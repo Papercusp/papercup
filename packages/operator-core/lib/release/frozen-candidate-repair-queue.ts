@@ -2051,6 +2051,60 @@ export function markFrozenRepairVerificationRed(
 }
 
 /**
+ * WI-10000741 (D-014's second half) — RECORD a red the suite measured at a head the row no
+ * longer carries, without moving anything the newer admission owns.
+ *
+ * D-014 rules that a verdict measured behind a fresh `repairHead` "records its legs but never
+ * overwrites the newer admission or phase". The gate honoured only the second clause: on a
+ * head mismatch `verdictTransitionAtHead` returned the fresh row untouched, so an hour-long
+ * suite whose red landed behind a mid-suite admission left NOTHING on the row — no round, no
+ * signature, no failing set — and the queue read as "never verified at that head" (measured
+ * 2026-09-08: candidate 2682c91d, ten manual whole-blob admissions, every superseded red
+ * discarded). This reducer is the missing first clause.
+ *
+ * What moves: `convergenceRounds` gains a round AT `measuredHead` (so the shrink series sees
+ * the measurement and `frozenRepairHeadAwaitsVerification` still answers true for the newer
+ * head, which has no round of its own), `signature`/`failingTests` take the fresh measurement
+ * with `measuredHead` stamped on each entry (the next selective verification at the newer head
+ * re-runs exactly what was red one admission ago — the best available estimate). What does
+ * NOT move: `phase`, `repairHead`, `admissions`, `fixerSpawnId`, `dispatchReservation`,
+ * `attempts` — those belong to the admission that superseded this verdict.
+ *
+ * Refuses when the head is NOT superseded (`repairHead === measuredHead`): that verdict is the
+ * row's own and belongs to `markFrozenRepairVerificationRed`, which also moves the phase.
+ */
+export function recordFrozenRepairSupersededRed(
+  queue: FrozenCandidateRepairQueue,
+  input: RepairSignatureRedInput & { measuredHead: string; nowMs: number },
+): FrozenCandidateRepairQueue {
+  assertTimestamp(input.nowMs, 'nowMs');
+  if (!nonBlank(input.measuredHead)) throw new Error('measuredHead is required to record a superseded red');
+  if (queue.repairHead === input.measuredHead) {
+    throw new Error(
+      `red at ${input.measuredHead.slice(0, 12)} is not superseded — it is the queue's own repairHead; ` +
+        `record it with markFrozenRepairVerificationRed`,
+    );
+  }
+  const round = nextConvergenceRound(queue);
+  const { signature, failingTests } = nextRepairSignature(queue.signature, {
+    ...input,
+    head: input.measuredHead,
+    round,
+  });
+  return {
+    ...queue,
+    updatedAtMs: input.nowMs,
+    convergenceRounds: appendConvergenceRound(queue, {
+      head: input.measuredHead,
+      failingTests,
+      nowMs: input.nowMs,
+    }),
+    failingTests: boundedFailures(failingTests),
+    signature,
+  };
+}
+
+/**
  * P-002 — fold one tick's NON-TEST leg measurements into the queue.
  *
  * A SEPARATE seam from the red/green markers on purpose. Those take a flat `failingTests`
