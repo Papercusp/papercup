@@ -270,6 +270,48 @@ export async function markSpawned(taskId: string, facts: SpawnedFacts, inject?: 
   `;
 }
 
+/**
+ * Re-open a confined task that was deliberately frozen before member recovery
+ * marked it `stranded`. The cgroup remains the source of truth for whether the
+ * process is still recoverable; callers must positively verify that separately
+ * before invoking this bookkeeping transition.
+ *
+ * Keep the transition state- and ended_at-guarded. A stale recovery request must
+ * not resurrect a later terminal verdict, and a row that was never closed as a
+ * strand is not part of this compatibility path. The former strand reason is
+ * retained in the detail bag so reopening does not erase why reconciliation
+ * closed the row; the live lifecycle tuple is cleared because the task is live
+ * again.
+ */
+export async function reopenStrandedTask(taskId: string, inject?: Sql): Promise<boolean> {
+  const sql = sqlOf(inject);
+  const rows = await sql`
+    UPDATE harness_shared.task_ledger
+       SET state = 'running',
+           exit_code = NULL,
+           exit_reason = NULL,
+           ended_at = NULL,
+           detail =
+             CASE
+               WHEN jsonb_typeof(COALESCE(detail, '{}'::jsonb)) = 'object'
+                 THEN COALESCE(detail, '{}'::jsonb)
+               ELSE '{}'::jsonb
+             END || jsonb_build_object(
+               'reopenedFromStranded', jsonb_build_object(
+                 'at', now(),
+                 'reason', exit_reason
+               )
+             ),
+           last_seen_at = now(),
+           updated_at = now()
+     WHERE task_id = ${taskId}
+       AND state = 'stranded'
+       AND ended_at IS NOT NULL
+    RETURNING task_id
+  `;
+  return rows.length > 0;
+}
+
 export interface CloseTaskInput {
   state: Extract<TaskState, 'exited' | 'killed' | 'timed_out' | 'stranded' | 'ended_unobserved'>;
   exitCode?: number | null;
