@@ -145,7 +145,7 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     expect(f.engine.adapter.host.snapshot()).toMatchObject({ executorAttached: true, streamReady: true,
       descriptor: { identity: { nativeSessionId: `native-${backend}` }, modes: ['auto'], carry: 'warm', accountRoute: 'default' } });
     expect(f.transport().env).toMatchObject({ PAPERCUSP_SID: 'su-rpc-fixture', PAPERCUSP_PROFILE: 'engineer' });
-    expect(f.transport().args).toContain(backend === 'codex' ? 'app-server' : 'rpc');
+    expect(f.transport().args).toContain(backend === 'codex' ? 'app-server' : 'rpc-ui');
     // An assigned id and a working executor do not prove native persistence.
     expect(f.engine.nativeSession().exactResumeSupported).toBe(false);
   });
@@ -262,6 +262,13 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       .resolves.toMatchObject({ status: 'refused' });
     expect(f.sent.filter((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toHaveLength(1);
   });
+});
+
+it('enables native OMP question callbacks through the RPC UI transport', async () => {
+  const f = fixture('omp');
+  await f.engine.ready;
+  const args = f.transport().args;
+  expect(args[args.indexOf('--mode') + 1]).toBe('rpc-ui');
 });
 
 it('refuses an OMP gateway model reported under the default account before inference', async () => {
