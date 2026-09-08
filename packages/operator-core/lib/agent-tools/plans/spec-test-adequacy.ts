@@ -502,7 +502,7 @@ function rerunRecipeFor(
   current: EvidenceCurrentInput[] | undefined,
   harness: string | undefined,
   classRef: PlanClassRubricRef,
-  selection: { workItemIds?: string[]; planItemIds?: string[] } | undefined,
+  selection: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] } | undefined,
 ): SpecTestAdequacyRerunRecipe {
   const evaluatorBuild = getBuildInfo();
   const selectedEvidence = [...new Map(
@@ -547,10 +547,12 @@ function rerunRecipeFor(
       classRef,
       specIds: [clause.specId],
       ...(selection?.workItemIds?.length ? { workItemIds: [...selection.workItemIds] } : {}),
+      ...(selection?.evidenceRefs?.length ? { evidenceRefs: [...selection.evidenceRefs] } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
-      // These inputs select the current cohort as well as classify freshness.
-      // Omitting them revives historical bindings on an otherwise valid replay.
+      // Fingerprints classify the selected bindings; the selectors above define
+      // the population. Keeping those roles separate prevents a partial current[]
+      // input from silently excluding an unmeasured historical binding.
       ...(current !== undefined ? { current: fingerprints } : {}),
     },
     selection: {
@@ -598,7 +600,7 @@ export function evaluateSpecTestAdequacy(input: {
   /** The caller-attested current fingerprints used by listSpecEvidence. */
   current?: EvidenceCurrentInput[];
   /** Exact caller selectors that constrain the evidence population on replay. */
-  rerunSelection?: { workItemIds?: string[]; planItemIds?: string[] };
+  rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] };
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;

@@ -20,6 +20,7 @@ export const argsSchema = z.object({
     .enum(PLAN_CLASS_RUBRIC_REFS)
     .describe('Existing plan-class standard rubric referenced by the plan acceptance rubric.'),
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   current: z
@@ -44,7 +45,7 @@ export const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. Explicit selections never succeed vacuously: when specIds/workItemIds/planItemIds are supplied but no eligible clause matches, the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. Explicit selections never succeed vacuously: when specIds/workItemIds/evidenceRefs/planItemIds are supplied but no eligible clause matches, the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
   guidance: {
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
@@ -75,6 +76,7 @@ export default defineTool({
       planSlugs: [args.slug],
       workItemIds: args.workItemIds,
       specIds: args.specIds,
+      evidenceRefs: args.evidenceRefs,
       current,
       limit: evidenceLimit,
     });
@@ -85,13 +87,17 @@ export default defineTool({
           error: 'evidence_selection_hit_limit',
           count: allEvidence.length,
           limit: evidenceLimit,
-          remedy: 'Narrow workItemIds/specIds or raise limit; a capped evidence set cannot produce an adequacy verdict.',
+          remedy: 'Narrow workItemIds/specIds/evidenceRefs or raise limit; a capped evidence set cannot produce an adequacy verdict.',
         },
       };
     }
     const explicitSelection =
-      args.specIds !== undefined || args.workItemIds !== undefined || args.planItemIds !== undefined;
-    if (args.workItemIds !== undefined && allEvidence.length === 0) {
+      args.specIds !== undefined ||
+      args.workItemIds !== undefined ||
+      args.evidenceRefs !== undefined ||
+      args.planItemIds !== undefined;
+    const bindingSelection = args.workItemIds !== undefined || args.evidenceRefs !== undefined;
+    if (bindingSelection && allEvidence.length === 0) {
       return {
         data: {
           ok: false,
@@ -105,16 +111,19 @@ export default defineTool({
           eligibleClauseCount: 0,
           selection: {
             specIds: args.specIds ?? null,
-            workItemIds: args.workItemIds,
+            workItemIds: args.workItemIds ?? null,
+            evidenceRefs: args.evidenceRefs ?? null,
             planItemIds: args.planItemIds ?? null,
           },
           remedy:
-            'No exact evidence edge exists for the selected work item(s); pass specIds to evaluate intended uncovered clauses.',
+            args.evidenceRefs !== undefined
+              ? 'No exact evidence binding matches the selected workItemIds/evidenceRefs; verify those immutable selectors or pass specIds without a binding selector to evaluate intended uncovered clauses.'
+              : 'No exact evidence edge exists for the selected work item(s); pass specIds to evaluate intended uncovered clauses.',
         },
       };
     }
     const evidenceSpecIds = new Set(allEvidence.map((row) => row.specId));
-    const requestedSpecIds = args.specIds ?? (args.workItemIds ? [...evidenceSpecIds] : undefined);
+    const requestedSpecIds = args.specIds ?? (bindingSelection ? [...evidenceSpecIds] : undefined);
     const clauses = await listSpecClauses({
       harnessSlug,
       planSlug: args.slug,
@@ -139,6 +148,7 @@ export default defineTool({
           selection: {
             specIds: args.specIds ?? null,
             workItemIds: args.workItemIds ?? null,
+            evidenceRefs: args.evidenceRefs ?? null,
             planItemIds: args.planItemIds ?? null,
           },
           excludedClauses: clauses.map((clause) => ({
@@ -149,7 +159,7 @@ export default defineTool({
           remedy:
             clauses.length > 0 && args.includeDraft !== true
               ? 'The selection matched only draft clauses; pass includeDraft:true to evaluate draft clauses or select active/accepted clauses.'
-              : 'Verify the exact slug and specIds/workItemIds/planItemIds selection; no eligible clause matched.',
+              : 'Verify the exact slug and specIds/workItemIds/evidenceRefs/planItemIds selection; no eligible clause matched.',
         },
       };
     }
@@ -163,6 +173,7 @@ export default defineTool({
         current,
         rerunSelection: {
           workItemIds: args.workItemIds,
+          evidenceRefs: args.evidenceRefs,
           planItemIds: args.planItemIds,
         },
         now,

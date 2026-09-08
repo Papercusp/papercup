@@ -296,6 +296,54 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     ).toBeUndefined();
   });
 
+  it('preserves valid rerun population selectors and rejects malformed ones instead of widening', () => {
+    const recipe = {
+      schemaVersion: 1 as const,
+      evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        workItemIds: ['WI-123'],
+        evidenceRefs: ['testing:run:current#packages/operator-core/lib/reconnect.test.ts'],
+        planItemIds: ['P-001'],
+      },
+      selection: {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        evidence: [
+          {
+            evidenceKind: 'test',
+            evidenceRef: 'testing:run:current#packages/operator-core/lib/reconnect.test.ts',
+          },
+        ],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness' as const,
+        classifier: 'classifySpecEvidenceCurrentness' as const,
+        unknownWhenMissing: true as const,
+      },
+    };
+
+    expect(asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe?.args).toMatchObject({
+      workItemIds: ['WI-123'],
+      evidenceRefs: ['testing:run:current#packages/operator-core/lib/reconnect.test.ts'],
+      planItemIds: ['P-001'],
+    });
+
+    for (const malformedArgs of [
+      { ...recipe.args, workItemIds: [] },
+      { ...recipe.args, evidenceRefs: [''] },
+      { ...recipe.args, planItemIds: ['P-1'] },
+    ]) {
+      expect(
+        asStructuredObservation({ rerunRecipe: { ...recipe, args: malformedArgs } })?.rerunRecipe,
+      ).toBeUndefined();
+    }
+  });
+
   it('round-trips native Cargo check runs and drops malformed native records', () => {
     const out = asStructuredObservation({
       rubricRef: 'pui-tui-remediation-and-consolidation-2026-08-27-acceptance',

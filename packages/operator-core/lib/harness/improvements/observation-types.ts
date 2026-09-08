@@ -201,6 +201,8 @@ export interface SpecTestAdequacyRerunRecipe {
     specIds: string[];
     /** Preserve the evidence-population selector used by the original evaluation. */
     workItemIds?: string[];
+    /** Preserve exact immutable evidence identities so superseded runs stay excluded. */
+    evidenceRefs?: string[];
     /** Preserve an explicit plan-item selector instead of widening the replay. */
     planItemIds?: string[];
     includeDraft: true;
@@ -1164,6 +1166,24 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       recipe.args && typeof recipe.args === 'object' && !Array.isArray(recipe.args)
         ? (recipe.args as Record<string, unknown>)
         : null;
+    const optionalSelector = (
+      value: unknown,
+      maxItems: number,
+      maxLength: number,
+      pattern?: RegExp,
+    ): string[] | null | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value) || value.length === 0 || value.length > maxItems) return null;
+      const parsed = value.map((entry) => (typeof entry === 'string' ? entry.trim() : ''));
+      return parsed.some((entry) => !entry || entry.length > maxLength || (pattern ? !pattern.test(entry) : false))
+        ? null
+        : parsed;
+    };
+    // Optional population selectors are fail-closed: a malformed persisted value
+    // drops the recipe instead of silently widening its replay.
+    const workItemIds = optionalSelector(rawArgs?.workItemIds, 500, 200);
+    const evidenceRefs = optionalSelector(rawArgs?.evidenceRefs, 500, 2000);
+    const planItemIds = optionalSelector(rawArgs?.planItemIds, 200, 200, /^P-\d{3,}$/);
     // Historical cards omitted args.harness even though the scorecard itself
     // carries sourceHive. Prefer an explicitly recorded evaluator arg, then use
     // sourceHive as the lossless fallback needed to replay those cards.
@@ -1197,6 +1217,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       typeof current.supplied === 'boolean' &&
       fingerprints !== null &&
       fingerprints.every((entry): entry is SpecTestAdequacyCurrentFingerprint => entry !== null) &&
+      workItemIds !== null &&
+      evidenceRefs !== null &&
+      planItemIds !== null &&
       derivation?.kind === 'listSpecEvidence.currentness' &&
       derivation.classifier === 'classifySpecEvidenceCurrentness' &&
       derivation.unknownWhenMissing === true
@@ -1213,6 +1236,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           slug: selection.planSlug,
           classRef: recipe.classRef as string,
           specIds: [selection.specId],
+          ...(workItemIds ? { workItemIds } : {}),
+          ...(evidenceRefs ? { evidenceRefs } : {}),
+          ...(planItemIds ? { planItemIds } : {}),
           includeDraft: true,
           ...(current.supplied ? { current: fingerprints } : {}),
         },

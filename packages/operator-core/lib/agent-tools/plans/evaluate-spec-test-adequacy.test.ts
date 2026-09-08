@@ -94,12 +94,14 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result.rows).toHaveLength(1);
   });
 
-  it('preserves exact work-item and plan-item selectors in the emitted rerun recipe', async () => {
+  it('preserves exact work-item, evidence-ref, and plan-item selectors in the emitted rerun recipe', async () => {
+    const evidenceRefs = ['testing:run:current#packages/operator-core/lib/reconnect.test.ts'];
     const result = await call({
       harness: 'papercusp',
       slug: 'plan-a',
       classRef: 'plan-class-feature-ship',
       workItemIds: ['WI-123'],
+      evidenceRefs,
       planItemIds: ['P-001'],
       includeDraft: true,
     });
@@ -107,10 +109,34 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result).toMatchObject({ ok: true, count: 1 });
     expect(result.rows[0].scorecardDraft.rerunRecipe.args).toMatchObject({
       workItemIds: ['WI-123'],
+      evidenceRefs,
       planItemIds: ['P-001'],
     });
-    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ workItemIds: ['WI-123'] }));
+    expect(listEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ workItemIds: ['WI-123'], evidenceRefs }),
+    );
     expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-001'] }));
+  });
+
+  it('refuses an evidence-ref selector that matches no immutable binding', async () => {
+    listEvidence.mockResolvedValue([]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      evidenceRefs: ['testing:run:superseded'],
+      includeDraft: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'selection_empty',
+      selectedEvidenceCount: 0,
+      selection: { evidenceRefs: ['testing:run:superseded'] },
+      remedy: expect.stringContaining('No exact evidence binding matches'),
+    });
+    expect(listClauses).not.toHaveBeenCalled();
   });
 
   it('accepts the persisted rerunRecipe.current wrapper and normalizes it to current[]', async () => {
