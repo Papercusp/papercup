@@ -125,6 +125,8 @@ export interface FleetMemberObservation {
   isRegisteredLeader?: boolean;
   /** A current claim has canonical activity='progressing'. */
   hasProgressingClaim?: boolean;
+  /** Whether the current assignment read still classifies this member as stalled. */
+  stalled?: boolean | null;
 }
 
 /**
@@ -475,7 +477,7 @@ export interface FleetTransitionEventsDeps {
   ) => Promise<
     Pick<
       FleetMemberObservation,
-      'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim'
+      'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim' | 'stalled'
     > | null
   >;
   /** Resolve an agent's current fleet. Default = the canonical append-only
@@ -557,13 +559,16 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
       // control state before delivery so recorded/non-wakeable claimless residue
       // cannot wake a leader after it has become non-actionable.
       if (
-        (edge.kind === 'member-dead' || edge.kind === 'context-critical' || edge.kind === 'repeated-recovery') &&
+        (edge.kind === 'member-dead' ||
+          edge.kind === 'context-critical' ||
+          edge.kind === 'member-stalled' ||
+          edge.kind === 'repeated-recovery') &&
         deps.currentMemberObservation
       ) {
         let currentMember:
           | Pick<
               FleetMemberObservation,
-              'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim'
+              'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim' | 'stalled'
             >
           | null
           | undefined;
@@ -585,6 +590,13 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
           edge.kind === 'context-critical' &&
           currentMember !== undefined &&
           !isActionableFleetObservation(currentMember)
+        ) {
+          return;
+        }
+        if (
+          edge.kind === 'member-stalled' &&
+          currentMember !== undefined &&
+          currentMember.stalled !== true
         ) {
           return;
         }

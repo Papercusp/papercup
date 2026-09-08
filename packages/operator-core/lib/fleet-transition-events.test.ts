@@ -279,6 +279,43 @@ describe('emitFleetTransitionEdge', () => {
     expect(emit).toHaveBeenCalledOnce();
   });
 
+  it('suppresses a member-stalled wake when the current assignment is parked/healthy', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentMemberObservation = vi.fn(async () => ({
+      sessionState: 'parked' as const,
+      wakeable: true,
+      claimCount: 1,
+      stalled: false,
+    }));
+
+    emitFleetTransitionEdge(
+      { kind: 'member-stalled', fleetSlug: 'f', agentId: 'su-a', to: 'stalled', from: 'clear' },
+      { emit, currentMemberObservation },
+    );
+    await settle();
+
+    expect(currentMemberObservation).toHaveBeenCalledWith('f', 'su-a');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('emits a member-stalled wake when the current assignment remains stalled', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentMemberObservation = vi.fn(async () => ({
+      sessionState: 'live' as const,
+      wakeable: true,
+      claimCount: 1,
+      stalled: true,
+    }));
+
+    emitFleetTransitionEdge(
+      { kind: 'member-stalled', fleetSlug: 'f', agentId: 'su-a', to: 'stalled', from: 'clear' },
+      { emit, currentMemberObservation },
+    );
+    await settle();
+
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
   it('still emits a context-critical wake while the current writer remains critical', async () => {
     const emit = vi.fn().mockResolvedValue(undefined);
     const currentContextPressure = vi.fn(async () => 'critical' as const);

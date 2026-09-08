@@ -35,9 +35,14 @@
  */
 
 import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
-import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
+import {
+  decorateLoopMonitorStates,
+  decorateParkedOn,
+  reconcileWakeability,
+} from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
+import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { readFleetAdmissionBlocks } from '../../agent-tools/coordination/fleet-scope-admission-blocks';
 import { readFleetRepeatedRecoveryStates } from '../../fleet-repeated-recovery';
 import {
@@ -127,6 +132,25 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
     readFleetRepeatedRecoveryStates(recoveryMembers).catch(() => new Map()),
   ]);
 
+  // Keep the transition detector on the same parked-loop truth as
+  // fleet:assignments. A raw fleet_assignment row can still carry a stale
+  // progress-stalled bit while the member is healthily waiting for its next
+  // wake or parked on an exact dependency event. If the loop read is
+  // unavailable, leave stalled unknown so this sweep cannot manufacture an
+  // actionable member-stalled edge from a partial read.
+  let loopStateKnown = true;
+  try {
+    await decorateParkedOn(withLiveness, (ids) => listParkedAwaitsForSubscribers(ids));
+  } catch {
+    // A missing parked-await read is safe to degrade; the loop state below can
+    // still suppress a false positive when it reports an active healthy loop.
+  }
+  try {
+    await decorateLoopMonitorStates(withLiveness);
+  } catch {
+    loopStateKnown = false;
+  }
+
   return withLiveness
     .filter((a): a is typeof a & { fleetSlug: string } => Boolean(a.fleetSlug))
     .map((a) => ({
@@ -136,7 +160,7 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
       contextPressure: pressure.get(a.agentId) ?? null,
       wakeable: a.wakeable ?? null,
       claimCount: a.claims.length,
-      stalled: a.stalled === true,
+      stalled: loopStateKnown ? a.stalled === true : null,
       consecutiveRecoveryOnlyCycles:
         repeatedRecovery.get(a.agentId)?.status === 'measured'
           ? repeatedRecovery.get(a.agentId)?.consecutiveRecoveryOnlyCycles ?? null
@@ -160,12 +184,15 @@ async function gatherCurrentFleetMemberObservation(
   const member = agents.find((agent) => agent.fleetSlug === fleetSlug);
   if (!member) return null;
   const [reconciled] = await reconcileWakeability([member as ObservableAgent]);
+  await decorateParkedOn([reconciled], (ids) => listParkedAwaitsForSubscribers(ids));
+  await decorateLoopMonitorStates([reconciled]);
   return {
     sessionState: reconciled?.sessionState ?? null,
     wakeable: reconciled?.wakeable ?? null,
     claimCount: reconciled?.claims.length ?? 0,
     isRegisteredLeader: reconciled?.fleetRole === 'leader',
     hasProgressingClaim: reconciled?.claims.some((claim) => claim.activity === 'progressing') ?? false,
+    stalled: reconciled?.stalled === true,
   };
 }
 
@@ -263,7 +290,14 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   const memberDeadEdges = edges.filter((edge) => edge.kind === 'member-dead');
   const contextEdges = edges.filter((edge) => edge.kind === 'context-critical');
   const repeatedRecoveryEdges = edges.filter((edge) => edge.kind === 'repeated-recovery');
-  if ((memberDeadEdges.length > 0 || contextEdges.length > 0 || repeatedRecoveryEdges.length > 0) && !deps.gather) {
+  const stalledEdges = edges.filter((edge) => edge.kind === 'member-stalled');
+  if (
+    (memberDeadEdges.length > 0 ||
+      contextEdges.length > 0 ||
+      stalledEdges.length > 0 ||
+      repeatedRecoveryEdges.length > 0) &&
+    !deps.gather
+  ) {
     // The production sweep gathers a cached observation first, then supplies a
     // single shared current-state read to all detached edge emits. Keeping the
     // read lazy makes the revalidation happen after the sweep has yielded, which
