@@ -585,6 +585,15 @@ export interface ScorecardGradingAudit {
   /** The meta-rubric the audit grades against (grading-integrity). */
   metaRubricRef: string;
   stampedAt: string;
+  /**
+   * Short-lived dispatch reservation written atomically before an auditor is
+   * launched. It prevents two independent queue readers from launching for the
+   * same pending scorecard; an expired reservation may be replaced safely.
+   */
+  dispatchReservation?: {
+    key: string;
+    reservedAt: string;
+  };
   /** The audit scorecard's issue id, once audited. */
   auditIssueId?: string;
   /** The auditor's ownerId (verified ≠ the graded card's author at emit). */
@@ -1304,10 +1313,28 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       typeof g.stampedAt === 'string' &&
       g.stampedAt.trim()
     ) {
+      const dispatchReservation =
+        g.dispatchReservation && typeof g.dispatchReservation === 'object' && !Array.isArray(g.dispatchReservation)
+          ? (g.dispatchReservation as Record<string, unknown>)
+          : undefined;
+      const reservationKey = typeof dispatchReservation?.key === 'string' ? dispatchReservation.key : undefined;
+      const reservationTimestamp =
+        typeof dispatchReservation?.reservedAt === 'string' ? dispatchReservation.reservedAt : undefined;
       out.gradingAudit = {
         state: g.state,
         metaRubricRef: g.metaRubricRef,
         stampedAt: g.stampedAt,
+        ...(reservationKey &&
+        reservationKey.trim() &&
+        reservationTimestamp &&
+        reservationTimestamp.trim()
+          ? {
+              dispatchReservation: {
+                key: reservationKey,
+                reservedAt: reservationTimestamp,
+              },
+            }
+          : {}),
         ...(typeof g.auditIssueId === 'string' && g.auditIssueId.trim() ? { auditIssueId: g.auditIssueId } : {}),
         ...(typeof g.auditor === 'string' && g.auditor.trim() ? { auditor: g.auditor } : {}),
         ...(typeof g.auditedAt === 'string' && g.auditedAt.trim() ? { auditedAt: g.auditedAt } : {}),
