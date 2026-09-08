@@ -254,6 +254,75 @@ describe('listSpecEvidence timestamp normalization', () => {
     });
   });
 
+  it('replays a pinned server-measured snapshot without reading the live repository', async () => {
+    h.rows = [
+      {
+        id: 3,
+        work_item_id: 'WI-3',
+        plan_slug: 'plan-one',
+        spec_id: 'SPEC-001-01',
+        source_val_id: 'VAL-001-01',
+        spec_revision: 1,
+        current_revision: 2,
+        spec_fingerprint: 'sha256:spec-v1',
+        evidence_kind: 'test',
+        evidence_ref: 'vitest:replay',
+        source_fingerprint: 'git:graded',
+        test_fingerprint: 'sha256:test-graded',
+        fixture_fingerprint: null,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+        details: {
+          currentMeasurement: {
+            schemaVersion: 1,
+            kind: 'repo-files',
+            sourcePaths: ['src/feature.ts'],
+            testPaths: ['test/feature.test.ts'],
+          },
+        },
+        observed_at: '2026-08-20 17:10:00-04',
+        binding_fingerprint: 'sha256:binding',
+        created_by: 'su-test',
+        created_at: '2026-08-20T21:10:01.000Z',
+        spec_is_current: true,
+      },
+    ];
+
+    const [row] = await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+      currentProvenance: 'server-measured',
+      current: [
+        {
+          evidenceKind: 'test',
+          evidenceRef: 'vitest:replay',
+          sourceFingerprint: 'git:graded',
+          testFingerprint: 'sha256:test-graded',
+        },
+      ],
+    });
+
+    expect(row).toMatchObject({
+      specRevision: 1,
+      currentRevision: 2,
+      specFingerprint: 'sha256:spec-v1',
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    });
+    expect(row).not.toHaveProperty('serverMeasurement');
+  });
+
   it('surfaces provisional scorecard proof bases on the returned binding row', async () => {
     h.rows = [
       {
