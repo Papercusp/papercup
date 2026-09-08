@@ -5359,6 +5359,95 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toHaveLength(18);
   });
 
+  it("EI-22690386207028024: coord:send uses the reserved budget for concurrent handoffs", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    let noteSecondStarted: () => void = () => {};
+    const secondStarted = new Promise<void>((resolve) => {
+      noteSecondStarted = resolve;
+    });
+    const hits: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        active++;
+        maxActive = Math.max(maxActive, active);
+        res.once("close", () => {
+          active = Math.max(0, active - 1);
+        });
+        if (client === "held-send") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        noteSecondStarted();
+        res.end('{"result":{"sent":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 2,
+        maxCoordSendQueue: 1,
+        coordSendQueueWaitMs: 250,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "coord:send", arguments: {} },
+      });
+    let first: ReturnType<typeof request> | undefined;
+    let second: ReturnType<typeof request> | undefined;
+    try {
+      first = request(port(proxy), body(1), "/api/mcp?client=held-send");
+      await firstStarted;
+      second = request(port(proxy), body(2), "/api/mcp?client=parallel-send");
+      const secondReached = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 500);
+        void secondStarted.then(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+
+      expect(secondReached).toBe(true);
+      expect(maxActive).toBe(2);
+      const health = JSON.parse(
+        (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+      );
+      expect(health.inFlight.coordSendMax).toBe(2);
+      expect((await second).status).toBe(200);
+    } finally {
+      releaseFirst();
+      if (first) await first;
+      if (second) await second;
+    }
+    expect(hits).toEqual(["held-send", "parallel-send"]);
+  });
+
   it("EI-21653510279635866: expires a queued dedicated coord:send before the client deadline", async () => {
     expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
     expect(DEFAULT_COORD_SEND_QUEUE_WAIT_MS).toBeLessThan(60_000);
