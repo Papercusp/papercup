@@ -1441,6 +1441,34 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for packages/operator-core/lib/release/sync-batch-delta-check-deps.ts: every detected start is the file's own run() wrapper around spawnSync with an explicit per-leg timeout (SYNC_DELTA_TIMEOUTS_MS, 30s–25min) and killSignal:'SIGTERM'; each call is synchronous, bounded, and resolves to the deps contract's undetermined value on any failure rather than a fake result, so no call can wedge the routine tick or leave an independent resident queue behind.",
   },
   {
+    path: "apps/operator/bin/bundle-host-freshness.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for apps/operator/bin/bundle-host-freshness.mjs: every detected start is execFileSync('git', ...) used for bounded repository identity and dirty-state metadata with an explicit 30s timeout; each call is synchronous and awaited, creates no worker or resident queue, and must remain available to reject a stale host bundle before launch.",
+  },
+  {
+    path: "packages/operator-core/lib/p2p/two-peer-commerce/commerce-peer-launcher.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/p2p/two-peer-commerce/commerce-peer-launcher.ts: its local/SSH children are the measured subjects of one finite two-peer diagnostic run, not a resident service or queue; runTwoPeerCommerce awaits bounded ready/mesh/convergence windows and owns every handle, and its finally cleanup sends stop/end then SIGKILLs local stragglers and tears down remote children before the one-shot run returns.",
+  },
+  {
+    path: "scripts/install-onnxruntime-node.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/install-onnxruntime-node.mjs: the single spawnSync child is the version-pinned onnxruntime package's installer, invoked as an npm postinstall under the serialized install:safe lifecycle; it is synchronous and awaited, returns only after the provider files are verified, and creates no detached worker or independent resident queue.",
+  },
+  {
+    path: "scripts/lib/executed-source-map.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/executed-source-map.mjs: defaultExec performs one synchronous git diff --name-only metadata read for a cached commit pair with a 64 MiB output bound; it is awaited, starts no worker or resident queue, and an unavailable/unknown revision degrades honestly to null so selection keeps rather than drops tests.",
+  },
+  {
     path: "scripts/ensure-playwright-browsers.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

@@ -16511,7 +16511,7 @@
           "POST"
         ]
       },
-      "description": "Full verdict for a raw shell command: (a) does it touch a named resource with an exclusive (restart/migration) in flight — decision (allow | warn | block) + matched resources; and (b) does a bash→tool substitution rule claim it — substitutions[] + substitutionTier (observe | advise | deny). The one call a raw-Bash gate makes.",
+      "description": "Full verdict for a raw shell command: named-resource holds, frozen-lineage bypasses, and bash→tool substitutions. The one call a raw-Bash gate makes.",
       "capabilities": [
         "locks:read"
       ],

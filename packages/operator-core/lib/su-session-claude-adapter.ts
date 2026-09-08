@@ -472,6 +472,18 @@ export class ClaudeSuSessionAdapter {
       return;
     }
 
+    // A default/alias is only a launch request. Native initialization and root
+    // assistant records name the model that actually ran, including on replay.
+    const nativeModel = record.type === 'system' && record.subtype === 'init'
+      ? firstString(record.model)
+      : record.type === 'assistant' && !record.parent_tool_use_id && record.isSidechain !== true
+        ? firstString(asRecord(record.message)?.model) : null;
+    if (nativeModel && nativeModel !== '<synthetic>' && this.host.descriptor().model !== nativeModel) {
+      this.host.emit({
+        type: 'session', descriptor: { ...this.host.descriptor(), model: nativeModel },
+      } as SuSessionEventInput<'claude'>);
+    }
+
     const recordId = firstString(record.uuid, record.id, record.message_id);
     if (recordIndicatesCompaction(record)) {
       this.host.transition('compacting', 'Claude native transcript compacted');

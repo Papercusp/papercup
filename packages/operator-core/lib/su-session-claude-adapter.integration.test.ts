@@ -86,6 +86,26 @@ function events(adapter: ReturnType<typeof createClaudeSuSessionAdapter>): SuSes
 }
 
 describe('Claude SU-session backend — PUI entry and native transcript translation', () => {
+  it('records the actual root model from native initialization and resumed transcript records', () => {
+    const adapter = createClaudeSuSessionAdapter(binding(), runtime(), { agentChatId: 'model-proof', register: false });
+    try {
+      expect(adapter.host.descriptor().model).toBeNull();
+      adapter.ingestNativeLine(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet-4-6' }));
+      expect(adapter.host.descriptor().model).toBe('claude-sonnet-4-6');
+      adapter.ingestNativeLine(JSON.stringify({ type: 'assistant', message: {
+        role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'restored reply' }],
+      } }));
+      expect(adapter.host.descriptor().model).toBe('claude-opus-4-8');
+      for (const line of [
+        { type: 'user', message: { model: 'untrusted-user-value', content: 'hi' } },
+        { type: 'assistant', parent_tool_use_id: 'child', message: { model: 'child-model', content: [] } },
+        { type: 'assistant', isSidechain: true, message: { model: 'sidechain-model', content: [] } },
+        { type: 'assistant', message: { model: '<synthetic>', content: [] } },
+      ]) adapter.ingestNativeLine(JSON.stringify(line));
+      expect(adapter.host.descriptor().model).toBe('claude-opus-4-8');
+    } finally { adapter.dispose(); }
+  });
+
   it('creates through the canonical PUI entry, translates prompts/tools/results, and opens typed cards', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-su-session-'));
     tempDirs.push(dir);
