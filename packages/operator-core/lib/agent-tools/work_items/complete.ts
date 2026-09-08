@@ -2702,7 +2702,10 @@ async function completeOne(
     const outcome = await designEvidenceCompletionGate(
       designFeatureCandidates({ id: it.id, sourcePlanSlug: existing.sourcePlanSlug }),
       {
-        requiredReferences: existing.payload?.designReferences,
+        requiredReferences:
+          existing.payload && typeof existing.payload === 'object'
+            ? (existing.payload as Record<string, unknown>).designReferences
+            : undefined,
         evaluate: async (featureId) => {
           const verbDeps = await designCompareDepsFor(harnessSlug);
           return evaluateFeatureDesignGate(
