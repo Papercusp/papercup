@@ -272,6 +272,39 @@ describe('goals:start — the happy path', () => {
     expect(cmd).not.toContain('Ship a paid app');
   });
 
+  it('reads goal history in the production handler and injects it into the kickoff env', async () => {
+    const priorAttempts = await import('../../prior-attempt-context');
+    const readHistory = vi.spyOn(priorAttempts, 'readGoalHistoryContext').mockResolvedValueOnce({
+      status: 'available',
+      brief: {
+        fingerprint: 'goal-start-handler-history-fingerprint',
+        attempts: [
+          {
+            authority: 'checkpoint',
+            scope: 'goal-wide',
+            rawRef: 'goal-history#production-handler-proof',
+            text: 'PRODUCTION HANDLER HISTORY MARKER',
+          },
+        ],
+      },
+      recovery: { tool: 'goals:get', args: { id: 'resolved-at-runtime', detail: 'full' } },
+    } as never);
+
+    try {
+      const res = await call();
+      const goalId = dataOf(res).id as string;
+      const env = (spawnConsoleMock.mock.calls[0][0] as { envelope: { env: Record<string, string> } }).envelope.env;
+
+      expect(readHistory).toHaveBeenCalledTimes(1);
+      expect(readHistory).toHaveBeenCalledWith(goalId);
+      expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('GOAL HISTORY — own and bounded descendant evidence');
+      expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('goal-start-handler-history-fingerprint');
+      expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('PRODUCTION HANDLER HISTORY MARKER');
+    } finally {
+      readHistory.mockRestore();
+    }
+  });
+
   it('persists the kill criterion and ceiling as columns, not prose', async () => {
     const res = await call();
     const insert = sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text));

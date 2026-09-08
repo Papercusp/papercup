@@ -834,6 +834,91 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(complete.ratings['execution-integrity'].evidence).toContain('Every original failure has exactly one');
   });
 
+  it('rejects a collapsed causal pair even when one row claims every required scenario', () => {
+    const pairClause = clause({
+      falsifier: {
+        observation: 'Either original failure recurs.',
+        requiredScenarios: ['missing-history', 'missing-recovery'],
+        causalPairing: 'one-to-one',
+      },
+    });
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const negative = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#before-missing-history',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          outcome: 'killed',
+          causalPairIds: ['missing-history'],
+        },
+      },
+    });
+    const collapsedRecurrence = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#after-collapsed-pair',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          scenarioIds: ['missing-history', 'missing-recovery'],
+          causalPairIds: ['missing-history'],
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: pairClause,
+      evidence: [negative, collapsedRecurrence],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['correct-layer'].rating).toBe('pass');
+    expect(result.ratings['execution-integrity'].rating).toBe('fail');
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'canonical causalPairId(s) missing: missing-recovery',
+    );
+  });
+
+  it('rejects a killed outcome on the repaired recurrence side of a causal pair', () => {
+    const pairClause = clause({
+      falsifier: { observation: 'The original failure recurs.', causalPairing: 'one-to-one' },
+    });
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const negative = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#before-missing-goal-history',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          outcome: 'killed',
+          causalPairIds: ['missing-goal-history'],
+        },
+      },
+    });
+    const killedRecurrence = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#after-missing-goal-history',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          outcome: 'killed',
+          causalPairIds: ['missing-goal-history'],
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: pairClause,
+      evidence: [negative, killedRecurrence],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['execution-integrity'].rating).toBe('fail');
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'missing-goal-history:recurrence binding is not successful ledger-backed repaired proof',
+    );
+  });
+
   it('rejects a multi-pair row and orphan recurrence under a one-to-one contract', () => {
     const pairClause = clause({
       falsifier: { observation: 'Either original failure recurs.', causalPairing: 'one-to-one' },

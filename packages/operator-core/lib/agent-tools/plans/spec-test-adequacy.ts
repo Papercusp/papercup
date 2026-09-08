@@ -167,6 +167,7 @@ const HIGH_RISK_BEHAVIOR_CLASSES = new Set<SpecBehaviorClass>([
 ]);
 
 const SUCCESS_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded', 'killed']);
+const REPAIRED_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded']);
 const FAILURE_OUTCOMES = new Set(['fail', 'failed', 'error', 'timed-out', 'timeout', 'survived']);
 const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([
   'test',
@@ -387,6 +388,11 @@ function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
     details.executed === true &&
     SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')
   );
+}
+
+function isSuccessfulRepairedEvidence(row: SpecEvidenceForAdequacy): boolean {
+  const details = detailsOf(row);
+  return isSuccessfulExecutableEvidence(row) && REPAIRED_OUTCOMES.has(details.outcome?.toLowerCase() ?? '');
 }
 
 function booleanRating(
@@ -963,6 +969,7 @@ export function evaluateSpecTestAdequacy(input: {
 
   let causalPairRating: AdequacyRatingEntry | null = null;
   if (clause.falsifier?.causalPairing === 'one-to-one') {
+    const canonicalPairIds = [...new Set(clause.falsifier.requiredScenarios ?? [])].sort();
     const malformedPairRows = evidence.filter((row) =>
       detailsOf(row).contractMetadataIssues?.includes('causalPairIds:invalid'),
     );
@@ -1008,6 +1015,16 @@ export function evaluateSpecTestAdequacy(input: {
       add(recurrenceByPair, details.causalPairIds[0]!, row);
     }
     const pairIds = [...new Set([...negativeByPair.keys(), ...recurrenceByPair.keys()])].sort();
+    if (canonicalPairIds.length > 0) {
+      const missingCanonicalPairs = canonicalPairIds.filter((pairId) => !pairIds.includes(pairId));
+      const unexpectedPairs = pairIds.filter((pairId) => !canonicalPairIds.includes(pairId));
+      if (missingCanonicalPairs.length > 0) {
+        violations.push(`canonical causalPairId(s) missing: ${missingCanonicalPairs.join(', ')}`);
+      }
+      if (unexpectedPairs.length > 0) {
+        violations.push(`causalPairId(s) not named by requiredScenarios: ${unexpectedPairs.join(', ')}`);
+      }
+    }
     for (const pairId of pairIds) {
       const negatives = negativeByPair.get(pairId) ?? [];
       const recurrences = recurrenceByPair.get(pairId) ?? [];
@@ -1017,7 +1034,7 @@ export function evaluateSpecTestAdequacy(input: {
       if (negatives.length === 1 && !isSuccessfulExecutableEvidence(negatives[0]!)) {
         violations.push(`${pairId}:negative binding is not successful ledger-backed counterexample proof`);
       }
-      if (recurrences.length === 1 && !isSuccessfulExecutableEvidence(recurrences[0]!)) {
+      if (recurrences.length === 1 && !isSuccessfulRepairedEvidence(recurrences[0]!)) {
         violations.push(`${pairId}:recurrence binding is not successful ledger-backed repaired proof`);
       }
     }
