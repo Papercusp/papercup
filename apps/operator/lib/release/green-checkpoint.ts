@@ -16720,6 +16720,29 @@ export function realCheckpointDeps(
             await writeFreezeAndConvergeDisposition(repairTarget, disposition);
             freezeDispositionRecordedThisTick = true;
           },
+          // WI-10000758: the frozen-repair DISPATCHER. `dispatchFrozenRepair` optional-chains
+          // this dep, so when sweep c076b0dd95 (P-005, 2026-09-04) deleted it together with
+          // the repair-worktree machinery nothing failed loudly: every `dispatch-fixer` tick
+          // still took the reservation, got `fired = null`, released it via finalize and
+          // logged "fixer dispatch did not return a spawn … queue remains unassigned for
+          // retry" — `attempts` stayed 0 across 14 consecutive reds, while the OTHER
+          // dispatch path (`recordCheckpointVerdict`) is gated `!verdict.repairQueue`, so no
+          // path at all could spawn a fixer for a frozen candidate. dispatchReleaseFixer
+          // needs no worktree (D-010: the fixer authors on staging and admits by path) and
+          // already carries the frozen-repair guards (stale candidate, snapshot mismatch,
+          // WI-2140605 no-measured-failures). The wiring invariant — dispatcher present iff
+          // the reservation trio is — is pinned by
+          // green-checkpoint-frozen-repair-dispatcher-wiring.test.ts.
+          async dispatchFrozenRepairFixer(queue: FrozenCandidateRepairQueue) {
+            const { dispatchReleaseFixer } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            return dispatchReleaseFixer(
+              repairTarget,
+              queue.repairHead,
+              queue.failingTests,
+              queue,
+            );
+          },
           async reserveFrozenRepairFixer(
             queue: FrozenCandidateRepairQueue,
             options?: { allowCreateIfAbsent?: boolean },

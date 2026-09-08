@@ -13503,9 +13503,11 @@ describe("WI-42350: a sha that already reached a RED verdict is not re-judged", 
   };
 
   it("EI-22430783328866306: persists a first red when the fixer dispatcher is absent", async () => {
-    // P-005 production wiring intentionally supplies the queue writer without a fixer
-    // dispatcher. The writer is still load-bearing: a red must remain resumable even when
+    // The queue WRITER is load-bearing on its own: a red must remain resumable even when
     // dispatch is unavailable, rather than silently skipping the frozen queue entirely.
+    // (The P-005 sweep c076b0dd95 dropped the production dispatcher by accident, not by
+    // design — WI-10000758 restored it; see green-checkpoint-frozen-repair-dispatcher-
+    // wiring.test.ts. This case keeps exercising the dispatcher-ABSENT path on purpose.)
     vi.stubEnv("PAPERCUSP_QUIET_CUT", "0");
     try {
       const ready = await commit("a", "1", "ready");
