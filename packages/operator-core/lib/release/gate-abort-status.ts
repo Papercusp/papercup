@@ -55,6 +55,9 @@ import { formatIdleAge } from '../format/relative-time';
  */
 export const RECORDED_INCONCLUSIVE_STATUSES = [
   'migrations-pending',
+  // EI-22642378999251872: a measured standing preflight breach now counts as a no-verdict
+  // and is recorded, so repeated hourly aborts cannot masquerade as harmless skipped work.
+  'disk-headroom',
   'infra-inconclusive',
   'deadline-exceeded',
   'cancelled',
@@ -97,6 +100,8 @@ export type GateAbortKind = 'standing-condition' | 'transient' | 'peer-owned' | 
 const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 'unknown'>> = {
   // The dev PG is behind the candidate: a real, standing precondition.
   'migrations-pending': 'standing-condition',
+  // The post-GC re-sample still breached the write floor: re-firing before reclamation repeats it.
+  'disk-headroom': 'standing-condition',
   // The repair queue's staging expectation does not match the tree: standing until reconciled.
   'repair-staging-mismatch': 'standing-condition',
   // The gate's own vite-node module cache was deleted mid-run — HOST weather, already past.

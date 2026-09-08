@@ -570,6 +570,24 @@ describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI
 });
 
 describe("EI-21175363643337524: real disk-headroom admission", () => {
+  const gcResult = (bytesFreed = 0, errors = 0) => ({
+    dryRun: false,
+    dirs: [
+      {
+        dir: "/tmp/fleet-logs",
+        scanned: 4,
+        removedByAge: bytesFreed > 0 ? 1 : 0,
+        removedByCeiling: 0,
+        bytesFreed,
+        bytesRemaining: 100,
+        errors: Array.from({ length: errors }, (_, i) => ({
+          path: `/tmp/fleet-logs/error-${i}.log`,
+          error: "unlink failed",
+        })),
+      },
+    ],
+  });
+
   it("admits warning-only byte headroom on a large filesystem and preserves every snapshot", async () => {
     const gib = 1024 ** 3;
     const snapshots = [
@@ -615,7 +633,7 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(calls).toEqual([]);
   });
 
-  it("rejects a critical byte breach while retaining the ordinary inode floor", async () => {
+  it("runs bounded GC once, re-samples once, and rejects a persistent critical breach", async () => {
     const gib = 1024 ** 3;
     const snapshots = [
       {
@@ -637,6 +655,8 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
         freeInodesPct: 0.01,
       },
     ];
+    let sampleCount = 0;
+    let gcCount = 0;
     const { exec, calls } = makeExec([]);
     const deps = realCheckpointDeps(
       cfg,
@@ -644,7 +664,16 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
       "disk-headroom-critical-floor-run",
       undefined,
       undefined,
-      async () => snapshots,
+      async () => {
+        sampleCount++;
+        return snapshots;
+      },
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(0, 1);
+      },
     );
 
     const result = await deps.checkDiskHeadroom?.();
@@ -656,9 +685,123 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(result?.summary).toContain(
       "/mnt/data low-inodes breaches the standing critical write headroom floor",
     );
+    expect(result?.summary).toContain("bounded fleet-log GC scanned 4 file(s)");
+    expect(result?.summary).toContain("with 1 error(s)");
     expect(result?.summary).toContain("floor is 2.0 GiB and 2.00% bytes");
     expect(result?.summary).toContain("5.00% inodes");
+    expect(sampleCount).toBe(2);
+    expect(gcCount).toBe(1);
     expect(calls).toEqual([]);
+  });
+
+  it("continues when one bounded GC pass restores measured headroom", async () => {
+    const gib = 1024 ** 3;
+    const low = [
+      {
+        path: "/tmp",
+        totalBytes: 1_000 * gib,
+        freeBytes: 1 * gib,
+        freePct: 0.001,
+        totalInodes: 1_000_000,
+        freeInodes: 500_000,
+        freeInodesPct: 0.5,
+      },
+    ];
+    const recovered = [{ ...low[0], freeBytes: 30 * gib, freePct: 0.03 }];
+    const samples = [low, recovered];
+    let gcCount = 0;
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-headroom-recovered-run",
+      undefined,
+      undefined,
+      async () => samples.shift() ?? recovered,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(29 * gib);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain("automatic headroom recovery succeeded");
+    expect(result?.summary).toContain("freed 29.00 GiB");
+    expect(result?.summary).toContain("after cleanup: /tmp 30.0 GiB free");
+    expect(gcCount).toBe(1);
+    expect(samples).toHaveLength(0);
+  });
+
+  it("never runs cleanup when statfs is unreadable, and fails closed without deleting on an unknown target", async () => {
+    let gcCount = 0;
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-headroom-unmeasured-run",
+      undefined,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(1024);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain(
+      "without running cleanup on an unmeasured target",
+    );
+    expect(gcCount).toBe(0);
+  });
+
+  it("contains a GC failure, re-samples once, and reports the persistent breach", async () => {
+    const gib = 1024 ** 3;
+    const snapshots = [
+      {
+        path: "/tmp",
+        totalBytes: 1_000 * gib,
+        freeBytes: 1 * gib,
+        freePct: 0.001,
+        totalInodes: 1_000_000,
+        freeInodes: 500_000,
+        freeInodesPct: 0.5,
+      },
+    ];
+    let sampleCount = 0;
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-headroom-gc-error-run",
+      undefined,
+      undefined,
+      async () => {
+        sampleCount++;
+        return snapshots;
+      },
+      undefined,
+      undefined,
+      async () => {
+        throw new Error("gc unavailable");
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain(
+      "bounded fleet-log GC failed safely (gc unavailable)",
+    );
+    expect(sampleCount).toBe(2);
   });
 });
 

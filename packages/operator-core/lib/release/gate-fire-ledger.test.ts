@@ -29,6 +29,7 @@ describe('classifyGateOutcomeStatus — single-homed outcome classes', () => {
       cancelled: 'no-verdict',
       'deadline-exceeded': 'no-verdict',
       'migrations-pending': 'no-verdict',
+      'disk-headroom': 'no-verdict',
       'infra-inconclusive': 'no-verdict',
       // widened 2026-09-01 against the FULL live population (24 distinct statuses measured
       // via GROUP BY over kind='green_checkpoint'): standing pre-suite aborts, the P-006/P-007
@@ -47,7 +48,6 @@ describe('classifyGateOutcomeStatus — single-homed outcome classes', () => {
       'decision-pending': 'pending',
       // pre-suite yields
       'repair-in-progress': 'skip',
-      'disk-headroom': 'skip',
       'unchanged-since-verdict': 'skip',
       // a release-fixer DISPATCH diagnostic riding the kind — routing, not a verdict
       'release-fixer-skipped-stale': 'skip',

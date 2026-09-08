@@ -23,6 +23,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { readdir, readFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -89,6 +90,7 @@ import type { FlakeSuspect } from '../../dev-data';
 import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
 import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
+  readStoredQualification,
   recordStoredQualificationVerdict,
 } from '../../release/checkpoint-qualification-transaction';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
@@ -141,6 +143,318 @@ export interface CheckpointRunLogPaths {
   terminalPath: string;
 }
 
+/** Versioned terminal evidence written by the out-of-process scheduled wrapper. */
+export const SCHEDULED_CHECKPOINT_TERMINAL_SCHEMA_VERSION = 1 as const;
+
+/**
+ * Identity stamped before launch. These fields are nullable for callers that only use the
+ * wrapper as a log/evidence primitive, but a reconciler never mutates qualification state
+ * without all three exact identities.
+ */
+export interface ScheduledCheckpointTerminalContext {
+  workspaceId?: string | null;
+  installSlug?: string | null;
+  qualificationAttemptId?: string | null;
+  gateFireId?: string | null;
+}
+
+export interface ScheduledCheckpointTerminalRecord {
+  schemaVersion: typeof SCHEDULED_CHECKPOINT_TERMINAL_SCHEMA_VERSION;
+  runId: string;
+  logPath: string;
+  exitCode: number | null;
+  killed: boolean;
+  memoryEvents: unknown;
+  finishedAt: string;
+  workspaceId: string | null;
+  installSlug: string | null;
+  qualificationAttemptId: string | null;
+  gateFireId: string | null;
+}
+
+function nullableBoundedString(value: unknown, max = 512): string | null | undefined {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized && normalized.length <= max ? normalized : undefined;
+}
+
+/**
+ * Parse one terminal file fail-closed. `terminalPath` binds the record to the file that
+ * contained it; a copied/tampered record cannot point reconciliation at a different log.
+ */
+export function parseScheduledCheckpointTerminal(
+  raw: unknown,
+  terminalPath?: string,
+): ScheduledCheckpointTerminalRecord | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  if (value.schemaVersion !== SCHEDULED_CHECKPOINT_TERMINAL_SCHEMA_VERSION) return null;
+  const runId = nullableBoundedString(value.runId, 160);
+  const logPath = nullableBoundedString(value.logPath, 4096);
+  const finishedAt = nullableBoundedString(value.finishedAt, 80);
+  const workspaceId = nullableBoundedString(value.workspaceId, 160);
+  const installSlug = nullableBoundedString(value.installSlug, 160);
+  const qualificationAttemptId = nullableBoundedString(value.qualificationAttemptId, 200);
+  const gateFireId = nullableBoundedString(value.gateFireId, 160);
+  const exitCode = value.exitCode;
+  if (
+    !runId ||
+    !logPath ||
+    !finishedAt ||
+    !Number.isFinite(Date.parse(finishedAt)) ||
+    (exitCode !== null &&
+      (typeof exitCode !== 'number' || !Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255)) ||
+    workspaceId === undefined ||
+    installSlug === undefined ||
+    qualificationAttemptId === undefined ||
+    gateFireId === undefined ||
+    (value.killed !== undefined && typeof value.killed !== 'boolean') ||
+    (terminalPath && `${logPath}.terminal.json` !== terminalPath)
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: SCHEDULED_CHECKPOINT_TERMINAL_SCHEMA_VERSION,
+    runId,
+    logPath,
+    exitCode: exitCode === null ? null : Number(exitCode),
+    killed: value.killed === true,
+    memoryEvents: value.memoryEvents ?? null,
+    finishedAt,
+    workspaceId,
+    installSlug,
+    qualificationAttemptId,
+    gateFireId,
+  };
+}
+
+function nonNegativeCounter(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** True only for cgroup counters that prove a kill, never for generic pressure/throttling. */
+export function checkpointTerminalHasOomKill(
+  terminal: Pick<ScheduledCheckpointTerminalRecord, 'memoryEvents'>,
+): boolean {
+  if (!terminal.memoryEvents || typeof terminal.memoryEvents !== 'object' || Array.isArray(terminal.memoryEvents)) {
+    return false;
+  }
+  const events = terminal.memoryEvents as Record<string, unknown>;
+  for (const scopeName of ['subtree', 'local'] as const) {
+    const scope = events[scopeName];
+    if (!scope || typeof scope !== 'object' || Array.isArray(scope)) continue;
+    const counters = scope as Record<string, unknown>;
+    if ((nonNegativeCounter(counters.oomKill) ?? 0) > 0 || (nonNegativeCounter(counters.oomGroupKill) ?? 0) > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function checkpointTerminalSummary(terminal: ScheduledCheckpointTerminalRecord): string {
+  const exit = terminal.exitCode === null ? 'unknown exit' : `exit ${terminal.exitCode}`;
+  const cause = checkpointTerminalHasOomKill(terminal)
+    ? 'cgroup memory.events proves an OOM kill'
+    : terminal.killed
+      ? 'the wrapper was killed before the child returned'
+      : 'no cgroup OOM-kill counter was observed';
+  return `scheduled wrapper ${terminal.runId} ended with ${exit}; ${cause}; evidence ${terminal.logPath}`;
+}
+
+type ScheduledTerminalRecorder = typeof recordStoredQualificationVerdict;
+type ScheduledTerminalRead = (file: string) => Promise<string>;
+type ScheduledTerminalMove = (from: string, to: string) => Promise<unknown>;
+
+export interface ScheduledCheckpointTerminalReconcileDeps {
+  recordVerdict?: ScheduledTerminalRecorder;
+  readText?: ScheduledTerminalRead;
+  move?: ScheduledTerminalMove;
+  listNames?: (dir: string) => Promise<string[]>;
+}
+
+export type ScheduledCheckpointTerminalReconcileStatus =
+  | 'settled'
+  | 'already-settled'
+  | 'stale-attempt'
+  | 'ignored-unattributed'
+  | 'ignored-other-target'
+  | 'invalid'
+  | 'retry';
+
+export interface ScheduledCheckpointTerminalReconcileResult {
+  terminalPath: string;
+  status: ScheduledCheckpointTerminalReconcileStatus;
+  reason?: string;
+  markerRetained?: boolean;
+}
+
+interface LoadedScheduledCheckpointTerminal {
+  terminalPath: string;
+  terminal: ScheduledCheckpointTerminalRecord;
+  logText: string;
+}
+
+async function loadScheduledCheckpointTerminal(
+  terminalPath: string,
+  readText: ScheduledTerminalRead,
+): Promise<LoadedScheduledCheckpointTerminal | null> {
+  let terminalRaw: string;
+  try {
+    terminalRaw = await readText(terminalPath);
+  } catch {
+    return null;
+  }
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(terminalRaw);
+  } catch {
+    return null;
+  }
+  const terminal = parseScheduledCheckpointTerminal(parsedJson, terminalPath);
+  if (!terminal) return null;
+  let logText = '';
+  try {
+    logText = await readText(terminal.logPath);
+  } catch {
+    // The terminal record itself remains authoritative for an abnormal exit. A missing log is
+    // evidence loss, not permission to leave the logical attempt running forever.
+  }
+  return { terminalPath, terminal, logText };
+}
+
+async function markScheduledTerminalReconciled(terminalPath: string, move: ScheduledTerminalMove): Promise<boolean> {
+  try {
+    await move(terminalPath, `${terminalPath}.reconciled`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function reconcileLoadedScheduledCheckpointTerminal(
+  target: GateVerdictTarget,
+  loaded: LoadedScheduledCheckpointTerminal,
+  deps: Required<Pick<ScheduledCheckpointTerminalReconcileDeps, 'recordVerdict' | 'move'>>,
+): Promise<ScheduledCheckpointTerminalReconcileResult> {
+  const { terminalPath, terminal, logText } = loaded;
+  if (terminal.workspaceId !== target.workspaceId || terminal.installSlug !== target.installSlug) {
+    return { terminalPath, status: 'ignored-other-target' };
+  }
+  if (!terminal.qualificationAttemptId) {
+    const moved = await markScheduledTerminalReconciled(terminalPath, deps.move);
+    return {
+      terminalPath,
+      status: 'ignored-unattributed',
+      reason: 'terminal marker has no exact logical-attempt identity',
+      markerRetained: !moved,
+    };
+  }
+
+  const emitted = parseMarkerLine(logText, GREEN_CHECKPOINT_RESULT_MARKER);
+  const emittedReason = typeof emitted?.reason === 'string' && emitted.reason.trim() ? emitted.reason.trim() : null;
+  const reason = emittedReason ?? checkpointFallbackStatus(false, terminal.exitCode ?? undefined, null, terminal);
+  const green = typeof emitted?.green === 'boolean' ? emitted.green : null;
+  const evidenceRefs = [
+    `checkpoint-terminal:${terminal.runId}`,
+    `checkpoint-log:${terminal.logPath}`,
+    ...(terminal.gateFireId ? [`gate-fire:${terminal.gateFireId}`] : []),
+  ];
+  let settlement: Awaited<ReturnType<ScheduledTerminalRecorder>>;
+  try {
+    settlement = await deps.recordVerdict(target, {
+      attemptId: terminal.qualificationAttemptId,
+      reason,
+      green,
+      evidenceRefs,
+    });
+  } catch (error) {
+    return {
+      terminalPath,
+      status: 'retry',
+      reason: error instanceof Error ? error.message : String(error),
+      markerRetained: true,
+    };
+  }
+  if (settlement.status === 'missing' || settlement.status === 'unreadable') {
+    return {
+      terminalPath,
+      status: 'retry',
+      reason: 'error' in settlement && settlement.error ? settlement.error : settlement.status,
+      markerRetained: true,
+    };
+  }
+  const moved = await markScheduledTerminalReconciled(terminalPath, deps.move);
+  const status: ScheduledCheckpointTerminalReconcileStatus =
+    settlement.status === 'updated'
+      ? 'settled'
+      : settlement.status === 'idempotent' || settlement.status === 'terminal'
+        ? 'already-settled'
+        : 'stale-attempt';
+  return { terminalPath, status, reason, markerRetained: !moved };
+}
+
+/**
+ * Reconcile one marker. The DB transition happens before the atomic same-directory rename;
+ * a crash in that tiny gap replays an idempotent/CAS-conflicting transition on the next pass.
+ */
+export async function reconcileScheduledCheckpointTerminalFile(
+  target: GateVerdictTarget,
+  terminalPath: string,
+  deps: ScheduledCheckpointTerminalReconcileDeps = {},
+): Promise<ScheduledCheckpointTerminalReconcileResult> {
+  const readText = deps.readText ?? ((file) => readFile(file, 'utf8'));
+  const loaded = await loadScheduledCheckpointTerminal(terminalPath, readText);
+  if (!loaded) return { terminalPath, status: 'invalid', markerRetained: true };
+  return reconcileLoadedScheduledCheckpointTerminal(target, loaded, {
+    recordVerdict: deps.recordVerdict ?? recordStoredQualificationVerdict,
+    move: deps.move ?? rename,
+  });
+}
+
+/** Bounded startup sweep for a parent that died before it could consume its child's marker. */
+export async function reconcileScheduledCheckpointTerminals(
+  target: GateVerdictTarget,
+  options: ScheduledCheckpointTerminalReconcileDeps & { dir?: string; limit?: number } = {},
+): Promise<ScheduledCheckpointTerminalReconcileResult[]> {
+  const dir = options.dir ?? scheduledCheckpointLogDir();
+  const limit = Math.max(1, Math.min(64, Math.trunc(options.limit ?? 32)));
+  const listNames = options.listNames ?? (async (root) => readdir(root));
+  const readText = options.readText ?? ((file) => readFile(file, 'utf8'));
+  let names: string[];
+  try {
+    names = await listNames(dir);
+  } catch {
+    return [];
+  }
+  const terminalPaths = names
+    .filter((name) => name.endsWith('.terminal.json'))
+    .sort()
+    .reverse()
+    .slice(0, limit)
+    .map((name) => path.join(dir, name));
+  // Read independent files in parallel (performance A1); serialize only the CAS mutations
+  // against the one routine row so two stale markers cannot race each other's state transition.
+  const loaded = await Promise.all(
+    terminalPaths.map((terminalPath) => loadScheduledCheckpointTerminal(terminalPath, readText)),
+  );
+  const results: ScheduledCheckpointTerminalReconcileResult[] = [];
+  for (let i = 0; i < terminalPaths.length; i += 1) {
+    const item = loaded[i];
+    if (!item) {
+      results.push({ terminalPath: terminalPaths[i]!, status: 'invalid', markerRetained: true });
+      continue;
+    }
+    results.push(
+      await reconcileLoadedScheduledCheckpointTerminal(target, item, {
+        recordVerdict: options.recordVerdict ?? recordStoredQualificationVerdict,
+        move: options.move ?? rename,
+      }),
+    );
+  }
+  return results;
+}
+
 /** Build a unique per-run checkpoint log path before the suite starts. */
 export function checkpointRunLogPaths(
   logDir: string,
@@ -189,10 +503,18 @@ function shellQuote(value: string): string {
  * same-directory temp file followed by rename. That last write is deliberately outside the
  * routine parent: a scheduled systemd scope can outlive the parent that launched it.
  */
-export function buildScheduledCheckpointShell(payload: readonly string[], paths: CheckpointRunLogPaths): string {
+export function buildScheduledCheckpointShell(
+  payload: readonly string[],
+  paths: CheckpointRunLogPaths,
+  context: ScheduledCheckpointTerminalContext = {},
+): string {
   const command = payload.map(shellQuote).join(' ');
   const runIdJson = shellQuote(JSON.stringify(paths.runId));
   const logPathJson = shellQuote(JSON.stringify(paths.logPath));
+  const workspaceIdJson = shellQuote(JSON.stringify(context.workspaceId ?? null));
+  const installSlugJson = shellQuote(JSON.stringify(context.installSlug ?? null));
+  const qualificationAttemptIdJson = shellQuote(JSON.stringify(context.qualificationAttemptId ?? null));
+  const gateFireIdJson = shellQuote(JSON.stringify(context.gateFireId ?? null));
   const logDir = path.dirname(paths.logPath);
   return [
     `log=${shellQuote(paths.logPath)}`,
@@ -242,9 +564,9 @@ export function buildScheduledCheckpointShell(payload: readonly string[], paths:
     '  fi',
     '  printf "GREEN_CHECKPOINT_MEMORY_EVENTS %s\\n" "$memory_events_json" >> "$log" 2>/dev/null || :',
     '  if [ "$checkpoint_reached_exit" = 1 ]; then',
-    `    printf '{"runId":%s,"logPath":%s,"exitCode":%s,"memoryEvents":%s,"finishedAt":"%s"}\\n' ${runIdJson} ${logPathJson} "$ec" "$memory_events_json" "$finished_at" > "$tmp" 2>/dev/null || :`,
+    `    printf '{"schemaVersion":1,"runId":%s,"logPath":%s,"exitCode":%s,"memoryEvents":%s,"finishedAt":"%s","workspaceId":%s,"installSlug":%s,"qualificationAttemptId":%s,"gateFireId":%s}\\n' ${runIdJson} ${logPathJson} "$ec" "$memory_events_json" "$finished_at" ${workspaceIdJson} ${installSlugJson} ${qualificationAttemptIdJson} ${gateFireIdJson} > "$tmp" 2>/dev/null || :`,
     '  else',
-    `    printf '{"runId":%s,"logPath":%s,"exitCode":null,"killed":true,"memoryEvents":%s,"finishedAt":"%s"}\\n' ${runIdJson} ${logPathJson} "$memory_events_json" "$finished_at" > "$tmp" 2>/dev/null || :`,
+    `    printf '{"schemaVersion":1,"runId":%s,"logPath":%s,"exitCode":null,"killed":true,"memoryEvents":%s,"finishedAt":"%s","workspaceId":%s,"installSlug":%s,"qualificationAttemptId":%s,"gateFireId":%s}\\n' ${runIdJson} ${logPathJson} "$memory_events_json" "$finished_at" ${workspaceIdJson} ${installSlugJson} ${qualificationAttemptIdJson} ${gateFireIdJson} > "$tmp" 2>/dev/null || :`,
     '  fi',
     '  mv -f -- "$tmp" "$terminal" 2>/dev/null || :',
     '  exit "$ec"',
@@ -446,6 +768,8 @@ interface RunResult {
    *  for opposite operator actions, so the fact is captured at the only place that knows it
    *  first-hand (the timer callback) rather than inferred downstream from empty fields. */
   timedOut?: boolean;
+  /** Durable wrapper evidence path, present only for an isolated scheduled checkpoint. */
+  terminalPath?: string;
 }
 
 function runScript(
@@ -454,7 +778,7 @@ function runScript(
   args: string[],
   timeoutMs: number,
   extraEnv: Record<string, string> = {},
-  isolate?: { memoryMaxG: number },
+  isolate?: { memoryMaxG: number; terminalContext?: ScheduledCheckpointTerminalContext },
   /** Env keys DELETED from the inherited env before `extraEnv` is applied. `extraEnv` cannot
    *  express a deletion, and for a SUBJECT-hive gate run the value that must go is one this
    *  process INHERITED (EI-20709645463022690). Explicit string[] rather than
@@ -471,10 +795,16 @@ function runScript(
   // scope, before the suite starts, so a completed or abnormal child exit leaves attributable
   // evidence even when this parent never observes `close`. The direct kill-switch path stays
   // byte-compatible with the historical escape hatch.
-  const scopedPayload = wantScope
-    ? ['/bin/bash', '-c', buildScheduledCheckpointShell(base, checkpointRunLogPaths(scheduledCheckpointLogDir()))]
-    : base;
-  const attempt = (argv: string[], fallback: (() => Promise<RunResult>) | null): Promise<RunResult> =>
+  const checkpointPaths = wantScope ? checkpointRunLogPaths(scheduledCheckpointLogDir()) : null;
+  const scopedPayload =
+    wantScope && checkpointPaths
+      ? ['/bin/bash', '-c', buildScheduledCheckpointShell(base, checkpointPaths, isolate?.terminalContext)]
+      : base;
+  const attempt = (
+    argv: string[],
+    fallback: (() => Promise<RunResult>) | null,
+    terminalPath?: string,
+  ): Promise<RunResult> =>
     new Promise((resolve) => {
       const startedAt = Date.now();
       // P-007: detached → the child is its own process-GROUP leader, so on the timeout we
@@ -519,7 +849,8 @@ function runScript(
         settled = true;
         clearTimeout(killer);
         if (sigkiller) clearTimeout(sigkiller);
-        resolve(timedOut ? { ...r, timedOut: true } : r);
+        const withTerminal = terminalPath ? { ...r, terminalPath } : r;
+        resolve(timedOut ? { ...withTerminal, timedOut: true } : withTerminal);
       };
       // Scope-launch failure (spawn error / fast systemd-run exit with a launch-shaped
       // stderr) → retry DIRECT once, so a box without a reachable user bus degrades to
@@ -549,6 +880,7 @@ function runScript(
     ? attempt(
         buildIsolatedScopeArgv(scopedPayload, isolate.memoryMaxG, 'allow', CHECKPOINT_SCOPE_RUNTIME_MAX_SEC),
         () => attempt(base, null),
+        checkpointPaths?.terminalPath,
       )
     : attempt(base, null);
 }
@@ -1660,6 +1992,21 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // late `await import` of the notify/dispatch path can bind across the mutation and throw. Awaited
   // rather than fired-and-forgotten so the diagnostic lands BEFORE the suite's output buries it.
   await prebindSelfHealModules();
+  // EI-22642378999251872: consume terminal evidence left by a prior scope whose parent died.
+  // This is part of the existing hourly action (not a second scheduler), bounded to 32 newest
+  // files. Exact target + attempt CAS prevents another hive or a stale run settling this one.
+  const recoveredTerminals = await reconcileScheduledCheckpointTerminals(ctx).catch((error) => {
+    console.warn(
+      `${orchestratorStdoutTag()} scheduled terminal reconciliation failed: ${error instanceof Error ? error.message : error}`,
+    );
+    return [] as ScheduledCheckpointTerminalReconcileResult[];
+  });
+  const recoveredCount = recoveredTerminals.filter((result) =>
+    ['settled', 'already-settled', 'stale-attempt'].includes(result.status),
+  ).length;
+  if (recoveredCount > 0) {
+    console.log(`${orchestratorStdoutTag()} reconciled ${recoveredCount} scheduled checkpoint terminal marker(s)`);
+  }
   // per-hive-git-and-release-gate P-010: route a per-hive routine to ITS OWN checkout /
   // branches / greenCmd. Operator-home (papercusp) → default root + empty overlay = EXACT
   // current behavior (regression-safe). A non-gated installSlug (gate disabled / no repo) →
@@ -1841,6 +2188,17 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // Log the admitted verdict too: a bound nobody can see working is indistinguishable from a
   // bound that is silently failing open, which is exactly the failure mode this guard risks.
   console.log(`${orchestratorStdoutTag()} ${ctx.installSlug}: ${memoryAdmission.detail}`);
+  // Snapshot the exact logical attempt before launch. A scheduled process used to settle
+  // whichever global attempt happened to be current hours later; transporting this id gives
+  // both the CLI recorder and the out-of-process terminal marker a CAS identity.
+  const qualificationAtLaunch = await readStoredQualification(ctx).catch(() => ({
+    status: 'unreadable' as const,
+    error: 'qualification read failed before launch',
+  }));
+  const qualificationAttemptId =
+    qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
+      ? qualificationAtLaunch.transaction.attemptId
+      : undefined;
   const r = await runScript(
     root,
     'apps/operator/lib/release/green-checkpoint.ts',
@@ -1853,6 +2211,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     {
       ...routing.extraEnv,
       [GATE_FIRE_ID_ENV]: gateFireId,
+      ...(qualificationAttemptId ? { [CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]: qualificationAttemptId } : {}),
       ...gateVerdictEnv({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }),
       // WI-4310: the suite's child process must not inherit a large host pool and
       // starve routinesTick's shared org-admin pool. The checkpoint-specific knob
@@ -1861,7 +2220,15 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     },
     // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
     // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.
-    { memoryMaxG: checkpointMemoryG },
+    {
+      memoryMaxG: checkpointMemoryG,
+      terminalContext: {
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        qualificationAttemptId: qualificationAttemptId ?? null,
+        gateFireId,
+      },
+    },
     // EI-20709645463022690: for a SUBJECT hive, drop the operator's inherited DATABASE_URL/PG*
     // so the pot's suite resolves its OWN database. EMPTY for operator-home, whose gate legs
     // genuinely need that DSN — so papercusp's own pipeline is byte-identical (D-007).
@@ -1886,19 +2253,33 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // dying, so this only relabels the genuinely verdict-less case.
   // Explicitly `string`, NOT the helper's narrow union: this is the broad status vocabulary and
   // it is reassigned from `parsed.reason` below (advanced | up-to-date | not-green | …).
-  let status: string = checkpointFallbackStatus(r.timedOut, r.code, r.signal);
+  const loadedTerminal = r.terminalPath
+    ? await loadScheduledCheckpointTerminal(r.terminalPath, (file) => readFile(file, 'utf8'))
+    : null;
+  let status: string = checkpointFallbackStatus(r.timedOut, r.code, r.signal, loadedTerminal?.terminal);
   let candidate: string | undefined;
   let summary: string | undefined;
   let failingTests: string[] | undefined;
   let flakeSuspects: string[] | undefined;
   // P-008: parse the delimited result marker, not a brace-slice of all stdout.
-  const parsed = parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) as CheckpointVerdict | null;
+  const parsed = (parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) ??
+    parseMarkerLine(loadedTerminal?.logText ?? '', GREEN_CHECKPOINT_RESULT_MARKER)) as CheckpointVerdict | null;
   if (parsed?.reason) {
     status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed | skipped-locked
     candidate = parsed.candidate;
     summary = parsed.summary;
     failingTests = parsed.failingTests;
     flakeSuspects = parsed.flakeSuspects;
+  } else if (loadedTerminal) {
+    summary = checkpointTerminalSummary(loadedTerminal.terminal);
+  }
+  if (r.terminalPath) {
+    const terminalReconciliation = await reconcileScheduledCheckpointTerminalFile(ctx, r.terminalPath);
+    if (terminalReconciliation.status === 'retry') {
+      console.warn(
+        `${orchestratorStdoutTag()} terminal marker retained for retry: ${terminalReconciliation.reason ?? r.terminalPath}`,
+      );
+    }
   }
   /**
    * WI-4494 — did the RUN already record its own verdict?
@@ -2548,13 +2929,23 @@ export function checkpointFallbackStatus(
   timedOut: boolean | undefined,
   exitCode?: number,
   signal?: NodeJS.Signals | null,
-): 'deadline-exceeded' | 'cancelled' | 'error' {
+  terminal?: Pick<ScheduledCheckpointTerminalRecord, 'killed' | 'memoryEvents'> | null,
+): 'deadline-exceeded' | 'cancelled' | 'infra-inconclusive' | 'error' {
   if (timedOut) return 'deadline-exceeded';
+  if (terminal?.killed && checkpointTerminalHasOomKill(terminal)) return 'infra-inconclusive';
   // EI-21103236147949832: stopping a systemd transient scope makes the systemd-run
   // wrapper exit 143; a directly-spawned child reports SIGTERM. Neither produced a
   // suite verdict, so classifying either as a crash creates a false red and preserves
   // the previous run's failing-test signature. The runner's own deadline wins above.
   if (exitCode === 143 || signal === 'SIGTERM') return 'cancelled';
+  // EI-22642378999251872: exit 137 alone says only SIGKILL. The wrapper-owned cgroup
+  // counters are the direct evidence that distinguishes an OOM kill from an external kill;
+  // never infer OOM from the exit code. Both are non-verdicts, but only the measured OOM gets
+  // the infrastructure classification and its evidence in gate_health.inconclusive.detail.
+  if (exitCode === 137 || signal === 'SIGKILL') {
+    return terminal && checkpointTerminalHasOomKill(terminal) ? 'infra-inconclusive' : 'cancelled';
+  }
+  if (terminal?.killed) return 'cancelled';
   return 'error';
 }
 
@@ -2588,7 +2979,6 @@ export function classifyGateStallStatus(
     status === 'skipped-locked' ||
     status === 'migrations-pending' ||
     status === 'infra-inconclusive' ||
-    status === 'disk-headroom' ||
     status === 'deadline-exceeded' ||
     status === 'cancelled' ||
     status === 'repair-in-progress' ||
@@ -2606,6 +2996,10 @@ export function classifyGateStallStatus(
     status === 'unchanged-since-verdict'
   )
     return 'noop';
+  // EI-22642378999251872: a standing headroom breach does not self-clear by merely waiting for
+  // another hourly fire. Count it as WEDGED (never as a code red) so repeated aborts trigger the
+  // existing consecutiveNoVerdict escalation while preserving the prior real verdict.
+  if (status === 'disk-headroom') return 'no-verdict';
   /**
    * EI-21462211894072863 — 'error' is a NON-VERDICT that must still be COUNTED, which is why it
    * gets its own class instead of joining either neighbour.
@@ -2860,8 +3254,8 @@ export function gateStallNoopLogMessage(status: string, detail?: string | null):
       `${orchestratorStdoutTag()} 'disk-headroom' — this run ABORTED before checkout setup or tests ` +
       `because the temp filesystem lacked safe byte/inode headroom. It rendered no code verdict, ` +
       `so do not triage the prior red's files and do not re-fire until space is reclaimed. No peer ` +
-      `run is in flight. Leaving gate_health untouched (not a red; a frozen \`main\` is still ` +
-      `escalated by checkMainBehindStaging / evaluateGreenStall)`
+      `run is in flight. This tick advances gate_health.consecutiveNoVerdict (never the red streak), ` +
+      `and repeated aborts escalate as a WEDGED gate rather than masquerading as hourly progress`
     );
   }
   if (status === 'repair-in-progress') {
@@ -3553,7 +3947,7 @@ export async function trackGateStall(
         const streak = bumped[0]?.streak ?? 0;
         const alreadyAlerted = bumped[0]?.alerted === true;
         console.log(
-          `${orchestratorStdoutTag()} 'error' — ${streak} consecutive tick(s) have produced NO verdict ` +
+          `${orchestratorStdoutTag()} '${status}' — ${streak} consecutive tick(s) have produced NO verdict ` +
             `(consecutiveReds left at ${gh.consecutiveReds ?? 0}, which still describes the last run that ` +
             `actually judged code)`,
         );
@@ -3573,17 +3967,16 @@ export async function trackGateStall(
           await broadcastSevereEvent({
             summary:
               `[${ctx.installSlug}] green-checkpoint is WEDGED on ${ctx.installSlug} — ${streak} consecutive run(s) ` +
-              `exited without producing ANY verdict. This is NOT a red build: no failing test has been named.`,
+              `ended without producing ANY verdict (latest: ${status}). This is NOT a red build: no failing test has been named.`,
             body:
-              `${streak} consecutive green-checkpoint run(s) on \`${ctx.installSlug}\` exited without publishing a ` +
-              `result marker, so no verdict about the code exists — in either direction. \`main\` is not advancing.\n\n` +
+              `${streak} consecutive green-checkpoint run(s) on \`${ctx.installSlug}\` ended without a code ` +
+              `verdict; the latest status is \`${status}\`. \`main\` is not advancing.\n\n` +
               `⚠ DO NOT triage failing tests on this signal. Any failing-test list still shown for this harness ` +
               `belongs to the last run that actually judged code, which is now at least ${streak} fire(s) old; ` +
               `\`gate_health.consecutiveReds\` describes THAT run, not these.\n\n` +
-              `The question to answer is why the runs are DYING, not which test is red: read the green-checkpoint ` +
-              `log for the most recent run and see gate_health.inconclusive for what was recorded. An exit with no ` +
-              `marker that is neither a deadline-kill nor an external SIGTERM usually means the run failed before ` +
-              `the suite could report (setup, dependency generation, or a crash in the gate script itself).`,
+              `Read gate_health.inconclusive and the newest green-checkpoint log for the measured blocker. A standing ` +
+              `preflight condition (for example disk-headroom) must be cleared before re-fire; an unreported process ` +
+              `exit instead requires diagnosing why the runner died before it could publish a result.`,
             category: 'severe-event',
             // Deliberately NO conditionKey. `gate-red-streak:<harness>` mints exactly one claimable
             // work-item whose whole framing is "the reds are yours to fix" — the response this
@@ -4742,8 +5135,8 @@ export async function readFrozenCandidateRepairQueue(
   if (read.status === 'value') return read.queue;
   if (read.status === 'absent') return null;
   throw new Error(
-    `${describeUnreadableFrozenCandidateRepairQueue(read)} — ` +
-      'refusing to treat a persisted row as absent',
+   `${describeUnreadableFrozenCandidateRepairQueue(read)} — ` +
+     'refusing to treat a persisted row as absent',
   );
 }
 

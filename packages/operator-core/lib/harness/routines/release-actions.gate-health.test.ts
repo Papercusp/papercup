@@ -1587,6 +1587,33 @@ describe('EI-21462211894072863: a verdict-less tick counts as WEDGED, never as a
     expect(bump!.params[0]).toBe('test-slug');
   });
 
+  it('EI-22642378999251872: persistent disk-headroom uses the same counted wedge path and escalation', async () => {
+    seededGh = {
+      consecutiveReds: 3,
+      consecutiveNoVerdict: stallReds - 1,
+      noVerdictAlerted: false,
+      lastGreenAt: Date.now(),
+    };
+
+    await trackGateStall(
+      ctx,
+      'disk-headroom',
+      'deadbeefcafe',
+      undefined,
+      undefined,
+      undefined,
+      '/tmp remains below the critical write floor after bounded fleet-log GC',
+    );
+
+    expect(lastGateHealthWrite()).toBeNull();
+    expect(noVerdictBump()).not.toBeNull();
+    expect(broadcastSevereEvent).toHaveBeenCalledTimes(1);
+    const event = broadcastSevereEvent.mock.calls[0]![0]!;
+    expect(String(event.summary)).toContain('latest: disk-headroom');
+    expect(String(event.summary)).toMatch(/NOT a red build/i);
+    expect(String(event.body)).toContain('standing preflight condition');
+  });
+
   it('⭐ escalates at the SAME threshold a red streak would — loudness is preserved exactly', async () => {
     seededGh = { consecutiveNoVerdict: stallReds - 1, noVerdictAlerted: false, lastGreenAt: Date.now() };
 

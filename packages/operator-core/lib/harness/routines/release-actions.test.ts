@@ -19,7 +19,7 @@ import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTI
 import { pipelineName } from '../../release/pipeline-name';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,11 +42,21 @@ vi.mock('../../events/await/engine', () => ({
 }));
 
 const recordStoredQualificationVerdict = vi.hoisted(() =>
-  vi.fn(async (..._a: unknown[]) => ({ status: 'missing' as const })),
+  vi.fn(async (..._a: unknown[]): Promise<{ status: string; transaction?: Record<string, never> }> => ({
+    status: 'missing',
+  })),
+);
+const readStoredQualification = vi.hoisted(() =>
+  vi.fn(
+    async (
+      ..._a: unknown[]
+    ): Promise<{ status: string; transaction?: { phase: string; attemptId: string } }> => ({ status: 'none' }),
+  ),
 );
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   recordStoredQualificationVerdict: (...a: unknown[]) => recordStoredQualificationVerdict(...a),
+  readStoredQualification: (...a: unknown[]) => readStoredQualification(...a),
 }));
 
 const readLiveReleaseCertification = vi.hoisted(() => vi.fn());
@@ -227,6 +237,9 @@ import {
   buildReleaseFixerKickoff,
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
+  checkpointTerminalHasOomKill,
+  parseScheduledCheckpointTerminal,
+  reconcileScheduledCheckpointTerminals,
   readFrozenCandidateRepairQueue,
   readFrozenCandidateRepairQueueState,
   retireFrozenCandidateRepairQueue,
@@ -418,8 +431,8 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('infra-inconclusive', true)).toBe('reset');
   });
 
-  it('EI-210512: disk-headroom is a pre-suite NON-VERDICT, not a red', () => {
-    expect(classifyGateStallStatus('disk-headroom', false)).toBe('noop');
+  it('EI-22642378999251872: persistent disk-headroom is a counted NON-VERDICT, not a red', () => {
+    expect(classifyGateStallStatus('disk-headroom', false)).toBe('no-verdict');
     expect(classifyGateStallStatus('disk-headroom', true)).toBe('reset');
   });
 
@@ -441,6 +454,27 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(checkpointFallbackStatus(false, 1, 'SIGTERM')).toBe('cancelled');
     expect(checkpointFallbackStatus(true, 143, 'SIGTERM')).toBe('deadline-exceeded');
     expect(checkpointFallbackStatus(false, 1, null)).toBe('error');
+  });
+
+  it('EI-22642378999251872: exit 137 uses cgroup kill counters instead of guessing OOM from the code', () => {
+    const oom = {
+      killed: false,
+      memoryEvents: {
+        subtree: { oomKill: 1, oomGroupKill: 0 },
+        local: { oomKill: 0, oomGroupKill: 0 },
+      },
+    };
+    const notOom = {
+      killed: false,
+      memoryEvents: {
+        subtree: { oomKill: 0, oomGroupKill: 0 },
+        local: null,
+      },
+    };
+    expect(checkpointTerminalHasOomKill(oom)).toBe(true);
+    expect(checkpointTerminalHasOomKill(notOom)).toBe(false);
+    expect(checkpointFallbackStatus(false, 137, null, oom)).toBe('infra-inconclusive');
+    expect(checkpointFallbackStatus(false, 137, null, notOom)).toBe('cancelled');
   });
 
   it('WI-39841: deadline-exceeded is a NON-VERDICT, not a red', () => {
@@ -936,7 +970,8 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     expect(msg).toContain('before checkout setup or tests');
     expect(msg).toContain('do not re-fire until space is reclaimed');
     expect(msg).toContain('No peer run is in flight');
-    expect(msg).toContain('checkMainBehindStaging');
+    expect(msg).toContain('consecutiveNoVerdict');
+    expect(msg).toContain('WEDGED');
   });
 
   it('names the detector that DOES cover the freeze, so the reader is not left thinking nothing watches it', () => {
@@ -1123,13 +1158,20 @@ const REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url));
 // checked wherever the suite runs rather than only in a directory literally named
 // `papercusp`.
 const EXPECTED_PIPELINE = pipelineName(REPO_ROOT);
+const ORIGINAL_CHECKPOINT_LOG_DIR = process.env.PAPERCUSP_CHECKPOINT_LOG_DIR;
+let ACTION_CHECKPOINT_LOG_DIR = '';
 
 beforeAll(() => {
   process.env.PAPERCUSP_INTEGRATION_ROOT = REPO_ROOT;
+  ACTION_CHECKPOINT_LOG_DIR = mkdtempSync(join(tmpdir(), 'papercusp-release-actions-test-logs-'));
+  process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = ACTION_CHECKPOINT_LOG_DIR;
 });
 
 afterAll(() => {
   delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+  if (ORIGINAL_CHECKPOINT_LOG_DIR === undefined) delete process.env.PAPERCUSP_CHECKPOINT_LOG_DIR;
+  else process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = ORIGINAL_CHECKPOINT_LOG_DIR;
+  rmSync(ACTION_CHECKPOINT_LOG_DIR, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -1139,6 +1181,8 @@ beforeEach(() => {
   fakeSql.unsafe.mockClear();
   recordStoredQualificationVerdict.mockClear();
   recordStoredQualificationVerdict.mockResolvedValue({ status: 'missing' });
+  readStoredQualification.mockClear();
+  readStoredQualification.mockResolvedValue({ status: 'none' });
   // EI-21363817573800034: admission defaults to CLEAR for every test, so the guard is invisible
   // to the ~136 cases that predate it. Reset globally (not just in the admission describe): a
   // held/unknown value leaking forward silently stops the suite from spawning, which surfaces as
@@ -2051,6 +2095,12 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
                 "process.stdout.write('normal stdout\\n'); process.stderr.write('normal stderr\\n')",
               ],
               paths,
+              {
+                workspaceId: 'ws-terminal',
+                installSlug: 'papercusp',
+                qualificationAttemptId: 'attempt-terminal',
+                gateFireId: 'fire-terminal',
+              },
             ),
           ],
           { encoding: 'utf8' },
@@ -2079,9 +2129,14 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
           };
         };
         expect(terminal).toMatchObject({
+          schemaVersion: 1,
           runId: 'normal-run',
           logPath: paths.logPath,
           exitCode: 0,
+          workspaceId: 'ws-terminal',
+          installSlug: 'papercusp',
+          qualificationAttemptId: 'attempt-terminal',
+          gateFireId: 'fire-terminal',
         });
         expect(terminal).toHaveProperty('memoryEvents');
         if (terminal.memoryEvents !== null) {
@@ -2213,6 +2268,106 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    it('CAS-settles an OOM-killed logical attempt before rename and safely replays after a rename failure', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-reconcile-'));
+      const paths = checkpointRunLogPaths(dir, 'oom-run', new Date('2026-09-07T15:02:00.000Z'));
+      try {
+        writeFileSync(paths.logPath, '# wrapper died before publishing a verdict marker\n');
+        writeFileSync(
+          paths.terminalPath,
+          JSON.stringify({
+            schemaVersion: 1,
+            runId: paths.runId,
+            logPath: paths.logPath,
+            exitCode: 137,
+            killed: false,
+            memoryEvents: {
+              subtree: { oomKill: 1, oomGroupKill: 0 },
+              local: { oomKill: 0, oomGroupKill: 0 },
+            },
+            finishedAt: '2026-09-07T15:03:00Z',
+            workspaceId: 'ws-42',
+            installSlug: 'my-harness',
+            qualificationAttemptId: 'attempt-oom',
+            gateFireId: 'fire-oom',
+          }),
+        );
+       recordStoredQualificationVerdict.mockResolvedValueOnce({
+         status: 'updated',
+         transaction: {},
+       });
+        recordStoredQualificationVerdict.mockResolvedValueOnce({
+          status: 'idempotent',
+          transaction: {},
+        });
+        let moveAttempts = 0;
+        const move = async (from: string, to: string) => {
+          moveAttempts++;
+          if (moveAttempts === 1) throw new Error('simulated post-DB rename interruption');
+          renameSync(from, to);
+        };
+
+        const first = await reconcileScheduledCheckpointTerminals(ctx, { dir, move });
+        expect(first).toEqual([
+          expect.objectContaining({ status: 'settled', reason: 'infra-inconclusive', markerRetained: true }),
+        ]);
+       expect(recordStoredQualificationVerdict).toHaveBeenCalledTimes(1);
+        expect(recordStoredQualificationVerdict).toHaveBeenCalledWith(
+          expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
+          expect.objectContaining({
+            attemptId: 'attempt-oom',
+            reason: 'infra-inconclusive',
+            evidenceRefs: expect.arrayContaining(['checkpoint-terminal:oom-run', 'gate-fire:fire-oom']),
+          }),
+        );
+        expect(existsSync(paths.terminalPath)).toBe(true);
+
+        const second = await reconcileScheduledCheckpointTerminals(ctx, { dir, move });
+        expect(second).toEqual([expect.objectContaining({ status: 'already-settled', markerRetained: false })]);
+        expect(recordStoredQualificationVerdict).toHaveBeenCalledTimes(2);
+        expect(existsSync(paths.terminalPath)).toBe(false);
+        expect(existsSync(`${paths.terminalPath}.reconciled`)).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('never lets an unscoped or copied terminal marker settle the current attempt', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-wrong-target-'));
+      const paths = checkpointRunLogPaths(dir, 'other-run', new Date('2026-09-07T15:04:00.000Z'));
+      try {
+        writeFileSync(paths.logPath, '');
+        writeFileSync(
+          paths.terminalPath,
+          JSON.stringify({
+            schemaVersion: 1,
+            runId: paths.runId,
+            logPath: paths.logPath,
+            exitCode: 137,
+            killed: false,
+            memoryEvents: null,
+            finishedAt: '2026-09-07T15:05:00Z',
+            workspaceId: 'different-workspace',
+            installSlug: 'my-harness',
+            qualificationAttemptId: 'attempt-other',
+            gateFireId: null,
+          }),
+        );
+        const parsed = parseScheduledCheckpointTerminal(
+          JSON.parse(readFileSync(paths.terminalPath, 'utf8')),
+          paths.terminalPath,
+        );
+        expect(parsed?.qualificationAttemptId).toBe('attempt-other');
+
+        const result = await reconcileScheduledCheckpointTerminals(ctx, { dir });
+        expect(result).toEqual([expect.objectContaining({ status: 'ignored-other-target' })]);
+        expect(recordStoredQualificationVerdict).not.toHaveBeenCalled();
+        expect(existsSync(paths.terminalPath)).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   it('the PERIODIC gate launches the suite under systemd-run --scope (own cgroup, stdout marker still parsed)', async () => {
@@ -2230,6 +2385,29 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(appendPipelineEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),
     );
+  });
+
+  it('EI-22642378999251872: the periodic launcher snapshots one exact logical attempt into env and terminal evidence', async () => {
+    readStoredQualification.mockResolvedValueOnce({
+      status: 'present',
+      transaction: { phase: 'running', attemptId: 'attempt-transported' },
+    });
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(readStoredQualification).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
+    );
+    const [, args, options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: Record<string, string> },
+    ];
+    expect(options.env?.[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]).toBe('attempt-transported');
+    expect(args.at(-1)).toContain('attempt-transported');
+    expect(args.at(-1)).toContain('ws-42');
+    expect(args.at(-1)).toContain('my-harness');
   });
 
   it('WI-4310: checkpoint child receives a bounded dedicated DB pool override', async () => {

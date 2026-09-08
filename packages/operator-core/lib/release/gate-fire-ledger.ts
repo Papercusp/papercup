@@ -145,6 +145,7 @@ const GATE_OUTCOME_CLASS_BY_STATUS: Record<string, GateOutcomeClass> = {
   cancelled: 'no-verdict',
   'deadline-exceeded': 'no-verdict',
   'migrations-pending': 'no-verdict',
+  'disk-headroom': 'no-verdict',
   'infra-inconclusive': 'no-verdict',
   // Standing pre-suite abort: the repair queue's staging expectation mismatched the tree.
   'repair-staging-mismatch': 'no-verdict',
@@ -163,9 +164,7 @@ const GATE_OUTCOME_CLASS_BY_STATUS: Record<string, GateOutcomeClass> = {
   // mid-run bridge
   'decision-pending': 'pending',
   'repair-in-progress': 'skip',
-  // Pre-suite admission refusals without the skipped- prefix: the disk analog of
-  // skipped-memory-budget, and WI-42350's decline-to-rejudge (self-clears on tree movement).
-  'disk-headroom': 'skip',
+  // WI-42350's decline-to-rejudge self-clears on tree movement.
   'unchanged-since-verdict': 'skip',
   // A release-fixer DISPATCH diagnostic row, not a tick outcome — it rides the
   // green_checkpoint kind but records fixer routing, so it must not read as a verdict.

@@ -96,6 +96,8 @@ describe('standing conditions — the over-correction guard', () => {
 
   it('has at least one member, so the tests below are not vacuous', () => {
     expect(standing.length).toBeGreaterThan(0);
+    expect(classifyGateAbort('disk-headroom')).toBe('standing-condition');
+    expect(standing).toContain('disk-headroom');
   });
 
   it('KEEPS the generic wording — a real blocker does re-abort, and saying otherwise burns a ~55min suite', () => {
