@@ -10,6 +10,7 @@ import type {
 } from '@papercusp/deployment-driver';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { createConfiguredGcpWorkspaceHostProvider } from '../../../workspace-host/gcp-provider';
+import { parseGcpBillingExportDescriptor } from '../../../workspace-host/gcp-api-client';
 import {
   readWorkspaceHostConnection,
   upsertWorkspaceHostConnection,
@@ -29,6 +30,7 @@ interface ConnectionBody {
   credentialRef?: unknown;
   projectId?: unknown;
   serviceAccountEmail?: unknown;
+  billingExport?: unknown;
 }
 
 export interface WorkspaceHostConnectionInspection {
@@ -241,12 +243,20 @@ export function createWorkspaceHostConnectionRoute(
         if (!GCP_SERVICE_ACCOUNT.test(serviceAccountEmail)) {
           return requestError('invalid GCP runtime serviceAccountEmail', 400);
         }
+        let billingExport;
+        if (body.billingExport !== undefined) {
+          try {
+            billingExport = parseGcpBillingExportDescriptor(body.billingExport);
+          } catch {
+            return requestError('invalid GCP billingExport descriptor', 400);
+          }
+        }
         connectionId = workspaceHostConnectionId(target, label);
         connection = {
           target,
           cloudCredentialRef: { kind: 'cloud', ref: credentialRef },
           scope: { kind: 'project', id: projectId },
-          provider: { projectId, serviceAccountEmail },
+          provider: { projectId, serviceAccountEmail, ...(billingExport ? { billingExport } : {}) },
         };
       } else {
         connectionId = typeof body.connectionId === 'string' ? body.connectionId.trim() : '';

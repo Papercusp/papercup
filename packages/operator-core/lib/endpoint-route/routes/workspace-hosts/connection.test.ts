@@ -114,6 +114,68 @@ describe('POST /workspace-hosts/connection', () => {
     );
   });
 
+  it('validates and persists a typed non-secret Cloud Billing export descriptor', async () => {
+    const { dependencies, inspectConnection, upsertConnection } = harness();
+    const billingExport = {
+      schemaVersion: 'gcp-billing-export-v1',
+      projectId: 'paper-prod',
+      datasetId: 'cloud_billing_export',
+      tableId: 'gcp_billing_export_v1_01A2B3_C4D5E6_789ABC',
+      location: 'US',
+      labelKey: 'papercusp_run_id',
+      maximumBytesBilled: '1000000000',
+    };
+
+    const response = await post(dependencies, {
+      action: 'connect',
+      target: 'gcp',
+      label: 'Production GCP',
+      credentialRef: 'adc://default',
+      projectId: 'paper-prod',
+      serviceAccountEmail: 'papercusp-host@paper-prod.iam.gserviceaccount.com',
+      billingExport,
+    });
+
+    expect(response.status).toBe(200);
+    expect(inspectConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection: expect.objectContaining({
+          provider: expect.objectContaining({ billingExport }),
+        }),
+      }),
+    );
+    expect(upsertConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: expect.objectContaining({ billingExport }) }),
+    );
+  });
+
+  it('rejects unsafe billing-export identifiers and unbounded query cost before provider inspection', async () => {
+    const { dependencies, inspectConnection, upsertConnection } = harness();
+    const base = {
+      schemaVersion: 'gcp-billing-export-v1',
+      projectId: 'paper-prod',
+      datasetId: 'cloud_billing_export',
+      tableId: 'gcp_billing_export_v1_01A2B3_C4D5E6_789ABC',
+      labelKey: 'papercusp_run_id',
+      maximumBytesBilled: '1000000000',
+    };
+    const connect = (billingExport: unknown) =>
+      post(dependencies, {
+        action: 'connect',
+        target: 'gcp',
+        label: 'Production GCP',
+        credentialRef: 'adc://default',
+        projectId: 'paper-prod',
+        serviceAccountEmail: 'papercusp-host@paper-prod.iam.gserviceaccount.com',
+        billingExport,
+      });
+
+    await expect(connect({ ...base, tableId: 'table`; SELECT secret' })).resolves.toMatchObject({ status: 400 });
+    await expect(connect({ ...base, maximumBytesBilled: '10000000001' })).resolves.toMatchObject({ status: 400 });
+    expect(inspectConnection).not.toHaveBeenCalled();
+    expect(upsertConnection).not.toHaveBeenCalled();
+  });
+
   it('fails closed when a nominally successful validation proves no authenticated principal', async () => {
     const { dependencies, inspectConnection, upsertConnection } = harness();
     inspectConnection.mockResolvedValueOnce({

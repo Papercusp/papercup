@@ -8,7 +8,9 @@ import type {
   WorkspaceHostRegion,
   WorkspaceHostScope,
   WorkspaceHostSize,
+  WorkspaceHostSpendObservation,
 } from '@papercusp/deployment-driver';
+import { createWorkspaceHostSpendObservation } from '@papercusp/deployment-driver';
 import {
   GCP_DEFAULT_WORKSPACE_HOST_IMAGE,
   GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF,
@@ -47,6 +49,296 @@ import type {
 import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, gcpWorkspaceHostLabelValue } from './gcp-safety';
 
 const COMPUTE_API = 'https://compute.googleapis.com/compute/v1';
+const BIGQUERY_API = 'https://bigquery.googleapis.com/bigquery/v2';
+const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+const BIGQUERY_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]{0,1023}$/;
+const BIGQUERY_LOCATION = /^[A-Za-z][A-Za-z0-9-]{0,62}$/;
+const GCP_LABEL_KEY = /^[a-z][a-z0-9_-]{0,62}$/;
+const GCP_LABEL_VALUE = /^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$/;
+const CANONICAL_UNSIGNED_INTEGER = /^(?:0|[1-9]\d*)$/;
+const CANONICAL_INTEGER = /^(?:0|[1-9]\d*|-[1-9]\d*)$/;
+
+/** Hard product ceiling for one billing-export query. */
+export const GCP_BILLING_EXPORT_MAX_BYTES_BILLED = 10_000_000_000n;
+
+export interface GcpBillingExportDescriptor {
+  readonly schemaVersion: 'gcp-billing-export-v1';
+  /** Project that owns the export table and is billed for the query job. */
+  readonly projectId: string;
+  readonly datasetId: string;
+  readonly tableId: string;
+  readonly location?: string;
+  /** Resource-label key whose value is the immutable Papercusp run id. */
+  readonly labelKey: string;
+  /** BigQuery maximumBytesBilled, kept as an exact decimal string. */
+  readonly maximumBytesBilled: string;
+}
+
+export interface GcpBillingExportReadInput {
+  readonly descriptor?: unknown;
+  readonly runId: string;
+  readonly usageStartAt: string;
+  readonly usageEndAt: string;
+}
+
+export type GcpBillingExportRetryReason =
+  | 'missing-config'
+  | 'invalid-config'
+  | 'permission'
+  | 'rate-limited'
+  | 'transport'
+  | 'query-rejected'
+  | 'query-pending'
+  | 'no-data'
+  | 'malformed-result'
+  | 'multiple-currencies';
+
+export type GcpBillingExportReadResult =
+  | {
+      readonly status: 'observed';
+      readonly retryable: false;
+      readonly observation: WorkspaceHostSpendObservation;
+      readonly jobReference: { readonly projectId: string; readonly jobId: string; readonly location?: string };
+      readonly totalBytesProcessed?: string;
+      readonly cacheHit?: boolean;
+    }
+  | {
+      readonly status: 'retryable';
+      readonly retryable: true;
+      readonly reason: GcpBillingExportRetryReason;
+      readonly jobReference?: { readonly projectId: string; readonly jobId: string; readonly location?: string };
+    };
+
+export interface GcpBillingExportReaderOptions {
+  acquireAuth?: () => Promise<GcpResolvedAuth>;
+  fetch?: typeof fetch;
+  now?: () => string;
+}
+
+interface RawBigQueryQueryResponse {
+  jobComplete?: boolean;
+  jobReference?: { projectId?: string; jobId?: string; location?: string };
+  totalBytesProcessed?: string;
+  cacheHit?: boolean;
+  pageToken?: string;
+  errors?: unknown[];
+  schema?: { fields?: Array<{ name?: string; type?: string }> };
+  rows?: Array<{ f?: Array<{ v?: unknown }> }>;
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function descriptorString(
+  value: Record<string, unknown>,
+  key: keyof GcpBillingExportDescriptor,
+  pattern: RegExp,
+): string {
+  const candidate = typeof value[key] === 'string' ? value[key].trim() : '';
+  if (!pattern.test(candidate)) throw new Error(`gcp_billing_export_${key}_invalid`);
+  return candidate;
+}
+
+/** Validate the only provider-controlled identifiers interpolated into GoogleSQL. */
+export function parseGcpBillingExportDescriptor(value: unknown): GcpBillingExportDescriptor {
+  if (!record(value) || value.schemaVersion !== 'gcp-billing-export-v1') {
+    throw new Error('gcp_billing_export_descriptor_invalid');
+  }
+  const projectId = descriptorString(value, 'projectId', GCP_PROJECT_ID);
+  const datasetId = descriptorString(value, 'datasetId', BIGQUERY_IDENTIFIER);
+  const tableId = descriptorString(value, 'tableId', BIGQUERY_IDENTIFIER);
+  const labelKey = descriptorString(value, 'labelKey', GCP_LABEL_KEY);
+  const maximumBytesBilled = descriptorString(value, 'maximumBytesBilled', CANONICAL_UNSIGNED_INTEGER);
+  const maximum = BigInt(maximumBytesBilled);
+  if (maximum <= 0n || maximum > GCP_BILLING_EXPORT_MAX_BYTES_BILLED) {
+    throw new Error('gcp_billing_export_maximumBytesBilled_out_of_range');
+  }
+  const location = value.location === undefined ? undefined : descriptorString(value, 'location', BIGQUERY_LOCATION);
+  return {
+    schemaVersion: 'gcp-billing-export-v1',
+    projectId,
+    datasetId,
+    tableId,
+    ...(location ? { location } : {}),
+    labelKey,
+    maximumBytesBilled,
+  };
+}
+
+function timestamp(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized || !Number.isFinite(Date.parse(normalized))) throw new Error(`gcp_billing_export_${label}_invalid`);
+  return normalized;
+}
+
+function billingQuery(descriptor: GcpBillingExportDescriptor): string {
+  const table = `${descriptor.projectId}.${descriptor.datasetId}.${descriptor.tableId}`;
+  return [
+    'WITH totals AS (',
+    '  SELECT',
+    '    currency,',
+    '    CAST(ROUND(SUM(cost) * 1000000) AS INT64) AS gross_micros,',
+    '    CAST(ROUND(SUM(IFNULL((SELECT SUM(credit.amount) FROM UNNEST(credits) AS credit), 0)) * 1000000) AS INT64) AS credit_micros',
+    `  FROM \`${table}\``,
+    '  WHERE usage_start_time >= @usage_start_at',
+    '    AND usage_start_time < @usage_end_at',
+    '    AND EXISTS (SELECT 1 FROM UNNEST(labels) AS label WHERE label.key = @label_key AND label.value = @run_id)',
+    '  GROUP BY currency',
+    ')',
+    'SELECT currency, gross_micros, credit_micros, gross_micros + credit_micros AS net_micros',
+    'FROM totals',
+    'ORDER BY currency',
+  ].join('\n');
+}
+
+function retryable(reason: GcpBillingExportRetryReason): GcpBillingExportReadResult {
+  return { status: 'retryable', retryable: true, reason };
+}
+
+function queryJobReference(
+  value: RawBigQueryQueryResponse['jobReference'],
+): { projectId: string; jobId: string; location?: string } | undefined {
+  const projectId = value?.projectId?.trim();
+  const jobId = value?.jobId?.trim();
+  if (!projectId || !jobId) return undefined;
+  const location = value?.location?.trim();
+  return { projectId, jobId, ...(location ? { location } : {}) };
+}
+
+function classifyBillingError(error: unknown): GcpBillingExportRetryReason {
+  const status = (error as GcpHttpError | undefined)?.status;
+  if ((error as GcpHttpError | undefined)?.throttled === true || status === 429) return 'rate-limited';
+  if (status === 401 || status === 403) return 'permission';
+  if (status === 400) return 'query-rejected';
+  return 'transport';
+}
+
+/** Read one cumulative run-cost snapshot from the supported Cloud Billing export. */
+export class GoogleBigQueryBillingExportReader {
+  private readonly acquireAuth: () => Promise<GcpResolvedAuth>;
+  private readonly fetchImpl: typeof fetch;
+  private readonly now: () => string;
+
+  constructor(options: GcpBillingExportReaderOptions = {}) {
+    this.acquireAuth = options.acquireAuth ?? acquireGcpAdcAuth;
+    this.fetchImpl = options.fetch ?? fetch;
+    this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  async read(input: GcpBillingExportReadInput): Promise<GcpBillingExportReadResult> {
+    if (input.descriptor === undefined) return retryable('missing-config');
+    let descriptor: GcpBillingExportDescriptor;
+    let usageStartAt: string;
+    let usageEndAt: string;
+    try {
+      descriptor = parseGcpBillingExportDescriptor(input.descriptor);
+      if (!GCP_LABEL_VALUE.test(input.runId)) throw new Error('gcp_billing_export_run_id_invalid');
+      usageStartAt = timestamp(input.usageStartAt, 'usage_start_at');
+      usageEndAt = timestamp(input.usageEndAt, 'usage_end_at');
+      if (Date.parse(usageEndAt) <= Date.parse(usageStartAt)) {
+        throw new Error('gcp_billing_export_usage_window_invalid');
+      }
+    } catch {
+      return retryable('invalid-config');
+    }
+
+    let raw: RawBigQueryQueryResponse;
+    try {
+      const auth = await this.acquireAuth();
+      raw = await fetchGcpApiJson<RawBigQueryQueryResponse>(
+        this.fetchImpl,
+        auth.accessToken,
+        `${BIGQUERY_API}/projects/${encodeURIComponent(descriptor.projectId)}/queries`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            query: billingQuery(descriptor),
+            useLegacySql: false,
+            parameterMode: 'NAMED',
+            maximumBytesBilled: descriptor.maximumBytesBilled,
+            maxResults: '2',
+            timeoutMs: 10_000,
+            ...(descriptor.location ? { location: descriptor.location } : {}),
+            queryParameters: [
+              { name: 'usage_start_at', parameterType: { type: 'TIMESTAMP' }, parameterValue: { value: usageStartAt } },
+              { name: 'usage_end_at', parameterType: { type: 'TIMESTAMP' }, parameterValue: { value: usageEndAt } },
+              { name: 'label_key', parameterType: { type: 'STRING' }, parameterValue: { value: descriptor.labelKey } },
+              { name: 'run_id', parameterType: { type: 'STRING' }, parameterValue: { value: input.runId } },
+            ],
+          }),
+        },
+      );
+    } catch (error) {
+      return retryable(classifyBillingError(error));
+    }
+
+    const jobReference = queryJobReference(raw.jobReference);
+    if (raw.jobComplete !== true) {
+      return {
+        status: 'retryable',
+        retryable: true,
+        reason: 'query-pending',
+        ...(jobReference ? { jobReference } : {}),
+      };
+    }
+    if (raw.errors?.length) return retryable('query-rejected');
+    if (raw.pageToken) return retryable('multiple-currencies');
+    if (!jobReference) return retryable('malformed-result');
+    if (!raw.rows?.length) return retryable('no-data');
+    if (raw.rows.length !== 1) return retryable('multiple-currencies');
+
+    const expectedFields = ['currency:STRING', 'gross_micros:INTEGER', 'credit_micros:INTEGER', 'net_micros:INTEGER'];
+    const fields = (raw.schema?.fields ?? []).map(
+      ({ name, type }) => `${name ?? ''}:${type === 'INT64' ? 'INTEGER' : (type ?? '')}`,
+    );
+    const cells = raw.rows[0]?.f?.map(({ v }) => v);
+    if (
+      fields.length !== expectedFields.length ||
+      fields.some((field, index) => field !== expectedFields[index]) ||
+      cells?.length !== expectedFields.length ||
+      typeof cells[0] !== 'string' ||
+      !/^[A-Z]{3}$/.test(cells[0]) ||
+      cells.slice(1).some((cell) => typeof cell !== 'string' || !CANONICAL_INTEGER.test(cell))
+    ) {
+      return retryable('malformed-result');
+    }
+    if (
+      raw.totalBytesProcessed !== undefined &&
+      (!CANONICAL_UNSIGNED_INTEGER.test(raw.totalBytesProcessed) ||
+        BigInt(raw.totalBytesProcessed) > BigInt(descriptor.maximumBytesBilled))
+    ) {
+      return retryable('malformed-result');
+    }
+
+    try {
+      const observation = createWorkspaceHostSpendObservation({
+        currency: cells[0],
+        grossMicros: cells[1] as string,
+        creditMicros: cells[2] as string,
+        netMicros: cells[3] as string,
+        observedAt: this.now(),
+        providerEvidenceRef: `gcp://bigquery/projects/${jobReference.projectId}/jobs/${jobReference.jobId}`,
+      });
+      return {
+        status: 'observed',
+        retryable: false,
+        observation,
+        jobReference,
+        ...(raw.totalBytesProcessed ? { totalBytesProcessed: raw.totalBytesProcessed } : {}),
+        ...(typeof raw.cacheHit === 'boolean' ? { cacheHit: raw.cacheHit } : {}),
+      };
+    } catch {
+      return retryable('malformed-result');
+    }
+  }
+}
+
+export function createGcpBillingExportReader(
+  options: GcpBillingExportReaderOptions = {},
+): GoogleBigQueryBillingExportReader {
+  return new GoogleBigQueryBillingExportReader(options);
+}
 
 /**
  * The error the shared transport throws. Imported rather than re-declared: a second copy of this

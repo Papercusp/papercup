@@ -4,7 +4,12 @@ import type {
   WorkspaceHostProviderContext,
 } from '@papercusp/deployment-driver';
 import { describe, expect, it, vi } from 'vitest';
-import { GoogleComputeWorkspaceHostApiClient } from './gcp-api-client';
+import {
+  GCP_BILLING_EXPORT_MAX_BYTES_BILLED,
+  GoogleBigQueryBillingExportReader,
+  GoogleComputeWorkspaceHostApiClient,
+  parseGcpBillingExportDescriptor,
+} from './gcp-api-client';
 import {
   createAdcGcpWorkspaceHostProvider,
   type GcpDiskInsertInput,
@@ -42,6 +47,214 @@ function makeClient(fetchImpl: typeof fetch): GoogleComputeWorkspaceHostApiClien
     now: () => NOW,
   });
 }
+
+const BILLING_EXPORT = {
+  schemaVersion: 'gcp-billing-export-v1',
+  projectId: PROJECT,
+  datasetId: 'cloud_billing_export',
+  tableId: 'gcp_billing_export_v1_01A2B3_C4D5E6_789ABC',
+  location: 'US',
+  labelKey: 'papercusp_run_id',
+  maximumBytesBilled: '1000000000',
+} as const;
+
+function makeBillingReader(fetchImpl: typeof fetch): GoogleBigQueryBillingExportReader {
+  return new GoogleBigQueryBillingExportReader({
+    acquireAuth: vi.fn(async () => ({ accessToken: TOKEN, projectId: PROJECT, identity: 'operator@example.com' })),
+    fetch: fetchImpl,
+    now: () => NOW,
+  });
+}
+
+describe('GCP Cloud Billing export reader', () => {
+  it('uses bounded public BigQuery REST and preserves exact gross, credit, net, and conservative cents', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe(`https://bigquery.googleapis.com/bigquery/v2/projects/${PROJECT}/queries`);
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        useLegacySql: false,
+        parameterMode: 'NAMED',
+        maximumBytesBilled: '1000000000',
+        maxResults: '2',
+        timeoutMs: 10_000,
+        location: 'US',
+      });
+      expect(String(body.query)).toContain(
+        `FROM \`${PROJECT}.cloud_billing_export.gcp_billing_export_v1_01A2B3_C4D5E6_789ABC\``,
+      );
+      expect(String(body.query)).toContain('UNNEST(labels)');
+      expect(String(body.query)).not.toContain('BillingData');
+      expect(body.queryParameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'label_key', parameterValue: { value: 'papercusp_run_id' } }),
+          expect.objectContaining({ name: 'run_id', parameterValue: { value: 'r4' } }),
+        ]),
+      );
+      return json({
+        jobComplete: true,
+        jobReference: { projectId: PROJECT, jobId: 'billing-query-r4', location: 'US' },
+        totalBytesProcessed: '123456',
+        cacheHit: false,
+        schema: {
+          fields: [
+            { name: 'currency', type: 'STRING' },
+            { name: 'gross_micros', type: 'INTEGER' },
+            { name: 'credit_micros', type: 'INTEGER' },
+            { name: 'net_micros', type: 'INTEGER' },
+          ],
+        },
+        rows: [{ f: [{ v: 'USD' }, { v: '8651' }, { v: '-8651' }, { v: '0' }] }],
+      });
+    }) as typeof fetch;
+
+    await expect(
+      makeBillingReader(fetchImpl).read({
+        descriptor: BILLING_EXPORT,
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00.000Z',
+        usageEndAt: '2026-09-08T00:00:00.000Z',
+      }),
+    ).resolves.toEqual({
+      status: 'observed',
+      retryable: false,
+      observation: {
+        currency: 'USD',
+        grossMicros: '8651',
+        creditMicros: '-8651',
+        netMicros: '0',
+        budgetCents: 1,
+        observedAt: NOW,
+        providerEvidenceRef: `gcp://bigquery/projects/${PROJECT}/jobs/billing-query-r4`,
+      },
+      jobReference: { projectId: PROJECT, jobId: 'billing-query-r4', location: 'US' },
+      totalBytesProcessed: '123456',
+      cacheHit: false,
+    });
+  });
+
+  it('returns typed retryable outcomes for missing config, empty data, and incomplete jobs', async () => {
+    const unusedFetch = vi.fn() as unknown as typeof fetch;
+    await expect(
+      makeBillingReader(unusedFetch).read({
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00Z',
+        usageEndAt: '2026-09-08T00:00:00Z',
+      }),
+    ).resolves.toEqual({ status: 'retryable', retryable: true, reason: 'missing-config' });
+    expect(unusedFetch).not.toHaveBeenCalled();
+
+    const emptyFetch = vi.fn(async () =>
+      json({
+        jobComplete: true,
+        jobReference: { projectId: PROJECT, jobId: 'empty' },
+        schema: { fields: [] },
+        rows: [],
+      }),
+    ) as typeof fetch;
+    await expect(
+      makeBillingReader(emptyFetch).read({
+        descriptor: BILLING_EXPORT,
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00Z',
+        usageEndAt: '2026-09-08T00:00:00Z',
+      }),
+    ).resolves.toEqual({ status: 'retryable', retryable: true, reason: 'no-data' });
+
+    const pendingFetch = vi.fn(async () =>
+      json({ jobComplete: false, jobReference: { projectId: PROJECT, jobId: 'pending', location: 'US' } }),
+    ) as typeof fetch;
+    await expect(
+      makeBillingReader(pendingFetch).read({
+        descriptor: BILLING_EXPORT,
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00Z',
+        usageEndAt: '2026-09-08T00:00:00Z',
+      }),
+    ).resolves.toEqual({
+      status: 'retryable',
+      retryable: true,
+      reason: 'query-pending',
+      jobReference: { projectId: PROJECT, jobId: 'pending', location: 'US' },
+    });
+  });
+
+  it('classifies permissions and malformed or mixed-currency responses without reporting zero spend', async () => {
+    const permissionFetch = vi.fn(async () => json({ error: { message: 'forbidden' } }, 403)) as typeof fetch;
+    await expect(
+      makeBillingReader(permissionFetch).read({
+        descriptor: BILLING_EXPORT,
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00Z',
+        usageEndAt: '2026-09-08T00:00:00Z',
+      }),
+    ).resolves.toEqual({ status: 'retryable', retryable: true, reason: 'permission' });
+
+    const mixedFetch = vi.fn(async () =>
+      json({
+        jobComplete: true,
+        jobReference: { projectId: PROJECT, jobId: 'mixed' },
+        schema: { fields: [] },
+        rows: [{ f: [] }, { f: [] }],
+      }),
+    ) as typeof fetch;
+    await expect(
+      makeBillingReader(mixedFetch).read({
+        descriptor: BILLING_EXPORT,
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00Z',
+        usageEndAt: '2026-09-08T00:00:00Z',
+      }),
+    ).resolves.toEqual({ status: 'retryable', retryable: true, reason: 'multiple-currencies' });
+
+    const malformedFetch = vi.fn(async () =>
+      json({
+        jobComplete: true,
+        jobReference: { projectId: PROJECT, jobId: 'malformed' },
+        schema: {
+          fields: [
+            { name: 'currency', type: 'STRING' },
+            { name: 'gross_micros', type: 'INTEGER' },
+            { name: 'credit_micros', type: 'INTEGER' },
+            { name: 'net_micros', type: 'INTEGER' },
+          ],
+        },
+        rows: [{ f: [{ v: 'USD' }, { v: '1.5' }, { v: '0' }, { v: '1.5' }] }],
+      }),
+    ) as typeof fetch;
+    await expect(
+      makeBillingReader(malformedFetch).read({
+        descriptor: BILLING_EXPORT,
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00Z',
+        usageEndAt: '2026-09-08T00:00:00Z',
+      }),
+    ).resolves.toEqual({ status: 'retryable', retryable: true, reason: 'malformed-result' });
+  });
+
+  it('validates interpolated identifiers and enforces the absolute query-cost ceiling before fetching', async () => {
+    expect(() => parseGcpBillingExportDescriptor({ ...BILLING_EXPORT, tableId: 'billing`; DROP TABLE x' })).toThrow(
+      'gcp_billing_export_tableId_invalid',
+    );
+    expect(() =>
+      parseGcpBillingExportDescriptor({
+        ...BILLING_EXPORT,
+        maximumBytesBilled: (GCP_BILLING_EXPORT_MAX_BYTES_BILLED + 1n).toString(),
+      }),
+    ).toThrow('gcp_billing_export_maximumBytesBilled_out_of_range');
+
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(
+      makeBillingReader(fetchImpl).read({
+        descriptor: { ...BILLING_EXPORT, datasetId: 'bad.dataset' },
+        runId: 'r4',
+        usageStartAt: '2026-09-07T00:00:00Z',
+        usageEndAt: '2026-09-08T00:00:00Z',
+      }),
+    ).resolves.toEqual({ status: 'retryable', retryable: true, reason: 'invalid-config' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
 
 function desired(): WorkspaceHostDesiredSpec {
   return {
