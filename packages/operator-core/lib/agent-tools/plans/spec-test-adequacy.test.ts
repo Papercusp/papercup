@@ -700,6 +700,72 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
+  it('does not report exact fixture or mutation bindings as spec-scoped absence when current grading narrows the cohort', () => {
+    const currentTest = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/interview-prep.test.ts#current',
+      fingerprints: {
+        ...evidence().fingerprints,
+        fixtureFingerprint: null,
+      },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: undefined,
+          falsifiable: true,
+        },
+      },
+    });
+    const unknownFixture = evidence({
+      evidenceKind: 'fixture',
+      evidenceRef: 'packages/operator-core/lib/interview-prep-evidence/servicenow-staff-ml-manual-review.json',
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'not-supplied',
+        comparisonSupplied: false,
+        unknownReasons: ['fixture-current-fingerprint-not-supplied'],
+      },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: true,
+        },
+      },
+    });
+    const unknownMutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:reinsert-superseded-requisition:2026-09-08',
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'not-supplied',
+        comparisonSupplied: false,
+        unknownReasons: ['source-current-fingerprint-not-supplied'],
+      },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          outcome: 'killed',
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [currentTest, unknownFixture, unknownMutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.evidenceRefs).toEqual([
+      currentTest.evidenceRef,
+    ]);
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('2 exact fixture binding(s) are outside');
+    expect(result.ratings.falsifiability.evidence).not.toContain('no mutation or counterexample binding is bound');
+    expect(result.ratings.falsifiability.evidence).toContain('1 mutation or counterexample binding(s) exist');
+  });
+
   it('never lets evidence for another revision establish traceability', () => {
     const historical = evidence({ specRevision: 0 });
     const result = evaluateSpecTestAdequacy({
