@@ -1438,7 +1438,10 @@ async function startOperatorProcess(port = 0) {
 }
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
-  test('answers an actual native question through an installed PUI card', async () => {
+  // The installed Codex Default mode excludes request_user_input. Its native
+  // Plan-mode controls still need their own PUI acceptance before this case
+  // can claim a positive Codex question result.
+  test.skipIf(scriptedEngine.backend === 'codex')('answers an actual native question through an installed PUI card', async () => {
     const manifest = installedManifest();
     const nonce = randomUUID();
     const question = `PUI-QUESTION-${nonce}?`;
