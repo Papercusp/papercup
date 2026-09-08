@@ -5957,11 +5957,20 @@ async fn card_respond_send(
         }
     };
     let Some(ws) = workspace_id.filter(|id| !id.trim().is_empty()) else {
-        let _ = tx.send(Event::ChatError("Reconnect this conversation to resolve the card's workspace".into()));
+        let _ = tx.send(Event::ChatError(
+            "Reconnect this conversation to resolve the card's workspace".into(),
+        ));
         return;
     };
     if let Err(e) = client
-        .card_respond(&conversation_id, &correlation_id, &ws, &action, payload, None)
+        .card_respond(
+            &conversation_id,
+            &correlation_id,
+            &ws,
+            &action,
+            payload,
+            None,
+        )
         .await
     {
         let _ = tx.send(Event::ChatError(format!("card-response: {e}")));

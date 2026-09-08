@@ -3225,7 +3225,8 @@ impl App {
                 if let Some(snapshot) =
                     crate::card_view::SnapshotEnvelope::from_json(&snapshot.to_string())
                 {
-                    self.card_state.apply_delta(snapshot, correlation_id.as_deref());
+                    self.card_state
+                        .apply_delta(snapshot, correlation_id.as_deref());
                 }
                 if phase == "closed" {
                     self.session_note = Some(format!(
@@ -3591,9 +3592,14 @@ impl App {
         let Some(correlation_id) = self.card_state.focused_correlation_id() else {
             return Action::Render;
         };
-        let Some(conversation_id) = self.agent_chat_id.as_ref().or(self.conversation_id.as_ref())
-            .filter(|id| !id.trim().is_empty()).cloned() else {
-            self.error = Some("Reconnect this conversation before answering its card".into());
+        let Some(conversation_id) = self
+            .agent_chat_id
+            .as_ref()
+            .or(self.conversation_id.as_ref())
+            .filter(|id| !id.trim().is_empty())
+            .cloned()
+        else {
+            self.last_error = Some("Reconnect this conversation before answering its card".into());
             return Action::Render;
         };
         let workspace_id = self.card_state.focused_workspace_id();
@@ -11503,7 +11509,10 @@ mod tests {
                 "presentation":{"kind":"radio","options":[{"id":"yes","label":"Yes"}]}});
             app.apply_su_session_event(su_event(event));
         }
-        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("first"));
+        assert_eq!(
+            app.card_state.focused_correlation_id().as_deref(),
+            Some("first")
+        );
         assert_eq!(app.card_state.remaining(), 1);
         let mut closed = su_event_base("card", 3);
         closed["turnId"] = json!("same-turn");
@@ -11511,8 +11520,14 @@ mod tests {
         closed["correlationId"] = json!("first");
         closed["resolution"] = json!("cancelled");
         app.apply_su_session_event(su_event(closed));
-        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("second"));
-        assert_eq!(app.card_state.focused_workspace_id().as_deref(), Some("ws-1"));
+        assert_eq!(
+            app.card_state.focused_correlation_id().as_deref(),
+            Some("second")
+        );
+        assert_eq!(
+            app.card_state.focused_workspace_id().as_deref(),
+            Some("ws-1")
+        );
     }
 
     #[test]
@@ -11529,13 +11544,24 @@ mod tests {
             "presentation":{"kind":"radio","options":[{"id":"0","label":"Keep"},{"id":"1","label":"Change"}]}});
         app.apply_su_session_event(su_event(event));
         let action = app.on_key(KeyCode::Char('2'), KeyModifiers::NONE);
-        assert!(matches!(action, Action::CardRespond { conversation_id, correlation_id, workspace_id, payload: Some(payload), .. }
+        assert!(
+            matches!(action, Action::CardRespond { conversation_id, correlation_id, workspace_id, payload: Some(payload), .. }
             if conversation_id == "chat-1" && correlation_id == "question" && workspace_id.as_deref() == Some("ws-1")
-                && payload == json!({"picks":["1"]})));
-        assert!(app.card_state.has_card(), "a failed POST must leave the question answerable");
+                && payload == json!({"picks":["1"]}))
+        );
+        assert!(
+            app.card_state.has_card(),
+            "a failed POST must leave the question answerable"
+        );
         app.agent_chat_id = None;
-        assert!(matches!(app.on_key(KeyCode::Char('2'), KeyModifiers::NONE), Action::Render));
-        assert!(app.card_state.has_card(), "a missing conversation must not hide the question");
+        assert!(matches!(
+            app.on_key(KeyCode::Char('2'), KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert!(
+            app.card_state.has_card(),
+            "a missing conversation must not hide the question"
+        );
     }
 
     #[test]
@@ -16609,7 +16635,10 @@ mod tests {
             }
             app.apply_su_session_event(su_event(reply));
         }
-        assert!(app.chat_streaming, "replay has not reached current readiness");
+        assert!(
+            app.chat_streaming,
+            "replay has not reached current readiness"
+        );
         let mut ready = su_event_base("lifecycle", 5);
         ready["state"] = json!("ready");
         ready["runtimeGeneration"] = json!(1);
