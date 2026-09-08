@@ -627,6 +627,156 @@ export interface ScorecardRow {
 }
 
 /**
+ * The evidence-first projection for one scorecard.
+ *
+ * This is deliberately not a smaller `ScorecardRow`: the history row carries
+ * replay recipes, generation stamps, instrument snapshots, and link metadata
+ * for monitoring and trend consumers. An auditor needs the opposite shape —
+ * the exact criterion evidence and only the identity/completeness fields that
+ * tell them which card they are re-running. Keeping this projection separate
+ * prevents a future list-row field from silently making the single-card audit
+ * read spill again (EI-22710824425098387).
+ */
+export interface ScorecardEvidenceCriterion {
+  key: string;
+  rating: string;
+  evidence: string;
+}
+
+export interface ScorecardEvidenceRow {
+  issueId: string;
+  createdAt: string;
+  createdBy: string | null;
+  rubricRef: string;
+  rubricRevision?: number;
+  sourceHive?: string;
+  subject?: ObservationSubject;
+  criteria: ScorecardEvidenceCriterion[];
+  nKeys: number;
+  missingKeys: string[];
+  extraKeys: string[];
+  rubricResolved: boolean;
+  synthesized: boolean;
+  gradingAudit?: ScorecardGradingAudit;
+  provisional?: ScorecardProvisional;
+  retracted?: ScorecardRetraction;
+}
+
+export type ScorecardEvidenceReadResult =
+  | { kind: 'found'; scorecard: ScorecardEvidenceRow }
+  | { kind: 'not_found' }
+  | { kind: 'not_scorecard' };
+
+interface ScorecardEvidenceDb {
+  issue_id: string;
+  created_by: string | null;
+  created_at: string | Date;
+  rubric_ref: string | null;
+  rubric_revision: unknown;
+  source_hive: string | null;
+  subject: unknown;
+  ratings: unknown;
+  synthesized: unknown;
+  grading_audit: unknown;
+  provisional: unknown;
+  retracted: unknown;
+}
+
+/**
+ * Read one scorecard with an evidence-first storage projection.
+ *
+ * Do not implement this as `listScorecards({ limit: ... })` plus an in-memory
+ * lookup: that path selects and parses every history-only field, including
+ * replay recipes and generation metadata, before the transport can shape the
+ * result. Selecting only the audit identity, completeness markers, and ratings
+ * keeps the exact evidence available while making the bounded wire contract
+ * independent of those unrelated fields (EI-22710824425098387).
+ */
+export async function readScorecardEvidence(issueId: string): Promise<ScorecardEvidenceReadResult> {
+  const rows = await acquireWithContentionRetry(() =>
+    boundedPgReadTxn<ScorecardEvidenceDb[]>((tx) => tx<ScorecardEvidenceDb[]>`
+      SELECT scorecard.issue_id,
+             scorecard.created_by,
+             scorecard.created_at,
+             scorecard.payload -> 'observation' ->> 'rubricRef' AS rubric_ref,
+             scorecard.payload -> 'observation' -> 'rubricRevision' AS rubric_revision,
+             scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
+             scorecard.payload -> 'observation' -> 'subject' AS subject,
+             scorecard.payload -> 'observation' -> 'ratings' AS ratings,
+             scorecard.payload -> 'observation' -> 'synthesized' AS synthesized,
+             scorecard.payload -> 'observation' -> 'gradingAudit' AS grading_audit,
+             scorecard.payload -> 'observation' -> 'provisional' AS provisional,
+             scorecard.payload -> 'observation' -> 'retracted' AS retracted
+        FROM harness_shared.engineer_issues AS scorecard
+       WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
+         AND scorecard.issue_id = ${issueId}
+       ORDER BY scorecard.created_at DESC NULLS LAST
+       LIMIT 1`),
+  );
+  const row = rows[0];
+  if (!row) return { kind: 'not_found' };
+
+  const observation = asStructuredObservation({
+    rubricRef: row.rubric_ref,
+    rubricRevision: row.rubric_revision,
+    sourceHive: row.source_hive,
+    subject: row.subject,
+    ratings: row.ratings,
+    synthesized: row.synthesized,
+    gradingAudit: row.grading_audit,
+    provisional: row.provisional,
+    retracted: row.retracted,
+  });
+  if (!observation?.rubricRef || !observation.ratings) return { kind: 'not_scorecard' };
+
+  const rubric = await getRubric(observation.rubricRef);
+  const criteriaKeys = rubric
+    ? rubric.criteria.map((criterion) => criterion.key)
+    : builtInCriterionKeysForRubric(observation.rubricRef);
+  const rubricResolved = criteriaKeys !== null;
+  const normalizedRatings = normalizeScorecardRatings(
+    observation.ratings,
+    rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
+  );
+  const ratedKeys = new Set(Object.keys(normalizedRatings));
+  const missingKeys = rubricResolved ? criteriaKeys!.filter((key) => !ratedKeys.has(key)) : [];
+  const criterionKeySet = rubricResolved ? new Set(criteriaKeys!) : null;
+  const extraKeys = criterionKeySet
+    ? [...ratedKeys].filter((key) => !criterionKeySet.has(key))
+    : [];
+  const orderedKeys = [
+    ...(criteriaKeys ?? []),
+    ...Object.keys(normalizedRatings).filter((key) => !criteriaKeys?.includes(key)),
+  ];
+  const criteria = orderedKeys.flatMap((key) => {
+    const rating = normalizedRatings[key];
+    return rating ? [{ key, rating: rating.rating, evidence: rating.evidence }] : [];
+  });
+
+  return {
+    kind: 'found',
+    scorecard: {
+      issueId: row.issue_id,
+      createdAt: tsIso(row.created_at),
+      createdBy: row.created_by,
+      rubricRef: observation.rubricRef,
+      ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+      ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
+      ...(observation.subject ? { subject: observation.subject } : {}),
+      criteria,
+      nKeys: ratedKeys.size,
+      missingKeys,
+      extraKeys,
+      rubricResolved,
+      synthesized: row.synthesized === true || row.synthesized === 'true',
+      ...(observation.gradingAudit ? { gradingAudit: observation.gradingAudit } : {}),
+      ...(observation.provisional ? { provisional: observation.provisional } : {}),
+      ...(observation.retracted ? { retracted: observation.retracted } : {}),
+    },
+  };
+}
+
+/**
  * The settled-evidence admission policy (EI-21949865560276745) lives in the neutral
  * observation-types leaf so a reader can inherit it without importing this store.
  * Re-exported here because this module's trend is its other consumer.
