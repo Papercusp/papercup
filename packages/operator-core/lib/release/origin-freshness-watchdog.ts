@@ -56,7 +56,6 @@ import { hiveGitRepoPath, readNamespaceRef, defaultRunGit, type RunGit } from '.
 import { githubOriginDevicePubkey } from '../sync/pot-git/github-ingress';
 import { BRIDGE_CANONICAL_REF } from '../sync/pot-git/github-bridge-tick';
 import { STAGING_REF } from '../sync/pot-git/integrator';
-import { resolveUsageActor } from '../harness/usage-actor';
 import {
   evaluateOriginFreshness,
   isIntegratorStalledThisSweep,
@@ -133,6 +132,96 @@ async function revListCount(repoPath: string, from: string, to: string, runGit: 
   if (r.code !== 0) return null;
   const n = Number.parseInt(r.stdout.trim(), 10);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Bound on device namespaces examined per sweep. Each non-caught-up namespace costs one
+ *  `git` spawn, and a spawn blocks bg-host's event loop ~165ms at its ~4.2GB RSS (see the
+ *  `readNamespaceRefForDevices` header). Real pots have a handful; this only stops a store
+ *  with pathological namespace litter from stalling the loop. */
+const MAX_NAMESPACES_PER_SWEEP = 32;
+
+/**
+ * EI-22702954391733746 — the integrator's backlog across EVERY device namespace, not just
+ * THIS process's own.
+ *
+ * WHY THIS IS NOT `readNamespaceRef(self)`. It used to be, and that made signal 5 — the only
+ * signal that can see an integrator stall at all — structurally incapable of firing on
+ * papercusp. `resolveUsageActor()` resolves the LOCAL MACHINE's device key, but the device
+ * that PUBLISHES staging need not be the machine running the watchdog. Measured 2026-09-08:
+ * bg-host's own namespace sat 945 commits BEHIND canonical (last advanced two days earlier),
+ * so `rev-list --count canonical..selfNS` was 0 — and 0 was read as "integrated / caught up".
+ * The publisher device was a different namespace entirely, standing 26 commits ahead of a
+ * canonical ref frozen for ~8h. The detector reported health throughout, for the same reason
+ * every incident in this module's header did: it measured the wrong thing and called the
+ * absence of a reading a healthy reading.
+ *
+ * THE 0-CONFLATION THIS FIXES. `revListCount(canonical, ns)` returns 0 both when a namespace
+ * is genuinely caught up AND when it is an ANCESTOR of canonical (stale / not the publisher).
+ * Those are opposite worlds — "nothing to do" vs "no information" — and collapsing them is
+ * what let the blindness masquerade as health. Here a pot with no integrable namespace at all
+ * returns NULL (no signal), never 0.
+ *
+ * WHY "DESCENDANT OF CANONICAL" IS THE FILTER, and not a bare max. A naive max-ahead over all
+ * namespaces is the noise generator this module's header warns about: an abandoned/divergent
+ * device (measured on papercusp: 21 ahead of canonical while 32708 BEHIND it) would hold the
+ * backlog permanently above 0 and alarm on any quiet period. Work the integrator could
+ * actually integrate is work built ON TOP of canonical — i.e. canonical is an ancestor of it,
+ * equivalently `behind === 0` in the symmetric-difference count below. A divergent device
+ * fails that test and contributes no signal; a caught-up device passes it with ahead 0.
+ *
+ * Controls measured against the live store before this shipped:
+ *   healthy state → only the publisher qualifies, ahead 0 ⇒ 0 ⇒ no alarm (negative control)
+ *   during the freeze → publisher qualifies, ahead 26 ⇒ alarms in ~4 sweeps (positive control)
+ *
+ * Returns the max ahead-count among integrable namespaces, or null when the store yields no
+ * reading at all. Null is treated as healthy by the caller — never a false alarm.
+ */
+export async function integratorBacklogAcrossDevices(
+  repoPath: string,
+  canonicalSha: string,
+  runGit: RunGit,
+): Promise<number | null> {
+  // ONE spawn for every device's staging ref, regardless of member count — the loop-shape
+  // `readNamespaceRefForDevices` exists to prevent.
+  const r = await runGit(
+    ['for-each-ref', '--format=%(objectname) %(refname)', `refs/namespaces/*/${STAGING_REF}`],
+    repoPath,
+  );
+  if (r.code !== 0) return null;
+
+  const shas = new Set<string>();
+  for (const line of r.stdout.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    const sp = t.indexOf(' ');
+    if (sp < 0) continue;
+    const sha = t.slice(0, sp);
+    if (sha) shas.add(sha);
+  }
+  if (shas.size === 0) return null; // no device namespaces ⇒ no reading, not a healthy reading
+
+  let best: number | null = null;
+  let examined = 0;
+  for (const sha of shas) {
+    if (examined >= MAX_NAMESPACES_PER_SWEEP) break;
+    examined += 1;
+    if (sha === canonicalSha) {
+      best = Math.max(best ?? 0, 0); // caught up: a real reading of zero backlog
+      continue;
+    }
+    // `--left-right --count A...B` yields "<behind>\t<ahead>" in ONE spawn, so the ancestry
+    // test and the count cost one invocation rather than a merge-base plus a rev-list.
+    const lr = await runGit(['rev-list', '--left-right', '--count', `${canonicalSha}...${sha}`], repoPath);
+    if (lr.code !== 0) continue;
+    const parts = lr.stdout.trim().split(/\s+/);
+    if (parts.length < 2) continue;
+    const behind = Number.parseInt(parts[0], 10);
+    const ahead = Number.parseInt(parts[1], 10);
+    if (!Number.isFinite(behind) || !Number.isFinite(ahead)) continue;
+    if (behind !== 0) continue; // divergent or stale ⇒ not integrable ⇒ contributes no signal
+    best = Math.max(best ?? 0, ahead);
+  }
+  return best;
 }
 
 /** Resolve the hive HOME slug for a registry entry — mirrors git-sync-action's
@@ -501,18 +590,8 @@ export async function checkOriginFreshness(
       // pubkey is unresolvable, yields null ⇒ treated as healthy, never a false alarm.
       let integratorBacklogCommits: number | null = null;
       try {
-        // resolveUsageActor() can return null (an unresolvable/uninitialised actor), and a
-        // resolved actor need not carry a devicePubkey — optional-chain BOTH rather than
-        // assert. An unresolvable identity must degrade to "no signal" (healthy), never to a
-        // throw that costs the whole sweep, and never to a false alarm.
-        const selfPubkey = (await resolveUsageActor())?.devicePubkey ?? null;
-        if (selfPubkey && canonicalSha != null) {
-          const selfNamespaceSha = await readNamespaceRef(repoPath, selfPubkey, STAGING_REF, runGit);
-          if (selfNamespaceSha != null && selfNamespaceSha !== canonicalSha) {
-            integratorBacklogCommits = await revListCount(repoPath, canonicalSha, selfNamespaceSha, runGit);
-          } else if (selfNamespaceSha === canonicalSha) {
-            integratorBacklogCommits = 0; // integrated / caught up
-          }
+        if (canonicalSha != null) {
+          integratorBacklogCommits = await integratorBacklogAcrossDevices(repoPath, canonicalSha, runGit);
         }
       } catch {
         integratorBacklogCommits = null; // diagnostics must never break the sweep

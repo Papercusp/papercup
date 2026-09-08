@@ -76,7 +76,7 @@ vi.mock('../severe-event-broadcast', () => ({
 const notify = vi.hoisted(() => ({ attention: vi.fn(async (..._args: unknown[]) => undefined) }));
 vi.mock('../attention-notify', () => ({ notifyAttention: notify.attention }));
 
-import { checkOriginFreshness } from './origin-freshness-watchdog';
+import { checkOriginFreshness, integratorBacklogAcrossDevices } from './origin-freshness-watchdog';
 
 /**
  * A postgres-template-tag stand-in that routes on the statement text. Records
@@ -443,5 +443,119 @@ describe('EI-20285011147862697 — a publish refusal on an origin-less pot still
     expect(res.publishChecked).toBe(1); // it WAS judged — this is not silence-by-skipping
     expect(res.alarmed).toHaveLength(0);
     expect(broadcasts.alarm).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * EI-22702954391733746 — signal 5's INPUT, which had no coverage at all.
+ *
+ * That absence is not incidental to the bug, it IS the bug's survival mechanism: the pure
+ * verdict tests in origin-freshness.test.ts all passed for the entire time this signal was
+ * structurally incapable of firing, exactly as this file's own header describes for WI-5791.
+ * The untested half was never "is the verdict right" — it was "does the signal read anything".
+ *
+ * It read this MACHINE's device namespace. Measured on papercusp 2026-09-08: bg-host's own
+ * namespace stood 945 commits BEHIND canonical (last advanced two days earlier), so
+ * `rev-list --count canonical..selfNS` was 0 — reported as "integrated / caught up" — while a
+ * DIFFERENT device published 26 commits the frozen integrator never took. Origin sat frozen
+ * ~8h and every signal in the module read healthy.
+ *
+ * The numbers below are that incident's real measurements, so a regression reproduces it.
+ */
+describe('integratorBacklogAcrossDevices (EI-22702954391733746)', () => {
+  const CANONICAL_FROZEN = '00d844e2674033fd41884ac1c4d20d3c71c79596';
+  const PUBLISHER_NS = '2353785026cfb9425edfd168f3ace2cdcb10b049'; // 26 ahead, 0 behind
+  const SELF_NS = '6a83aa715b5d4b56c0728ed1597a73817ce6532f'; // bg-host's own: 945 BEHIND
+  const DIVERGENT_NS = '9d65ef68aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // 21 ahead but 32708 behind
+
+  /** A runGit that answers only the two shapes the helper issues, from a declared graph. */
+  const fakeGit = (
+    namespaceShas: readonly string[],
+    /** sha -> [behind, ahead] relative to the canonical under test. */
+    graph: Record<string, [number, number]>,
+  ) =>
+    (async (args: readonly string[]) => {
+      if (args[0] === 'for-each-ref') {
+        const stdout = namespaceShas
+          .map((sha, i) => `${sha} refs/namespaces/${'ab'.repeat(32)}${i}/refs/heads/staging`)
+          .join('\n');
+        return { code: 0, stdout, stderr: '' };
+      }
+      if (args[0] === 'rev-list' && args[1] === '--left-right') {
+        const spec = args[3] ?? '';
+        const sha = spec.slice(spec.indexOf('...') + 3);
+        const pair = graph[sha];
+        if (!pair) return { code: 1, stdout: '', stderr: 'unknown rev' };
+        return { code: 0, stdout: `${pair[0]}\t${pair[1]}`, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    }) as unknown as Parameters<typeof integratorBacklogAcrossDevices>[2];
+
+  it('REGRESSION: reports the PUBLISHER device\'s backlog, not this machine\'s stale namespace', async () => {
+    const backlog = await integratorBacklogAcrossDevices(
+      '/fake/papercusp',
+      CANONICAL_FROZEN,
+      fakeGit([SELF_NS, PUBLISHER_NS, DIVERGENT_NS], {
+        [SELF_NS]: [945, 0], // ancestor of canonical — stale, contributes nothing
+        [PUBLISHER_NS]: [0, 26], // the real integrator backlog
+        [DIVERGENT_NS]: [32708, 21], // abandoned/divergent — must be excluded
+      }),
+    );
+
+    // The whole incident in one assertion: the old self-device read returned 0 here.
+    expect(backlog).not.toBe(0);
+    expect(backlog).toBe(26);
+  });
+
+  it('NEGATIVE CONTROL: healthy state reads 0 — the divergent device must not manufacture backlog', async () => {
+    // Publisher caught up (ns == canonical). The divergent device is STILL 21 ahead, which is
+    // why a naive max-over-all-devices would alarm on a perfectly healthy pot forever.
+    const backlog = await integratorBacklogAcrossDevices(
+      '/fake/papercusp',
+      PUBLISHER_NS,
+      fakeGit([SELF_NS, PUBLISHER_NS, DIVERGENT_NS], {
+        [SELF_NS]: [945, 0],
+        [DIVERGENT_NS]: [32708, 21],
+      }),
+    );
+
+    expect(backlog).toBe(0);
+  });
+
+  it('reports NULL, not 0, when no namespace is integrable — blindness must not read as health', async () => {
+    // Every device divergent or stale: we have no reading of the integrator at all. 0 would
+    // claim "caught up", which is the exact conflation that hid this outage.
+    const backlog = await integratorBacklogAcrossDevices(
+      '/fake/papercusp',
+      CANONICAL_FROZEN,
+      fakeGit([SELF_NS, DIVERGENT_NS], {
+        [SELF_NS]: [945, 0],
+        [DIVERGENT_NS]: [32708, 21],
+      }),
+    );
+
+    expect(backlog).toBeNull();
+  });
+
+  it('reports NULL when the store has no device namespaces at all', async () => {
+    const backlog = await integratorBacklogAcrossDevices('/fake/papercusp', CANONICAL_FROZEN, fakeGit([], {}));
+    expect(backlog).toBeNull();
+  });
+
+  it('reads every device namespace in ONE for-each-ref spawn', async () => {
+    // bg-host runs at ~4.2GB RSS where each spawn blocks the event loop ~165ms, so a
+    // per-device read loop is the shape readNamespaceRefForDevices exists to prevent.
+    const calls: string[][] = [];
+    const counting = (async (args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[0] === 'for-each-ref') {
+        return { code: 0, stdout: `${PUBLISHER_NS} refs/namespaces/aa/refs/heads/staging`, stderr: '' };
+      }
+      return { code: 0, stdout: '0\t3', stderr: '' };
+    }) as unknown as Parameters<typeof integratorBacklogAcrossDevices>[2];
+
+    await integratorBacklogAcrossDevices('/fake/papercusp', CANONICAL_FROZEN, counting);
+
+    expect(calls.filter((c) => c[0] === 'for-each-ref')).toHaveLength(1);
   });
 });
