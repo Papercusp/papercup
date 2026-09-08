@@ -95,7 +95,7 @@ import {
 
 type SeeAlsoContext = { harnessSlug?: unknown };
 
-type CheckpointHandlerContext = { harnessSlug?: unknown; workspaceId?: unknown };
+type CheckpointHandlerContext = { harnessSlug?: string | null; workspaceId?: unknown };
 
 function concreteCheckpointHarness(ctx: CheckpointHandlerContext): string {
   return resolveConcreteHarnessSlug(undefined, ctx) ?? operatorHomeHarnessSlug();
