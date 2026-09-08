@@ -94,6 +94,9 @@ const observationRatingsSchema = z.record(
   }),
 );
 
+const NOT_EXERCISED_RUBRIC_GUIDANCE =
+  'CONDITIONAL: when observation.notExercised is non-empty, provide observation.rubricRef or the top-level rubricRef compatibility alias; omit it for a free-text observation.';
+
 /**
  * EI-19325151590626958 — the DEFAULT conditionKey for a rubric-graded scorecard observation.
  *
@@ -644,7 +647,9 @@ export default defineTool({
           .string()
           .max(120)
           .optional()
-          .describe('compatibility alias for observation.rubricRef; prefer observation:{ rubricRef, ratings }'),
+          .describe(
+            `compatibility alias for observation.rubricRef; prefer observation:{ rubricRef, ratings }. ${NOT_EXERCISED_RUBRIC_GUIDANCE}`,
+          ),
         ratings: observationRatingsSchema
           .optional()
           .describe('compatibility alias for observation.ratings; prefer observation:{ rubricRef, ratings }'),
@@ -679,7 +684,7 @@ export default defineTool({
               .max(120)
               .optional()
               .describe(
-                "a rubrics.rubric_id this observation grades against (e.g. 'pot-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it",
+                `a rubrics.rubric_id this observation grades against (e.g. 'pot-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it. ${NOT_EXERCISED_RUBRIC_GUIDANCE.replace('provide observation.rubricRef or the top-level rubricRef compatibility alias', 'provide this field or the top-level rubricRef compatibility alias')}`,
               ),
             ratings: observationRatingsSchema
               .optional()
@@ -698,7 +703,7 @@ export default defineTool({
               .max(64)
               .optional()
               .describe(
-                "criterion keys this run did NOT exercise — each expands to { rating:'unknown', evidence:'idle: not exercised by this run.' } so a scoped drill passes the completeness gate without hand-written boilerplate (explicit ratings win)",
+                `criterion keys this run did NOT exercise — each expands to { rating:'unknown', evidence:'idle: not exercised by this run.' } so a scoped drill passes the completeness gate without hand-written boilerplate (explicit ratings win). ${NOT_EXERCISED_RUBRIC_GUIDANCE}`,
               ),
             // WI-3594 (scorecard→improvement flow): a GRADE filing (rubricRef+ratings) often
             // identifies a concrete follow-up — link it AT FILE TIME instead of a separate

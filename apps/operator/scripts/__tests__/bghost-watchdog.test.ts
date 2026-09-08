@@ -118,8 +118,35 @@ let requestCommittedHotPathRestart: (
       args: string[],
       opts?: { stdin?: string; timeout?: number },
     ) => Promise<{ err: Error | null; stdout: string; stderr?: string }>;
+    verifyGeneration?: (beforePid: number | null) => Promise<{
+      verified: boolean;
+      beforePid: number | null;
+      observedPid: number | null;
+      waitedMs: number;
+      code: string;
+    }>;
   },
 ) => Promise<{ ok: boolean; restarted: boolean; coalesced: boolean; code: string }>;
+let waitForBgHostRestartGeneration: (
+  beforePid: number | null,
+  deps?: {
+    sh?: (
+      cmd: string,
+      args: string[],
+      opts?: { timeout?: number },
+    ) => Promise<{ err: Error | null; stdout: string }>;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    waitMs?: number;
+    pollMs?: number;
+  },
+) => Promise<{
+  verified: boolean;
+  beforePid: number | null;
+  observedPid: number | null;
+  waitedMs: number;
+  code: string;
+}>;
 beforeAll(async () => {
   ({
     parseIdleSec,
@@ -147,6 +174,7 @@ beforeAll(async () => {
     shouldCheckCommittedHotPathActivation,
     readCommittedHotPathState,
     requestCommittedHotPathRestart,
+    waitForBgHostRestartGeneration,
     // PROBE_SCRIPT points the WHOLE suite — pure functions included — at a mutated COPY outside the
     // tree, so scripts/mutation-probe.sh can prove falsifiability without ever mutating the shared
     // working tree (git-sync would commit the mutant mid-probe).
@@ -244,25 +272,33 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
   });
 
   it('waits out a git-sync fire but still fast-fails an exclusive-resource holder, with no unsafe overrides', async () => {
-    let observed:
-      | { cmd: string; args: string[]; opts?: { stdin?: string; timeout?: number } }
-      | undefined;
+    const calls: Array<{ cmd: string; args: string[]; opts?: { stdin?: string; timeout?: number } }> = [];
     const outcome = await requestCommittedHotPathRestart('abcdef1234567890', {
       ptoolScript: '/repo/apps/operator/scripts/ptool.mjs',
       sh: async (cmd, args, opts) => {
-        observed = { cmd, args, opts };
-        return { err: null, stdout: JSON.stringify({ ok: true, target: 'bg-host', restarted: true }) };
+        calls.push({ cmd, args, opts });
+        if (args.includes('dev:restart')) {
+          return {
+            err: null,
+            stdout: JSON.stringify({ ok: true, target: 'bg-host', restarted: true, restartedFromPid: 4242 }),
+          };
+        }
+        return {
+          err: null,
+          stdout: '5252\n',
+        };
       },
     });
     expect(outcome).toMatchObject({ ok: true, restarted: true, code: 'restarted' });
-    expect(observed?.cmd).toBe(process.execPath);
-    expect(observed?.args).toEqual([
+    expect(calls[0]?.cmd).toBe(process.execPath);
+    expect(calls[0]?.args).toEqual([
       '/repo/apps/operator/scripts/ptool.mjs',
       'dev:restart',
       '--json',
       '-',
     ]);
-    const payload = JSON.parse(observed?.opts?.stdin ?? '{}');
+    expect(calls[1]?.args).toEqual(['--user', 'show', 'papercusp-bg-host', '-p', 'MainPID', '--value']);
+    const payload = JSON.parse(calls[0]?.opts?.stdin ?? '{}');
     expect(payload).toMatchObject({
       target: 'bg-host',
       confirm: true,
@@ -292,8 +328,57 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
 
     // The ptool budget must COVER the drain we just asked it to wait out. Without this, a drain
     // that works still lands as `ptool_failed` — trading one refusal code for another.
-    expect(observed?.opts?.timeout).toBeGreaterThan(payload.git_sync_drain_sec * 1_000);
-    expect(observed?.opts?.timeout).toBe(30_000 + payload.git_sync_drain_sec * 1_000);
+    expect(calls[0]?.opts?.timeout).toBeGreaterThan(payload.git_sync_drain_sec * 1_000);
+    expect(calls[0]?.opts?.timeout).toBe(30_000 + payload.git_sync_drain_sec * 1_000);
+  });
+
+  it('requires a changed MainPID before accepting the detached bg-host restart', async () => {
+    let now = 0;
+    const pids = ['4242', '4242', '5252'];
+    const verification = await waitForBgHostRestartGeneration(4242, {
+      now: () => now,
+      sleep: async () => {
+        now += 1;
+      },
+      waitMs: 10,
+      pollMs: 1,
+      sh: async () => ({ err: null, stdout: `${pids.shift() ?? '5252'}\n` }),
+    });
+    expect(verification).toMatchObject({
+      verified: true,
+      beforePid: 4242,
+      observedPid: 5252,
+      code: 'generation_changed',
+    });
+  });
+
+  it('fails closed when the detached restart leaves the old generation in place', async () => {
+    let now = 0;
+    const verification = await waitForBgHostRestartGeneration(4242, {
+      now: () => now,
+      sleep: async () => {
+        now += 1;
+      },
+      waitMs: 2,
+      pollMs: 1,
+      sh: async () => ({ err: null, stdout: '4242\n' }),
+    });
+    expect(verification).toMatchObject({
+      verified: false,
+      beforePid: 4242,
+      observedPid: 4242,
+      code: 'generation_unchanged',
+    });
+
+    await expect(
+      requestCommittedHotPathRestart('abc', {
+        sh: async () => ({
+          err: null,
+          stdout: JSON.stringify({ ok: true, target: 'bg-host', restarted: true, restartedFromPid: 4242 }),
+        }),
+        verifyGeneration: async () => verification,
+      }),
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'restart_unverified' });
   });
 
   it('fails closed when ptool fails or returns a refusal', async () => {

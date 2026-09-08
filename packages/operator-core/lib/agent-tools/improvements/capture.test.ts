@@ -2256,6 +2256,52 @@ describe('improvements:capture — notExercised shorthand (rubric-system-improve
     });
     expect(r.success).toBe(true);
   });
+
+  it('publishes the conditional rubric prerequisite without making free-text observations require a rubric', () => {
+    const argsSchema = (
+      captureTool as unknown as {
+        args: { safeParse: (v: unknown) => { success: boolean } };
+      }
+    ).args;
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: {
+        rubricRef?: { description?: string };
+        observation?: {
+          required?: string[];
+          properties?: {
+            rubricRef?: { description?: string };
+            notExercised?: { description?: string };
+          };
+        };
+      };
+    };
+
+    expect(json.properties?.observation?.properties?.notExercised?.description).toMatch(
+      /non-empty.*observation\.rubricRef.*top-level rubricRef compatibility alias/i,
+    );
+    expect(json.properties?.observation?.properties?.rubricRef?.description).toMatch(
+      /notExercised.*top-level rubricRef compatibility alias/i,
+    );
+    expect(json.properties?.rubricRef?.description).toMatch(/notExercised.*observation\.rubricRef/i);
+    expect(json.properties?.observation?.required).toBeUndefined();
+
+    expect(
+      argsSchema.safeParse({
+        title: 'free-text observation',
+        lane: 'observation',
+        body: 'narrative evidence belongs in body',
+        observation: { kind: 'friction' },
+      }).success,
+    ).toBe(true);
+    expect(
+      argsSchema.safeParse({
+        title: 'legacy scoped scorecard',
+        lane: 'observation',
+        rubricRef: 'r',
+        observation: { notExercised: ['wake'] },
+      }).success,
+    ).toBe(true);
+  });
 });
 
 /**

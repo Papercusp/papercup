@@ -1022,6 +1022,68 @@ const HOT_PATH_GIT_SYNC_DRAIN_SEC =
 /** Derived, never a second literal: the ptool budget must cover the drain we just asked it to wait
  *  out, or a drain that works still lands as `ptool_failed` — trading one refusal code for another. */
 const HOT_PATH_PTOOL_TIMEOUT_MS = 30_000 + HOT_PATH_GIT_SYNC_DRAIN_SEC * 1_000;
+/** `dev:restart` hands bg-host's detached systemd restart back as soon as it is scheduled. Keep the
+ * activation result fail-closed until systemd exposes a different MainPID, otherwise `restarted:true`
+ * can mean only that a child was spawned while the old generation continues serving stale code. */
+const BG_HOST_RESTART_PID_WAIT_MS =
+  Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_RESTART_PID_WAIT_MS) || 30_000;
+const BG_HOST_RESTART_PID_POLL_MS =
+  Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_RESTART_PID_POLL_MS) || 250;
+
+/**
+ * Verify the detached bg-host restart's postcondition. The restart tool returns the MainPID observed
+ * BEFORE it spawned systemd; a changed MainPID is the only generation evidence this plain Node watchdog
+ * can obtain without importing the TypeScript restart tool. Unknown or unchanged state is never treated
+ * as success. The seams keep the bounded poll deterministic and hermetic in tests.
+ */
+export async function waitForBgHostRestartGeneration(beforePid, deps = {}) {
+  const shImpl = deps.sh ?? sh;
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve_) => setTimeout(resolve_, ms)));
+  const now = deps.now ?? Date.now;
+  const waitMs = Number.isFinite(deps.waitMs) && deps.waitMs >= 0 ? deps.waitMs : BG_HOST_RESTART_PID_WAIT_MS;
+  const pollMs = Number.isFinite(deps.pollMs) && deps.pollMs >= 0 ? deps.pollMs : BG_HOST_RESTART_PID_POLL_MS;
+  const baseline = Number(beforePid);
+  if (!Number.isInteger(baseline) || baseline <= 0) {
+    return { verified: false, beforePid: null, observedPid: null, waitedMs: 0, code: 'baseline_unknown' };
+  }
+
+  const startedAtMs = now();
+  let observedPid = null;
+  while (now() - startedAtMs <= waitMs) {
+    try {
+      const result = await shImpl(
+        'systemctl',
+        ['--user', 'show', UNIT, '-p', 'MainPID', '--value'],
+        { timeout: 3_000 },
+      );
+      if (!result.err) {
+        const pid = Number(String(result.stdout ?? '').trim());
+        observedPid = Number.isInteger(pid) && pid > 0 ? pid : null;
+      }
+    } catch {
+      observedPid = null;
+    }
+    if (observedPid !== null && observedPid !== baseline) {
+      return {
+        verified: true,
+        beforePid: baseline,
+        observedPid,
+        waitedMs: Math.max(0, now() - startedAtMs),
+        code: 'generation_changed',
+      };
+    }
+    const remainingMs = waitMs - (now() - startedAtMs);
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(pollMs, remainingMs));
+  }
+  return {
+    verified: false,
+    beforePid: baseline,
+    observedPid,
+    waitedMs: Math.max(0, now() - startedAtMs),
+    code: observedPid === null ? 'generation_unknown' : 'generation_unchanged',
+  };
+}
 
 /** Invoke the EXISTING coordinated restart tool, never raw systemctl, for committed-code activation.
  * The wrapper owns boot-integrity, green-gate collision, exclusive-resource drain, audit, and the ~13m
@@ -1058,6 +1120,33 @@ export async function requestCommittedHotPathRestart(latestCommitHash, deps = {}
       code: body?.reason ?? 'ptool_result_unknown',
       body,
     };
+  }
+  if (body.restarted === true) {
+    let verification;
+    try {
+      const verifyGeneration =
+        deps.verifyGeneration ?? ((beforePid) => waitForBgHostRestartGeneration(beforePid, { sh: shImpl }));
+      verification = await verifyGeneration(body.restartedFromPid);
+    } catch (error) {
+      return {
+        ok: false,
+        restarted: false,
+        coalesced: false,
+        code: 'restart_verification_failed',
+        body,
+        verificationError: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (!verification?.verified) {
+      return {
+        ok: false,
+        restarted: false,
+        coalesced: false,
+        code: 'restart_unverified',
+        body,
+        verification,
+      };
+    }
   }
   return {
     ok: true,
