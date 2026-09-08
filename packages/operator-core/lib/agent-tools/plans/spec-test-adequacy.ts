@@ -1,6 +1,6 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
-import type { SpecBehaviorClass, SpecClauseRevision } from './spec-clauses-store';
+import { SPEC_PROOF_OBLIGATION_ID_RE, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
 import type {
   EvidenceCurrentInput,
   EvidenceCurrentness,
@@ -97,10 +97,7 @@ export function latestLogicalEvidence(rows: readonly SpecEvidenceForAdequacy[]):
     const priorTs = appendTimestamp(prior.row);
     const rowId = row.id ?? Number.NEGATIVE_INFINITY;
     const priorId = prior.row.id ?? Number.NEGATIVE_INFINITY;
-    if (
-      rowTs > priorTs ||
-      (rowTs === priorTs && (rowId > priorId || (rowId === priorId && index > prior.index)))
-    ) {
+    if (rowTs > priorTs || (rowTs === priorTs && (rowId > priorId || (rowId === priorId && index > prior.index)))) {
       selected.set(key, { row, index });
     }
   });
@@ -126,6 +123,9 @@ interface AdequacyDetails {
   outcome?: string;
   targeted?: boolean;
   coverageRungs?: Partial<Record<'l1' | 'l2' | 'l3' | 'l4', boolean>>;
+  scenarioIds?: string[];
+  causalPairIds?: string[];
+  contractMetadataIssues?: string[];
   provisionalProofBase?: boolean;
 }
 
@@ -168,14 +168,21 @@ const HIGH_RISK_BEHAVIOR_CLASSES = new Set<SpecBehaviorClass>([
 
 const SUCCESS_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded', 'killed']);
 const FAILURE_OUTCOMES = new Set(['fail', 'failed', 'error', 'timed-out', 'timeout', 'survived']);
+const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([
+  'test',
+  'coverage-census',
+  'mutation',
+  'counterexample',
+  'check',
+  'operational',
+]);
 
 const DURABLE_WORK_ITEM_REF_RE = /\b(?:WI|EI|F)-\d+\b/i;
 const DURABLE_ARTIFACT_REF_RE =
   /\b(?:artifact|artifact[-_ ]?ref|artifact[-_ ]?id)\s*(?:[:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
 const DURABLE_TEST_RUN_REF_RE =
   /\b(?:test[-_ ]?run|testing[-_ ]?run)(?:[-_ ]?id)?\s*(?:[-:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
-const DURABLE_COVERAGE_REF_RE =
-  /\bcoverage(?:[-_ ]?(?:evidence|run))(?:[-_ ]?id)?\s*[:/#=]\s*\d+\b/i;
+const DURABLE_COVERAGE_REF_RE = /\bcoverage(?:[-_ ]?(?:evidence|run))(?:[-_ ]?id)?\s*[:/#=]\s*\d+\b/i;
 const DURABLE_FILE_REF_RE =
   /(?:^|[\s:(])(?:(?:file|path|repo-file):(?:\/\/)?|(?:\.\.\/|\.\/)?)(?:apps|packages|libs|scripts|src|lib|test|tests|bin|docs|rubrics)\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$/i;
 const DURABLE_ABSOLUTE_FILE_REF_RE =
@@ -229,6 +236,23 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
     coverageRaw && typeof coverageRaw === 'object' && !Array.isArray(coverageRaw)
       ? (coverageRaw as Record<string, unknown>)
       : null;
+  const contractMetadataIssues: string[] = [];
+  const idList = (key: 'scenarioIds' | 'causalPairIds'): string[] | undefined => {
+    if (!(key in raw)) return undefined;
+    const value = raw[key];
+    if (
+      !Array.isArray(value) ||
+      value.length === 0 ||
+      value.some((id) => typeof id !== 'string' || !SPEC_PROOF_OBLIGATION_ID_RE.test(id.trim())) ||
+      new Set(value.map((id) => (typeof id === 'string' ? id.trim() : ''))).size !== value.length
+    ) {
+      contractMetadataIssues.push(`${key}:invalid`);
+      return undefined;
+    }
+    return value.map((id) => id.trim()).sort();
+  };
+  const scenarioIds = idList('scenarioIds');
+  const causalPairIds = idList('causalPairIds');
   return {
     ...(bool('fixtureCalibrated') !== undefined ? { fixtureCalibrated: bool('fixtureCalibrated') } : {}),
     ...(bool('falsifiable') !== undefined ? { falsifiable: bool('falsifiable') } : {}),
@@ -249,6 +273,9 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
           ) as AdequacyDetails['coverageRungs'],
         }
       : {}),
+    ...(scenarioIds ? { scenarioIds } : {}),
+    ...(causalPairIds ? { causalPairIds } : {}),
+    ...(contractMetadataIssues.length > 0 ? { contractMetadataIssues } : {}),
     ...(evidence.provisionalProofBase === true || raw.provisionalProofBase === true
       ? { provisionalProofBase: true }
       : {}),
@@ -316,9 +343,10 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
           .map((rung) => `${rung}:${details.coverageRungs?.[rung]}`)
           .join('|')}`
       : null,
-    row.currentness.staleReasons.length > 0
-      ? `staleReasons=${JSON.stringify(row.currentness.staleReasons)}`
-      : null,
+    details.scenarioIds ? `scenarioIds=${JSON.stringify(details.scenarioIds)}` : null,
+    details.causalPairIds ? `causalPairIds=${JSON.stringify(details.causalPairIds)}` : null,
+    details.contractMetadataIssues ? `contractMetadataIssues=${JSON.stringify(details.contractMetadataIssues)}` : null,
+    row.currentness.staleReasons.length > 0 ? `staleReasons=${JSON.stringify(row.currentness.staleReasons)}` : null,
     row.currentness.unknownReasons.length > 0
       ? `unknownReasons=${JSON.stringify(row.currentness.unknownReasons)}`
       : null,
@@ -340,6 +368,25 @@ function bindingSummary(rows: SpecEvidenceForAdequacy[]): string {
 
 function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]): string {
   return `${statement} Bound evidence: ${bindingSummary(rows)}.`;
+}
+
+function hasExecutionLedgerReference(row: SpecEvidenceForAdequacy): boolean {
+  return (
+    (Number.isSafeInteger(row.testRunId) && row.testRunId! > 0) ||
+    (Number.isSafeInteger(row.coverageEvidenceRef) && row.coverageEvidenceRef! > 0)
+  );
+}
+
+function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
+  const details = detailsOf(row);
+  return (
+    EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
+    hasExecutionLedgerReference(row) &&
+    details.collected === true &&
+    details.skipped === false &&
+    details.executed === true &&
+    SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')
+  );
 }
 
 function booleanRating(
@@ -377,10 +424,7 @@ function l4WaiverOf(exemption: Record<string, unknown> | null, now: Date): L4Wai
   };
 }
 
-export function requiredProofFloor(
-  clause: SpecClauseRevision,
-  classRef: PlanClassRubricRef,
-): 'none' | 'l3' | 'l4' {
+export function requiredProofFloor(clause: SpecClauseRevision, classRef: PlanClassRubricRef): 'none' | 'l3' | 'l4' {
   if (clause.behaviorClass === 'non-automated' && clause.requiredTestLayers.length === 0) return 'none';
   if (classRef === 'plan-class-migration' || classRef === 'plan-class-bugfix') return 'l4';
   if (clause.mutationRequired || HIGH_RISK_BEHAVIOR_CLASSES.has(clause.behaviorClass)) return 'l4';
@@ -413,8 +457,7 @@ function riskFloorRating(
   const meetsL4 = detailRows.some(isL4Proof);
   const meetsL3 = meetsL4 || detailRows.some(({ details }) => details.coverageRungs?.l3 === true);
   const meetsL3Rows = detailRows.filter(
-    ({ row, details }) =>
-      details.coverageRungs?.l3 === true || isL4Proof({ row, details }),
+    ({ row, details }) => details.coverageRungs?.l3 === true || isL4Proof({ row, details }),
   );
   if (floor === 'l4') {
     if (meetsL4) {
@@ -505,14 +548,17 @@ function rerunRecipeFor(
   selection: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] } | undefined,
 ): SpecTestAdequacyRerunRecipe {
   const evaluatorBuild = getBuildInfo();
-  const selectedEvidence = [...new Map(
-    evidence.map((row) => [`${row.evidenceKind}\0${row.evidenceRef}`, {
-      evidenceKind: row.evidenceKind,
-      evidenceRef: row.evidenceRef,
-    }]),
-  ).values()].sort((a, b) =>
-    `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`),
-  );
+  const selectedEvidence = [
+    ...new Map(
+      evidence.map((row) => [
+        `${row.evidenceKind}\0${row.evidenceRef}`,
+        {
+          evidenceKind: row.evidenceKind,
+          evidenceRef: row.evidenceRef,
+        },
+      ]),
+    ).values(),
+  ].sort((a, b) => `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`));
   const selectedKeys = new Set(selectedEvidence.map((row) => `${row.evidenceKind}\0${row.evidenceRef}`));
   const fingerprints: SpecTestAdequacyCurrentFingerprint[] = (current ?? [])
     .filter((row) => selectedKeys.has(`${row.evidenceKind}\0${row.evidenceRef}`))
@@ -525,9 +571,7 @@ function rerunRecipeFor(
       rubricFingerprint: row.rubricFingerprint ?? null,
       environmentFingerprint: row.environmentFingerprint ?? null,
     }))
-    .sort((a, b) =>
-      `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`),
-    );
+    .sort((a, b) => `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`));
   return {
     schemaVersion: 1,
     evaluator: 'plans:evaluate-spec-test-adequacy',
@@ -624,11 +668,7 @@ export function evaluateSpecTestAdequacy(input: {
   // historical current-cohort behavior is retained only for internally/server-classified
   // evidence when no caller comparison input was supplied.
   const evidence =
-    input.current !== undefined
-      ? exactEvidence
-      : currentEvidence.length > 0
-        ? currentEvidence
-        : exactEvidence;
+    input.current !== undefined ? exactEvidence : currentEvidence.length > 0 ? currentEvidence : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 
   const lineageAssessments = evidence.map((row) => ({ row, assessment: classifySpecEvidenceLineage(row) }));
@@ -651,7 +691,8 @@ export function evaluateSpecTestAdequacy(input: {
             `Ephemeral-only evidence cannot establish independently rerunnable traceability for ${clauseIdentity(clause)}.`,
             ephemeralEvidence,
           ),
-          suggestion: 'Attach a durable testRunId, coverageEvidenceRef, work-item/artifact/test-run reference, or durable file probe.',
+          suggestion:
+            'Attach a durable testRunId, coverageEvidenceRef, work-item/artifact/test-run reference, or durable file probe.',
         }
       : unknownLineageEvidence.length > 0
         ? {
@@ -660,7 +701,8 @@ export function evaluateSpecTestAdequacy(input: {
               `Evidence lineage is not anchored to a durable rerunnable record for ${clauseIdentity(clause)}.`,
               unknownLineageEvidence,
             ),
-            suggestion: 'Attach a durable testRunId, coverageEvidenceRef, work-item/artifact/test-run reference, or durable file probe.',
+            suggestion:
+              'Attach a durable testRunId, coverageEvidenceRef, work-item/artifact/test-run reference, or durable file probe.',
           }
         : {
             rating: 'pass',
@@ -719,8 +761,9 @@ export function evaluateSpecTestAdequacy(input: {
             unknown: `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
           });
 
+  let layerRating: AdequacyRatingEntry;
   if (clause.requiredTestLayers.length === 0) {
-    ratings['correct-layer'] = {
+    layerRating = {
       rating: 'not-applicable',
       evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseProbe(clause)}`,
     };
@@ -738,46 +781,105 @@ export function evaluateSpecTestAdequacy(input: {
     const missing = required.filter((layer) => !present.has(layer));
     const unreachable = required.filter((layer) => present.get(layer) === false);
     const unresolved = required.filter((layer) => present.get(layer) === undefined);
-    ratings['correct-layer'] = missing.length || unreachable.length
-      ? {
-          rating: 'fail',
-          evidence: `${evidenceWithBindings(
-            `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
-              ...missing.map((layer) => `${layer}:missing`),
-              ...unreachable.map((layer) => `${layer}:unreachable`),
-            ].join(', ')}.`,
-            evidence,
-          )} ${clauseProbe(clause)}`,
-          suggestion: 'Bind proof for every requiredTestLayer and attest that it reaches the real path.',
-        }
-      : unresolved.length
+    layerRating =
+      missing.length || unreachable.length
         ? {
-            rating: 'unknown',
-            evidence: evidenceWithBindings(
-              `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
-              evidence.filter((row) => {
-                const details = detailsOf(row);
-                return (
-                  typeof details.testLayer === 'string' &&
-                  unresolved.includes(normalizedLayer(details.testLayer))
-                );
-              }),
-            ),
+            rating: 'fail',
+            evidence: `${evidenceWithBindings(
+              `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
+                ...missing.map((layer) => `${layer}:missing`),
+                ...unreachable.map((layer) => `${layer}:unreachable`),
+              ].join(', ')}.`,
+              evidence,
+            )} ${clauseProbe(clause)}`,
+            suggestion: 'Bind proof for every requiredTestLayer and attest that it reaches the real path.',
           }
-        : {
-            rating: 'pass',
+        : unresolved.length
+          ? {
+              rating: 'unknown',
+              evidence: evidenceWithBindings(
+                `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
+                evidence.filter((row) => {
+                  const details = detailsOf(row);
+                  return (
+                    typeof details.testLayer === 'string' && unresolved.includes(normalizedLayer(details.testLayer))
+                  );
+                }),
+              ),
+            }
+          : {
+              rating: 'pass',
+              evidence: evidenceWithBindings(
+                `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.join(', ')}.`,
+                evidence.filter((row) => {
+                  const details = detailsOf(row);
+                  return (
+                    typeof details.testLayer === 'string' &&
+                    required.includes(normalizedLayer(details.testLayer)) &&
+                    details.pathReachable === true
+                  );
+                }),
+              ),
+            };
+  }
+
+  const requiredScenarios = [...new Set(clause.falsifier?.requiredScenarios ?? [])].sort();
+  let scenarioRating: AdequacyRatingEntry | null = null;
+  if (requiredScenarios.length > 0) {
+    const malformedScenarioRows = evidence.filter((row) =>
+      detailsOf(row).contractMetadataIssues?.includes('scenarioIds:invalid'),
+    );
+    const successfulScenarioRows = evidence.filter(
+      (row) => isSuccessfulExecutableEvidence(row) && detailsOf(row).pathReachable === true,
+    );
+    const covered = new Set(successfulScenarioRows.flatMap((row) => detailsOf(row).scenarioIds ?? []));
+    const missing = requiredScenarios.filter((scenario) => !covered.has(scenario));
+    scenarioRating =
+      missing.length > 0
+        ? {
+            rating: 'fail',
             evidence: evidenceWithBindings(
-              `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.join(', ')}.`,
-              evidence.filter((row) => {
-                const details = detailsOf(row);
-                return (
-                  typeof details.testLayer === 'string' &&
-                  required.includes(normalizedLayer(details.testLayer)) &&
-                  details.pathReachable === true
-                );
-              }),
+              `Canonical acceptance scenario(s) are not covered by successful ledger-backed path proof for ${clauseIdentity(clause)}: ${missing.join(', ')}. Required scenarios: ${requiredScenarios.join(', ')}.`,
+              successfulScenarioRows,
             ),
-          };
+            suggestion:
+              'Bind successful executed proof whose adequacy.scenarioIds cover every falsifier.requiredScenarios id.',
+          }
+        : malformedScenarioRows.length > 0
+          ? {
+              rating: 'unknown',
+              evidence: evidenceWithBindings(
+                `All named scenarios are represented, but malformed scenarioIds metadata prevents a complete scenario-cohort verdict for ${clauseIdentity(clause)}.`,
+                malformedScenarioRows,
+              ),
+              suggestion: 'Supersede malformed bindings with schema-valid adequacy.scenarioIds.',
+            }
+          : {
+              rating: 'pass',
+              evidence: evidenceWithBindings(
+                `Every canonical acceptance scenario has successful ledger-backed path proof for ${clauseIdentity(clause)}: ${requiredScenarios.join(', ')}.`,
+                successfulScenarioRows.filter((row) =>
+                  (detailsOf(row).scenarioIds ?? []).some((scenario) => requiredScenarios.includes(scenario)),
+                ),
+              ),
+            };
+  }
+  if (scenarioRating === null) {
+    ratings['correct-layer'] = layerRating;
+  } else {
+    const combinedRating: AdequacyRating =
+      layerRating.rating === 'fail' || scenarioRating.rating === 'fail'
+        ? 'fail'
+        : layerRating.rating === 'unknown' || scenarioRating.rating === 'unknown'
+          ? 'unknown'
+          : 'pass';
+    ratings['correct-layer'] = {
+      rating: combinedRating,
+      evidence: `${layerRating.evidence} Scenario completeness: ${scenarioRating.evidence}`,
+      ...([layerRating.suggestion, scenarioRating.suggestion].filter(Boolean).length > 0
+        ? { suggestion: [layerRating.suggestion, scenarioRating.suggestion].filter(Boolean).join(' ') }
+        : {}),
+    };
   }
 
   ratings['oracle-independence'] = booleanRating(evidence, (d) => d.oracleIndependent, {
@@ -786,12 +888,7 @@ export function evaluateSpecTestAdequacy(input: {
     unknown: `No bound evidence establishes oracle independence for ${clauseIdentity(clause)}.`,
   });
 
-  const executable = evidence.filter((row) =>
-    ['test', 'coverage-census', 'mutation', 'counterexample', 'check', 'operational'].includes(row.evidenceKind),
-  );
-  const hasExecutionLedgerReference = (row: SpecEvidenceForAdequacy): boolean =>
-    (Number.isSafeInteger(row.testRunId) && row.testRunId! > 0) ||
-    (Number.isSafeInteger(row.coverageEvidenceRef) && row.coverageEvidenceRef! > 0);
+  const executable = evidence.filter((row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind));
   const unbackedExecution = executable.filter((row) => !hasExecutionLedgerReference(row));
   const explicitBadExecution = executable.some((row) => {
     const d = detailsOf(row);
@@ -812,7 +909,7 @@ export function evaluateSpecTestAdequacy(input: {
       SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
     );
   });
-  ratings['execution-integrity'] = explicitBadExecution
+  const executionRating: AdequacyRatingEntry = explicitBadExecution
     ? {
         rating: 'fail',
         evidence: evidenceWithBindings(
@@ -864,6 +961,103 @@ export function evaluateSpecTestAdequacy(input: {
               : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
           };
 
+  let causalPairRating: AdequacyRatingEntry | null = null;
+  if (clause.falsifier?.causalPairing === 'one-to-one') {
+    const malformedPairRows = evidence.filter((row) =>
+      detailsOf(row).contractMetadataIssues?.includes('causalPairIds:invalid'),
+    );
+    const negativeRows = evidence.filter(
+      (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
+    );
+    const recurrenceRows = evidence.filter(
+      (row) =>
+        row.evidenceKind !== 'mutation' &&
+        row.evidenceKind !== 'counterexample' &&
+        detailsOf(row).causalPairIds !== undefined,
+    );
+    const violations: string[] = [];
+    const negativeByPair = new Map<string, SpecEvidenceForAdequacy[]>();
+    const recurrenceByPair = new Map<string, SpecEvidenceForAdequacy[]>();
+    const add = (target: Map<string, SpecEvidenceForAdequacy[]>, pairId: string, row: SpecEvidenceForAdequacy) =>
+      target.set(pairId, [...(target.get(pairId) ?? []), row]);
+
+    for (const row of malformedPairRows) violations.push(`${row.evidenceRef}:malformed causalPairIds`);
+    if (negativeRows.length === 0) violations.push('no mutation/counterexample binding declares the original failure');
+    for (const row of negativeRows) {
+      const details = detailsOf(row);
+      if (details.contractMetadataIssues?.includes('causalPairIds:invalid')) {
+        violations.push(`${row.evidenceRef}:malformed causalPairIds`);
+        continue;
+      }
+      if (details.causalPairIds?.length !== 1) {
+        violations.push(`${row.evidenceRef}:expected exactly one causalPairId on the negative binding`);
+        continue;
+      }
+      add(negativeByPair, details.causalPairIds[0]!, row);
+    }
+    for (const row of recurrenceRows) {
+      const details = detailsOf(row);
+      if (details.contractMetadataIssues?.includes('causalPairIds:invalid')) {
+        violations.push(`${row.evidenceRef}:malformed causalPairIds`);
+        continue;
+      }
+      if (details.causalPairIds?.length !== 1) {
+        violations.push(`${row.evidenceRef}:expected exactly one causalPairId on the recurrence binding`);
+        continue;
+      }
+      add(recurrenceByPair, details.causalPairIds[0]!, row);
+    }
+    const pairIds = [...new Set([...negativeByPair.keys(), ...recurrenceByPair.keys()])].sort();
+    for (const pairId of pairIds) {
+      const negatives = negativeByPair.get(pairId) ?? [];
+      const recurrences = recurrenceByPair.get(pairId) ?? [];
+      if (negatives.length !== 1) violations.push(`${pairId}:expected 1 negative binding, found ${negatives.length}`);
+      if (recurrences.length !== 1)
+        violations.push(`${pairId}:expected 1 recurrence binding, found ${recurrences.length}`);
+      if (negatives.length === 1 && !isSuccessfulExecutableEvidence(negatives[0]!)) {
+        violations.push(`${pairId}:negative binding is not successful ledger-backed counterexample proof`);
+      }
+      if (recurrences.length === 1 && !isSuccessfulExecutableEvidence(recurrences[0]!)) {
+        violations.push(`${pairId}:recurrence binding is not successful ledger-backed repaired proof`);
+      }
+    }
+    causalPairRating =
+      violations.length > 0
+        ? {
+            rating: 'fail',
+            evidence: evidenceWithBindings(
+              `The canonical one-to-one causal-pair contract is incomplete for ${clauseIdentity(clause)}: ${violations.join('; ')}.`,
+              [...negativeRows, ...recurrenceRows],
+            ),
+            suggestion:
+              'Bind exactly one successful ledger-backed mutation/counterexample row and one successful repaired row for each stable adequacy.causalPairIds id.',
+          }
+        : {
+            rating: 'pass',
+            evidence: evidenceWithBindings(
+              `Every original failure has exactly one successful ledger-backed negative and repaired recurrence binding for ${clauseIdentity(clause)}: ${pairIds.join(', ')}.`,
+              [...negativeRows, ...recurrenceRows],
+            ),
+          };
+  }
+  if (causalPairRating === null) {
+    ratings['execution-integrity'] = executionRating;
+  } else {
+    const combinedRating: AdequacyRating =
+      executionRating.rating === 'fail' || causalPairRating.rating === 'fail'
+        ? 'fail'
+        : executionRating.rating === 'unknown' || causalPairRating.rating === 'unknown'
+          ? 'unknown'
+          : 'pass';
+    ratings['execution-integrity'] = {
+      rating: combinedRating,
+      evidence: `${executionRating.evidence} Causal pairing: ${causalPairRating.evidence}`,
+      ...([executionRating.suggestion, causalPairRating.suggestion].filter(Boolean).length > 0
+        ? { suggestion: [executionRating.suggestion, causalPairRating.suggestion].filter(Boolean).join(' ') }
+        : {}),
+    };
+  }
+
   const freshnessStates = evidence.map((row) => row.currentness.overall);
   ratings.freshness = freshnessStates.includes('stale')
     ? {
@@ -893,10 +1087,10 @@ export function evaluateSpecTestAdequacy(input: {
                       .map((row) => row.evidenceRef)
                       .join(', ')}.`
                 : callerAttestedCurrent
-                ? `Current fingerprints were caller-supplied and are labeled attested-current; matching stored values cannot establish independently measured freshness, so freshness is unknown for this replay input. Missing comparison for: ${refs}.`
-                : callerOmittedCurrent
-                ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
-                : `Current fingerprints are missing for: ${refs}.`;
+                  ? `Current fingerprints were caller-supplied and are labeled attested-current; matching stored values cannot establish independently measured freshness, so freshness is unknown for this replay input. Missing comparison for: ${refs}.`
+                  : callerOmittedCurrent
+                    ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
+                    : `Current fingerprints are missing for: ${refs}.`;
             })(),
             evidence.filter((row) => row.currentness.overall === 'unknown'),
           ),
@@ -904,7 +1098,10 @@ export function evaluateSpecTestAdequacy(input: {
       : evidence.length
         ? {
             rating: 'pass',
-            evidence: evidenceWithBindings(`Every bound proof dimension is current for ${clauseIdentity(clause)}.`, evidence),
+            evidence: evidenceWithBindings(
+              `Every bound proof dimension is current for ${clauseIdentity(clause)}.`,
+              evidence,
+            ),
           }
         : {
             rating: 'fail',
@@ -914,14 +1111,7 @@ export function evaluateSpecTestAdequacy(input: {
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date());
   ratings['plan-class-risk-floor'] = risk.rating;
 
-  const rerunRecipe = rerunRecipeFor(
-    clause,
-    evidence,
-    input.current,
-    input.harness,
-    classRef,
-    input.rerunSelection,
-  );
+  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef, input.rerunSelection);
   appendRatingRerunProbes(ratings, rerunRecipe);
 
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));
@@ -937,7 +1127,8 @@ export function evaluateSpecTestAdequacy(input: {
     rerunRecipe.selection.specRevision,
   );
   const rawRefs = evidenceRefs.join(', ') || '(none)';
-  const bodyRefs = rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
+  const bodyRefs =
+    rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
   return {
     planSlug: clause.planSlug,
     specId: clause.specId,
