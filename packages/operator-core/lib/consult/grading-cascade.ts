@@ -35,6 +35,7 @@
  */
 import type { CascadeWakeContext, CascadeWakeCopy, CascadeWakeCopyWriter } from './cascade-core';
 import type { ObservationRatings } from '../harness/improvements/observation-types';
+import type { AcceptanceReviewReservationRef } from '../coord/condition-upsert';
 
 /** The persisted `routing.cascade.flavor` discriminator. */
 export const GRADING_CASCADE_FLAVOR = 'acceptance-grading';
@@ -52,6 +53,21 @@ export interface GradingCascadeMeta {
    * because a grader's session may sit in a different hive and every read the
    * brief asks for has to name the subject tree explicitly. */
   harnessSlug: string | null;
+  /** The durable acceptance assignment this cascade is servicing. */
+  reservation?: AcceptanceReviewReservationRef;
+}
+
+/** Shared line used by fresh-judge and cascade briefs; key and id are both
+ * intentional so an operator can reconcile a retry from either surface. */
+export function acceptanceReviewReservationGuidance(
+  reservation?: AcceptanceReviewReservationRef,
+): string {
+  if (!reservation) return '';
+  return (
+    `Dispatch reservation: condition key '${reservation.conditionKey}', canonical work-item ` +
+    `'${reservation.id ?? 'unassigned'}'. Reuse this exact reservation for retries of the same ` +
+    `workspace/harness/plan/rubric/revision target; a changed target must receive a new key.`
+  );
 }
 
 /**
@@ -120,7 +136,12 @@ export const ACCEPTANCE_GRADING_NO_CLAIM_FACT =
 export const ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE = `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Emit the card directly.`;
 
 /** The reads a grader has to do, rendered with the subject harness pinned. */
-function graderReadingInstructions(planSlug: string, harnessSlug: string | null, rubricId: string): string {
+function graderReadingInstructions(
+  planSlug: string,
+  harnessSlug: string | null,
+  rubricId: string,
+  reservation?: AcceptanceReviewReservationRef,
+): string {
   const planRead = harnessSlug
     ? `plans:get { slug:${JSON.stringify(planSlug)}, harness:${JSON.stringify(harnessSlug)} }`
     : `plans:get { slug:${JSON.stringify(planSlug)} }`;
@@ -131,7 +152,8 @@ function graderReadingInstructions(planSlug: string, harnessSlug: string | null,
     `scorecard: scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
     `with concrete evidence per rating. ${ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE} The targetHive makes ` +
     `deterministic checks run against the subject ` +
-    `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} The verdict is YOURS — ` +
+    `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} ` +
+    `${acceptanceReviewReservationGuidance(reservation)} The verdict is YOURS — ` +
     `consult if you need to, but the grade is not delegable.`
   );
 }
@@ -145,11 +167,12 @@ export function buildAssignedAcceptanceGraderBrief(
   planSlug: string,
   harnessSlug: string | null,
   rubricId: string,
+  reservation?: AcceptanceReviewReservationRef,
 ): string {
   return (
     `The relevance router selected you to grade plan '${planSlug}' — your transcript history matched the ` +
     `plan + rubric above the precision floor and you are outside its implementer/consult-participant ` +
-    `exclusion set (D-009 independence). ${graderReadingInstructions(planSlug, harnessSlug, rubricId)}`
+    `exclusion set (D-009 independence). ${graderReadingInstructions(planSlug, harnessSlug, rubricId, reservation)}`
   );
 }
 
@@ -164,6 +187,7 @@ export function buildMinimumFillAcceptanceGraderBrief(
   planSlug: string,
   harnessSlug: string | null,
   rubricId: string,
+  reservation?: AcceptanceReviewReservationRef,
 ): string {
   return (
     `You were selected to grade plan '${planSlug}' as the BEST-AVAILABLE independent grader — BELOW the ` +
@@ -171,7 +195,7 @@ export function buildMinimumFillAcceptanceGraderBrief(
     `outside its implementer/consult-participant exclusion set and grading requires an independent grader. ` +
     `Grade it FIRST-PRINCIPLES from the plan, the rubric and the code — do not decline solely for lack of ` +
     `prior context, and do not present unfamiliarity as a finding. ` +
-    `${graderReadingInstructions(planSlug, harnessSlug, rubricId)}`
+    `${graderReadingInstructions(planSlug, harnessSlug, rubricId, reservation)}`
   );
 }
 
@@ -226,7 +250,7 @@ export function gradingCascadeWakeCopy(meta: GradingCascadeMeta): CascadeWakeCop
         `so do not let it stand unchallenged if it is wrong, and do not treat agreement with it as ` +
         `independent corroboration (D-003). The full thread is conversation ${ctx.conversationId}:\n` +
         `${priorLines}\n` +
-        `${graderReadingInstructions(meta.planSlug, meta.harnessSlug, meta.rubricId)}\n` +
+        `${graderReadingInstructions(meta.planSlug, meta.harnessSlug, meta.rubricId, meta.reservation)}\n` +
         `After you emit your scorecard, post it into the conversation with ` +
         `consult:reply { conversation_id:${JSON.stringify(ctx.conversationId)}, kind:'answer', ... } so the ` +
         `chain records your verdict; consult:decline closes your slot and advances to the next grader.`,

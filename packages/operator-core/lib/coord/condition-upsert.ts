@@ -37,6 +37,7 @@
  * a hard unique claim on the ingest path is the wrong tool. This seam is for
  * single-host system filers (routines, gates, seeders).
  */
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { createWorkItem, setWorkItemState, type CreateWorkItemInput } from '../work-items';
 import { claimConditionKey, findConditionKeyHolder, releaseStaleConditionKeys } from './condition-bridge';
@@ -47,6 +48,86 @@ export const CONDITION_UPSERT_ACTOR = 'system:condition-upsert' as const;
 
 /** Payload key stamping occurrence state on the owning row. */
 export const CONDITION_UPSERT_MARKER = '_conditionUpsert';
+
+/**
+ * Namespaced identity for one acceptance-grading target.
+ *
+ * Acceptance dispatch has two different idempotency surfaces: the launcher
+ * receipt (which protects a process launch) and the durable assignment a
+ * reviewer sees (which must protect the review target).  Keep the latter in
+ * the condition-upsert seam so retries race on the same partial unique index.
+ * The complete tuple is hashed because condition_key is also used by older
+ * callers with a compact, bounded key; the payload retains the typed tuple for
+ * inspection and future migrations.
+ */
+export const ACCEPTANCE_REVIEW_TARGET_NAMESPACE = 'acceptance-review-target:v1';
+
+export interface AcceptanceReviewTarget {
+  workspaceId: string;
+  harnessSlug: string | null;
+  planSlug: string;
+  rubricId: string;
+  /** The subject/rubric revision being graded; null is an explicit legacy pin. */
+  revision: number | null;
+}
+
+export interface AcceptanceReviewReservationRef {
+  conditionKey: string;
+  id: string | null;
+}
+
+function normalizeAcceptanceReviewTarget(target: AcceptanceReviewTarget): AcceptanceReviewTarget {
+  const workspaceId = target.workspaceId.trim();
+  const planSlug = target.planSlug.trim();
+  const rubricId = target.rubricId.trim();
+  if (!workspaceId || !planSlug || !rubricId) {
+    throw new Error('acceptanceReviewTargetConditionKey: workspaceId, planSlug, and rubricId are required');
+  }
+  const harnessSlug = target.harnessSlug?.trim() || null;
+  const revision = target.revision == null ? null : Number(target.revision);
+  if (revision !== null && (!Number.isInteger(revision) || revision < 0)) {
+    throw new Error('acceptanceReviewTargetConditionKey: revision must be a non-negative integer or null');
+  }
+  return { workspaceId, harnessSlug, planSlug, rubricId, revision };
+}
+
+/** Stable condition key for one (workspace, harness, plan, rubric, revision). */
+export function acceptanceReviewTargetConditionKey(target: AcceptanceReviewTarget): string {
+  const normalized = normalizeAcceptanceReviewTarget(target);
+  const tuple = JSON.stringify([
+    ACCEPTANCE_REVIEW_TARGET_NAMESPACE,
+    normalized.workspaceId,
+    normalized.harnessSlug,
+    normalized.planSlug,
+    normalized.rubricId,
+    normalized.revision,
+  ]);
+  return `${ACCEPTANCE_REVIEW_TARGET_NAMESPACE}:${createHash('sha256').update(tuple).digest('hex').slice(0, 32)}`;
+}
+
+/**
+ * Reserve/adopt the durable acceptance assignment for one typed target.
+ * Callers pass the returned key and id into every fresh-judge or cascade brief
+ * so a retry can be traced back to the one canonical assignment.
+ */
+export async function reserveAcceptanceReviewTarget(
+  target: AcceptanceReviewTarget,
+  input: Pick<CreateWorkItemInput, 'title' | 'summary'> = {},
+): Promise<AcceptanceReviewReservationRef & { created: boolean }> {
+  const normalized = normalizeAcceptanceReviewTarget(target);
+  const conditionKey = acceptanceReviewTargetConditionKey(normalized);
+  const result = await upsertConditionWorkItem(conditionKey, {
+    kind: 'task',
+    title: input.title ?? `Acceptance grading reservation — ${normalized.planSlug} (${normalized.rubricId})`,
+    summary:
+      input.summary ??
+      `Canonical reviewer assignment for acceptance target ${normalized.planSlug} at revision ${normalized.revision ?? 'legacy'}.`,
+    harness: normalized.harnessSlug ?? undefined,
+    workspaceId: normalized.workspaceId,
+    payload: { acceptanceReviewTarget: normalized },
+  });
+  return { conditionKey: result.conditionKey, id: result.id, created: result.created };
+}
 
 export interface ConditionUpsertResult {
   conditionKey: string;

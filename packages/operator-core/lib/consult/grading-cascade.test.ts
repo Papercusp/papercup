@@ -31,6 +31,7 @@ import {
   gradingCascadeWakeCopy,
   type GradingCascadeMeta,
 } from './grading-cascade';
+import { acceptanceReviewTargetConditionKey } from '../coord/condition-upsert';
 
 const META: GradingCascadeMeta = {
   flavor: 'acceptance-grading',
@@ -55,6 +56,42 @@ const wakeCtx = (over: Partial<CascadeWakeContext> = {}): CascadeWakeContext => 
   next: NEXT,
   digest: [],
   ...over,
+});
+
+const TARGET = {
+  workspaceId: 'ws-test',
+  harnessSlug: 'papercusp',
+  planSlug: 'plan-a',
+  rubricId: 'rubric-a',
+  revision: 3,
+} as const;
+
+const RESERVATION = {
+  conditionKey: acceptanceReviewTargetConditionKey(TARGET),
+  id: 'WI-review-a',
+};
+
+describe('acceptance review-target reservation identity', () => {
+  it('reuses one key for the same typed target and separates revisions', () => {
+    expect(acceptanceReviewTargetConditionKey({ ...TARGET })).toBe(RESERVATION.conditionKey);
+    expect(acceptanceReviewTargetConditionKey({ ...TARGET, revision: 4 })).not.toBe(RESERVATION.conditionKey);
+    expect(acceptanceReviewTargetConditionKey({ ...TARGET, planSlug: 'plan-b' })).not.toBe(RESERVATION.conditionKey);
+  });
+
+  it('carries the reservation key and canonical id through every grader brief path', () => {
+    expect(buildAssignedAcceptanceGraderBrief(TARGET.planSlug, TARGET.harnessSlug, TARGET.rubricId, RESERVATION)).toEqual(
+      expect.stringContaining(RESERVATION.conditionKey),
+    );
+    expect(buildAssignedAcceptanceGraderBrief(TARGET.planSlug, TARGET.harnessSlug, TARGET.rubricId, RESERVATION)).toContain(
+      RESERVATION.id,
+    );
+    expect(buildMinimumFillAcceptanceGraderBrief(TARGET.planSlug, TARGET.harnessSlug, TARGET.rubricId, RESERVATION)).toContain(
+      RESERVATION.conditionKey,
+    );
+    expect(gradingCascadeWakeCopy({ flavor: 'acceptance-grading', ...TARGET, reservation: RESERVATION })(wakeCtx()).body).toContain(
+      RESERVATION.id,
+    );
+  });
 });
 
 describe('acceptance-grading no-claim guidance (EI-20249725405239230)', () => {
