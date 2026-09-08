@@ -355,6 +355,115 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
   return reconcilePersistedOrphan(snapshot, row, sql);
 }
 
+interface PersistedTestRunRow {
+  file_path: string;
+  status: string;
+  finished_at: Date | string | number | null;
+  output_tail: string | null;
+}
+
+/**
+ * Recover a detached run whose process worker disappeared after the Vitest
+ * reporter flushed its per-file rows. The snapshot table is the process
+ * lifecycle cache, while test_runs is the reporter's durable verdict ledger;
+ * the exact run_group_id ties the two without relying on a task-manager row
+ * (older detached runs, and some flag-off launches, have no task_id).
+ *
+ * Fail closed: a partial/active/untimestamped row set is not enough to turn a
+ * running snapshot into a terminal result. Latest-per-file selection also
+ * prevents an older retry from poisoning the recovered verdict.
+ */
+async function reconcilePersistedTestRun(snapshot: RunSnapshot, sql: SqlLike): Promise<RunSnapshot> {
+  if (snapshot.status !== 'running') return snapshot;
+
+  let query: PromiseLike<unknown>;
+  try {
+    query = sql`
+      SELECT DISTINCT ON (file_path) file_path, status, finished_at, output_tail
+        FROM harness_shared.test_runs
+       WHERE run_group_id = ${snapshot.runId}
+       ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+       LIMIT 200
+    `;
+  } catch {
+    return snapshot;
+  }
+  const rows = await boundedSnapshotQuery<PersistedTestRunRow[]>(query);
+  if (!rows || rows.length === 0) return snapshot;
+
+  const validStatuses = new Set(['pass', 'fail', 'skip', 'cancelled', 'error']);
+  if (
+    rows.some(
+      (row) =>
+        !row ||
+        typeof row.status !== 'string' ||
+        !validStatuses.has(row.status) ||
+        epochMs(row.finished_at) === null,
+    )
+  ) {
+    // A running row, an unknown status, or a missing finish timestamp means the
+    // reporter has not supplied a complete terminal verdict yet.
+    return snapshot;
+  }
+
+  const statuses = new Set(rows.map((row) => row.status));
+  const status: RunStatus = statuses.has('error')
+    ? 'error'
+    : statuses.has('fail')
+      ? 'fail'
+      : statuses.has('cancelled')
+        ? 'cancelled'
+        : statuses.has('pass')
+          ? 'pass'
+          : 'error';
+  const exitCode = status === 'pass' ? 0 : status === 'fail' ? 1 : null;
+  const finishedAt = Math.max(...rows.map((row) => epochMs(row.finished_at)!));
+  const ledgerOutput = rows
+    .map((row) => row.output_tail)
+    .filter((output): output is string => typeof output === 'string' && output.length > 0)
+    .join('\n');
+  const note =
+    status === 'error' && statuses.has('skip') && !statuses.has('pass') && !statuses.has('fail') && !statuses.has('error')
+      ? `\n[detached-recovery] test_runs ledger has ${rows.length} file row(s), but all tests were skipped; no verdict was observed.\n`
+      : `\n[detached-recovery] recovered ${status} verdict from ${rows.length} test_runs file row(s).\n`;
+  const combinedOutput = [snapshot.output, ledgerOutput, note].filter(Boolean).join('\n');
+  const reconciled: RunSnapshot = {
+    ...snapshot,
+    status,
+    exitCode,
+    finishedAt,
+    output: combinedOutput.length > OUTPUT_CAP_BYTES ? combinedOutput.slice(-OUTPUT_CAP_BYTES) : combinedOutput,
+    truncated: snapshot.truncated || combinedOutput.length > OUTPUT_CAP_BYTES,
+  };
+  return persistReconciledSnapshot(snapshot, reconciled, sql);
+}
+
+async function persistReconciledSnapshot(
+  original: RunSnapshot,
+  reconciled: RunSnapshot,
+  sql: SqlLike,
+): Promise<RunSnapshot> {
+  let update: PromiseLike<unknown>;
+  try {
+    update = sql`
+      UPDATE harness_shared.testing_run_snapshots
+         SET status = ${reconciled.status},
+             exit_code = ${reconciled.exitCode},
+             finished_at = ${new Date(reconciled.finishedAt!).toISOString()},
+             output = ${reconciled.output},
+             truncated = ${reconciled.truncated},
+             updated_at = now()
+       WHERE run_id = ${original.runId}
+         AND status = 'running'
+       RETURNING run_id
+    `;
+  } catch {
+    return original;
+  }
+  const rows = await boundedSnapshotQuery<unknown[]>(update);
+  return rows && rows.length > 0 ? reconciled : original;
+}
+
 /**
  * A detached snapshot is not itself a liveness oracle: the worker that owned
  * its child may have disappeared after writing `status='running'`. The linked
@@ -371,6 +480,9 @@ async function reconcilePersistedOrphan(
   row: DurableRunSnapshotRow,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
+  const fromTestRunLedger = await reconcilePersistedTestRun(snapshot, sql);
+  if (fromTestRunLedger !== snapshot) return fromTestRunLedger;
+
   const taskState = row.task_state;
   const taskDeadlineAt = epochMs(row.task_deadline_at ?? null);
   const deadlineExpired = taskDeadlineAt !== null && taskDeadlineAt <= Date.now();
@@ -397,25 +509,7 @@ async function reconcilePersistedOrphan(
     truncated: snapshot.truncated || combinedOutput.length > OUTPUT_CAP_BYTES,
   };
 
-  let update: PromiseLike<unknown>;
-  try {
-    update = sql`
-      UPDATE harness_shared.testing_run_snapshots
-         SET status = 'error',
-             exit_code = NULL,
-             finished_at = ${new Date(finishedAt).toISOString()},
-             output = ${reconciled.output},
-             truncated = ${reconciled.truncated},
-             updated_at = now()
-       WHERE run_id = ${snapshot.runId}
-         AND status = 'running'
-       RETURNING run_id
-    `;
-  } catch {
-    return snapshot;
-  }
-  const rows = await boundedSnapshotQuery<unknown[]>(update);
-  return rows && rows.length > 0 ? reconciled : snapshot;
+  return persistReconciledSnapshot(snapshot, reconciled, sql);
 }
 
 function evictOldRuns(): void {

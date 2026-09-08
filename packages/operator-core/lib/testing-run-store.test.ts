@@ -517,6 +517,106 @@ describe('durable detached snapshot lifecycle', () => {
     );
   });
 
+  it('recovers a stale snapshot from the terminal test_runs verdict when no task row exists', async () => {
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT run_id, kind, label')) {
+        return [
+          {
+            run_id: 'ledger-pass-run',
+            task_id: null,
+            kind: 'vitest',
+            label: 'detached',
+            file_path: 'lib/example.test.ts',
+            command: ['node', 'router.js'],
+            status: 'running',
+            exit_code: null,
+            started_at: new Date(1_700_000_000_000),
+            finished_at: null,
+            output: '',
+            truncated: false,
+            task_state: null,
+            task_deadline_at: null,
+          },
+        ];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) {
+        return [
+          {
+            file_path: 'lib/example.test.ts',
+            status: 'pass',
+            finished_at: new Date(1_700_000_001_000),
+            output_tail: null,
+          },
+        ];
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: 'ledger-pass-run' }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync('ledger-pass-run', sql)).resolves.toMatchObject({
+      runId: 'ledger-pass-run',
+      status: 'pass',
+      exitCode: 0,
+      finishedAt: 1_700_000_001_000,
+    });
+    expect(updates).toHaveLength(1);
+    expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls.some((call) => call[0].join(' ').includes('FROM harness_shared.test_runs'))).toBe(true);
+  });
+
+  it('does not recover a running snapshot from a partial or active test_runs ledger', async () => {
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT run_id, kind, label')) {
+        return [
+          {
+            run_id: 'ledger-partial-run',
+            task_id: null,
+            kind: 'vitest',
+            label: 'detached',
+            file_path: null,
+            command: ['node', 'router.js'],
+            status: 'running',
+            exit_code: null,
+            started_at: new Date(1_700_000_000_000),
+            finished_at: null,
+            output: '',
+            truncated: false,
+            task_state: null,
+            task_deadline_at: null,
+          },
+        ];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) {
+        return [
+          {
+            file_path: 'lib/one.test.ts',
+            status: 'pass',
+            finished_at: new Date(1_700_000_001_000),
+            output_tail: null,
+          },
+          {
+            file_path: 'lib/two.test.ts',
+            status: 'running',
+            finished_at: null,
+            output_tail: null,
+          },
+        ];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync('ledger-partial-run', sql)).resolves.toMatchObject({
+      runId: 'ledger-partial-run',
+      status: 'running',
+      finishedAt: null,
+    });
+  });
+
   it('reconciles a stale running snapshot when its linked task deadline elapsed first', async () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
