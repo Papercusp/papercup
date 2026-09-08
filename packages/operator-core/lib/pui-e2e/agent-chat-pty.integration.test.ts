@@ -534,9 +534,11 @@ async function waitForCorrelatedReply(prompt: string, reply: string): Promise<Pe
     if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === prompt)) return true;
     const refusedLaunch = sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su' && Number(entry.status) >= 400);
     if (refusedLaunch) throw new Error(`Native launch refused: ${String(refusedLaunch.error ?? refusedLaunch.status)}`);
-    const failed = scriptedEngine.engines.find((engine) => engine.adapter.host.snapshot().terminal);
-    if (failed) {
-      const diagnostics = failed.adapter.host.recent.map(({ event }) => event)
+    // A resumed conversation deliberately retains its stopped predecessor in
+    // the evidence list. Only the current native process can refuse this turn.
+    const active = scriptedEngine.engines.at(-1);
+    if (active?.adapter.host.snapshot().terminal) {
+      const diagnostics = active.adapter.host.recent.map(({ event }) => event)
         .filter((event) => event.type === 'error' || event.type === 'lifecycle').slice(-5);
       throw new Error(`Native engine stopped before the owner turn was saved: ${JSON.stringify(diagnostics)}`);
     }
