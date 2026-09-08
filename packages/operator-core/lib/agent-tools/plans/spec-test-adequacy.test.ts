@@ -97,6 +97,22 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
   };
 }
 
+function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
+  const base = evidence();
+  return {
+    ...base,
+    evidenceKind: 'counterexample',
+    evidenceRef: 'counterexample:reconnect',
+    details: {
+      adequacy: {
+        ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+        outcome: 'pass',
+      },
+    },
+    ...over,
+  };
+}
+
 describe('spec-test-adequacy per-clause evaluator', () => {
   it('grades the newest server-created version even when an older row has a future observedAt', () => {
     const evidenceRef = 'test/reconnect.integration.ts#recorded';
@@ -125,18 +141,18 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(latestLogicalEvidence([older, newer])).toEqual([newer]);
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
-      evidence: [older, newer],
+      evidence: [older, newer, negativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
-    expect(result.evidenceRefs).toEqual([evidenceRef]);
+    expect(result.evidenceRefs).toEqual([evidenceRef, 'counterexample:reconnect'].sort());
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
   });
 
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
-      evidence: [evidence()],
+      evidence: [evidence(), negativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
@@ -154,7 +170,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           specId: 'SPEC-003-01',
           specRevision: 1,
           specFingerprint: 'sha256:spec-v1',
-          evidence: [{ evidenceKind: 'coverage-census', evidenceRef: 'surface:reconnect' }],
+          evidence: expect.arrayContaining([
+            { evidenceKind: 'coverage-census', evidenceRef: 'surface:reconnect' },
+            { evidenceKind: 'counterexample', evidenceRef: 'counterexample:reconnect' },
+          ]),
         },
         current: { supplied: false, fingerprints: [] },
         derivation: {
@@ -176,6 +195,23 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.traceability.evidence).toContain('kind=coverage-census');
     expect(result.ratings['execution-integrity'].evidence).toContain('testRunId=43');
     expect(result.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true|l4:false');
+  });
+
+  it('does not treat a binder falsifiability attestation as a demonstrated negative control', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence()],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability).toMatchObject({
+      rating: 'unknown',
+      suggestion: expect.stringContaining('successful ledger-backed mutation or counterexample'),
+    });
+    expect(result.ratings.falsifiability.evidence).toContain('Binder-attested falsifiable=true');
+    expect(result.ratings.falsifiability.evidence).toContain('no mutation or counterexample binding is bound');
+    expect(result.wouldBlock).toContain('falsifiability');
+    expect(result.verdict).toBe('unknown');
   });
 
   it('puts an exact executable evaluator probe in every rating evidence string', () => {
@@ -332,6 +368,14 @@ describe('spec-test-adequacy per-clause evaluator', () => {
             violatableKeys: ['criterion-a'],
           },
         }),
+        negativeEvidence({
+          provisionalProofBase: true,
+          provisionalScorecard: {
+            issueId: 'EI-123',
+            stampedAt: '2026-08-20T17:09:00.000Z',
+            violatableKeys: ['criterion-a'],
+          },
+        }),
       ],
       classRef: 'plan-class-feature-ship',
     });
@@ -445,7 +489,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       now: new Date('2026-08-20T00:00:00.000Z'),
     });
     expect(waived.ratings['plan-class-risk-floor']).toMatchObject({ rating: 'waived' });
-    expect(waived.verdict).toBe('pass');
+    expect(waived.ratings.falsifiability.rating).toBe('unknown');
+    expect(waived.verdict).toBe('unknown');
 
     const expired = evaluateSpecTestAdequacy({
       clause: clause({
@@ -656,7 +701,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         unknownReasons: ['test_fingerprint_absent'],
       },
     });
-    const current = evidence({ evidenceRef: 'surface:current' });
+    const current = negativeEvidence({ evidenceRef: 'surface:current' });
 
     const passing = evaluateSpecTestAdequacy({
       clause: clause(),
@@ -1163,7 +1208,9 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
   }
 
   it('stamps each generated recipe with the loaded evaluator build identity', () => {
-    expect(recipeFor().evaluatorBuild).toEqual(getBuildInfo());
+    const recipe = recipeFor();
+    expect(recipe.evaluatorBuild).toEqual(getBuildInfo());
+    expect(recipe.args.evaluatorBuild).toEqual(getBuildInfo());
   });
 
   it("records args that PARSE against the evaluator's own schema, classRef included", () => {
