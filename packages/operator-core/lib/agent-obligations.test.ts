@@ -280,6 +280,23 @@ describe('bounded projection', () => {
     });
   });
 
+  it('delivers a complete action within a narrow slot while retaining its full recovery data', () => {
+    const obligation = defineAgentObligation(input({ reason: 'Detailed reporting history. '.repeat(50) }));
+    const agenda = evaluateAgentObligations([obligation], NOW);
+    const full = projectAgentObligationAgenda({ agenda, sink: 'full', mode: 'truncate', maxChars: 400 });
+    expect(full.receipt.entriesDelivered).toBe(0);
+    const compact = projectAgentObligationAgenda({
+      agenda, sink: 'turn-start', mode: 'truncate', detail: 'action', maxChars: 400,
+    });
+    expect(compact.text).toContain('[DUE]');
+    expect(compact.text).toContain(obligation.action!.summary);
+    expect(compact.text.length).toBeLessThanOrEqual(400);
+    expect(compact.receipt).toMatchObject({ entriesAvailable: 1, entriesDelivered: 1, entriesOmitted: 0 });
+    expect(compact.entries[0]).toEqual(obligation);
+    expect(compact.entries[0]!.reason).toBe(obligation.reason);
+    expect(compact.entries[0]!.authority).toEqual(obligation.authority);
+  });
+
   it('distinguishes a refusing sink from a truncating sink', () => {
     const agenda = evaluateAgentObligations([defineAgentObligation(input())], NOW);
     const refused = projectAgentObligationAgenda({

@@ -26,7 +26,7 @@ import { promisify } from 'node:util';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { notifyTaskKillRequested } from './kill-notify';
-import { closeTask, getSubtree, getTask, updateTaskLimits } from './store';
+import { closeTask, getSubtree, getTask, reopenStrandedTask, updateTaskLimits } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
@@ -595,6 +595,32 @@ async function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): Pr
   return countCgroupProcesses(await resolveRowScopeCgroup(row, d), d);
 }
 
+/**
+ * Resolve a task scope for the stranded-thaw recovery path. Unlike kill's
+ * diagnostic fallback, recovery must never walk the stored path after systemd
+ * failed to resolve the row's own scope: thawing a lookalike or operator cgroup
+ * would turn a terminal ledger row into live work for the wrong process tree.
+ */
+async function resolveVerifiedRowScopeCgroup(
+  row: TaskRow,
+  d: ReturnType<typeof deps>,
+): Promise<{ ok: true; cgroupPath: string } | { ok: false; error: ControlError; detail: string }> {
+  if (!row.scopeUnit) {
+    return { ok: false, error: 'no_target', detail: 'task has no scope unit to recover' };
+  }
+  if (row.cgroupPath && isManagedScopeCgroupPath(row.cgroupPath, row.scopeUnit)) {
+    return { ok: true, cgroupPath: row.cgroupPath };
+  }
+  const resolved = await scopeCgroupPath(row.scopeUnit, d);
+  return resolved.ok
+    ? resolved
+    : { ok: false, error: resolved.error, detail: resolved.detail };
+}
+
+function cgroupIsFrozen(cgroupPath: string, d: ReturnType<typeof deps>): boolean {
+  return d.fs.readFile(`${absCgroupDir(cgroupPath)}/cgroup.freeze`)?.trim() === '1';
+}
+
 /** Human label for a `/proc/<pid>/stat` state letter (`man proc`, `/proc/pid/stat`).
  *  Unrecognised/unreadable states fall through to `residueLabel`'s own default —
  *  never invented here. */
@@ -712,8 +738,69 @@ async function setFrozen(taskId: string, frozen: boolean, opts: ControlDeps): Pr
   const action = frozen ? 'freeze' : 'thaw';
   const row = await getTask(taskId);
   if (!row) return { ok: false, taskId, action, error: 'task_not_found' };
-  if (!isLiveOwnedState(row.state)) {
+
+  // Member recovery freezes a still-running task before markStranded() closes
+  // its ledger row. The cgroup, not the terminal row, is therefore the only
+  // backward-compatible marker that this particular stranded task can resume.
+  // Require all three facts in this call: exact confined scope, non-empty
+  // subtree, and the freezer's positive state. A stranded row that is empty or
+  // already thawed remains a terminal refusal, never a resurrection guess.
+  const recoverStranded = !frozen && row.state === 'stranded';
+  if (!isLiveOwnedState(row.state) && !recoverStranded) {
     return { ok: false, taskId, action, error: 'not_live', detail: `state is ${row.state}` };
+  }
+  if (recoverStranded) {
+    if (!row.confined || !row.scopeUnit) {
+      return {
+        ok: false,
+        taskId,
+        action,
+        error: 'not_live',
+        detail: `state is stranded — recovery requires a confined task scope; this task is unconfined or has no scope unit`,
+      };
+    }
+    const resolved = await resolveVerifiedRowScopeCgroup(row, d);
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        taskId,
+        action,
+        error: 'not_live',
+        detail: `state is stranded — could not verify its managed scope: ${resolved.detail}`,
+      };
+    }
+    const processCount = countCgroupProcesses(resolved.cgroupPath, d);
+    if (processCount === 0) {
+      return {
+        ok: false,
+        taskId,
+        action,
+        error: 'not_live',
+        detail: `state is stranded — scope ${row.scopeUnit} holds no live process; refusing to resurrect an empty row`,
+      };
+    }
+    if (!cgroupIsFrozen(resolved.cgroupPath, d)) {
+      return {
+        ok: false,
+        taskId,
+        action,
+        error: 'not_live',
+        detail: `state is stranded — scope ${row.scopeUnit} is not positively frozen; refusing to thaw a terminal row`,
+      };
+    }
+    // Restore the ledger BEFORE the thaw actuation. That closes the dangerous
+    // window in which a successfully thawed process is running but remains
+    // invisible to listLiveTasks/reconciliation as a terminal row. The helper's
+    // guarded UPDATE turns a concurrent recovery/close into a refusal.
+    if (!(await reopenStrandedTask(taskId))) {
+      return {
+        ok: false,
+        taskId,
+        action,
+        error: 'not_live',
+        detail: 'state is stranded — recovery lost the ledger transition race; refusing to thaw',
+      };
+    }
   }
   if (!row.confined || !row.scopeUnit) {
     return {

@@ -426,11 +426,13 @@ function authorityLabel(authority: AgentObligationAuthority): string {
 }
 
 /** Load-bearing action first; optional reason/provenance may be clipped later. */
-export function formatAgentObligationLine(obligation: AgentObligation): string {
+export function formatAgentObligationLine(obligation: AgentObligation, detail: 'full' | 'action' = 'full'): string {
   const action = obligation.action?.summary ?? obligation.clearsWhen.summary;
+  const actionLine = `- [${obligation.status.toUpperCase()}] ${obligation.title} — ${action}`;
+  if (detail === 'action') return actionLine;
   const demand = obligation.applicableDemand > 0 ? `; demand ${obligation.applicableDemand}` : '';
   const age = obligation.ageMs != null ? `; age ${Math.max(0, Math.round(obligation.ageMs / 60_000))}m` : '';
-  return `- [${obligation.status.toUpperCase()}] ${obligation.title} — ${action}; why: ${obligation.reason}${demand}${age}; authority: ${authorityLabel(obligation.authority)} (${obligation.authority.sourceRef})`;
+  return `${actionLine}; why: ${obligation.reason}${demand}${age}; authority: ${authorityLabel(obligation.authority)} (${obligation.authority.sourceRef})`;
 }
 
 export function conservativeTokenEstimate(chars: number): number {
@@ -445,6 +447,8 @@ export function projectAgentObligationAgenda(input: {
   agenda: AgentObligationAgenda;
   sink: string;
   mode: 'truncate' | 'refuse';
+  /** Narrow sinks retain the complete action; reason and authority stay in the full agenda. */
+  detail?: 'full' | 'action';
   maxEntries?: number;
   maxChars?: number;
   maxEstimatedTokens?: number;
@@ -454,7 +458,7 @@ export function projectAgentObligationAgenda(input: {
   const charBudgetFromTokens = maxEstimatedTokens * 4;
   const maxChars = Math.max(0, Math.min(input.maxChars ?? charBudgetFromTokens, charBudgetFromTokens));
   const capped = input.agenda.primary.slice(0, maxEntries);
-  const lines = capped.map(formatAgentObligationLine);
+  const lines = capped.map((entry) => formatAgentObligationLine(entry, input.detail));
   const joined = lines.join('\n');
   const entryCapHit = input.agenda.primary.length > capped.length;
   const charCapHit = joined.length > maxChars;

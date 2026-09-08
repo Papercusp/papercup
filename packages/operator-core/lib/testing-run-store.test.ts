@@ -492,6 +492,7 @@ describe('durable detached snapshot lifecycle', () => {
             output: 'partial output',
             truncated: false,
             task_state: 'exited',
+            task_deadline_at: null,
           },
         ];
       }
@@ -514,6 +515,47 @@ describe('durable detached snapshot lifecycle', () => {
     expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0].join(' ')).toContain(
       "WHERE run_id =",
     );
+  });
+
+  it('reconciles a stale running snapshot when its linked task deadline elapsed first', async () => {
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT run_id, kind, label')) {
+        return [
+          {
+            run_id: 'deadline-run',
+            task_id: 'task-deadline',
+            kind: 'vitest',
+            label: 'deadline',
+            file_path: 'lib/example.test.ts',
+            command: ['node', 'router.js'],
+            status: 'running',
+            exit_code: null,
+            started_at: new Date(Date.now() - 120_000),
+            finished_at: null,
+            output: 'partial output',
+            truncated: false,
+            task_state: 'running',
+            task_deadline_at: new Date(Date.now() - 1_000),
+          },
+        ];
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: 'deadline-run' }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync('deadline-run', sql)).resolves.toMatchObject({
+      runId: 'deadline-run',
+      status: 'error',
+      exitCode: null,
+      finishedAt: expect.any(Number),
+      output: expect.stringContaining('passed its durable runtime deadline'),
+    });
+    expect(updates).toHaveLength(1);
   });
 
   it('does not report a local orphan conversion when the compare-and-set loses a race', async () => {

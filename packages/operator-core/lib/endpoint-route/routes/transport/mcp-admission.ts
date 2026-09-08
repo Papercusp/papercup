@@ -152,9 +152,11 @@ export function resetMcpAdmissionForTests(): void {
  * only for one item with the default shallow read; bulk, detail, and thread reads remain shed
  * under critical pressure. `scorecards:list` is admitted only for an exact rubric+subject audit
  * read; broad history remains shed. `rubrics:get` is admitted only for one rubric (the full
- * criteria body is required by a judge); multi-rubric reads remain shed. `work_items:checkpoint`
- * is admitted only for a single item, because a bounded durability write is needed to preserve
- * successor state during the pressure condition; bulk checkpoint batches remain shed.
+ * criteria body is required by a judge); multi-rubric reads remain shed. A judge's
+ * `scorecards:emit` is admitted only for one terminal grading-integrity audit of one scorecard;
+ * ordinary scorecard writes remain shed. `work_items:checkpoint` is admitted only for a single
+ * item, because a bounded durability write is needed to preserve successor state during the
+ * pressure condition; bulk checkpoint batches remain shed.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -169,6 +171,7 @@ const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
+const SCORECARDS_EMIT_NAME = normalizeMcpName('scorecards:emit');
 const RUBRICS_GET_NAME = normalizeMcpName('rubrics:get');
 const CRITICAL_SCORECARDS_LIST_MAX_ROWS = 25;
 const CAPABILITY_READ_NAME = normalizeMcpName('capability:read');
@@ -306,18 +309,43 @@ function isBoundedRubricsGetArgs(args: unknown): boolean {
   return true;
 }
 
-function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown): boolean {
+/**
+ * The MCP admission gate runs before the handler resolves the signed principal, so it cannot
+ * inspect `ctx.principal`. The role query is still useful as a narrow routing hint here: the
+ * signed-spawn verifier will reject a forged role before dispatch. Require the exact judge role
+ * and the full bounded audit shape before reserving capacity for a scorecard write.
+ */
+function isJudgeRoleRequest(requestUrl?: string): boolean {
+  if (!requestUrl) return false;
+  try {
+    return new URL(requestUrl, 'http://127.0.0.1').searchParams.get('role')?.trim() === 'judge';
+  } catch {
+    return false;
+  }
+}
+
+function isBoundedJudgeGradingAuditEmitArgs(args: unknown, requestUrl?: string): boolean {
+  if (!isJudgeRoleRequest(requestUrl) || !args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const record = args as { rubricRef?: unknown; terminal?: unknown; subject?: unknown };
+  if (record.rubricRef !== 'grading-integrity' || record.terminal !== true) return false;
+  if (!record.subject || typeof record.subject !== 'object' || Array.isArray(record.subject)) return false;
+  const subject = record.subject as { kind?: unknown; ref?: unknown };
+  return subject.kind === 'scorecard' && typeof subject.ref === 'string' && subject.ref.trim().length > 0;
+}
+
+function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, requestUrl?: string): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
+  if (normalized === SCORECARDS_EMIT_NAME) return isBoundedJudgeGradingAuditEmitArgs(args, requestUrl);
   if (normalized === RUBRICS_GET_NAME) return isBoundedRubricsGetArgs(args);
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
   return normalized !== WORK_ITEMS_GET_NAME || isBoundedWorkItemsGetArgs(args);
 }
 
-function isCriticalPressureDiagnosticCall(message: unknown): boolean {
+function isCriticalPressureDiagnosticCall(message: unknown, requestUrl?: string): boolean {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   const params = (message as { params?: { name?: unknown; arguments?: unknown } }).params;
   if (!params || typeof params.name !== 'string') return false;
@@ -326,9 +354,9 @@ function isCriticalPressureDiagnosticCall(message: unknown): boolean {
     const invokeArgs = params.arguments;
     if (!invokeArgs || typeof invokeArgs !== 'object' || Array.isArray(invokeArgs)) return false;
     const target = (invokeArgs as { name?: unknown; args?: unknown }).name;
-    return isCriticalPressureDiagnostic(target, (invokeArgs as { args?: unknown }).args);
+    return isCriticalPressureDiagnostic(target, (invokeArgs as { args?: unknown }).args, requestUrl);
   }
-  return isCriticalPressureDiagnostic(params.name, params.arguments);
+  return isCriticalPressureDiagnostic(params.name, params.arguments, requestUrl);
 }
 
 const MCP_HANDSHAKE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
@@ -352,7 +380,7 @@ function isMcpHealthProbe(requestUrl: string | undefined): boolean {
  * sheddable tools/call id in a batch; null if none).
  * PURE + unit-tested.
  */
-export function classifyMcpBody(bodyText: string): { sheddable: boolean; id: string | number | null } {
+export function classifyMcpBody(bodyText: string, requestUrl?: string): { sheddable: boolean; id: string | number | null } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(bodyText);
@@ -364,7 +392,7 @@ export function classifyMcpBody(bodyText: string): { sheddable: boolean; id: str
   let sheddable = false;
   for (const m of msgs) {
     if (m && typeof m === 'object' && (m as { method?: unknown }).method === 'tools/call') {
-      if (isCriticalPressureDiagnosticCall(m)) continue;
+      if (isCriticalPressureDiagnosticCall(m, requestUrl)) continue;
       sheddable = true;
       const mid = (m as { id?: unknown }).id;
       if (id === null && (typeof mid === 'string' || typeof mid === 'number')) id = mid;
@@ -405,7 +433,7 @@ export function classifyMcpRequest(bodyText: string, requestUrl?: string): McpAd
     if (MCP_HANDSHAKE_METHODS.has(method)) continue;
     handshake = false;
     if (method !== 'tools/call') continue;
-    if (isCriticalPressureDiagnosticCall(message)) diagnosticToolCall = true;
+    if (isCriticalPressureDiagnosticCall(message, requestUrl)) diagnosticToolCall = true;
     else ordinaryToolCall = true;
   }
   if (ordinaryToolCall) return 'ordinary';
@@ -526,7 +554,7 @@ export async function acquireAdmission(
     return { response: null, lease: null, classification: 'other' };
   }
   const classification = classifyMcpRequest(bodyText, req.url);
-  const { sheddable, id } = classifyMcpBody(bodyText);
+  const { sheddable, id } = classifyMcpBody(bodyText, req.url);
   if (sheddable && shouldShedForPressure(pressure, enabled)) {
     return {
       response: admissionShedResponse(id, ADMISSION_RETRY_AFTER_SEC, 'loop_pressure_critical'),

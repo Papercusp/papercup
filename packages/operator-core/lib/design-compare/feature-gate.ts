@@ -159,7 +159,13 @@ export async function evaluateFeatureDesignGate(
   const applicable = references.filter((r) => r.verdict.applicable);
   if (applicable.length === 0) return { applicable: false, references };
 
-  const blocking = applicable.filter((r) => r.verdict.applicable && (!r.verdict.satisfied || r.acceptance?.satisfied === false));
+  const blocking = applicable.filter((r) => {
+    if (!r.verdict.applicable) return false;
+    // An illustrative raster has no valid pixel threshold. Its explicitly
+    // adopted structural/journey contract is the graded obligation instead.
+    if (r.acceptance && r.reference?.referenceClass === 'raster-mockup') return !r.acceptance.satisfied;
+    return !r.verdict.satisfied || r.acceptance?.satisfied === false;
+  });
   return {
     applicable: true,
     satisfied: blocking.length === 0,
@@ -181,6 +187,11 @@ export function renderFeatureDesignGate(result: FeatureDesignGateResult): string
   if (!result.applicable) return undefined;
   if (result.satisfied) {
     const n = result.references.filter((r) => r.verdict.applicable).length;
+    if (result.references.some(row => row.acceptance)) {
+      return `design evidence: ${n} ratified reference(s) satisfy their current proof obligations. ` +
+        `Journey/state evidence includes the separate visual review; illustrative references do not establish pixel equivalence. ` +
+        `This does NOT establish: ${DESIGN_GATE_DOES_NOT_ESTABLISH.join('; ')}.`;
+    }
     return (
       `design evidence: ${n} ratified reference(s) have current passing evidence for every required case. ` +
       `This does NOT establish: ${DESIGN_GATE_DOES_NOT_ESTABLISH.join('; ')}.`

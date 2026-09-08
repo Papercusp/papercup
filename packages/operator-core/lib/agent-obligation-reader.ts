@@ -375,6 +375,7 @@ export function projectAgentObligationBrief(input: {
   agenda: AgentObligationAgenda;
   sink: string;
   detailRef: string;
+  detail?: 'full' | 'action';
   maxEntries?: number;
   maxChars?: number;
   maxEstimatedTokens?: number;
@@ -383,6 +384,7 @@ export function projectAgentObligationBrief(input: {
     agenda: input.agenda,
     sink: input.sink,
     mode: 'truncate',
+    detail: input.detail,
     maxEntries: input.maxEntries,
     maxChars: input.maxChars,
     maxEstimatedTokens: input.maxEstimatedTokens,
@@ -410,6 +412,9 @@ export function projectAgentTurnStartObligationBrief(agenda: AgentObligationAgen
     agenda,
     sink: 'turn-start',
     detailRef: 'coord:orient for the complete obligation agenda',
+    // Real provider explanations can exceed this sink's entire 400-char slot.
+    // Deliver the complete action here; the recovery reader retains every field.
+    detail: 'action',
     maxEntries: 3,
     // The whole orientation remains capped at 600 chars. Keep this slice
     // strict so obligations cannot crowd out direct messages or held work.

@@ -146,6 +146,8 @@ interface DurableRunSnapshotRow {
   truncated: boolean;
   /** Joined task-manager state used to reconcile a worker-death orphan. */
   task_state?: TaskState | string | null;
+  /** Durable task deadline used when the task row has not reached a terminal state yet. */
+  task_deadline_at?: Date | string | number | null;
 }
 
 function snapshotPersistenceEnabled(sqlOverride?: SqlLike): boolean {
@@ -333,7 +335,8 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
     query = sql`
       SELECT run_id, kind, label, file_path, command, status, exit_code,
              started_at, finished_at, output, truncated, task_id,
-             task_ledger.state AS task_state
+             task_ledger.state AS task_state,
+             task_ledger.deadline_at AS task_deadline_at
         FROM harness_shared.testing_run_snapshots
         LEFT JOIN harness_shared.task_ledger AS task_ledger
           ON task_ledger.task_id = harness_shared.testing_run_snapshots.task_id
@@ -369,14 +372,20 @@ async function reconcilePersistedOrphan(
   sql: SqlLike,
 ): Promise<RunSnapshot> {
   const taskState = row.task_state;
-  if (snapshot.status !== 'running' || typeof taskState !== 'string' || !isTerminalState(taskState as TaskState)) {
+  const taskDeadlineAt = epochMs(row.task_deadline_at ?? null);
+  const deadlineExpired = taskDeadlineAt !== null && taskDeadlineAt <= Date.now();
+  const taskTerminal = typeof taskState === 'string' && isTerminalState(taskState as TaskState);
+  if (snapshot.status !== 'running' || (!taskTerminal && !deadlineExpired)) {
     return snapshot;
   }
 
   const finishedAt = Date.now();
-  const note =
-    `\n[detached-recovery] task-manager reports linked process ${row.task_id ?? snapshot.taskId ?? 'unknown'} ` +
-    `is no longer live (state=${taskState}); no test verdict was observed.\n`;
+  const note = taskTerminal
+    ? `\n[detached-recovery] task-manager reports linked process ${row.task_id ?? snapshot.taskId ?? 'unknown'} ` +
+      `is no longer live (state=${taskState}); no test verdict was observed.\n`
+    : `\n[detached-recovery] linked task ${row.task_id ?? snapshot.taskId ?? 'unknown'} ` +
+      `passed its durable runtime deadline${taskDeadlineAt === null ? '' : ` at ${new Date(taskDeadlineAt).toISOString()}`}; ` +
+      'no test verdict was observed.\n';
   const combinedOutput = snapshot.output + note;
   const output = combinedOutput.length > OUTPUT_CAP_BYTES ? combinedOutput.slice(-OUTPUT_CAP_BYTES) : combinedOutput;
   const reconciled: RunSnapshot = {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { getTask, listTasks } from './store';
+import { getTask, listTasks, reopenStrandedTask } from './store';
 
 function fakeSql(row: Record<string, unknown>): Sql {
   return (async () => [row]) as unknown as Sql;
@@ -61,6 +61,27 @@ describe('task-manager/store row mapping', () => {
 
     expect(malformed?.detail).toEqual({});
     expect(array?.detail).toEqual({});
+  });
+});
+
+describe('reopenStrandedTask', () => {
+  it('reopens only an ended stranded row and clears its terminal tuple', async () => {
+    const calls: Array<{ text: string; args: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+      calls.push({ text: Array.from(strings).join('?'), args });
+      return Promise.resolve([{ task_id: 'stranded-task' }]);
+    }) as unknown as Sql;
+
+    await expect(reopenStrandedTask('stranded-task', sql)).resolves.toBe(true);
+
+    const query = calls[0]!.text;
+    expect(query).toContain("SET state = 'running'");
+    expect(query).toContain('exit_code = NULL');
+    expect(query).toContain('exit_reason = NULL');
+    expect(query).toContain('ended_at = NULL');
+    expect(query).toContain("state = 'stranded'");
+    expect(query).toContain('ended_at IS NOT NULL');
+    expect(calls[0]!.args).toContain('stranded-task');
   });
 });
 

@@ -5,6 +5,7 @@ import type { TaskRow, TaskState } from './types';
 const store = vi.hoisted(() => ({
   rows: new Map<string, TaskRow>(),
   closed: [] as { taskId: string; state: string; reason: string | null }[],
+  reopened: [] as string[],
   limitUpdates: [] as { taskId: string; limits: { memoryMaxBytes?: number; cpuWeight?: number; tasksMax?: number } }[],
   persistLimits: true,
 }));
@@ -14,6 +15,16 @@ vi.mock('./store', () => ({
   getSubtree: async (rootId: string) => [...store.rows.values()].filter((r) => r.rootTaskId === rootId),
   closeTask: async (id: string, input: { state: string; exitReason?: string | null }) => {
     store.closed.push({ taskId: id, state: input.state, reason: input.exitReason ?? null });
+    return true;
+  },
+  reopenStrandedTask: async (id: string) => {
+    const current = store.rows.get(id);
+    if (!current || current.state !== 'stranded' || !current.endedAt) return false;
+    current.state = 'running';
+    current.endedAt = null;
+    current.exitCode = null;
+    current.exitReason = null;
+    store.reopened.push(id);
     return true;
   },
   updateTaskLimits: async (
@@ -55,6 +66,7 @@ function row(over: Partial<TaskRow> & { taskId: string }): TaskRow {
 beforeEach(() => {
   store.rows.clear();
   store.closed.length = 0;
+  store.reopened.length = 0;
   store.limitUpdates.length = 0;
   store.persistLimits = true;
 });
@@ -822,6 +834,73 @@ describe('freeze / thaw', () => {
     // subtree is worse than an honest refusal.
     row({ taskId: 'e2', confined: false, scopeUnit: null, pid: 5 });
     expect(await freezeTask('e2')).toMatchObject({ ok: false, error: 'unsupported' });
+  });
+
+  it('recovers a stranded task only when its managed scope is non-empty and frozen', async () => {
+    const scopeDir = '/sys/fs/cgroup/papercusp.slice/pc-e3.scope';
+    const calls: string[][] = [];
+    row({ taskId: 'e3', state: 'stranded', endedAt: new Date().toISOString(), exitReason: 'member recovery' });
+    const out = await thawTask('e3', {
+      fs: {
+        readFile: (path: string) => {
+          if (path === `${scopeDir}/cgroup.procs`) return '4242\n';
+          if (path === `${scopeDir}/cgroup.freeze`) return '1\n';
+          return '';
+        },
+        readDir: () => [],
+        isDir: () => true,
+      },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: true, taskId: 'e3', action: 'thaw' });
+    expect(calls).toEqual([['--user', 'thaw', 'pc-e3.scope']]);
+    expect(store.reopened).toEqual(['e3']);
+    expect(store.rows.get('e3')).toMatchObject({ state: 'running', endedAt: null, exitReason: null });
+  });
+
+  it('refuses an ordinary stranded row whose scope is empty or already thawed', async () => {
+    for (const [taskId, freezeValue] of [
+      ['e4-empty', '1'],
+      ['e5-thawed', '0'],
+    ] as const) {
+      row({ taskId, state: 'stranded', endedAt: new Date().toISOString() });
+      const scopeDir = `/sys/fs/cgroup/papercusp.slice/pc-${taskId}.scope`;
+      const out = await thawTask(taskId, {
+        fs: {
+          readFile: (path: string) => {
+            if (path === `${scopeDir}/cgroup.procs` && taskId === 'e5-thawed') return '4242\n';
+            if (path === `${scopeDir}/cgroup.freeze`) return freezeValue;
+            return '';
+          },
+          readDir: () => [],
+          isDir: () => true,
+        },
+        execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+      });
+      expect(out).toMatchObject({ ok: false, error: 'not_live' });
+      expect(store.reopened).not.toContain(taskId);
+    }
+  });
+
+  it('does not recover a stranded row from an unvalidated stored cgroup path', async () => {
+    row({
+      taskId: 'e6-unvalidated',
+      state: 'stranded',
+      endedAt: new Date().toISOString(),
+      cgroupPath: '/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-dev-api.service',
+    });
+    const out = await thawTask('e6-unvalidated', {
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args[1] === 'show') throw new Error('systemctl unreachable');
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'not_live' });
+    expect(store.reopened).not.toContain('e6-unvalidated');
   });
 });
 

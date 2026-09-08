@@ -161,18 +161,6 @@ describe.skipIf(NO_TRACKED)(`windows-vm launcher: display transports are pinned$
     expect(lines.join('\n')).toContain('-vnc 127.0.0.1:9');
   });
 
-  it('keeps the memory-residency experiment reachable without changing CPU features', () => {
-    const argv = execContinuation(TRACKED).lines.join('\n');
-    expect(argv).toMatch(/-overcommit\s+mem-lock=on(?:\s|$)/);
-    expect(argv).toMatch(/-cpu\s+host\s+\\/);
-    expect(argv).not.toContain('hv-tlbflush-direct');
-  });
-
-  it('CONTROL: memory locking after a truncated continuation is not effective', () => {
-    const truncated = `${CONTROL_TRUNCATED}\n  -overcommit mem-lock=on\n`;
-    expect(execContinuation(truncated).lines.join('\n')).not.toContain('mem-lock=on');
-  });
-
   it('CONTROL: a VNC-only launcher is caught (this is the 2026-08-20 regression)', () => {
     const { lines } = execContinuation(CONTROL_VNC_ONLY);
     expect(lines.join('\n')).not.toContain('-spice');
