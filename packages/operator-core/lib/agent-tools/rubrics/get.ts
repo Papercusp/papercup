@@ -177,10 +177,18 @@ export default defineTool({
           // rows from the default scan path. When its projection misses a ref but
           // the revision spine can still see a versioned backing plan row, report
           // the measured stale-reader shape instead of a false ordinary absence.
-          // A failed/unversioned revision read stays terse: it cannot establish
-          // that a backing row exists, so never claim build skew from it.
+          // A failed revision read is a distinct UNKNOWN state: it cannot establish
+          // that the rubric is absent, so never collapse it into a false not-found.
           const revisionRead = await readRubricPlanRevision(lookupRef);
-          if (!revisionRead.ok || revisionRead.revision == null) {
+          if (!revisionRead.ok) {
+            return {
+              ok: false as const,
+              rubricRef,
+              error:
+                'rubric could not be resolved because the backing plan read failed; retry or verify independently before treating it as absent',
+            };
+          }
+          if (revisionRead.revision == null) {
             return { ok: false as const, rubricRef, error: 'rubric not found' };
           }
 

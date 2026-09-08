@@ -302,7 +302,7 @@ export interface McpProxyOptions {
   /**
    * EI-21556422206126497 — bounded FIFO waiters for durability-boundary writes
    * (`loop:checkpoint`, `work_items:complete`, lifecycle writes, ...). The dedicated
-   * continuation socket remains single-flight, but a concurrent checkpoint waits here
+   * continuation pool remains conflict-serialized, but an overlapping checkpoint waits here
    * instead of being shed merely because one sibling write is still finishing.
    */
   maxCriticalContinuationQueue?: number;
@@ -1652,6 +1652,11 @@ interface CriticalContinuationIdentity {
   critical: boolean;
   /** Bounded, argument-free tool/path identities safe to expose in health + failure telemetry. */
   tools: string[];
+  /**
+   * Work-item identities whose mutations must remain ordered. `null` is the conservative
+   * global key for continuation calls that cannot prove a narrower conflict domain.
+   */
+  conflictKeys: string[] | null;
 }
 
 interface CoordSendIdentity {
@@ -1727,18 +1732,58 @@ export function coordSendToolNames(
   return classifyCoordSendCall(rawBody, requestPath).tools;
 }
 
+const WORK_ITEM_SCOPED_CONTINUATION_TOOLS = new Set([
+  normalizeMcpName("work_items:checkpoint"),
+  normalizeMcpName("work_items:complete"),
+]);
+
+/**
+ * Derive the narrow mutation domain carried by the two work-item continuation tools.
+ * Anything malformed, unkeyed, or outside that pair stays globally conflicting; admission
+ * must never guess an identity before the upstream tool has validated its own arguments.
+ */
+function criticalContinuationConflictKeysForTool(
+  toolName: string,
+  args: unknown,
+): string[] | null {
+  if (!WORK_ITEM_SCOPED_CONTINUATION_TOOLS.has(toolName)) return null;
+  if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+  const input = args as { id?: unknown; items?: unknown };
+  const ids: string[] = [];
+  if (typeof input.id === "string" && input.id.trim()) ids.push(input.id.trim());
+  if (Array.isArray(input.items)) {
+    for (const item of input.items) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const id = (item as { id?: unknown }).id;
+      if (typeof id !== "string" || !id.trim()) return null;
+      ids.push(id.trim());
+    }
+  }
+  return ids.length > 0 ? [...new Set(ids)].sort() : null;
+}
+
 function classifyCriticalContinuationCall(
   rawBody: Buffer,
   requestPath?: string,
 ): CriticalContinuationIdentity {
   if (isCriticalSessionLifecyclePath(requestPath)) {
     const path = requestPath?.split("?")[0]?.replace(/\/+$/, "") || "/";
-    return { critical: true, tools: [`rest:${path}`] };
+    return { critical: true, tools: [`rest:${path}`], conflictKeys: null };
   }
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     const tools: string[] = [];
+    const conflictKeys = new Set<string>();
+    let globallyConflicting = false;
+    const recordCriticalTool = (toolName: string, args: unknown): void => {
+      tools.push(
+        CRITICAL_CONTINUATION_DISPLAY_NAMES.get(toolName) ?? toolName,
+      );
+      const keys = criticalContinuationConflictKeysForTool(toolName, args);
+      if (keys === null) globallyConflicting = true;
+      else for (const key of keys) conflictKeys.add(key);
+    };
     const critical =
       messages.length > 0 &&
       messages.every((message) => {
@@ -1761,9 +1806,7 @@ function classifyCriticalContinuationCall(
             )
           )
             return false;
-          tools.push(
-            CRITICAL_CONTINUATION_DISPLAY_NAMES.get(calledTool) ?? calledTool,
-          );
+          recordCriticalTool(calledTool, call.params?.arguments);
           return true;
         }
         if (calledTool !== TOOLS_INVOKE_NAME) return false;
@@ -1785,9 +1828,9 @@ function classifyCriticalContinuationCall(
           )
         )
           return false;
-        tools.push(
-          CRITICAL_CONTINUATION_DISPLAY_NAMES.get(normalizedTarget) ??
-            normalizedTarget,
+        recordCriticalTool(
+          normalizedTarget,
+          (invokeArgs as { args?: unknown }).args,
         );
         return true;
       });
@@ -1796,10 +1839,13 @@ function classifyCriticalContinuationCall(
       ? {
           critical: true,
           tools: [...new Set(tools)].slice(0, MAX_RECORDED_RPC_METHODS),
+          conflictKeys: globallyConflicting
+            ? null
+            : [...conflictKeys].sort(),
         }
-      : { critical: false, tools: [] };
+      : { critical: false, tools: [], conflictKeys: null };
   } catch {
-    return { critical: false, tools: [] };
+    return { critical: false, tools: [], conflictKeys: null };
   }
 }
 
@@ -1943,6 +1989,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           ),
         )
       : maxInFlight;
+  // P-004: reuse the already-budgeted control-plane reserve as the concurrency budget for
+  // disjoint continuation mutations. This is not a new/static capacity escape hatch: the
+  // existing reserve remains the upper bound, while unkeyed and overlapping writes still
+  // serialize exactly as before.
+  const criticalContinuationConcurrencyCeiling = Math.max(
+    1,
+    reservedControlPlaneGuaranteedFloor,
+  );
   const partitionedAdmission = reservedControlPlaneGuaranteedFloor > 0;
   const upstreamAgent = opts.upstreamAgent ?? UPSTREAM_AGENT;
   // Admission-only reservation is not end-to-end reservation: during the measured incident all
@@ -1969,13 +2023,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     });
   const ownsCriticalContinuationAgent =
     opts.criticalContinuationAgent === undefined;
-  // A single independent socket is intentional: continuation writes are infrequent, and
-  // isolation from the ordinary reserved pool matters more than parallelism at this boundary.
+  // The isolated pool admits only conflict-disjoint continuation mutations concurrently.
+  // Same-item/unkeyed ordering is enforced before a request reaches this agent.
   const criticalContinuationAgent =
     opts.criticalContinuationAgent ??
     new http.Agent({
       keepAlive: false,
-      maxSockets: 1,
+      maxSockets: criticalContinuationConcurrencyCeiling,
     });
   const ownsCoordSendAgent = opts.coordSendAgent === undefined;
   // Pure coord:send handoffs get their own one-socket bulkhead. This keeps the recovery
@@ -2060,6 +2114,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     startedAtMs: number;
     traceId: string;
     tools: string[];
+    conflictKeys: string[] | null;
   }
   const criticalContinuationRequests = new Map<
     number,
@@ -2090,10 +2145,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
    * working-as-designed backpressure signal was filed as a broken transport.
    */
   const criticalContinuationBlocker = (
+    conflictKeys: string[] | null,
     now = Date.now(),
-  ): { tools: string[]; ageMs: number; traceId: string } | null => {
+  ): {
+    tools: string[];
+    ageMs: number;
+    traceId: string;
+    conflictKeys: string[] | null;
+  } | null => {
     let oldest: ContinuationRequestDetails | null = null;
     for (const details of criticalContinuationRequests.values()) {
+      if (!criticalContinuationKeysConflict(details.conflictKeys, conflictKeys))
+        continue;
       if (oldest == null || details.startedAtMs < oldest.startedAtMs) {
         oldest = details;
       }
@@ -2104,6 +2167,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           tools: oldest.tools,
           ageMs: Math.max(0, now - oldest.startedAtMs),
           traceId: oldest.traceId,
+          conflictKeys: oldest.conflictKeys,
         };
   };
 
@@ -2136,6 +2200,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   interface QueuedCriticalContinuation extends QueuedAdmission {
     traceId: string;
     tools: string[];
+    conflictKeys: string[] | null;
     maxWaitMs: number;
   }
   type QueuedHandshake = QueuedAdmission;
@@ -2315,10 +2380,41 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     }
   };
 
-  const canGrantCriticalContinuation = (): boolean =>
-    !shouldShedForInFlight(
-      criticalContinuationInFlight + criticalContinuationGrantReservations,
-      1,
+  const criticalContinuationKeysConflict = (
+    left: string[] | null,
+    right: string[] | null,
+  ): boolean =>
+    left === null ||
+    right === null ||
+    left.some((key) => right.includes(key));
+
+  const canGrantCriticalContinuation = (
+    conflictKeys: string[] | null,
+  ): boolean => {
+    // A reservation becomes an active map entry in the same event-loop continuation. Treat
+    // that tiny hand-off as globally conflicting so a direct arrival cannot race the key stamp.
+    if (criticalContinuationGrantReservations > 0) return false;
+    if (
+      shouldShedForInFlight(
+        criticalContinuationInFlight,
+        criticalContinuationConcurrencyCeiling,
+      )
+    )
+      return false;
+    return [...criticalContinuationRequests.values()].every(
+      (active) =>
+        !criticalContinuationKeysConflict(active.conflictKeys, conflictKeys),
+    );
+  };
+
+  const hasQueuedCriticalContinuationConflict = (
+    conflictKeys: string[] | null,
+  ): boolean =>
+    criticalContinuationQueue.some(
+      (waiter) =>
+        !waiter.cancelled &&
+        !waiter.granted &&
+        criticalContinuationKeysConflict(waiter.conflictKeys, conflictKeys),
     );
 
   const cancelQueuedCriticalContinuation = (
@@ -2341,13 +2437,29 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   pumpCriticalContinuationQueue = (): void => {
-    while (criticalContinuationQueue.length > 0) {
-      const waiter = criticalContinuationQueue.shift();
-      if (!waiter || waiter.cancelled) continue;
-      if (!canGrantCriticalContinuation()) {
-        criticalContinuationQueue.unshift(waiter);
-        return;
+    for (let index = 0; index < criticalContinuationQueue.length; index++) {
+      const waiter = criticalContinuationQueue[index];
+      if (!waiter || waiter.cancelled || waiter.granted) {
+        criticalContinuationQueue.splice(index, 1);
+        index--;
+        continue;
       }
+      if (!canGrantCriticalContinuation(waiter.conflictKeys)) continue;
+      // A waiter may bypass only earlier DISJOINT mutations. This removes cross-item
+      // head-of-line blocking without letting same-item (or unkeyed/global) writes reorder.
+      const conflictsWithEarlierWaiter = criticalContinuationQueue
+        .slice(0, index)
+        .some(
+          (earlier) =>
+            !earlier.cancelled &&
+            !earlier.granted &&
+            criticalContinuationKeysConflict(
+              earlier.conflictKeys,
+              waiter.conflictKeys,
+            ),
+        );
+      if (conflictsWithEarlierWaiter) continue;
+      criticalContinuationQueue.splice(index, 1);
       waiter.granted = true;
       criticalContinuationGrantReservations++;
       waiter.resolve(true);
@@ -2528,6 +2640,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           inFlightId,
           traceId: details.traceId,
           tools: details.tools,
+          conflictKeys: details.conflictKeys,
           ageMs: Math.max(0, healthNow - details.startedAtMs),
         }));
       const waitingCriticalContinuationRequests = criticalContinuationQueue
@@ -2536,6 +2649,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         .map((waiter) => ({
           traceId: waiter.traceId,
           tools: waiter.tools,
+          conflictKeys: waiter.conflictKeys,
           ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
           maxWaitMs: waiter.maxWaitMs,
         }));
@@ -2568,6 +2682,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             reservedControlPlane: reservedControlPlaneInFlight,
             watchdog: watchdogProbeInFlight,
             criticalContinuation: criticalContinuationInFlight,
+            criticalContinuationMax: criticalContinuationConcurrencyCeiling,
             criticalContinuationRequests: activeCriticalContinuationRequests,
             criticalContinuationQueue: {
               waiting: criticalContinuationQueueLength(),
@@ -2704,6 +2819,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const coordSendTools = coordSendIdentity.tools;
         const criticalContinuation = criticalContinuationIdentity.critical;
         const criticalContinuationTools = criticalContinuationIdentity.tools;
+        const criticalContinuationConflictKeys =
+          criticalContinuationIdentity.conflictKeys;
         const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
         const watchdogSessionProbe =
           sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
@@ -2722,8 +2839,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               ? "reserved-control-plane"
               : "ordinary";
         const admissionCeiling =
-          coordSend || criticalContinuation || watchdogSessionProbe
+          coordSend || watchdogSessionProbe
             ? 1
+            : criticalContinuation
+              ? criticalContinuationConcurrencyCeiling
             : partitionedAdmission
               ? standardReservedControlPlane
                 ? reservedControlPlaneCeiling
@@ -2980,7 +3099,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // from normal traffic, but the old hard admission ceiling shed every SECOND durability
         // write immediately. Preserve single-flight upstream execution while absorbing a bounded
         // concurrent burst in FIFO order. A waiter owns no socket or in-flight slot until granted.
-        if (criticalContinuation && !canGrantCriticalContinuation()) {
+        if (
+          criticalContinuation &&
+          (!canGrantCriticalContinuation(criticalContinuationConflictKeys) ||
+            hasQueuedCriticalContinuationConflict(
+              criticalContinuationConflictKeys,
+            ))
+        ) {
           pumpCriticalContinuationQueue();
           // EI-21568137857973279 — the bounded continuation FIFO is itself a
           // recovery dependency: when all ordinary waiter slots are occupied, a
@@ -3024,7 +3149,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
               criticalContinuationInFlight,
-              1,
+              criticalContinuationConcurrencyCeiling,
               completedForwardAtMs,
               Date.now(),
             );
@@ -3053,6 +3178,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               path: req.url,
               traceId: requestTraceId,
               tools: criticalContinuationTools,
+              conflictKeys: criticalContinuationConflictKeys,
               criticalContinuationInFlight,
               queueLength: criticalContinuationQueueLength(),
               maxCriticalContinuationQueue,
@@ -3096,6 +3222,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               expired: false,
               traceId: requestTraceId,
               tools: criticalContinuationTools,
+              conflictKeys: criticalContinuationConflictKeys,
               maxWaitMs: effectiveQueueWaitMs,
             };
             if (
@@ -3105,7 +3232,36 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               completionPriority ||
               improvementsCapturePriority
             ) {
-              criticalContinuationQueue.unshift(queuedCriticalContinuation);
+              if (queuedCriticalContinuation.conflictKeys === null) {
+                // Preserve the established recovery-priority contract for global
+                // compaction/loop/incident writes: these deliberately jump the FIFO.
+                criticalContinuationQueue.unshift(queuedCriticalContinuation);
+              } else {
+                // A keyed priority write may jump unrelated/global traffic, but never an
+                // earlier mutation of the same work item. That is the only ordering domain
+                // P-004 narrows, and it keeps bulk/overlapping mutations deterministic.
+                let insertAt = 0;
+                for (
+                  let index = 0;
+                  index < criticalContinuationQueue.length;
+                  index++
+                ) {
+                  const earlier = criticalContinuationQueue[index];
+                  if (
+                    earlier?.conflictKeys &&
+                    earlier.conflictKeys.some((key) =>
+                      queuedCriticalContinuation.conflictKeys!.includes(key),
+                    )
+                  ) {
+                    insertAt = index + 1;
+                  }
+                }
+                criticalContinuationQueue.splice(
+                  insertAt,
+                  0,
+                  queuedCriticalContinuation,
+                );
+              }
             } else {
               criticalContinuationQueue.push(queuedCriticalContinuation);
             }
@@ -3164,6 +3320,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   path: req.url,
                   traceId: requestTraceId,
                   tools: criticalContinuationTools,
+                  conflictKeys: criticalContinuationConflictKeys,
                   waitedMs: waitedSoFarMs,
                   criticalContinuationInFlight,
                   queueLength: criticalContinuationQueueLength(),
@@ -3186,6 +3343,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               path: req.url,
               traceId: requestTraceId,
               tools: criticalContinuationTools,
+              conflictKeys: criticalContinuationConflictKeys,
               criticalContinuationInFlight,
               queueLength: criticalContinuationQueueLength(),
               maxCriticalContinuationQueue,
@@ -3209,7 +3367,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // `queueLength: 0` is indistinguishable from "the transport dropped my write",
               // and the honest cause (one slow durability write owning the single socket) is
               // unrecoverable from the response.
-              const blocker = criticalContinuationBlocker();
+              const blocker = criticalContinuationBlocker(
+                queuedCriticalContinuation.conflictKeys,
+              );
               const blockedByDetail = blocker
                 ? ` — head-of-line blocked by ${blocker.tools.join(",") || "an unnamed continuation"} in flight ${blocker.ageMs}ms (trace ${blocker.traceId})`
                 : " — no continuation was in flight; the slot was released before the retry";
@@ -3431,7 +3591,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             startedAtMs: inFlightStartedAt,
             traceId: requestTraceId,
             tools: criticalContinuationTools,
+            conflictKeys: criticalContinuationConflictKeys,
           });
+          // A newly active key may leave later disjoint waiters immediately runnable.
+          pumpCriticalContinuationQueue();
         } else if (watchdogSessionProbe) {
           watchdogProbeInFlight++;
           watchdogProbeInFlightStarts.set(inFlightId, inFlightStartedAt);

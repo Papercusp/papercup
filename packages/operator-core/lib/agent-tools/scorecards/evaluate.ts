@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { getRubric } from '../../rubrics';
+import { getRubric, readRubricPlanRevision } from '../../rubrics';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -24,6 +24,7 @@ import {
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { resolveAcceptanceGraderEligibility } from './grader-eligibility';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 
 export const scorecardRatingEntrySchema = z
   .object({
@@ -188,7 +189,41 @@ export async function evaluateScorecard(
   caller?: ScorecardEvaluateCaller,
 ) {
   const rubric = await getRubric(args.rubricRef);
-  if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  if (!rubric) {
+    // `getRubric` is intentionally fail-soft for read callers. Pair its null
+    // with the revision-spine read so a transient DB/data-plane failure cannot
+    // become a false authoritative "not found" during grading preflight.
+    const revisionRead = await readRubricPlanRevision(args.rubricRef);
+    if (!revisionRead.ok) {
+      return {
+        ok: false as const,
+        error:
+          `rubric '${args.rubricRef}' could not be resolved because the backing plan read failed; ` +
+          'retry or verify independently before treating it as absent',
+      };
+    }
+    return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  }
+
+  // Keep the documented read-only preflight aligned with scorecards:emit. An
+  // adopted acceptance rubric can be individually resolvable while its BAR
+  // snapshot is stale or incomplete; returning an apparently gradeable
+  // skeleton in that state makes a grader spend the full pass only to have the
+  // terminal emit refuse the same payload.
+  if (rubric.kind === 'acceptance' && rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
+    const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
+      expectedApplicable: true,
+    });
+    if (!lifecycle.satisfied) {
+      return {
+        ok: false as const,
+        code: 'acceptance_bar_contract_not_ready' as const,
+        error: lifecycle.message ?? 'acceptance BAR contract is not ready for grading',
+        lifecycle,
+      };
+    }
+  }
+
   const graderEligibility = await reportGraderEligibility(rubric, caller);
 
   const skeleton = rubric.criteria.map((criterion) => ({

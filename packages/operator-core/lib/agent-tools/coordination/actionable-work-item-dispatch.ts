@@ -28,6 +28,7 @@ import {
 import { wakeRecipients, type WakeRecipientsResult } from './inbox-wake';
 import { assemblePresenceSnapshot, matchesOwner, resolvePresenceScope } from './presence-snapshot';
 import { listSessionsForAgentName, type AdoptionRow } from '../../plan-items/agent-names';
+import type { LegacyFleetScopeDowngradeAdmission } from '../../work-item-fleet-scope-recovery';
 
 const UNASSIGNED_FRONTIER_STATES = new Set(['open', 'failing', 'todo']);
 const RETAINED_EXECUTION_STATES = new Set([...UNASSIGNED_FRONTIER_STATES, 'wip', 'in_progress', 'validating']);
@@ -150,7 +151,11 @@ export interface ActionableWorkItemDispatchResult {
 export interface ActionableWorkItemDispatchDeps {
   observe: (id: string, opts: { harness?: string; revalidateHeld?: boolean }) => Promise<WorkItemObservation | null>;
   authorize: typeof authorizeWorkItemDispatch;
-  claim: (id: string, assignee: string, opts: { harness?: string }) => Promise<WorkItem | null>;
+  claim: (
+    id: string,
+    assignee: string,
+    opts: { harness?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission },
+  ) => Promise<WorkItem | null>;
   /** The same named-id claim-floor oracle used by work_items:claim. */
   explainClaimFloors: typeof explainIssueClaimFloors;
   blockers: (id: string, harness?: string) => Promise<UnresolvedDepBlocker[]>;
@@ -185,7 +190,11 @@ export async function authorizeWorkItemDispatch(args: {
   target: string;
   harness?: string;
   workspaceId?: string;
-}): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  actor?: string;
+}): Promise<
+  | { allowed: true; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission }
+  | { allowed: false; reason: string }
+> {
   const { gateWorkScope, readWorkScopePolicy } = await import('../../work-scope-policy');
   const policy = await readWorkScopePolicy(args.workspaceId);
   const workspace = await gateWorkScope('coord:dispatch', {
@@ -194,7 +203,14 @@ export async function authorizeWorkItemDispatch(args: {
   if (!workspace.allowed) return { allowed: false, reason: workspace.message };
   const { admitWorkItemForFleetTarget } = await import('../../scheduler/fleet-scope-admission');
   const fleet = await admitWorkItemForFleetTarget(args);
-  return fleet.allowed ? { allowed: true } : { allowed: false, reason: fleet.reason };
+  return fleet.allowed
+    ? {
+        allowed: true,
+        ...(fleet.scoped && fleet.legacyFleetScopeDowngradeAdmission
+          ? { legacyFleetScopeDowngradeAdmission: fleet.legacyFleetScopeDowngradeAdmission }
+          : {}),
+      }
+    : { allowed: false, reason: fleet.reason };
 }
 
 function sameAgent(holder: string | null | undefined, target: string): boolean {
@@ -285,9 +301,10 @@ async function classifyOne(
   targetAgent: string,
   harness: string | undefined,
   workspaceId: string | undefined,
+  actor: string | undefined,
   deps: ActionableWorkItemDispatchDeps,
 ): Promise<
-  | { kind: 'claim'; workItemId: string }
+  | { kind: 'claim'; workItemId: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission }
   | { kind: 'retained'; workItemId: string }
   | { kind: 'skip'; skipped: WorkItemDispatchSkip }
 > {
@@ -411,14 +428,16 @@ async function classifyOne(
       },
     };
   }
+  let legacyFleetScopeDowngradeAdmission: LegacyFleetScopeDowngradeAdmission | undefined;
   try {
     const authority = await deps.authorize({
-      workItemId, target: targetAgent, harness: harness ?? workItem.harness ?? undefined,
+      workItemId, target: targetAgent, actor, harness: harness ?? workItem.harness ?? undefined,
       ...(workspaceId ? { workspaceId } : {}),
     });
     if (!authority.allowed) return {
       kind: 'skip', skipped: { workItemId, code: 'authority_denied', reason: authority.reason },
     };
+    legacyFleetScopeDowngradeAdmission = authority.legacyFleetScopeDowngradeAdmission;
   } catch (error) {
     return {
       kind: 'skip', skipped: {
@@ -461,21 +480,25 @@ async function classifyOne(
     };
   }
   if (retainedByTarget) return { kind: 'retained', workItemId };
-  return { kind: 'claim', workItemId };
+  return {
+    kind: 'claim',
+    workItemId,
+    ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
+  };
 }
 
 /** Assign only the current execution frontier. No wake occurs in this function. */
 export async function assignActionableWorkItems(
   args: {
-    workItemIds: readonly string[]; targetAgent: string; harness?: string; workspaceId?: string;
+    workItemIds: readonly string[]; targetAgent: string; actor?: string; harness?: string; workspaceId?: string;
     /** Durable callers reauthorize their original request after readiness I/O. */
     beforeMutate?: (stage: 'claim' | 'wake') => Promise<void>;
   },
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemAssignment> {
   const requested = [...new Set(args.workItemIds.map((id) => id.trim()).filter(Boolean))];
-  const classified = await Promise.all(requested.map((id) => classifyOne(id, args.targetAgent, args.harness, args.workspaceId, deps)));
-  const toClaim = classified.filter((r): r is { kind: 'claim'; workItemId: string } => r.kind === 'claim');
+  const classified = await Promise.all(requested.map((id) => classifyOne(id, args.targetAgent, args.harness, args.workspaceId, args.actor, deps)));
+  const toClaim = classified.filter((r): r is Extract<(typeof classified)[number], { kind: 'claim' }> => r.kind === 'claim');
   const retained = classified
     .filter((r): r is { kind: 'retained'; workItemId: string } => r.kind === 'retained')
     .map((r) => r.workItemId);
@@ -484,13 +507,14 @@ export async function assignActionableWorkItems(
     .map((r) => r.skipped);
 
   const claimResults = await Promise.all(
-    toClaim.map(async ({ workItemId }) => {
+    toClaim.map(async ({ workItemId, legacyFleetScopeDowngradeAdmission }) => {
       // Authorization/read failures propagate to the durable caller, rather than
       // being misclassified as an ordinary atomic claim refusal.
       await args.beforeMutate?.('claim');
       try {
         const claimed = await deps.claim(workItemId, args.targetAgent, {
           ...(args.harness ? { harness: args.harness } : {}),
+          ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
         });
         return claimed
           ? { ok: true as const, workItemId }
@@ -652,6 +676,7 @@ export async function assignAndWakeActionableWorkItems(
   args: {
     workItemIds: readonly string[];
     targetAgent: string;
+    actor?: string;
     workspaceId?: string;
     harness?: string;
     summary?: string;
@@ -674,6 +699,7 @@ export async function assignAndWakeActionableWorkItems(
   const assignment = await assignActionableWorkItems(
     {
       workItemIds: args.workItemIds,
+      ...(args.actor ? { actor: args.actor } : {}),
       // Assignment is durable across sessions, so it must remain keyed on the
       // stable adopted name. Only the wake below targets the ephemeral ownerId.
       targetAgent: args.targetAgent,

@@ -1498,16 +1498,20 @@ export async function captureToolInvocationFriction(
   };
   const normalized = normalizeSuspectedToolFailure(report);
   const kind = normalized.class === 'caller' || normalized.class === 'rate-limit' ? 'change' : 'bug';
+  // Migration 865's arbiter keys watchdogKey, not the nested class payload.
+  // Use the measured contract/build identity here so a new contract cannot
+  // collide with an old observation and impersonate corroboration on retry.
+  const watchdogKey = normalized.classKey;
   return captureImprovement({
     title: `${failure.toolName} tool-call failure (${failure.errorCode ?? failure.status})`,
     body: `Invocation telemetry observed ${failure.toolName} at ${invokedAt}.\n\n${failure.message}`,
     kind, severity: 'nit', lane: 'observation',
     scope: harnessSlug ? `harness:${harnessSlug}` : 'operator',
     workspaceId, createdBy: ownerId, evidenceAt: invokedAt,
-    watchdogKey: normalized.watchdogKey,
+    watchdogKey,
     payloadExtra: {
       toolFailureProbation: {
-        ...normalized, state: 'probation', intendedKind: kind, reporters: [ownerId],
+        ...normalized, watchdogKey, state: 'probation', intendedKind: kind, reporters: [ownerId],
         firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
       },
       toolInvocation: { workspaceId, harnessSlug, ownerId, invokedAt },

@@ -124,6 +124,7 @@ import {
 } from './harness/improvements/agent-review-policy';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
+import type { LegacyFleetScopeDowngradeAdmission } from './work-item-fleet-scope-recovery';
 
 /**
  * Release cleanup is only needed on the explicit release paths. Keep the
@@ -4965,6 +4966,8 @@ export async function claimWorkItem(
      * CAS and feature-family G2/origin floor still apply.
      */
     forceTakeoverAdmission?: ForceTakeoverAdmission;
+    /** EI-226378: scheduler-minted authorization for one exact legacy downgrade marker. */
+    legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission;
   } = {},
 ): Promise<WorkItem | null> {
   // EI-1545: resolve the issue-scope workspace ONCE, up front, and reuse that SAME
@@ -5022,6 +5025,9 @@ export async function claimWorkItem(
       forceTakeoverAdmission: opts.forceTakeoverAdmission,
       ...(isLeaderDispatchAdmission(leaderDispatchAdmission) ? { leaderDispatchAdmission } : {}),
       ...(isSelfFiledFalloutAdmission(selfFiledFalloutAdmission) ? { selfFiledFalloutAdmission } : {}),
+      ...(opts.legacyFleetScopeDowngradeAdmission
+        ? { legacyFleetScopeDowngradeAdmission: opts.legacyFleetScopeDowngradeAdmission }
+        : {}),
     });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {

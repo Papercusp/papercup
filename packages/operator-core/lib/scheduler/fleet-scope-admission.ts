@@ -25,6 +25,11 @@ import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-fi
 import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
 import { boundedPgReadTxn, PG_READ_QUERY_CALL_OVERHEAD_MS } from '../pg-read-query';
 import { interpretFleetClaimability } from '../fleet/lane-health';
+import {
+  mintLegacyFleetScopeDowngradeAdmission,
+  readFleetScopeDowngradeMarker,
+  type LegacyFleetScopeDowngradeAdmission,
+} from '../work-item-fleet-scope-recovery';
 
 /**
  * EI-19393442073558754: pull the `kind in [...]` / `kind = ...` leaf's value out of a claim spec's
@@ -111,7 +116,13 @@ export interface FleetScopeContext {
 
 export type FleetScopeAdmission =
   | { allowed: true; scoped: false }
-  | { allowed: true; scoped: true; scope: FleetScopeContext }
+  | {
+      allowed: true;
+      scoped: true;
+      scope: FleetScopeContext;
+      /** Opaque leader authorization for one exact legacy downgrade marker. */
+      legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission;
+    }
   | {
       allowed: false;
       scoped: true;
@@ -469,6 +480,44 @@ export async function leaderDispatchedAdmission(
 }
 
 /**
+ * EI-226378: derive the one recovery capability that may cross the born-pending
+ * floor for an old fleet-scope downgrade row.
+ *
+ * The marker is durable evidence, not authorization. Authorization is re-derived
+ * from the current member scope, active fleet state, and the current durable fleet
+ * leader. The requested target must be the exact target that resolved to this member
+ * (allowing the stable name and canonical owner id aliases used by dispatch), and
+ * the marker reporter must still be the current leader. The returned object is
+ * WeakSet-backed and therefore cannot be forged by copying the marker fields.
+ */
+export async function deriveLegacyFleetScopeDowngradeAdmission(
+  item: Pick<WorkItem, 'id' | 'payload' | 'createdBy'>,
+  target: string,
+  scope: FleetScopeContext,
+  actor?: string | null,
+): Promise<LegacyFleetScopeDowngradeAdmission | null> {
+  const marker = readFleetScopeDowngradeMarker(item.payload);
+  if (!marker) return null;
+  if (marker.fleet !== scope.fleetSlug) return null;
+  if (marker.requestedAssignee !== target && marker.requestedAssignee !== scope.ownerId) return null;
+  if (!item.createdBy || marker.reportedBy !== item.createdBy) return null;
+
+  const { getFleet } = await import('../agent-fleets-store');
+  const fleet = await getFleet(scope.workspaceId, scope.fleetSlug).catch(() => null);
+  if (fleet?.controlState === 'winding-down') return null;
+  const leaderOwnerId = fleet?.leaderOwnerId?.trim();
+  if (!leaderOwnerId || marker.reportedBy !== leaderOwnerId || actor !== leaderOwnerId) return null;
+
+  return mintLegacyFleetScopeDowngradeAdmission({
+    ...marker,
+    itemId: item.id,
+    target,
+    workspaceId: scope.workspaceId,
+    leaderOwnerId,
+  });
+}
+
+/**
  * EI-18862608742257943: the same feature/issue-family branch as {@link itemMatchesScope},
  * but against a RAW `ClaimSpec` rather than a live {@link FleetScopeContext} — usable
  * BEFORE any bee has joined a fleet, when there is no membership row for
@@ -567,6 +616,8 @@ export async function admitWorkItemForFleetTarget(args: {
   workItemId: string;
   harness?: string;
   workspaceId?: string | null;
+  /** Server-derived caller identity; required for legacy leader recovery. */
+  actor?: string | null;
 }): Promise<FleetScopeAdmission> {
   const scope = await resolveFleetScopeContext(args.target, args.workspaceId);
   if (!scope) return { allowed: true, scoped: false };
@@ -575,6 +626,17 @@ export async function admitWorkItemForFleetTarget(args: {
   if (paused) return paused;
   const { getWorkItem } = await import('../work-items');
   const item = await getWorkItem(args.workItemId, args.harness);
+  const legacyFleetScopeDowngradeAdmission = item
+    ? await deriveLegacyFleetScopeDowngradeAdmission(item, args.target, scope, args.actor)
+    : null;
+  if (legacyFleetScopeDowngradeAdmission) {
+    return {
+      allowed: true,
+      scoped: true,
+      scope,
+      legacyFleetScopeDowngradeAdmission,
+    };
+  }
   // A fleet with no authored spec may still absorb a bug it filed itself. Read the
   // server-backed item before the no-spec refusal so this narrow provenance exception
   // applies to by-id claims too; peer-filed and non-bug items remain denied.

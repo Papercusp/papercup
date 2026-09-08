@@ -40,6 +40,11 @@ vi.mock('../../rubrics', async (importOriginal) => {
 });
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: vi.fn(async () => null) }));
 vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
+const readAndEvaluateAcceptanceBarLifecycleM = vi.fn();
+vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
+  readAndEvaluateAcceptanceBarLifecycle: (...args: unknown[]) => readAndEvaluateAcceptanceBarLifecycleM(...args),
+}));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../issues-engineer')>();
   return { ...actual, getIssue: vi.fn() };
@@ -137,6 +142,19 @@ const ACCEPTANCE_RUBRIC: Rubric = {
   createdBy: 'su-implementer',
 } as Rubric;
 
+const BAR_ACCEPTANCE_RUBRIC = {
+  ...ACCEPTANCE_RUBRIC,
+  subjectPlan: 'bar-plan',
+  barContract: {
+    schemaVersion: 1,
+    adoptionEpoch: 1,
+    cohort: 'post-epoch',
+    subjectPlanRevision: 7,
+    seededAt: '2026-09-08T00:00:00.000Z',
+    seededBy: 'su-seeder',
+  },
+} as unknown as Rubric;
+
 const RATINGS = {
   'crit-a': { rating: 'pass', evidence: 'observed A working' },
   'crit-b': { rating: 'pass', evidence: 'observed B working' },
@@ -211,6 +229,7 @@ beforeEach(() => {
   getRubricM.mockResolvedValue(RUBRIC);
   getRubricPlanRevisionM.mockResolvedValue(7);
   readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 7 });
+  readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ satisfied: true });
   listM.mockResolvedValue([]);
   mockResolvedTyped(captureM, { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] });
   getIssueM.mockResolvedValue(null);
@@ -1473,6 +1492,45 @@ describe('evaluateScorecard', () => {
     getRubricM.mockResolvedValue(null);
     const r = await evaluateScorecard({ rubricRef: 'nope' });
     expect(r).toMatchObject({ ok: false });
+  });
+
+  it('preflights the adopted acceptance BAR lifecycle before returning a gradeable skeleton', async () => {
+    getRubricM.mockResolvedValue(BAR_ACCEPTANCE_RUBRIC);
+    const lifecycle = {
+      phase: 'pre-grading',
+      satisfied: false,
+      message: 'acceptance BAR contract is not ready for grading — contract-level: bar_snapshot_rubric_revision_mismatch',
+    };
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue(lifecycle);
+
+    const r = await evaluateScorecard({ rubricRef: 'acceptance-rubric' });
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'acceptance_bar_contract_not_ready',
+      error: lifecycle.message,
+      lifecycle,
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalledWith('bar-plan', 'pre-grading', {
+      expectedApplicable: true,
+    });
+    expect(listM).not.toHaveBeenCalled();
+  });
+
+  it('does not collapse a failed backing-plan read into a false not-found', async () => {
+    getRubricM.mockResolvedValue(null);
+    readRubricPlanRevisionM.mockResolvedValue({ ok: false, revision: null });
+
+    const r = await evaluateScorecard({ rubricRef: 'active-acceptance-rubric' });
+
+    expect(r).toMatchObject({
+      ok: false,
+      error:
+        "rubric 'active-acceptance-rubric' could not be resolved because the backing plan read failed; " +
+        'retry or verify independently before treating it as absent',
+    });
+    expect(r.error).not.toContain('not found');
+    expect(readRubricPlanRevisionM).toHaveBeenCalledWith('active-acceptance-rubric');
   });
 
   it('with ratings + no latest scorecard: changed:true and every criterion listed as changed', async () => {

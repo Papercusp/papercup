@@ -224,6 +224,7 @@ export async function composeDispatch(
   args: DispatchArgs,
   call: InnerCall,
   deps: ComposeDispatchDeps = {},
+  caller?: string,
 ): Promise<DispatchResult> {
   const hydrate = deps.hydrateRefs ?? hydrateRefs;
   // 1. Pre-state: the target's wakeability (P-001). Best-effort — a presence read
@@ -260,6 +261,7 @@ export async function composeDispatch(
       workItems = await assign({
         workItemIds: args.workItemIds,
         targetAgent,
+        ...(caller ? { actor: caller } : {}),
         ...(args.harness ? { harness: args.harness } : {}),
       });
     } catch (error) {
@@ -793,8 +795,8 @@ export default defineTool({
         }) }] };
       }
     }
-    const result = await composeDispatch(dispatchArgs, inProcessCall(ctx));
     const identity = resolveAgentIdentity(ctx);
+    const result = await composeDispatch(dispatchArgs, inProcessCall(ctx), {}, identity.ownerId);
     const finalized = await finalizePilotDispatchReceipt(dispatchArgs, result, {
       workspaceId: identity.workspaceId,
       harnessSlug: dispatchArgs.harness ?? ((ctx as unknown as { harnessSlug?: string }).harnessSlug ?? null),

@@ -6360,6 +6360,177 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["long-completion", "queued-checkpoint"]);
   });
 
+  it("BYOC P-004: disjoint work-item continuations bypass a slow completion while same-item writes stay ordered", async () => {
+    let releaseItemA: () => void = () => {};
+    const itemAGate = new Promise<void>((resolve) => {
+      releaseItemA = resolve;
+    });
+    let noteItemAStarted: () => void = () => {};
+    const itemAStarted = new Promise<void>((resolve) => {
+      noteItemAStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "item-a-completion") {
+          noteItemAStarted();
+          void itemAGate.then(() => res.end('{"result":{"complete":true}}'));
+          return;
+        }
+        res.end('{"result":{"ok":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        // The existing reserve is the disjoint-continuation budget: two keys may run,
+        // without adding or widening a P-004-specific static cap.
+        controlPlaneReserve: 2,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 1_000,
+        criticalContinuationQueueWaitLogMs: 10,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string, args: object) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: args },
+      });
+    const itemACompletion = request(
+      port(proxy),
+      body(1, "work_items:complete", {
+        id: "WI-A",
+        completion: { summary: "held" },
+      }),
+      "/api/mcp?client=item-a-completion",
+    );
+    await itemAStarted;
+
+    // A queued same-item request that disconnects never reaches the upstream.
+    const cancelledItemA = http.request({
+      host: "127.0.0.1",
+      port: port(proxy),
+      method: "POST",
+      path: "/api/mcp?client=item-a-cancelled",
+    });
+    const cancelledOutcome = new Promise<"response" | "error" | "closed">(
+      (resolve) => {
+        cancelledItemA.once("response", (response) => {
+          response.resume();
+          resolve("response");
+        });
+        cancelledItemA.once("error", () => resolve("error"));
+        cancelledItemA.once("close", () => resolve("closed"));
+      },
+    );
+    cancelledItemA.end(
+      body(2, "work_items:checkpoint", {
+        id: "WI-A",
+        checkpoint: "cancel me before forwarding",
+      }),
+    );
+    await waitFor(() =>
+      logs.some((line) =>
+        line.includes("queued critical-continuation request"),
+      ),
+    );
+    cancelledItemA.destroy();
+    expect(await cancelledOutcome).not.toBe("response");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    let sameItemSettled = false;
+    const queuedItemA = request(
+      port(proxy),
+      body(3, "work_items:checkpoint", {
+        id: "WI-A",
+        checkpoint: "must follow completion",
+      }),
+      "/api/mcp?client=item-a-queued",
+    ).then((result) => {
+      sameItemSettled = true;
+      return result;
+    });
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 2,
+    );
+
+    // The bounded same-key queue tells the caller this later mutation was not forwarded.
+    const overflow = await request(
+      port(proxy),
+      body(4, "work_items:checkpoint", {
+        id: "WI-A",
+        checkpoint: "must not enter a full same-key queue",
+      }),
+      "/api/mcp?client=item-a-overflow",
+    );
+    expect(overflow.status).toBe(429);
+    expect(JSON.parse(overflow.body)).toMatchObject({
+      error: "mcp_proxy_critical_continuation_queue_full",
+      forwardingResult: "not_forwarded",
+    });
+
+    // A different work-item key uses spare capacity immediately; the ordinary claim path
+    // remains responsive on its existing reserved-control-plane route too.
+    const unrelatedCheckpoint = await Promise.race([
+      request(
+        port(proxy),
+        body(5, "work_items:checkpoint", {
+          id: "WI-B",
+          checkpoint: "unrelated continuation",
+        }),
+        "/api/mcp?client=item-b-checkpoint",
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+    ]);
+    expect(unrelatedCheckpoint?.status).toBe(200);
+    const unrelatedClaim = await Promise.race([
+      request(
+        port(proxy),
+        body(6, "work_items:claim", { row: "WI-B,self" }),
+        "/api/mcp?client=item-b-claim",
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+    ]);
+    expect(unrelatedClaim?.status).toBe(200);
+    expect(sameItemSettled).toBe(false);
+    expect(hits).toEqual([
+      "item-a-completion",
+      "item-b-checkpoint",
+      "item-b-claim",
+    ]);
+
+    releaseItemA();
+    expect((await itemACompletion).status).toBe(200);
+    expect((await queuedItemA).status).toBe(200);
+    expect(hits).toEqual([
+      "item-a-completion",
+      "item-b-checkpoint",
+      "item-b-claim",
+      "item-a-queued",
+    ]);
+    expect(hits).not.toContain("item-a-cancelled");
+    expect(hits).not.toContain("item-a-overflow");
+  }, 10_000);
+
   it("EI-21568557856490825: reconciliation reads bypass a saturated continuation FIFO", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {

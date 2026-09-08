@@ -10,7 +10,10 @@ import {
 } from '../work-item-fleet-scope-recovery';
 
 const fleetIO = vi.hoisted(() => ({ getFleet: vi.fn() }));
-vi.mock('../agent-fleets-store', () => ({ getFleet: fleetIO.getFleet }));
+vi.mock('../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-fleets-store')>()),
+  getFleet: fleetIO.getFleet,
+}));
 
 const scope = {
   ownerId: 'su-member',

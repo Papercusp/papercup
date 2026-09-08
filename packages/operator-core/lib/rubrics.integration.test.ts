@@ -1602,15 +1602,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
        ORDER BY work_item_id, spec_id`;
     expect(priorEdges).toHaveLength(2);
 
-    const after = await rubrics.amendRubric({
+    const amendment = {
       rubricId: seeded.rubricSlug,
       actorId: 'terminal-rebind-actor',
+      reason: 'Refresh terminal work-item coverage after a BAR meaning change.',
       criterion: {
         key: before.criteria[0]!.key,
-        field: 'method',
-        mode: 'append',
-        text: 'Verify the terminal coverage edge after the BAR revision.',
+        field: 'driftMarkers',
+        mode: 'replace',
+        text: 'The terminal coverage edge still points at a superseded BAR revision.',
       },
+    };
+    const after = await rubrics.amendRubric({
+      ...amendment,
+      approvalRef: await postApproval(amendment),
     });
     expect(after!.revision).toBe(before.revision! + 1);
 

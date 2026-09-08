@@ -783,3 +783,36 @@ describe('resolveStableAgentTarget', () => {
     });
   });
 });
+
+describe('EI-226378 legacy fleet-scope recovery propagation', () => {
+  it('carries the server-minted capability from authorization into the claim writer', async () => {
+    const legacyFleetScopeDowngradeAdmission = {
+      itemId: 'EI-recovery',
+      target: 'stable-reviewer',
+      workspaceId: 'fixture-workspace',
+      leaderOwnerId: 'su-leader',
+      requestedAssignee: 'stable-reviewer',
+      reportedBy: 'su-leader',
+      fleet: 'recovery-fleet',
+      code: 'fleet_scope_violation',
+      at: new Date().toISOString(),
+    };
+    const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
+    const d = deps({
+      claim,
+      authorize: vi.fn(async () => ({ allowed: true as const, legacyFleetScopeDowngradeAdmission })),
+    });
+
+    await assignActionableWorkItems({
+      workItemIds: ['EI-recovery'],
+      targetAgent: 'stable-reviewer',
+      harness: 'email',
+      workspaceId: 'fixture-workspace',
+    }, d);
+
+    expect(claim).toHaveBeenCalledWith('EI-recovery', 'stable-reviewer', {
+      harness: 'email',
+      legacyFleetScopeDowngradeAdmission,
+    });
+  });
+});

@@ -178,16 +178,22 @@ async fn read_su_launch_result(
         }
         let result: serde_json::Value =
             serde_json::from_str(&frame.data).context("decode SU launch result")?;
-        let status = result.get("httpStatus").and_then(|value| value.as_u64())
+        let status = result
+            .get("httpStatus")
+            .and_then(|value| value.as_u64())
             .ok_or_else(|| anyhow!("SU launch result omitted its status"))?;
-        let body = result.get("body").filter(|value| value.is_object())
+        let body = result
+            .get("body")
+            .filter(|value| value.is_object())
             .ok_or_else(|| anyhow!("SU launch result omitted its response"))?;
         if !(200..300).contains(&status) {
             anyhow::bail!("SU launch -> {status}: {body}");
         }
         return Ok(body.clone());
     }
-    anyhow::bail!("SU launch stream closed before its result; draft retained for the same conversation")
+    anyhow::bail!(
+        "SU launch stream closed before its result; draft retained for the same conversation"
+    )
 }
 
 /// Thin typed client over the operator API, transport-agnostic (D-009).
@@ -1040,11 +1046,14 @@ impl OperatorClient {
             SuSessionOpenRequest::Attach(request) => serde_json::to_value(request),
         }
         .context("encode SU-session open request")?;
-        let frames = self.transport
+        let frames = self
+            .transport
             .subscribe_sse_post("/api/adv/sessions/launch-su?stream=1", body.to_string())
             .await
             .context("open SU session")?;
-        let value = read_su_launch_result(frames).await.context("open SU session")?;
+        let value = read_su_launch_result(frames)
+            .await
+            .context("open SU session")?;
         if value.get("status").and_then(|v| v.as_str()) != Some("ok") {
             let code = value
                 .get("code")
@@ -3486,28 +3495,54 @@ mod tests {
     async fn su_launch_stream_waits_for_the_final_binding_after_progress() {
         let (tx, rx) = mpsc::unbounded_channel();
         let pending = tokio::spawn(read_su_launch_result(rx));
-        tx.send(SseFrame { event: "launch-starting".into(), data: "{}".into() }).unwrap();
-        tx.send(SseFrame { event: "heartbeat".into(), data: "{}".into() }).unwrap();
+        tx.send(SseFrame {
+            event: "launch-starting".into(),
+            data: "{}".into(),
+        })
+        .unwrap();
+        tx.send(SseFrame {
+            event: "heartbeat".into(),
+            data: "{}".into(),
+        })
+        .unwrap();
         tokio::task::yield_now().await;
         assert!(!pending.is_finished());
-        tx.send(SseFrame { event: "launch-result".into(), data: serde_json::json!({
-            "httpStatus": 200, "body": { "status": "ok", "advSessionId": 42, "ready": false }
-        }).to_string() }).unwrap();
+        tx.send(SseFrame {
+            event: "launch-result".into(),
+            data: serde_json::json!({
+                "httpStatus": 200, "body": { "status": "ok", "advSessionId": 42, "ready": false }
+            })
+            .to_string(),
+        })
+        .unwrap();
         assert_eq!(pending.await.unwrap().unwrap()["advSessionId"], 42);
     }
 
     #[tokio::test]
     async fn su_launch_stream_preserves_refusal_and_rejects_a_missing_result() {
         let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(SseFrame { event: "launch-result".into(), data: serde_json::json!({
-            "httpStatus": 429, "body": { "error": "fixture admission refusal" }
-        }).to_string() }).unwrap();
+        tx.send(SseFrame {
+            event: "launch-result".into(),
+            data: serde_json::json!({
+                "httpStatus": 429, "body": { "error": "fixture admission refusal" }
+            })
+            .to_string(),
+        })
+        .unwrap();
         let error = read_su_launch_result(rx).await.unwrap_err().to_string();
         assert!(error.contains("429") && error.contains("fixture admission refusal"));
         let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(SseFrame { event: "launch-starting".into(), data: "{}".into() }).unwrap();
+        tx.send(SseFrame {
+            event: "launch-starting".into(),
+            data: "{}".into(),
+        })
+        .unwrap();
         drop(tx);
-        assert!(read_su_launch_result(rx).await.unwrap_err().to_string().contains("before its result"));
+        assert!(read_su_launch_result(rx)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("before its result"));
     }
 
     fn inbox_action(id: &str) -> crate::models::AttentionAction {

@@ -20,6 +20,8 @@ import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '.
 import { metadataToolFailure, metadataWorkflowTargets } from '../../agent-tools/plans/coordination-metadata-fixtures';
 import { normalizeSuspectedToolFailure } from './tool-error-classifier';
 
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+
 function existing(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
     kind: 'bug',
@@ -569,6 +571,48 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.created[0].payload).toMatchObject({ lane: 'observation', toolFailureProbation: {
       state: 'probation', direct: false, contractFingerprint: 'schema-unknown~field-unknown', deployedRevision: 'runtime-unknown' } });
     expect(d.created[0].payload).not.toHaveProperty('toolFailureProbation.report.reproduced');
+  });
+
+  it('R-7 a second measured reporter promotes the same issue while readiness stays unknown', async () => {
+    const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
+    const prior = existing({ id: 'EI-R7', title: 'first report', scope: 'harness:papercusp',
+      payload: { lane: 'observation', watchdogKey: normalized.watchdogKey,
+        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'] } } });
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior],
+      findIssuesByWatchdogKeys: async () => [prior],
+      updateIssuePatch: async (_id: string, patch: object) => Object.assign(prior, patch),
+      mergeIssuePayload: async (_id: string, patch: object, opts?: { unset?: readonly string[] }) => {
+        const payload = { ...(prior.payload as Record<string, unknown>), ...patch };
+        for (const key of opts?.unset ?? []) delete payload[key];
+        prior.payload = payload; return prior;
+      }, tagIssue: vi.fn(async () => {}), untagIssue: vi.fn(async () => {}),
+    } satisfies CaptureDeps;
+    expect(await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: 'papercusp', ownerId: 'su-b',
+      invokedAt: '2026-09-08T12:00:00Z', failure: metadataToolFailure }, d))
+      .toMatchObject({ reason: 'promoted', issue: { id: 'EI-R7' } });
+    expect(prior.payload).toMatchObject({ toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
+      implementationReadiness: { status: 'unknown', reason: 'corroborated-tool-failure-awaiting-review' } });
+    expect(d.created).toHaveLength(0);
+  });
+
+  it.each(['schema', 'runtime', 'scope'] as const)('R-7 changed %s cannot corroborate or rewrite the old observation', async dimension => {
+    const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
+    const prior = existing({ id: 'EI-OTHER', title: 'first report', scope: 'harness:papercusp',
+      payload: { lane: 'observation', watchdogKey: normalized.watchdogKey,
+        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'] } } });
+    const original = structuredClone(prior);
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior],
+      findIssuesByWatchdogKeys: async () => [prior], updateIssuePatch: vi.fn(), mergeIssuePayload: vi.fn(),
+    } satisfies CaptureDeps;
+    await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: dimension === 'scope' ? 'other-pot' : 'papercusp',
+      ownerId: 'su-b', invokedAt: '2026-09-08T12:00:00Z', failure: { ...metadataToolFailure,
+        ...(dimension === 'schema' ? { schemaRevision: 'different-contract' } : {}),
+        ...(dimension === 'runtime' ? { runtimeVersion: 'different-loaded-build' } : {}) } }, d);
+    expect(prior).toEqual(original);
+    expect(d.updateIssuePatch).not.toHaveBeenCalled();
+    expect(d.created).toHaveLength(1);
+    expect(d.created[0].payload).toMatchObject({ lane: 'observation', toolFailureProbation: { state: 'probation', reporters: ['su-b'] } });
+    if (dimension !== 'scope') expect(d.created[0].payload?.watchdogKey).not.toBe(normalized.classKey);
   });
 
   it('P-001 R-7 coalesces two same-reporter retries without creating or promoting another identity', async () => {

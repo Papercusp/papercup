@@ -82,6 +82,10 @@ import { trackDetached } from './detached-imports';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
+import {
+  isLegacyFleetScopeDowngradeAdmission,
+  type LegacyFleetScopeDowngradeAdmission,
+} from './work-item-fleet-scope-recovery';
 
 /**
  * EI-217141: a fleet leader's explicit assignment is the one narrow exception to
@@ -2819,6 +2823,12 @@ export async function claimIssue(
      */
     selfFiledFalloutAdmission?: SelfFiledFalloutAdmission;
     /**
+     * EI-226378: private capability minted by the current fleet leader for an
+     * exact legacy fleetScopeDowngrade marker. It only carries the existing
+     * row's marker across the issue claim's born-pending SQL predicate.
+     */
+    legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission;
+    /**
      * EI-22345414208647835: private capability minted only after the claim
      * tool's checked force guard authorizes replacing a dead/expired holder.
      * It bypasses only the born-pending admission floor and must agree with
@@ -2843,6 +2853,13 @@ export async function claimIssue(
     opts.selfFiledFalloutAdmission.target === assignee &&
     opts.selfFiledFalloutAdmission.workspaceId === ws
       ? opts.selfFiledFalloutAdmission
+      : null;
+  const legacyFleetScopeDowngradeAdmission =
+    isLegacyFleetScopeDowngradeAdmission(opts.legacyFleetScopeDowngradeAdmission) &&
+    opts.legacyFleetScopeDowngradeAdmission.itemId === id &&
+    opts.legacyFleetScopeDowngradeAdmission.target === assignee &&
+    opts.legacyFleetScopeDowngradeAdmission.workspaceId === ws
+      ? opts.legacyFleetScopeDowngradeAdmission
       : null;
   const forceTakeoverAdmission =
     isForceTakeoverAdmission(opts.forceTakeoverAdmission) &&
@@ -2905,8 +2922,8 @@ export async function claimIssue(
        -- self-filed fallout. Keep each durable provenance CAS in its exception so
        -- a row changed after capability derivation cannot inherit old authorization.
        AND ${
-         leaderDispatchAdmission || selfFiledFalloutAdmission || forceTakeoverAdmission
-           ? sql`(
+        leaderDispatchAdmission || selfFiledFalloutAdmission || legacyFleetScopeDowngradeAdmission || forceTakeoverAdmission
+          ? sql`(
                ${admittedWhereSql(sql)}
                ${
                  leaderDispatchAdmission
@@ -2916,15 +2933,28 @@ export async function claimIssue(
                )`
                    : sql``
                }
-               ${
-                 selfFiledFalloutAdmission
+              ${
+                selfFiledFalloutAdmission
                    ? sql`OR (
                  admission = 'pending'
                  AND kind = 'bug'
                  AND created_by = ${selfFiledFalloutAdmission.createdBy}
                )`
-                   : sql``
-               }
+                  : sql``
+              }
+              ${
+                legacyFleetScopeDowngradeAdmission
+                  ? sql`OR (
+                admission = 'pending'
+                AND (assigned_by IS NULL OR btrim(assigned_by) = '')
+                AND COALESCE(payload->'fleetScopeDowngrade'->>'requestedAssignee', '') = ${legacyFleetScopeDowngradeAdmission.requestedAssignee}
+                AND COALESCE(payload->'fleetScopeDowngrade'->>'reportedBy', '') = ${legacyFleetScopeDowngradeAdmission.reportedBy}
+                AND COALESCE(payload->'fleetScopeDowngrade'->>'fleet', '') = ${legacyFleetScopeDowngradeAdmission.fleet}
+                AND COALESCE(payload->'fleetScopeDowngrade'->>'code', '') = ${legacyFleetScopeDowngradeAdmission.code}
+                AND COALESCE(payload->'fleetScopeDowngrade'->>'at', '') = ${legacyFleetScopeDowngradeAdmission.at}
+              )`
+                  : sql``
+              }
                ${
                  forceTakeoverAdmission
                    ? sql`OR (

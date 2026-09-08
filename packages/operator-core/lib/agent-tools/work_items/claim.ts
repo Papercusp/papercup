@@ -353,6 +353,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     workItemId: it.id,
     harness: it.harness,
     workspaceId: identity.workspaceId,
+    actor: identity.ownerId,
   });
   if (!admission.allowed) {
     // WI-6326: reuse the SAME liveness read notifyFleetScopeRefusal just performed for
@@ -386,9 +387,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         // EI-21906739799895413: pass the refused id so the remedy renders an EXECUTABLE
         // fence-preserving widen rather than describing one.
         `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, it.id)}` +
-        (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
+      (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     };
   }
+  const legacyFleetScopeDowngradeAdmission =
+    admission.scoped ? admission.legacyFleetScopeDowngradeAdmission : undefined;
   // D-008: readiness/lifecycle floors, including claim-hold, gate self-select only. A named
   // by-id claim is the deliberate operator override, so do not apply a claim-hold refusal here.
   // Keep this pre-read for the separate checked cross-holder takeover below: force:true must
@@ -481,6 +484,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     fromHolder: claimerDefault,
     ...(forced ? { expectedAssignee: forced.holder } : {}),
     ...(forceTakeoverAdmission ? { forceTakeoverAdmission } : {}),
+    ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
   });
   if (workItem && forced) {
     // The CAS has landed; leave both a durable audit row and the same holder/owner

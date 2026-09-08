@@ -19,6 +19,7 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { mintLegacyFleetScopeDowngradeAdmission } from './work-item-fleet-scope-recovery';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -397,6 +398,80 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
           FROM harness_shared.work_items
          WHERE feature_id = 'EI-self-filed-pending'`)[0];
       expect(row).toEqual({ taken_by: 'su-member', admission: 'pending' });
+    });
+
+    it('EI-226378: claims an exact legacy fleet-scope downgrade row with the server-minted capability', async () => {
+      const marker = {
+        requestedAssignee: 'su-member',
+        reportedBy: 'su-leader',
+        fleet: 'dispatch-fleet',
+        code: 'fleet_scope_violation',
+        at: new Date().toISOString(),
+      } as const;
+      await seedIssue('EI-legacy-downgrade-pending', {
+        admission: 'pending',
+        createdBy: 'su-leader',
+      });
+      await db.sql`
+        UPDATE harness_shared.work_items
+           SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{fleetScopeDowngrade}', ${JSON.stringify(marker)}::text::jsonb)
+         WHERE feature_id = 'EI-legacy-downgrade-pending'`;
+
+      const capability = mintLegacyFleetScopeDowngradeAdmission({
+        ...marker,
+        itemId: 'EI-legacy-downgrade-pending',
+        target: 'su-member',
+        workspaceId: 'default',
+        leaderOwnerId: 'su-leader',
+      });
+      const claimed = await wi.claimWorkItem('EI-legacy-downgrade-pending', 'su-member', {
+        harness: H,
+        legacyFleetScopeDowngradeAdmission: capability,
+      });
+      expect(claimed?.assignee).toBe('su-member');
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = 'EI-legacy-downgrade-pending'`)[0];
+      expect(row).toEqual({ taken_by: 'su-member', admission: 'pending' });
+    });
+
+    it.each([
+      ['a copied capability object', () => ({
+        itemId: 'EI-legacy-forged',
+        target: 'su-member',
+        workspaceId: 'default',
+        leaderOwnerId: 'su-leader',
+        requestedAssignee: 'su-member',
+        reportedBy: 'su-leader',
+        fleet: 'dispatch-fleet',
+        code: 'fleet_scope_violation',
+        at: new Date().toISOString(),
+      })],
+      ['a capability for another target', () => mintLegacyFleetScopeDowngradeAdmission({
+        itemId: 'EI-legacy-forged',
+        target: 'other-member',
+        workspaceId: 'default',
+        leaderOwnerId: 'su-leader',
+        requestedAssignee: 'su-member',
+        reportedBy: 'su-leader',
+        fleet: 'dispatch-fleet',
+        code: 'fleet_scope_violation',
+        at: new Date().toISOString(),
+      })],
+    ])('EI-226378: rejects %s at the claim writer', async (_label, capabilityFactory) => {
+      await seedIssue('EI-legacy-forged', { admission: 'pending', createdBy: 'su-leader' });
+      const claimed = await wi.claimWorkItem('EI-legacy-forged', 'su-member', {
+        harness: H,
+        legacyFleetScopeDowngradeAdmission: capabilityFactory() as never,
+      });
+
+      expect(claimed).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = 'EI-legacy-forged'`)[0];
+      expect(row).toEqual({ taken_by: null, admission: 'pending' });
     });
 
     it('keeps a pending bug filed by a peer refused without the self-filed capability', async () => {

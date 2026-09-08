@@ -4218,6 +4218,14 @@ export async function defaultPapercuspCollectors(
       collect: () => collectToolErrorSignals(getOrgPg().sql, opts, workspaceId),
     },
     {
+      name: 'papercusp-invocation-friction',
+      collect: async () => {
+        const { recoverInvocationFriction } = await import('./invocation-friction');
+        const result = await recoverInvocationFriction(workspaceId);
+        return { signals: [], note: `friction delivered=${result.delivered}, locked-pending=${result.pending}` };
+      },
+    },
+    {
       name: 'papercusp-service-down',
       // WI-40769: declared so a THROWN tick is attributable to this source and
       // discounted from absence evidence (service-down is auto-close eligible).

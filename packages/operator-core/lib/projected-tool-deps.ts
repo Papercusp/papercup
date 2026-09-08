@@ -69,10 +69,9 @@ import { recordMcpTraffic } from './coverage-census/attribution/sink';
 import { observeFailureLoop } from './failure-loop-circuit-breaker';
 import { goalKickoffRefusalPayload, isGoalKickoffGuardedTool, readGoalKickoffEvidence } from './goals/kickoff-evidence';
 import { normalizeSessionActivation } from './session-activation';
-import type { ToolInvocationFriction } from './harness/improvements/capture-core';
+import type { InvocationFrictionRef } from './harness/improvements/invocation-friction';
 import { trackDetached } from './detached-imports';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { runWithWorkspace } from './workspace-als';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -533,7 +532,7 @@ interface RecordInvocationInput {
 interface TelemetryRow {
   workspaceId: string;
   params: unknown[];
-  friction?: ToolInvocationFriction;
+  friction?: InvocationFrictionRef;
 }
 
 /**
@@ -615,7 +614,7 @@ INSERT INTO harness_shared.tool_invocations
           WHEN c.in_drain_fleet THEN 'drain-fleet-member'
           ELSE 'goal-descendant-agent'
         END
-   FROM classified c`;
+   FROM classified c RETURNING id::text`;
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
@@ -665,10 +664,10 @@ export function __resetTelemetryHealthForTests(): void {
 
 /** Capture is bounded to one flush batch and enrolled in the existing detached
  * work registry. A busy capture never holds quota/spill readers or accumulates
- * another queue. Skipped/failed deliveries remain in invocation telemetry for
- * the existing watchdog/miner, and are visible in telemetry health. */
+ * another queue. Skipped/failed deliveries remain marked pending in invocation
+ * telemetry for the existing watchdog, and are visible in telemetry health. */
 function captureCommittedFriction(rows: readonly TelemetryRow[]): void {
-  const inputs = rows.flatMap(row => row.friction ? [row.friction] : []);
+  const inputs = rows.flatMap(row => row.friction?.id ? [row.friction] : []);
   if (!inputs.length) return;
   if (frictionState.pending) {
     frictionState.skipped += inputs.length;
@@ -677,13 +676,13 @@ function captureCommittedFriction(rows: readonly TelemetryRow[]): void {
   frictionState.pending = inputs.length;
   void trackDetached((async () => {
     try {
-      const { captureToolInvocationFriction } = await import('./harness/improvements/capture-core');
+      const { captureInvocationFriction } = await import('./harness/improvements/invocation-friction');
       for (const input of inputs) {
         try {
-          await runWithWorkspace(input.workspaceId, () => captureToolInvocationFriction(input));
+          await captureInvocationFriction(input);
         } catch (err) {
           frictionState.errors++;
-          console.warn(`[projected-tool-deps] friction capture failed for ${input.failure.toolName}; invocation retained: ${err instanceof Error ? err.message : String(err)}`);
+          console.warn(`[projected-tool-deps] friction capture failed for invocation ${input.id}; invocation retained: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     } catch (err) {
@@ -769,7 +768,8 @@ export async function flushPendingTelemetry(): Promise<void> {
                 // sufficiently overlap with `unknown[]` for a direct cast, so go through
                 // `unknown` first — derived from `tx` itself so this file need not import
                 // postgres.js's ParameterOrJSON type.
-                await tx.unsafe(TELEMETRY_INSERT_SQL, row.params as unknown as Parameters<typeof tx.unsafe>[1]);
+                const inserted = await tx.unsafe<{ id: string }[]>(TELEMETRY_INSERT_SQL, row.params as unknown as Parameters<typeof tx.unsafe>[1]);
+                if (row.friction && inserted?.[0]) row.friction.id = inserted[0].id;
               }
             });
           } catch (err) {
@@ -981,29 +981,17 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   });
   const servingHost = getServingHostIdentity();
   const invokedAt = new Date().toISOString();
-  const invalidInput = input.metadataJson?.invalidInput as Record<string, unknown> | undefined;
-  const schemaRevision = invalidInput?.source === 'projected-tool-registry' &&
-    invalidInput.toolName === input.toolName && typeof invalidInput.registryRevision === 'string'
-    ? invalidInput.registryRevision : undefined;
-  const friction: ToolInvocationFriction | undefined =
+  const friction: InvocationFrictionRef | undefined =
     coordOwnerId && ['error', 'invalid-input', 'timeout'].includes(input.status) &&
     !/^(improvements:|system:improvement-)/.test(input.toolName)
       ? {
-          workspaceId: input.ctx.workspaceId,
-          harnessSlug,
-          ownerId: coordOwnerId,
-          invokedAt,
-          failure: {
-            toolName: input.toolName,
-            status: input.status,
-            errorCode: input.errorCode ?? undefined,
-            message: (input.errorMessage ?? '').split(String.fromCharCode(0)).join('').slice(0, 8192),
-            schemaRevision,
-            // This is the serving process's loaded build, never checkout HEAD.
-            runtimeVersion: servingHost.buildSha ?? undefined,
-          },
+          workspaceId: input.ctx.workspaceId, id: '',
         }
       : undefined;
+  const deliveryMetadata = metadataJson ? JSON.parse(metadataJson) : {};
+  delete deliveryMetadata.frictionCapture;
+  delete deliveryMetadata.frictionAttemptAt;
+  if (friction) deliveryMetadata.frictionCapture = 'pending';
   return {
     workspaceId: input.ctx.workspaceId,
     ...(friction ? { friction } : {}),
@@ -1030,7 +1018,9 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       // actually involved at dispatch time.
       input.ctx.transport ?? null,
       input.eventCount ?? null,
-      metadataJson,
+      // Framework-owned marker overrides handler metadata. Pending delivery
+      // survives skipped batches, failed capture and process restarts.
+      Object.keys(deliveryMetadata).length ? jsonbSafeStringify(deliveryMetadata) : null,
       p?.kind ?? null,
       p?.authMethod ?? null,
       p?.trust ?? null,

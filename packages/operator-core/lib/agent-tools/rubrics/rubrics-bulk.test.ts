@@ -442,7 +442,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(revisionM).toHaveBeenCalledWith('acceptance-rubric');
   });
 
-  it('keeps a not-found terse when the backing-row probe cannot establish existence', async () => {
+  it('does not collapse a failed backing-row probe into a false not-found', async () => {
     getM.mockResolvedValue(null);
     revisionM.mockResolvedValue({ ok: false, revision: null });
     setServerVintageResolver(() => ({
@@ -456,8 +456,10 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({
       ok: false,
       rubricRef: 'unknown-rubric',
-      error: 'rubric not found',
+      error:
+        'rubric could not be resolved because the backing plan read failed; retry or verify independently before treating it as absent',
     });
+    expect(b.results[0].error).not.toBe('rubric not found');
     expect(revisionM).toHaveBeenCalledWith('unknown-rubric');
   });
 

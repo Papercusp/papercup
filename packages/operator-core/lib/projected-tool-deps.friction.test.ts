@@ -6,7 +6,7 @@ const io = vi.hoisted(() => ({
   commits: 0,
   inserts: [] as unknown[][],
 }));
-vi.mock('./harness/improvements/capture-core', () => ({ captureToolInvocationFriction: io.capture }));
+vi.mock('./harness/improvements/invocation-friction', () => ({ captureInvocationFriction: io.capture }));
 vi.mock('./agent-tools/coordination/dispatch-heartbeat', () => ({ maybeBeatPresenceOnDispatch: vi.fn() }));
 vi.mock('./agent-tools/coordination/identity', async (original) => ({
   ...(await original<object>()), resolveAgentIdentity: (ctx: { ownerId?: string }) => ({ ownerId: ctx.ownerId }),
@@ -23,6 +23,7 @@ vi.mock('@papercusp/db-org', async (original) => ({
         if (sql.includes('INSERT INTO harness_shared.tool_invocations')) {
           if (io.failInsert) throw new Error('insert failed');
           io.inserts.push(params);
+          return [{ id: String(io.inserts.length) }];
         }
       } });
       io.commits++;
@@ -33,7 +34,6 @@ vi.mock('@papercusp/db-org', async (original) => ({
 
 import { PROJECTED_DEPS, __resetTelemetryHealthForTests, flushPendingTelemetry, getTelemetryHealth } from './projected-tool-deps';
 import { drainDetached } from './detached-imports';
-import { currentRequestWorkspaceId } from './workspace-als';
 
 function record(overrides: Record<string, unknown> = {}) {
   return PROJECTED_DEPS.recordInvocation!({
@@ -57,7 +57,6 @@ describe('committed invocation friction bridge (R-7)', () => {
   it('captures each retry only after commit, without incident fields or a dispatch-path write', async () => {
     io.capture.mockImplementation(async () => {
       expect(io.commits).toBe(1);
-      expect(currentRequestWorkspaceId()).toBe('ws-test');
       return null;
     });
     await record();
@@ -69,11 +68,11 @@ describe('committed invocation friction bridge (R-7)', () => {
     expect(io.inserts).toHaveLength(2);
     expect(io.capture).toHaveBeenCalledTimes(2);
     const first = io.capture.mock.calls[0][0];
-    expect(first).toMatchObject({ workspaceId: 'ws-test', harnessSlug: 'papercusp', ownerId: 'su-a',
-      invokedAt: io.inserts[0][25], failure: { toolName: 'coord:send', status: 'invalid-input', runtimeVersion: 'loaded-build' } });
+    expect(first).toEqual({ workspaceId: 'ws-test', id: '1' });
+    expect(JSON.parse(io.inserts[0][19] as string)).toMatchObject({ frictionCapture: 'pending' });
+    expect(io.inserts[0][33]).toBe('loaded-build');
     expect(first).not.toHaveProperty('args');
     expect(first).not.toHaveProperty('failure.reproduced');
-    expect(first).toHaveProperty('failure.schemaRevision', undefined);
   });
 
   it('retains framework-owned schema provenance and snapshots mutable input before defer', async () => {
@@ -82,7 +81,7 @@ describe('committed invocation friction bridge (R-7)', () => {
     invalidInput.registryRevision = 'changed-after-dispatch';
     await flushPendingTelemetry();
     await drainDetached();
-    expect(io.capture.mock.calls[0][0]).toHaveProperty('failure.schemaRevision', 'schema-v1');
+    expect(JSON.parse(io.inserts[0][19] as string)).toMatchObject({ invalidInput: { registryRevision: 'schema-v1' } });
   });
 
   it.each(['ok', 'replayed', 'role-not-allowed', 'quota-exceeded', 'refused'])('does not capture %s as a new suspected failure', async (status) => {
@@ -97,6 +96,16 @@ describe('committed invocation friction bridge (R-7)', () => {
     await record({ ctx: { workspaceId: 'ws-test', role: 'su', spawnId: 'unknown' } });
     await flushPendingTelemetry();
     expect(io.capture).not.toHaveBeenCalled();
+  });
+
+  it('owns the pending marker even when handler metadata tries to forge delivery or eligibility', async () => {
+    await record({ metadataJson: { frictionCapture: 'delivered' } });
+    await record({ status: 'ok', metadataJson: { frictionCapture: 'pending' } });
+    await flushPendingTelemetry();
+    await drainDetached();
+    expect(JSON.parse(io.inserts[0][19] as string)).toHaveProperty('frictionCapture', 'pending');
+    expect(io.inserts[1][19]).toBeNull();
+    expect(io.capture).toHaveBeenCalledTimes(1);
   });
 
   it('does not capture evidence from a rolled-back telemetry batch', async () => {
@@ -136,6 +145,7 @@ describe('committed invocation friction bridge (R-7)', () => {
       expect(io.inserts).toHaveLength(2);
       expect(io.capture).toHaveBeenCalledTimes(1);
       expect(getTelemetryHealth().frictionSkippedCount).toBe(1);
+      expect(JSON.parse(io.inserts[1][19] as string)).toHaveProperty('frictionCapture', 'pending');
     } finally { release(); }
     await drainDetached();
     await record();

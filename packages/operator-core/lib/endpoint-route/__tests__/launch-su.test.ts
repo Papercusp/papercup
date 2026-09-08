@@ -306,12 +306,20 @@ afterEach(() => {
 describe('launch-su', () => {
   it('streams launch progress before slow preflight and preserves the final refusal', async () => {
     let release!: () => void;
-    floorMock.mockImplementationOnce(() => new Promise((resolve) => {
-      release = () => resolve({ ok: false, reason: 'fixture admission refusal' });
-    }));
+    floorMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: false, reason: 'fixture admission refusal' });
+        }),
+    );
     let opened: Response | undefined;
-    const pending = callPost({ agent: 'codex', harness_slug: 'papercup', attached_engine: true,
-      agent_chat_id: 'streamed-chat' }, true).then((response) => { opened = response; return response; });
+    const pending = callPost(
+      { agent: 'codex', harness_slug: 'papercup', attached_engine: true, agent_chat_id: 'streamed-chat' },
+      true,
+    ).then((response) => {
+      opened = response;
+      return response;
+    });
     try {
       await vi.advanceTimersByTimeAsync(31_000);
       expect(opened, 'launch progress must precede the ordinary route watchdog').toBeDefined();
@@ -741,7 +749,12 @@ describe('launch-su', () => {
 
     it('the deferred (workbench) path never spawns, so it is unaffected (no warning possible)', async () => {
       spawnDiesImmediately = true;
-      const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan', defer_spawn: true });
+      const res = await callPost({
+        agent: 'claude',
+        harness_slug: 'papercup',
+        plan_slug: 'my-plan',
+        defer_spawn: true,
+      });
       const json = await res.json();
       expect(json.status).toBe('ok');
       expect(json.deferred).toBe(true);
