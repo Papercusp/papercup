@@ -14,7 +14,10 @@ const M = vi.hoisted(() => ({
   fetchTurnExcerpts: vi.fn(),
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: M.getOrgPg }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: M.getOrgPg,
+}));
 vi.mock('../../consult/relevance-router', () => ({ routeConsult: M.routeConsult }));
 vi.mock('../search/embedder', () => ({ buildQueryEmbedder: M.buildQueryEmbedder }));
 vi.mock('../coordination/liveness-oracle', () => ({ resolveSessionStates: M.resolveSessionStates }));

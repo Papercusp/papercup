@@ -87,21 +87,48 @@ export const JOURNAL_READ_SLICE_MS = 60 * 60 * 1000;
 export const JOURNAL_READ_SLICE_CONCURRENCY = 8;
 
 /**
- * Normalize the compact lookback shorthand agents commonly use (`40m`, `-2h`)
- * into journalctl's accepted relative-time grammar. Keep every other value
- * verbatim so journalctl remains the authority for its full timestamp syntax.
+ * Normalize the compact and bare-spaced lookback shorthand agents commonly use
+ * (`40m`, `-2h`, `30 min`) into journalctl's accepted relative-time grammar.
+ * Keep every other value verbatim so journalctl remains the authority for its
+ * full timestamp syntax.
  */
 export function normalizeJournalWindow(value: string): string {
-  const match = value.trim().match(/^-?(\d+)(s|m|h|d|w)$/i);
-  if (!match) return value;
   const units: Record<string, string> = {
     s: 'seconds',
+    sec: 'seconds',
+    secs: 'seconds',
+    second: 'seconds',
+    seconds: 'seconds',
     m: 'minutes',
+    min: 'minutes',
+    mins: 'minutes',
+    minute: 'minutes',
+    minutes: 'minutes',
     h: 'hours',
+    hr: 'hours',
+    hrs: 'hours',
+    hour: 'hours',
+    hours: 'hours',
     d: 'days',
+    day: 'days',
+    days: 'days',
     w: 'weeks',
+    week: 'weeks',
+    weeks: 'weeks',
   };
-  return `-${match[1]} ${units[match[2].toLowerCase()]}`;
+  const trimmed = value.trim();
+  // A bare spaced duration is a useful shorthand for a past lookback, but
+  // journalctl only accepts it when expressed as a relative timestamp (for
+  // example, `-30 min`). Preserve already-valid signed forms verbatim so the
+  // default window and its returned echo remain backwards-compatible.
+  const spaced = trimmed.match(
+    /^(\d+)\s+(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$/i,
+  );
+  if (spaced) return `-${spaced[1]} ${units[spaced[2].toLowerCase()]}`;
+
+  const compact = trimmed.match(/^-?(\d+)(s|m|h|d|w)$/i);
+  if (!compact) return value;
+  return `-${compact[1]} ${units[compact[2].toLowerCase()]}`;
 }
 
 /** syslog severities, most severe first — index IS the numeric priority. */

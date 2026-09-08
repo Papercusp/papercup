@@ -144,6 +144,26 @@ export function driftFragment(lit: string, includes: IncludesFn): {
     residue: [string, string];
 } | null;
 /**
+ * Build a one-pass substring matcher for a finite set of probes.
+ *
+ * `String.prototype.includes` is excellent for an isolated lookup, but this guard
+ * performs thousands of lookups against one ~200 MB corpus. Calling it once per
+ * assertion turns an absent literal into another full-corpus scan. The matcher below
+ * uses an Aho–Corasick trie: it scans the corpus once, records which trie states were
+ * reached, then propagates those hits through failure links so every requested literal
+ * gets the same exact substring semantics as `corpus.includes(literal)`.
+ *
+ * The returned function keeps a native `includes` fallback for probes discovered while
+ * growing a drift fragment. Main preloads every fixed-size window, so the fallback is
+ * limited to the few matched fragments that need maximal growth; the public helper also
+ * remains useful for callers with an intentionally open-ended query set.
+ *
+ * @param {string} corpus
+ * @param {Iterable<string>} queries
+ * @returns {IncludesFn}
+ */
+export function createCorpusIncludes(corpus: string, queries: Iterable<string>): IncludesFn;
+/**
  * Judge one test file's negative assertions. `includes` answers "does the non-test
  * corpus contain this string" — injected so the unit tests can drive a synthetic corpus.
  *

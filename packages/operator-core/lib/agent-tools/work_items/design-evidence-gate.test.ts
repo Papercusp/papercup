@@ -795,6 +795,165 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  // The desktop canary's approval contract, with controlled comparison evidence.
+  // This proves binding through the real completion path; live portal rendering
+  // remains a separate browser obligation under the prevention plan's P-002/3.
+  const DESKTOP_ROUTE = '/?app=desktops';
+  const APPROVAL = {
+    schemaVersion: 1,
+    approvalRef: 'unified-web-portal-2026-08-29#D-062',
+    planSlug: PLAN_SLUG,
+    planItemIds: ['P-001'],
+    targetRoute: DESKTOP_ROUTE,
+  } as const;
+
+  function desktopApprovalInput(revision = 1) {
+    const environment = { ...ENV, state: 'disconnected' };
+    return {
+      featureId: PLAN_SLUG, referenceId: REF, revision,
+      referenceClass: 'artifact-capture' as const,
+      contentSha256: (revision === 1 ? 'a' : 'b').repeat(64),
+      image: {
+        mediaType: 'image/png' as const, locator: `/refs/desktop-option-b-${revision}.png`,
+        byteLength: 4096, width: ENV.viewport.width, height: ENV.viewport.height,
+      },
+      referenceEnvironment: environment,
+      requiredCases: [{
+        caseId: 'desktop.option-b.disconnected', environment,
+        target: { targetKind: 'page-route' as const, targetId: DESKTOP_ROUTE },
+        rationale: 'Option B viewer, roster and activity with truthful disconnected data',
+      }],
+      provenance: {
+        source: 'artifact-capture', sourceRef: 'scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png',
+        capturedOnRenderHost: calibrationRenderHost() ?? undefined,
+      },
+      approval: revision === 1 ? APPROVAL : { ...APPROVAL, approvalRef: 'reviewed-desktop-replacement#D-001' },
+    };
+  }
+
+  async function prepareApprovedDesktop(d: VerbDeps, revision = 1) {
+    const input = desktopApprovalInput(revision);
+    Object.assign(d, { materializeReferenceImage: async (image: { locator: string }) => ({
+      path: '/tmp/reference.png', contentSha256: (image.locator.endsWith('-1.png') ? 'a' : 'b').repeat(64),
+    }) });
+    const ratified = await ratifyReferenceVerb(input, CALLER, d);
+    expect(ratified.ok, JSON.stringify(ratified)).toBe(true);
+    const compared = await compareRenderVerb({
+      featureId: PLAN_SLUG, referenceId: REF,
+      target: { targetId: DESKTOP_ROUTE, targetKind: 'page-route', implementationRevision: 'repaired-portal' },
+      environment: input.referenceEnvironment, policy: POLICY,
+      actualImagePath: '/tmp/actual.png', diffImagePath: '/tmp/diff.png',
+      renderHost: calibrationRenderHost() ?? undefined,
+    }, CALLER, d);
+    expect(compared.ok, JSON.stringify(compared)).toBe(true);
+    designCompareDepsFor.mockResolvedValue(d);
+    return ratified;
+  }
+
+  function approvedDesktopItem(binding: unknown) {
+    getWorkItem.mockResolvedValue({
+      id: ITEM, kind: 'change', family: 'issue', state: 'in_progress',
+      harness: HARNESS, sourcePlanSlug: PLAN_SLUG, sourcePlanItemIds: ['P-001'],
+      payload: binding === undefined ? {} : { designReferences: binding },
+    });
+  }
+
+  const DESKTOP_BINDING = {
+    schemaVersion: 1, featureId: PLAN_SLUG, referenceId: REF,
+    revision: 1, contentSha256: 'a'.repeat(64),
+  };
+
+  it('desktop.binding.missing: original unbound approval cannot close even with passing pixels', async () => {
+    await prepareApprovedDesktop(deps(0));
+    approvedDesktopItem(undefined);
+    const result = await closeItem();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('approval-binding-missing');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('desktop.binding.malformed: an invalid revision cannot discharge approval', async () => {
+    await prepareApprovedDesktop(deps(0));
+    approvedDesktopItem([{ ...DESKTOP_BINDING, revision: 'latest' }]);
+    const result = await closeItem();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('approval-binding-malformed');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('desktop.binding.replaced: fresh passing pixels cannot silently replace the approved reference', async () => {
+    const d = deps(0);
+    await prepareApprovedDesktop(d);
+    await prepareApprovedDesktop(d, 2);
+    approvedDesktopItem([DESKTOP_BINDING]);
+    const result = await closeItem();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('approval-reference-replaced');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('desktop.binding.repaired: exact approved binding and current evidence allow the same close', async () => {
+    const ratified = await prepareApprovedDesktop(deps(0));
+    expect(ratified).toMatchObject({ binding: DESKTOP_BINDING });
+    approvedDesktopItem([DESKTOP_BINDING]);
+    const result = await closeItem();
+    expect(result.ok, result.error).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+  });
+
+  it('desktop.binding.scope: a different implementing item cannot borrow the approved binding', async () => {
+    await prepareApprovedDesktop(deps(0));
+    approvedDesktopItem([DESKTOP_BINDING]);
+    getWorkItem.mockResolvedValue({
+      ...(await getWorkItem()), sourcePlanItemIds: ['P-002'],
+    });
+    const result = await closeItem();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('approval-scope-mismatch');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it.each(['approvalRef', 'targetRoute', 'planItemIds', 'state'] as const)(
+    'desktop.binding.invalid-scope: refuses malformed %s before ratification', async (field) => {
+      const input = desktopApprovalInput();
+      const malformed = field === 'state'
+        ? { ...input, requiredCases: input.requiredCases.map(c => ({ ...c, environment: { ...c.environment, state: '' } })) }
+        : { ...input, approval: { ...APPROVAL, [field]: field === 'planItemIds' ? [] : '' } };
+      const d = deps(0);
+      const result = await ratifyReferenceVerb(malformed, CALLER, d);
+      expect(result).toMatchObject({ ok: false, code: 'validation-failed' });
+      expect(await d.store.listFeatureReferenceIds({ harnessSlug: HARNESS, featureId: PLAN_SLUG })).toEqual([]);
+    },
+  );
+
+  it('desktop.binding.downgrade: revising the image cannot remove the adopted approval contract', async () => {
+    const d = deps(0);
+    await prepareApprovedDesktop(d);
+    const { approval: _approval, ...replacement } = desktopApprovalInput(2);
+    const result = await ratifyReferenceVerb(replacement, CALLER, d);
+    expect(result).toMatchObject({ ok: false, code: 'validation-failed' });
+    expect(JSON.stringify(result)).toContain('approval');
+  });
+
+  it('desktop.binding.reapproval: replacement bytes cannot reuse the original approval source', async () => {
+    const d = deps(0);
+    await prepareApprovedDesktop(d);
+    const result = await ratifyReferenceVerb({ ...desktopApprovalInput(2), approval: APPROVAL }, CALLER, d);
+    expect(result).toMatchObject({ ok: false, code: 'validation-failed' });
+    expect(JSON.stringify(result)).toContain('new approvalRef');
+  });
+
+  it('desktop.binding.bytes: changing image bytes behind the same locator invalidates prior passing proof', async () => {
+    const d = deps(0);
+    await prepareApprovedDesktop(d);
+    Object.assign(d, { materializeReferenceImage: async () => ({ path: '/tmp/reference.png', contentSha256: 'c'.repeat(64) }) });
+    approvedDesktopItem([DESKTOP_BINDING]);
+    const result = await closeItem();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('approved-reference-bytes-mismatch');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it('reports but does NOT refuse while enforcement is off (D-006 report-only rollout)', async () => {
     // The gate ships report-only until P-011 flips it. This pins that the
     // ENFORCING flag is what separates a refusal from a notice — so flipping it

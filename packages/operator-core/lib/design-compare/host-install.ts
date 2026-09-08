@@ -21,7 +21,9 @@
  * stamp a result), and that throw surfaces as a refusal from the verb rather
  * than as a comparison that silently used something else.
  */
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -64,7 +66,10 @@ export const filesystemReferenceMaterializer: ReferenceImageMaterializer = async
       const dir = mkdtempSync(join(tmpdir(), 'papercusp-design-ref-'));
       const path = join(dir, 'reference.png');
       writeFileSync(path, bytes);
-      return { path };
+      return {
+        path, contentSha256: createHash('sha256').update(bytes).digest('hex'),
+        release: () => rm(dir, { recursive: true, force: true }),
+      };
     } catch (error) {
       return { error: `failed to decode data: locator — ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -72,11 +77,11 @@ export const filesystemReferenceMaterializer: ReferenceImageMaterializer = async
 
   if (locator.startsWith('file://')) {
     const path = locator.slice('file://'.length);
-    return existsSync(path) ? { path } : { error: `file:// locator does not exist on this host: ${path}` };
+    return existsSync(path) ? measuredFile(path) : { error: `file:// locator does not exist on this host: ${path}` };
   }
 
   if (locator.startsWith('/')) {
-    return existsSync(locator) ? { path: locator } : { error: `path does not exist on this host: ${locator}` };
+    return existsSync(locator) ? measuredFile(locator) : { error: `path does not exist on this host: ${locator}` };
   }
 
   return {
@@ -86,6 +91,16 @@ export const filesystemReferenceMaterializer: ReferenceImageMaterializer = async
       'working directory the host happens to have.',
   };
 };
+
+async function measuredFile(path: string) {
+  try {
+    const hash = createHash('sha256');
+    for await (const bytes of createReadStream(path)) hash.update(bytes);
+    return { path, contentSha256: hash.digest('hex') };
+  } catch (error) {
+    return { error: `reference bytes could not be read: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
 
 /**
  * Per-harness cache of the production dependency bundle.

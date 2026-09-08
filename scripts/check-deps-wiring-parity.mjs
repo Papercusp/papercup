@@ -813,6 +813,19 @@ const WAIT_MODE_SPECIFIC_SEAM =
   'which agent/session owners at migrate/restart/locks:acquire never carry.';
 
 /**
+ * 2026-09-08 — the plan revision hooks are intentionally two modes, not a missing
+ * dependency. `WithPlanLockOpts.revisionInTransaction` is the strict atomic hook and
+ * is required only by plans:start's draft→ready approval (the write must roll back
+ * when its revision insert fails). Ordinary plan writers keep the historical
+ * best-effort `afterWrite` hook, and plans:start's later `## Promoted` decoration is
+ * also best-effort. Wiring the strict hook into those callers would change their
+ * failure contract rather than repair an omission.
+ */
+const PLAN_REVISION_HOOK_MODES =
+  'intentional: WithPlanLockOpts.revisionInTransaction is strict and applies only to plans:start draft→ready approval; ' +
+  'ordinary plan writers and plans:start ## Promoted use best-effort afterWrite by contract.';
+
+/**
  * 2026-09-05 — the rubric live DRILL (`scout/rubric-live-drill.ts`) deliberately omits
  * `onScoutDraftCreated`: in production (`register-scout-action.ts:442`) that hook pings the
  * Mug about a NEWLY routed draft to start the review feedback loop; a drill's drafts are
@@ -865,6 +878,34 @@ const FAIL_BASELINE = new Map([
   ['GuardSpec|packages/operator-core/lib/agent-tools/db/migrate.ts|hostLocalOwnerPid,onStaleHolderReclaimed', WAIT_MODE_SPECIFIC_SEAM],
   ['GuardSpec|packages/operator-core/lib/agent-tools/dev/restart.ts|hostLocalOwnerPid,onStaleHolderReclaimed', WAIT_MODE_SPECIFIC_SEAM],
   ['McpProxyOptions|apps/operator/bin/host-bootstrap.ts|resolveTargets', MCP_PROXY_TARGET_MODE],
+  // 2026-09-08 — `revisionInTransaction` is deliberately limited to the strict
+  // plans:start draft→ready approval path. All ordinary plan writes use the
+  // best-effort afterWrite hook; the promoted-block write in plans:start does too.
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-decision.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-item.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/edit.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/new.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/ratify-decision.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content-chunk.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-decision-body.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-frontmatter-field.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-frontmatter.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-importance.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-initiative.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-input-schema.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-blocked-by.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-phase.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-now.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-plan-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-template-data.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-title.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|afterWrite', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/transfer-owner.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+  ['WithPlanLockOpts|packages/operator-core/lib/scout/scout-plan-draft.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
 ]);
 
 /** The line-independent identity a baseline row matches on. */

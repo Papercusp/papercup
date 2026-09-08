@@ -48,6 +48,7 @@ import {
   environmentsMatch,
 } from './contract';
 import type { PngDimensions } from './png-header';
+import { validateRatification } from './ratification';
 import type {
   DesignApprovalScope,
   DesignReferenceBinding,
@@ -166,7 +167,11 @@ function describeCaller(caller: VerbCaller): string {
  */
 export type ReferenceImageMaterializer = (
   image: ReferenceImageRef,
-) => Promise<{ readonly path: string } | { readonly error: string }>;
+) => Promise<{
+  readonly path: string;
+  readonly contentSha256?: string;
+  readonly release?: () => Promise<void>;
+} | { readonly error: string }>;
 
 export interface VerbDeps {
   /**
@@ -187,6 +192,22 @@ export interface VerbDeps {
 
 function scopeFor(deps: VerbDeps, featureId: string, referenceId: string): ReferenceScope {
   return { harnessSlug: deps.harnessSlug, featureId, referenceId };
+}
+
+/** Check the bytes behind a locator, not a second caller-supplied identity. */
+async function verifyApprovedImage(image: ReferenceImageRef, expected: string, deps: VerbDeps): Promise<VerbRefusal | null> {
+  try {
+    const materialized = await deps.materializeReferenceImage(image);
+    if ('error' in materialized) return refuse('reference-unreadable', materialized.error);
+    try {
+      return materialized.contentSha256 === expected ? null
+        : refuse('validation-failed', 'approved-reference-bytes-mismatch: stored approval hash does not match the independently read image bytes');
+    } finally {
+      await materialized.release?.();
+    }
+  } catch (error) {
+    return refuse('reference-unreadable', error instanceof Error ? error.message : String(error));
+  }
 }
 
 // ─── verb 1: ratify_reference ────────────────────────────────────────────────
@@ -292,6 +313,12 @@ export async function ratifyReferenceVerb(
   };
 
   try {
+    if (candidate.approval) {
+      const errors = validateRatification(candidate);
+      if (errors.length) return { ok: false, code: 'validation-failed', detail: errors.map(e => e.message).join('; '), errors };
+      const mismatch = await verifyApprovedImage(input.image, input.contentSha256, deps);
+      if (mismatch) return mismatch;
+    }
     const outcome = await ratifyReference(deps.store, {
       scope: scopeFor(deps, input.featureId, input.referenceId),
       candidate,
@@ -501,8 +528,20 @@ export async function compareRenderVerb(
     );
   }
 
-  const result = await compareAgainstReference(requestFor(materialized.path), deps.comparison);
-  return persist(result, input, deps);
+  try {
+    if (active.reference.approval && materialized.contentSha256 !== identity.contentSha256) {
+      return refuse('validation-failed', 'approved-reference-bytes-mismatch: the reference image changed after approval');
+    }
+    const result = await compareAgainstReference(requestFor(materialized.path), deps.comparison);
+    // A decoded data URL is temporary. Evidence must retain the original stored
+    // locator so releasing that decode cannot leave a dangling reference image.
+    const durable = materialized.release && result.artifacts
+      ? { ...result, artifacts: { ...result.artifacts, referenceImage: active.image.locator } }
+      : result;
+    return await persist(durable, input, deps);
+  } finally {
+    await materialized.release?.();
+  }
 }
 
 function invalidResult(args: {
@@ -671,6 +710,11 @@ export async function getDesignEvidenceVerb(
 
   const active = activeRevision(rows);
   const activeRevisionNumber = active?.reference.identity.revision;
+
+  if (active?.reference.approval) {
+    const mismatch = await verifyApprovedImage(active.image, active.reference.identity.contentSha256, deps);
+    if (mismatch) return mismatch;
+  }
 
   const evidence: EvidenceView[] = stored.map((row) => {
     const r = row.result;

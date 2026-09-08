@@ -68,7 +68,15 @@ describe('buildJournalctlArgs', () => {
     expect(normalizeJournalWindow('-2h')).toBe('-2 hours');
     expect(normalizeJournalWindow('3d')).toBe('-3 days');
     expect(normalizeJournalWindow('1w')).toBe('-1 weeks');
-    expect(normalizeJournalWindow('  40 min  ')).toBe('  40 min  ');
+  });
+
+  it('normalizes bare spaced durations such as the documented `30 min` lookback', () => {
+    expect(normalizeJournalWindow('30 min')).toBe('-30 minutes');
+    expect(normalizeJournalWindow('  40 min  ')).toBe('-40 minutes');
+    expect(normalizeJournalWindow('2 hours')).toBe('-2 hours');
+    expect(normalizeJournalWindow('-3 days')).toBe('-3 days');
+    expect(normalizeJournalWindow('30 minutes ago')).toBe('30 minutes ago');
+    expect(normalizeJournalWindow('2026-07-26 00:00')).toBe('2026-07-26 00:00');
   });
 
   it('PUSHES grep down to --grep — the whole reason this tool exists', () => {
