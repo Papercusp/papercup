@@ -14,8 +14,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EngineerIssue } from '../../issues-engineer';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { buildScoutPlanTemplate } from '../../scout/scout-plan-draft';
 import {
   buildRouteRationale,
+  buildRouteDraftBody,
+  guardRouteDraftBody,
+  knownRouteDraftPlaceholderSections,
   routeIdeaArgs,
   runRouteIdea,
   slugStemFromTitle,
@@ -48,7 +52,14 @@ function makeDeps(over: Partial<RouteIdeaDeps> = {}) {
   const preserveAgentReviewAuthority =
     over.preserveAgentReviewAuthority ?? vi.fn(async () => ({ preserved: false, reason: 'not-agent-review' as const }));
   return {
-    deps: { createPlanDraft, recordRoutedIdea, getIssue, linkIssue, preserveAgentReviewAuthority } as unknown as RouteIdeaDeps,
+    deps: {
+      createPlanDraft,
+      recordRoutedIdea,
+      getIssue,
+      linkIssue,
+      preserveAgentReviewAuthority,
+      ...(over.buildDraftBody ? { buildDraftBody: over.buildDraftBody } : {}),
+    } as unknown as RouteIdeaDeps,
     createPlanDraft,
     recordRoutedIdea,
     getIssue,
@@ -119,6 +130,58 @@ describe('buildRouteRationale', () => {
 
   it('notes the source ref (re-route provenance)', () => {
     expect(buildRouteRationale({ framing: 'x', sourceRef: 'wi:EI-9' })).toContain('Routed from wi:EI-9');
+  });
+});
+
+describe('route draft placeholder guard', () => {
+  const templateArgs = {
+    slug: 'guarded-idea-2026-09-08',
+    title: 'Guarded idea',
+    date: '2026-09-08',
+    rationale: 'A measured framing and a concrete mechanism.',
+  };
+
+  it('recognizes the known template prose and the route builder removes it', () => {
+    const rawTemplate = buildScoutPlanTemplate(templateArgs);
+    expect(knownRouteDraftPlaceholderSections(rawTemplate)).toEqual(['requirements', 'design']);
+    expect(guardRouteDraftBody(rawTemplate)).toEqual({
+      ok: false,
+      reason: 'placeholder-draft',
+      placeholderSections: ['requirements', 'design'],
+    });
+
+    const template = buildRouteDraftBody(templateArgs);
+    expect(knownRouteDraftPlaceholderSections(template)).toEqual([]);
+    expect(guardRouteDraftBody(template)).toEqual({ ok: true });
+    expect(template).not.toContain('## Requirements\n\nTBD');
+    expect(template).not.toContain('## Design\n\nTBD');
+    expect(template).not.toContain('The ratified plan must turn the proposal above');
+    expect(template).not.toContain('Start from the first concrete slice below');
+  });
+
+  it('refuses the known unmodified template before createPlanDraft can write', async () => {
+    const { deps, createPlanDraft, recordRoutedIdea } = makeDeps({
+      buildDraftBody: (args) => {
+        // Deliberately reintroduce the shared generator output: this is the
+        // permanent negative control for the route-level guard.
+        return buildScoutPlanTemplate(args);
+      },
+    });
+
+    const out = await runRouteIdea(
+      { draft: { title: 'Guarded idea', framing: 'the why', mechanism: 'the how' }, rail: 'plan' },
+      {},
+      deps,
+    );
+
+    expect(out).toEqual({
+      ok: false,
+      reason: 'placeholder-draft',
+      placeholderSections: ['requirements', 'design'],
+    });
+    expect(createPlanDraft).not.toHaveBeenCalled();
+    expect(recordRoutedIdea).not.toHaveBeenCalled();
+    expect(toToolResult(out).isError).toBe(true);
   });
 });
 

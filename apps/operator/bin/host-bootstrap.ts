@@ -497,16 +497,17 @@ export function runBootstrap(): void {
       const { validateDeclaredSingletons } = await import(
         '@papercusp/operator-core/lib/startup/validate-declared-singletons'
       );
-      // A packaged desktop's first boot validates before the asynchronous dogfood-hive
-      // bootstrap has had a chance to register its first project. In that known empty-
-      // workspace window, every @singleton row is absent by construction; running the
-      // detector here produces a misleading FATAL on a service that is serving normally.
-      // Defer only this recognized fresh-install case. Once any project exists, keep the
-      // detector loud so a genuinely established workspace cannot hide an unmaterialized
-      // learning loop behind the first-boot exception.
-      if (process.env.PAPERCUSP_DESKTOP === '1' && (await isLikelyFreshInstallGap())) {
+      // A fresh operator host's first boot validates before the asynchronous dogfood-hive
+      // bootstrap has had a chance to register its first project. This applies to both the
+      // packaged desktop and an isolated Hono host: in that known empty-workspace window,
+      // every @singleton row is absent by construction, so running the detector produces a
+      // misleading FATAL on a service that is serving normally. Defer only this recognized
+      // fresh-install case. Once any project exists, keep the detector loud so a genuinely
+      // established workspace cannot hide an unmaterialized learning loop behind the
+      // first-boot exception.
+      if (await isLikelyFreshInstallGap()) {
         console.log(
-          '[declared-singletons] startup validation deferred — fresh packaged install has no ' +
+          '[declared-singletons] startup validation deferred — fresh install has no ' +
             'registered project yet; retry after first-boot hive provisioning',
         );
         return;

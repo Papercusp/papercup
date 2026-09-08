@@ -1431,7 +1431,8 @@
             "apps/operator/bin/**/*.test.ts",
             "apps/operator/scripts/**/*.test.ts",
             "scripts/*.test.ts",
-            "scripts/*.test.mjs"
+            "scripts/*.test.mjs",
+            "scripts/lib/**/*.test.ts"
           ]
         },
         {

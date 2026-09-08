@@ -26,7 +26,11 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 
 import { getIssue, linkIssue } from '../../issues-engineer';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
-import { createScoutPlanDraft, type CreateScoutPlanDraftInput } from '../../scout/scout-plan-draft';
+import {
+  buildScoutPlanTemplate,
+  createScoutPlanDraft,
+  type CreateScoutPlanDraftInput,
+} from '../../scout/scout-plan-draft';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { preserveAgentReviewAuthorityBeforePlanRoute } from '../../harness/improvements/agent-review';
 import { resolvePlanRevisionSessionRef } from '../plans/revisions';
@@ -82,8 +86,8 @@ export type RouteIdeaArgs = z.infer<typeof routeIdeaArgs>;
 /** The tool's payload — what was routed, where, and (re-route path) the link state. */
 export interface RouteIdeaResult {
   ok: boolean;
-  /** The only non-ok outcome: a featureId that resolved to no issue. */
-  reason?: 'not-found';
+  /** Refusal reason for a route that cannot safely enter the plan rail. */
+  reason?: 'not-found' | 'placeholder-draft';
   rail?: 'plan';
   /** The (dated) draft plan slug. */
   slug?: string;
@@ -99,6 +103,129 @@ export interface RouteIdeaResult {
   linked?: boolean;
   /** Re-route path: the wi is deliberately NOT closed (D-007). */
   wiStaysOpen?: boolean;
+  /** Sections whose known placeholder text made the route unsafe. */
+  placeholderSections?: RouteDraftPlaceholderSection[];
+}
+
+/** The two plan sections whose old Scout prose disguised an empty draft. */
+export type RouteDraftPlaceholderSection = 'requirements' | 'design';
+
+const KNOWN_ROUTE_PLACEHOLDERS: Readonly<Record<RouteDraftPlaceholderSection, readonly string[]>> = {
+  requirements: [
+    'TBD',
+    'The ratified plan must turn the proposal above into a concrete, observable outcome. Its first slice must preserve the rationale recorded in this draft and produce verification evidence that a reviewer can use to judge the outcome.',
+  ],
+  design: [
+    'TBD',
+    'Start from the first concrete slice below and refine its implementation boundary, dependencies, and verification during review. The design must stay within the proposal\'s rationale and make the smallest verifiable change explicit before the plan is ratified.',
+  ],
+};
+
+function normalizedSectionBody(body: string): string {
+  return body.replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim();
+}
+
+function sectionRange(content: string, heading: string): { start: number; end: number; body: string } | null {
+  const start = content.indexOf(`## ${heading}`);
+  if (start < 0) return null;
+  const bodyStart = content.indexOf('\n', start);
+  if (bodyStart < 0) return { start, end: content.length, body: '' };
+  const remainder = content.slice(bodyStart);
+  const nextHeading = remainder.search(/\n## /);
+  const end = nextHeading < 0 ? content.length : bodyStart + nextHeading;
+  return { start, end, body: content.slice(bodyStart + 1, end) };
+}
+
+/** Pure detector for the exact known template prose observed in routed drafts. */
+export function knownRouteDraftPlaceholderSections(content: string): RouteDraftPlaceholderSection[] {
+  return (['requirements', 'design'] as const).filter((section) => {
+    const range = sectionRange(content, section[0].toUpperCase() + section.slice(1));
+    if (!range) return false;
+    const body = normalizedSectionBody(range.body);
+    return KNOWN_ROUTE_PLACEHOLDERS[section].some((placeholder) => normalizedSectionBody(placeholder) === body);
+  });
+}
+
+/**
+ * Keep the shared draft shape, but remove deceptive known placeholders for the
+ * su route. Missing sections are intentionally visible and remain subject to
+ * the existing spec-triad gate until a reviewer authors them.
+ */
+export function buildRouteDraftBody(args: Parameters<typeof buildScoutPlanTemplate>[0]): string {
+  const body = buildScoutPlanTemplate(args);
+  const ranges = (['requirements', 'design'] as const)
+    .map((section) => {
+      const range = sectionRange(body, section[0].toUpperCase() + section.slice(1));
+      if (!range) return null;
+      const normalized = normalizedSectionBody(range.body);
+      return KNOWN_ROUTE_PLACEHOLDERS[section].some((placeholder) => normalizedSectionBody(placeholder) === normalized)
+        ? range
+        : null;
+    })
+    .filter((range): range is { start: number; end: number; body: string } => range !== null)
+    .sort((a, b) => b.start - a.start);
+
+  return ranges
+    .reduce((current, range) => current.slice(0, range.start) + current.slice(range.end), body)
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+export type RouteDraftBodyBuilder = (args: Parameters<typeof buildScoutPlanTemplate>[0]) => string;
+
+export type RouteDraftGuardResult =
+  | { ok: true }
+  | { ok: false; reason: 'placeholder-draft'; placeholderSections: RouteDraftPlaceholderSection[] };
+
+/** Refuse a body if a future route builder reintroduces the deceptive template prose. */
+export function guardRouteDraftBody(content: string): RouteDraftGuardResult {
+  const placeholderSections = knownRouteDraftPlaceholderSections(content);
+  return placeholderSections.length
+    ? { ok: false, reason: 'placeholder-draft', placeholderSections }
+    : { ok: true };
+}
+
+function routeDraftBuilder(title: string, rationale: string, builder: RouteDraftBodyBuilder) {
+  const buildBody = ({ slug, date }: { slug: string; date: string }): string =>
+    builder({ slug, title, date, rationale });
+  // Probe the exact builder before any plan or ledger write. This keeps the
+  // route safe if the shared template changes and starts emitting a known
+  // placeholder again.
+  const guard = guardRouteDraftBody(buildBody({ slug: 'route-probe', date: '2000-01-01' }));
+  return { buildBody, guard };
+}
+
+function prepareRoutePlanDraft(args: {
+  title: string;
+  rationale: string;
+  harnessSlug: string;
+  workspaceId?: string;
+  revisionIdentity: ReturnType<typeof resolveAgentIdentity>;
+  revisionSession: Awaited<ReturnType<typeof resolvePlanRevisionSessionRef>>;
+}, deps: RouteIdeaDeps):
+  | { ok: true; input: CreateScoutPlanDraftInput }
+  | { ok: false; result: RouteIdeaResult } {
+  const { buildBody, guard } = routeDraftBuilder(
+    args.title,
+    args.rationale,
+    deps.buildDraftBody ?? buildRouteDraftBody,
+  );
+  if (!guard.ok) return { ok: false, result: guard };
+
+  const date = new Date().toISOString().slice(0, 10);
+  return {
+    ok: true,
+    input: {
+      slug: slugStemFromTitle(args.title),
+      title: args.title,
+      harnessSlug: args.harnessSlug,
+      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      revisionIdentity: args.revisionIdentity,
+      revisionSession: args.revisionSession,
+      rationale: args.rationale,
+      date,
+      buildBody,
+    },
+  };
 }
 
 /** Injectable seams — unit tests drive the full flow with fakes (grade-idea/gym-tools pattern). */
@@ -108,6 +235,8 @@ export interface RouteIdeaDeps {
   getIssue: typeof getIssue;
   linkIssue: typeof linkIssue;
   preserveAgentReviewAuthority: typeof preserveAgentReviewAuthorityBeforePlanRoute;
+  /** Test seam for proving the route refuses a reintroduced known placeholder. */
+  buildDraftBody?: RouteDraftBodyBuilder;
 }
 
 /**
@@ -183,15 +312,19 @@ export async function runRouteIdea(
     const issue = await deps.getIssue(args.featureId);
     if (!issue) return { ok: false, reason: 'not-found', featureId: args.featureId };
 
-    const { slug, created } = await deps.createPlanDraft({
-      slug: slugStemFromTitle(issue.title),
-      title: issue.title,
-      harnessSlug,
-      ...(workspaceId ? { workspaceId } : {}),
-      revisionIdentity: identity,
-      revisionSession,
-      rationale: buildRouteRationale({ framing: issue.body || null, sourceRef: `wi:${issue.id}` }),
-    });
+    const draft = prepareRoutePlanDraft(
+      {
+        title: issue.title,
+        harnessSlug,
+        ...(workspaceId ? { workspaceId } : {}),
+        revisionIdentity: identity,
+        revisionSession,
+        rationale: buildRouteRationale({ framing: issue.body || null, sourceRef: `wi:${issue.id}` }),
+      },
+      deps,
+    );
+    if (!draft.ok) return { ...draft.result, featureId: issue.id };
+    const { slug, created } = await deps.createPlanDraft(draft.input);
     const planRef = `plan:${slug}`;
     // The same bare EI id is used by su-ideate's plan-learning row and, when
     // review enrollment happened first, by agent-review's grade authority. Move
@@ -227,20 +360,24 @@ export async function runRouteIdea(
 
   // ── Draft path: a fresh idea → a new draft plan + a fresh ledger row.
   const d = args.draft!;
-  const { slug, created } = await deps.createPlanDraft({
-    slug: slugStemFromTitle(d.title),
-    title: d.title,
-    harnessSlug,
-    ...(workspaceId ? { workspaceId } : {}),
-    revisionIdentity: identity,
-    revisionSession,
-    rationale: buildRouteRationale({
-      framing: d.framing,
-      mechanism: d.mechanism,
-      bet: d.bet ?? null,
-      cheapExperiment: d.cheapExperiment ?? null,
-    }),
-  });
+  const draft = prepareRoutePlanDraft(
+    {
+      title: d.title,
+      harnessSlug,
+      ...(workspaceId ? { workspaceId } : {}),
+      revisionIdentity: identity,
+      revisionSession,
+      rationale: buildRouteRationale({
+        framing: d.framing,
+        mechanism: d.mechanism,
+        bet: d.bet ?? null,
+        cheapExperiment: d.cheapExperiment ?? null,
+      }),
+    },
+    deps,
+  );
+  if (!draft.ok) return draft.result;
+  const { slug, created } = await deps.createPlanDraft(draft.input);
   const planRef = `plan:${slug}`;
   await deps.recordRoutedIdea({
     ideaId: planRef, // no pre-existing idea id — key the row by its routed artifact

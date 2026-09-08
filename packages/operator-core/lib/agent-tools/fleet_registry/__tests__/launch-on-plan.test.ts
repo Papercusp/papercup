@@ -2668,6 +2668,14 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
     const composed = fs.readFileSync(payload.memberLaunchContextPath, 'utf8');
     expect(composed).toContain('MISSION: full drain of the non-P2P backlog.');
     expect(composed).toContain('Do NOT touch WI-1234 — a peer owns it.');
+    // The durable fresh-fleet recipe must carry the same canonical file path
+    // handed to psu, never the inline prose that would kill a later refill.
+    const persisted = setFleetHeadcountTargetMock.mock.calls.at(-1)?.[0] as {
+      config?: { launchContext?: string };
+    };
+    expect(persisted.config?.launchContext).toBe(payload.memberLaunchContextPath);
+    expect(persisted.config?.launchContext).not.toBe(briefText);
+    expect(fs.readFileSync(persisted.config!.launchContext!, 'utf8')).toContain('MISSION: full drain');
     // The path actually handed to psu is the WRITTEN file, never the raw brief text.
     const firstGreeting = spawnConsoleMock.mock.calls[0][0].envelope.greetingCmd as string;
     expect(firstGreeting).toContain('--launch-context=');

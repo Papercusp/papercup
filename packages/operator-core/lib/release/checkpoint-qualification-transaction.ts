@@ -837,7 +837,19 @@ export function assessTerminalRepairQueueReconciliation(
   // through to the same phase/attempts/fixer safety checks below, so it is judged on its actual
   // state rather than being permanently blocked (WI-2142947).
   const originUnknown = queue.qualificationAttemptId === null;
-  if (!originUnknown && queue.qualificationAttemptId !== current.attemptId) {
+  const originMatchesTerminal = queue.qualificationAttemptId === current.attemptId;
+  // A logical qualification can inherit the queue selected by its immediate predecessor.
+  // If that inherited run then terminates inconclusively, the queue still names the earlier
+  // attempt while `previousAttemptId` is the durable link from the terminal transaction back
+  // to it. This link is accepted only for the narrow untested repair-head state below.
+  const originMatchesImmediatePredecessor =
+    current.previousAttemptId !== null && queue.qualificationAttemptId === current.previousAttemptId;
+  const safeUntestedRepairHead =
+    queue.phase === 'ready-to-verify' &&
+    queue.fixerSpawnId === null &&
+    queue.dispatchReservation == null &&
+    frozenRepairHeadAwaitsVerification(queue);
+  if (!originUnknown && !originMatchesTerminal && !(originMatchesImmediatePredecessor && safeUntestedRepairHead)) {
     return {
       status: 'blocked',
       reason: 'queue-origin-mismatch',
@@ -851,17 +863,11 @@ export function assessTerminalRepairQueueReconciliation(
   // suite-producing state. Preserve the exact queue while installing the successor logical
   // qualification, which will select the same repairHead through the ordinary frozen-queue /
   // required-ancestor preflight below. Keep this deliberately narrow: provenance must name the
-  // terminal predecessor, no fixer or dispatch reservation may still own the row, and the head
-  // must be absent from the convergence rounds. Unknown or mismatched provenance stays fail-
-  // closed, as does a repairHead that has already consumed a verification run.
-  if (
-    !originUnknown &&
-    queue.qualificationAttemptId === current.attemptId &&
-    queue.phase === 'ready-to-verify' &&
-    queue.fixerSpawnId === null &&
-    queue.dispatchReservation == null &&
-    frozenRepairHeadAwaitsVerification(queue)
-  ) {
+  // terminal attempt or its explicitly recorded immediate predecessor, no fixer or dispatch
+  // reservation may still own the row, and the head must be absent from the convergence rounds.
+  // Unknown, unrelated, or deeper ancestry stays fail-closed, as does a repairHead that has
+  // already consumed a verification run.
+  if (!originUnknown && (originMatchesTerminal || originMatchesImmediatePredecessor) && safeUntestedRepairHead) {
     return {
       status: 'preserved',
       reason: 'matching-untested-repair-head',
@@ -958,6 +964,44 @@ async function mutateStoredQualification(
                             #- '{gate_health,inconclusive}'
                      ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
                    END,
+                   '{${tx.unsafe(CHECKPOINT_QUALIFICATION_METADATA_KEY)}}',
+                   ${JSON.stringify(transition.transaction)}::text::jsonb,
+                   true
+                 ),
+                 updated_at = now()
+           WHERE workspace_id = ${target.workspaceId}
+             AND install_slug = ${target.installSlug}
+             AND target_role = 'system:green-checkpoint'
+             AND metadata->'repair_queue' = ${JSON.stringify(metadata.repair_queue)}::text::jsonb
+             AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY} = ${JSON.stringify(raw)}::text::jsonb
+           RETURNING metadata`;
+        if (updatedRows.length === 0) {
+          return {
+            status: 'conflict' as const,
+            transaction: predecessor!,
+            repairQueueReconciliation: {
+              ...reconciliation,
+              status: 'blocked',
+              reason: 'cas-miss',
+            },
+          };
+        }
+        return { ...transition, repairQueueReconciliation: reconciliation };
+      }
+      if (reconciliation?.status === 'preserved') {
+        // Preservation is a queue handoff, not just permission to leave an old id behind.
+        // Re-stamp the queue to the successor in the SAME exact-row CAS that installs the
+        // successor transaction. Otherwise the next inconclusive run sees ancestry two hops
+        // old and wedges on queue-origin-mismatch again.
+        const updatedRows = await tx<{ metadata: Record<string, unknown> }[]>`
+          UPDATE harness_shared.routines
+             SET metadata = jsonb_set(
+                   jsonb_set(
+                     COALESCE(metadata, '{}'::jsonb),
+                     '{repair_queue,qualificationAttemptId}',
+                     ${JSON.stringify(transition.transaction.attemptId)}::text::jsonb,
+                     true
+                   ),
                    '{${tx.unsafe(CHECKPOINT_QUALIFICATION_METADATA_KEY)}}',
                    ${JSON.stringify(transition.transaction)}::text::jsonb,
                    true

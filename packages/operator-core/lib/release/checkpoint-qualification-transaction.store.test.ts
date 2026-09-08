@@ -35,6 +35,21 @@ function terminalQualification() {
   }).transaction;
 }
 
+function terminalSuccessorQualification() {
+  const inherited = beginQualificationTransaction(terminalQualification(), {
+    attemptId: 'attempt-2',
+    requiredAncestorSha: 'repair-1',
+    declaredPaths: ['fixed.ts'],
+    candidate: 'candidate-1',
+    nowMs: 250,
+  }).transaction;
+  return settleQualificationTransaction(inherited, {
+    attemptId: 'attempt-2',
+    reason: 'dependency-prewarm-missing',
+    nowMs: 275,
+  }).transaction;
+}
+
 function safeQueue() {
   return createFrozenCandidateQueue({
     candidate: 'candidate-1',
@@ -178,7 +193,101 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     });
     const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
     expect(update.text).not.toContain("- 'repair_queue'");
-    expect(update.text).not.toContain("metadata->'repair_queue' =");
+    expect(update.text).toContain("metadata->'repair_queue' =");
+    expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
+    expect(update.values).toContain(JSON.stringify('attempt-2'));
+    expect(update.values).toContain(JSON.stringify(queue));
+    expect(update.values).toContain(JSON.stringify(current));
+  });
+
+  it('preserves and re-stamps an untested queue owned by the terminal attempt immediate predecessor', async () => {
+    const current = terminalSuccessorQualification();
+    const redCandidate = markFrozenCandidateVerificationRed(safeQueue(), {
+      failingTests: ['broken.test.ts'],
+      nowMs: 150,
+    });
+    const queue = markFrozenRepairAdmitted(redCandidate, {
+      atMs: 175,
+      actor: 'agent-1',
+      source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1',
+      toRepairHead: 'repair-1',
+      paths: ['fixed.ts'],
+      unchanged: [],
+      blobs: { 'fixed.ts': 'blob-1' },
+    });
+    const { statements } = transactionHarness({
+      qualificationTransaction: current,
+      repair_queue: queue,
+    });
+
+    const result = await beginStoredQualification(
+      target,
+      {
+        ...successor,
+        attemptId: 'attempt-3',
+      },
+      {
+        reconcileTerminalRepairQueueForSuccessor: true,
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: {
+        attemptId: 'attempt-3',
+        previousAttemptId: 'attempt-2',
+      },
+      repairQueueReconciliation: {
+        status: 'preserved',
+        reason: 'matching-untested-repair-head',
+        predecessorAttemptId: 'attempt-2',
+        successorAttemptId: 'attempt-3',
+      },
+    });
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).not.toContain("- 'repair_queue'");
+    expect(update.text).toContain("metadata->'repair_queue' =");
+    expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
+    expect(update.values).toContain(JSON.stringify('attempt-3'));
+    expect(update.values).toContain(JSON.stringify(queue));
+    expect(update.values).toContain(JSON.stringify(current));
+  });
+
+  it('fails closed when the preserved queue changes before its ownership re-stamp', async () => {
+    const current = terminalSuccessorQualification();
+    const redCandidate = markFrozenCandidateVerificationRed(safeQueue(), {
+      failingTests: ['broken.test.ts'],
+      nowMs: 150,
+    });
+    const queue = markFrozenRepairAdmitted(redCandidate, {
+      atMs: 175,
+      actor: 'agent-1',
+      source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1',
+      toRepairHead: 'repair-1',
+      paths: ['fixed.ts'],
+      unchanged: [],
+      blobs: { 'fixed.ts': 'blob-1' },
+    });
+    transactionHarness({ qualificationTransaction: current, repair_queue: queue }, { casMatches: false });
+
+    const result = await beginStoredQualification(
+      target,
+      {
+        ...successor,
+        attemptId: 'attempt-3',
+      },
+      {
+        reconcileTerminalRepairQueueForSuccessor: true,
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: 'conflict',
+      transaction: { attemptId: 'attempt-2' },
+      repairQueueReconciliation: { status: 'blocked', reason: 'cas-miss' },
+    });
   });
 
   it('fails closed on an exact-CAS miss without installing the successor', async () => {

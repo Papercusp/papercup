@@ -87,7 +87,11 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
-import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
+import {
+  FOREGROUND_TERMINATION_GRACE_MS,
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  clampForegroundTimeoutMs,
+} from '../capability/foreground-transport-cap';
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -1045,7 +1049,7 @@ function runTestProcess(
         };
         const killGroupWithFallback = () => {
           killGroup('SIGTERM');
-          setTimeout(() => killGroup('SIGKILL'), 5000).unref();
+          setTimeout(() => killGroup('SIGKILL'), FOREGROUND_TERMINATION_GRACE_MS).unref();
         };
         const timer = setTimeout(() => {
           timedOut = true;

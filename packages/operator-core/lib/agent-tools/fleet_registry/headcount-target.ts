@@ -1,6 +1,7 @@
 /** fleet:headcount-target — persist a bounded fleet member target for the
  * background governor. The first wave still uses fleet:launch-on-plan; this
  * tool records the validated recipe that later routine ticks may top up. */
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet, getFleetHeadcountTarget, setFleetHeadcountTarget } from '../../agent-fleets-store';
@@ -46,7 +47,11 @@ export default defineTool({
     headless: z.boolean().optional().describe('Persisted placement. Defaults true for background restoration.'),
     role: z.string().min(1).optional(),
     brief: z.string().min(1).max(4000).optional(),
-    launchContext: z.string().min(1).optional(),
+    launchContext: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Readable PATH to a launch-context file. Put inline instructions in brief; prose here is refused before persistence.'),
     contextSize: z.literal('trimmed').optional(),
     compactionLimit: z.number().int().min(20_000).max(900_000).optional(),
     carry: z.enum(['warm', 'cold']).optional(),
@@ -130,6 +135,39 @@ export default defineTool({
       ...(args.carry ? { carry: args.carry } : {}),
       ...(args.extraArgs?.length ? { extraArgs: args.extraArgs } : {}),
     });
+    // The governor and respawn path pass this value to psu as --launch-context,
+    // which is a FILE PATH (not an inline brief). Validate the effective value,
+    // including an inherited value from an older profile, before persisting it;
+    // otherwise a prose value is accepted here and only kills a replacement
+    // member later when psu attempts to open it (EI-22682725231684697).
+    const rawLaunchContext = (config as { launchContext?: unknown }).launchContext;
+    const launchContext = typeof rawLaunchContext === 'string' ? rawLaunchContext.trim() : undefined;
+    if (rawLaunchContext !== undefined && (!launchContext || typeof rawLaunchContext !== 'string')) {
+      return json({
+        ok: false,
+        error: 'invalid_launch_context',
+        message: 'launchContext must be a non-empty readable file path before the fleet launch recipe can be persisted. Use brief for inline instructions.',
+      }, true);
+    }
+    if (launchContext) {
+      try {
+        readFileSync(launchContext, 'utf8');
+      } catch (error) {
+        return json({
+          ok: false,
+          error: 'invalid_launch_context',
+          launchContext,
+          message:
+            `launchContext must be a readable file path before the fleet launch recipe can be persisted: ` +
+            `could not read \`${launchContext}\` (${error instanceof Error ? error.message : String(error)}). ` +
+            'Use brief for inline instructions.',
+        }, true);
+      }
+      // Persist the canonical trimmed spelling. A path that is readable only
+      // before surrounding whitespace is stripped would otherwise fail when
+      // the governor forwards the stored value to psu.
+      (config as { launchContext?: string }).launchContext = launchContext;
+    }
     await setFleetHeadcountTarget({ workspaceId, fleetSlug: args.fleet, target: args.target, config });
     return json({
       ok: true,

@@ -522,10 +522,15 @@ describe('coord:orient args', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const modesStart = source.indexOf('const runtimeModesPromise =');
     const portfolioStart = source.indexOf('const goalPortfolioPromise =');
+    const obligationsStart = source.indexOf('const goalObligationsPromise =');
     const composeStart = source.indexOf('const result = await composeOrient(');
 
     expect(modesStart).toBeGreaterThanOrEqual(0);
     expect(portfolioStart).toBeGreaterThan(modesStart);
+    expect(obligationsStart).toBeGreaterThan(portfolioStart);
+    expect(obligationsStart).toBeLessThan(composeStart);
+    expect(source.slice(obligationsStart, composeStart)).toContain('readAgentObligationAgenda');
+    expect(source.slice(obligationsStart, composeStart)).toContain('projectAgentTurnStartObligationBrief');
     expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBrief');
     // WI-2140700: the holder's owner-report obligation starts in the same early
     // window (overlapping the sequential folds) and is folded into
@@ -785,6 +790,7 @@ function composeGoalOrient(
   args: Parameters<typeof composeOrient>[0],
   call: InnerCall,
   fold: NonNullable<Parameters<typeof composeOrient>[18]>,
+  obligationsFold?: NonNullable<Parameters<typeof composeOrient>[19]>,
 ): ReturnType<typeof composeOrient> {
   return composeOrient(
     args,
@@ -806,6 +812,7 @@ function composeGoalOrient(
     undefined,
     undefined,
     fold,
+    obligationsFold,
   );
 }
 
@@ -829,6 +836,44 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const { call: ordinaryCall } = fakeCall({ ...CORE });
     const ordinary = await composeOrient({}, ordinaryCall, 'me');
     expect(ordinary.goalPortfolio).toBeUndefined();
+    expect(ordinary.obligations).toBeUndefined();
+  });
+
+  it('folds the complete canonical obligation agenda behind the turn-start recovery reference', async () => {
+    const { call } = fakeCall({ ...CORE });
+    const obligations = {
+      schemaVersion: 'agent-obligations-v1',
+      evaluatedAt: '2026-09-08T09:00:00.000Z',
+      sourceGeneration: 'agenda-complete-1',
+      evaluations: [{ id: 'evaluation-1', status: 'due' }],
+      primary: [
+        { id: 'obligation-1', status: 'due', title: 'First complete obligation' },
+        { id: 'obligation-2', status: 'due', title: 'Second complete obligation' },
+      ],
+      projection: {
+        text: '- [DUE] First complete obligation',
+        entries: [{ id: 'obligation-1' }],
+        receipt: {
+          sink: 'turn-start',
+          mode: 'truncate',
+          entriesAvailable: 2,
+          entriesDelivered: 1,
+          entriesOmitted: 1,
+          bodyDeliveredChars: 33,
+          estimatedTokens: 9,
+          bodyTruncated: true,
+          refused: false,
+          reason: 'entry-cap',
+        },
+      },
+      detailRef: 'coord:orient for the complete obligation agenda',
+    } as never;
+
+    const result = await composeGoalOrient({}, call, async () => GOAL_PORTFOLIO, async () => obligations);
+
+    expect(result.obligations).toBe(obligations);
+    expect(result.obligations?.primary).toHaveLength(2);
+    expect(result.obligations?.projection.receipt.entriesOmitted).toBe(1);
   });
 
   it('folds assignments + claimable + inbox + plan-events into one result (no intent)', async () => {

@@ -1413,11 +1413,11 @@ async function startOperatorProcess(port = 0) {
   child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
     events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
     path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string;
-    before?: unknown[]; after?: unknown[]; body?: unknown; stage?: string }) => {
+    before?: unknown[]; after?: unknown[]; body?: unknown; stage?: string; workers?: unknown }) => {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
     if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
       console.info('PUI_OPERATOR_PROCESS_STAGE', JSON.stringify({ type: message.type, stage: message.stage,
-        pid: message.pid, instanceId: message.instanceId, at: new Date().toISOString() }));
+        pid: message.pid, instanceId: message.instanceId, workers: message.workers, at: new Date().toISOString() }));
       if (message.stage) shutdownStages.push(message.stage);
     }
     if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);

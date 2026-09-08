@@ -2,9 +2,8 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import type {
   AppendTaskReleaseReceiptResult,
   TaskReleaseJournal,
@@ -440,8 +439,7 @@ async function main(): Promise<void> {
   })}\n`);
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-if (isMain) {
+if (isCliEntry(import.meta.url)) {
   main().catch((error: unknown) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

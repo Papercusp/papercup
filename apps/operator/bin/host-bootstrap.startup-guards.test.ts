@@ -96,17 +96,19 @@ describe('host-bootstrap wires every startup guard', () => {
     expect(catches.length).toBeGreaterThanOrEqual(STARTUP_GUARDS.length);
   });
 
-  it('defers declared-singleton validation during a fresh packaged install', () => {
-    // The packaged sidecar starts before the async dogfood-hive bootstrap can register its
-    // first project. Running the absence detector in that empty-workspace window emits a
-    // misleading FATAL even though the operator is healthy and serving. The defer must stay
-    // narrow: the normal validateDeclaredSingletons() call remains in the same boot block for
-    // established workspaces.
-    expect(bootSrc).toMatch(
-      /process\.env\.PAPERCUSP_DESKTOP\s*===\s*['"]1['"]\s*&&\s*\(await\s+isLikelyFreshInstallGap\(\)\)/,
+  it('defers declared-singleton validation for any fresh operator host, including isolated Hono', () => {
+    // The host starts before the async dogfood-hive bootstrap can register its first project.
+    // This empty-workspace window exists for packaged desktop and isolated Hono hosts alike;
+    // an env-specific desktop gate would leave the Hono path emitting a false FATAL. The
+    // defer must stay narrow: established workspaces still call validateDeclaredSingletons().
+    const singletonGuard = bootSrc.slice(
+      bootSrc.indexOf("'@papercusp/operator-core/lib/startup/validate-declared-singletons'"),
+      bootSrc.indexOf('// [D-007 startup validation]'),
     );
-    expect(bootSrc).toContain('[declared-singletons] startup validation deferred');
-    expect(bootSrc).toMatch(/startup validation deferred[\s\S]*?return;[\s\S]*?validateDeclaredSingletons\(\)/);
+    expect(singletonGuard).toContain('if (await isLikelyFreshInstallGap())');
+    expect(singletonGuard).not.toContain('PAPERCUSP_DESKTOP');
+    expect(singletonGuard).toContain('[declared-singletons] startup validation deferred');
+    expect(singletonGuard).toMatch(/startup validation deferred[\s\S]*?return;[\s\S]*?validateDeclaredSingletons\(\)/);
   });
 
   it('defers bespoke active-seed validation during a fresh packaged install', () => {
@@ -153,6 +155,49 @@ describe('host-bootstrap fails the background plane closed on migration failure'
     const guardBody = bootSrc.slice(failureGuard, requestGate);
     expect(guardBody).toMatch(/BACKGROUND STARTUP WITHHELD[\s\S]*?return;/);
     expect(guardBody).toMatch(/markSubstrateBootRoutingFailed[\s\S]*?return;/);
+  });
+});
+
+describe('background admission recovery loads the live kernel resolver before routines start', () => {
+  const coreRoot = join(__dirname, '../../../packages/operator-core/lib');
+  const coreSource = (path: string) => readFileSync(join(coreRoot, path), 'utf8');
+
+  it('keeps the resolver install on the eager host-handler import graph, not the first MCP request', () => {
+    // Do not import these modules: that would boot shared background work.
+    // Pin each eager edge instead of merely finding the resolver name in a
+    // test that installs it by hand. This also covers requestless primaries.
+    const eagerEdges: Array<[string, RegExp]> = [
+      [readFileSync(join(__dirname, 'host-handler.ts'), 'utf8'), /^import \{ app \} from '\.\/host-app';$/m],
+      [readFileSync(join(__dirname, 'host-app.ts'), 'utf8'),
+        /^import \{ registerRouteLiterals, registerRouteCatchalls \} from '@papercusp\/operator-core\/lib\/endpoint-route\/register';$/m],
+      [coreSource('endpoint-route/register.ts'), /^import \{ ALL_ROUTES \} from '\.\/routes';$/m],
+      [coreSource('endpoint-route/routes/index.ts'), /^import transport from '\.\/transport\/index';$/m],
+      [coreSource('endpoint-route/routes/transport/index.ts'), /^import \{ mcpHandler \} from '\.\/_mcp-handler';$/m],
+      [coreSource('endpoint-route/routes/transport/_mcp-handler.ts'), /^import '\.\.\/\.\.\/\.\.\/agent-tools\/index';$/m],
+      [coreSource('agent-tools/index.ts'), /^import '\.\.\/events';$/m],
+    ];
+    for (const [source, edge] of eagerEdges) expect(source).toMatch(edge);
+    expect(coreSource('events/index.ts')).toMatch(/^installControlAnchorKernelResolver\(\);$/m);
+    expect(coreSource('projected-tool-deps.ts')).toMatch(
+      /export function installControlAnchorKernelResolver\(\): void \{\s*setKernelEnforcementResolver\(controlAnchorKernelResolver\);/,
+    );
+  });
+
+  it('evaluates the handler before bootstrap in both Hono and packaged background hosts', () => {
+    expect(honoHostSrc).toMatch(/^import \{ handler \} from '\.\/host-handler';$/m);
+    expect(honoHostSrc).toContain('return runBootstrap();');
+    const packagedHost = readFileSync(join(__dirname, 'serve.ts'), 'utf8');
+    const handlerImport = packagedHost.indexOf('const { handler } = await import("./host-handler");');
+    const bootstrapCall = packagedHost.indexOf('runBootstrap();', handlerImport);
+    expect(handlerImport).toBeGreaterThan(-1);
+    expect(bootstrapCall).toBeGreaterThan(handlerImport);
+    expect(packagedHost.slice(handlerImport, bootstrapCall)).toContain('requestHandler = handler;');
+    expect(bootSrc).toMatch(
+      /const \{ startDbos \} = await import\('@papercusp\/operator-core\/lib\/dbos\/bootstrap'\);\s*await startDbos\(\);/,
+    );
+    for (const path of ['dbos/routines-workflow.ts', 'dbos/ephemeral-executor.ts']) {
+      expect(coreSource(path)).toMatch(/^import '\.\.\/harness\/routines\/register-system-actions';$/m);
+    }
   });
 });
 

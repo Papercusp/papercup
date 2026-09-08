@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   MCP_TRANSPORT_CAP_MS,
+  FOREGROUND_RESPONSE_HEADROOM_MS,
+  FOREGROUND_TERMINATION_GRACE_MS,
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
   foregroundTimeoutHint,
@@ -47,6 +49,23 @@ describe('clampForegroundTimeoutMs — keep a foreground run under the MCP trans
   });
 });
 
+describe('foreground timeout cleanup headroom (EI-22536928771275862)', () => {
+  it('derives the ceiling from cleanup grace and response-delivery headroom', () => {
+    expect(FOREGROUND_TERMINATION_GRACE_MS).toBeGreaterThan(0);
+    expect(FOREGROUND_RESPONSE_HEADROOM_MS).toBeGreaterThanOrEqual(3_000);
+    expect(FOREGROUND_TIMEOUT_CEILING_MS).toBe(
+      MCP_TRANSPORT_CAP_MS - FOREGROUND_TERMINATION_GRACE_MS - FOREGROUND_RESPONSE_HEADROOM_MS,
+    );
+    expect(FOREGROUND_TIMEOUT_CEILING_MS).toBe(45_000);
+  });
+
+  it('uses the shared termination grace for process-tree escalation', () => {
+    const runSrc = readFileSync(join(TOOLS_DIR, 'testing', 'run.ts'), 'utf8');
+    expect(runSrc).toContain('FOREGROUND_TERMINATION_GRACE_MS');
+    expect(runSrc).not.toMatch(/setTimeout\(\(\) => killGroup\('SIGKILL'\), 5000\)/);
+  });
+});
+
 describe('foregroundTimeoutHint — actionable hint on a clamped timeout (EI-6073)', () => {
   const RERUN = 'capability:bash { …same command…, run_in_background: true }';
 
@@ -54,7 +73,7 @@ describe('foregroundTimeoutHint — actionable hint on a clamped timeout (EI-607
     const h = foregroundTimeoutHint('timed_out', FOREGROUND_TIMEOUT_CEILING_MS, RERUN);
     expect(h).toMatch(/run_in_background/);
     expect(h).toMatch(/capability:bash_output/);
-    expect(h).toContain('50s'); // the clamped ceiling, human-readable
+    expect(h).toContain(`${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s`); // the clamped ceiling, human-readable
   });
 
   it("carries the CALLER's own re-run invocation, not a hardcoded sibling tool's", () => {
@@ -105,10 +124,10 @@ describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-215700
   it('names BOTH the requested budget and the effective one — the pair is the whole point', () => {
     const d = foregroundClampDisclosure(REQUESTED, FOREGROUND_TIMEOUT_CEILING_MS);
     expect(d).toContain('120s'); // what the caller asked for
-    expect(d).toContain('50s'); // what was actually in force
+    expect(d).toContain(`${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s`); // what was actually in force
   });
 
-  // Both items were filed as "I requested 120 and was killed at 50000ms". The specific dead end
+  // Both items were filed as "I requested 120 and was killed at the foreground ceiling". The specific dead end
   // was concluding the deadline had been honoured and the SCRIPT was simply too slow. Say the
   // opposite out loud, and say that retrying bigger is futile — otherwise the natural next move
   // is timeoutSec:120 again, which changes nothing.
@@ -134,11 +153,11 @@ describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-215700
   });
 
   // CALIBRATION (permanent control): the assertions above must be able to FAIL. A disclosure that
-  // omitted the requested budget — the exact shape that shipped, where only the effective 50000ms
+  // omitted the requested budget — the exact shape that shipped, where only the effective ceiling
   // ever reached the caller — must be rejected by the same checks.
   it('the same assertions REJECT a disclosure that omits the REQUESTED budget', () => {
-    const effectiveOnly = 'script_timeout after 50000ms';
-    expect(effectiveOnly).toContain('50'); // passes — this is what shipped
+    const effectiveOnly = 'script_timeout after 45000ms';
+    expect(effectiveOnly).toContain('45'); // passes — this is what shipped
     expect(effectiveOnly).not.toContain('120s'); // ← the real guard would fail here
     expect(effectiveOnly).not.toMatch(/never in force/i); // ← and here
   });

@@ -101,10 +101,16 @@ async function stop(): Promise<void> {
     await stopInvalidationListener();
     // Explicit process.exit skips beforeExit, so the embedding workers need
     // their normal per-environment teardown before Node unloads ONNX.
-    const { shutdownLocalEmbedder } = require('@papercusp/memory') as typeof import('@papercusp/memory');
-    const { shutdownLocalReranker } = require('@papercusp/rerank') as typeof import('@papercusp/rerank');
+    const { shutdownLocalEmbedder, getWorkerState } = require('@papercusp/memory') as typeof import('@papercusp/memory');
+    const { shutdownLocalReranker, getRerankWorkerState } = require('@papercusp/rerank') as typeof import('@papercusp/rerank');
     await Promise.all([shutdownLocalEmbedder(), shutdownLocalReranker()]);
-    send({ type: 'shutdown-stage', stage: 'embedding-workers-stopped', pid: process.pid, instanceId });
+    const [esmMemory, esmRerank] = await Promise.all([import('@papercusp/memory'), import('@papercusp/rerank')]);
+    const workers = { cjsEmbed: getWorkerState(), esmEmbed: esmMemory.getWorkerState(),
+      cjsRerank: getRerankWorkerState(), esmRerank: esmRerank.getRerankWorkerState() };
+    if (Object.values(workers).some((worker) => worker.alive || worker.pendingCount > 0)) {
+      throw new Error(`Embedding worker survived cross-loader shutdown: ${JSON.stringify(workers)}`);
+    }
+    send({ type: 'shutdown-stage', stage: 'embedding-workers-stopped', pid: process.pid, instanceId, workers });
     const dbOrg = require('@papercusp/db-org') as typeof import('@papercusp/db-org');
     await dbOrg._resetForTests();
     send({ type: 'stopped', pid: process.pid, instanceId });

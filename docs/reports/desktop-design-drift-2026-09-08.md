@@ -1,6 +1,6 @@
 # Desktop GUI design drift: findings, repair and prevention plan
 
-Prepared for Avi on 8 September 2026; updated after actual portal verification at 09:05 UTC. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
+Prepared for Avi on 8 September 2026; portal verification completed at 09:05 UTC and evidence review updated at 09:54 UTC. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
 
 ## Current conclusion
 
@@ -81,7 +81,11 @@ These are actual portal/current-data captures, with no fabricated desktop image 
 
 The served portal build is `sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6fa24f`, with build ID `sAkL9leDemaAAqkCOmti2` and portal source-root digest `820d2f1184e5cd448761f272cab6621476171105a8d3589d8b9c45109f2f157c`. The normal `papercusp-cloud-portal.service` was restarted onto that immutable generation after preview acceptance. Build, full portal typecheck, and real service browser checks passed. The build reports separately changing linked dependencies; its root digest is not a whole-monorepo freeze claim.
 
-Acceptance bookkeeping is still being settled: the specific repair plan's activation re-audit preserved BAR revision 2, and the final frozen spec-quality card is `EI-22683309730362618`. The documentation guidance clause now has an explicit manual-review exemption from unit testing; the guidance remains mandatory under R-2. Independent review and terminal work-item/plan evidence will be recorded before reporting the whole plan finished.
+Formal acceptance remains open. The current acceptance rubric is revision 3, with the original BAR meanings preserved and the bugfix class and verification methods recorded. The current spec-quality card is `EI-22684842903034302`; independent audit `EI-22685428343609739` passed. The earlier card `EI-22683309730362618` failed audit and is superseded. The documentation guidance clause has an explicit manual-review exemption from unit testing; the guidance remains mandatory under R-2.
+
+Independent review also rejected the original test-adequacy cards' freshness claims. Their copied fingerprint inputs did not independently measure the source. The source and test blobs still match the executed runs; replacement bindings 2098–2105 now use the existing server measurement mechanism. Replacement cards `EI-22686434382631229`, `EI-22686436835731837`, and `EI-22686438933474762` replay with passing currentness and await independent audit. This measures repository source, test and saved artifact bytes. It does not claim a fresh live deployment measurement; the historical browser runs retain their original build identities, and final acceptance still requires an independent actual-portal run and visual inspection.
+
+The rubric critique is recorded at `WI-10000712#201552`, with author vetting `EI-22686582146057973`. Three weaknesses remain explicit: R-2 mixes outcome and implementation language; R-1/R-3 share some browser evidence; and the browser/manual review lacks its own structured runner binding. R-1/R-2's structured test checks run Vitest, so placing a Playwright file there would use the wrong runner. These limitations do not waive the required browser journey, visual comparison, causal report or cloud-connectivity disclosure. The broader proposal below is the place to refine this enforcement contract.
 
 ## Recommended prevention program
 
@@ -108,4 +112,4 @@ The practical rule I recommend is: **no UI approval lives only in prose, and no 
 
 ## Overnight scope
 
-I am continuing directly in this session with AUTO mode registered and a tracked warm continuation loop on WI-10000654. The stop condition is the verified specific desktop layout/navigation repair and an updated report. The broader prevention plan remains for your morning review. Cloud credentials, initialization and provider lifecycle operations retain their existing separate approval boundaries.
+I am continuing directly in this session with AUTO mode registered. The recurring loop was stopped after the live repair; the exact independent-review completion event carries the remaining handoff. The stop condition is formal closure of the verified specific desktop layout/navigation repair and an updated report. The broader prevention plan remains for your morning review. Cloud credentials, initialization and provider lifecycle operations retain their existing separate approval boundaries.

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -167,6 +170,75 @@ describe('fleet:headcount-target canonical launch profile', () => {
       target: 4,
       config: { ...savedProfile.config, productiveCapacityFloor: 2 },
     });
+  });
+
+  it('refuses prose launchContext before persisting a recipe that respawn would consume as a path', async () => {
+    mocks.getFleetHeadcountTarget.mockResolvedValueOnce(null);
+    const result = await tool.handler(
+      {
+        fleet: 'byoc',
+        target: 4,
+        harness: 'papercusp',
+        plan: 'byoc-plan',
+        launchContext: 'Read the assigned work item and complete it with evidence.',
+      } as never,
+      {} as never,
+    );
+
+    expect(parse(result)).toMatchObject({
+      ok: false,
+      error: 'invalid_launch_context',
+      launchContext: 'Read the assigned work item and complete it with evidence.',
+    });
+    expect(mocks.setFleetHeadcountTarget).not.toHaveBeenCalled();
+  });
+
+  it('also refuses an inherited invalid launchContext instead of perpetuating a broken profile', async () => {
+    mocks.getFleetHeadcountTarget.mockResolvedValueOnce({
+      ...savedProfile,
+      config: {
+        ...savedProfile.config,
+        launchContext: 'resume the assigned task from the previous member',
+      },
+    });
+
+    const result = await tool.handler(
+      { fleet: 'byoc', target: 4, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {} as never,
+    );
+
+    expect(parse(result)).toMatchObject({ ok: false, error: 'invalid_launch_context' });
+    expect(mocks.setFleetHeadcountTarget).not.toHaveBeenCalled();
+  });
+
+  it('accepts and trims a readable launchContext path before persisting it', async () => {
+    const contextDir = mkdtempSync(join(tmpdir(), 'papercusp-headcount-context-'));
+    const contextPath = join(contextDir, 'brief.md');
+    writeFileSync(contextPath, '# Fleet brief\n', 'utf8');
+    mocks.getFleetHeadcountTarget.mockResolvedValueOnce(null);
+
+    try {
+      const result = await tool.handler(
+        {
+          fleet: 'byoc',
+          target: 1,
+          harness: 'papercusp',
+          plan: 'byoc-plan',
+          launchContext: ` ${contextPath} `,
+        } as never,
+        {} as never,
+      );
+
+      expect(parse(result)).toMatchObject({ ok: true, config: { launchContext: contextPath } });
+      expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
+        workspaceId: 'ws-test',
+        fleetSlug: 'byoc',
+        target: 1,
+        config: expect.objectContaining({ launchContext: contextPath }),
+      });
+    } finally {
+      rmSync(contextDir, { recursive: true, force: true });
+    }
   });
 
   // R5 (interrupted-member-recovery-hardening-2026-09-01): the supervise grant is a

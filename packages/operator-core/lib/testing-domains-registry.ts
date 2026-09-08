@@ -1130,6 +1130,7 @@ defineTestDomain({
         'apps/operator/scripts/**/*.test.ts',
         'scripts/*.test.ts',
         'scripts/*.test.mjs',
+        'scripts/lib/**/*.test.ts',
       ] },
     { id: 'integration', label: 'Integration (test/)', globs: [
         'apps/operator/test/**/*.test.ts',

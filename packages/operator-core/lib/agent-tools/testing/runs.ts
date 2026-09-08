@@ -129,7 +129,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` rows are { filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. outputTail is populated only for fail/error rows and is truncated.',
+      '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` rows are { id, workspaceId, harnessSlug, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. outputTail is populated only for fail/error rows and is truncated.',
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
@@ -217,7 +217,11 @@ export default defineTool({
       total: z.number().int().nonnegative(),
       truncatedByLimit: z.boolean(),
       latestPerFile: z.boolean(),
-      runs: z.array(z.unknown()).optional(),
+      runs: z.array(z.object({
+        id: z.number().int().positive(),
+        workspaceId: z.string().nullable(),
+        harnessSlug: z.string().nullable(),
+      }).passthrough()).optional(),
       groups: z.array(z.unknown()).optional(),
     })
     .passthrough(),
@@ -352,6 +356,9 @@ export default defineTool({
 
     const rows = await sql<
       Array<{
+        id: string;
+        workspace_id: string | null;
+        harness_slug: string | null;
         file_path: string;
         status: string;
         framework: string;
@@ -376,7 +383,8 @@ export default defineTool({
       ), picked AS (
         ${picked}
       )
-      SELECT p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
+      SELECT p.id::text, p.workspace_id, p.harness_slug,
+             p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
              CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
                   THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
              p.run_group_id, p.source, p.branch, p.commit_sha,
@@ -395,6 +403,9 @@ export default defineTool({
         ...emptyResultMetadata(rows.length),
         latestPerFile,
         runs: rows.map((r) => ({
+          id: Number(r.id),
+          workspaceId: r.workspace_id,
+          harnessSlug: r.harness_slug,
           filePath: r.file_path,
           status: r.status,
           framework: r.framework,

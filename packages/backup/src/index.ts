@@ -24,6 +24,8 @@ export {
   type BackupHost,
   type BackupIntervalHandle,
   type BackupIntervalScheduler,
+  type BackupMigrationLock,
+  type BackupMigrationLockOptions,
   type IntervalSnapshotAdmission,
 } from './config';
 export {

@@ -180,6 +180,44 @@ describe('testing:runs rollup source isolation', () => {
   });
 });
 
+describe('testing:runs evidence identity', () => {
+  it('returns each durable receipt and its stored scope, including an unscoped receipt', async () => {
+    let selectedSql = '';
+    const row = {
+      file_path: 'packages/example/same.test.ts', status: 'pass', framework: 'vitest',
+      started_at: '2026-09-08T09:43:05Z', finished_at: '2026-09-08T09:43:06Z',
+      duration_ms: '1000', output_tail: null, run_group_id: null, source: 'local',
+      branch: 'staging', commit_sha: 'abc123', loop_lag_p95_ms: null, rss_mb: null,
+      worktree_dirty: false, is_scratch_config: false, total: '2',
+    };
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      if (!call.strings.some((part) => part.includes('WITH filtered'))) return call;
+      selectedSql = renderSqlFragment(call);
+      return Promise.resolve([
+        { ...row, id: '17692431', workspace_id: 'workspace-a', harness_slug: 'harness-a' },
+        { ...row, id: '17692432', workspace_id: null, harness_slug: null },
+      ]);
+    });
+
+    const result = await runsTool.handler({ filePath: 'same.test.ts', limit: 2 } as never, {} as never) as {
+      data?: Record<string, unknown>;
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    expect(data).toMatchObject({
+      count: 2,
+      runs: [
+        { id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'harness-a' },
+        { id: 17692432, workspaceId: null, harnessSlug: null },
+      ],
+    });
+    // Both rows have the same path/time/commit. Those labels cannot replace
+    // the ledger identity, and a missing scope must not inherit the caller's.
+    expect(selectedSql).toContain('SELECT p.id::text, p.workspace_id, p.harness_slug');
+  });
+});
+
 describe('testing:runs empty results', () => {
   beforeEach(() => {
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {

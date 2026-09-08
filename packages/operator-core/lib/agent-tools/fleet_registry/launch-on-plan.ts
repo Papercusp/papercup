@@ -4488,6 +4488,28 @@ export default defineTool({
       memberSpecs.length === 0 &&
       !(args.perMemberLaunchContext && args.perMemberLaunchContext.length > 0)
     ) {
+      // A supplied launchContext may be inline brief text. The member command
+      // above never forwards that raw value: composeMemberLaunchContext writes
+      // the effective brief to a readable file and memberLaunchContextPath is
+      // the path actually handed to psu. Persist that canonical path as well;
+      // otherwise a later governor/respawn refill replays the inline prose as
+      // --launch-context and the replacement dies while opening its profile.
+      const requestedLaunchContext = args.launchContext?.trim();
+      const persistedLaunchContext = requestedLaunchContext
+        ? memberLaunchContextPath ??
+          (looksLikeInlineLaunchContextText(requestedLaunchContext) ? undefined : effectiveLaunchContext)
+        : undefined;
+      if (requestedLaunchContext && !persistedLaunchContext) {
+        try {
+          await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+        } catch {
+          /* the guard self-heals when the window elapses */
+        }
+        return err(
+          `Could not persist the fresh fleet launch profile for \`${fleetSlug}\`: ` +
+            'the supplied inline launchContext did not produce a canonical readable context file. No members were opened.',
+        );
+      }
       const modelSpec = composeModelSpec(fleetDefaults.model, fleetDefaults.effort) ?? null;
       const split = splitModelSpec(modelSpec);
       const config = normalizePersistedFleetLaunchConfig({
@@ -4500,7 +4522,7 @@ export default defineTool({
         headless: args.headless ?? true,
         ...(args.role?.trim() ? { role: args.role.trim() } : {}),
         ...(args.brief?.trim() ? { brief: args.brief.trim() } : {}),
-        ...(args.launchContext?.trim() ? { launchContext: args.launchContext.trim() } : {}),
+        ...(persistedLaunchContext ? { launchContext: persistedLaunchContext } : {}),
         ...(args.contextSize ? { contextSize: args.contextSize } : {}),
         ...(args.compactionLimit != null ? { compactionLimit: args.compactionLimit } : {}),
         carry: args.carry ?? 'warm',

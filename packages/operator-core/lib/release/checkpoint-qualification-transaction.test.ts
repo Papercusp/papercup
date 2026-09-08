@@ -337,6 +337,85 @@ describe('logical checkpoint qualification transaction', () => {
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
   });
 
+  it('preserves an untested repair head linked through the terminal attempt immediate predecessor', () => {
+    const firstTerminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
+    }).transaction;
+    const inherited = beginQualificationTransaction(firstTerminal, {
+      attemptId: 'attempt-2',
+      requiredAncestorSha: 'candidate-1',
+      candidate: 'candidate-1',
+      nowMs: 450,
+    }).transaction;
+    const current = settleQualificationTransaction(inherited, {
+      attemptId: 'attempt-2',
+      reason: 'dependency-prewarm-missing',
+      nowMs: 500,
+    }).transaction;
+    expect(current).toMatchObject({
+      attemptId: 'attempt-2',
+      previousAttemptId: 'attempt-1',
+      phase: 'terminal',
+      outcome: { kind: 'code-inconclusive' },
+    });
+
+    const redCandidate = markFrozenCandidateVerificationRed(
+      createFrozenCandidateQueue({
+        candidate: 'candidate-1',
+        qualificationAttemptId: 'attempt-1',
+        base: null,
+        nowMs: 200,
+      }),
+      {
+        failingTests: ['broken.test.ts'],
+        nowMs: 300,
+      },
+    );
+    const readyToVerify = markFrozenRepairAdmitted(redCandidate, {
+      atMs: 350,
+      actor: 'agent-1',
+      source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1',
+      toRepairHead: 'repair-1',
+      paths: ['fixed.ts'],
+      unchanged: [],
+      blobs: { 'fixed.ts': 'blob-1' },
+    });
+    const successor = {
+      attemptId: 'attempt-3',
+      requiredAncestorSha: 'repair-1',
+      declaredPaths: ['fixed.ts'],
+      candidate: 'candidate-2',
+      nowMs: 600,
+    };
+
+    expect(assessTerminalRepairQueueReconciliation(current, successor, readyToVerify)).toMatchObject({
+      status: 'preserved',
+      reason: 'matching-untested-repair-head',
+      predecessorAttemptId: 'attempt-2',
+      successorAttemptId: 'attempt-3',
+      candidate: 'candidate-1',
+    });
+    expect(
+      assessTerminalRepairQueueReconciliation(current, successor, {
+        ...readyToVerify,
+        qualificationAttemptId: 'unrelated-attempt',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    expect(
+      assessTerminalRepairQueueReconciliation(current, successor, {
+        ...readyToVerify,
+        convergenceRounds: [
+          ...(readyToVerify.convergenceRounds ?? []),
+          { round: 2, head: 'repair-1', failingCount: 1, atMs: 550 },
+        ],
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+  });
+
   // WI-2142947: a NULL qualificationAttemptId (schema v3 permits this, WI-41667) is an
   // ABSENCE of provenance, not evidence of a competing owner. It must not be treated as a
   // permanent 'queue-origin-mismatch' fail-close; it falls through to the same

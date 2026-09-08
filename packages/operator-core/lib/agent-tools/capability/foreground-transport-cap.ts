@@ -28,8 +28,19 @@
 /** The hard per-call ceiling the MCP transport enforces. Not ours to change. */
 export const MCP_TRANSPORT_CAP_MS = 55_000;
 
-/** Foreground ceiling — below the transport cap, with ~5s headroom to serialize the response. */
-export const FOREGROUND_TIMEOUT_CEILING_MS = 50_000;
+/** Time reserved for the process-tree SIGTERM → SIGKILL escalation after a foreground timeout. */
+export const FOREGROUND_TERMINATION_GRACE_MS = 5_000;
+
+/** Time reserved to serialize and deliver the structured timeout response. */
+export const FOREGROUND_RESPONSE_HEADROOM_MS = 5_000;
+
+/**
+ * Foreground ceiling — leave room for process cleanup and response delivery before the transport
+ * kills the call. Keep this derived from the shared budgets so a change to either cleanup path
+ * cannot silently reopen the transport-vs-handler race (EI-22536928771275862).
+ */
+export const FOREGROUND_TIMEOUT_CEILING_MS =
+  MCP_TRANSPORT_CAP_MS - FOREGROUND_TERMINATION_GRACE_MS - FOREGROUND_RESPONSE_HEADROOM_MS;
 
 /** Clamp a FOREGROUND command timeout below the MCP transport cap (EI-6073).
  *  Background runs skip this clamp — they carry their own (much longer) deadline instead. */

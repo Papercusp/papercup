@@ -658,6 +658,12 @@ export interface OrientResult {
    *  composition only folds the injected result. Absent for a non-GOAL caller;
    *  null means the caller is a GOAL holder but the portfolio read degraded. */
   goalPortfolio?: import('../../../goal-launch-settings').GoalPortfolioBrief | null;
+  /** P-007 (shared-agent-obligations-and-briefs): the canonical complete
+   *  obligation agenda for a resolved GOAL holder. The embedded turn-start
+   *  projection remains bounded, while `primary` and `evaluations` are the
+   *  complete recovery payload promised by its detailRef. Absent for a
+   *  non-GOAL caller; null means the canonical read degraded. */
+  obligations?: import('../../../agent-obligation-reader').AgentObligationBrief | null;
   /** EI-18731216945970087 / EI-20201050911711528: present ONLY when composeOrient
    *  caught a presence/registry leadership DRIFT — the caller's presence projection
    *  showed no fleet or a non-leader role, but `agent_fleets.leader_owner_id` says
@@ -774,6 +780,9 @@ export type OrientFleetSummariesFold = (
 ) => Promise<OrientFleetSummary[] | null>;
 
 export type OrientGoalPortfolioFold = () => Promise<import('../../../goal-launch-settings').GoalPortfolioBrief | null>;
+export type OrientObligationsFold = () => Promise<
+  import('../../../agent-obligation-reader').AgentObligationBrief | null
+>;
 
 /**
  * Overlay the effective membership onto the caller's own fleet-assignment row.
@@ -987,6 +996,10 @@ export async function composeOrient(
    *  injects this closure over that in-flight promise. Undefined means the
    *  caller is not a resolved GOAL holder. */
   goalPortfolioFold?: OrientGoalPortfolioFold,
+  /** P-007: complete obligation-agenda recovery for a GOAL holder. The handler
+   *  starts the canonical reader beside the portfolio read and injects this
+   *  closure so composition remains IO-free and the two waits overlap. */
+  obligationsFold?: OrientObligationsFold,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   const reportProgress = (snapshot: OrientResult): void => {
@@ -1404,6 +1417,14 @@ export async function composeOrient(
       label: 'orient:goalPortfolio',
     });
     result.goalPortfolio = portfolio.value;
+  }
+  if (obligationsFold) {
+    const obligations = await withBoundedTimeout(obligationsFold(), {
+      fallback: null,
+      timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS,
+      label: 'orient:obligations',
+    });
+    result.obligations = obligations.value;
   }
   // EI-21589715378243224: preserve the core assignment/backlog/inbox snapshot
   // before the optional folds below can consume the aggregate budget.
@@ -3310,6 +3331,30 @@ export default defineTool({
           }
         })()
       : undefined;
+    const goalObligationsPromise =
+      goalSubject && ownerId
+        ? (async () => {
+            try {
+              const { readAgentObligationAgenda, projectAgentTurnStartObligationBrief } = await import(
+                '../../../agent-obligation-reader'
+              );
+              const read = await readAgentObligationAgenda({
+                workspaceId: orientWorkspaceId,
+                ownerId,
+                goalId: goalSubject,
+                // Reuse the already-started canonical portfolio read so orient's
+                // two GOAL core folds describe one snapshot rather than racing
+                // independent reads of the same mutable state.
+                deps: {
+                  goalPortfolio: async () => (goalPortfolioPromise ? await goalPortfolioPromise : null),
+                },
+              });
+              return projectAgentTurnStartObligationBrief(read.agenda);
+            } catch {
+              return null;
+            }
+          })()
+        : undefined;
     // WI-2140700: the holder's own every-wake owner-report obligation — computed
     // from the same three rails the goal-owner-report watchdog measures and folded
     // into `modes.ownerReport`, which the GOAL contract tells the holder to read
@@ -3506,6 +3551,7 @@ export default defineTool({
       recoveredFleetScopePromise ? () => recoveredFleetScopePromise : undefined,
       (snapshot) => snapshotOrientAggregate(aggregateFallback, snapshot),
       goalPortfolioPromise ? () => goalPortfolioPromise : undefined,
+      goalObligationsPromise ? () => goalObligationsPromise : undefined,
     );
     // Await the already-running recovery only after composeOrient completes;
     // this preserves the existing fold output while keeping the two budgets

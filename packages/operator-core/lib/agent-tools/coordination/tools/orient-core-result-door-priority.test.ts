@@ -236,6 +236,14 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
       // goalPortfolio is a non-evictable core key for GOAL callers; include
       // a concrete value so this fixture exercises the complete core order.
       goalPortfolio: { schemaVersion: 1, goal: { id: 'goal-1' } },
+      obligations: {
+        schemaVersion: 'agent-obligations-v1',
+        sourceGeneration: 'agenda-1',
+        evaluations: [],
+        primary: [{ id: 'obligation-1', status: 'due' }],
+        projection: { receipt: { entriesAvailable: 1, entriesDelivered: 1, entriesOmitted: 0 } },
+        detailRef: 'coord:orient for the complete obligation agenda',
+      },
       ...tier4,
     };
     const out = assembleOrientOutput({
@@ -259,12 +267,13 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
     expect(Object.keys(out)).toEqual(expected);
   });
 
-  it('omits the optional GOAL portfolio for an ordinary caller', () => {
+  it('omits GOAL-only core fields for an ordinary caller', () => {
     const out = assembleOrientOutput({
       result: { ok: true, me: 'me-value', claimable: [], inbox: {} },
     });
 
     expect(out).not.toHaveProperty('goalPortfolio');
+    expect(out).not.toHaveProperty('obligations');
   });
 });
 
