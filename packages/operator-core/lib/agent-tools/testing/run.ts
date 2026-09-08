@@ -84,7 +84,7 @@ import {
 } from '../../testing-run-store';
 import { deriveAffectedPlan } from './affected-plan';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
-import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import {
@@ -1870,6 +1870,9 @@ export default defineTool({
       .describe(
         `Cap the returned failures list (default 20). Counts stay complete; \`failuresTruncated\` flags the cut. Note this caps the LIST COUNT, not bytes — the result is separately bounded to ${TESTING_RUN_MAX_PAYLOAD_BYTES} B, which is what actually limits a run with huge assertion diffs.`,
       ),
+    harness: harnessArg.describe(
+      'Concrete harness whose workspace-scoped test ledger rows should be stamped and returned as bindable testRunIds. Omit for an unscoped run.',
+    ),
   }),
   async handler(args, ctx) {
     // Exactly one selector. Both branches REFUSE rather than defaulting, because every
@@ -1929,7 +1932,10 @@ export default defineTool({
     // race and hand back an actionable next step. The clamp is a TRANSPORT concern, so it lives
     // here and not in runTestFilesCore (whose other callers budget for themselves).
     const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+    // Operator/superuser sessions commonly carry the '*' harness sentinel. Let
+    // the caller name the concrete harness on this call so the child reporter
+    // receives the same scope that plans:bind-spec-evidence validates.
+    const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     const result = await runTestFilesCore({
       files,
       root: rootSelection.root,

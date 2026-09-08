@@ -522,10 +522,10 @@ describe('testing:run (integration)', () => {
   it('keeps the admin test-run ledger reporter alongside machine-readable JSON output', async () => {
     const out = await body(
       call(
-        { files: [GREEN_TARGET] },
+        { files: [GREEN_TARGET], harness: 'papercusp' },
         {
           projectDir: REPO_ROOT,
-          harnessSlug: 'papercusp',
+          harnessSlug: '*',
           workspaceId: 'papercusp-workspace',
         },
       ),
