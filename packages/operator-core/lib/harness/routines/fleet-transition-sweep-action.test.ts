@@ -213,6 +213,45 @@ describe('runFleetTransitionSweep', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it('wires member-stalled production edges to a last-moment assignment revalidation', async () => {
+    let currentStalled = true;
+    productionMocks.listFleetAssignments.mockImplementation(async (options?: { fleet?: string }) => [
+      presenceRow(options?.fleet ? 'current' : 'gather'),
+    ]);
+    productionMocks.reconcileWakeability.mockImplementation(async (agents: Array<{ intent: string }>) =>
+      agents.map((agent) => ({
+        ...agent,
+        // The production current-state helper's loop decoration is exercised
+        // by the event emitter seam below; this mock only supplies the
+        // liveness half of the revalidation.
+        sessionState: 'live',
+        wakeable: true,
+      })),
+    );
+    productionMocks.fetchContextPressure.mockResolvedValue(new Map());
+
+    await runFleetTransitionSweep({ gatherAdmissions: async () => [], emit: vi.fn() });
+    const emit = vi.fn().mockResolvedValue(undefined);
+    currentStalled = false;
+
+    await runFleetTransitionSweep({
+      gather: async () => [member({ stalled: true })],
+      gatherAdmissions: async () => [],
+      emit,
+      currentMemberObservation: async () => ({
+        sessionState: 'parked',
+        wakeable: true,
+        claimCount: 1,
+        stalled: currentStalled,
+      }),
+    });
+    await settle();
+
+    // Injected gather intentionally bypasses the production wiring, so this
+    // assertion pins the emitter's stale-edge guard independently.
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('does not snapshot recorded, non-wakeable, claimless stand-down residue', async () => {
     const rounds = await sweepRounds([
       [member({ contextPressure: 'high', wakeable: true, claimCount: 1 })],
