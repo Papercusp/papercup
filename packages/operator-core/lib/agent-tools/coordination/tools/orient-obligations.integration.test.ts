@@ -5,6 +5,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_
 import { setMode } from '../../../modes/store';
 import * as obligationReader from '../../../agent-obligation-reader';
 import * as goalSettings from '../../../goal-launch-settings';
+import { formatAgentObligationLine } from '../../../agent-obligations';
 import {
   buildTurnStartOrientationBlock,
   ORIENTATION_CURSOR_SURFACE,
@@ -89,7 +90,12 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const canonical = await read.mock.results[0].value;
     const brief = obligationReader.projectAgentTurnStartObligationBrief(canonical.agenda);
     const actionLines = brief.projection.text.split('\n').filter(Boolean);
-    expect(actionLines.length, 'the real provider must produce an actionable agenda').toBeGreaterThan(0);
+    expect(actionLines.length, JSON.stringify({
+      receipt: brief.projection.receipt,
+      primary: canonical.agenda.primary.map((entry: obligationReader.AgentObligationBrief['evaluations'][number]) => ({
+        ruleId: entry.ruleId, status: entry.status, chars: formatAgentObligationLine(entry).length,
+      })),
+    })).toBeGreaterThan(0);
     expect(brief.evaluations.some((entry) => entry.scope.goalId === GOAL)).toBe(true);
     let epoch = 1;
     // Unrelated orientation sources are stable; the agenda, projection, final
