@@ -11,6 +11,7 @@ import {
   isSettledWorkItem,
   liveAssigneeProbe,
   liveBlockedState,
+  liveWorkItemClaimableEventPayload,
   liveSettledProbe,
   reconcileCriticalWorkItemAlert,
   selectCriticalWorkItemAlerts,
@@ -19,6 +20,16 @@ import {
   workItemIdFromRef,
 } from './work-items-events';
 import type { WorkItem } from './work-items';
+
+const duplicateAdmissionCheck = vi.hoisted(() => vi.fn(async () => true));
+vi.mock('./work-items-admission', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./work-items-admission')>()),
+  isWorkItemDuplicateAdmitted: duplicateAdmissionCheck,
+}));
+
+beforeEach(() => {
+  duplicateAdmissionCheck.mockReset().mockResolvedValue(true);
+});
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   id: 'WI-1',
@@ -650,6 +661,43 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
         assignee: null,
       }),
     });
+  });
+
+  it('EI-22727753112811582: suppresses pending duplicate-screening rows in both emit and registration latch', async () => {
+    const emit = typedEmit();
+    duplicateAdmissionCheck.mockResolvedValue(false);
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    const item = wi({ id: 'WI-ADMISSION-PENDING', state: 'open', assignee: null, harness: 'papercusp' });
+
+    emitWorkItemClaimableEvent(item, 'created', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(duplicateAdmissionCheck).toHaveBeenCalledWith(item.id);
+    expect(emit).not.toHaveBeenCalled();
+
+    await expect(
+      liveWorkItemClaimableEventPayload(item.id, item.harness ?? undefined, {
+        getItem: vi.fn(async () => item) as never,
+      }),
+    ).resolves.toBeNull();
+    expect(duplicateAdmissionCheck).toHaveBeenLastCalledWith(item.id);
+  });
+
+  it('EI-22727753112811582: preserves claimable emit and latch for admitted rows', async () => {
+    const emit = typedEmit();
+    const admitted = vi.fn(async () => true);
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    const item = wi({ id: 'WI-ADMITTED', state: 'open', assignee: null, harness: 'papercusp' });
+
+    emitWorkItemClaimableEvent(item, 'created', { emit, duplicateAdmissionCheck: admitted });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+
+    await expect(
+      liveWorkItemClaimableEventPayload(item.id, item.harness ?? undefined, {
+        getItem: vi.fn(async () => item) as never,
+        duplicateAdmissionCheck: admitted,
+      }),
+    ).resolves.toMatchObject({ id: item.id, state: 'open' });
   });
 
   it("EI-14161: carries the item's own payload.tags so a spec's tag-based exclusion is derivable", async () => {

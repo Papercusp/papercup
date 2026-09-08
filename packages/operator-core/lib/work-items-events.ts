@@ -136,7 +136,10 @@ export function emitWorkItemClaimedEvent(
  * `payload` carries `{id, kind, severity, harness, title}` so a waiter on the
  * global key can filter by kind/harness itself. Fire-and-forget; never throws.
  */
-export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
+export function emitWorkItemCreatedEvent(
+  wi: WorkItem,
+  deps: Pick<SettledEventsDeps, 'emit' | 'duplicateAdmissionCheck'> = {},
+): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   const payload = workItemEventPayload({
     id: wi.id,
@@ -161,6 +164,18 @@ export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsD
 }
 
 type PlanItemLaneBlockReason = (wi: WorkItem) => Promise<PlanItemLaneBlock | null>;
+
+/** Duplicate-screening admission seam for claimable lifecycle events. Kept async because
+ * the WorkItem projection deliberately does not expose the durable admission column. */
+type DuplicateAdmissionCheck = (workItemId: string) => Promise<boolean>;
+
+/** Resolve the duplicate-screening floor lazily so this lifecycle module keeps its
+ * documented work-items import cycle safe. A missing/unreadable row is fail-closed by
+ * the shared predicate, which is required for claimable notifications to stay honest. */
+async function defaultDuplicateAdmissionCheck(workItemId: string): Promise<boolean> {
+  const { isWorkItemDuplicateAdmitted } = await import('./work-items-admission');
+  return isWorkItemDuplicateAdmitted(workItemId);
+}
 
 /** Resolve the plan-lane guard lazily so the lifecycle event module keeps its documented
  * work-items import cycle safe. Claimable events are best-effort notifications; the guard's
@@ -216,13 +231,26 @@ const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
 export function emitWorkItemClaimableEvent(
   wi: WorkItem,
   reason: 'created' | 'released' | 'unblocked' | 'requeued',
-  deps: Pick<SettledEventsDeps, 'emit' | 'planItemLaneBlockReason'> = {},
+  deps: Pick<SettledEventsDeps, 'emit' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck'> = {},
 ): void {
   if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return;
   const emit = deps.emit ?? emitAwaitedEvent;
+  const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
   const payload = workItemClaimableEventPayload(wi, reason);
   void Promise.resolve()
     .then(async () => {
+      // The scheduler rejects admission-pending rows before claiming them. Keep the
+      // broad wake at the same floor or parked agents will wake on work they cannot
+      // take (EI-22727753112811582). Admission errors also fail closed: an unknown
+      // duplicate-screening result is not evidence of claimability.
+      let admitted: boolean;
+      try {
+        admitted = await checkAdmission(wi.id);
+      } catch (e) {
+        failSoft(`claimable-admission-check for ${wi.id}`, e);
+        return;
+      }
+      if (!admitted) return;
       if (mayHavePlanItemLinkage(wi)) {
         const check = deps.planItemLaneBlockReason ?? defaultPlanItemLaneBlockReason;
         let blocked: PlanItemLaneBlock | null = null;
@@ -304,14 +332,25 @@ export function workItemClaimableEventPayload(
 export async function liveWorkItemClaimableEventPayload(
   id: string,
   harness?: string,
+  deps: Pick<SettledEventsDeps, 'getItem' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck'> = {},
 ): Promise<Record<string, unknown> | null> {
-  const wi = await getWorkItem(id, harness);
+  const getItem = deps.getItem ?? getWorkItem;
+  const wi = await getItem(id, harness);
   if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return null;
+  const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
+  try {
+    if (!(await checkAdmission(wi.id))) return null;
+  } catch {
+    // Registration-time latches must never manufacture a match when the durable
+    // duplicate-screening floor cannot be read.
+    return null;
+  }
   // Keep the registration-time latch aligned with the producer guard. Without this check a
   // waiter registering after a stale claimable emit could receive `already_claimable` for a
   // plan-linked row that scheduler:get_next would immediately reject on its plan-item DAG.
   if (mayHavePlanItemLinkage(wi)) {
-    const blocked = await defaultPlanItemLaneBlockReason(wi).catch(() => null);
+    const check = deps.planItemLaneBlockReason ?? defaultPlanItemLaneBlockReason;
+    const blocked = await check(wi).catch(() => null);
     if (blocked) return null;
   }
   return workItemClaimableEventPayload(wi);
@@ -343,7 +382,7 @@ export async function liveWorkItemClaimableEventPayload(
  */
 export async function emitClaimReleasedEventAwaited(
   wi: WorkItem,
-  deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
+  deps: Pick<SettledEventsDeps, 'emit' | 'duplicateAdmissionCheck'> & { announceClaimable?: boolean } = {},
 ): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
   const payload = workItemEventPayload({
@@ -383,7 +422,7 @@ export async function emitClaimReleasedEventAwaited(
 /** Compatibility wrapper for callers that deliberately do not await delivery. */
 export function emitClaimReleasedEvent(
   wi: WorkItem,
-  deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
+  deps: Pick<SettledEventsDeps, 'emit' | 'duplicateAdmissionCheck'> & { announceClaimable?: boolean } = {},
 ): void {
   void emitClaimReleasedEventAwaited(wi, deps);
 }
@@ -466,7 +505,7 @@ export function emitWorkItemBlockedEvent(wi: WorkItem, deps: Pick<SettledEventsD
 export function emitWorkItemStatusEvent(
   wi: WorkItem,
   prevState: string,
-  deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
+  deps: Pick<SettledEventsDeps, 'emit' | 'duplicateAdmissionCheck'> & { announceClaimable?: boolean } = {},
 ): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   const payload = workItemEventPayload({
@@ -526,6 +565,8 @@ export function workItemIdFromRef(ref: { kind: string; ref: string }): { id: str
  *  seam (P-005) — this module owns NO store of its own. */
 export interface SettledEventsDeps {
   emit?: typeof emitAwaitedEvent;
+  /** EI-22727753112811582: duplicate-screening floor for claimable emits/latches. */
+  duplicateAdmissionCheck?: DuplicateAdmissionCheck;
   /** WI-22699169150878155: injectable parity check so claimable lifecycle events do not
    * advertise a row whose linked plan-item lane is blocked/owner-gated/terminal. */
   planItemLaneBlockReason?: PlanItemLaneBlockReason;
@@ -670,6 +711,7 @@ async function emitUnblockedForClearedEdges(
   getItem: typeof getWorkItem,
   listInMany: BlockingEdgeReader['listInMany'],
   dispatchActionable: typeof assignAndWakeActionableWorkItems,
+  duplicateAdmissionCheck?: DuplicateAdmissionCheck,
 ): Promise<void> {
   // Dedup dsts — a duplicate src→dst edge must not double-emit for one dependent.
   const dsts = [...new Map(dstRefs.map((r) => [refKey(r), r])).values()];
@@ -766,7 +808,7 @@ async function emitUnblockedForClearedEdges(
     // P-007: an unblocked dependent may have just become pool-claimable — the
     // canonical key co-fires here so BOTH unblock paths (settle + unlink) are
     // covered; the emitter's own guard drops assigned / non-claimable items.
-    emitWorkItemClaimableEvent(dependent, 'unblocked', { emit });
+    emitWorkItemClaimableEvent(dependent, 'unblocked', { emit, duplicateAdmissionCheck });
   }
 }
 
@@ -905,7 +947,10 @@ export async function liveAssigneeProbe(
 export async function emitUnblockedOnEdgeRemoved(
   dst: ObjectRef,
   clearedById: string,
-  deps: Pick<SettledEventsDeps, 'emit' | 'getItem' | 'listIn' | 'listInMany' | 'dispatchActionable'> = {},
+  deps: Pick<
+    SettledEventsDeps,
+    'emit' | 'getItem' | 'listIn' | 'listInMany' | 'dispatchActionable' | 'duplicateAdmissionCheck'
+  > = {},
 ): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
   const getItem = deps.getItem ?? getWorkItem;
@@ -917,6 +962,7 @@ export async function emitUnblockedOnEdgeRemoved(
       getItem,
       resolveListInMany(deps),
       deps.dispatchActionable ?? defaultDispatchActionable,
+      deps.duplicateAdmissionCheck,
     );
   } catch (e) {
     failSoft(`unlink-unblocked-event for ${clearedById}`, e);
@@ -1091,6 +1137,7 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
       getItem,
       listInMany,
       deps.dispatchActionable ?? defaultDispatchActionable,
+      deps.duplicateAdmissionCheck,
     );
   } catch (e) {
     failSoft(`settled unblocked-loop for ${wi.id}`, e);
