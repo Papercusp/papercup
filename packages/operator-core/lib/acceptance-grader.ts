@@ -1003,7 +1003,9 @@ export async function resolveAcceptanceGrader(
       ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
     });
-    const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug) : null;
+    const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug, {
+      harnessSlug: plan.row.harnessSlug,
+    }) : null;
     const rubricId = rubric ? String((rubric as unknown as { rubricId: string }).rubricId) : null;
     if (rubricId != null) discoveryRubricId = rubricId;
     // `rubric` truthy ⟺ `rubricId != null`, so this is the same condition as before
@@ -1115,7 +1117,7 @@ export async function launchAcceptanceGrader(
   });
   if (!plan) return { state: 'failed', idempotencyKey: '', label: '', error: `plan '${planSlug}' not found` };
   const [rubric, audit, workItems] = await Promise.all([
-    (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug),
+    (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug, { harnessSlug: plan.row.harnessSlug }),
     (deps.getAudit ?? getLatestPlanAudit)(planSlug),
     (deps.listWork ?? listWorkItems)({
       harness: plan.row.harnessSlug,
