@@ -70,6 +70,7 @@ vi.mock('../../plan-item-coverage', () => ({
 // type or hit a rest parameter). A rest param keeps the mock body identical
 // while accepting the wrapper's forwarded args.
 const listFleetAssignmentsMock = vi.fn(async (..._args: unknown[]) => []);
+const groupByAgentMock = vi.fn((..._args: unknown[]) => [] as unknown[]);
 // PARTIAL mock (importOriginal), not a closed factory: anything this file does
 // not deliberately stub falls through to the REAL module. A closed factory has
 // to be hand-edited every time fleet/assignments.ts gains an export, and when it
@@ -80,7 +81,7 @@ const listFleetAssignmentsMock = vi.fn(async (..._args: unknown[]) => []);
 vi.mock('../../fleet/assignments', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../fleet/assignments')>()),
   listFleetAssignments: (...a: unknown[]) => listFleetAssignmentsMock(...a),
-  groupByAgent: vi.fn(() => []),
+  groupByAgent: (...a: unknown[]) => groupByAgentMock(...a),
   lastToolCallAtByOwner: vi.fn(async () => new Map()),
   orphanedClaims: vi.fn(() => []),
   stalledClaims: vi.fn(() => []),
@@ -95,6 +96,7 @@ const ctx = { workspaceId: 'ws-real' } as unknown as Parameters<typeof fleetAssi
 beforeEach(() => {
   vi.clearAllMocks();
   listFleetAssignmentsMock.mockResolvedValue([]);
+  groupByAgentMock.mockReturnValue([]);
 });
 
 describe('fleet:assignments — EI-18689331932953939 fleet-scoped read', () => {
@@ -119,5 +121,51 @@ describe('fleet:assignments — EI-18689331932953939 fleet-scoped read', () => {
     expect(listFleetAssignmentsMock).toHaveBeenCalledWith(
       expect.objectContaining({ fleet: 'gui-chat-controls', plan: 'some-plan' }),
     );
+  });
+
+  it('explicit payloadTier:"full" bypasses the handler-owned agent trim', async () => {
+    const agents = Array.from({ length: 8 }, (_, index) => ({
+      agentId: `su-agent-${index}`,
+      label: null,
+      name: null,
+      present: true,
+      alive: true,
+      heartbeatAt: new Date().toISOString(),
+      intent: 'i'.repeat(4_000),
+      declaredPlanSlug: null,
+      fleetSlug: 'gui-chat-controls',
+      fleetRole: 'member',
+      claims: [],
+      orphaned: false,
+      stalled: false,
+      declaredUnclaimed: false,
+      doing: null,
+      queued: Array.from({ length: 8 }, (_, queuedIndex) => ({
+        id: `WI-${index}-${queuedIndex}`,
+        title: 'q'.repeat(300),
+      })),
+      load: 0,
+    }));
+    groupByAgentMock.mockReturnValue(agents);
+
+    const ordinary = (await fleetAssignmentsTool.handler({}, ctx)) as {
+      data: { agents: unknown[]; agents_truncated?: boolean };
+    };
+    expect(ordinary.data.agents_truncated).toBe(true);
+    expect(ordinary.data.agents.length).toBeLessThan(agents.length);
+
+    const full = (await fleetAssignmentsTool.handler(
+      {},
+      { ...ctx, payloadTierOverride: 'full' } as never,
+    )) as {
+      data: {
+        agents: Array<{ intent: string; queued: unknown[] }>;
+        agents_truncated?: boolean;
+      };
+    };
+    expect(full.data.agents_truncated).toBeUndefined();
+    expect(full.data.agents).toHaveLength(agents.length);
+    expect(full.data.agents[0]?.intent).toHaveLength(4_000);
+    expect(full.data.agents[0]?.queued).toHaveLength(8);
   });
 });

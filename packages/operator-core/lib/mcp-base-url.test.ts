@@ -27,6 +27,12 @@ describe('resolveAgentMcpBaseUrl', () => {
     expect(resolveAgentMcpBaseUrl('http://localhost:3070')).toBe('http://127.0.0.1:9071');
   });
 
+  it('staging/current-build :3170 stays direct even when the live proxy is configured', () => {
+    process.env[KEY] = 'http://127.0.0.1:9071';
+    expect(resolveAgentMcpBaseUrl('http://localhost:3170')).toBe('http://localhost:3170');
+    expect(resolveAgentMcpBaseUrl('http://127.0.0.1:3170/')).toBe('http://127.0.0.1:3170');
+  });
+
   it('env set to whitespace/empty → falls back to operator base (no accidental break)', () => {
     process.env[KEY] = '   ';
     expect(resolveAgentMcpBaseUrl('http://localhost:3070')).toBe('http://localhost:3070');
@@ -59,6 +65,11 @@ describe('resolveInheritedOperatorBaseUrl', () => {
   it('suffixed origin + proxy configured → stripped AND routed through the proxy', () => {
     process.env[KEY] = 'http://127.0.0.1:9071';
     expect(resolveInheritedOperatorBaseUrl('http://localhost:3070/api/mcp')).toBe('http://127.0.0.1:9071');
+  });
+
+  it('staging/current-build inherited URL stays direct when the live proxy is configured', () => {
+    process.env[KEY] = 'http://127.0.0.1:9071';
+    expect(resolveInheritedOperatorBaseUrl('http://localhost:3170/api/mcp')).toBe('http://localhost:3170');
   });
 });
 

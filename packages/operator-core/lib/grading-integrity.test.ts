@@ -122,6 +122,40 @@ describe('dispatchPendingGradingAudits', () => {
     );
   });
 
+  it.each(['passed', 'failed'] as const)(
+    'skips an explicitly requested %s target after its grading audit settled',
+    async (state) => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([
+        card('EI-settled', {
+          gradingAudit: {
+            state,
+            metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+            stampedAt: '2026-08-28T00:00:00.000Z',
+            auditIssueId: 'EI-grading-audit',
+            auditor: 'independent-auditor',
+            auditedAt: '2026-08-28T00:05:00.000Z',
+          },
+        }),
+      ]);
+
+      const result = await dispatchPendingGradingAudits({ targetIds: ['EI-settled'], ctx }, d);
+
+      expect(result).toEqual({
+        requestedTargetIds: ['EI-settled'],
+        receipts: [
+          expect.objectContaining({
+            issueId: 'EI-settled',
+            state: 'skipped',
+            reason: 'target is no longer a current pending standard-rubric scorecard',
+          }),
+        ],
+      });
+      expect(d.reserve).not.toHaveBeenCalled();
+      expect(d.launch).not.toHaveBeenCalled();
+    },
+  );
+
   it('reserves a target before launch so a concurrent dispatcher skips the loser', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-concurrent')]);

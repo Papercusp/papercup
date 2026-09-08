@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import {
   driftFragment,
+  createCorpusIncludes,
   extractDocLiterals,
   extractNegativeLiterals,
   judgeDocFile,
@@ -74,6 +75,32 @@ describe('driftFragment — grows the match so the residue is honest', () => {
 
   it('is null when nothing substantial of the literal survives in the source', () => {
     expect(driftFragment('a totally removed phrase', inc('unrelated source text'))).toBeNull();
+  });
+});
+
+describe('createCorpusIncludes — batches corpus substring probes', () => {
+  it('preserves exact includes semantics for indexed and fallback probes', () => {
+    const includes = createCorpusIncludes('alpha beta gamma', ['alpha', 'delta']);
+    expect(includes('alpha')).toBe(true);
+    expect(includes('delta')).toBe(false);
+    expect(includes('beta gamma')).toBe(true); // a growth probe not in the batch
+    expect(includes('')).toBe(true);
+  });
+
+  it('falls back to native semantics when there are no indexed probes', () => {
+    const includes = createCorpusIncludes('alpha beta gamma', []);
+    expect(includes('beta')).toBe(true);
+    expect(includes('delta')).toBe(false);
+    expect(includes('')).toBe(true);
+  });
+
+  it('propagates overlapping suffix matches through failure links', () => {
+    const includes = createCorpusIncludes('ushers', ['he', 'she', 'his', 'hers', 'her']);
+    expect(includes('he')).toBe(true);
+    expect(includes('she')).toBe(true);
+    expect(includes('his')).toBe(false);
+    expect(includes('hers')).toBe(true);
+    expect(includes('her')).toBe(true);
   });
 });
 

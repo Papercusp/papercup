@@ -7,12 +7,14 @@
  * local proxy (apps/operator/lib/mcp-proxy/proxy.ts, default `127.0.0.1:9071`) fronts `:3070` and
  * RETRIES a refused upstream, so the restart is invisible to the client.
  *
- * OPT-IN (safe by construction): we only redirect agents through the proxy when the operator
+ * OPT-IN (safe by construction): we redirect agents through the proxy only when the operator
  * environment explicitly sets `PAPERCUSP_MCP_PROXY_BASE` (e.g. `http://127.0.0.1:9071` on the dev
- * box, where the proxy runs). Unset (CI, a fresh deploy with no proxy, tests) → the caller's own
- * operator base is used unchanged, so this can NEVER break an environment that has no proxy. The
- * signed/superuser query params + the bearer header are preserved either way (the proxy is a pure
- * passthrough), so auth is unaffected.
+ * box, where the proxy runs) and the caller points at the live operator. The proxy fronts `:3070`,
+ * not the staging/current-build operator at `:3170`; a staging launch must stay on its own port or
+ * a reviewer can read an older projection and manufacture a false grading-integrity failure. Unset
+ * (CI, a fresh deploy with no proxy) → the caller's own operator base is used unchanged, so this
+ * can NEVER break an environment that has no proxy. The signed/superuser query params + the bearer
+ * header are preserved either way (the proxy is a pure passthrough), so auth is unaffected.
  */
 
 /**
@@ -22,7 +24,18 @@
  */
 export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
   const proxy = process.env.PAPERCUSP_MCP_PROXY_BASE?.trim();
-  const base = proxy && proxy.length > 0 ? proxy : operatorBaseUrl;
+  // The resilient proxy is intentionally a live-operator (:3070) transport. When
+  // this process is serving the staging/current-build operator (:3170), routing a
+  // child through :9071 silently changes its runtime vintage back to green main.
+  // Keep the explicit staging endpoint authoritative even when the parent service
+  // exports the proxy for ordinary live sessions.
+  let isStagingRuntime = false;
+  try {
+    isStagingRuntime = new URL(operatorBaseUrl).port === '3170';
+  } catch {
+    // Preserve the historical string fallback for malformed/relative test inputs.
+  }
+  const base = proxy && proxy.length > 0 && !isStagingRuntime ? proxy : operatorBaseUrl;
   return base.replace(/\/$/, '');
 }
 

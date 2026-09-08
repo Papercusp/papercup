@@ -55,8 +55,9 @@
  * justification at the site — which is itself the improvement: it turns an invisible
  * always-passes into a documented intentional ratchet.
  *
- * COST: builds a ~110M-char corpus from every tracked text file, so a full run is
- * ~40-60s. It is a gate, not an inner-loop check.
+ * COST: builds a ~110M-char corpus from every tracked text file. The corpus matcher
+ * indexes all static probes in one pass, so a full run remains bounded by corpus size
+ * rather than multiplying a full-corpus scan by every assertion.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync, realpathSync } from 'node:fs';
@@ -477,6 +478,109 @@ function residueIsComposed(residue, haystack) {
 }
 
 /**
+ * Build a one-pass substring matcher for a finite set of probes.
+ *
+ * `String.prototype.includes` is excellent for an isolated lookup, but this guard
+ * performs thousands of lookups against one ~200 MB corpus. Calling it once per
+ * assertion turns an absent literal into another full-corpus scan. The matcher below
+ * uses an Aho–Corasick trie: it scans the corpus once, records which trie states were
+ * reached, then propagates those hits through failure links so every requested literal
+ * gets the same exact substring semantics as `corpus.includes(literal)`.
+ *
+ * The returned function keeps a native `includes` fallback for probes discovered while
+ * growing a drift fragment. Main preloads every fixed-size window, so the fallback is
+ * limited to the few matched fragments that need maximal growth; the public helper also
+ * remains useful for callers with an intentionally open-ended query set.
+ *
+ * @param {string} corpus
+ * @param {Iterable<string>} queries
+ * @returns {IncludesFn}
+ */
+export function createCorpusIncludes(corpus, queries) {
+  const patterns = [...new Set(queries)].filter((s) => s.length > 0);
+  const patternIds = new Map(patterns.map((pattern, id) => [pattern, id]));
+  if (patterns.length === 0) return (s) => corpus.includes(s);
+
+  /** @type {Array<Map<string, number>>} */
+  const next = [new Map()];
+  const fail = [0];
+  /** @type {Array<number[]>} */
+  const terminals = [[]];
+
+  for (let id = 0; id < patterns.length; id++) {
+    let state = 0;
+    const pattern = patterns[id];
+    for (let i = 0; i < pattern.length; i++) {
+      const char = pattern[i];
+      let child = next[state].get(char);
+      if (child === undefined) {
+        child = next.length;
+        next[state].set(char, child);
+        next.push(new Map());
+        fail.push(0);
+        terminals.push([]);
+      }
+      state = child;
+    }
+    terminals[state].push(id);
+  }
+
+  // BFS order is depth-ascending, so processing it backwards later propagates every
+  // reached state to its shorter suffix states before their terminal patterns are read.
+  const order = [];
+  const queue = [];
+  for (const child of next[0].values()) queue.push(child);
+  for (let head = 0; head < queue.length; head++) {
+    const state = queue[head];
+    order.push(state);
+    for (const [char, child] of next[state]) {
+      let fallback = fail[state];
+      while (fallback !== 0 && !next[fallback].has(char)) fallback = fail[fallback];
+      const candidate = next[fallback].get(char);
+      fail[child] = candidate === undefined || candidate === child ? 0 : candidate;
+      queue.push(child);
+    }
+  }
+
+  const seen = new Uint8Array(next.length);
+  let state = 0;
+  for (let i = 0; i < corpus.length; i++) {
+    const char = corpus[i];
+    let candidate = next[state].get(char);
+    while (state !== 0 && candidate === undefined) {
+      state = fail[state];
+      candidate = next[state].get(char);
+    }
+    state = candidate === undefined ? 0 : candidate;
+    seen[state] = 1;
+  }
+
+  const found = new Uint8Array(patterns.length);
+  for (let i = order.length - 1; i >= 0; i--) {
+    const reached = order[i];
+    if (!seen[reached]) continue;
+    for (const id of terminals[reached]) found[id] = 1;
+    if (reached !== 0) seen[fail[reached]] = 1;
+  }
+
+  return (s) => {
+    if (s.length === 0) return true;
+    const id = patternIds.get(s);
+    if (id !== undefined) return found[id] === 1;
+    return corpus.includes(s);
+  };
+}
+
+/** Add every fixed-size probe `driftFragment` can ask before fragment growth. */
+function addDriftQueries(queries, lit) {
+  const need = Math.max(MIN_FRAGMENT, Math.ceil(lit.length * FRAGMENT_SHARE));
+  if (lit.length < need) return;
+  for (let start = 0; start + need <= lit.length; start++) {
+    queries.add(lit.slice(start, start + need));
+  }
+}
+
+/**
  * Judge one test file's negative assertions. `includes` answers "does the non-test
  * corpus contain this string" — injected so the unit tests can drive a synthetic corpus.
  *
@@ -589,18 +693,58 @@ function main(argv) {
     }
   }
   const corpus = parts.join('\n \n');
-  const includes = (s) => corpus.includes(s);
+  const docFiles = list.filter((p) => DOC_PROMPT_RE.test(p) && !isExcluded(p));
+  const testTexts = new Map();
+  const docTexts = new Map();
+  for (const f of testFiles) {
+    try {
+      testTexts.set(f, readFileSync(resolve(ROOT, f), 'utf8'));
+    } catch {
+      /* unreadable / gone since ls-files — skip */
+    }
+  }
+  for (const f of docFiles) {
+    try {
+      docTexts.set(f, readFileSync(resolve(ROOT, f), 'utf8'));
+    } catch {
+      /* unreadable / gone since ls-files — skip */
+    }
+  }
+
+  // Collect every fixed probe before scanning the corpus. This turns the dominant
+  // operation from one full-corpus `includes` call per assertion into one indexed pass.
+  const queries = new Set();
+  const addQuery = (query) => {
+    if (query.length > 0) queries.add(query);
+  };
+  for (const text of testTexts.values()) {
+    for (const { lit } of extractNegativeLiterals(text)) {
+      if (!lit || lit.length < MIN_LITERAL) continue;
+      addQuery(lit);
+      const trimmed = lit.trim();
+      if (trimmed.length >= MIN_LITERAL) addQuery(trimmed);
+      addDriftQueries(queries, lit);
+    }
+  }
+  for (const text of docTexts.values()) {
+    for (const { lit } of extractDocLiterals(text)) {
+      if (!looksLikeEmittedOutput(lit)) continue;
+      addQuery(lit);
+      const trimmed = lit.trim();
+      addQuery(trimmed);
+      const untrailed = stripTrailingEllipsis(trimmed);
+      if (untrailed.length >= MIN_LITERAL) addQuery(untrailed);
+      addDriftQueries(queries, untrailed.length >= MIN_LITERAL ? untrailed : lit);
+    }
+  }
+  const includes = createCorpusIncludes(corpus, queries);
 
   let considered = 0;
   const drifted = [];
   const orphaned = [];
   for (const f of testFiles) {
-    let text;
-    try {
-      text = readFileSync(resolve(ROOT, f), 'utf8');
-    } catch {
-      continue;
-    }
+    const text = testTexts.get(f);
+    if (text === undefined) continue;
     if (!text.includes('.not.to')) continue;
     const r = judgeFile({ file: f, text, includes });
     considered += r.considered;
@@ -610,16 +754,11 @@ function main(argv) {
   // Front-end 2 (EI-18773280958875269): blueprint-prompt literals that quote emitted
   // output no longer producible. REPORT-ONLY — see judgeDocFile's header for why this
   // never gates (never affects the exit code below), unlike front-end 1's DRIFTED.
-  const docFiles = list.filter((p) => DOC_PROMPT_RE.test(p) && !isExcluded(p));
   const docFindings = [];
   let docConsidered = 0;
   for (const f of docFiles) {
-    let text;
-    try {
-      text = readFileSync(resolve(ROOT, f), 'utf8');
-    } catch {
-      continue;
-    }
+    const text = docTexts.get(f);
+    if (text === undefined) continue;
     const r = judgeDocFile({ file: f, text, includes });
     docConsidered += r.considered;
     docFindings.push(...r.findings);
