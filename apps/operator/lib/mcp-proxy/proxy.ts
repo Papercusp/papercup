@@ -1997,6 +1997,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     1,
     reservedControlPlaneGuaranteedFloor,
   );
+  // Pure coord:send handoffs share the same reserved control-plane budget as other
+  // conflict-disjoint continuation mutations. Keeping this derived from the existing
+  // reserve avoids a second static capacity escape hatch while allowing independent
+  // handoffs to make progress concurrently when the reserve has room.
+  const coordSendConcurrencyCeiling = Math.max(
+    1,
+    reservedControlPlaneGuaranteedFloor,
+  );
   const partitionedAdmission = reservedControlPlaneGuaranteedFloor > 0;
   const upstreamAgent = opts.upstreamAgent ?? UPSTREAM_AGENT;
   // Admission-only reservation is not end-to-end reservation: during the measured incident all
@@ -2032,13 +2040,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       maxSockets: criticalContinuationConcurrencyCeiling,
     });
   const ownsCoordSendAgent = opts.coordSendAgent === undefined;
-  // Pure coord:send handoffs get their own one-socket bulkhead. This keeps the recovery
-  // message path live while a completion/checkpoint occupies criticalContinuationAgent.
+  // Pure coord:send handoffs get their own bounded bulkhead. This keeps the recovery
+  // message path live while a completion/checkpoint occupies criticalContinuationAgent,
+  // while allowing disjoint sends to use the reserved control-plane budget concurrently.
   const coordSendAgent =
     opts.coordSendAgent ??
     new http.Agent({
       keepAlive: false,
-      maxSockets: 1,
+      maxSockets: coordSendConcurrencyCeiling,
     });
   const maxHandshakeInFlight =
     opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
@@ -2427,7 +2436,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   const canGrantCoordSend = (): boolean =>
-    !shouldShedForInFlight(coordSendInFlight + coordSendGrantReservations, 1);
+    !shouldShedForInFlight(
+      coordSendInFlight + coordSendGrantReservations,
+      coordSendConcurrencyCeiling,
+    );
 
   const cancelQueuedCoordSend = (waiter: QueuedCoordSend): void => {
     if (waiter.cancelled || waiter.granted) return;
@@ -2701,6 +2713,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               requests: waitingCriticalContinuationRequests,
             },
             coordSend: coordSendInFlight,
+            coordSendMax: coordSendConcurrencyCeiling,
             coordSendRequests: activeCoordSendRequests,
             coordSendQueue: {
               waiting: coordSendQueueLength(),
@@ -2839,8 +2852,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               ? "reserved-control-plane"
               : "ordinary";
         const admissionCeiling =
-          coordSend || watchdogSessionProbe
-            ? 1
+          coordSend
+            ? coordSendConcurrencyCeiling
+            : watchdogSessionProbe
+              ? 1
             : criticalContinuation
               ? criticalContinuationConcurrencyCeiling
             : partitionedAdmission
@@ -2912,10 +2927,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           });
           return;
         }
-        // EI-21669304707115602 — pure coord:send handoffs have a dedicated one-socket
-        // continuation lane. They must not wait behind a long completion/checkpoint on the
-        // shared critical socket, while still keeping a bounded FIFO and an honest pre-forward
-        // dwell response inside ptool's client deadline.
+        // EI-21669304707115602 — pure coord:send handoffs have a dedicated continuation
+        // lane. They must not wait behind a long completion/checkpoint on the shared critical
+        // socket, while still keeping a bounded FIFO and an honest pre-forward dwell response
+        // inside ptool's client deadline. The lane's concurrency is derived from the reserved
+        // control-plane budget, matching criticalContinuationAgent.
         if (coordSend && !canGrantCoordSend()) {
           pumpCoordSendQueue();
           if (maxCoordSendQueue <= coordSendQueueLength()) {
