@@ -4990,7 +4990,7 @@ async fn open_su_session_task(
     let binding = match client.open_su_session(&request).await {
         Ok(binding) => binding,
         Err(error) => {
-            let _ = tx.send(Event::SuSessionError(error.to_string()));
+            let _ = tx.send(Event::SuSessionError(format!("{error:#}")));
             return;
         }
     };
@@ -5023,7 +5023,7 @@ async fn attach_su_session_task(
     let binding = match client.open_su_session(&request).await {
         Ok(binding) => binding,
         Err(error) => {
-            let _ = tx.send(Event::SuSessionError(error.to_string()));
+            let _ = tx.send(Event::SuSessionError(format!("{error:#}")));
             return;
         }
     };
