@@ -1536,6 +1536,36 @@ export interface HarnessTestRunIdQuery {
   sql?: SqlLike;
 }
 
+export interface HarnessTestRunEvidence {
+  id: number;
+  file_path: string;
+  status: string;
+  finished_at: string | Date | null;
+}
+
+/** Same scoped ledger as findHarnessTestRunIds; null distinguishes an unreadable ledger. */
+export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery): Promise<HarnessTestRunEvidence[] | null> {
+  try {
+    let sql = params.sql;
+    if (!sql) {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      sql = getOrgPg().sql as unknown as SqlLike;
+    }
+    const rows = await sql`
+      SELECT id, file_path, status, finished_at FROM harness_shared.test_runs
+       WHERE workspace_id = ${params.workspaceId} AND harness_slug = ${params.harnessSlug}
+         AND run_group_id = ${params.runGroupId}
+         AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})
+       ORDER BY id DESC LIMIT 200`;
+    if (!Array.isArray(rows)) return null;
+    return rows.flatMap(raw => {
+      const row = raw as HarnessTestRunEvidence;
+      const id = positiveSafeInteger(row.id);
+      return id === null ? [] : [{ ...row, id }];
+    });
+  } catch { return null; }
+}
+
 function positiveSafeInteger(value: unknown): number | null {
   const numeric = Number(value);
   return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
