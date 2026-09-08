@@ -20,14 +20,15 @@
  * with transcript search (PlanSessionsTab). Tab state is `?ppv` (nuqs, D-003)
  * so the popup is deep-linkable + agent-driveable.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Maximize2, Minimize2 } from "lucide-react";
+import { useMemo, useRef } from "react";
+import { Maximize, Maximize2, Minimize, Minimize2 } from "lucide-react";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { Modal } from "@/app/harness/Modal";
 import { Tooltip } from "@/app/harness/Tooltip";
 import PlanDetail from "@/app/admin/plans/PlanDetail";
 import { usePlanList, type AuthorIdentity } from "@/app/admin/plans/plans-api";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
+import { usePopupMaximize } from "@/app/_components/chat/use-popup-maximize";
 import PlanSessionsTab from "./PlanSessionsTab";
 import PlanProvenanceBadge from "./PlanProvenanceBadge";
 // PlanDetail's chrome (pc-plans__*) is global CSS; importing it here makes the
@@ -37,15 +38,6 @@ import "./plans-pane.css";
 
 const POPUP_VIEWS = ["plan", "sessions"] as const;
 export type PlanPopupView = (typeof POPUP_VIEWS)[number];
-
-/** A not-yet-attached ref and an idle Fullscreen API are both null during
- * hydration. They must not compare as an active fullscreen relationship. */
-export function isPopupSurfaceFullscreen(
-  fullscreenElement: Element | null,
-  surface: HTMLElement | null,
-): boolean {
-  return surface !== null && fullscreenElement === surface;
-}
 
 export default function PlanPopupModal({
   planSlug,
@@ -76,9 +68,6 @@ export default function PlanPopupModal({
   );
   const [, setPlanTarget] = useQueryState("jump", parseAsString);
   const dirtyRef = useRef(false);
-  const popupSurfaceRef = useRef<HTMLDivElement>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isWindowExpanded, setIsWindowExpanded] = useState(false);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // `wppop` carries only the stable scoped identity (`harness::slug`). The
@@ -120,66 +109,20 @@ export default function PlanPopupModal({
       : (provenancePlan?.ownerIdentity ?? null);
 
   const open = planSlug !== null;
-  const isExpanded = isFullscreen || isWindowExpanded;
-  const fullscreenAvailable =
-    typeof document !== "undefined" &&
-    document.fullscreenEnabled !== false &&
-    typeof HTMLElement !== "undefined" &&
-    typeof HTMLElement.prototype.requestFullscreen === "function" &&
-    typeof document.exitFullscreen === "function";
-
-  useEffect(() => {
-    if (!open || typeof document === "undefined") {
-      setIsFullscreen(false);
-      setIsWindowExpanded(false);
-      return;
-    }
-    const sync = () => {
-      setIsFullscreen(
-        isPopupSurfaceFullscreen(
-          document.fullscreenElement,
-          popupSurfaceRef.current,
-        ),
-      );
-    };
-    document.addEventListener("fullscreenchange", sync);
-    sync();
-    return () => document.removeEventListener("fullscreenchange", sync);
-  }, [open]);
-
-  const toggleFullscreen = async () => {
-    if (isWindowExpanded) {
-      setIsWindowExpanded(false);
-      return;
-    }
-    const target = popupSurfaceRef.current;
-    if (!target) return;
-    // Embedded hosts and desktop webviews may deny the browser API. The
-    // popup can still fill its window through the existing Modal sizing seam.
-    if (!fullscreenAvailable) {
-      setIsWindowExpanded(true);
-      return;
-    }
-    try {
-      if (document.fullscreenElement === target) {
-        await document.exitFullscreen();
-        return;
-      }
-      await target.requestFullscreen();
-    } catch {
-      setIsWindowExpanded(true);
-    }
-  };
+  const {
+    mode: maximizeMode,
+    maximized,
+    screenActive,
+    popupRef: popupSurfaceRef,
+    toggleWindow,
+    toggleScreen,
+    reset: resetMaximize,
+  } = usePopupMaximize({ param: "pmax", open });
+  const windowActive = maximizeMode === "window";
 
   const reallyClose = () => {
     dirtyRef.current = false;
-    setIsWindowExpanded(false);
-    if (
-      typeof document !== "undefined" &&
-      document.fullscreenElement === popupSurfaceRef.current
-    ) {
-      void document.exitFullscreen().catch(() => {});
-    }
+    resetMaximize();
     void setView(null); // drop ?ppv so the next open lands on the Plan tab
     void setPlanTarget(null); // a later open must not inherit a stale P/D jump
     onClose();
@@ -211,16 +154,14 @@ export default function PlanPopupModal({
           title={planTitle ?? planSlug ?? "Plan"}
           srOnlyTitle
           contentClassName="plan-popup"
-          wrapStyle={isWindowExpanded ? { padding: 0 } : undefined}
-          closeOnEscape={!isWindowExpanded}
+          wrapStyle={maximized ? { padding: 0 } : undefined}
+          closeOnEscape={!maximized}
           contentStyle={{
-            width: isWindowExpanded ? "100vw" : "94vw",
-            maxWidth: isWindowExpanded ? "100vw" : "1100px",
-            height: isWindowExpanded
-              ? "100dvh"
-              : "calc(100vh - 4rem)",
-            maxHeight: isWindowExpanded ? "100dvh" : "860px",
-            borderRadius: isWindowExpanded ? 0 : undefined,
+            width: maximized ? "100vw" : "94vw",
+            maxWidth: maximized ? "100vw" : "1100px",
+            height: maximized ? "100dvh" : "calc(100vh - 4rem)",
+            maxHeight: maximized ? "100dvh" : "860px",
+            borderRadius: maximized ? 0 : undefined,
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
@@ -232,10 +173,10 @@ export default function PlanPopupModal({
             className="plan-popup__surface"
             data-testid="plan-popup-fullscreen-surface"
             onKeyDownCapture={(event) => {
-              if (event.key === "Escape" && isWindowExpanded) {
+              if (event.key === "Escape" && windowActive) {
                 event.preventDefault();
                 event.stopPropagation();
-                setIsWindowExpanded(false);
+                toggleWindow();
               }
             }}
           >
@@ -284,27 +225,59 @@ export default function PlanPopupModal({
               <Tooltip
                 side="bottom"
                 label={
-                  isExpanded ? "Restore plan popup" : "View plan fullscreen"
+                  windowActive
+                    ? "Exit full window"
+                    : "Fill the app window with this plan"
                 }
               >
                 <span
                   className="plan-popup__fullscreen-wrap"
-                  data-testid="plan-popup-fullscreen-wrap"
+                  data-testid="plan-popup-full-window-wrap"
                 >
                   <button
                     type="button"
                     className="plan-popup__fullscreen"
-                    onClick={() => void toggleFullscreen()}
+                    onClick={toggleWindow}
                     aria-label={
-                      isExpanded ? "Exit fullscreen" : "Enter fullscreen"
+                      windowActive ? "Exit full window" : "Full window"
                     }
-                    aria-pressed={isExpanded}
-                    data-testid="plan-popup-fullscreen"
+                    aria-pressed={windowActive}
+                    data-testid="plan-popup-full-window"
                   >
-                    {isExpanded ? (
+                    {windowActive ? (
                       <Minimize2 size={14} aria-hidden="true" />
                     ) : (
                       <Maximize2 size={14} aria-hidden="true" />
+                    )}
+                  </button>
+                </span>
+              </Tooltip>
+              <Tooltip
+                side="bottom"
+                label={
+                  screenActive
+                    ? "Exit full screen"
+                    : "Fill the whole screen with this plan"
+                }
+              >
+                <span
+                  className="plan-popup__fullscreen-wrap"
+                  data-testid="plan-popup-full-screen-wrap"
+                >
+                  <button
+                    type="button"
+                    className="plan-popup__fullscreen"
+                    onClick={toggleScreen}
+                    aria-label={
+                      screenActive ? "Exit full screen" : "Full screen"
+                    }
+                    aria-pressed={screenActive}
+                    data-testid="plan-popup-full-screen"
+                  >
+                    {screenActive ? (
+                      <Minimize size={14} aria-hidden="true" />
+                    ) : (
+                      <Maximize size={14} aria-hidden="true" />
                     )}
                   </button>
                 </span>

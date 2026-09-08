@@ -90,9 +90,14 @@ describe('admission replay policy fidelity', () => {
     expect(replay).not.toHaveProperty('appliedExecutionRevision');
     await expect(authorize(authority)).resolves.toBeUndefined();
     // coord:dispatch and work_items:claim each traverse preflight AND enforce.
-    expect(h.sql).toHaveBeenCalledTimes(4);
+    const anchorReads = h.sql.mock.calls.filter(([parts]) =>
+      Array.isArray(parts) && parts.join('?').includes('FROM harness_shared.session_briefs'));
+    expect(anchorReads).toHaveLength(4);
     h.state = { lifecycle: { released: { at: 'after-queue' } } };
     await expect(authorize(authority)).rejects.toThrow('revoked');
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({
+      decision: 'deny', reason: expect.stringContaining('[preflight:kernel-preflight]'),
+    }));
   });
 
   it.each([
@@ -113,7 +118,7 @@ describe('admission replay policy fidelity', () => {
       denyTools: ['work_items:claim'], reason: 'review only now', imposedBy: 'director',
     }));
     await expect(authorize(authority)).rejects.toThrow('review only now');
-    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ decision: 'deny' }));
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ decision: 'deny', gate: 'capability' }));
   });
 
   it('rechecks current audit mode before the inner claim instead of inheriting an earlier allow', async () => {

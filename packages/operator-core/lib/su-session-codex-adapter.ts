@@ -499,7 +499,7 @@ export class CodexSuSessionAdapter {
 
   /** Consume one complete native JSONL record. Partial trailing records must be
    * retained by the source until their newline arrives. */
-  ingestNativeLine(line: string): void {
+  ingestNativeLine(line: string, { preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): void {
     let record: Record<string, unknown>;
     try {
       record = JSON.parse(line) as Record<string, unknown>;
@@ -544,10 +544,10 @@ export class CodexSuSessionAdapter {
 
     if (record.type === 'event_msg' && payloadType === 'task_started') {
       this.currentTurnId = this.nextTurnId(nativeTurnHint);
-      this.host.transition('running', 'Codex native task started');
+      if (!preserveLifecycle) this.host.transition('running', 'Codex native task started');
     }
     if (record.type === 'compacted') {
-      this.host.transition('compacting', 'Codex native transcript compacted');
+      if (!preserveLifecycle) this.host.transition('compacting', 'Codex native transcript compacted');
     }
 
     const error = nativeError(record);
@@ -569,7 +569,7 @@ export class CodexSuSessionAdapter {
     for (const entry of this.parser.parseLine(line)) {
       if (entry.kind === 'prompt') {
         this.currentTurnId = this.nextTurnId(nativeTurnHint);
-        this.host.transition('running', 'Codex owner turn persisted');
+        if (!preserveLifecycle) this.host.transition('running', 'Codex owner turn persisted');
         this.emitTranscript({
           turnId: this.currentTurnId,
           role: 'owner',
@@ -625,7 +625,7 @@ export class CodexSuSessionAdapter {
     }
 
     if (record.type === 'event_msg' && (payloadType === 'task_complete' || payloadType === 'turn_completed')) {
-      this.host.transition('waiting-for-owner', error ? 'Codex turn failed' : 'Codex turn completed');
+      if (!preserveLifecycle) this.host.transition('waiting-for-owner', error ? 'Codex turn failed' : 'Codex turn completed');
       this.currentTurnId = null;
     }
   }
@@ -644,11 +644,11 @@ export class CodexSuSessionAdapter {
     }
   }
 
-  async consumeRolloutSnapshot(): Promise<void> {
+  async consumeRolloutSnapshot({ preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): Promise<void> {
     if (!this.runtimeValue.rolloutPath) {
       throw new Error('Codex runtime has no resolved rollout path');
     }
-    for await (const line of readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath)) this.ingestNativeLine(line);
+    for await (const line of readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath)) this.ingestNativeLine(line, { preserveLifecycle });
   }
 
   /** P-004 calls this after an exact resume/carry replacement attaches. The

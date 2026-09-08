@@ -1,10 +1,12 @@
 # Desktop GUI design drift: findings, repair and prevention plan
 
-Prepared for Avi on 8 September 2026. This report is a living handoff: the status below distinguishes verified work from work still in progress. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
+Prepared for Avi on 8 September 2026; updated after actual portal verification at 09:05 UTC. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
 
 ## Current conclusion
 
 The mismatch is real. You selected a desktop workspace with a large viewer and a compact roster/activity column. The portal instead opened cloud-infrastructure management and required expanding a host before its desktop viewer became visible. The existing viewer implementation was present, but its placement and navigation did not deliver the selected experience.
+
+The layout/navigation repair is now running at **http://127.0.0.1:3801/?app=desktops**. Clicking **Desktops** in the real sidebar opens the selected option B composition directly. Four browser acceptance cases passed against that normal service: sidebar entry and responsive layout, canonical unavailable link, legacy unavailable link, and workspace selection with reload/back/forward. The same sidebar test failed against the prior served build because the desktop workspace was absent.
 
 There is also a separate connectivity limitation: the available canary panel reports that its desktop connection is not ready. Repairing layout and navigation does not prove that a remote desktop is connected. No cloud initialization, credential mint, provisioning, takeover or teardown has been performed for this repair.
 
@@ -52,26 +54,34 @@ The existing completion adapter returned the **first applicable** candidate desi
 
 The original desktop acceptance work, WI-2001281/P-031, still carries a separate connected-cloud acceptance obligation. Its checkpoint claims the B integration was built and rendered, while reserving actual connected DesktopSession/control acceptance for the canary readiness gate. Those statements do not establish that the portal sidebar journey matched B. A component build, a screenshot, an item completion, a plan shipment verdict and actual remote control are different claims and need different evidence.
 
-## Repair already authored
+## Verified repair
 
 The specific repair is tracked under **desktop-design-fidelity-repair-2026-09-08**, with WI-10000654 for the screen and WI-10000685 for focused design-gate hardening.
 
 - The portal registry now mounts a dedicated `DesktopWorkspacePage` for Desktops. Cloud management retains its own destination.
 - The desktop page chooses an available workspace when there is no explicit selection, prioritizing one advertising the supported connector. It exposes a workspace selector and preserves explicit deep-link subjects; an invalid subject is shown as unavailable rather than silently opening another machine.
+- The real browser test exposed a remaining legacy-link defect: the portal shell erased `host` when `desktopHost` was absent. The bridge now leaves that page-owned selector intact. Canonical `desktopHost` still takes precedence, and workspace selection survives reload and browser back/forward.
 - `HostedDesktopConnection` extracts and reuses the existing session/discovery/viewer wiring for both destinations. Host or connector changes reset the scoped connection identity; switching management tabs retains the connection component.
 - The desktop page uses the existing option B viewer/roster/activity layout and portal tokens, with a truthful disconnected/empty state and responsive container layout.
-- Four new registry-level entry/state tests now pass, alongside the 48 existing UI tests. That is source-level verification, not a claim of deployment.
-- Focused gate hardening has been authored to evaluate every candidate and honor explicit `payload.designReferences: [{ featureId, referenceId }]` obligations. Missing declared ratification and malformed requirements can no longer silently become not-applicable. Existing calibration limits remain intact. This hardening still needs its post-edit test/type verification at the time of this report's initial publication.
+- Four new registry-level entry/state tests pass, alongside the 48 existing UI tests. The final focused gate suite passes 31 tests; the portal URL bridge/isolation suites pass 29. Final named operator/core checks and the portal's full TypeScript check passed.
+- Focused gate hardening evaluates every candidate and honors explicit `payload.designReferences: [{ featureId, referenceId }]` obligations. Missing declared ratification and malformed requirements can no longer silently become not-applicable. Existing report-only and host-calibration enforcement limits remain intact. Real completion-handler positive and negative controls passed; this is verified source behavior, not a claim that the operator's separate green release pipeline has deployed it.
 
 The initial repaired UI test result is saved in `/tmp/pcv/papercusp-test-files-report-Chnyp2/group-0.json`; the original failing regression result is `/tmp/pcv/papercusp-test-files-report-9iLNC7/group-0.json`. These are local run artifacts. Durable conclusions and later evidence are recorded on the work items.
 
-## What remains before the specific fix is finished
+## Captured result and verification limits
 
-1. Finish type checks, focused gate tests and navigation regression coverage, including any browser-history or connection-state issues the real render reveals.
-2. Build the portal from the corrected shared source and verify it through the real shell, including a clean Desktops entry, direct links, workspace changes, desktop/narrow widths, and the current disconnected state.
-3. Compare the resulting composition to option B and capture the actual result. A controlled ready-state fixture can verify viewer layout and controls, but will be labeled as a fixture and will not count as cloud connectivity.
-4. Carry the verified portal build to the normal local portal service, check the resulting served content, and update this report with the result and remaining limitations.
-5. Complete durable acceptance records. The repair plan's source audit and structural spec-quality evaluation are recorded; the latter received independent grading-integrity approval via EI-22680402648711841. Plan start/acceptance bookkeeping has additionally exposed an acceptance-BAR revision mismatch; that must be reconciled without changing the promised behavior or bypassing its gate.
+| Capture | What it proves |
+| --- | --- |
+| [Original sidebar destination](desktop-design-drift-2026-09-08/original-desktops-entry.png) | The real Desktops sidebar opened cloud management before the repair. |
+| [Repaired desktop, 1440 × 900](desktop-design-drift-2026-09-08/desktop-option-b-1440.png) | Large viewer area with compact roster and activity alongside, reached through the actual sidebar. |
+| [Repaired narrow screen, 390 × 844](desktop-design-drift-2026-09-08/desktop-option-b-390.png) | Responsive page header and viewer, without horizontal destination overflow. |
+| [Narrow roster after scrolling](desktop-design-drift-2026-09-08/desktop-option-b-390-roster.png) | The stacked roster/activity panel is reachable inside the portal's scrolling content. |
+
+These are actual portal/current-data captures, with no fabricated desktop image or activity. Compared with option B, the selected viewer/roster hierarchy is restored; the existing portal shell remains. The illustrative mockup's connected screen cannot be reproduced honestly while the available canary has no ready connector. Real remote video, Watch/Take control/release/Escape/fullscreen operation still belongs to the separately gated connected-cloud acceptance; this repair preserves the existing transport/viewer implementation and does not claim those live actions were exercised.
+
+The served portal build is `sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6fa24f`, with build ID `sAkL9leDemaAAqkCOmti2` and portal source-root digest `820d2f1184e5cd448761f272cab6621476171105a8d3589d8b9c45109f2f157c`. The normal `papercusp-cloud-portal.service` was restarted onto that immutable generation after preview acceptance. Build, full portal typecheck, and real service browser checks passed. The build reports separately changing linked dependencies; its root digest is not a whole-monorepo freeze claim.
+
+Acceptance bookkeeping is still being settled: the specific repair plan's activation re-audit preserved BAR revision 2, and the final frozen spec-quality card is `EI-22683309730362618`. The documentation guidance clause now has an explicit manual-review exemption from unit testing; the guidance remains mandatory under R-2. Independent review and terminal work-item/plan evidence will be recorded before reporting the whole plan finished.
 
 ## Recommended prevention program
 

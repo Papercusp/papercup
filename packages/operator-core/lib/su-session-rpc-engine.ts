@@ -440,8 +440,10 @@ export function startSuRpcEngine(
     if (options.nativeSession) {
       // The native runtime restores inference context; the adapter restores
       // the owner's visible history before this connection accepts new input.
-      if (backend === 'codex') await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot();
-      else await (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot();
+      // Historical turn completion must not advertise current readiness.
+      host.transition('resuming', 'Restoring saved conversation before attaching the executor');
+      if (backend === 'codex') await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true });
+      else await (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true });
     }
     if (closed) throw new Error('Structured connection closed during startup');
     await options.beforeReady?.(peer.pid());

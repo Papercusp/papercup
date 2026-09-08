@@ -408,7 +408,7 @@ export class OmpSuSessionAdapter {
     this.host.emit({ type: 'transcript', phase: 'completed', turnId: input.turnId, role: input.role, channel: input.channel, ...(input.content ? { content: input.content } : {}) } as SuSessionEventInput<'omp'>);
   }
 
-  ingestNativeLine(line: string): void {
+  ingestNativeLine(line: string, { preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): void {
     let record: Record<string, unknown>;
     try { record = JSON.parse(line) as Record<string, unknown>; }
     catch {
@@ -418,13 +418,13 @@ export class OmpSuSessionAdapter {
     const recordId = firstString(record.id, record.entryId, record.messageId);
     const messageRecord = asRecord(record.message);
     const messageToolId = firstString(messageRecord?.toolCallId, messageRecord?.tool_call_id);
-    if (recordIndicatesCompaction(record)) this.host.transition('compacting', 'OMP native transcript compacted');
+    if (!preserveLifecycle && recordIndicatesCompaction(record)) this.host.transition('compacting', 'OMP native transcript compacted');
     for (const entry of this.parser.parseLine(line)) {
       const turnId = entry.kind === 'prompt'
         ? (this.currentTurnId = this.nextTurnId(recordId))
         : this.ensureTurn(recordId);
       if (entry.kind === 'prompt') {
-        this.host.transition('running', 'OMP owner turn persisted');
+        if (!preserveLifecycle) this.host.transition('running', 'OMP owner turn persisted');
         this.emitTranscript({ turnId, role: 'owner', channel: 'text', content: entry.text ?? '' });
       } else if (entry.kind === 'text') {
         this.emitTranscript({ turnId, role: 'assistant', channel: 'text', content: entry.text ?? '' });
@@ -466,7 +466,7 @@ export class OmpSuSessionAdapter {
       }
     }
     if (recordEndsTurn(record)) {
-      this.host.transition('waiting-for-owner', errorMessage ? 'OMP turn failed' : 'OMP turn completed');
+      if (!preserveLifecycle) this.host.transition('waiting-for-owner', errorMessage ? 'OMP turn failed' : 'OMP turn completed');
       this.currentTurnId = null;
     }
   }
@@ -478,9 +478,9 @@ export class OmpSuSessionAdapter {
     }
   }
 
-  async consumeTranscriptSnapshot(): Promise<void> {
+  async consumeTranscriptSnapshot({ preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): Promise<void> {
     if (!this.runtimeValue.transcriptPath) throw new Error('OMP runtime has no resolved transcript path');
-    for await (const line of readOmpTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line);
+    for await (const line of readOmpTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle });
   }
 
   replaceRuntime(runtime: OmpSuRuntimeBinding, reason = 'OMP runtime replaced'): void {

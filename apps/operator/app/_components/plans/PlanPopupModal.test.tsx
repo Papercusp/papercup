@@ -92,7 +92,7 @@ vi.mock("./PlanSessionsTab", () => ({
   default: () => <div data-testid="plan-sessions" />,
 }));
 
-import PlanPopupModal, { isPopupSurfaceFullscreen } from "./PlanPopupModal";
+import PlanPopupModal from "./PlanPopupModal";
 
 afterEach(() => {
   planRows.value = [];
@@ -277,63 +277,62 @@ describe("PlanPopupModal provenance", () => {
 });
 
 describe("PlanPopupModal fullscreen and target lifecycle", () => {
-  it("does not mistake an unattached ref plus an idle Fullscreen API for fullscreen", () => {
-    const surface = document.createElement("div");
-    expect(isPopupSurfaceFullscreen(null, null)).toBe(false);
-    expect(isPopupSurfaceFullscreen(null, surface)).toBe(false);
-    expect(isPopupSurfaceFullscreen(surface, surface)).toBe(true);
-  });
-
   it("fullscreenes the complete popup surface, restores it, and follows external exit", async () => {
     const fullscreen = installFullscreenApi();
     renderPopup(null, null);
 
     const surface = screen.getByTestId("plan-popup-fullscreen-surface");
-    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
 
     await waitFor(() =>
       expect(fullscreen.requestFullscreen).toHaveBeenCalledTimes(1),
     );
     expect(fullscreen.requestFullscreen.mock.instances[0]).toBe(surface);
     expect(
-      screen.getByRole("button", { name: "Exit fullscreen" }),
+      screen.getByRole("button", { name: "Exit full screen" }),
     ).toBeTruthy();
 
     fullscreen.externalExit();
     await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Enter fullscreen" }),
-      ).toBeTruthy(),
+      expect(screen.getByRole("button", { name: "Full screen" })).toBeTruthy(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Exit fullscreen" }),
+        screen.getByRole("button", { name: "Exit full screen" }),
       ).toBeTruthy(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Exit full screen" }));
     await waitFor(() =>
       expect(fullscreen.exitFullscreen).toHaveBeenCalledTimes(1),
     );
   });
 
-  it("fills the host window and restores when the Fullscreen API is unavailable", () => {
-    installFullscreenApi(false);
+  it("renders adjacent full-window and full-screen controls and fills only the host window", async () => {
+    const fullscreen = installFullscreenApi();
     renderPopup(null, null);
 
-    const button = screen.getByRole("button", {
-      name: "Enter fullscreen",
-    }) as HTMLButtonElement;
-    expect(button.disabled).toBe(false);
-    expect(button.hasAttribute("title")).toBe(false);
-    fireEvent.click(button);
+    const fullWindow = screen.getByRole("button", { name: "Full window" });
+    const fullScreen = screen.getByRole("button", { name: "Full screen" });
+    expect(
+      fullWindow.compareDocumentPosition(fullScreen) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    fireEvent.click(fullWindow);
     const modal = screen.getByTestId("plan-popup-modal");
-    expect(modal.style.width).toBe("100vw");
+    await waitFor(() => expect(modal.style.width).toBe("100vw"));
     expect(modal.style.height).toBe("100dvh");
     expect(screen.getByTestId("plan-popup-wrap").style.padding).toBe("0px");
-    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+    expect(fullscreen.requestFullscreen).not.toHaveBeenCalled();
+    expect(document.fullscreenElement).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Exit full window" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Full screen" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Exit full window" }));
     expect(modal.style.width).toBe("94vw");
     expect(modal.style.maxWidth).toBe("1100px");
     expect(modal.style.maxHeight).toBe("860px");
@@ -342,21 +341,29 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
 
   it("falls back to filling the window after a rejected browser request", async () => {
     const fullscreen = installFullscreenApi();
-    fullscreen.requestFullscreen.mockRejectedValueOnce(new Error("Permission denied"));
+    fullscreen.requestFullscreen.mockRejectedValueOnce(
+      new Error("Permission denied"),
+    );
     renderPopup(null, null);
-    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
     await waitFor(() =>
       expect(screen.getByTestId("plan-popup-modal").style.width).toBe("100vw"),
     );
-    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Exit full window" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Full screen" })).toBeTruthy();
   });
 
   it("Escape restores the expanded window without closing the plan", () => {
     installFullscreenApi(false);
     const onClose = vi.fn();
     renderPopup(null, null, { onClose });
-    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
-    fireEvent.keyDown(screen.getByRole("button", { name: "Exit fullscreen" }), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Full window" }));
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: "Exit full window" }),
+      { key: "Escape" },
+    );
     expect(screen.getByTestId("plan-popup-modal").style.width).toBe("94vw");
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -365,7 +372,7 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
     const onUrlUpdate = vi.fn<OnUrlUpdateFunction>();
     const onClose = vi.fn();
     renderPopup(null, null, {
-      searchParams: "?ppv=sessions&jump=D-004",
+      searchParams: "?ppv=sessions&jump=D-004&pmax=window",
       onUrlUpdate,
       onClose,
     });
@@ -377,7 +384,10 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
       const writes = onUrlUpdate.mock.calls.map((call) => call[0].queryString);
       expect(
         writes.some(
-          (search) => !search.includes("ppv=") && !search.includes("jump="),
+          (search) =>
+            !search.includes("ppv=") &&
+            !search.includes("jump=") &&
+            !search.includes("pmax="),
         ),
       ).toBe(true);
     });

@@ -548,7 +548,7 @@ export class ClaudeSuSessionAdapter {
 
   /** Consume one complete Claude JSONL record. The source retains a partial
    * trailing record until its newline arrives. */
-  ingestNativeLine(line: string): void {
+  ingestNativeLine(line: string, { preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): void {
     let record: Record<string, unknown>;
     try {
       record = JSON.parse(line) as Record<string, unknown>;
@@ -582,7 +582,7 @@ export class ClaudeSuSessionAdapter {
     }
 
     const recordId = firstString(record.uuid, record.id, record.message_id);
-    if (recordIndicatesCompaction(record)) {
+    if (!preserveLifecycle && recordIndicatesCompaction(record)) {
       this.host.transition('compacting', 'Claude native transcript compacted');
     }
 
@@ -592,7 +592,7 @@ export class ClaudeSuSessionAdapter {
         ? (this.currentTurnId ??= this.nextTurnId(recordId))
         : this.ensureTurn(recordId);
       if (entry.kind === 'prompt') {
-        this.host.transition('running', 'Claude owner turn persisted');
+        if (!preserveLifecycle) this.host.transition('running', 'Claude owner turn persisted');
         this.emitTranscript({ turnId, role: 'owner', channel: 'text', content: entry.text ?? '' });
       } else if (entry.kind === 'text') {
         this.emitTranscript({ turnId, role: 'assistant', channel: 'text', content: entry.text ?? '' });
@@ -631,7 +631,7 @@ export class ClaudeSuSessionAdapter {
           this.cards.delete(callId);
         }
       } else if (entry.kind === 'result') {
-        this.host.transition('waiting-for-owner', 'Claude native turn completed');
+        if (!preserveLifecycle) this.host.transition('waiting-for-owner', 'Claude native turn completed');
       }
     }
 
@@ -649,7 +649,7 @@ export class ClaudeSuSessionAdapter {
           } as SuSessionEventInput<'claude'>);
         }
       }
-      this.host.transition('waiting-for-owner', isError ? 'Claude turn failed' : 'Claude turn completed');
+      if (!preserveLifecycle) this.host.transition('waiting-for-owner', isError ? 'Claude turn failed' : 'Claude turn completed');
       this.currentTurnId = null;
     }
   }
@@ -674,12 +674,12 @@ export class ClaudeSuSessionAdapter {
     }
   }
 
-  async consumeTranscriptSnapshot(): Promise<void> {
+  async consumeTranscriptSnapshot({ preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): Promise<void> {
     this.runtimeValue.transcriptPath ??= await findClaudeTranscript(this.runtimeValue.nativeSession);
     if (!this.runtimeValue.transcriptPath) {
       throw new Error('Claude runtime has no resolved transcript path');
     }
-    for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line);
+    for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle });
   }
 
   /** P-004 calls this after exact Claude resume/carry replacement attaches. The

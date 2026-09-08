@@ -99,6 +99,12 @@ async function stop(): Promise<void> {
     await drainDetached();
     const { stopInvalidationListener } = require('../sync-sse') as typeof import('../sync-sse');
     await stopInvalidationListener();
+    // Explicit process.exit skips beforeExit, so the embedding workers need
+    // their normal per-environment teardown before Node unloads ONNX.
+    const { shutdownLocalEmbedder } = require('@papercusp/memory') as typeof import('@papercusp/memory');
+    const { shutdownLocalReranker } = require('@papercusp/rerank') as typeof import('@papercusp/rerank');
+    await Promise.all([shutdownLocalEmbedder(), shutdownLocalReranker()]);
+    send({ type: 'shutdown-stage', stage: 'embedding-workers-stopped', pid: process.pid, instanceId });
     const dbOrg = require('@papercusp/db-org') as typeof import('@papercusp/db-org');
     await dbOrg._resetForTests();
     send({ type: 'stopped', pid: process.pid, instanceId });
