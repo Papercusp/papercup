@@ -221,3 +221,26 @@ it('rejects a Codex approval from a different thread before opening a card', asy
   expect(f.engine.adapter.host.recent.some(({ event }) => event.type === 'card')).toBe(false);
   expect(f.sent.some((frame) => frame.id === 'wrong')).toBe(false);
 });
+
+it.each(['thread/start', 'mcpServerStatus/list'])('accepts matching Codex startup notifications during %s', async (method) => {
+  const f = fixture('codex', { request: async (frame) => {
+    if (frame.method === method) f.emit({ method: 'mcpServer/startupStatus/updated', params: {
+      threadId: 'native-codex', name: 'papercusp-su', status: 'starting',
+    } });
+    return undefined;
+  } });
+  await f.engine.ready;
+  expect(f.engine.adapter.host.snapshot()).toMatchObject({ streamReady: true,
+    descriptor: { identity: { nativeSessionId: 'native-codex' } } });
+});
+
+it('validates a queued pre-identity Codex approval before it can open a card', async () => {
+  const f = fixture('codex', { request: async (frame) => {
+    if (frame.method === 'thread/start') f.emit({ id: 'early-wrong', method: 'item/commandExecution/requestApproval',
+      params: { threadId: 'another-session', command: 'touch wrong.txt' } });
+    return undefined;
+  } });
+  await expect(f.engine.ready).rejects.toThrow('different thread');
+  expect(f.engine.adapter.host.recent.some(({ event }) => event.type === 'card')).toBe(false);
+  expect(f.sent.some((frame) => frame.id === 'early-wrong')).toBe(false);
+});

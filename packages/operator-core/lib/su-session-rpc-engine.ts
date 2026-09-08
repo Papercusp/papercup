@@ -121,6 +121,8 @@ export function startSuRpcEngine(
   let inputTail = Promise.resolve();
   const streams = new Map<string, string>();
   const tools = new Map<string, string>();
+  const initializingFrames: RpcFrame[] = [];
+  let initializingFrameBytes = 0;
   const unavailable = (message: string) => ({ ok: false as const, code: 'engine_delivery_unknown', message, retryable: false });
   const controls = {
     async ownerTurn({ content, turnId }: { content: string; turnId: string }) {
@@ -233,6 +235,17 @@ export function startSuRpcEngine(
   function onMessage(frame: RpcFrame): void {
     if (closed) return;
     const frameThreadId = object(frame.params).threadId;
+    if (backend === 'codex' && frameThreadId && !nativeId()) {
+      // App-server can announce MCP startup before thread/start responds.
+      // Defer these frames until that correlated response pins the identity;
+      // never treat an unbound identity as permission to dispatch a request.
+      initializingFrameBytes += Buffer.byteLength(JSON.stringify(frame));
+      if (initializingFrames.length >= 256 || initializingFrameBytes > 1_048_576) {
+        throw new Error('Codex emitted too many thread events before identifying its session');
+      }
+      initializingFrames.push(frame);
+      return;
+    }
     if (backend === 'codex' && frameThreadId && frameThreadId !== nativeId()) throw new Error('Codex event belongs to a different thread');
     if (cards.handle(backend, frame, ownerTurnId || 'startup', (response) => { if (!closed) peer?.send(response); })) return;
     if (backend === 'codex') {
@@ -333,12 +346,14 @@ export function startSuRpcEngine(
       const thread = object(result.thread), id = string(thread.id);
       if (!id || nativeId() && id !== nativeId()) throw new Error('Codex did not return the requested native identity');
       if (thread.cwd && resolve(string(thread.cwd)) !== resolve(boot.cwd)) throw new Error('Codex started in a different project');
+      nativePath = string(thread.path) || null;
+      native = { ...native as CodexNativeSessionHandle, rolloutId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
+      if (!host.descriptor().identity.nativeSessionId) (adapter as CodexSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, rolloutId: id }, rolloutPath: nativePath });
+      for (const frame of initializingFrames.splice(0)) onMessage(frame);
+      initializingFrameBytes = 0;
       const servers = await peer.request({ method: 'mcpServerStatus/list', params: {} });
       const su = (Array.isArray(servers.data) ? servers.data : []).map(object).find((server) => server.name === 'papercusp-su');
       if (!su || !Object.keys(object(su.tools)).length) throw new Error('Codex SU tools are not connected');
-      nativePath = string(thread.path) || null;
-      native = { ...native as CodexNativeSessionHandle, rolloutId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
-      if (!host.descriptor().identity.nativeSessionId) (adapter as CodexSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, rolloutId: id }, rolloutPath: string(thread.path) || null });
       actualModel = string(result.model);
     } else {
       const state = await peer.request({ type: 'get_state' });
