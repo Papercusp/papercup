@@ -1714,6 +1714,10 @@ export default defineTool({
           getNextForBee({
             cupId: ident.ownerId,
             onPlanLaneBlocked,
+            // EI-22708243422971631: retries are still claim-path work. Keep them on the
+            // scheduler-only pool too; otherwise miss diagnosis can move the second claim
+            // onto the contended process-wide pool and consume the remaining handler budget.
+            useDedicatedClaimPool: true,
             workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
             harness: args.harness,
             heldPaths: args.heldPaths,
@@ -1767,6 +1771,9 @@ export default defineTool({
             getNextForBee({
               cupId: ident.ownerId,
               onPlanLaneBlocked,
+              // EI-22708243422971631: the feature-family retry has the same claim-path
+              // contention risk as the divergence retry above.
+              useDedicatedClaimPool: true,
               workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
               harness: args.harness,
               heldPaths: args.heldPaths,
