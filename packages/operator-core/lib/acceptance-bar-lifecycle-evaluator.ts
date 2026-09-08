@@ -75,6 +75,13 @@ function addCode(codes: AcceptanceBarSnapshotCode[], code: AcceptanceBarSnapshot
   if (!codes.includes(code)) codes.push(code);
 }
 
+function automatedProofRequired(bar: AcceptanceBarTrace): boolean {
+  // Missing behaviorClass is an old snapshot shape; fail closed to the historic
+  // automated behavior until a fresh snapshot proves the clause is non-automated.
+  return bar.behaviorClass !== 'non-automated' ||
+    (bar.requiredTestLayers?.length ?? 0) > 0 || bar.mutationRequired === true;
+}
+
 /**
  * P-001: attribute every blocking code to the BAR(s) that produced it.
  *
@@ -239,7 +246,7 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
   // a non-empty METHOD (checked above), while runnable checks carry their own
   // file/instrument/probe/cargo binding in the structured check.
   if (phase === 'ship') {
-    if (bar.role === 'outcome') {
+    if (bar.role === 'outcome' && automatedProofRequired(bar)) {
       if (!bar.requiredTestLayers?.length) addCode(codes, 'bar_snapshot_proof_depth_missing');
       else if (bar.proof.adequacy?.state !== 'pass') addCode(codes, 'bar_snapshot_proof_inadequate');
     }
