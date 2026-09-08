@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { MCP_PROXY_HOT_PATHS as SERVICE_HEALTH_MCP_PROXY_HOT_PATHS } from '../../../../packages/operator-core/lib/service-health';
 
 // The watchdog is a long-lived systemd entrypoint that starts its poll loop on import. Opt out so
 // we can unit-test the pure decision logic without launching setInterval / hitting the network.
@@ -17,6 +18,11 @@ let livenessProbeUrl: Watchdog['livenessProbeUrl'];
 let evaluateStallRate: Watchdog['evaluateStallRate'];
 let buildEscalationCall: Watchdog['buildEscalationCall'];
 let decideRestartAfterRecheck: Watchdog['decideRestartAfterRecheck'];
+let MCP_PROXY_COMMITTED_HOT_PATHS: Watchdog['MCP_PROXY_COMMITTED_HOT_PATHS'];
+let evaluateMcpProxyHotPathActivation: Watchdog['evaluateMcpProxyHotPathActivation'];
+let shouldCheckMcpProxyHotPathActivation: Watchdog['shouldCheckMcpProxyHotPathActivation'];
+let readMcpProxyHotPathState: Watchdog['readMcpProxyHotPathState'];
+let requestMcpProxyHotPathRestart: Watchdog['requestMcpProxyHotPathRestart'];
 beforeAll(async () => {
   ({
     shouldRestart,
@@ -29,7 +35,183 @@ beforeAll(async () => {
     evaluateStallRate,
     buildEscalationCall,
     decideRestartAfterRecheck,
+    MCP_PROXY_COMMITTED_HOT_PATHS,
+    evaluateMcpProxyHotPathActivation,
+    shouldCheckMcpProxyHotPathActivation,
+    readMcpProxyHotPathState,
+    requestMcpProxyHotPathRestart,
   } = await import('./watchdog.mjs'));
+});
+
+/**
+ * EI-22647232817982385 — the proxy tsx-loads the working tree but has no file watcher, so a
+ * committed fix can sit inert in the live process indefinitely. This is the recurrence guard for
+ * the activation lane adapted from bghost-watchdog's fail-closed committed-hot-path check:
+ * activation requires a known generation, a known newer commit, and a clean relevant tree.
+ * Unknown evidence and in-progress edits must never become permission to restart a peer's proxy.
+ */
+describe('mcp-proxy watchdog — committed hot-path activation (EI-22647232817982385)', () => {
+  const NOW = 1_000_000;
+  const safe = {
+    activeForSec: 100,
+    latestCommitMs: 950_000,
+    latestCommitHash: 'abcdef1234567890',
+    nowMs: NOW,
+    dirtyEntries: [],
+  };
+
+  it('pins the watchdog scope to the canonical service-health proxy hot paths', () => {
+    expect([...MCP_PROXY_COMMITTED_HOT_PATHS]).toEqual([...SERVICE_HEALTH_MCP_PROXY_HOT_PATHS]);
+  });
+
+  it('activates only for a newer committed change and a clean working tree', () => {
+    expect(evaluateMcpProxyHotPathActivation(safe)).toMatchObject({
+      activate: true,
+      code: 'activate',
+      bootMs: 900_000,
+      latestCommitHash: safe.latestCommitHash,
+    });
+  });
+
+  it.each([
+    ['generation age unknown', { activeForSec: null }, 'generation_unknown'],
+    ['clock unknown', { nowMs: null }, 'clock_unknown'],
+    ['commit timestamp unknown', { latestCommitMs: null }, 'commit_unknown'],
+    ['commit hash unknown', { latestCommitHash: null }, 'commit_unknown'],
+    ['future-dated commit', { latestCommitMs: NOW + 1 }, 'commit_time_future'],
+    ['running generation is current', { latestCommitMs: NOW - 101_000 }, 'generation_current'],
+    ['cleanliness unknown', { dirtyEntries: null }, 'cleanliness_unknown'],
+  ])('fails closed when %s', (_label, patch, code) => {
+    expect(evaluateMcpProxyHotPathActivation({ ...safe, ...patch })).toMatchObject({
+      activate: false,
+      code,
+    });
+  });
+
+  it('suppresses on any dirty or untracked proxy hot-path entry, including tests', () => {
+    expect(
+      evaluateMcpProxyHotPathActivation({
+        ...safe,
+        dirtyEntries: [
+          ' M apps/operator/lib/mcp-proxy/proxy.ts',
+          '?? apps/operator/lib/mcp-proxy/proxy.test.ts',
+        ],
+      }),
+    ).toMatchObject({ activate: false, code: 'hot_paths_dirty', dirtyCount: 2 });
+  });
+
+  it('throttles repeated checks and refuses an overlapping check', () => {
+    expect(
+      shouldCheckMcpProxyHotPathActivation({ inFlight: false, lastCheckMs: 0, nowMs: 10, intervalMs: 300 }),
+    ).toBe(true);
+    expect(
+      shouldCheckMcpProxyHotPathActivation({ inFlight: true, lastCheckMs: 0, nowMs: 10, intervalMs: 300 }),
+    ).toBe(false);
+    expect(
+      shouldCheckMcpProxyHotPathActivation({ inFlight: false, lastCheckMs: 100, nowMs: 399, intervalMs: 300 }),
+    ).toBe(false);
+    expect(
+      shouldCheckMcpProxyHotPathActivation({ inFlight: false, lastCheckMs: 100, nowMs: 400, intervalMs: 300 }),
+    ).toBe(true);
+  });
+
+  it('reads a non-test committed proxy change while treating every dirty entry as unsafe', async () => {
+    const calls: string[][] = [];
+    const state = await readMcpProxyHotPathState({
+      root: '/repo',
+      sh: async (_command, args) => {
+        calls.push(args);
+        if (args.includes('log')) return { err: null, stdout: '950\u0000abcdef1234567890\n' };
+        return {
+          err: null,
+          stdout:
+            ' M apps/operator/lib/mcp-proxy/proxy.ts\u0000' +
+            '?? apps/operator/lib/mcp-proxy/proxy.test.ts\u0000',
+        };
+      },
+    });
+    expect(state).toMatchObject({
+      latestCommitMs: 950_000,
+      latestCommitHash: 'abcdef1234567890',
+      dirtyEntries: [
+        'M apps/operator/lib/mcp-proxy/proxy.ts',
+        '?? apps/operator/lib/mcp-proxy/proxy.test.ts',
+      ],
+      error: null,
+    });
+    const logArgs = calls.find((args) => args.includes('log'))!;
+    const statusArgs = calls.find((args) => args.includes('status'))!;
+    expect(logArgs).toContain(':(glob)apps/operator/lib/mcp-proxy/**/*.ts');
+    expect(logArgs).toContain(':(exclude,glob)**/*.test.ts');
+    expect(logArgs).toContain(':(exclude)apps/operator/lib/mcp-proxy/watchdog.mjs');
+    expect(statusArgs).toContain('--untracked-files=all');
+    expect(statusArgs).toContain('apps/operator/lib/mcp-proxy');
+    expect(statusArgs).toContain(':(exclude)apps/operator/lib/mcp-proxy/watchdog.test.ts');
+  });
+
+  it('fails closed when either git read fails', async () => {
+    const state = await readMcpProxyHotPathState({
+      root: '/repo',
+      sh: async (_command, args) =>
+        args.includes('log')
+          ? { err: new Error('git unavailable'), stdout: '' }
+          : { err: null, stdout: '' },
+    });
+    expect(state).toMatchObject({ latestCommitMs: null, latestCommitHash: null, dirtyEntries: [], error: 'commit_unknown' });
+    expect(evaluateMcpProxyHotPathActivation({ ...safe, ...state })).toMatchObject({
+      activate: false,
+      code: 'commit_unknown',
+    });
+  });
+
+  it('uses the coordinated mcp-proxy restart surface with a bounded call drain', async () => {
+    let observed: { command: string; args: string[]; opts?: { stdin?: string; timeout?: number } } | undefined;
+    const outcome = await requestMcpProxyHotPathRestart('abcdef1234567890', {
+      ptoolScript: '/repo/apps/operator/scripts/ptool.mjs',
+      sh: async (command, args, opts) => {
+        observed = { command, args, opts };
+        return { err: null, stdout: JSON.stringify({ ok: true, target: 'mcp-proxy', restarted: true }) };
+      },
+    });
+    expect(outcome).toMatchObject({ ok: true, restarted: true, code: 'restarted' });
+    expect(observed?.command).toBe(process.execPath);
+    expect(observed?.args).toEqual(['/repo/apps/operator/scripts/ptool.mjs', 'dev:restart', '--json', '-']);
+    const payload = JSON.parse(observed?.opts?.stdin ?? '{}');
+    expect(payload).toMatchObject({
+      target: 'mcp-proxy',
+      confirm: true,
+      authorize: true,
+    });
+    expect(payload.max_drain_sec).toBeGreaterThan(0);
+    expect(observed?.opts?.timeout).toBe(30_000 + payload.max_drain_sec * 1_000);
+    expect(payload).not.toHaveProperty('override_gate_collision');
+    expect(payload).not.toHaveProperty('override_boot_integrity');
+  });
+
+  it('fails closed when coordinated restart is unavailable or refuses', async () => {
+    await expect(
+      requestMcpProxyHotPathRestart('abc', {
+        sh: async () => ({ err: new Error('boom'), stdout: '' }),
+      }),
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'ptool_failed' });
+    await expect(
+      requestMcpProxyHotPathRestart('abc', {
+        sh: async () => ({ err: null, stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
+      }),
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'gate_collision' });
+  });
+
+  it('keeps activation in the existing poll cadence before liveness probing', async () => {
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('./watchdog.mjs', import.meta.url), 'utf8');
+    const pollStart = source.indexOf('async function poll()');
+    const pollBody = source.slice(pollStart);
+    const activationIndex = pollBody.indexOf('maybeActivateMcpProxyHotPathCode');
+    const livenessIndex = pollBody.indexOf('fetch(livenessProbeUrl');
+    expect(activationIndex).toBeGreaterThan(-1);
+    expect(activationIndex).toBeLessThan(livenessIndex);
+    expect(source).toContain('if (!admitRestart(reason)) return { restartRequested: false, code: \'restart_suppressed\' };');
+  });
 });
 
 /**
