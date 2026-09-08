@@ -2,7 +2,8 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 interface ReviewManifest {
@@ -29,11 +30,36 @@ const manifestPath = [
 ].find(existsSync);
 if (!manifestPath) throw new Error('servicenow_staff_ml_review_manifest_not_found');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ReviewManifest;
-const sourcePath = process.env.SERVICENOW_INTERVIEW_PREP_FILE ?? manifest.sourcePath;
+const resolveEvidencePath = (path: string): string => (isAbsolute(path) ? path : resolve(homedir(), path));
+const sourcePath = process.env.SERVICENOW_INTERVIEW_PREP_FILE ?? resolveEvidencePath(manifest.sourcePath);
 
 const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 const normalized = (value: string | null | undefined): string => value?.replace(/\s+/g, ' ').trim() ?? '';
 const withoutTerminalPeriod = (value: string): string => value.replace(/\.$/, '');
+const collectionSlugs = [
+  'mcp-cicd-study-faq',
+  'papercusp-answer-bank',
+  'rtx-hirevue-prep',
+  'servicenow-staff-ml-interview-prep',
+  'twg-recruiter-screen',
+];
+const expectedCollectionTargets = collectionSlugs.map((slug) => `${slug}-standalone.html`).sort();
+
+function reciprocalCollectionTargets(document: Document): string[] {
+  return [
+    ...new Set(
+      [...document.querySelectorAll<HTMLAnchorElement>('a[href$="-standalone.html"]')]
+        .map((link) => link.getAttribute('href'))
+        .filter((href): href is string => href !== null),
+    ),
+  ].sort();
+}
+
+function expectExactReciprocalCollection(document: Document, label: string): void {
+  const targets = reciprocalCollectionTargets(document);
+  expect(targets, `${label} does not expose the exact reciprocal collection`).toEqual(expectedCollectionTargets);
+  expect(targets).not.toContain('nonexistent-interview-prep-standalone.html');
+}
 
 function factValue(scope: ParentNode, label: string): string {
   const item = [...scope.querySelectorAll('li')].find((candidate) =>
@@ -53,21 +79,13 @@ beforeAll(() => {
 describe('ServiceNow Staff ML interview-prep source contract', () => {
   it('pins the exact reviewed source and answer-bank snapshots', () => {
     expect(sha256(html)).toBe(manifest.sourceSha256);
-    expect(sha256(readFileSync(manifest.answerBankPath))).toBe(manifest.answerBankSha256);
+    expect(sha256(readFileSync(resolveEvidencePath(manifest.answerBankPath)))).toBe(manifest.answerBankSha256);
     expect(manifest.manualReview.result).toBe('pass');
     expect(manifest.manualReview.scope.length).toBeGreaterThanOrEqual(6);
     expect(manifest.manualReview.falsifierCoverage.length).toBeGreaterThanOrEqual(4);
   });
 
   it('keeps every generated standalone page discoverable from the full collection', () => {
-    const collectionSlugs = [
-      'mcp-cicd-study-faq',
-      'papercusp-answer-bank',
-      'rtx-hirevue-prep',
-      'servicenow-staff-ml-interview-prep',
-      'twg-recruiter-screen',
-    ];
-    const expectedTargets = collectionSlugs.map((slug) => `${slug}-standalone.html`).sort();
     const collectionDir = dirname(sourcePath);
     const buildScript = readFileSync(resolve(collectionDir, 'build-standalone.sh'), 'utf8');
 
@@ -76,19 +94,34 @@ describe('ServiceNow Staff ML interview-prep source contract', () => {
       const standalonePath = resolve(collectionDir, `${slug}-standalone.html`);
       expect(existsSync(standalonePath), `missing ${standalonePath}`).toBe(true);
       const standalone = new DOMParser().parseFromString(readFileSync(standalonePath, 'utf8'), 'text/html');
-      const targets = [
-        ...new Set(
-          [...standalone.querySelectorAll<HTMLAnchorElement>('a[href$="-standalone.html"]')]
-            .map((link) => link.getAttribute('href'))
-            .filter((href): href is string => href !== null),
-        ),
-      ].sort();
 
       expect(standalone.compatMode, `${slug} rendered in quirks mode`).toBe('CSS1Compat');
       expect(standalone.querySelector('meta[name="viewport"]'), `${slug} lacks viewport metadata`).not.toBeNull();
-      expect(targets, `${slug} does not expose the exact reciprocal collection`).toEqual(expectedTargets);
-      expect(targets).not.toContain('nonexistent-interview-prep-standalone.html');
+      expectExactReciprocalCollection(standalone, slug);
     }
+  });
+
+  it('kills missing-link and extra-link reciprocal collection mutants', () => {
+    const baselineHtml = readFileSync(
+      resolve(dirname(sourcePath), 'servicenow-staff-ml-interview-prep-standalone.html'),
+      'utf8',
+    );
+    const baseline = new DOMParser().parseFromString(baselineHtml, 'text/html');
+    expect(() => expectExactReciprocalCollection(baseline, 'baseline')).not.toThrow();
+
+    const missingLinkMutant = new DOMParser().parseFromString(baselineHtml, 'text/html');
+    const removedLink = missingLinkMutant.querySelector<HTMLAnchorElement>(
+      `a[href="${expectedCollectionTargets[0]}"]`,
+    );
+    expect(removedLink).not.toBeNull();
+    removedLink?.remove();
+    expect(() => expectExactReciprocalCollection(missingLinkMutant, 'missing-link mutant')).toThrow();
+
+    const extraLinkMutant = new DOMParser().parseFromString(baselineHtml, 'text/html');
+    const extraLink = extraLinkMutant.createElement('a');
+    extraLink.href = 'nonexistent-interview-prep-standalone.html';
+    extraLinkMutant.body.append(extraLink);
+    expect(() => expectExactReciprocalCollection(extraLinkMutant, 'extra-link mutant')).toThrow();
   });
 
   it('preserves supplied meeting details without exposing them in the tracked test', () => {
