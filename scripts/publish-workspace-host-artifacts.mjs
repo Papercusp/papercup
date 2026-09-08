@@ -36,6 +36,11 @@ import { open, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import {
+  appendTaskReleaseReceipt,
+  getTask,
+  taskReleaseJournalFromDetail,
+} from '@papercusp/operator-core/lib/task-manager/store';
 
 const PART_BYTES = 32 * 1024 * 1024;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
@@ -74,18 +79,25 @@ const SENSITIVE_ERROR_FIELDS = [
  */
 const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 
-function parseArgs(argv) {
+function parseArgs(argv, env = process.env) {
   const out = { base: DEFAULT_BASE, planOnly: false, concurrency: 4 };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--dir') out.dir = argv[++i];
     else if (a === '--base') out.base = argv[++i];
     else if (a === '--token') out.token = argv[++i];
+    else if (a === '--task-id') out.taskId = argv[++i];
+    else if (a === '--operation-id') out.operationId = argv[++i];
     else if (a === '--plan-only') out.planOnly = true;
     else if (a === '--concurrency') out.concurrency = Number(argv[++i]);
     else throw new Error(`unknown argument: ${a}`);
   }
   if (!out.dir) throw new Error('--dir <publication dir> is required');
+  if (!Number.isSafeInteger(out.concurrency) || out.concurrency < 1 || out.concurrency > 32) {
+    throw new Error('--concurrency must be an integer between 1 and 32');
+  }
+  out.taskId ??= env.PAPERCUSP_RELEASE_TASK_ID?.trim();
+  out.operationId ??= env.PAPERCUSP_RELEASE_OPERATION_ID?.trim();
   out.base = out.base.replace(/\/+$/, '');
   return out;
 }
@@ -213,23 +225,38 @@ async function readPart(path, partNumber) {
   }
 }
 
-export async function request(url, init, attempts = 4, stage = 'request') {
+const SAFE_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+export async function request(
+  url,
+  init,
+  attempts = 4,
+  stage = 'request',
+  fetchImpl = globalThis.fetch,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+) {
+  const method = String(init?.method ?? 'GET').toUpperCase();
+  if (attempts > 1 && !SAFE_RETRY_METHODS.has(method)) {
+    throw new Error(
+      `${stage} refused a blind ${method} retry; journal the intent and reconcile its outcome instead`,
+    );
+  }
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const res = await fetch(url, init);
+      const res = await fetchImpl(url, init);
       // 4xx is a contract answer, not a transport blip: never retry it, or a
       // digest mismatch is re-sent until it looks like a network problem.
       if (res.status >= 500 && attempt < attempts) {
         lastError = new Error(`HTTP ${res.status}`);
-        await new Promise((r) => setTimeout(r, 1000 * attempt));
+        await sleep(1000 * attempt);
         continue;
       }
       return res;
     } catch (error) {
       lastError = error;
       if (attempt === attempts) break;
-      await new Promise((r) => setTimeout(r, 1000 * attempt));
+      await sleep(1000 * attempt);
     }
   }
   throw new Error(
@@ -247,9 +274,286 @@ async function body(res) {
   }
 }
 
+class ReleaseHttpError extends Error {
+  constructor(leg, res, payload) {
+    super(`${leg} failed: HTTP ${res.status} ${JSON.stringify(payload)}`);
+    this.name = 'ReleaseHttpError';
+    this.status = res.status;
+    this.payload = payload;
+    this.outcomeUnknown =
+      res.status >= 500 ||
+      (res.status === 409 && /outcome_unknown/.test(String(payload?.error ?? '')));
+  }
+}
+
 function fail(leg, res, payload) {
   const detail = JSON.stringify(payload);
-  throw new Error(`${leg} failed: HTTP ${res.status} ${detail}`);
+  throw new ReleaseHttpError(leg, res, payload, detail);
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('release stage identity contains a non-finite number');
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (!value || typeof value !== 'object') {
+    throw new Error('release stage identity contains a non-JSON value');
+  }
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => {
+      if (entry === undefined) throw new Error(`release stage identity field '${key}' is undefined`);
+      return `${JSON.stringify(key)}:${canonicalJson(entry)}`;
+    })
+    .join(',')}}`;
+}
+
+export function releaseStageInputHash(value) {
+  return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+}
+
+/** Stable UUIDv4-shaped identity accepted by the workspace-host multipart API. */
+export function releaseStageRequestIdentity(operationId, stage, inputHash, attempt = 0) {
+  const hex = createHash('sha256')
+    .update(`${operationId}\u0000${stage}\u0000${inputHash}\u0000${attempt}`, 'utf8')
+    .digest('hex')
+    .slice(0, 32)
+    .split('');
+  hex[12] = '4';
+  hex[16] = ['8', '9', 'a', 'b'][Number.parseInt(hex[16], 16) % 4];
+  const raw = hex.join('');
+  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
+}
+
+const DEFAULT_RELEASE_LEDGER = {
+  getTask,
+  appendTaskReleaseReceipt,
+  taskReleaseJournalFromDetail,
+};
+
+function latestReceipt(receipts, requestIdentity) {
+  return [...receipts]
+    .reverse()
+    .find((receipt) => receipt.requestIdentity === requestIdentity) ?? null;
+}
+
+function matchingStageReceipts(journal, stage, inputHash) {
+  const forStage = journal.receipts.filter((receipt) => receipt.stage === stage);
+  const conflicting = forStage.find((receipt) => receipt.inputHash !== inputHash);
+  if (conflicting) {
+    throw new Error(
+      `release stage ${stage} input changed within operation ${journal.operationId}; ` +
+        `receipt ${conflicting.sequence} pins ${conflicting.inputHash}, current input is ${inputHash}`,
+    );
+  }
+  return forStage;
+}
+
+async function readReleaseJournal(ledger, taskId, operationId) {
+  const task = await ledger.getTask(taskId);
+  if (!task) throw new Error(`release task ${taskId} is absent from the task ledger`);
+  const journal = ledger.taskReleaseJournalFromDetail(task.detail);
+  if (!journal) {
+    throw new Error(`release task ${taskId} has no complete task_ledger.detail.release journal`);
+  }
+  if (journal.operationId !== operationId) {
+    throw new Error(
+      `release task ${taskId} belongs to operation ${journal.operationId}, not ${operationId}`,
+    );
+  }
+  return { task, journal };
+}
+
+async function appendReleaseReceipt(ctx, receipt) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const { journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId);
+    const prior = latestReceipt(journal.receipts, receipt.requestIdentity);
+    if (prior?.state === receipt.state) return journal;
+    const result = await ctx.ledger.appendTaskReleaseReceipt(
+      ctx.taskId,
+      journal.cursor,
+      {
+        operationId: ctx.operationId,
+        ...receipt,
+        credentialGeneration: ctx.credentialGeneration,
+        credentialExpiresAt: ctx.credentialExpiresAt,
+      },
+    );
+    if (result.ok) return result.journal;
+    if (result.reason === 'cursor_mismatch' || result.reason === 'cas_conflict') continue;
+    throw new Error(
+      `release journal refused ${receipt.stage}/${receipt.requestIdentity}/${receipt.state}: ${result.reason}`,
+    );
+  }
+  throw new Error(`release journal stayed contended while recording ${receipt.stage}/${receipt.state}`);
+}
+
+function assertCredentialFresh(ctx) {
+  if (!ctx.credentialExpiresAt) return;
+  const expiresAt = Date.parse(ctx.credentialExpiresAt);
+  if (!Number.isFinite(expiresAt)) {
+    throw new Error('PAPERCUSP_RELEASE_CREDENTIAL_EXPIRES_AT must be an ISO timestamp');
+  }
+  if (expiresAt <= ctx.now().getTime()) {
+    throw new Error(
+      `release credential generation ${ctx.credentialGeneration ?? '(unreported)'} expired at ${ctx.credentialExpiresAt}`,
+    );
+  }
+}
+
+async function reconcilePending(ctx, args, requestIdentity, priorState) {
+  let reconciled;
+  try {
+    reconciled = await args.reconcile(requestIdentity);
+  } catch (error) {
+    if (priorState === 'intent') {
+      await appendReleaseReceipt(ctx, {
+        requestIdentity,
+        stage: args.stage,
+        state: 'unknown',
+        inputHash: args.inputHash,
+        evidenceRefs: ['reconcile:unavailable'],
+      });
+    }
+    throw new Error(
+      `release stage ${args.stage} outcome remains unknown because reconciliation failed: ${error.message}`,
+      { cause: error },
+    );
+  }
+  if (reconciled.state === 'committed') {
+    await appendReleaseReceipt(ctx, {
+      requestIdentity,
+      stage: args.stage,
+      state: 'committed',
+      inputHash: args.inputHash,
+      evidenceRefs: reconciled.evidenceRefs ?? [],
+    });
+    return reconciled;
+  }
+  if (reconciled.state === 'absent') {
+    await appendReleaseReceipt(ctx, {
+      requestIdentity,
+      stage: args.stage,
+      state: 'refused',
+      inputHash: args.inputHash,
+      evidenceRefs: ['reconcile:confirmed-absent', ...(reconciled.evidenceRefs ?? [])],
+    });
+    return reconciled;
+  }
+  if (priorState === 'intent') {
+    await appendReleaseReceipt(ctx, {
+      requestIdentity,
+      stage: args.stage,
+      state: 'unknown',
+      inputHash: args.inputHash,
+      evidenceRefs: reconciled.evidenceRefs ?? ['reconcile:outcome-unknown'],
+    });
+  }
+  throw new Error(`release stage ${args.stage} provider outcome is still unknown; refusing another mutation`);
+}
+
+/**
+ * Execute one provider mutation behind the task-ledger receipt chain.
+ * A mutation is attempted once. A second attempt is possible only after the
+ * adapter proves the prior identity absent; a committed receipt is revalidated
+ * against the provider before it is trusted.
+ */
+export async function runJournaledMutation(ctx, args) {
+  assertCredentialFresh(ctx);
+  const inputHash = releaseStageInputHash(args.input);
+  const stageArgs = { ...args, inputHash };
+  let { journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId);
+  let receipts = matchingStageReceipts(journal, args.stage, inputHash);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const identities = [...new Set(receipts.map((receipt) => receipt.requestIdentity))];
+    const activeIdentity = identities.at(-1) ?? null;
+    const prior = activeIdentity ? latestReceipt(receipts, activeIdentity) : null;
+
+    if (prior?.state === 'committed') {
+      const verified = await args.reconcile(activeIdentity);
+      if (verified.state !== 'committed') {
+        throw new Error(
+          `release stage ${args.stage} has a committed receipt but provider verification returned ${verified.state}`,
+        );
+      }
+      await ctx.afterStage?.(args.stage, { resumed: true, requestIdentity: activeIdentity });
+      return verified.value;
+    }
+
+    if (prior?.state === 'intent' || prior?.state === 'unknown') {
+      const reconciled = await reconcilePending(ctx, stageArgs, activeIdentity, prior.state);
+      if (reconciled.state === 'committed') {
+        await ctx.afterStage?.(args.stage, { resumed: true, requestIdentity: activeIdentity });
+        return reconciled.value;
+      }
+      ({ journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId));
+      receipts = matchingStageReceipts(journal, args.stage, inputHash);
+      continue;
+    }
+
+    if (prior?.state === 'refused' && !prior.evidenceRefs.includes('reconcile:confirmed-absent')) {
+      throw new Error(`release stage ${args.stage} was refused for request ${activeIdentity}; input must change before retry`);
+    }
+
+    const requestIdentity = releaseStageRequestIdentity(
+      ctx.operationId,
+      args.stage,
+      inputHash,
+      identities.length,
+    );
+    await appendReleaseReceipt(ctx, {
+      requestIdentity,
+      stage: args.stage,
+      state: 'intent',
+      inputHash,
+      evidenceRefs: args.intentEvidenceRefs ?? [],
+    });
+
+    try {
+      assertCredentialFresh(ctx);
+      const outcome = await args.mutate(requestIdentity);
+      await appendReleaseReceipt(ctx, {
+        requestIdentity,
+        stage: args.stage,
+        state: 'committed',
+        inputHash,
+        evidenceRefs: outcome.evidenceRefs ?? [],
+      });
+      await ctx.afterStage?.(args.stage, { resumed: false, requestIdentity });
+      return outcome.value;
+    } catch (error) {
+      if (error instanceof ReleaseHttpError && !error.outcomeUnknown) {
+        await appendReleaseReceipt(ctx, {
+          requestIdentity,
+          stage: args.stage,
+          state: 'refused',
+          inputHash,
+          evidenceRefs: [`http:${error.status}`],
+        });
+        throw error;
+      }
+      await appendReleaseReceipt(ctx, {
+        requestIdentity,
+        stage: args.stage,
+        state: 'unknown',
+        inputHash,
+        evidenceRefs: ['response:outcome-unknown'],
+      });
+      const reconciled = await reconcilePending(ctx, stageArgs, requestIdentity, 'unknown');
+      if (reconciled.state === 'committed') {
+        await ctx.afterStage?.(args.stage, { resumed: true, requestIdentity });
+        return reconciled.value;
+      }
+      ({ journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId));
+      receipts = matchingStageReceipts(journal, args.stage, inputHash);
+    }
+  }
+  throw new Error(`release stage ${args.stage} exhausted reconciled attempts`);
 }
 
 async function main() {

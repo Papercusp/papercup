@@ -33,11 +33,13 @@
  */
 
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { codexHomeForSessionKey, sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import { ompSessionsRoot } from './omp-sessions';
+import { ompSessionsRootForSessionKey } from './session-transcript-resolvers';
 import { ingestFileNow } from './search/session-ingest';
 import {
   archiveAndDeleteSession,
@@ -72,6 +74,7 @@ export interface AdvRowForArchive {
   cwd: string | null;
   coord_owner_id: string | null;
   session_id: string | null; // native CLI uuid
+  omp_thread_id?: string | null; // OMP writes its native identity here
   /** Re-read at PASS time, not schedule time: `null` means a successor re-opened
    *  the row since the end was reported (→ `row_reopened`). `undefined` = the
    *  caller did not load it (legacy/test rows) — no verdict from this signal. */
@@ -92,6 +95,8 @@ export interface ArchiveRoots {
   claudeSessionRoot: string;
   codexHomeFor: (advSessionId: number) => string;
   ompRoot: string;
+  /** Tracked OMP launches isolate their transcripts by adv-session id. */
+  ompRootFor?: (advSessionId: number) => string;
 }
 
 export function defaultArchiveRoots(): ArchiveRoots {
@@ -99,6 +104,10 @@ export function defaultArchiveRoots(): ArchiveRoots {
     claudeSessionRoot: sessionClaudeRoot(),
     codexHomeFor: (id) => codexHomeForSessionKey(id),
     ompRoot: ompSessionsRoot(),
+    ompRootFor: (id) => {
+      const tracked = ompSessionsRootForSessionKey(id);
+      return existsSync(tracked) ? tracked : ompSessionsRoot();
+    },
   };
 }
 
@@ -108,10 +117,11 @@ export function resolveArchiveRefForAdvRow(
   row: AdvRowForArchive,
   roots: ArchiveRoots,
 ): SessionArchiveRef | null {
-  if (!row.session_id) return null;
   const agent = row.agent ?? (row.mode === 'omp' ? 'omp' : null);
+  const nativeId = agent === 'omp' ? row.omp_thread_id ?? row.session_id : row.session_id;
+  if (!nativeId) return null;
   const base = {
-    sessionId: row.session_id,
+    sessionId: nativeId,
     owner: row.coord_owner_id,
     cwd: row.cwd,
     advSessionId: row.id,
@@ -124,7 +134,7 @@ export function resolveArchiveRefForAdvRow(
     case 'codex':
       return { ...base, sourceKind: 'codex', sessionRoot: roots.codexHomeFor(row.id) };
     case 'omp':
-      return { ...base, sourceKind: 'omp', sessionRoot: roots.ompRoot };
+      return { ...base, sourceKind: 'omp', sessionRoot: roots.ompRootFor?.(row.id) ?? roots.ompRoot };
     default:
       return null;
   }
@@ -145,7 +155,7 @@ export interface ArchiveHookDeps {
 async function loadAdvRow(advSessionId: number): Promise<AdvRowForArchive | null> {
   const { sql } = getOrgPg();
   const rows = await sql<AdvRowForArchive[]>`
-    SELECT id, agent, mode, cwd, coord_owner_id, session_id, ended_at
+    SELECT id, agent, mode, cwd, coord_owner_id, session_id, omp_thread_id, ended_at
       FROM harness_shared.adv_sessions
      WHERE id = ${advSessionId}`;
   return rows[0] ?? null;
@@ -227,7 +237,7 @@ export async function runArchiveForAdvSession(
   const ref = resolveArchiveRefForAdvRow(row, deps.roots ?? defaultArchiveRoots());
   if (!ref) {
     console.warn(
-      `[session-archive] adv ${advSessionId} not resolvable (agent=${row.agent}, owner=${row.coord_owner_id}, native=${row.session_id}) — left for the disk-side reconciler`,
+      `[session-archive] adv ${advSessionId} not resolvable (agent=${row.agent}, owner=${row.coord_owner_id}, native=${row.session_id}, omp=${row.omp_thread_id ?? null}) — left for the disk-side reconciler`,
     );
     return { ok: false, reason: 'unresolvable' };
   }

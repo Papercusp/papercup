@@ -108,6 +108,23 @@ describe('resolveArchiveRefForAdvRow', () => {
     expect(resolveArchiveRefForAdvRow(row({ session_id: null }), ROOTS)).toBeNull();
     expect(resolveArchiveRefForAdvRow(row({ agent: 'gemini' }), ROOTS)).toBeNull();
   });
+
+  it('resolves the OMP identity column and its isolated transcript home', () => {
+    const ref = resolveArchiveRefForAdvRow(row({
+      agent: 'omp', session_id: null, omp_thread_id: SID,
+    }), { ...ROOTS, ompRootFor: (id) => `/su-omp-homes/session-${id}/agent/sessions` });
+    expect(ref).toMatchObject({
+      sourceKind: 'omp', sessionId: SID, sessionRoot: '/su-omp-homes/session-9/agent/sessions',
+    });
+  });
+
+  it('prefers the OMP column for OMP only, including the legacy mode discriminator', () => {
+    const stale = 'dddddddd-1111-2222-3333-444444444444';
+    expect(resolveArchiveRefForAdvRow(row({
+      agent: null, mode: 'omp', session_id: stale, omp_thread_id: SID,
+    }), ROOTS)?.sessionId).toBe(SID);
+    expect(resolveArchiveRefForAdvRow(row({ session_id: null, omp_thread_id: SID }), ROOTS)).toBeNull();
+  });
 });
 
 describe('runArchiveForAdvSession (injected deps, no PG)', () => {
@@ -159,6 +176,30 @@ describe('runArchiveForAdvSession (injected deps, no PG)', () => {
     ).toMatchObject({ ok: false, reason: 'unresolvable' });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('archives the tracked OMP transcript with no session_id and keeps a neighboring session', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-hook-omp-'));
+    const sessionRoot = join(tmp, 'agent', 'sessions');
+    await mkdir(join(sessionRoot, '-repo'), { recursive: true });
+    const abs = join(sessionRoot, '-repo', `2026-09-08_${SID}.jsonl`);
+    const neighbor = join(sessionRoot, '-repo', '2026-09-08_another-session.jsonl');
+    await writeFile(abs, '{"type":"session"}\n');
+    await writeFile(neighbor, 'neighbor\n');
+    await quiet(abs);
+    const store = new MiniStore();
+    const ingested: string[] = [];
+    const result = await runArchiveForAdvSession(9, {
+      loadRow: async () => row({ agent: 'omp', session_id: null, omp_thread_id: SID }),
+      roots: { ...ROOTS, ompRootFor: () => sessionRoot }, store, protectedIdentity: NOBODY,
+      ingestFile: async (p) => { ingested.push(p); },
+    });
+    expect(result.ok).toBe(true);
+    expect(ingested).toEqual([abs]);
+    expect(store.stamps.has(`omp:${SID}`)).toBe(true);
+    expect(store.advStamps).toEqual([9]);
+    expect(existsSync(abs)).toBe(false);
+    expect(existsSync(neighbor)).toBe(true);
   });
 
   it('an ingest failure never blocks archival (the archive preserves the bytes)', async () => {
