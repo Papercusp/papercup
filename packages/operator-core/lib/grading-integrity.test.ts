@@ -7,6 +7,7 @@ import {
   GRADING_AUDIT_DISPATCH_LIMIT,
   GRADING_INTEGRITY_RUBRIC_REF,
   reconcilePendingGradingAudits,
+  type GradingAuditReservationResult,
   type DispatchPendingGradingAuditsDeps,
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
@@ -56,7 +57,12 @@ function deps() {
   const launch = vi
     .fn<Launch>()
     .mockResolvedValue(launchResult({ deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-audit' }] } }));
-  return { listScorecards, getRubric, launch };
+  const reserve = vi.fn(async (): Promise<GradingAuditReservationResult> => ({
+    status: 'claimed',
+    reservation: { key: 'grading-audit:test', reservedAt: '2026-09-08T00:00:00.000Z' },
+  }));
+  const release = vi.fn(async () => true);
+  return { listScorecards, getRubric, launch, reserve, release };
 }
 
 describe('dispatchPendingGradingAudits', () => {
@@ -114,6 +120,47 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({ idempotencyKey: 'grading-audit:EI-audit-1' }),
       ctx,
     );
+  });
+
+  it('reserves a target before launch so a concurrent dispatcher skips the loser', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-concurrent')]);
+    let claimed = false;
+    d.reserve.mockImplementation(async () => {
+      if (claimed) return { status: 'already-reserved' };
+      claimed = true;
+      return {
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-concurrent', reservedAt: '2026-09-08T00:00:00.000Z' },
+      };
+    });
+
+    const [first, second] = await Promise.all([
+      dispatchPendingGradingAudits({ targetIds: ['EI-concurrent'], ctx }, d),
+      dispatchPendingGradingAudits({ targetIds: ['EI-concurrent'], ctx }, d),
+    ]);
+
+    expect(d.reserve).toHaveBeenCalledTimes(2);
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect([first, second].map((result) => result.receipts[0]?.state).sort()).toEqual(['launched', 'skipped']);
+    expect([first, second].find((result) => result.receipts[0]?.state === 'skipped')?.receipts[0]?.reason).toBe(
+      'another dispatcher already reserved this scorecard',
+    );
+  });
+
+  it('releases a reservation when the launch fails so repair can retry the target', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-launch-failure')]);
+    d.launch.mockResolvedValue({ isError: true, content: [{ text: 'launch refused' }] } as LaunchResult);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-launch-failure'], ctx }, d);
+
+    expect(result.receipts).toEqual([
+      expect.objectContaining({ issueId: 'EI-launch-failure', state: 'failed', reason: 'launch refused' }),
+    ]);
+    expect(d.release).toHaveBeenCalledWith('EI-launch-failure', 'grading-audit:EI-launch-failure', {
+      workspaceId: 'ws-test',
+    });
   });
 
   it('selects a bounded oldest-first backlog when no explicit targets are supplied', async () => {

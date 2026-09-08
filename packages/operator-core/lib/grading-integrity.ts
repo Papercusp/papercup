@@ -22,6 +22,9 @@ import {
 import { getRubric } from './rubrics';
 import { listScorecards, type ScorecardRow } from './scorecards';
 import { killTask } from './task-manager/control';
+import { resolveIssueWorkspace } from './issues-engineer';
+import { boundedOrgTxn } from './pg-bounded-txn';
+import type { OrgSql } from './work-items';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -34,6 +37,12 @@ export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
 export const GRADING_AUDIT_DISPATCH_LIMIT = 50;
 /** Maximum scorecard history scanned when selecting an oldest-first backlog batch. */
 export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
+/**
+ * A dispatch reservation survives a launcher response failure long enough for
+ * the launch idempotency key to settle, but not forever if the launcher dies
+ * before the auditor emits its audit card.
+ */
+export const GRADING_AUDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
 /**
  * Automatic grading auditors must use the inference gateway so a quota-walled
  * system/default credential cannot strand the audit queue before kickoff.
@@ -91,11 +100,113 @@ export interface DispatchPendingGradingAuditsDeps {
   listScorecards?: typeof listScorecards;
   getRubric?: typeof getRubric;
   launch?: GradingAuditLaunchHandler;
+  reserve?: typeof reservePendingGradingAudit;
+  release?: typeof releasePendingGradingAudit;
   readLogTail?: (path: string) => string | Promise<string>;
   killTask?: typeof killTask;
   sleep?: (ms: number) => Promise<void>;
   terminalLogRecheckDelayMs?: number;
   terminalLogMaxRechecks?: number;
+}
+
+export type GradingAuditReservationStatus = 'claimed' | 'already-reserved' | 'not-pending';
+
+export interface GradingAuditReservationResult {
+  status: GradingAuditReservationStatus;
+  reservation?: {
+    key: string;
+    reservedAt: string;
+  };
+}
+
+interface GradingAuditReservationOptions {
+  workspaceId?: string | null;
+  now?: Date;
+}
+
+/**
+ * Atomically reserve one pending scorecard for an auditor launch.
+ *
+ * The dispatcher intentionally reads a bounded candidate list first, so this
+ * is the second, write-side gate: the UPDATE predicate is the actual winner
+ * election. A row lock is held for the fallback classification query, which
+ * keeps two concurrent dispatchers from both observing an unreserved target.
+ */
+export async function reservePendingGradingAudit(
+  issueId: string,
+  reservationKey: string,
+  options: GradingAuditReservationOptions = {},
+): Promise<GradingAuditReservationResult> {
+  const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
+  const now = options.now ?? new Date();
+  const reservedAt = now.toISOString();
+  const staleBefore = new Date(now.getTime() - GRADING_AUDIT_RESERVATION_TTL_MS).toISOString();
+  const reservation = JSON.stringify({ key: reservationKey, reservedAt });
+
+  return boundedOrgTxn(async (tx: OrgSql) => {
+    const claimed = await tx<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               COALESCE(payload, '{}'::jsonb),
+               '{observation,gradingAudit,dispatchReservation}',
+               ${reservation}::jsonb,
+               true
+             ),
+             origin = 'local',
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
+         AND (
+           payload->'observation'->'gradingAudit'->'dispatchReservation' IS NULL
+           OR CASE
+                WHEN payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt'
+                     ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+                THEN (payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
+                ELSE TRUE
+              END
+         )
+      RETURNING feature_id`;
+    if (claimed[0]) {
+      return { status: 'claimed' as const, reservation: { key: reservationKey, reservedAt } };
+    }
+
+    const current = await tx<{ state: string | null; has_reservation: boolean }[]>`
+      SELECT payload->'observation'->'gradingAudit'->>'state' AS state,
+             (payload->'observation'->'gradingAudit' ? 'dispatchReservation') AS has_reservation
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       FOR UPDATE`;
+    return current[0]?.state === 'pending' && current[0].has_reservation
+      ? { status: 'already-reserved' as const }
+      : { status: 'not-pending' as const };
+  });
+}
+
+/** Release only the reservation owned by this dispatcher. */
+export async function releasePendingGradingAudit(
+  issueId: string,
+  reservationKey: string,
+  options: Pick<GradingAuditReservationOptions, 'workspaceId'> = {},
+): Promise<boolean> {
+  const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
+  const released = await boundedOrgTxn(async (tx: OrgSql) =>
+    tx<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = payload #- '{observation,gradingAudit,dispatchReservation}',
+             origin = 'local',
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
+         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
+      RETURNING feature_id`,
+  );
+  return Boolean(released[0]);
 }
 
 function currentPendingScorecard(card: ScorecardRow): boolean {
@@ -142,6 +253,8 @@ export async function dispatchPendingGradingAudits(
   const readCards = deps.listScorecards ?? listScorecards;
   const resolveRubric = deps.getRubric ?? getRubric;
   const launch = deps.launch ?? launchAgentTool.handler;
+  const reserve = deps.reserve ?? reservePendingGradingAudit;
+  const release = deps.release ?? releasePendingGradingAudit;
   const cards = await readCards({
     includeSuperseded: true,
     includeRetracted: true,
@@ -192,6 +305,17 @@ export async function dispatchPendingGradingAudits(
     let currentIdempotencyKey = idempotencyKey;
     let terminalFallbacks = 0;
     let attempts = 0;
+    let reservationHeld = false;
+    const releaseReservation = async () => {
+      if (!reservationHeld) return;
+      reservationHeld = false;
+      try {
+        await release(issueId, idempotencyKey, { workspaceId: input.ctx.workspaceId });
+      } catch {
+        // The reservation TTL is the durable cleanup fallback if this release
+        // cannot reach the database after a launcher failure.
+      }
+    };
     const recoveryFields = () =>
       retiredTaskIds.length
         ? {
@@ -204,6 +328,21 @@ export async function dispatchPendingGradingAudits(
           }
         : {};
     try {
+      const reservation = await reserve(issueId, idempotencyKey, { workspaceId: input.ctx.workspaceId });
+      if (reservation.status !== 'claimed') {
+        receipts.push({
+          issueId,
+          rubricRef: card.rubricRef,
+          state: 'skipped',
+          idempotencyKey,
+          reason:
+            reservation.status === 'already-reserved'
+              ? 'another dispatcher already reserved this scorecard'
+              : 'target is no longer a pending scorecard',
+        });
+        continue;
+      }
+      reservationHeld = true;
       const terminateTask = deps.killTask ?? killTask;
       const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
       let launchBackend: 'claude' | 'codex' = 'claude';
@@ -259,6 +398,7 @@ export async function dispatchPendingGradingAudits(
 
         if (terminalFailure) {
           if (!taskId) {
+            await releaseReservation();
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -279,6 +419,7 @@ export async function dispatchPendingGradingAudits(
             killed.error !== 'task_not_found' &&
             killed.error !== 'already_gone'
           ) {
+            await releaseReservation();
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -295,6 +436,7 @@ export async function dispatchPendingGradingAudits(
           retiredTaskIds.push(taskId);
           terminalCodes.push(terminalFailure.code);
           if (terminalFallbacks >= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+            await releaseReservation();
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -318,24 +460,27 @@ export async function dispatchPendingGradingAudits(
           continue;
         }
 
-        receipt = result.isError
-          ? {
-              issueId,
-              rubricRef: card.rubricRef,
-              state: 'failed',
-              idempotencyKey: currentIdempotencyKey,
-              launch: result.data?.launch,
-              reason: result.content?.[0]?.text ?? 'grading auditor launch failed',
-              ...recoveryFields(),
-            }
-          : {
-              issueId,
-              rubricRef: card.rubricRef,
-              state: result.data?.deduped ? 'deduped' : 'launched',
-              idempotencyKey: currentIdempotencyKey,
-              launch: result.data?.launch,
-              ...recoveryFields(),
-            };
+        if (result.isError) {
+          await releaseReservation();
+          receipt = {
+            issueId,
+            rubricRef: card.rubricRef,
+            state: 'failed',
+            idempotencyKey: currentIdempotencyKey,
+            launch: result.data?.launch,
+            reason: result.content?.[0]?.text ?? 'grading auditor launch failed',
+            ...recoveryFields(),
+          };
+        } else {
+          receipt = {
+            issueId,
+            rubricRef: card.rubricRef,
+            state: result.data?.deduped ? 'deduped' : 'launched',
+            idempotencyKey: currentIdempotencyKey,
+            launch: result.data?.launch,
+            ...recoveryFields(),
+          };
+        }
         break;
       }
 
@@ -350,6 +495,7 @@ export async function dispatchPendingGradingAudits(
         },
       );
     } catch (error) {
+      await releaseReservation();
       receipts.push({
         issueId,
         rubricRef: card.rubricRef,

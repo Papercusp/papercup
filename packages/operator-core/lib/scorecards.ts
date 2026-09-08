@@ -684,6 +684,10 @@ export function resetGradingAuditStampForRetraction(
     ...(rawGradingAudit as Record<string, unknown>),
     state: 'pending',
   };
+  // A retracted audit re-opens the subject for dispatch. Do not carry the old
+  // launch reservation across that boundary or the repaired subject would stay
+  // blocked until the reservation TTL elapsed.
+  delete pendingGradingAudit.dispatchReservation;
   delete pendingGradingAudit.auditIssueId;
   delete pendingGradingAudit.auditor;
   delete pendingGradingAudit.auditedAt;
@@ -933,6 +937,7 @@ export async function recordGradingAudit(
     auditor: input.auditor,
     auditedAt: input.at ?? new Date().toISOString(),
   };
+  delete settled.dispatchReservation;
   const updated = await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
     observation: { ...(rawObservation as Record<string, unknown>), gradingAudit: settled },
   });
