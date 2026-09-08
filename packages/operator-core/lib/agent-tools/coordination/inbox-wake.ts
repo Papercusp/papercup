@@ -140,9 +140,23 @@ export interface WakeRecipientsResult {
   /** Legacy queue-count alias retained for callers that predate `queued`. Despite its
    *  name, this is NOT execution-confirmed turn count; it mirrors EmitResult.woken. */
   woken: number;
-  /** The await-event enqueue response does not confirm that a recipient started
-   * a turn; later activity/checkpoint observation must establish pickup. */
-  pickupConfirmed?: boolean;
+  /** ALWAYS `false`, and typed `false` on purpose — a wake fan CANNOT answer this.
+   *
+   *  `wakeRecipients` returns once the wake is ENQUEUED on the await-event pump; the
+   *  target has not been scheduled a turn yet, let alone taken one. So a truthful
+   *  pickup confirmation is unavailable AT THIS SEAM BY CONSTRUCTION, not merely
+   *  unimplemented — no future change to this function can make it `true` without
+   *  first inventing an execution handshake that reports back LATER.
+   *
+   *  The literal type is the guard (EI-22733985246154315). It was previously
+   *  `boolean`, which let `checkpoint-run` gate a gate-ownership stand-down on
+   *  `wake.pickupConfirmed === true` — a branch production could never enter, kept
+   *  green by a unit test that mocked the value `true`. Narrowing to `false` makes
+   *  any such comparison a compile error instead of silently-dead code.
+   *
+   *  To establish that a target actually picked up, observe it AFTERWARDS: a fresh
+   *  `lastActiveAt` / work-item checkpoint / `lastProgressAt` that post-dates the wake. */
+  pickupConfirmed?: false;
   /** Recipients whose wake was STAGED (wake-mode `manual` — the hive Pause
    *  primitive) instead of fired — always 0 when everything resolves `auto`
    *  (the default). Graduated off the POT_AGENT_TABS flag (start-hive P-007). */

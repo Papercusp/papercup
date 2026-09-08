@@ -680,38 +680,21 @@ export default defineTool({
         });
         wakeCount = wake.woken;
         // `woken`/`queued` only means the wake was accepted by the await-event pump. It does not
-        // prove the target started a turn, so it must never authorize the liveness-confirmed
-        // stand-down. Only the explicit execution handshake is strong enough for that branch.
-        if (wake.pickupConfirmed === true && !criticalProgressLease.expired) {
-          ctx.metadata?.({
-            standDown: 'condition_claimed_liveness_confirmed',
-            standDownWorkItem: ownership.workItem,
-            standDownTakenBy: ownership.takenBy,
-            standDownHolderSessionState: ownership.holderSessionState,
-            standDownWakeCount: wakeCount,
-            ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
-          });
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  ok: false,
-                  launched: false,
-                  reason: 'condition_claimed_liveness_confirmed',
-                  work_item: ownership.workItem,
-                  taken_by: ownership.takenBy,
-                  holder_session_state: ownership.holderSessionState,
-                  wake_confirmed: true,
-                  woken: wakeCount,
-                  note:
-                    `NOT launched: a required wake reached ${ownership.takenBy}, confirming the current gate owner can resume. ` +
-                    'The claim remains theirs; read its checkpoint and wait for their progress rather than starting a parallel gate run.',
-                }),
-              },
-            ],
-          };
-        }
+        // prove the target started a turn, so it must never authorize a liveness-confirmed
+        // stand-down.
+        //
+        // There is deliberately NO "confirmed pickup" stand-down branch here (EI-22733985246154315).
+        // One used to sit at this line, gated on `wake.pickupConfirmed === true`. Every producer of
+        // that field returns the literal `false` — necessarily, because a wake fan returns once the
+        // wake is ENQUEUED, before the target could possibly take a turn — so the branch was
+        // unreachable in production while a unit test mocking `pickupConfirmed: true` kept it green.
+        // `WakeRecipientsResult.pickupConfirmed` is now typed `false`, so re-introducing that
+        // comparison is a compile error rather than dead code that looks tested.
+        //
+        // The intent it was reaching for is already served, and served with a signal that is
+        // actually observable: `shouldStandDownForLivePeer` below reads the shared liveness oracle
+        // (`ownershipHeldByLiveHolder`) and stands down for a live peer holder without needing any
+        // handshake from the wake itself. The wake above still fires; it is a nudge, not evidence.
       }
 
       // P-008 progress lease + deterministic transfer. Reuse the same shared
