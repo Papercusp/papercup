@@ -7,6 +7,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolve } from 'node:path';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../test/_pg-helpers';
 import {
@@ -17,7 +18,8 @@ import {
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as Sql,
   denied: false, revoked: false,
-  wake: vi.fn(), model: vi.fn(), claim: vi.fn(),
+  wake: vi.fn(), model: vi.fn(), claim: vi.fn(), invocations: vi.fn(),
+  denyPickupClaim: false,
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...await orig<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }),
@@ -36,6 +38,27 @@ vi.mock('./modes/store', async (orig) => ({
 }));
 vi.mock('./operator-state-pg', async (orig) => ({
   ...await orig<typeof import('./operator-state-pg')>(), readOperatorState: async () => null,
+}));
+// Keep the REAL projected registry/dispatcher, capability resolver, tool handlers,
+// identity resolver and canonical PG writes. These are the host's external policy
+// and telemetry ports, not replacement tools or canned get/claim outcomes.
+vi.mock('./projected-tool-deps', () => ({
+  PROJECTED_DEPS: {
+    defaultDeny: true,
+    recordInvocation: (...args: unknown[]) => h.invocations(...args),
+    checkCapabilityEnvelope: async ({ toolName }: { toolName: string }) =>
+      h.denyPickupClaim && toolName === 'work_items:claim'
+        ? { decision: 'deny', reason: 'current target claim confinement' } : null,
+  },
+}));
+vi.mock('./cache', async (orig) => ({
+  ...await orig<typeof import('./cache')>(),
+  cachedRead: async (_ctx: unknown, _opts: unknown, read: () => Promise<unknown>) => read(),
+}));
+vi.mock('./memory/claim-port', () => ({ buildClaimRecallBlock: async () => null }));
+vi.mock('./premises-claim-port', () => ({ getClaimTimePremises: async () => null }));
+vi.mock('@papercusp/flags/server', async (orig) => ({
+  ...await orig<typeof import('@papercusp/flags/server')>(), getFlag: async () => false,
 }));
 vi.mock('./work-scope-policy', async (orig) => ({
   ...await orig<typeof import('./work-scope-policy')>(),
@@ -64,7 +87,12 @@ const { authorizeAdmissionRecovery, requestAdmissionRecovery } = await import('.
 const { assignAndWakeActionableWorkItems, authorizeWorkItemDispatch } =
   await import('./agent-tools/coordination/actionable-work-item-dispatch');
 const { planItemLaneBlockReason, planItemLiveClaimReason } = await import('./scheduler/plan-item-lane-guard');
-const { composePickup } = await import('./agent-tools/work_items/pickup');
+// Import the real definitions to register their real projected fn/schema/gates.
+await import('./agent-tools/work_items/get');
+await import('./agent-tools/work_items/claim');
+await import('./agent-tools/work_items/pickup');
+const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
+const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
 
 let db: FreshPgDb;
@@ -89,6 +117,9 @@ beforeAll(async () => {
         SELECT value = ANY(ARRAY['done','dropped','deprecated','passed','failed','resolved','closed']::text[])
       $$;
     CREATE TABLE harness_shared.operator_secrets(name text PRIMARY KEY, value_b64 text);
+    CREATE TABLE harness_shared.system_principals (
+      workspace_id text, name text, capabilities jsonb, PRIMARY KEY (workspace_id, name)
+    );
     CREATE TABLE harness_shared.routines (
       id text PRIMARY KEY, workspace_id text, install_slug text, name text, target_role text,
       active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz
@@ -101,11 +132,16 @@ afterAll(async () => db?.cleanup());
 beforeEach(async () => {
   h.denied = false;
   h.revoked = false;
+  h.denyPickupClaim = false;
+  h.invocations.mockReset();
   h.model.mockReset().mockRejectedValue(new Error('unexpected external model call'));
   h.wake.mockReset().mockResolvedValue({ queued: 1, woken: 0, staged: 0, timedOutTargets: [] });
   h.claim.mockReset().mockImplementation(wi.claimWorkItem);
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.dedup_edges,
-    harness_shared.dedup_adjudications, harness_shared.admission_runs, harness_shared.routines`;
+    harness_shared.dedup_adjudications, harness_shared.admission_runs, harness_shared.routines,
+    harness_shared.system_principals`;
+  await db.sql`INSERT INTO harness_shared.system_principals VALUES
+    ('default', 'reviewer', '["work_items:read","work_items:write"]')`;
   await db.sql`INSERT INTO harness_shared.routines
     (id, workspace_id, install_slug, name, target_role, trigger_config, next_fire_at)
     VALUES ('original-promoter','default','papercusp','work-item-admission-promoter',
@@ -146,22 +182,20 @@ async function row(id: string) {
       AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
   return r!;
 }
-/** Target's later turn, not the dispatcher's turn. The compound keeps its actual
- * get/claim algorithm; its dispatcher adapter binds the caller to this target and
- * rechecks current authority before the canonical claim. No canned claim receipt.
+/** A separate target-owned call. Context represents the authenticated transport
+ * boundary, NOT presence.agentRole and NOT the original requester's privilege.
+ * Capabilities are loaded from fresh PG by the real transport principal resolver.
+ * The outer pickup AND nested get/claim traverse the unmodified dispatch stack.
  */
-async function pickup(id: string) {
-  return composePickup({ id, harness: scope.harnessSlug }, async (name, args) => {
-    expect(args).toMatchObject({ id });
-    if (name === 'work_items:get') {
-      const item = await wi.getWorkItem(id, scope.harnessSlug);
-      return { ok: true, results: [{ ok: Boolean(item), workItem: item }] };
-    }
-    expect(name).toBe('work_items:claim');
-    await authorizeAdmissionRecovery({ ...scope, workItemId: id }, { caller: 'reviewer', target: 'reviewer' });
-    const item = await wi.claimWorkItem(id, 'reviewer', { harness: scope.harnessSlug });
-    return { ok: true, results: [{ ok: Boolean(item), workItem: item }] };
+async function pickup(id: string, role: UnifiedToolContext['role'] = 'reviewer') {
+  const principal = await synthesizeDispatchPrincipal(db.sql, {
+    workspaceId: scope.workspaceId, role: role!, sigVerifiedSpawn: true,
   });
+  const ctx: UnifiedToolContext = {
+    role, principal, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+    uiClientId: 'reviewer', sigVerifiedSpawn: true, spawnId: 'reviewer-turn', tx: db.sql,
+  };
+  return inProcessCall(ctx)('work_items:pickup', { id, harness: scope.harnessSlug, detail: false });
 }
 
 describe('canonical original-item recovery chain (fresh PG; controlled external I/O)', () => {
@@ -191,9 +225,47 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     });
     expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
     expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: 'reviewer' } });
+    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual([
+      'work_items:get', 'work_items:claim', 'work_items:pickup',
+    ]);
     // The delivery record does not retroactively become proof of execution.
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
     expect(await db.sql`SELECT feature_id FROM harness_shared.work_items`).toHaveLength(2);
+  });
+
+  it('a delivered request cannot lend authority to a target whose current role is denied', async () => {
+    const original = await create();
+    await request(original.id);
+    await tick();
+    await expect(pickup(original.id, 'judge')).rejects.toThrow('role_not_allowed');
+    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual(['work_items:pickup']);
+    expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
+  });
+
+  it('reloads revoked target capabilities instead of inheriting the dispatcher or saved request grants', async () => {
+    const original = await create();
+    await request(original.id);
+    await tick();
+    await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read"]'`;
+    await expect(pickup(original.id)).rejects.toThrow('missing_capability');
+    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual(['work_items:pickup']);
+    expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
+    await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read","work_items:write"]'`;
+    await expect(pickup(original.id)).resolves.toMatchObject({ ok: true, claimed: true });
+  });
+
+  it('runs the current inner claim gate even when outer pickup and get were allowed', async () => {
+    const original = await create();
+    await request(original.id);
+    await tick();
+    h.denyPickupClaim = true;
+    await expect(pickup(original.id)).rejects.toThrow('current target claim confinement');
+    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual([
+      'work_items:get', 'work_items:claim', 'work_items:pickup',
+    ]);
+    expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
+    h.denyPickupClaim = false;
+    await expect(pickup(original.id)).resolves.toMatchObject({ ok: true, claimed: true });
   });
 
   it('survives a crash after canonical claim without a replacement or a second screen', async () => {

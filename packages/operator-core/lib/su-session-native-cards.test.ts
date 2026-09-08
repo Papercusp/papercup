@@ -65,4 +65,34 @@ describe('native requests through the shared PUI card correlator', () => {
     expect(f.replies).toEqual([{ id: 13, result: { decision: 'cancel' } }]);
     expect(f.events.at(-1)).toMatchObject({ type: 'card', phase: 'closed', resolution: 'cancelled' });
   });
+
+  it('accepts Claude multiple selections and custom text through validated cards', async () => {
+    const f = fixture();
+    const pending = f.cards.handleClaude('AskUserQuestion', { questions: [{ question: 'Which features?', multiSelect: true,
+      options: [{ label: 'Search' }, { label: 'Export' }] }] }, 'turn', {
+      signal: new AbortController().signal, toolUseID: 'question', requestId: 'request',
+    });
+    expect(f.answer({ picks: ['0', '0'] }).ok).toBe(false);
+    expect(f.answer({ picks: ['0', '2'] }).ok).toBe(true);
+    await flush();
+    expect(f.events.at(-1)).toMatchObject({ type: 'card', phase: 'opened', card: { presentation: { kind: 'text' } } });
+    expect(f.answer({ value: 'Offline' }).ok).toBe(true);
+    await expect(pending).resolves.toMatchObject({ behavior: 'allow', updatedInput: { answers: { 'Which features?': 'Search, Offline' } } });
+  });
+
+  it('cancels only the aborted Claude request and leaves a concurrent permission answerable', async () => {
+    const f = fixture(); const aborted = new AbortController();
+    const first = f.cards.handleClaude('Bash', { command: 'first' }, 'turn', {
+      signal: aborted.signal, toolUseID: 'first', requestId: 'first-request',
+    });
+    const second = f.cards.handleClaude('Bash', { command: 'second' }, 'turn', {
+      signal: new AbortController().signal, toolUseID: 'second', requestId: 'second-request',
+    });
+    const secondCard = f.events.at(-1);
+    if (secondCard?.type !== 'card' || secondCard.phase !== 'opened') throw new Error('No second permission card');
+    aborted.abort();
+    await expect(first).resolves.toMatchObject({ behavior: 'deny' });
+    expect(resolveCardResponse({ correlationId: secondCard.card.correlationId, action: 'submit', payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    await expect(second).resolves.toMatchObject({ behavior: 'allow', updatedInput: { command: 'second' } });
+  });
 });

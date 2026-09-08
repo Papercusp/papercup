@@ -98,6 +98,11 @@ function command(engine: ClaudeSuEngine, type: 'owner_turn' | 'interrupt' | 'end
     type, ...(type === 'owner_turn' ? { turnId: 'owner-turn-1', content: '  hi 雪\n\n' } : {}),
   };
 }
+function openCards(engine: ClaudeSuEngine) {
+  const events = engine.adapter.host.recent.map(({ event }) => event);
+  const closed = new Set(events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
+  return events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
+}
 
 describe('structured Claude SU engine', () => {
   it('restores historical assistant text without sending a new native turn', async () => {
@@ -268,14 +273,14 @@ describe('structured Claude SU engine', () => {
       signal: new AbortController().signal, toolUseID: 'native-question', requestId: 'question-request',
     });
     let settled = false; void answer.then(() => { settled = true; });
-    await vi.waitFor(() => expect(engine.adapter.host.snapshot().openCards).toHaveLength(1));
-    const card = engine.adapter.host.snapshot().openCards[0];
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    const card = openCards(engine)[0];
     expect(card.correlationId).not.toBe('native-question');
     expect(settled).toBe(false);
     expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'wrong' }).ok).toBe(false);
     expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
     await expect(answer).resolves.toMatchObject({ behavior: 'allow', updatedInput: { answers: { 'Which destination?': 'There' } } });
-    expect(engine.adapter.host.snapshot().openCards).toHaveLength(0);
+    expect(openCards(engine)).toHaveLength(0);
     expect(engine.adapter.host.recent.filter(({ event }) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
     expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
   });
@@ -287,18 +292,18 @@ describe('structured Claude SU engine', () => {
     const permission = canUseTool('Bash', { command: 'touch approved.txt' }, {
       signal: new AbortController().signal, toolUseID: 'permission', requestId: 'permission-request', title: 'Create approved.txt?',
     });
-    await vi.waitFor(() => expect(engine.adapter.host.snapshot().openCards).toHaveLength(1));
-    const card = engine.adapter.host.snapshot().openCards[0];
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    const card = openCards(engine)[0];
     expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
     await expect(permission).resolves.toMatchObject({ behavior: 'deny' });
     const questions = canUseTool('AskUserQuestion', { questions: [
       { question: 'First?', options: [{ label: 'Yes' }, { label: 'No' }] },
       { question: 'Second?', options: [{ label: 'Yes' }, { label: 'No' }] },
     ] }, { signal: new AbortController().signal, toolUseID: 'questions', requestId: 'two-questions' });
-    await vi.waitFor(() => expect(engine.adapter.host.snapshot().openCards).toHaveLength(1));
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
     await expect(questions).resolves.toMatchObject({ behavior: 'deny' });
-    expect(engine.adapter.host.snapshot().openCards).toHaveLength(0);
+    expect(openCards(engine)).toHaveLength(0);
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'card' && event.phase === 'opened' && event.card.prompt === 'Second?')).toBe(false);
   });
 
