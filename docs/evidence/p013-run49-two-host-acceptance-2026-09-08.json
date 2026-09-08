@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 run49 isolated two-host Papercup chat acceptance",
+  "framework": "playwright",
+  "command": [
+    "bash",
+    "scripts/verify-tauri-headless.sh",
+    "--script",
+    ".papercusp/tmp/p013-tauri-live.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-08T02:01:18.754Z",
+  "finishedAt": "2026-09-08T02:04:47.103Z",
+  "summary": "The frozen isolated operator desktop and the external portal both rendered and persisted the same choice-card interaction and markdown prose, rejected a duplicate answer with HTTP 409, rendered compact inline semantic timestamps for same-day and older turns, and exposed the Papercup identity to assistive technology without visible role text. The verifier tore down with exit=0.",
+  "assertions": [
+    {
+      "id": "same-input-contract",
+      "passed": true,
+      "evidence": "Both hosts used card prompt SHA-256 a263b284f284a07f95b5844c16df9cf171db6e6da9310222b34258dc21dba899 and prose prompt SHA-256 3c27fbad8472865ea2eb989de6fbcaa93d8166060f151d5fce23d66b81d7950c."
+    },
+    {
+      "id": "desktop-choice-card",
+      "passed": true,
+      "evidence": "Tauri result recorded visible question 'Choose P013 parity token', exactly Alpha/Beta options, persisted chat:ask_choice input, and answered pick Alpha."
+    },
+    {
+      "id": "portal-choice-card",
+      "passed": true,
+      "evidence": "Portal result recorded the same visible question and Alpha/Beta options, persisted chat:ask_choice input, and answered pick Alpha through the restricted PI tool surface."
+    },
+    {
+      "id": "duplicate-answer-conflict",
+      "passed": true,
+      "evidence": "Both hosts' second card-response attempts returned HTTP 409 after the Alpha answer had persisted."
+    },
+    {
+      "id": "markdown-parity",
+      "passed": true,
+      "evidence": "Both DOM snapshots contained strong text 'P013 parity bold', list items first/second, and inline code 'inline' after one prose submission."
+    },
+    {
+      "id": "compact-inline-semantic-time",
+      "passed": true,
+      "evidence": "Both hosts rendered same-day HH:MM labels and an older 'Sep 5 · HH:MM' label in the message line beside content; every inspected time carried an ISO dateTime and was visible."
+    },
+    {
+      "id": "icon-only-visible-identity",
+      "passed": true,
+      "evidence": "Both DOM snapshots reported zero visible assistant-role labels and screen-reader-only 'Papercup' labels; the desktop snapshot also recorded avatar icons."
+    },
+    {
+      "id": "host-trust-boundary",
+      "passed": true,
+      "evidence": "Desktop DOM reported hostTrust=owner; portal DOM reported hostTrust=public. Portal PI discovery returned HTTP 200 and exposed only voice:delegate_deep and chat:ask_choice."
+    },
+    {
+      "id": "source-provenance",
+      "passed": true,
+      "evidence": "Operator health reported version 0.0.18 and source short SHA c9dd1a154a throughout; portal source HEAD cb9557c2f07e241850920f6da53975caccea754d with runtime fingerprint 11411279161c1cb34d733051f6dca1b3f69dc9fe4ebc0374912814454c2e2285 over 96 inputs."
+    }
+  ],
+  "rawRunLog": {
+    "temporaryPathAtExecution": "/tmp/p013-tauri-run49.log",
+    "sha256": "ee7f659c8e107152170a1ad3f17a6fce770a32b86a7995caae72b737f0097ebf",
+    "bytes": 50932
+  },
+  "operator": {
+    "origin": "http://127.0.0.1:33700",
+    "healthSha": "c9dd1a154a",
+    "version": "0.0.18"
+  },
+  "portal": {
+    "origin": "http://127.0.0.1:39797",
+    "sourceHead": "cb9557c2f07e241850920f6da53975caccea754d",
+    "sourceFingerprint": "11411279161c1cb34d733051f6dca1b3f69dc9fe4ebc0374912814454c2e2285",
+    "runtimeInputCount": 96
+  }
+}
