@@ -67,18 +67,24 @@ describe('current authority scenario matrix', () => {
     );
     expect(brief).not.toBeNull();
     const serialized = JSON.stringify(brief);
-    const stale = serialized.indexOf('STALE CARRY');
-    expect(stale).toBeGreaterThan(0);
-    for (const current of [
-      'CURRENT SPEC',
-      'CURRENT DECISION',
-      'CORRECTION',
-      'CURRENT COMPLETION',
-      'CURRENT OWNERSHIP',
-    ]) {
-      expect(serialized.indexOf(current), current).toBeGreaterThanOrEqual(0);
-      expect(serialized.indexOf(current), current).toBeLessThan(stale);
-    }
+    const assertCurrentBeforeCarry = (output: string) => {
+      const stale = output.indexOf('STALE CARRY');
+      expect(stale).toBeGreaterThanOrEqual(0);
+      for (const current of [
+        'CURRENT SPEC',
+        'CURRENT DECISION',
+        'CORRECTION',
+        'CURRENT COMPLETION',
+        'CURRENT OWNERSHIP',
+      ]) {
+        expect(output.indexOf(current), current).toBeGreaterThanOrEqual(0);
+        expect(output.indexOf(current), current).toBeLessThan(stale);
+      }
+    };
+    assertCurrentBeforeCarry(serialized);
+    // Permanent negative control: the same oracle must reject a final sink
+    // that prepends stale carry ahead of every current authority record.
+    expect(() => assertCurrentBeforeCarry(`STALE CARRY precedes authority\n${serialized}`)).toThrow();
   });
 });
 

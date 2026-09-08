@@ -600,6 +600,26 @@ function compactMember(value: unknown): unknown {
   if (source.doing && typeof source.doing === 'object') {
     out.doing = pick(source.doing, ['id', 'title', 'status', 'activity'], 140) ?? source.doing;
   }
+  const progress = asDict(source.checkpointProgress);
+  if (progress) {
+    const items = Array.isArray(progress.items) ? progress.items : [];
+    out.checkpointProgress = {
+      ...pick(progress, ['status', 'source', 'snapshotOnly', 'readAtMs', 'rosterItems', 'omitted', 'note'], 260),
+      items: items.slice(0, 1).map((entry) => {
+        const item = asDict(entry) ?? {};
+        const note = typeof item.checkpoint === 'string' ? item.checkpoint : null;
+        return {
+          ...pick(item, [
+            'id', 'harness', 'holderProof', 'status', 'checkpointUpdatedAtMs',
+            'lastProgressAtMs', 'checkpointContentHash', 'checkpointChars', 'checks', 'walls', 'recovery',
+          ], 140),
+          checkpoint: clip(note, 240),
+          checkpointTruncated: item.checkpointTruncated === true || (note?.length ?? 0) > 240,
+        };
+      }),
+      itemsOmittedByProjection: Math.max(0, items.length - 1),
+    };
+  }
   if (source.unanswered && typeof source.unanswered === 'object') {
     out.unanswered = pick(source.unanswered, ['count', 'oldestAgeMs'], 100) ?? source.unanswered;
   }

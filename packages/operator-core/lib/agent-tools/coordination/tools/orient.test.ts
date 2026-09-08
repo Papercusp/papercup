@@ -622,7 +622,7 @@ describe('coord:orient args', () => {
   it('starts the handler-owned GOAL portfolio read before composeOrient', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const modesStart = source.indexOf('const runtimeModesPromise =');
-    const portfolioStart = source.indexOf('const goalPortfolioPromise =');
+    const portfolioStart = source.indexOf('const goalPortfolioReadPromise =');
     const obligationsStart = source.indexOf('const goalObligationsPromise =');
     const composeStart = source.indexOf('const result = await composeOrient(');
 

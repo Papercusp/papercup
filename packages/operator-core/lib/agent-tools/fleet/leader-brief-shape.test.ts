@@ -3,6 +3,39 @@ import leaderBriefTool from './leader-brief';
 import { compactCampaign, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 import { projectFleetHeadcountState } from '../../agent-fleets-store';
 
+describe('leader checkpoint progress delivery (P-005)', () => {
+  it('keeps source identity, unknown state and truncation/recovery markers in the default tier', () => {
+    const recovery = { tool: 'work_items:get', args: { id: 'WI-A', harness: 'fixture' } };
+    const out = shapeLeaderBrief({
+      ok: true,
+      members: [{
+        agentId: 'owner',
+        checkpointProgress: {
+          status: 'unknown', source: 'work_items:checkpoint', snapshotOnly: true, readAtMs: 100,
+          rosterItems: 3, omitted: 1, note: 'Snapshot only; full-item checks/walls remain binding.',
+          items: [{
+            id: 'WI-A', harness: 'fixture', holderProof: { ownerId: 'owner', workspaceId: 'ws' },
+            status: 'stored', checkpoint: 'x'.repeat(700), checkpointUpdatedAtMs: 90,
+            checkpointContentHash: 'full-note-hash', checkpointTruncated: false, recovery,
+          }, {
+            id: 'WI-B', status: 'unknown', checkpoint: null, checkpointTruncated: false,
+          }],
+        },
+      }],
+    }, 'trimmed') as Record<string, any>;
+    const progress = out.members[0].checkpointProgress;
+    expect(progress).toMatchObject({
+      status: 'unknown', source: 'work_items:checkpoint', snapshotOnly: true,
+      omitted: 1, itemsOmittedByProjection: 1,
+    });
+    expect(progress.items[0]).toMatchObject({
+      id: 'WI-A', checkpointContentHash: 'full-note-hash', checkpointTruncated: true,
+      checkpointUpdatedAtMs: 90, recovery,
+    });
+    expect(progress.items[0].checkpoint.length).toBeLessThanOrEqual(240);
+  });
+});
+
 describe('leader plan history delivery', () => {
   const recovery = { tool: 'plans:get', args: { slug: 'history', harness: 'papercusp', heading: 'History' } };
   const planHistory = {

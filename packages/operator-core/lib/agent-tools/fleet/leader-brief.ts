@@ -162,6 +162,7 @@ import { resolveFleetMetricScope, type FleetMetricScopeResolution } from './flee
 import { buildFleetMetricsResult } from '../work_items/burn_down';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
+import { readLeaderCheckpointProgress, type LeaderCheckpointProgress } from './leader-brief-progress';
 import { getLongCallsInFlight } from '../../in-flight-calls';
 import { readDependencyBottlenecks, type DependencyBottleneckResult } from '../../dependency-traversal';
 import { renderDependencyBottleneckMermaid } from '../../dependency-mermaid';
@@ -618,6 +619,8 @@ export interface LeaderBriefMember {
   doing: unknown;
   /** Every currently-held work-item id (bounded by the member's actual claim list). */
   workItemIds: string[];
+  /** Same canonical held-item checkpoint reader as carry, not a copied loop narrative. */
+  checkpointProgress?: LeaderCheckpointProgress;
   /** P-006: per-held-work-item claim-progress health. Present only when at least one held work-item has a derived verdict. */
   claimHealth?: Record<string, ClaimHealth>;
   queuedCount: number;
@@ -4695,8 +4698,19 @@ export async function buildLeaderBrief(
   const benchSuggestions = compactLeaderBriefBenchSuggestions(membersWithVerdict);
   const intentAttention = compactLeaderBriefIntentAttention(membersWithVerdict);
   const repeatedRecovery = compactLeaderBriefRepeatedRecovery(membersWithVerdict);
+  const detailMembers = prioritizeActionableMembers(membersWithVerdict);
+  const claimsByOwner = new Map(grouped.map((agent) => [agent.agentId, agent.claims]));
+  // Only the bounded reader's first three candidates cost a held-item read.
+  const progress = await readLeaderCheckpointProgress(
+    detailMembers.map((member) => ({ agentId: member.agentId, claims: claimsByOwner.get(member.agentId) ?? [] })),
+    workspaceId,
+    { timeoutMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS, nowMs },
+  );
   const boundedMembers = trimToByteBudget(
-    prioritizeActionableMembers(membersWithVerdict),
+    detailMembers.map((member) => ({
+      ...member,
+      ...(progress.has(member.agentId) ? { checkpointProgress: progress.get(member.agentId)! } : {}),
+    })),
     LEADER_BRIEF_MEMBER_DETAIL_BUDGET,
   );
   const boundedReservationMembers = trimToByteBudget(reservation.members, LEADER_BRIEF_RESERVATION_DETAIL_BUDGET);

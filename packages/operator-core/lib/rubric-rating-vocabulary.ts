@@ -83,6 +83,33 @@ function closingQuote(opening: string): string {
   return opening;
 }
 
+/** Only balanced literals hide directives; contractions and unmatched quotes do not. */
+function quotedLiteralRanges(text: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let start = -1;
+  let close = '';
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (character === '\\') {
+      index++;
+      continue;
+    }
+    if (start >= 0) {
+      if (character === close) {
+        ranges.push({ start, end: index });
+        start = -1;
+      }
+      continue;
+    }
+    if (!isQuote(character)) continue;
+    // A possessive/contraction apostrophe cannot open a quoted source literal.
+    if (character === "'" && /\w/.test(text[index - 1] ?? '')) continue;
+    start = index;
+    close = closingQuote(character);
+  }
+  return ranges;
+}
+
 function skipDirectiveConnector(input: string): string {
   let rest = input.trimStart();
   for (;;) {
@@ -123,15 +150,17 @@ function parseDirectiveTarget(input: string, directive: string): ParsedDirective
   }
 
   const token = UNQUOTED_RATING_RE.exec(rest)?.[0];
-  if (!token || NON_RATING_DIRECTIVE_WORDS.has(token.toLowerCase()) || NON_RATING_TARGET_WORDS.has(token.toLowerCase())) {
+  if (
+    !token ||
+    NON_RATING_DIRECTIVE_WORDS.has(token.toLowerCase()) ||
+    NON_RATING_TARGET_WORDS.has(token.toLowerCase())
+  ) {
     return null;
   }
 
   const afterToken = rest.slice(token.length).trimStart();
   const explicitBoundary =
-    afterToken.length === 0 ||
-    /^[,;:.!?)]/.test(afterToken) ||
-    EXPLICIT_FOLLOWING_WORD_RE.test(afterToken);
+    afterToken.length === 0 || /^[,;:.!?)]/.test(afterToken) || EXPLICIT_FOLLOWING_WORD_RE.test(afterToken);
   if (!explicitBoundary) return null;
 
   return {
@@ -155,20 +184,20 @@ export function extractRubricRatingInstructions(
   if (!text?.trim()) return [];
 
   const instructions: RubricRatingInstruction[] = [];
+  const literalRanges = quotedLiteralRanges(text);
+  let literalIndex = 0;
   for (const match of text.matchAll(DIRECTIVE_RE)) {
     const directive = match[1];
     const directiveStart = match.index ?? 0;
-    // A directive-shaped word inside a quoted/code literal is data, not an
-    // instruction. Without this guard, SQL such as `mode IN ('grade','test')`
-    // starts parsing at the closing quote after `grade`, treats the next quote
-    // as a new opener, and reports the intervening comma as an off-scale
-    // rating. Real directives such as `Grade 'partial' if ...` remain visible
-    // because the directive word itself is not quote-bounded.
-    const following = text[directiveStart + match[0].length];
+    while (literalRanges[literalIndex]?.end < directiveStart) literalIndex++;
+    const literal = literalRanges[literalIndex];
+    // Test titles and code strings can contain whole phrases ending in "rate".
+    // Their closing quote is not the start of a requested rating. A real
+    // directive such as Grade 'partial' stays visible outside the literal.
+    if (literal && literal.start < directiveStart && directiveStart < literal.end) continue;
     // A directive embedded in a compound label (for example `GOAL+GRADE
     // mode`) is a noun/heading, not an instruction to emit `mode`.
     const preceding = text[directiveStart - 1];
-    if (isQuote(preceding) && following === closingQuote(preceding)) continue;
     if (preceding === '+' || preceding === '-' || preceding === '/') continue;
     const target = parseDirectiveTarget(text.slice(directiveStart + match[0].length), directive);
     if (!target) continue;
@@ -183,10 +212,7 @@ export function extractRubricRatingInstructions(
   return instructions;
 }
 
-function effectiveScale(
-  criterion: RubricRatingVocabularyCriterion,
-  rubricRatingScale: readonly string[],
-): string[] {
+function effectiveScale(criterion: RubricRatingVocabularyCriterion, rubricRatingScale: readonly string[]): string[] {
   const scale = criterion.ratingScale ?? rubricRatingScale;
   return scale
     .filter((value): value is string => typeof value === 'string')

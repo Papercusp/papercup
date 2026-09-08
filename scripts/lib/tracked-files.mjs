@@ -36,6 +36,8 @@ import { execSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
+import { isRepositoryIndexFault, withGitIndexFaultRetry } from './git-index-fault.mjs';
+
 /**
  * Repo root. NOTE the '../..': this module lives at scripts/lib/, one level
  * deeper than the scripts/check-*.mjs guards that copy the `new URL('..')`
@@ -47,21 +49,55 @@ import { join, resolve, sep } from 'node:path';
  */
 const ROOT = new URL('../..', import.meta.url).pathname;
 
-/** Run a git command and return trimmed stdout lines (empty array on failure). */
-function gitLines(args, cwd) {
-  try {
-    return execSync(`git ${args}`, {
+/**
+ * Run a git enumeration, retrying a torn `.git/index` and REFUSING to report one as "no files".
+ *
+ * EI-22703095921400106. The `catch { return [] }` these helpers used to end in was correct for
+ * the shape it was written for — an archive/checkpoint snapshot with no `.git` — and silently
+ * wrong for a shape nobody had hit yet. MEASURED 2026-09-08 on this very tree, with a 0-byte
+ * index: `listTrackedFiles()` returned 35,742 files healthy and **0 files, no error** torn. Every
+ * guard on this helper would then report a confident ✓ having scanned NOTHING — the exact
+ * "false ✓ actively suppresses the question" failure this module was created to kill (WI-6730),
+ * reintroduced through the error path instead of the submodule path.
+ *
+ * That is strictly worse than the crash this work-item started from: a crashed guard reds the
+ * gate loudly and gets fixed; a guard that scans zero files and passes lets real violations
+ * through and nobody ever learns. So an unreadable index THROWS here, matching the contract
+ * `listFilesIncludingUntracked` already enforces below (`if (root.error) throw root.error`).
+ * Every OTHER failure keeps the quiet `[]`, so the archive/checkpoint shape is untouched.
+ *
+ * stderr is captured rather than discarded because the classifier needs git's diagnostic to tell
+ * those two apart — the same reason, and the same `'pipe'`, that `listFilesIncludingUntracked`
+ * already uses. Capturing it also keeps it OUT of guard output, preserving the quiet-probe
+ * contract the old `'ignore'` was there for.
+ */
+function runGitEnumeration(args, cwd) {
+  return withGitIndexFaultRetry(() =>
+    execSync(`git ${args}`, {
       cwd,
       encoding: 'utf8',
-      // A missing git repository is an expected shape for archive/checkpoint
-      // snapshots. Keep that probe quiet; callers decide whether the empty
-      // result means "no entries" or requires the filesystem fallback.
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 256 * 1024 * 1024,
-    })
-      .split('\n')
-      .filter(Boolean);
-  } catch {
+    }),
+  );
+}
+
+/** True for the one error class that must never be flattened into an empty enumeration. */
+function isUnreadableIndex(error) {
+  return Boolean(error?.isRepositoryIndexFault) || isRepositoryIndexFault(error);
+}
+
+/**
+ * Run a git command and return trimmed stdout lines.
+ *
+ * Empty array on an EXPECTED failure (no `.git` — archive/checkpoint snapshots); THROWS on an
+ * unreadable index, because "" and "I could not read the repository" are not the same answer.
+ */
+function gitLines(args, cwd) {
+  try {
+    return runGitEnumeration(args, cwd).split('\n').filter(Boolean);
+  } catch (error) {
+    if (isUnreadableIndex(error)) throw error;
     return [];
   }
 }
@@ -90,17 +126,13 @@ function gitLines(args, cwd) {
  */
 function gitLinesNul(args, cwd) {
   try {
-    return execSync(`git ${args}`, {
-      cwd,
-      encoding: 'utf8',
-      // Same quiet-probe contract as `gitLines`: an archive/checkpoint snapshot
-      // with no .git is an expected shape, not a diagnostic worth surfacing.
-      stdio: ['ignore', 'pipe', 'ignore'],
-      maxBuffer: 256 * 1024 * 1024,
-    })
-      .split('\0')
-      .filter(Boolean);
-  } catch {
+    // Same quiet-probe contract as `gitLines`: an archive/checkpoint snapshot with no .git is an
+    // expected shape and still yields []. An unreadable index is NOT that shape and throws —
+    // this is the path `listTrackedFiles` uses, so it is where the measured 0-files-no-error
+    // false green came from (see `runGitEnumeration`).
+    return runGitEnumeration(args, cwd).split('\0').filter(Boolean);
+  } catch (error) {
+    if (isUnreadableIndex(error)) throw error;
     return [];
   }
 }

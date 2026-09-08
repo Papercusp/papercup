@@ -61,6 +61,8 @@ export type RecipeUnresolvedCause =
   | { kind: 'volatile-run-artifact-path'; tool: null; path: string }
   /** A work-item claim names a fixed assignee that this authority model cannot validate. */
   | { kind: 'fixed-claim-assignee'; tool: string }
+  /** A recipe embeds one generated task-manager handle from a past/current run. */
+  | { kind: 'volatile-task-id'; taskId: string }
   /** Tools were referenced but NO call could be statically resolved (dynamic/unsupported access form). */
   | { kind: 'unparsable-call-form'; tool: null };
 
@@ -243,6 +245,28 @@ const VOLATILE_COORDINATION_OWNER_ID =
 
 export function findVolatileCoordinationOwnerId(script: string): string | null {
   return script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0] ?? null;
+}
+
+/**
+ * The task manager's default `newTaskId()` shape is a 9-character base-36
+ * timestamp followed by a 10-character base-36 random suffix. A literal of
+ * that exact shape names one process/run, not a reusable recipe input. Keep the
+ * check on static string literals so a task id resolved from the current live
+ * process state or supplied through `inputs` remains a valid reusable shape.
+ *
+ * This is deliberately whole-script rather than call-argument analysis: the
+ * motivating recipe hoisted three ids into `const ids = [...]` and passed each
+ * through a loop, so `parse-check` correctly marked the call argument dynamic
+ * while dropping the literal values that made the recipe stale.
+ */
+const VOLATILE_TASK_ID_LITERAL = /^(?=[0-9a-z]{19}$)(?=[0-9a-z]*\d)(?=[0-9a-z]*[a-z])[0-9a-z]{19}$/;
+
+export function findVolatileTaskIdLiteral(script: string): string | null {
+  for (const match of script.matchAll(SCRIPT_STRING_LITERAL)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    if (value && VOLATILE_TASK_ID_LITERAL.test(value)) return value;
+  }
+  return null;
 }
 
 /**
@@ -459,6 +483,15 @@ export async function deriveRecipeAuthority(script: string): Promise<RecipeAutho
     if (artifactPath) {
       unresolvedCause = { kind: 'volatile-run-artifact-path', tool: null, path: artifactPath };
     }
+  }
+
+  // A generated task-manager id is a run-scoped handle. A literal survives in
+  // the saved recipe after the process it names has ended (or been replaced),
+  // even when it is hoisted into an array/const and therefore invisible to
+  // static call-argument collection.
+  if (!unresolvedCause) {
+    const taskId = findVolatileTaskIdLiteral(script);
+    if (taskId) unresolvedCause = { kind: 'volatile-task-id', taskId };
   }
 
   // A coordination recipe must resolve its target owner from the current
@@ -765,6 +798,14 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'the current path from the live authority (the active run-lock / systemd unit / the owning tool\'s own ' +
         'status read) and assert that the run identity it returns matches that live authority, or run the script ' +
         'directly via code:run against a path you resolved this turn.'
+      );
+    case 'volatile-task-id':
+      return (
+        `the recipe script embeds the concrete task-manager id \`${cause.taskId}\`, which names ONE ` +
+        'current or past process run rather than a reusable entity — re-running it can inspect, wait on, or ' +
+        'control an unrelated/ended task while appearing to audit the current lane. Declare the task handle as a ' +
+        'runtime binding or resolve it from live process authority each run; no authority proof can make a frozen ' +
+        'task id reusable.'
       );
     case 'volatile-coordination-owner-id':
       return (

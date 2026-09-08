@@ -4,6 +4,7 @@ import {
   deriveRecipeAuthority,
   findVolatileCoordinationOwnerId,
   findVolatileRunArtifactLiteral,
+  findVolatileTaskIdLiteral,
   recipeRevision,
   recipeAuthorityMatches,
   recipeAuthorityMatchesLiveRefs,
@@ -265,6 +266,55 @@ describe('recipe recommendation authority (P-008)', () => {
     expect(findVolatileRunArtifactLiteral('const p = `/tmp/papercusp-capability/scratch/bash-${bashId}.log`;')).toBeNull();
     // non-ephemeral roots are addresses, not artifacts
     expect(findVolatileRunArtifactLiteral(`const p = 'docs/plans/my-plan-2026-08-13.md';`)).toBeNull();
+  });
+
+  it('fails closed for hardcoded generated task-manager ids, including hoisted loop values', async () => {
+    const taskId = '0mt94bcnx1pyngto1k9';
+    const script = `const ids = ['${taskId}', '0mt94elo6mf01p51y0c', '0mt94tjz61wif8wb1kn'];
+      const out = [];
+      for (const id of ids) {
+        const p = await tools.processes.list({ rootTaskId: id, includeEnded: true, live: true, limit: 20 });
+        out.push(p.tasks?.[0] ?? null);
+      }
+      return out;`;
+
+    expect(findVolatileTaskIdLiteral(script)).toBe(taskId);
+    await expect(deriveRecipeAuthority(script)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: { kind: 'volatile-task-id', taskId },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script,
+      updatedAt: '2026-09-08T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+
+    const verdict = await validateRecipeAuthorityProof({
+      script,
+      updatedAt: '2026-09-08T00:00:00.000Z',
+    });
+    expect(verdict).toMatchObject({ ok: false, error: 'authority_unresolved' });
+    expect((verdict as { reason: string }).reason).toContain('task-manager id');
+    expect((verdict as { reason: string }).reason).toContain('runtime binding');
+  });
+
+  it('keeps runtime-resolved and binding-supplied task handles reusable', async () => {
+    const runtimeResolvedScript = `const live = await tools.processes.list({ live: true });
+      const ids = (live.tasks || []).map((task) => task.taskId);
+      return await Promise.all(ids.map((taskId) => tools.processes.list({ rootTaskId: taskId })));`;
+    expect(findVolatileTaskIdLiteral(runtimeResolvedScript)).toBeNull();
+    await expect(deriveRecipeAuthority(runtimeResolvedScript)).resolves.toMatchObject({ unresolved: false });
+
+    const bindingScript = `const taskId = inputs.taskId;
+      return await tools.processes.list({ rootTaskId: taskId });`;
+    expect(findVolatileTaskIdLiteral(bindingScript)).toBeNull();
+    await expect(deriveRecipeAuthority(bindingScript)).resolves.toMatchObject({ unresolved: false });
+  });
+
+  it('does not classify arbitrary literals as generated task ids', () => {
+    expect(findVolatileTaskIdLiteral(`const word = 'abcdefghijklmnopqrs';`)).toBeNull();
+    expect(findVolatileTaskIdLiteral(`const digits = '0123456789012345678';`)).toBeNull();
+    expect(findVolatileTaskIdLiteral('const id = `${currentTaskId}`;')).toBeNull();
   });
 
   it('fails closed for a pinned capability:bash scratch log without rejecting runtime-derived paths', async () => {
