@@ -118,7 +118,23 @@ export const gatewayStatusTool = defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({}),
-  result: z.object({ value: z.unknown().optional(), writer: z.unknown().optional() }).passthrough(),
+  // Keep the declared output aligned with the raw /admin/config projection. The
+  // canonical admission values are nested under `admissionState`; `value` and
+  // `writer` are properties of those nested measurements, not gateway:status's
+  // top-level response.
+  result: z
+    .object({
+      ok: z.boolean(),
+      version: z.number().optional(),
+      accounts: z.array(z.string()).optional(),
+      codexAccounts: z.array(z.string()).optional(),
+      providers: z.array(z.unknown()).optional(),
+      admissionState: z.unknown().optional(),
+      upstreamBase: z.string().optional(),
+      legacy: z.unknown().optional(),
+      error: z.string().optional(),
+    })
+    .passthrough(),
   async handler() {
     try {
       const r = await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) });

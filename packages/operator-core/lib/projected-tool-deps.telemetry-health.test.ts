@@ -91,6 +91,8 @@ describe("telemetry health counters (EI-7431)", () => {
       droppedRows: 0,
       insertErrorCount: 0,
       lastInsertErrorAt: null,
+      frictionSkippedCount: 0,
+      frictionErrorCount: 0,
     });
 
     await record("x:one");

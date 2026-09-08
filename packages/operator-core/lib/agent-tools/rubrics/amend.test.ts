@@ -1,6 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+
+const rubricsMocks = vi.hoisted(() => ({
+  amendRubric: vi.fn(),
+  previewAcceptanceBarAmendment: vi.fn(),
+  rubricCompleteness: vi.fn(),
+}));
+
+vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'amend-test' }) }));
+vi.mock('../../rubrics', () => ({
+  AMENDABLE_CRITERION_FIELDS: ['title', 'model', 'method', 'driftMarkers', 'replication'],
+  amendRubric: rubricsMocks.amendRubric,
+  previewAcceptanceBarAmendment: rubricsMocks.previewAcceptanceBarAmendment,
+  rubricCompleteness: rubricsMocks.rubricCompleteness,
+}));
+
 import amendTool, { rubricsAmendArgs } from './amend';
+
+type ToolOutput = { content: Array<{ text: string }> };
+const body = async (args: unknown) =>
+  JSON.parse(((await amendTool.handler(args as never, {} as never)) as ToolOutput).content[0]!.text);
+
+beforeEach(() => vi.clearAllMocks());
 
 const criterion = {
   key: 'r-1',
@@ -111,5 +132,24 @@ describe('rubrics:amend complete acceptance criteria input', () => {
         ]),
       );
     }
+  });
+
+  it('reports an actionable refusal when dryRun cannot resolve the rubric', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(null);
+
+    const result = await body({
+      rubricRef: 'missing-rubric',
+      dryRun: true,
+      reason: 'Preview the requested amendment.',
+      criterion: { key: 'r-1', field: 'method', mode: 'append', text: 'Run the focused check.' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      dryRun: true,
+      code: 'rubric_not_found',
+      error: "no rubric 'missing-rubric' — rubrics:list to see refs",
+      rubricRef: 'missing-rubric',
+    });
   });
 });

@@ -427,6 +427,14 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     expect(green.satisfied).toBe(true);
   });
 
+  it('does not require test-layer adequacy for a non-automated BAR with no layers', () => {
+    const verdict = evaluateAcceptanceBarLifecycle(
+      snapshot({ bars: [bar({ behaviorClass: 'non-automated', evidencePlane: 'live' })] }),
+      'ship',
+    );
+    expect(verdict.codes).not.toContain('bar_snapshot_proof_depth_missing');
+  });
+
   it('fails closed on uncertain or wrong-plane evidence, and skips legacy snapshots', () => {
     const uncertain = evaluateAcceptanceBarLifecycle(
       snapshot({

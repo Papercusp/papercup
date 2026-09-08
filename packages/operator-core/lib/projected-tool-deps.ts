@@ -69,6 +69,10 @@ import { recordMcpTraffic } from './coverage-census/attribution/sink';
 import { observeFailureLoop } from './failure-loop-circuit-breaker';
 import { goalKickoffRefusalPayload, isGoalKickoffGuardedTool, readGoalKickoffEvidence } from './goals/kickoff-evidence';
 import { normalizeSessionActivation } from './session-activation';
+import type { ToolInvocationFriction } from './harness/improvements/capture-core';
+import { trackDetached } from './detached-imports';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { runWithWorkspace } from './workspace-als';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -529,6 +533,7 @@ interface RecordInvocationInput {
 interface TelemetryRow {
   workspaceId: string;
   params: unknown[];
+  friction?: ToolInvocationFriction;
 }
 
 /**
@@ -624,11 +629,17 @@ let telemetryInsertErrorCount = 0;
 let telemetryLastInsertErrorAt: string | null = null;
 let telemetryInsertErrorToastSent = false;
 let telemetryScopeRejectionWarned = false;
+const frictionState = pinModuleState('@papercusp/operator-core.telemetry-friction', () => ({
+  pending: 0, skipped: 0, errors: 0,
+}));
 
 export interface TelemetryHealth {
   droppedRows: number;
   insertErrorCount: number;
   lastInsertErrorAt: string | null;
+  /** Committed invocation rows whose automatic probation delivery is busy/failed. */
+  frictionSkippedCount: number;
+  frictionErrorCount: number;
 }
 
 export function getTelemetryHealth(): TelemetryHealth {
@@ -636,6 +647,8 @@ export function getTelemetryHealth(): TelemetryHealth {
     droppedRows: telemetryDropped,
     insertErrorCount: telemetryInsertErrorCount,
     lastInsertErrorAt: telemetryLastInsertErrorAt,
+    frictionSkippedCount: frictionState.skipped,
+    frictionErrorCount: frictionState.errors,
   };
 }
 
@@ -646,6 +659,40 @@ export function __resetTelemetryHealthForTests(): void {
   telemetryLastInsertErrorAt = null;
   telemetryInsertErrorToastSent = false;
   telemetryScopeRejectionWarned = false;
+  frictionState.skipped = 0;
+  frictionState.errors = 0;
+}
+
+/** Capture is bounded to one flush batch and enrolled in the existing detached
+ * work registry. A busy capture never holds quota/spill readers or accumulates
+ * another queue. Skipped/failed deliveries remain in invocation telemetry for
+ * the existing watchdog/miner, and are visible in telemetry health. */
+function captureCommittedFriction(rows: readonly TelemetryRow[]): void {
+  const inputs = rows.flatMap(row => row.friction ? [row.friction] : []);
+  if (!inputs.length) return;
+  if (frictionState.pending) {
+    frictionState.skipped += inputs.length;
+    return;
+  }
+  frictionState.pending = inputs.length;
+  void trackDetached((async () => {
+    try {
+      const { captureToolInvocationFriction } = await import('./harness/improvements/capture-core');
+      for (const input of inputs) {
+        try {
+          await runWithWorkspace(input.workspaceId, () => captureToolInvocationFriction(input));
+        } catch (err) {
+          frictionState.errors++;
+          console.warn(`[projected-tool-deps] friction capture failed for ${input.failure.toolName}; invocation retained: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } catch (err) {
+      frictionState.errors += inputs.length;
+      console.warn(`[projected-tool-deps] friction consumer unavailable; invocations retained: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      frictionState.pending = 0;
+    }
+  })());
 }
 
 async function emitTelemetryInsertErrorToast(err: unknown): Promise<void> {
@@ -730,7 +777,11 @@ export async function flushPendingTelemetry(): Promise<void> {
             console.warn(
               `[projected-tool-deps] telemetry flush batch failed (${rows.length} rows): ${err instanceof Error ? err.message : String(err)}`,
             );
+            continue;
           }
+          // Quota/spill readers await this flush too. Capture must not join
+          // their response path, including when an earlier capture is stalled.
+          captureCommittedFriction(rows);
         }
       }
     } finally {
@@ -929,8 +980,33 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     spawnId: input.ctx.spawnId,
   });
   const servingHost = getServingHostIdentity();
+  const invokedAt = new Date().toISOString();
+  const invalidInput = input.metadataJson?.invalidInput as Record<string, unknown> | undefined;
+  const schemaRevision = invalidInput?.source === 'projected-tool-registry' &&
+    invalidInput.toolName === input.toolName && typeof invalidInput.registryRevision === 'string'
+    ? invalidInput.registryRevision : undefined;
+  const friction: ToolInvocationFriction | undefined =
+    coordOwnerId && ['error', 'invalid-input', 'timeout'].includes(input.status) &&
+    !/^(improvements:|system:improvement-)/.test(input.toolName)
+      ? {
+          workspaceId: input.ctx.workspaceId,
+          harnessSlug,
+          ownerId: coordOwnerId,
+          invokedAt,
+          failure: {
+            toolName: input.toolName,
+            status: input.status,
+            errorCode: input.errorCode ?? undefined,
+            message: (input.errorMessage ?? '').split(String.fromCharCode(0)).join('').slice(0, 8192),
+            schemaRevision,
+            // This is the serving process's loaded build, never checkout HEAD.
+            runtimeVersion: servingHost.buildSha ?? undefined,
+          },
+        }
+      : undefined;
   return {
     workspaceId: input.ctx.workspaceId,
+    ...(friction ? { friction } : {}),
     params: [
       input.ctx.workspaceId,
       harnessSlug,
@@ -962,7 +1038,7 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       coordOwnerId,
       // invoked_at (EI-7040): the dispatch-settle wall-clock, NOT the flush
       // time — see the note on TELEMETRY_INSERT_SQL.
-      new Date().toISOString(),
+      invokedAt,
       // P-009 / D-011 / D-014: the caller's DECLARED STATE at call time — the
       // intent it declared, the assumption watermark it had reached, and the
       // goal it holds. ONE Map.get off `coordOwnerId` (lib/agent-state-stamp);

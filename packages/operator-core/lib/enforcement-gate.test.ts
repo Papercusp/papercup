@@ -37,11 +37,26 @@ describe('staleCheckpointWarnings', () => {
     expect(w).toEqual([{ id: 'WI-9', title: 't', reason: 'missing' }]);
   });
 
-  it('flags a checkpoint older than the stale window, with age minutes', () => {
-    const old = NOW - (STALE_CHECKPOINT_WARN_MS + 5 * 60_000);
-    const w = staleCheckpointWarnings(brief({ heldItems: [held({ checkpointUpdatedAtMs: old })] }), NOW);
+  it('flags when item progress leads the checkpoint by the stale window, with lag minutes', () => {
+    const progress = NOW - 5 * 60_000;
+    const checkpoint = progress - (STALE_CHECKPOINT_WARN_MS + 5 * 60_000);
+    const w = staleCheckpointWarnings(
+      brief({ heldItems: [held({ checkpointUpdatedAtMs: checkpoint, lastProgressAtMs: progress })] }),
+      NOW,
+    );
     expect(w).toHaveLength(1);
     expect(w[0]).toMatchObject({ id: 'WI-1', reason: 'stale', ageMinutes: 20 });
+  });
+
+  it('does not flag an old checkpoint when the item has not progressed after it', () => {
+    const checkpoint = NOW - 50 * 60_000;
+    expect(
+      staleCheckpointWarnings(
+        brief({ heldItems: [held({ checkpointUpdatedAtMs: checkpoint, lastProgressAtMs: checkpoint })] }),
+        NOW,
+      ),
+    ).toEqual([]);
+    expect(staleCheckpointWarnings(brief({ heldItems: [held({ checkpointUpdatedAtMs: checkpoint })] }), NOW)).toEqual([]);
   });
 
   it('does not flag a fresh checkpoint', () => {
@@ -59,9 +74,15 @@ describe('detectFlushTripwires', () => {
   });
 
   it('emits missing- and stale-checkpoint tripwires', () => {
-    const old = NOW - 2 * STALE_CHECKPOINT_WARN_MS;
+    const progress = NOW - 5 * 60_000;
+    const old = progress - 2 * STALE_CHECKPOINT_WARN_MS;
     const t = detectFlushTripwires(
-      brief({ heldItems: [held({ id: 'WI-A', checkpoint: null }), held({ id: 'WI-B', checkpointUpdatedAtMs: old })] }),
+      brief({
+        heldItems: [
+          held({ id: 'WI-A', checkpoint: null }),
+          held({ id: 'WI-B', checkpointUpdatedAtMs: old, lastProgressAtMs: progress }),
+        ],
+      }),
       NOW,
     );
     expect(t.map((x) => x.kind).sort()).toEqual(['missing-checkpoint', 'stale-checkpoint']);
@@ -272,7 +293,7 @@ describe('renderFlushRefusal', () => {
     expect(text).toContain('Compaction is HELD');
     expect(text).toContain('work_items:checkpoint');
     expect(text).toContain('WI-1');
-    expect(text).toContain('WI-2 (40m old)');
+    expect(text).toContain('WI-2 (40m of progress after checkpoint)');
     expect(text).toContain('loop:checkpoint');
     expect(text).toContain('mechanical fallback');
   });

@@ -54,6 +54,7 @@ function fakeIssuesSql(
     scope: string;
     taken_by?: string | null;
     workspace_id?: string | null;
+    last_progress_at?: string | number | Date | null;
   }>,
 ) {
   return ((_strings: TemplateStringsArray, ..._vals: unknown[]) => Promise.resolve(rows)) as unknown as never;
@@ -1821,6 +1822,28 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
     expect(calls[0]!.text).not.toContain('engineer_issues');
     expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
     expect(calls[0]!.text).toContain("item_kind IN ('bug', 'change', 'task')");
+    expect(calls[0]!.text).toContain('last_progress_at');
+  });
+
+  it('carries the writer-backed last_progress_at anchor for relative checkpoint freshness', async () => {
+    const checkpointAt = Date.parse('2026-09-08T11:00:00.000Z');
+    const progressAt = Date.parse('2026-09-08T11:30:00.000Z');
+    const held = await readHeldWorkItems('su-abc', 'ws-test', {
+      sql: fakeIssuesSql([
+        {
+          issue_id: 'WI-progress',
+          title: 'progress-bearing item',
+          body: 'b',
+          scope: 'harness:papercusp',
+          last_progress_at: new Date(progressAt).toISOString(),
+        },
+      ]),
+      getWorkItemCheckpointFn: async () => 'checkpoint',
+    });
+    expect(held[0]).toMatchObject({ id: 'WI-progress', lastProgressAtMs: progressAt });
+    // The checkpoint timestamp is read from carry_notes independently; the two
+    // anchors are intentionally separate inputs to the relative gate.
+    expect(checkpointAt).toBeLessThan(progressAt);
   });
 
   it("canonicalizes a wildcard '*' workspace to the concrete one for BOTH the query and the checkpoint reads", async () => {

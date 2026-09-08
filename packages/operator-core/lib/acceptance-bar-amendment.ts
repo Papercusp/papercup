@@ -284,6 +284,7 @@ export async function synchronizeAcceptanceBarRevision(
        AND c.plan_slug = ${subjectPlan} AND r.source_bar_key IS NOT NULL
      ORDER BY c.spec_id LIMIT 1001`;
   if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
+  const { acceptanceBarBehaviorClass } = await import('./acceptance-bar-seed');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const revisions = new Map<string, number>();
   const missing = data.criteria.filter(
@@ -324,7 +325,7 @@ export async function synchronizeAcceptanceBarRevision(
             expectedRevision: 0,
             planItemId,
             behavior: criterion.model!,
-            behaviorClass: 'happy-path',
+            behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
             requiredEvidence: [criterion.evidencePlane],
             ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
             lifecycleStatus: 'draft',
@@ -380,7 +381,10 @@ export async function synchronizeAcceptanceBarRevision(
     const result = await setSpecClause({
       planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
-      behavior: unchangedBar ? clause.behavior : criterion.model!, behaviorClass: clause.behavior_class,
+      behavior: unchangedBar ? clause.behavior : criterion.model!,
+      behaviorClass: unchangedBar
+        ? clause.behavior_class
+        : acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
       requiredEvidence: unchangedBar ? clause.required_evidence
         : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
       requiredTestLayers: unchangedBar ? clause.required_test_layers

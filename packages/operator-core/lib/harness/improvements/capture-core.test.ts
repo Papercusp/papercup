@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   captureImprovement,
+  captureToolInvocationFriction,
   validateScoutEvidenceCitations,
   storageKindOf,
   DUP_THRESHOLD,
@@ -515,6 +516,59 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     correlationFingerprint: 'coord:send|invalid_args|42|body|codex-1.2|invalid-args-body-must-be',
     intendedKind: 'change' as const,
     reporters: [reporter],
+  });
+
+  it('R-7 automatically coalesces the frozen retry population with zero incident fields', async () => {
+    const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
+    const prior = existing({ id: 'EI-METADATA-FRICTION', title: 'known friction', kind: 'change',
+      scope: 'harness:papercusp', payload: { lane: 'observation', watchdogKey: normalized.watchdogKey,
+        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'] } } });
+    const d = { ...deps(),
+      findIssuesByWatchdogKeys: async () => [prior],
+      findIssuesByToolFailureClassKeys: async () => [prior],
+      updateIssuePatch: async (_id: string, patch: object) => Object.assign(prior, patch),
+      mergeIssuePayload: async (_id: string, patch: object) => {
+        prior.payload = { ...(prior.payload as object), ...patch }; return prior;
+      },
+      tagIssue: vi.fn(), untagIssue: vi.fn(),
+    } satisfies CaptureDeps;
+    const ids = [];
+    for (let retry = 0; retry < 2; retry++) {
+      const result = await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: 'papercusp',
+        ownerId: 'su-a', invokedAt: '2026-09-08T12:00:00Z', failure: metadataToolFailure }, d);
+      expect(result).toMatchObject({ created: false, reason: 'coalesced' });
+      ids.push(result!.issue!.id);
+    }
+    expect(new Set(ids).size).toBe(metadataWorkflowTargets.repeatedFrictionIdentities.maxAfter);
+    expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toHaveLength(2);
+    expect(prior.payload).toMatchObject({ lane: 'observation', toolFailureProbation: { state: 'probation', reporters: ['su-a'] } });
+    expect(d.tagIssue).not.toHaveBeenCalled();
+  });
+
+  it('R-7 preserves an already-promoted issue and records the retry as occurrence evidence', async () => {
+    const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
+    const prior = existing({ id: 'EI-PROMOTED', title: 'confirmed actionable defect', severity: 'major',
+      scope: 'harness:papercusp', payload: { lane: 'improvement', watchdogKey: normalized.watchdogKey,
+        toolFailureProbation: { ...normalized, state: 'promoted', reporters: ['su-a'] } } });
+    const original = structuredClone(prior);
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior] };
+    expect(await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: 'papercusp', ownerId: 'su-a',
+      invokedAt: '2026-09-08T12:00:00Z', failure: metadataToolFailure }, d)).toMatchObject({ created: false, issue: { id: prior.id } });
+    expect(prior).toEqual(original);
+    expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toHaveLength(1);
+  });
+
+  it('R-7 strips direct-evidence assertions and leaves missing dimensions explicitly unknown', async () => {
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [], findIssuesByWatchdogKeys: async () => [] };
+    await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: 'papercusp', ownerId: 'su-a',
+      invokedAt: '2026-09-08T12:00:00Z', failure: { toolName: 'coord:send', status: 'error',
+        message: 'internal error', ...{ reproduced: true, hardInternal: true } } }, d);
+    expect(d.created).toHaveLength(1);
+    expect(d.created[0].payload).toMatchObject({ lane: 'observation', toolFailureProbation: {
+      state: 'probation', direct: false, contractFingerprint: 'schema-unknown~field-unknown', deployedRevision: 'runtime-unknown' } });
+    expect(d.created[0].payload).not.toHaveProperty('toolFailureProbation.report.reproduced');
   });
 
   it('P-001 R-7 coalesces two same-reporter retries without creating or promoting another identity', async () => {

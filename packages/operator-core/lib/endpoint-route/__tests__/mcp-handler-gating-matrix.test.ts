@@ -449,6 +449,26 @@ registerProjectedTool({
   expose: { mcp: { name: 'cross_harness:probe' } },
   fn: probeFn('cross_harness:probe'),
 });
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: read-only MCP annotation',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: [],
+  effect: 'read',
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'gatingtest:read_annotation' } },
+  fn: probeFn('gatingtest:read_annotation'),
+});
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: write MCP annotation',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: [],
+  effect: 'write',
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'gatingtest:write_annotation' } },
+  fn: probeFn('gatingtest:write_annotation'),
+});
 
 const deltaRequested: Array<string | undefined> = [];
 defineTool({
@@ -684,8 +704,13 @@ const POWER_CLAIMS = {
   exp: 9999999999,
 };
 
+interface ToolsListEntry {
+  name: string;
+  annotations?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
 interface ToolsListResult {
-  tools: Array<{ name: string }>;
+  tools: ToolsListEntry[];
 }
 /**
  * DERIVED from the transport's own `McpCallResult` so a field added there
@@ -2577,6 +2602,23 @@ describe('tools/list — strict-mode listing matrix', () => {
       return Boolean(reg?.agentRoles && !reg.agentRoles.includes('scoper'));
     });
     expect(violations).toEqual([]);
+  });
+
+  it('derives readOnlyHint from projected.effect without dropping listing _meta', async () => {
+    const res = await listTools(extraFor(signedUrl({ role: 'scoper' })));
+    const read = res.tools.find((tool) => tool.name === 'gatingtest:read_annotation');
+    const write = res.tools.find((tool) => tool.name === 'gatingtest:write_annotation');
+
+    expect(read?.annotations).toMatchObject({ readOnlyHint: true });
+    expect(write?.annotations).toMatchObject({ readOnlyHint: false });
+    expect(read?._meta).toMatchObject({
+      'papercusp/toolRegistryRevision': expect.any(String),
+      'papercusp/toolRegistrySource': 'projected-tool-registry',
+    });
+    expect(write?._meta).toMatchObject({
+      'papercusp/toolRegistryRevision': expect.any(String),
+      'papercusp/toolRegistrySource': 'projected-tool-registry',
+    });
   });
 
   it('a different role does NOT see the scoper-only tool', async () => {

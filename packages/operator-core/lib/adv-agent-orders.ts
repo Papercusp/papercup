@@ -135,14 +135,17 @@ export interface AgentOrdersHeldItem {
   title: string | null;
   checkpoint: string | null;
   checkpointUpdatedAtMs: number | null;
+  /** Item-scoped progress anchor used to distinguish an old untouched checkpoint
+   *  from work that continued after the checkpoint was written. */
+  lastProgressAtMs: number | null;
 }
 
 /**
  * The carry brief — what the agent is tracking as it works, and (the part with
  * no visual form before this) HOW OLD each piece of it is.
  *
- * Three fields here exist purely to date the carry (`noteUpdatedAtMs`,
- * `heldItems[].checkpointUpdatedAtMs`, `postNoteInbox`) plus `citedRefsTerminal`,
+ * Four fields here exist purely to date the carry (`noteUpdatedAtMs`,
+ * `heldItems[].checkpointUpdatedAtMs`, `heldItems[].lastProgressAtMs`, `postNoteInbox`) plus `citedRefsTerminal`,
  * which carry-brief.ts calls the #1 stale-conclusion tell: a work-item the note
  * cites that has since gone terminal. A checkpoint written a dozen turns ago is
  * close to worthless and the model already knows it — so age renders as loudly
@@ -397,6 +400,7 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
         title: h.title ?? null,
         checkpoint: h.checkpoint ?? null,
         checkpointUpdatedAtMs: h.checkpointUpdatedAtMs ?? null,
+        lastProgressAtMs: h.lastProgressAtMs ?? null,
       })),
       checks: carryBrief.checks ?? [],
       citedRefs,

@@ -2752,6 +2752,21 @@ const handler = createMcpHandler(
           filtered.map(async (t) => {
             const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
             const out: Record<string, unknown> = { ...t };
+            // MCP clients use the standard annotation to decide whether a
+            // failed connection can safely replay a call. Keep the listing
+            // spread above so registry metadata in `_meta` survives while
+            // adding the effect-derived hint to the standard field.
+            const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
+            if (projected?.effect) {
+              const existingAnnotations =
+                out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
+                  ? (out.annotations as Record<string, unknown>)
+                  : {};
+              out.annotations = {
+                ...existingAnnotations,
+                readOnlyHint: projected.effect === 'read',
+              };
+            }
             if (tt.inputSchema) {
               // Registry write-positional tools advertise a single `row` string
               // (token-efficient-agent-io P-008) so the model emits a positional

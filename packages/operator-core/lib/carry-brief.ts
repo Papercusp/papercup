@@ -71,6 +71,11 @@ export interface CarryBriefHeldItem {
    *  long before a compaction means the turns since it will NOT carry). Null when
    *  no checkpoint, or when an injected test read supplies no meta. */
   checkpointUpdatedAtMs?: number | null;
+  /** Epoch ms of the work-item's last real progress (`work_items.last_progress_at`).
+   *  Unlike checkpoint age, this is item-scoped evidence that work happened after
+   *  the checkpoint. Optional for legacy/injected carry readers that did not load
+   *  the column. */
+  lastProgressAtMs?: number | null;
   /** Source-plan binding carried by the work-item row. Bare P-NNN references are
    *  not globally unique, so this is the only safe context for resolving one in
    *  the session's carry note. */
@@ -497,12 +502,14 @@ export async function readHeldWorkItems(
     workspace_id: string | null;
     source_plan_slug: string | null;
     source_plan_item_ids: string[] | null;
+    last_progress_at?: string | number | Date | null;
   }>>`
     SELECT feature_id AS issue_id,
            title,
            COALESCE(summary, '') AS body,
            taken_by,
            workspace_id,
+           last_progress_at,
            CASE
              WHEN harness_slug LIKE 'operator:%' OR harness_slug = '' OR harness_slug IS NULL THEN 'operator'
              ELSE 'harness:' || harness_slug
@@ -575,6 +582,7 @@ export async function readHeldWorkItems(
       harness,
       checkpoint,
       checkpointUpdatedAtMs,
+      ...(h.last_progress_at !== undefined ? { lastProgressAtMs: epochMs(h.last_progress_at) } : {}),
       ...(holderProof ? { holderProof } : {}),
       ...(h.source_plan_slug !== undefined ? { sourcePlanSlug: h.source_plan_slug } : {}),
       ...(h.source_plan_item_ids !== undefined ? { sourcePlanItemIds: h.source_plan_item_ids } : {}),

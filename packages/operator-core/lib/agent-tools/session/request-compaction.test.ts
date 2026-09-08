@@ -1185,7 +1185,7 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [
-        { id: 'WI-300', title: 'long-running', body: null, harness: 'papercup', checkpoint: 'old flush', checkpointUpdatedAtMs: fortyMinAgo },
+        { id: 'WI-300', title: 'long-running', body: null, harness: 'papercup', checkpoint: 'old flush', checkpointUpdatedAtMs: fortyMinAgo, lastProgressAtMs: Date.now() },
       ],
     });
     const b = body(await call({ focus: 'x' }));
@@ -1194,7 +1194,7 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.tripwires).toEqual([
       expect.objectContaining({ kind: 'stale-checkpoint', subject: 'WI-300', ageMinutes: 40 }),
     ]);
-    expect(b.note).toContain('WI-300 (40m old)');
+    expect(b.note).toContain('WI-300 (40m of progress after checkpoint)');
   });
 
   it('P-016: a stale-checkpoint retry gets the bounded mechanical fallback instead of stranding compaction', async () => {
@@ -1209,6 +1209,7 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
           harness: 'papercup',
           checkpoint: 'old flush',
           checkpointUpdatedAtMs: fortyMinAgo,
+          lastProgressAtMs: Date.now(),
         },
       ],
     });
@@ -1257,14 +1258,14 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
       ...emptyBrief,
       heldItems: [
         { id: 'WI-310', title: 'no note', body: null, harness: 'papercup', checkpoint: null },
-        { id: 'WI-311', title: 'old note', body: null, harness: 'papercup', checkpoint: 'x', checkpointUpdatedAtMs: Date.now() - 20 * 60_000 },
+        { id: 'WI-311', title: 'old note', body: null, harness: 'papercup', checkpoint: 'x', checkpointUpdatedAtMs: Date.now() - 20 * 60_000, lastProgressAtMs: Date.now() },
       ],
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.ok).toBe(false);
     expect(b.tripwires.map((t: { kind: string }) => t.kind).sort()).toEqual(['missing-checkpoint', 'stale-checkpoint']);
     expect(b.note).toContain('WI-310');
-    expect(b.note).toContain('WI-311 (20m old)');
+    expect(b.note).toContain('WI-311 (20m of progress after checkpoint)');
   });
 
   it('an armed loop with NO carry-note refuses, naming loop:checkpoint', async () => {

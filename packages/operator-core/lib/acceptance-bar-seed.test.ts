@@ -157,6 +157,10 @@ describe('acceptance BAR seed builder', () => {
     });
     expect(built.criteria[0]?.method).toBeUndefined();
     expect(built.projections).toHaveLength(3);
+    expect(built.projections.map((clause) => clause.behaviorClass)).toEqual([
+      'happy-path', 'happy-path', 'non-automated',
+    ]);
+    expect(built.projections[2]?.requiredTestLayers).toBeUndefined();
     expect(built.projections[0]).toMatchObject({
       specId: 'AUTO-BAR-R-1-P-001',
       planItemId: 'P-001',

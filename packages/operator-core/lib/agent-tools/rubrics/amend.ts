@@ -235,8 +235,24 @@ export default defineTool({
     };
     if (args.dryRun) {
       const preview = await previewAcceptanceBarAmendment(input);
+      if (preview === null) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                dryRun: true,
+                code: 'rubric_not_found',
+                error: `no rubric '${args.rubricRef}' — rubrics:list to see refs`,
+                rubricRef: args.rubricRef,
+              }),
+            },
+          ],
+        };
+      }
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: preview !== null, dryRun: true, preview }) }],
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, dryRun: true, preview }) }],
       };
     }
     const rubric = await amendRubric(input);

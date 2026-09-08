@@ -46,6 +46,7 @@ import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/wo
 import { acquireWithContentionRetry } from '../../agent-tools/locks/contention-retry';
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
 import { FLAGS } from '@papercusp/flags';
+import { normalizeSuspectedToolFailure, type SuspectedToolFailure } from './tool-error-classifier';
 import { getFlag } from '@papercusp/flags/server';
 import { classifyObservationFold, type FoldCandidate, type FoldClassification } from './observation-fold';
 import { trackDetached } from '../../detached-imports';
@@ -1471,6 +1472,51 @@ async function coalesceWatchdogWinner(args: {
   };
 }
 
+/** A committed invocation snapshot. Missing contract dimensions stay unknown. */
+export interface ToolInvocationFriction {
+  workspaceId: string;
+  harnessSlug: string;
+  ownerId: string;
+  invokedAt: string;
+  failure: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'status' | 'message' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>;
+}
+
+/** R-7: reuse the ordinary probation door without agent-authored incident fields. */
+export async function captureToolInvocationFriction(
+  invocation: ToolInvocationFriction,
+  deps: CaptureDeps = defaultDeps,
+): Promise<CaptureImprovementResult | null> {
+  const { failure, ownerId, workspaceId, harnessSlug, invokedAt } = invocation;
+  if (!ownerId || !workspaceId || !['error', 'invalid-input', 'timeout'].includes(failure.status ?? '') ||
+      /^(improvements:|system:improvement-)/.test(failure.toolName)) return null;
+  // Copy only measured fields; a telemetry object can never smuggle direct-
+  // evidence flags into an admission decision.
+  const report: SuspectedToolFailure = {
+    toolName: failure.toolName, errorCode: failure.errorCode, status: failure.status,
+    message: failure.message, schemaRevision: failure.schemaRevision,
+    fieldPath: failure.fieldPath, runtimeVersion: failure.runtimeVersion,
+  };
+  const normalized = normalizeSuspectedToolFailure(report);
+  const kind = normalized.class === 'caller' || normalized.class === 'rate-limit' ? 'change' : 'bug';
+  return captureImprovement({
+    title: `${failure.toolName} tool-call failure (${failure.errorCode ?? failure.status})`,
+    body: `Invocation telemetry observed ${failure.toolName} at ${invokedAt}.\n\n${failure.message}`,
+    kind, severity: 'nit', lane: 'observation',
+    scope: harnessSlug ? `harness:${harnessSlug}` : 'operator',
+    workspaceId, createdBy: ownerId, evidenceAt: invokedAt,
+    watchdogKey: normalized.watchdogKey,
+    payloadExtra: {
+      toolFailureProbation: {
+        ...normalized, state: 'probation', intendedKind: kind, reporters: [ownerId],
+        firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
+      },
+      toolInvocation: { workspaceId, harnessSlug, ownerId, invokedAt },
+    },
+    // Do not set sourceRole:'system': an automated report is still this
+    // caller's evidence, not a trusted watchdog promotion or review waiver.
+  }, deps);
+}
+
 export async function captureImprovement(
   input: CaptureImprovementInput,
   deps: CaptureDeps = defaultDeps,
@@ -1573,7 +1619,7 @@ export async function captureImprovement(
   let exactKeyLookupFailed = false;
   let classKeyLookupFailed = false;
   let classKeyIssues: EngineerIssue[] = [];
-  if (!isObservation && incomingProbation?.classKey) {
+  if (incomingProbation?.classKey) {
     classKeyIssues = await (deps.findIssuesByToolFailureClassKeys ?? findIssuesByToolFailureClassKeys)([
       incomingProbation.classKey,
     ]).catch(() => {
@@ -1583,6 +1629,14 @@ export async function captureImprovement(
     const classPrior = classKeyIssues.find((issue) =>
       sameToolFailureClassIdentity(issue, incomingProbation.classKey!, input, origin),
     );
+    if (isObservation && classPrior && issueWatchdogLane(classPrior) !== 'observation') {
+      // A later retry is evidence on the accountable existing issue. Preserve
+      // its disposition, severity, narrative, review state and promoted payload.
+      await appendCaptureOccurrence(deps, input, identity, 'coalesced', classPrior.id,
+        [], skippedDedupCoverage, harnessFromScope(classPrior.scope));
+      return { ok: true, created: false, reason: 'coalesced', issue: classPrior,
+        possibleDuplicates: [], dedupCoverage: skippedDedupCoverage };
+    }
     if (classPrior && incomingProbation.state === 'promoted') {
       const priorPayload = (classPrior.payload as Record<string, unknown> | null) ?? {};
       const priorProbation = toolFailureProbationOf(priorPayload);
@@ -2320,6 +2374,7 @@ export async function captureImprovement(
       (i) =>
         i.state === 'open' &&
         (i.payload as Record<string, unknown> | undefined)?.lane === 'observation' &&
+        (!incomingProbation?.classKey || toolFailureProbationOf(i.payload as Record<string, unknown> | null)?.classKey === incomingProbation.classKey) &&
         sameWatchdogIdentity(i, input, origin),
     );
     if (prior) {

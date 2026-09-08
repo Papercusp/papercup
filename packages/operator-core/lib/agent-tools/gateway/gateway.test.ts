@@ -15,6 +15,7 @@ import {
   gatewayOwnerReportTool,
   quarantineLegacyCapacityFields,
 } from './gateway';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
 
 let server: http.Server | undefined;
 const prevPort = process.env.PAPERCUSP_GATEWAY_PORT;
@@ -27,6 +28,25 @@ afterEach(async () => {
 });
 
 const body = (o: unknown) => JSON.parse((o as { content: { text: string }[] }).content[0]!.text);
+
+test('gateway:status advertises its actual top-level response shape', () => {
+  const projected = lookupByMcpName('gateway:status');
+  assert.ok(projected, 'gateway:status must be registered');
+  const properties = projected.outputJsonSchema?.properties as Record<string, unknown>;
+  assert.deepEqual(Object.keys(properties).sort(), [
+    'accounts',
+    'admissionState',
+    'codexAccounts',
+    'error',
+    'legacy',
+    'ok',
+    'providers',
+    'upstreamBase',
+    'version',
+  ]);
+  assert.equal(properties.value, undefined, 'value is nested, not a gateway:status field');
+  assert.equal(properties.writer, undefined, 'writer is nested, not a gateway:status field');
+});
 
 test('gateway:status reads /admin/config; gateway:reload POSTs /admin/reload (B-GWCTL round-trip)', async () => {
   let reloadHit = false;

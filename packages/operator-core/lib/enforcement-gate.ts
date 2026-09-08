@@ -21,9 +21,10 @@
  * The three tripwires named in the P-016 item map here as:
  *   - "stale checkpoint after N hops"     → 'stale-checkpoint' / 'missing-checkpoint'
  *       There is no per-hop counter at these seams and D-001 forbids deriving one
- *       from history/telemetry, so "N hops" is realized as elapsed wall-time
- *       ({@link STALE_CHECKPOINT_WARN_MS}, ~several wakes / a task step) — the same
- *       signal P-003 already uses. 'missing-checkpoint' is the never-written case.
+ *       from history/telemetry. The detector instead compares the checkpoint write
+ *       to the writer-backed item activity anchor (`last_progress_at`): a material
+ *       post-checkpoint lag ({@link STALE_CHECKPOINT_WARN_MS}) proves later work;
+ *       absolute wall age alone does not. 'missing-checkpoint' is the never-written case.
  *   - "unflushed state past soft threshold" → the BOUNDARY itself. A compaction seam
  *       fires at/near the soft threshold by construction (the agent calls it because
  *       it is near its limit); a handoff is the analogous hand-off boundary. So the
@@ -35,10 +36,11 @@
 import type { CarryBrief } from './carry-brief';
 import { parseCarryNote } from './carry-note';
 
-/** A held item's checkpoint older than this at a boundary is STALE — the turns
- *  since it was written will NOT carry across the boundary. 15 min ≈ several
- *  monitor wakes / a full task step; younger than that, the checkpoint plausibly
- *  still covers the current unit. (Formerly owned by session:request-compaction;
+/** A held item's last recorded progress materially newer than its checkpoint is
+ *  STALE — that item-scoped work cannot be represented by the checkpoint across
+ *  the boundary. 15 min ≈ several monitor wakes / a full task step. Absolute
+ *  checkpoint age is deliberately ignored: untouched held items can retain an
+ *  old but still complete checkpoint. (Formerly owned by session:request-compaction;
  *  this is now the single source, re-exported there for its existing warn path.) */
 export const STALE_CHECKPOINT_WARN_MS = 15 * 60_000;
 
@@ -52,19 +54,22 @@ export interface CheckpointFlushWarning {
   id: string;
   title: string | null;
   reason: 'missing' | 'stale';
-  /** Minutes since the checkpoint was written — only on reason:'stale'. */
+  /** Minutes that item progress leads the checkpoint write — only on reason:'stale'. */
   ageMinutes?: number;
 }
 
 /**
  * Best-effort flush-integrity scan over a carry brief's held work-items (P-003).
  * Pure; an absent brief yields an empty list. This is the detector both the WARN
- * path (request-compaction) and the ENFORCEMENT gate (below) share.
+ * path (request-compaction) and the ENFORCEMENT gate (below) share. `nowMs` remains
+ * in the signature for callers that provide a boundary clock; relative freshness
+ * intentionally does not use it.
  */
 export function staleCheckpointWarnings(
   brief: CarryBrief | null,
   nowMs: number = Date.now(),
 ): CheckpointFlushWarning[] {
+  void nowMs;
   if (!brief) return [];
   const out: CheckpointFlushWarning[] = [];
   for (const h of brief.heldItems) {
@@ -72,13 +77,17 @@ export function staleCheckpointWarnings(
       out.push({ id: h.id, title: h.title, reason: 'missing' });
     } else if (
       typeof h.checkpointUpdatedAtMs === 'number' &&
-      nowMs - h.checkpointUpdatedAtMs > STALE_CHECKPOINT_WARN_MS
+      Number.isFinite(h.checkpointUpdatedAtMs) &&
+      typeof h.lastProgressAtMs === 'number' &&
+      Number.isFinite(h.lastProgressAtMs) &&
+      h.lastProgressAtMs - h.checkpointUpdatedAtMs > STALE_CHECKPOINT_WARN_MS
     ) {
+      const progressLagMs = h.lastProgressAtMs - h.checkpointUpdatedAtMs;
       out.push({
         id: h.id,
         title: h.title,
         reason: 'stale',
-        ageMinutes: Math.round((nowMs - h.checkpointUpdatedAtMs) / 60_000),
+        ageMinutes: Math.round(progressLagMs / 60_000),
       });
     }
   }
@@ -102,7 +111,7 @@ export interface FlushTripwire {
   subject: string;
   /** Human-facing one-liner for the refusal text. */
   detail: string;
-  /** Minutes since the last write — only on 'stale-checkpoint'. */
+  /** Minutes of item progress after the checkpoint write — only on 'stale-checkpoint'. */
   ageMinutes?: number;
 }
 
@@ -205,7 +214,7 @@ export function detectFlushTripwires(
         kind: 'stale-checkpoint',
         subject: w.id,
         ageMinutes: w.ageMinutes,
-        detail: `${w.id} has a STALE checkpoint (${w.ageMinutes}m old) — everything since it was written will not carry.`,
+        detail: `${w.id} has a STALE checkpoint (${w.ageMinutes}m of progress after the checkpoint) — everything since it was written will not carry.`,
       });
     }
   }
@@ -285,7 +294,7 @@ export function renderFlushRefusal(boundary: GateBoundary, tripwires: ReadonlyAr
   const noCheckpointIds = tripwires.filter((t) => t.kind === 'missing-checkpoint').map((t) => t.subject);
   const staleIds = tripwires
     .filter((t) => t.kind === 'stale-checkpoint')
-    .map((t) => `${t.subject} (${t.ageMinutes}m old)`);
+    .map((t) => `${t.subject} (${t.ageMinutes}m of progress after checkpoint)`);
   const armedLoop = tripwires.find((t) => t.kind === 'armed-loop-no-carry-note');
   const coldNoProgress = tripwires.find((t) => t.kind === 'cold-successor-no-progress');
   const steps: string[] = [];
