@@ -90,7 +90,14 @@ const gateOwnershipM = vi.mocked(readGateOwnership);
 
 const listModule = await import('./list');
 const listTool = listModule.default;
-const { attestGateHealth, deriveGitSyncFreshness, deriveGitSyncExclusions, isHealthRecordKey } = listModule;
+const {
+  attestGateHealth,
+  deriveGitSyncFreshness,
+  deriveGitSyncExclusions,
+  isHealthRecordKey,
+  deriveOriginFreshness,
+  applyDerivedGitSyncHeadline,
+} = listModule;
 const setTool = (await import('./set')).default;
 
 type Out = { content?: { text: string }[]; data?: unknown };
@@ -1433,6 +1440,69 @@ describe('routines:list', () => {
       namedGroupArgs.filter((v) => v === true).length,
     );
     expect(namedGroupArgs).toContain('health');
+  });
+});
+
+/**
+ * EI-22702954391733746 — the health surface must not report a clean bill while origin is frozen.
+ *
+ * Measured 2026-09-08: throughout an ~8h egress freeze this surface read `last_status:'synced'`,
+ * `git_sync_freshness:'fresh'`, `warning:null`, while origin sat 26 commits behind. Nothing was
+ * wrong with the freshness verdict — it answers a DIFFERENT question (did the LOCAL commit stage
+ * run on schedule), and on a bridged pot the member is commit-only by design, so a healthy local
+ * stage is compatible with an arbitrarily stale origin. The origin verdict already existed, latched
+ * on the same row by origin-freshness-watchdog, and was dropped by healthOf's allowlist.
+ */
+describe('routines:list origin-freshness headline (EI-22702954391733746)', () => {
+  const FROZEN_ROW = {
+    last_status: 'synced',
+    of_alerted: 'true',
+    of_alerted_cause: 'integrator-backlog',
+    of_origin_sha: '00d844e2674033fd41884ac1c4d20d3c71c79596',
+    of_integrator_backlog_sweeps: '6',
+    of_stall_sweeps: '0',
+  };
+
+  it('REGRESSION: an origin alarm overrides a healthy-looking headline even when freshness is FRESH', () => {
+    const originFreshness = deriveOriginFreshness(FROZEN_ROW);
+    expect(originFreshness).toMatchObject({ alerted: true, cause: 'integrator-backlog' });
+
+    // The exact outage shape: the local-commit verdict is genuinely fresh, so a headline gated
+    // on `freshness.status === 'degraded'` would stay silent — which is what happened for 8h.
+    const health = applyDerivedGitSyncHeadline(
+      { last_status: 'synced' },
+      { status: 'fresh' },
+      originFreshness,
+    );
+
+    expect(health.last_status).not.toBe('synced');
+    expect(String(health.last_status)).toContain('origin-freshness ALARMING');
+    expect(String(health.last_status)).toContain('integrator-backlog');
+    expect(String(health.last_status)).toContain('raw: synced'); // writer value preserved, never lost
+  });
+
+  it('NEGATIVE CONTROL: leaves the headline alone when origin-freshness is not alarming', () => {
+    const originFreshness = deriveOriginFreshness({ ...FROZEN_ROW, of_alerted: 'false' });
+    expect(originFreshness).toMatchObject({ alerted: false });
+
+    const health = applyDerivedGitSyncHeadline({ last_status: 'synced' }, { status: 'fresh' }, originFreshness);
+    expect(health.last_status).toBe('synced');
+  });
+
+  it('preserves the pre-existing freshness-degraded override when origin is fine', () => {
+    const health = applyDerivedGitSyncHeadline(
+      { last_status: 'synced' },
+      { status: 'degraded' },
+      deriveOriginFreshness({ ...FROZEN_ROW, of_alerted: 'false' }),
+    );
+    expect(String(health.last_status)).toContain('see git_sync_freshness');
+  });
+
+  it('returns null for a row the origin watchdog does not judge — absent measurement, not health', () => {
+    // A legacy/p2p pot carries no of_* keys. Rendering that as `alerted:false` would assert a
+    // clean origin verdict nobody computed.
+    expect(deriveOriginFreshness({ last_status: 'synced' })).toBeNull();
+    expect(deriveOriginFreshness(null)).toBeNull();
   });
 });
 

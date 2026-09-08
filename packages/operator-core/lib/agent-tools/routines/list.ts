@@ -566,10 +566,66 @@ export function deriveGitSyncExclusions(
  * Scoped to this tool's response. The `harness_shared.routines.metadata.last_status` column
  * is untouched, so the writer and every direct reader of the raw column are unaffected.
  */
+/**
+ * EI-22702954391733746 — surface the ORIGIN-freshness watchdog's latch on this row.
+ *
+ * `git_sync_freshness` measures whether the LOCAL COMMIT stage completed on schedule. On a
+ * `bridged` hive the member is commit-only BY DESIGN and the bridge writer owns egress, so a
+ * healthy local stage is fully compatible with origin being arbitrarily stale — the two are
+ * independent by construction, not merely in practice. Measured 2026-09-08: this surface read
+ * `last_status:'synced'`, `git_sync_freshness:'fresh'`, `warning:null` for ~8h while origin
+ * sat 26 commits behind and canonical was frozen solid.
+ *
+ * The verdict for THAT question is already computed — by `origin-freshness-watchdog`, which
+ * latches it onto this very row as `of_alerted` / `of_alerted_cause`. It simply never reached
+ * any reader: `healthOf`'s allowlist drops every `of_*` key, so the one field that knew origin
+ * was frozen was invisible to the surface an agent actually reads. Same shape as the
+ * EI-21900560691158244 exclusion fields directly above.
+ *
+ * Read-only projection of what the watchdog already wrote — this computes no verdict of its
+ * own and issues no git calls. Returns null when the row carries no origin-freshness state
+ * (a legacy/p2p pot the watchdog does not judge), which is an absent MEASUREMENT and is
+ * deliberately not rendered as health.
+ */
+export function deriveOriginFreshness(metadata: unknown): Record<string, unknown> | null {
+  const m = (metadata ?? {}) as Record<string, unknown>;
+  const has = (k: string): boolean => Object.prototype.hasOwnProperty.call(m, k);
+  if (!has('of_alerted') && !has('of_origin_sha')) return null;
+  const num = (k: string): number | null => {
+    const n = Number.parseInt(String(m[k] ?? ''), 10);
+    return Number.isFinite(n) ? n : null;
+  };
+  const alerted = String(m.of_alerted ?? '') === 'true';
+  return {
+    alerted,
+    cause: (m.of_alerted_cause as string | null) ?? null,
+    tracked_origin_sha: (m.of_origin_sha as string | null) ?? null,
+    stall_sweeps: num('of_stall_sweeps'),
+    integrator_backlog_sweeps: num('of_integrator_backlog_sweeps'),
+    publish_refused_sweeps: num('of_publish_refused_sweeps'),
+    publish_backlog_sweeps: num('of_publish_backlog_sweeps'),
+  };
+}
+
 export function applyDerivedGitSyncHeadline(
   health: Record<string, unknown>,
   freshness: Record<string, unknown>,
+  originFreshness?: Record<string, unknown> | null,
 ): Record<string, unknown> {
+  // EI-22702954391733746: an ORIGIN-freshness alarm outranks a healthy local-commit verdict.
+  // Checked FIRST because the whole point is that `freshness` reads perfectly fresh during
+  // this class of outage — gating on `freshness.status === 'degraded'` would reproduce the
+  // exact silence being fixed.
+  if (originFreshness?.alerted === true) {
+    const raw = typeof health.last_status === 'string' ? health.last_status : null;
+    const cause = typeof originFreshness.cause === 'string' ? originFreshness.cause : 'origin-stale';
+    return {
+      ...health,
+      last_status:
+        `degraded (derived — origin-freshness ALARMING: ${cause}; commits are NOT reaching origin` +
+        `${raw === null ? '' : `; raw: ${raw}`})`,
+    };
+  }
   if (freshness.status !== 'degraded') return health;
   const raw = typeof health.last_status === 'string' ? health.last_status : null;
   return {
@@ -643,6 +699,7 @@ export default defineTool({
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
+      '⚠ `health.origin_freshness` — whether commits are REACHING ORIGIN, which `git_sync_freshness` cannot tell you (EI-22702954391733746): { alerted, cause, tracked_origin_sha, stall_sweeps, integrator_backlog_sweeps, publish_refused_sweeps, publish_backlog_sweeps }, null on a pot the origin watchdog does not judge. Read it as the SEPARATE question it is: `git_sync_freshness` measures whether the LOCAL COMMIT stage ran on schedule, and on a `bridged` pot the member is commit-only BY DESIGN, so `fresh` + `synced` is fully compatible with origin being arbitrarily stale — measured 2026-09-08, this surface read a clean bill for ~8h while origin sat 26 commits behind. When `alerted:true` the `last_status` headline is derived-overridden to say so.',
       '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no stamp, or a degraded git-sync freshness verdict) suppresses byte-exclusion action advice until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, long_running_age_ms, last_progress_at, progress_age_ms, stuck }, null when the row carries no git_sync_activity. `age_ms`/`long_running_age_ms` measure total fire duration; `progress_age_ms` measures time since the writer heartbeat. `stuck:true` means progress has been absent for longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`. Legacy active markers without a progress timestamp fall back to started_at.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
@@ -925,6 +982,7 @@ export default defineTool({
       let health: Record<string, unknown> | null;
       if (r.target_role === 'system:git-sync') {
         const freshness = deriveGitSyncFreshness(r.metadata, cron, r.active);
+        const originFreshness = deriveOriginFreshness(r.metadata);
         // The derived verdict replaces the headline it contradicts, rather than sitting
         // beside it hoping to be read (EI-21807573331912223). Raw value preserved at
         // git_sync_freshness.raw_last_status.
@@ -937,8 +995,13 @@ export default defineTool({
             // every one of those fields. Always present on a git-sync row, so zero is
             // an affirmative measurement rather than an absent field.
             git_sync_exclusions: deriveGitSyncExclusions(r.metadata, freshness),
+            // EI-22702954391733746: the origin-freshness watchdog's own latch. Local-commit
+            // freshness cannot see a frozen egress on a bridged pot, so without this the
+            // surface reports a clean bill through the entire outage.
+            origin_freshness: originFreshness,
           },
           freshness,
+          originFreshness,
         );
       } else {
         health = healthOf(r.metadata);
