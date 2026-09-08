@@ -8,6 +8,13 @@ test.skip(!portalUrl, 'Live portal acceptance requires PORTAL_DESKTOP_ACCEPTANCE
 const missingHost = 'acceptance-missing-host';
 const destinationFor = (page: Page) => page.getByRole('region', { name: 'Desktop workspace', exact: true });
 
+async function expectShellReady(page: Page) {
+  // Use the real navigation as the app-list positive control. A shell that
+  // never loads fails here, separately from a loaded shell mounting the wrong
+  // destination. This uses the runner's existing action budget.
+  await page.getByRole('button', { name: 'Desktops', exact: true }).waitFor({ state: 'visible' });
+}
+
 function desktopLink(selection: Record<string, string> = {}) {
   const url = new URL('/', portalUrl);
   url.search = new URLSearchParams({ app: 'desktops', accountsPane: 'false', chatPane: 'false', ...selection }).toString();
@@ -17,6 +24,7 @@ function desktopLink(selection: Record<string, string> = {}) {
 /** Discover a real workspace through the delivered shell; never mount or stub the component. */
 async function selectWorkspace(page: Page) {
   await page.goto(desktopLink({ desktopHost: missingHost }), { waitUntil: 'domcontentloaded' });
+  await expectShellReady(page);
   const destination = destinationFor(page);
   await expect(destination.getByText('Workspace unavailable', { exact: true })).toBeVisible();
   await destination.getByRole('combobox', { name: 'Desktop workspace', exact: true }).click();
@@ -32,6 +40,7 @@ async function selectWorkspace(page: Page) {
 }
 
 async function expectSelectedWorkspace(page: Page, selected: { host: string; name: string }, parameter = 'desktopHost') {
+  await expectShellReady(page);
   await expect(destinationFor(page).getByRole('region', { name: selected.name, exact: true })).toBeVisible();
   await expect(page.getByRole('list', { name: 'Managed workspace hosts' })).toHaveCount(0);
   await expect.poll(() => new URL(page.url()).searchParams.get('app')).toBe('desktops');
@@ -81,6 +90,7 @@ test('[desktop.entry.clean] Desktops sidebar opens option B directly, including 
 for (const param of ['desktopHost', 'host']) {
   test(`an invalid ${param} deep link cannot open a different machine`, async ({ page }) => {
     await page.goto(`${portalUrl}/?app=desktops&${param}=acceptance-missing-host&accountsPane=false&chatPane=false`, { waitUntil: 'domcontentloaded' });
+    await expectShellReady(page);
     const destination = page.getByRole('region', { name: 'Desktop workspace', exact: true });
     await expect(destination.getByText('Workspace unavailable', { exact: true })).toBeVisible();
     await expect(destination.getByRole('region', { name: /^Desktops for / })).toHaveCount(0);
@@ -131,4 +141,25 @@ test('[desktop.entry.history] back and forward restore both unavailable and sele
   await expect(destinationFor(page).getByRole('region', { name: selected.name, exact: true })).toHaveCount(0);
   await page.goForward({ waitUntil: 'domcontentloaded' });
   await expectSelectedWorkspace(page, selected);
+});
+
+test('desktop navigation completes while the auxiliary workspace-stats request is held', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const requested = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/workspace-stats');
+  // Controlled latency only: the shell, app list and desktop destination are
+  // real. This test makes no claim about the held roster response or readiness.
+  await page.route('**/api/workspace-stats', async (route) => {
+    await held;
+    await route.abort();
+  });
+  try {
+    await page.goto(desktopLink({ desktopHost: missingHost }), { waitUntil: 'domcontentloaded' });
+    await requested;
+    await expect(destinationFor(page).getByText('Workspace unavailable', { exact: true })).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Managed workspace hosts' })).toHaveCount(0);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
 });
