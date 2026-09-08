@@ -338,7 +338,8 @@ export interface ToolFailureCaptureTextInput {
  * information to file a useful row, so requiring callers to duplicate it into
  * title/body only creates another invalid-input loop. Explicit prose still wins;
  * omitted prose is derived deterministically and bounded by the same storage
- * limits as authored prose.
+ * limits as authored prose. Ordinary body-only captures use the first non-empty
+ * body line as their stable title, preserving the full body as narrative.
  *
  * WI-2146402: `title` and `body` are derived INDEPENDENTLY — a caller supplying
  * its own descriptive `title` alongside `toolFailure` still gets a body derived
@@ -352,13 +353,19 @@ export interface ToolFailureCaptureTextInput {
  */
 export function deriveToolFailureCaptureText(input: ToolFailureCaptureTextInput): { title: string; body?: string } {
   const failure = input.toolFailure;
-  if (!input.title && !failure) {
-    throw new Error('improvements:capture requires title unless toolFailure is supplied');
+  if (!input.title && !failure && !input.body) {
+    throw new Error('improvements:capture requires title, body, or toolFailure');
   }
   const qualifier = failure?.errorCode?.trim() || failure?.status?.trim();
   const title = input.title
     ? input.title
-    : clampText(`${failure!.toolName} tool-call failure${qualifier ? ` (${qualifier})` : ''}`, LIMITS.SHORT_TITLE);
+    : failure
+      ? clampText(`${failure.toolName} tool-call failure${qualifier ? ` (${qualifier})` : ''}`, LIMITS.SHORT_TITLE)
+      : clampText(
+          (input.body ?? '').trim().split(/\r?\n/, 1)[0]?.replace(/\s+/g, ' ').trim() ||
+            (input.body ?? '').replace(/\s+/g, ' ').trim(),
+          LIMITS.SHORT_TITLE,
+        );
   if (input.body) return { title, body: input.body };
   if (!failure) return { title, body: undefined };
 
@@ -521,10 +528,10 @@ export default defineTool({
           .optional()
           .describe(
             // EI-21906899166065181: `.optional()` here is a HALF-TRUTH — a superRefine below
-            // rejects a call that omits BOTH title and toolFailure. A caller reading the schema
+            // rejects a call that omits title, body, and toolFailure. A caller reading the schema
             // saw `title?` and learned the real contract only from the runtime refusal. Say the
             // conditional requirement where it is read, not only where it is enforced.
-            `one-line summary — REQUIRED unless toolFailure is supplied (that shorthand derives bounded title/body server-side). ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
+            `one-line summary — REQUIRED unless body or toolFailure is supplied (body-only captures derive the title from the first non-empty body line; toolFailure derives bounded title/body server-side). ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
           ),
         kind: z
           .enum(['bug', 'change', 'feature'])
@@ -835,12 +842,12 @@ export default defineTool({
             message: 'conflicting origin values: pass origin or signalOrigin, not both with different values',
           });
         }
-        if (!args.title && !args.toolFailure) {
+        if (!args.title && !args.body && !args.toolFailure) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['title'],
             message:
-              'title is required unless toolFailure is supplied (the server derives bounded title/body text for that shorthand)',
+              'title is required unless body or toolFailure is supplied (body-only captures derive the title from the first non-empty body line)',
           });
         }
       }),

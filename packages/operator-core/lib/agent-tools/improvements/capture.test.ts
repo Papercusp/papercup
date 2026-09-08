@@ -328,6 +328,24 @@ describe('improvements:capture tool envelope', () => {
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ source: 'su', createdBy: 'su-abc' }));
   });
 
+  it('derives a title before forwarding an ordinary body-only capture to the core (EI-22658735915306595)', async () => {
+    const body = '\nbody-only capture subject\nfull reproduction details';
+    const parsed = (captureTool.args as { parse: (value: unknown) => Record<string, unknown> }).parse({
+      kind: 'bug',
+      body,
+    });
+
+    await callTool(parsed);
+
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'body-only capture subject',
+        body,
+        kind: 'bug',
+      }),
+    );
+  });
+
   it('maps a static-client caller to source="su"', async () => {
     mockIdentity.mockReturnValue(identity('static-client'));
     await callTool({ title: 'x', kind: 'bug' });
@@ -976,8 +994,16 @@ describe('deriveToolFailureCaptureText (WI-2146402) — title and body derive in
 
   it('still throws when neither title nor toolFailure is supplied', () => {
     expect(() => deriveToolFailureCaptureText({})).toThrow(
-      'improvements:capture requires title unless toolFailure is supplied',
+      'improvements:capture requires title, body, or toolFailure',
     );
+  });
+
+  it('derives the title from the first non-empty body line for an ordinary body-only capture', () => {
+    const body = '\nbody-only capture subject\nfull reproduction details';
+    expect(deriveToolFailureCaptureText({ body })).toEqual({
+      title: 'body-only capture subject',
+      body,
+    });
   });
 
   it('an explicit title with no toolFailure carries no derived body (unchanged, non-toolFailure path)', () => {
@@ -1096,6 +1122,13 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(shorthand.success).toBe(true);
     expect(argsSchema.safeParse({}).success).toBe(false);
     expect(argsSchema.safeParse({ kind: 'bug' }).success).toBe(false);
+  });
+
+  it('accepts an ordinary body-only capture and leaves the body available for title derivation', () => {
+    const body = '\nbody-only capture subject\nfull reproduction details';
+    const parsed = argsSchema.safeParse({ kind: 'bug', body });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data).toEqual({ kind: 'bug', body });
   });
 
   it('accepts a known observation (kind/scope/confidence/refs)', () => {
