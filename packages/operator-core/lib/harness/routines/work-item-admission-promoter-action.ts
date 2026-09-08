@@ -1,6 +1,9 @@
 /** Durable system actions for work-item admission P-003/P-004. */
 import { randomUUID } from 'node:crypto';
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
+import type { AdmissionRecoveryDeps } from '../../work-item-admission-recovery';
 import { captureImprovement } from '../improvements/capture-core';
 import { notifySyncInvalidate } from '../../sync-sse';
 import {
@@ -14,6 +17,7 @@ import {
   WORK_ITEM_ADMISSION_PROMOTER,
   type FailOpenRunResult,
   type PromoterRunResult,
+  type PromoterLlmCall,
 } from '../../work-items-admission-promoter';
 import { optionalModelSpec } from '../../learning/model-policy';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -63,24 +67,42 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
     }
   }
   const { llmCall } = await import('../../llm-testing/llm-client');
-  const { authorizeAdmissionRecovery, runAdmissionRecoveries } = await import('../../work-item-admission-recovery');
+  const { authorizeAdmissionRecovery } = await import('../../work-item-admission-recovery');
   const { assignAndWakeActionableWorkItems } = await import('../../agent-tools/coordination/actionable-work-item-dispatch');
-  const recoveryRuns: PromoterRunResult[] = [];
-  const recovered = await runAdmissionRecoveries({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug }, {
+  return runAdmissionPromoterWithRecovery(options, {
+    sql: getOrgPg().sql,
     authorize: authorizeAdmissionRecovery,
     dispatch: assignAndWakeActionableWorkItems,
+    llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
+  });
+}
+
+/** The production composition, with explicit I/O so fresh-PG integration tests
+ * exercise the same wiring without bypassing the live-runtime VITEST guard.
+ * This is not another scheduler: the existing system action remains its caller.
+ */
+export async function runAdmissionPromoterWithRecovery(
+  options: ReturnType<typeof admissionPromoterOptions>,
+  deps: Pick<AdmissionRecoveryDeps, 'authorize' | 'dispatch'> & { sql: Sql; llmCall: PromoterLlmCall },
+): Promise<PromoterRunResult> {
+  const { runAdmissionRecoveries } = await import('../../work-item-admission-recovery');
+  const recoveryRuns: PromoterRunResult[] = [];
+  const recovered = await runAdmissionRecoveries(options, {
+    authorize: deps.authorize,
+    dispatch: deps.dispatch,
     screen: async (scope, beforePersist) => {
       const result = await runWorkItemAdmissionPromoter({
         ...options,
+        sql: deps.sql,
         runId: `${options.runId}:recovery:${scope.workItemId}`,
         targetItemIds: [scope.workItemId],
         beforePersist,
-        llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
+        llmCall: deps.llmCall,
       });
       recoveryRuns.push(result);
       return result;
     },
-  });
+  }, deps.sql);
   // A request-accelerated fire must not also accelerate writes to unrelated items.
   // The routine engine has already retained its ordinary recurring cadence.
   if (recovered > 0) return recoveryRuns.reduce<PromoterRunResult>((total, run) => ({
@@ -99,7 +121,8 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
   });
   return runWorkItemAdmissionPromoter({
     ...options,
-    llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
+    sql: deps.sql,
+    llmCall: deps.llmCall,
   });
 }
 
