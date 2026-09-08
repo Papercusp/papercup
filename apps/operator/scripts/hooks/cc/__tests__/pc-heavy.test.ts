@@ -484,7 +484,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   // ("only 1/2 heavy slots drained"). A count cannot distinguish a LIVE holder
   // from an orphaned one, and that gap is not theoretical: this very incident
   // was first filed as a stale writer lock and had to be retracted after a
-  // hand-run fuser/process-tree walk found a live materializer still making
+  // hand-run kernel-lock/process-tree walk found a live materializer still making
   // progress. Several sessions then repeated that same manual archaeology. The
   // refusal must name the undrained slot AND the pid still holding it, so the
   // "stale or live?" question is answered by the log instead of by hand.
@@ -525,15 +525,8 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   // leaving enough room for the assertion to observe the live-holder evidence.
   }, 20_000);
 
-  it('does not label an unverified fuser opener as a lock holder', async () => {
+  it('does not label an unverified owner-sidecar pid as a lock holder', async () => {
     const env = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0', PC_HEAVY_TIMEOUT_SEC: '3', PC_HEAVY_HEARTBEAT_SEC: '1' };
-    const fakeBin = join(dir, 'fake-bin');
-    mkdirSync(fakeBin);
-    // This stands in for both the real fuser→/proc exit race and a queued
-    // opener: fuser reports a pid, but there is no kernel FLOCK WRITE record
-    // proving that the pid owns this inode.
-    writeFileSync(join(fakeBin, 'fuser'), '#!/usr/bin/env bash\nprintf \'987654321\\n\'\n', { mode: 0o755 });
-
     const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
       env: baseEnv(env), cwd: dir, detached: true,
     });
@@ -541,11 +534,15 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     let barrier: ReturnType<typeof spawn> | undefined;
     try {
       await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing heavy holder');
+      // Sidecars are diagnostic hints, never ownership evidence. Model a torn
+      // write, stale pid, or pid reuse by replacing the real candidate with a
+      // process that cannot possibly expose the matching locked fd.
+      writeFileSync(join(dir, 'slot.0.owner'), '987654321\n');
 
       barrier = spawn(
         'bash',
         [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
-        { env: baseEnv({ ...env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` }), cwd: dir, detached: true },
+        { env: baseEnv(env), cwd: dir, detached: true },
       );
       const barrierErr = createTextCollector(barrier.stderr);
       const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
@@ -562,17 +559,21 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
-  it('bounds a stalled fuser holder diagnostic instead of wedging the heavy queue', async () => {
+  it('uses direct kernel holder metadata without invoking a stalled fuser fallback', async () => {
     const env = {
       PC_HEAVY_SLOTS: '1',
       PC_HEAVY_COALESCE: '0',
       PC_HEAVY_TIMEOUT_SEC: '1',
       PC_HEAVY_HEARTBEAT_SEC: '1',
-      PC_HEAVY_FUSER_TIMEOUT_SEC: '0.1',
     };
     const fakeBin = join(dir, 'slow-fuser-bin');
     mkdirSync(fakeBin);
-    writeFileSync(join(fakeBin, 'fuser'), '#!/usr/bin/env bash\nsleep 60\n', { mode: 0o755 });
+    const fuserInvoked = join(dir, 'fuser-invoked');
+    writeFileSync(
+      join(fakeBin, 'fuser'),
+      `#!/usr/bin/env bash\ntouch ${JSON.stringify(fuserInvoked)}\nsleep 60\n`,
+      { mode: 0o755 },
+    );
 
     const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
       env: baseEnv(env), cwd: dir, detached: true,
@@ -592,7 +593,9 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
 
       expect(await barrierExit).toBe(75);
       expect(Date.now() - startedAt).toBeLessThan(5_000);
-      expect(barrierErr.text()).toContain('holder could not be identified');
+      expect(barrierErr.text()).toContain(`pid ${holder.pid}`);
+      expect(barrierErr.text()).not.toContain('holder could not be identified');
+      expect(existsSync(fuserInvoked)).toBe(false);
     } finally {
       killGroup(holder);
       if (barrier) killGroup(barrier);
@@ -807,6 +810,8 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       expect(retryingErr.text()).toContain('retry materializer progress: elapsed=');
       expect(retryingErr.text()).toContain('retry materializer intent owner:');
       expect(retryingErr.text()).toContain('retry materializer writer lock holder:');
+      expect(retryingErr.text()).toContain(`pid ${writerBlocker.pid}`);
+      expect(retryingErr.text()).not.toContain(`pid ${barrier.pid}`);
 
       killGroup(writerBlocker);
       expect(
@@ -1791,9 +1796,9 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       await untilStderr(later, laterErr, (t) => t.includes('another exclusive materializer owns the writer lock'), 'the later writer queueing behind the gate');
       await untilStderr(later, laterErr, (t) => t.includes('writer lock held by:'), 'the kernel-verified writer owner diagnostic');
 
-      // fuser sees all three wrappers because each opens the writer path before
-      // flocking it. Only the first has a kernel FLOCK WRITE record; queued
-      // gate/later openers must never be mislabeled as lock owners.
+      // The kernel lock table includes the holder plus `->` rows for queued
+      // writers. The owner sidecar names only the first wrapper; queued
+      // gate/later openers must never overwrite it or be labeled as owners.
       expect(first.pid).toBeDefined();
       expect(gate.pid).toBeDefined();
       expect(later.pid).toBeDefined();

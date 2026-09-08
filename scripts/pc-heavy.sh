@@ -425,50 +425,84 @@ set -uo pipefail
 
 # ── Flock holder diagnostics (EI-21322804786723906) ─────────────────────────
 # Diagnostic-only helpers shared by the exclusive barrier and the retry path.
-# `fuser` is only a cheap candidate enumerator: it reports every process with
-# the path open, including writers queued in `flock`, so its output alone is
-# NOT ownership evidence. A candidate is named only when one of its matching
-# fds has a kernel FLOCK WRITE record in fdinfo. A missing `fuser`, unreadable
-# /proc, or a holder that exits between probes must never change admission;
-# callers simply print less. These helpers must never make a run fail.
-_exclusive_describe_holders() {
-  local _file="${1:-}" _target='' _pids='' _pid='' _fd='' _fd_target=''
-  local _fd_number='' _owns=0 _cmd='' _out=''
+# `/proc/locks` is the lock authority and is cheap to read directly. A row whose
+# second token is `->` is a BLOCKED WAITER, not a holder, so it is ignored. The
+# kernel records the PID of the short-lived `flock <fd>` helper that originally
+# acquired an inherited open-file description; after that helper exits, the
+# live wrapper still holds the lock but the recorded PID can be dead. To bridge
+# that Linux flock quirk without scanning the whole process table, pc-heavy
+# publishes its wrapper PID beside each lock after acquisition. That candidate
+# is still named only when one of its matching fds exposes the kernel FLOCK
+# WRITE record in fdinfo. Missing/unreadable /proc, malformed/stale metadata, or
+# a holder that exits between probes must never change admission; callers simply
+# print less. These helpers must never make a run fail.
+_pc_heavy_verified_holder_desc() {
+  local _file="${1:-}" _target="${2:-}" _pid="${3:-}" _fd='' _fd_target=''
+  local _fd_number='' _cmd=''
+  [ -n "$_file" ] && [ -n "$_target" ] || return 1
+  case "$_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -d "/proc/$_pid/fd" ] || return 1
+  for _fd in "/proc/$_pid/fd"/*; do
+    [ -e "$_fd" ] || continue
+    _fd_target="$(stat -Lc '%d:%i' "$_fd" 2>/dev/null || true)"
+    [ "$_fd_target" = "$_target" ] || continue
+    _fd_number="${_fd##*/}"
+    if grep -Eq '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE' "/proc/$_pid/fdinfo/$_fd_number" 2>/dev/null; then
+      _cmd="$(cat "/proc/$_pid/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-100 || true)"
+      [ -n "$_cmd" ] || _cmd='(cmdline unavailable after kernel lock proof)'
+      printf ' pid %s [%s];' "$_pid" "$_cmd"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_pc_heavy_publish_lock_owner() {
+  local _file="${1:-}"
   [ -n "$_file" ] || return 0
-  command -v fuser >/dev/null 2>&1 || return 0
-  command -v timeout >/dev/null 2>&1 || return 0
+  # Diagnostic-only and deliberately fail-open. A torn/stale PID is rejected
+  # by _pc_heavy_verified_holder_desc, so no cleanup protocol is required.
+  printf '%s\n' "$$" > "${_file}.owner" 2>/dev/null || true
+}
+
+_exclusive_describe_holders() {
+  local _file="${1:-}" _target='' _dev='' _inode='' _major='' _minor=''
+  local _lock_target='' _lock_id='' _kind='' _advisory='' _mode='' _pid=''
+  local _row_target='' _rest='' _candidate='' _out=''
+  [ -n "$_file" ] || return 0
   [ -e "$_file" ] || return 0
   _target="$(stat -Lc '%d:%i' "$_file" 2>/dev/null || true)"
   [ -n "$_target" ] || return 0
-  # Holder names are diagnostic-only. Never let fuser's whole-process-table
-  # scan become the thing that wedges a queued heavy command.
-  _pids="$(timeout --signal=TERM --kill-after=1s "${PC_HEAVY_FUSER_TIMEOUT_SEC:-2}" \
-    fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
-  [ -n "$_pids" ] || return 0
-  for _pid in $_pids; do
-    _owns=0
-    # A writer waiter opens the same inode before it blocks in `flock`, but its
-    # fdinfo has no owning lock record. Conversely, every live process sharing
-    # the owning open-file description exposes the kernel FLOCK record here —
-    # including the materialization child after pc-heavy execs it.
-    for _fd in "/proc/$_pid/fd"/*; do
-      [ -e "$_fd" ] || continue
-      _fd_target="$(stat -Lc '%d:%i' "$_fd" 2>/dev/null || true)"
-      [ "$_fd_target" = "$_target" ] || continue
-      _fd_number="${_fd##*/}"
-      if grep -Eq '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE' "/proc/$_pid/fdinfo/$_fd_number" 2>/dev/null; then
-        _owns=1
-        break
-      fi
-    done
-    [ "$_owns" = 1 ] || continue
-    # A proven holder can still exit between fdinfo and cmdline. Keep the
-    # ownership evidence while making the cmdline race explicit and quiet.
-    _cmd="$(cat "/proc/$_pid/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-100 || true)"
-    [ -n "$_cmd" ] || _cmd='(cmdline unavailable after kernel lock proof)'
-    _out="$_out pid $_pid [$_cmd];"
-  done
-  printf '%s' "$_out"
+
+  # Fast path for pc-heavy-owned locks. A waiter never publishes, so it cannot
+  # overwrite the real owner's candidate while merely holding the path open.
+  IFS= read -r _candidate < "${_file}.owner" 2>/dev/null || _candidate=''
+  _out="$(_pc_heavy_verified_holder_desc "$_file" "$_target" "$_candidate" 2>/dev/null || true)"
+  if [ -n "$_out" ]; then
+    printf '%s' "$_out"
+    return 0
+  fi
+
+  # Fallback for locks established by an external `flock path command` (for
+  # example an operator holding the writer mutex by hand). Decode Linux dev_t
+  # the same way as glibc/psu-launcher's existing /proc/locks guard, then match
+  # one non-waiter WRITE FLOCK row for this exact device+inode.
+  _dev="${_target%%:*}"
+  _inode="${_target#*:}"
+  case "$_dev:$_inode" in *[!0-9:]*|:|*:) return 0 ;; esac
+  _major=$(( ((_dev >> 8) & 0xfff) | ((_dev >> 32) & ~0xfff) ))
+  _minor=$(( (_dev & 0xff) | ((_dev >> 12) & ~0xff) ))
+  printf -v _lock_target '%02x:%02x:%s' "$_major" "$_minor" "$_inode"
+  while read -r _lock_id _kind _advisory _mode _pid _row_target _rest; do
+    # Blocked rows are `<id>: -> FLOCK ...`, so `_kind` is `->` and cannot
+    # satisfy this holder shape.
+    [ "$_kind" = FLOCK ] && [ "$_advisory" = ADVISORY ] && [ "$_mode" = WRITE ] || continue
+    [ "${_row_target,,}" = "${_lock_target,,}" ] || continue
+    _out="$(_pc_heavy_verified_holder_desc "$_file" "$_target" "$_pid" 2>/dev/null || true)"
+    [ -n "$_out" ] || continue
+    printf '%s' "$_out"
+    return 0
+  done < /proc/locks 2>/dev/null
 }
 
 # Probe an advisory flock without perturbing the lock owner. This is separate
@@ -2313,7 +2347,9 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     # this returns immediately in practice. -w rather than -n so a probe that
     # happens to hold the shared lock at this instant cannot make us skip the
     # declaration entirely.
-    flock -w 5 "$_exclusive_intent_fd" 2>/dev/null || true
+    if flock -w 5 "$_exclusive_intent_fd" 2>/dev/null; then
+      _pc_heavy_publish_lock_owner "$_exclusive_intent_path"
+    fi
   fi
 
   if ! { exec {_exclusive_writer_fd}>"$_exclusive_writer_path"; } 2>/dev/null; then
@@ -2404,6 +2440,7 @@ if [ "$_exclusive_all_slots" = 1 ]; then
       exit 75
     fi
   fi
+  _pc_heavy_publish_lock_owner "$_exclusive_writer_path"
   echo "[pc-heavy] exclusive materialization writer acquired — beginning heavy-slot drain" >&2
 
   _exclusive_slot_count="$_ceil"
@@ -2466,6 +2503,7 @@ if [ "$_exclusive_all_slots" = 1 ]; then
           _exclusive_fds+=("$_fd")
           _exclusive_locked[$_i]=1
           _exclusive_held=$(( _exclusive_held + 1 ))
+          _pc_heavy_publish_lock_owner "$_dir/slot.$_i"
         else
           _exclusive_unavailable[$_i]=1
           eval "exec ${_fd}>&-" 2>/dev/null || true
@@ -2995,9 +3033,10 @@ fi
 # free on the first try (the common, uncontended case) — real errors from
 # tsc/vitest/build runs were being dropped on the floor.
 _held=""
+_held_path=""
 for _i in $(seq 0 $(( _slots - 1 ))); do
   if { exec {_fd}>"$_slot_dir/slot.$_i"; } 2>/dev/null; then
-    if flock -n "$_fd"; then _held=1; break; fi
+    if flock -n "$_fd"; then _held=1; _held_path="$_slot_dir/slot.$_i"; break; fi
     eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
   fi
 done
@@ -3066,7 +3105,7 @@ if [ -z "$_held" ]; then
     fi
     for _i in $(seq 0 $(( _slots - 1 ))); do
       if { exec {_fd}>"$_slot_dir/slot.$_i"; } 2>/dev/null; then
-        if flock -n "$_fd"; then _held=1; break 2; fi
+        if flock -n "$_fd"; then _held=1; _held_path="$_slot_dir/slot.$_i"; break 2; fi
         eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
       fi
     done
@@ -3104,6 +3143,9 @@ fi
 # it, so emitting it and then refusing would make a refusal indistinguishable
 # from a command that ran.
 _gate_recheck_refusal "$@"
+if [ -n "$_held_path" ]; then
+  _pc_heavy_publish_lock_owner "$_held_path"
+fi
 echo "[pc-heavy] slot acquired — starting real work" >&2
 
 # The child self-limits via the slot it now (or effectively) holds — tell the
