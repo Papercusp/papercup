@@ -8,6 +8,9 @@ vi.mock('./modes/store', () => ({ getModes: io.modes }));
 vi.mock('./work-scope-policy', () => ({ readWorkScopePolicy: io.policy, gateWorkScope: io.gate }));
 vi.mock('./scheduler/fleet-scope-admission', () => ({ admitWorkItemForFleetTarget: io.fleet }));
 vi.mock('./operator-state-pg', () => ({ readOperatorState: io.state }));
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...await original<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: {} }),
+}));
 // This suite isolates session-policy composition. The chain integration suite
 // separately exercises authenticated replay through the real dispatch gates.
 vi.mock('./work-item-admission-authority', async (original) => ({

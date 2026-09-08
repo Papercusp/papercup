@@ -44,6 +44,8 @@ const requestSchema = z.object({
   message: 'v1 recovery requests cannot carry unsigned instructions',
 }).refine((r) => r.version === 3 || r.authority === undefined, {
   message: 'legacy recovery requests cannot carry unsigned authority',
+}).refine((r) => r.version !== 3 || r.authority !== undefined, {
+  message: 'v3 recovery requests require authenticated authority',
 });
 export type AdmissionRecoveryRequest = z.infer<typeof requestSchema>;
 export interface AdmissionRecoveryScope {
@@ -127,7 +129,8 @@ async function requestSignature(sql: Sql, scope: AdmissionRecoveryScope, request
     .update(JSON.stringify([`admission-recovery-v${request.version}`, scope.workspaceId, scope.harnessSlug, scope.workItemId,
       request.requestId, request.caller, request.target, request.routineId, request.requestedAt,
       ...(request.version >= 2 ? [request.note ?? null, request.body ?? null] : []),
-      ...(request.version === 3 ? [request.authority ?? null] : [])]))
+      // Parsing fixes property order across input objects and PG jsonb reads.
+      ...(request.version === 3 ? [admissionAuthoritySchema.parse(request.authority)] : [])]))
     .digest('hex');
 }
 

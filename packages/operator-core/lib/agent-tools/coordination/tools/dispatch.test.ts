@@ -46,7 +46,7 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     admissionRecoveryAuthority: { kind: 'superuser', role: 'operator', credentialSha256: 'a'.repeat(64) },
   };
   const call = async (args = base, ctx = context) => {
-    const output = await dispatch.handler(dispatch.args.parse(args), ctx as Parameters<typeof dispatch.handler>[1]);
+    const output = await dispatch.handler(dispatch.args.parse(args), ctx as unknown as Parameters<typeof dispatch.handler>[1]);
     return JSON.parse((output as { content: Array<{ text: string }> }).content[0]!.text);
   };
   beforeEach(() => {
