@@ -719,7 +719,10 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     // A degraded row stays machine-readable, while the repeated prose lives ONCE
     // at payload level instead of consuming the door once per stub.
     const stub = out.results.at(-1) as Record<string, unknown>;
-    expect(stub).toEqual({ id: "EI-00000000000000099", _stub: true });
+    expect(stub).toEqual({ ok: true, id: "EI-00000000000000099", _stub: true });
+    // The result schema requires `ok` on every keyed row, including id-only
+    // degradation stubs. This is the regression for EI-22706203744509223.
+    expect(out.results.filter((result) => result._stub).every((result) => result.ok === true)).toBe(true);
     expect(out._shapeNote?.stubbed).toEqual({
       count: 100,
       note: expect.stringMatching(/re-read an id alone/),

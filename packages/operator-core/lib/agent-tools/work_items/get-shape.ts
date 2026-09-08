@@ -416,6 +416,10 @@ function stubRow(r: Row, dropped: Set<string>, completionEvidenceIds: unknown[])
     dropped.add("workItem.terminalCompletionEvidence");
   }
   return {
+    // The keyed result contract requires every row to carry its own boolean
+    // outcome. Bulk degradation may drop the work-item payload, but it must
+    // not drop `ok` or turn a successful stub into an invalid result row.
+    ok: r.ok === true,
     id,
     _stub: true,
   };
