@@ -63,7 +63,11 @@ describe('requirement fulfillment at the actual ship door', () => {
     expect(JSON.stringify(result)).toContain('acceptance_bar_contract_not_ready');
     expect(JSON.stringify(result)).toContain('bar_snapshot_proof_inadequate');
     expect(withPlanLock).not.toHaveBeenCalled();
-    expect(readAcceptanceBarContractSnapshot).toHaveBeenCalledWith('wallet-plan', {}, { current });
+    expect(readAcceptanceBarContractSnapshot).toHaveBeenCalledWith(
+      'wallet-plan',
+      {},
+      { current, harnessSlug: 'papercusp' },
+    );
   });
 
   it('requires an explicit proof level; a positive grade cannot substitute for it', () => {

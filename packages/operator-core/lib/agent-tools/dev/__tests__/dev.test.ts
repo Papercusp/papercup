@@ -281,7 +281,20 @@ describe('dev:pg_health', () => {
     const data = { version: 'PostgreSQL 18', totalConnections: 5, activeConnections: 1, idleConnections: 4 };
     vi.doMock('../../../dev-data', () => ({ pgHealth: vi.fn(async () => data) }));
     const { default: tool } = await import('../pg_health');
-    expect(parsePayload((await tool.handler({}, MAKE_CTX())) as never)).toEqual(data);
+    const payload = parsePayload((await tool.handler({}, MAKE_CTX())) as never) as Record<string, any>;
+    expect(payload).toMatchObject(data);
+    expect(payload.processDiagnostics).toMatchObject({
+      source: 'current-process',
+      pid: expect.any(Number),
+      capturedAt: expect.any(String),
+      coverage: 'completed-results-in-selected-pools-only',
+      resultLimitPerPool: 4,
+      pools: expect.arrayContaining([
+        expect.objectContaining({ pool: 'org-app', observed: false }),
+        expect.objectContaining({ pool: 'org-admin', observed: false }),
+        expect.objectContaining({ pool: 'org-admin-lossless-bigint', observed: false }),
+      ]),
+    });
   });
 });
 
