@@ -54,6 +54,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isRepositoryIndexFault, runGuardWithIndexFaultGuard, withGitIndexFaultRetry } from './lib/git-index-fault.mjs';
 import { stripCommentsAndStrings, stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -259,15 +260,33 @@ export function listIntegrationTestFiles(root = ROOT, gitLsFiles = defaultGitLsF
   return gitLsFiles(root).filter((f) => f.endsWith('.integration.test.ts') && !f.startsWith('_retired/'));
 }
 
+/**
+ * EI-22703095921400106. This is the POPULATION source for the whole guard, so a failure that
+ * flattens to `[]` does not report "no drift found" — it reports "I scanned nothing" wearing
+ * the same face. MEASURED 2026-09-08 on this tree with a 0-byte `GIT_INDEX_FILE`: this helper
+ * returned 981 files healthy and **0 files, no error thrown** torn, so every fixture-drift
+ * finding silently disappears while the guard still exits 0.
+ *
+ * That is the false-GREEN direction, strictly worse than the false-RED this work-item began
+ * from: a crashed guard reds the gate loudly and gets fixed; a guard that scans zero files and
+ * passes lets real drift through and nobody ever learns. An unreadable index therefore THROWS
+ * (the caller turns it into an explicit NOT CHECKED), while every OTHER failure keeps the quiet
+ * `[]` this was written for. stderr is captured so the classifier can see git's own diagnostic
+ * and so it stays out of guard output.
+ */
 function defaultGitLsFiles(root) {
   try {
-    const out = execFileSync('git', ['ls-files', '--', '*.integration.test.ts'], {
-      cwd: root,
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    const out = withGitIndexFaultRetry(() =>
+      execFileSync('git', ['ls-files', '--', '*.integration.test.ts'], {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        maxBuffer: 16 * 1024 * 1024,
+      }),
+    );
     return out.split('\n').filter(Boolean);
-  } catch {
+  } catch (error) {
+    if (isRepositoryIndexFault(error)) throw error;
     return [];
   }
 }
@@ -496,28 +515,43 @@ async function main() {
   process.exit(check && anyFindings ? 1 : 0);
 }
 
+/**
+ * EI-22703095921400106. The `[]` here is LOAD-BEARING for an expected failure — an unresolvable
+ * `base` ref (a shallow clone, a base that predates the checkout) legitimately means "no
+ * migrations changed", and that must stay quiet. An unreadable `.git/index` is a different
+ * answer wearing the same face: it means the diff never ran, so returning `[]` would report
+ * "this migration changed no SQL" and skip the drift check entirely.
+ *
+ * So only the index-fault class is promoted to a throw; every other failure keeps the quiet
+ * `[]`. Both git calls are wrapped, because either can be the one that hits the torn index.
+ */
 function changedSqlFilesSince(base) {
   try {
-    const out = execFileSync(
-      'git',
-      ['diff', '--name-only', '--diff-filter=ACM', base, '--', SQL_DIR_REL + '/*.sql'],
-      { cwd: ROOT, encoding: 'utf8' },
+    const out = withGitIndexFaultRetry(() =>
+      execFileSync(
+        'git',
+        ['diff', '--name-only', '--diff-filter=ACM', base, '--', SQL_DIR_REL + '/*.sql'],
+        { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      ),
     );
     const tracked = out.split('\n').filter(Boolean);
     // Untracked-but-new migration files (the common case right after `db:next-migration`,
     // before git-sync's next commit) don't show up in a base-diff at all — pick them up too.
-    const untracked = execFileSync(
-      'git',
-      ['ls-files', '--others', '--exclude-standard', '--', SQL_DIR_REL + '/*.sql'],
-      { cwd: ROOT, encoding: 'utf8' },
+    const untracked = withGitIndexFaultRetry(() =>
+      execFileSync(
+        'git',
+        ['ls-files', '--others', '--exclude-standard', '--', SQL_DIR_REL + '/*.sql'],
+        { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      ),
     )
       .split('\n')
       .filter(Boolean);
     return [...new Set([...tracked, ...untracked])];
-  } catch {
+  } catch (error) {
+    if (isRepositoryIndexFault(error)) throw error;
     return [];
   }
 }
 
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
-if (invokedDirectly) main();
+if (invokedDirectly) runGuardWithIndexFaultGuard(main, { guard: 'migration-fixture-drift' });

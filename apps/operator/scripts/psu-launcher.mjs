@@ -8356,8 +8356,11 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
     fetchImpl = fetch,
     operatorUrl = OPERATOR_URL,
     token = null,
-    timeoutMs = 10_000,
-    connectBudgetMs = 10_000,
+    // Exact-session resume claims traverse the same MCP proxy as every other
+    // psu bootstrap request. Keep their default budget on the shared derivation
+    // instead of giving up while the proxy is still retrying an upstream.
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    connectBudgetMs = CONNECT_RETRY_BUDGET_MS,
     timeoutRetries = 1,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now = () => Date.now(),

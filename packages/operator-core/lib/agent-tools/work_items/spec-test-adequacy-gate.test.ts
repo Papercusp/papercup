@@ -119,10 +119,30 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
   };
 }
 
+/** The evaluator requires a successful ledger-backed negative control for falsifiability. */
+function counterexampleEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
+  return listedEvidence({
+    id: 2,
+    evidenceKind: 'counterexample',
+    evidenceRef: 'counterexample:reconnect',
+    details: {
+      adequacy: {
+        ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+        outcome: 'killed',
+      },
+    },
+    ...over,
+  });
+}
+
+function passingEvidence(): ListedEvidence[] {
+  return [listedEvidence(), counterexampleEvidence()];
+}
+
 function matchingCard(over: Partial<ScorecardRow> = {}): ScorecardRow {
   const result = evaluateSpecTestAdequacy({
     clause: clause(),
-    evidence: [evidence()],
+    evidence: passingEvidence(),
     classRef: 'plan-class-feature-ship',
   });
   return {
@@ -179,7 +199,10 @@ function planStatuses(byPlan: Record<string, string> = {}) {
 function passingDeps() {
   const listClauses = vi.fn<NonNullable<GateDeps['listClauses']>>(async () => [clause()]);
   const listEdges = vi.fn<NonNullable<GateDeps['listEdges']>>(async () => []);
-  const listEvidence = vi.fn<NonNullable<GateDeps['listEvidence']>>(async () => [listedEvidence()]);
+  const listEvidence = vi.fn<NonNullable<GateDeps['listEvidence']>>(async (options) => {
+    const rows = passingEvidence();
+    return options.evidenceRefs ? rows.filter((row) => options.evidenceRefs!.includes(row.evidenceRef)) : rows;
+  });
   const listCards = vi.fn<NonNullable<GateDeps['listCards']>>(async () => [matchingCard()]);
   const listPlanStatuses = planStatuses();
   return {
@@ -320,26 +343,32 @@ describe('specTestAdequacyCompletionGate', () => {
 
   it('accepts the exact current cohort without historical unknown bindings vetoing it', async () => {
     const deps = passingDeps();
-    deps.listEvidence.mockResolvedValue([
-      listedEvidence({
-        id: 1,
-        evidenceRef: 'test:historical',
-        currentness: {
-          ...evidence().currentness,
-          overall: 'unknown',
-          dimensions: {
-            ...evidence().currentness.dimensions,
-            source: 'unknown',
-            test: 'unknown',
-          },
-          unknownReasons: ['source_fingerprint_absent', 'test_fingerprint_absent'],
+    const historical = listedEvidence({
+      id: 1,
+      evidenceRef: 'test:historical',
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        dimensions: {
+          ...evidence().currentness.dimensions,
+          source: 'unknown',
+          test: 'unknown',
         },
-      }),
-      listedEvidence({ id: 2 }),
-    ]);
-
+        unknownReasons: ['source_fingerprint_absent', 'test_fingerprint_absent'],
+      },
+    });
+    const current = listedEvidence({ id: 2 });
+    const counterexample = counterexampleEvidence({ id: 3 });
+    deps.listEvidence.mockImplementation(async (options) => {
+      const rows = [historical, current, counterexample];
+      return options.evidenceRefs ? rows.filter((row) => options.evidenceRefs!.includes(row.evidenceRef)) : rows;
+    });
+    const attestation = {
+      ...ATTESTATION,
+      evidenceRefs: [current.evidenceRef, counterexample.evidenceRef],
+    };
     const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      { workItem: WORK_ITEM, attestation },
       deps,
     );
 
@@ -479,6 +508,17 @@ describe('specTestAdequacyCompletionGate', () => {
           staleReasons: ['test_fingerprint_mismatch'],
         },
       }),
+      counterexampleEvidence({
+        currentness: {
+          ...evidence().currentness,
+          overall: 'stale',
+          dimensions: {
+            ...evidence().currentness.dimensions,
+            test: 'stale',
+          },
+          staleReasons: ['test_fingerprint_mismatch'],
+        },
+      }),
     ]);
 
     const result = await specTestAdequacyCompletionGate(
@@ -494,6 +534,17 @@ describe('specTestAdequacyCompletionGate', () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
       listedEvidence({
+        currentness: {
+          ...evidence().currentness,
+          overall: 'unknown',
+          dimensions: {
+            ...evidence().currentness.dimensions,
+            test: 'unknown',
+          },
+          unknownReasons: ['test-current-fingerprint-not-supplied'],
+        },
+      }),
+      counterexampleEvidence({
         currentness: {
           ...evidence().currentness,
           overall: 'unknown',
@@ -523,6 +574,17 @@ describe('specTestAdequacyCompletionGate', () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
       listedEvidence({
+        currentness: {
+          ...evidence().currentness,
+          overall: 'stale',
+          dimensions: {
+            ...evidence().currentness.dimensions,
+            test: 'stale',
+          },
+          staleReasons: ['test_fingerprint_mismatch'],
+        },
+      }),
+      counterexampleEvidence({
         currentness: {
           ...evidence().currentness,
           overall: 'stale',
@@ -696,17 +758,18 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
 
   it('forwards an exact evidence selection so superseded bindings remain historical without poisoning completion', async () => {
     const deps = passingDeps();
+    const evidenceRefs = ['test:reconnect', 'counterexample:reconnect'];
     const result = await specTestAdequacyCompletionGate(
       {
         workItem: { ...WORK_ITEM, kind: 'bug' },
-        attestation: { ...ATTESTATION, evidenceRefs: ['test:reconnect'] },
+        attestation: { ...ATTESTATION, evidenceRefs },
       },
       deps,
     );
 
     expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
     expect(deps.listEvidence).toHaveBeenCalledWith(
-      expect.objectContaining({ evidenceRefs: ['test:reconnect'] }),
+      expect.objectContaining({ evidenceRefs }),
     );
   });
 

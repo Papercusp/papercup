@@ -17,6 +17,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { PSU_REQUEST_TIMEOUT_MS } from "./mcp-proxy/budgets.mjs";
 import {
   codexContextConfigArgs,
   codexContextConfigToml,
@@ -10172,6 +10173,36 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
 });
 
 describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", () => {
+  it("uses the shared proxy-derived request budget by default", async () => {
+    const timeoutValues: number[] = [];
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => {
+        timeoutValues.push(ms);
+        return new AbortController().signal;
+      });
+
+    try {
+      await expect(
+        reportSessionResumed(42, {
+          fetchImpl: async () =>
+            Response.json({
+              ok: true,
+              status: "acquired",
+              acquired: true,
+              reactivated: true,
+            }),
+          operatorUrl: "http://op:1",
+          resumeClaimKey: "resume-shared-budget",
+        }),
+      ).resolves.toMatchObject({ claimed: true, status: "acquired" });
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+
+    expect(timeoutValues).toEqual([PSU_REQUEST_TIMEOUT_MS]);
+  });
+
   it("POSTs the row id to bootstrap-su/session-resumed with the bearer", async () => {
     const calls = [];
     const fetchImpl = async (url, opts) => {
