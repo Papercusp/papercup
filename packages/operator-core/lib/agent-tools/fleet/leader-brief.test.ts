@@ -36,12 +36,14 @@ import {
   LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
   LEADER_BRIEF_READ_CONCURRENCY,
   LEADER_BRIEF_TOTAL_TIMEOUT_MS,
+  leaderBriefLaneHealthUnavailable,
   projectMember,
   projectFleetAdmissionBlockRead,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
   readLeaderBriefFleetMetrics,
+  readLeaderBriefLaneHealth,
   readLeaderAnnouncedGates,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
@@ -274,6 +276,30 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('passes the optional-read budget into lane health and keeps a typed recovery fallback', async () => {
+    const read = vi.fn(async () => ({ laneHealth: null, unavailable: null }));
+
+    await readLeaderBriefLaneHealth(
+      { fleet: 'fleet-a', harness: 'papercusp', workspaceId: 'ws-a' },
+      read as never,
+    );
+
+    expect(read).toHaveBeenCalledWith({
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      workspaceId: 'ws-a',
+      issueFamilyTotalBudgetMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+    });
+    expect(leaderBriefLaneHealthUnavailable({ fleet: 'fleet-a', harness: 'papercusp' })).toMatchObject({
+      laneHealth: null,
+      unavailable: {
+        code: 'leader-brief-budget-exceeded',
+        stage: 'leader-brief',
+        recoverVia: expect.stringContaining('work_items:claimable'),
+      },
+    });
   });
 });
 

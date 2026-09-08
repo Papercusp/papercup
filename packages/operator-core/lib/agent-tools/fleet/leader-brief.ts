@@ -41,7 +41,11 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { readFleetLaneHealth } from '../../fleet/lane-health';
+import {
+  readFleetLaneHealthDiagnosed,
+  type FleetLaneHealthReadResult,
+  type FleetLaneHealthUnavailable,
+} from '../../fleet/lane-health';
 import { canonicalExecutableWidth, exactPositiveSinglePlanSlugFromFilter } from '../../fleet/executable-frontier';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -365,6 +369,45 @@ export async function runBoundedLeaderBriefReads<T extends readonly (() => Promi
   return (await runLeaderBriefReads(boundedReads as never, concurrency)) as {
     [K in keyof T]: LeaderBriefReadResult<T[K]>;
   };
+}
+
+function leaderBriefClaimabilityRecovery(fleet: string, harness?: string | null): string {
+  return harness
+    ? `work_items:claimable ${JSON.stringify({ harness, spec: fleet, breakdownOnly: true })}`
+    : `scheduler:get_claim_spec ${JSON.stringify({ fleet, history: 0 })}, then ` +
+        'work_items:claimable with that spec and its resolved harness';
+}
+
+/** Explicit fallback for the optional lane-health leg; UNKNOWN is never rendered as zero. */
+export function leaderBriefLaneHealthUnavailable(input: {
+  fleet: string;
+  harness?: string | null;
+}): FleetLaneHealthReadResult {
+  const unavailable: FleetLaneHealthUnavailable = {
+    code: 'leader-brief-budget-exceeded',
+    stage: 'leader-brief',
+    detail:
+      `Fleet lane health did not settle inside the ${LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS}ms ` +
+      'optional-read deadline; the brief abandoned no unbounded aggregate and inferred no zero.',
+    recoverVia: leaderBriefClaimabilityRecovery(input.fleet, input.harness),
+    spec: null,
+    basis: null,
+  };
+  return { laneHealth: null, unavailable };
+}
+
+/**
+ * Bind lane health to the same whole-call allowance its leader-brief consumer owns.
+ * The diagnosed reader refuses to start an issue aggregate that cannot fit.
+ */
+export async function readLeaderBriefLaneHealth(
+  input: { fleet: string; harness?: string; workspaceId?: string | null },
+  read: typeof readFleetLaneHealthDiagnosed = readFleetLaneHealthDiagnosed,
+): Promise<FleetLaneHealthReadResult> {
+  return read({
+    ...input,
+    issueFamilyTotalBudgetMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+  });
 }
 
 /** PURE: keep an unavailable admission read distinct from a measured zero. */
@@ -3836,7 +3879,7 @@ export async function buildLeaderBrief(
     unownedCriticalsAll,
     admissionBlockRead,
     orphanedInFlight,
-    fleetLaneHealth,
+    fleetLaneHealthRead,
     fleetPause,
     concurrencyByOwner,
     poolCapacity,
@@ -3870,9 +3913,11 @@ export async function buildLeaderBrief(
           minAgeMinutes: args.orphan_min_age_minutes,
         }),
       // EI-18681259560385029: read the fleet's LIVE claimable count before
-      // projecting members; failures are UNKNOWN, never zero.
+      // projecting members; failures are UNKNOWN, never zero. EI-22687145239379284:
+      // the issue aggregate may take ~20s, so the diagnosed reader receives this
+      // leg's whole 750ms allowance and refuses to launch work that cannot fit it.
       () =>
-        readFleetLaneHealth({
+        readLeaderBriefLaneHealth({
           fleet,
           harness: args.harness,
           workspaceId: actorWorkspace,
@@ -3940,13 +3985,14 @@ export async function buildLeaderBrief(
         reason: 'leader-brief optional admission-block read timed out or failed',
       } as FleetAdmissionBlockRead,
       [] as OrphanedInFlightCandidate[],
-      null,
+      leaderBriefLaneHealthUnavailable({ fleet, harness: args.harness }),
       { paused: false, reason: null },
       new Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>(),
       null,
     ] as const,
     'optional-fleet-reads',
   );
+  const fleetLaneHealth = fleetLaneHealthRead.laneHealth;
   const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
   for (const alert of verifiedWaitTakeovers) {
     const current = takeoversBySubscriber.get(alert.subscriberId) ?? [];
@@ -3971,6 +4017,7 @@ export async function buildLeaderBrief(
     fleet,
     requestedHarness: args.harness,
     laneHealth: fleetLaneHealth,
+    unavailable: fleetLaneHealthRead.unavailable,
     fleetPaused: fleetPause.paused,
   });
   // P-005 / D-001: hydrate the rich, replace-full fleet snapshot through the
