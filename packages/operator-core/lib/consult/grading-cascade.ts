@@ -88,11 +88,29 @@ export function gradingCascadeMetaFromRouting(routing: unknown): GradingCascadeM
   const block = (snap as { cascade?: unknown } | null)?.cascade as Partial<GradingCascadeMeta> | undefined;
   if (!block || block.flavor !== GRADING_CASCADE_FLAVOR) return null;
   if (typeof block.planSlug !== 'string' || typeof block.rubricId !== 'string') return null;
+  const rawReservation = block.reservation;
+  const reservation =
+    rawReservation &&
+    typeof rawReservation === 'object' &&
+    !Array.isArray(rawReservation) &&
+    typeof (rawReservation as { conditionKey?: unknown }).conditionKey === 'string' &&
+    (typeof (rawReservation as { id?: unknown }).id === 'string' ||
+      (rawReservation as { id?: unknown }).id === null ||
+      (rawReservation as { id?: unknown }).id === undefined)
+      ? {
+          conditionKey: (rawReservation as { conditionKey: string }).conditionKey,
+          id:
+            typeof (rawReservation as { id?: unknown }).id === 'string'
+              ? (rawReservation as { id: string }).id
+              : null,
+        }
+      : undefined;
   return {
     flavor: GRADING_CASCADE_FLAVOR,
     planSlug: block.planSlug,
     rubricId: block.rubricId,
     harnessSlug: typeof block.harnessSlug === 'string' ? block.harnessSlug : null,
+    ...(reservation ? { reservation } : {}),
   };
 }
 
