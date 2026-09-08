@@ -1142,13 +1142,16 @@ export async function getAcceptanceRubricsForPlan(
 }
 
 /**
- * Backward-compatible singleton view of the plan acceptance rubric. Existing callers
- * retain the historical nullable API; the completion gate uses
- * getAcceptanceRubricsForPlan so duplicate live rows cannot be silently hidden behind
- * whichever one happens to be newest.
+ * Nullable singleton view of the subject's acceptance rubric. Preserve the resolved
+ * subject harness through this convenience reader; multiple live contracts are
+ * ambiguous, never permission to select whichever one happens to be newest.
  */
-export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubric | null> {
-  return (await getAcceptanceRubricsForPlan(planSlug))[0] ?? null;
+export async function getAcceptanceRubricForPlan(
+  planSlug: string,
+  options: { harnessSlug?: string } = {},
+): Promise<Rubric | null> {
+  const rubrics = await getAcceptanceRubricsForPlan(planSlug, options);
+  return rubrics.length === 1 ? rubrics[0] : null;
 }
 
 /**
@@ -1163,9 +1166,21 @@ export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubr
  * completion gate, which must see only LIVE contracts (a retired one must never
  * satisfy a ship). This one backs the post-ship explanation.
  */
-export async function getRetiredAcceptanceRubricsForPlan(planSlug: string): Promise<Rubric[]> {
+export async function getRetiredAcceptanceRubricsForPlan(
+  planSlug: string,
+  options: { harnessSlug?: string } = {},
+): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
+    const subjectScope = options.harnessSlug == null ? sql`TRUE` : sql`(
+      template_data->>'subjectHarnessSlug' = ${options.harnessSlug}
+      OR (template_data->>'subjectHarnessSlug' IS NULL AND (
+        SELECT count(*) = 1 AND bool_and(subject.harness_slug = ${options.harnessSlug})
+          FROM harness_shared.harness_plans AS subject
+         WHERE subject.workspace_id = ${rubricsScopeWorkspace()}
+           AND subject.plan_slug = ${planSlug}
+      ))
+    )`;
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
@@ -1176,10 +1191,12 @@ export async function getRetiredAcceptanceRubricsForPlan(planSlug: string): Prom
          AND template_data->>'kind' = 'acceptance'
          AND template_data->>'subjectPlan' = ${planSlug}
          AND (archived = true OR status IN ('superseded', 'shipped'))
+         AND ${subjectScope}
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
        LIMIT 5`;
     return (await mapRubricPlanRows(rows)).filter(
-      (r) => r.kind === 'acceptance' && r.subjectPlan === planSlug && r.status === 'retired',
+      (r) => r.kind === 'acceptance' && r.subjectPlan === planSlug && r.status === 'retired' &&
+        (!options.harnessSlug || !r.subjectHarnessSlug || r.subjectHarnessSlug === options.harnessSlug),
     );
   } catch {
     return [];
@@ -2460,7 +2477,9 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
     })
   ) {
     const subjectPlan = input.subjectPlan ?? '';
-    const retired = subjectPlan ? await getRetiredAcceptanceRubricsForPlan(subjectPlan) : [];
+    const retired = subjectPlan ? await getRetiredAcceptanceRubricsForPlan(subjectPlan, {
+      harnessSlug: input.subjectHarnessSlug,
+    }) : [];
     throw new Error(
       shippedSubjectPlanRefusal({
         rubricId: input.rubricId,
@@ -3953,9 +3972,13 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
  * rubricId, or null when there is nothing to do (no rubric / already retired / write
  * busy) or on any failure — a ship must never be failed by its lifecycle tidy-up.
  */
-export async function retireAcceptanceRubricForPlan(planSlug: string, by?: string): Promise<string | null> {
+export async function retireAcceptanceRubricForPlan(
+  planSlug: string,
+  by?: string,
+  options: { harnessSlug?: string } = {},
+): Promise<string | null> {
   try {
-    const rubric = await getAcceptanceRubricForPlan(planSlug);
+    const rubric = await getAcceptanceRubricForPlan(planSlug, options);
     if (!rubric || rubric.status === 'retired') return null;
     const scope = await resolveRubricWriteScope(rubric.rubricId);
     const result = await withPlanLock<boolean>(
