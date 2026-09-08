@@ -99,9 +99,10 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     const run = matches.length === 1 ? matches[0] : undefined;
     const measured = await deps.measure(scope.root, row.measurement).catch(() => null);
     const sourceStable = measured !== null && measured.sourceFingerprint === row.input.sourceFingerprint && measured.testFingerprint === row.input.testFingerprint;
-    const priorExecution = row.input.details?.testExecution as { phase?: string; runId?: string } | undefined;
+    const priorExecution = row.input.details?.testExecution as { phase?: string; runId?: string; ledgerStatus?: string } | undefined;
     const priorProof = row.input.details?.adequacy as { outcome?: string } | undefined;
-    if (!result && run && priorExecution?.phase === 'settled' && priorExecution.runId === runId) {
+    if (!result && run && priorExecution?.phase === 'settled' && priorExecution.runId === runId
+      && row.input.testRunId === run.id && priorExecution.ledgerStatus === run.status) {
       rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
         evidenceRef: row.input.evidenceRef, testRunId: run.id,
         phase: sourceStable ? 'settled' : 'source-changed', outcome: priorProof?.outcome ?? 'unknown', bindingStatus: 'unchanged' });

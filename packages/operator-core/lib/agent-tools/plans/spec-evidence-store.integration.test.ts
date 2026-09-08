@@ -286,6 +286,9 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(await buildFailureLoopHintText(hint!)).toContain('Reuse the saved evidence');
     const recovered = await recoverTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: runId, runId }, scope, deps);
     expect(recovered.rows[0]).toMatchObject({ testRunId: Number(run.id), phase: 'settled', outcome: 'pass', bindingStatus: 'unchanged' });
+    await db.sql`UPDATE harness_shared.test_runs SET status = 'fail' WHERE id = ${run.id}`;
+    const revised = await recoverTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: runId, runId }, scope, deps);
+    expect(revised.rows[0]).toMatchObject({ testRunId: Number(run.id), phase: 'review-required', outcome: 'unknown' });
     await writeFile(path.join(h.repoRoot, 'src/reconnect.ts'), 'export const reconnect = "changed after execution";\n');
     await finishTestEvidence(prepared, runId, runId, scope, result, deps);
     const changed = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });

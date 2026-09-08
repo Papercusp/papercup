@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { Rubric } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 
@@ -91,6 +91,53 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
 
     expect(result).toEqual({ ok: true, issueId: 'EI-TARGET', gradingAudit: existing });
     expect(mergeIssuePayload).not.toHaveBeenCalled();
+  });
+});
+
+describe('grading-audit rubric identity currentness (EI-22701281083010532)', () => {
+  const base = {
+    state: 'passed' as const,
+    metaRubricRef: 'grading-integrity',
+    stampedAt: '2026-09-08T00:00:00.000Z',
+    rubricRevision: 4,
+    criteriaHash: 'hash-old',
+  };
+
+  it('marks an exact revision and criteria hash current', () => {
+    expect(
+      classifyGradingAuditCurrentness(base, {
+        rubricId: 'grading-integrity',
+        revision: 4,
+        criteriaHash: 'hash-old',
+      }),
+    ).toEqual({
+      state: 'current',
+      reason: 'current',
+      recordedRevision: 4,
+      currentRevision: 4,
+      recordedCriteriaHash: 'hash-old',
+      currentCriteriaHash: 'hash-old',
+    });
+  });
+
+  it('marks a settled stamp stale when the live meta-rubric advances', () => {
+    expect(
+      classifyGradingAuditCurrentness(base, {
+        rubricId: 'grading-integrity',
+        revision: 6,
+        criteriaHash: 'hash-new',
+      }),
+    ).toMatchObject({ state: 'stale', reason: 'revision-mismatch', recordedRevision: 4, currentRevision: 6 });
+  });
+
+  it('keeps missing identity unknown instead of treating historical settlement as current', () => {
+    expect(
+      classifyGradingAuditCurrentness({ ...base, rubricRevision: undefined, criteriaHash: undefined }, {
+        rubricId: 'grading-integrity',
+        revision: 6,
+        criteriaHash: 'hash-new',
+      }),
+    ).toMatchObject({ state: 'unknown', reason: 'recorded-identity-missing' });
   });
 });
 

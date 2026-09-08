@@ -93,4 +93,22 @@ describe('test-time evidence continuity', () => {
     await expect(recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1', originRunId: runId,
       runId: 'faf310d9-ea4e-498c-be6b-6773fe46a276' }, scope, d)).rejects.toThrow('evidence_recovery_not_found');
   });
+
+  it.each([{ id: 42, status: 'fail' }, { id: 43, status: 'pass' }])(
+    'invalidates settled passing recovery when ledger attribution changes: %j', async changed => {
+      const d = deps();
+      const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+      await finishTestEvidence(prepared, runId, runId, scope, result(), d);
+      const stored = d.bind.mock.calls[1][0];
+      d.list.mockResolvedValue([{ ...stored, id: 2,
+        fingerprints: { sourceFingerprint: stored.sourceFingerprint, testFingerprint: stored.testFingerprint } }]);
+      const recovery = { workItemId: 'WI-1', planSlug: 'p1', originRunId: runId, runId };
+      expect((await recoverTestEvidence(recovery, scope, d)).rows[0])
+        .toMatchObject({ testRunId: 42, phase: 'settled', outcome: 'pass' });
+      d.ledger.mockResolvedValue([{ ...changed, file_path: binding.testPath, finished_at: 'now' }]);
+      expect((await recoverTestEvidence(recovery, scope, d)).rows[0])
+        .toMatchObject({ testRunId: changed.id, phase: 'review-required', outcome: 'unknown' });
+      expect(d.bind.mock.calls.at(-1)![0].details.adequacy.executed).toBe(false);
+    },
+  );
 });
