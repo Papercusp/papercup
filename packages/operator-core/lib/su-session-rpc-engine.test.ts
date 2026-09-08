@@ -354,7 +354,7 @@ it('makes an unacknowledged OMP interrupt visibly failed instead of leaving the 
   await f.engine.ready;
   await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
   await expect(f.engine.adapter.host.startCommand(command(f.engine, 'interrupt')).terminal)
-    .resolves.toMatchObject({ status: 'failed' });
+    .resolves.toMatchObject({ status: 'refused' });
   expect(f.engine.adapter.host.descriptor().lifecycle).toBe('failed');
   expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
   expect(f.close).toHaveBeenCalledOnce();
