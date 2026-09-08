@@ -27,7 +27,7 @@ import {
 } from '../../scheduler/claim-spec-store';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
-import { CLAIM_STATES_ALLOWLIST, releaseWorkItem } from '../../work-items';
+import { CLAIM_STATES_ALLOWLIST, familyOf, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
 import {
@@ -2163,9 +2163,7 @@ export default defineTool({
                     workItemId: wi.id as string,
                     workspaceId: ident.workspaceId ?? undefined,
                     harness: wi.harness ?? args.harness,
-                    family:
-                      wi.family ??
-                      (wi.kind === 'bug' || wi.kind === 'change' || wi.kind === 'task' ? 'issue' : 'feature'),
+                    family: wi.family ?? familyOf(wi.kind ?? ''),
                   });
                   const warning = m.sourceCitationWarning(hint, wi.id as string);
                   return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;

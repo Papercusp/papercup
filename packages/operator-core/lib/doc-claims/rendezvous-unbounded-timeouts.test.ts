@@ -71,6 +71,16 @@ describe('WI-1194246 rendezvous-unbounded-timeouts claim', () => {
       expect(verdict.acquisitions).toBe(1);
     });
 
+    it('accepts PostgreSQL string-literal zero resets', () => {
+      const verdict = judgeRendezvousTimeouts(`
+        await client\`SET lock_timeout = '0'\`;
+        await client\`SET statement_timeout = "0"\`;
+        await client\`SELECT pg_advisory_lock(hashtext(\${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))\`;
+      `);
+      expect(verdict.ok).toBe(true);
+      expect(verdict.acquisitions).toBe(1);
+    });
+
     it('does not require an opt-out for a RELEASE', () => {
       const verdict = judgeRendezvousTimeouts(`
         await client\`SELECT pg_advisory_unlock(hashtext(\${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))\`;

@@ -164,8 +164,8 @@ export const OPERATOR_SURFACES: Record<
     const Panel = mod.default;
     return { default: () => <Panel active /> };
   }),
-  // /cloud-workspaces?step=operate&tab=desktops
-  desktops: lazy(() => import('../../../../apps/operator/app/cloud-workspaces/page')),
+  // D-062: the desktop workspace is reachable directly, including without a host deep link.
+  desktops: lazy(() => import('../../../../apps/operator/app/cloud-workspaces/DesktopWorkspacePage')),
   // /plans — PlansPane owns filters, dashboard nav and the cleanup strip.
   // `layout="split"` is the route's own choice, re-stated here so the portal
   // pane lays out list-beside-detail exactly as /plans does.
@@ -221,7 +221,7 @@ export const OPERATOR_SURFACES: Record<
   // (apps/operator-vite/src/routes/coord.tsx), so the dashboard IS the surface.
   coord: lazy(() => import('../../../../apps/operator/app/coord/CoordDashboard')),
   // The operator top-nav's utility set (portal-parity D-007 / D-009).
-  // /cloud-workspaces — the SAME page as `desktops` above, landing on its
+  // /cloud-workspaces — cloud lifecycle management, landing on its
   // default step: the operator's own "Cloud" nav target is this route.
   cloud: lazy(() => import('../../../../apps/operator/app/cloud-workspaces/page')),
   // /cupboard + /cupboard/$id — two operator routes behind one switch, keyed by

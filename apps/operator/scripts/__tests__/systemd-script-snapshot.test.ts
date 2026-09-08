@@ -3,6 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { collectChildOutput } from '@papercusp/operator-core/lib/child-output';
 
 const WRAPPER = resolve(__dirname, '..', 'systemd', 'papercusp-script-snapshot.sh');
 const DB_UNIT = resolve(__dirname, '..', 'systemd', 'papercusp-db-backup.service');
@@ -21,16 +22,11 @@ async function runWrapper(cwd: string, args: string[], extraEnv: Record<string, 
   return await new Promise<{ status: number | null; stdout: string; stderr: string }>(
     (resolveResult, reject) => {
       const child = spawn('bash', [WRAPPER, ...args], { cwd, env });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
+      const output = collectChildOutput(child);
       child.once('error', reject);
-      child.once('close', (status) => resolveResult({ status, stdout, stderr }));
+      child.once('close', (status) =>
+        resolveResult({ status, stdout: output.stdout.text(), stderr: output.stderr.text() }),
+      );
     },
   );
 }

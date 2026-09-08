@@ -42,6 +42,14 @@ describe('DRIFT GUARD: GUI_TAB_TOUR vs the real ADV_TABS strip (AdvShell.tsx)', 
       `AdvShell.tsx not found at ${shellPath} — this drift guard measured NOTHING. If the file moved, update this path; do not skip.`,
     ).toBe(true);
     const src = readFileSync(shellPath, 'utf8');
+    const labelsPath = join(__dirname, '../../../../packages/operator-ui/src/adv-navigation.ts');
+    expect(existsSync(labelsPath), `ADV label registry not found at ${labelsPath}`).toBe(true);
+    const labelsSrc = readFileSync(labelsPath, 'utf8');
+    const labelsStart = labelsSrc.indexOf('export const ADV_MORE_LABELS');
+    const labelsEnd = labelsSrc.indexOf('} as const', labelsStart);
+    expect(labelsStart, 'ADV_MORE_LABELS not found — did the shared registry move or rename it?').toBeGreaterThan(-1);
+    expect(labelsEnd).toBeGreaterThan(labelsStart);
+    const labelsBody = labelsSrc.slice(labelsStart, labelsEnd);
     const arrayStart = src.indexOf('export const ADV_TABS');
     expect(arrayStart, 'ADV_TABS not found — did AdvShell.tsx move or rename it?').toBeGreaterThan(-1);
     const arrayEnd = src.indexOf('] as const', arrayStart);
@@ -49,7 +57,10 @@ describe('DRIFT GUARD: GUI_TAB_TOUR vs the real ADV_TABS strip (AdvShell.tsx)', 
     const body = src.slice(arrayStart, arrayEnd);
 
     const sharedLabels = new Map(
-      [...src.matchAll(/^\s{2}([a-z][A-Za-z0-9_]*):\s*'([^']+)'/gm)].map((match) => [match[1], match[2]]),
+      [...labelsBody.matchAll(/^\s{2}([a-z][A-Za-z0-9_]*):\s*(['"])([^'"]+)\2/gm)].map((match) => [
+        match[1],
+        match[3],
+      ]),
     );
     const entries: Array<{ id: string; label: string }> = [];
     const re = /\{\s*id:\s*'([^']+)',\s*label:\s*(?:'([^']+)'|ADV_MORE_LABELS\.([A-Za-z0-9_]+))/g;

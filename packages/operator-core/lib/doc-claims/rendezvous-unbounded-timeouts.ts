@@ -44,8 +44,8 @@ const LOCK_KEY = 'BACKUP_MIGRATION_ADVISORY_LOCK_KEY';
 const LOOKBACK_LINES = 12;
 
 const RESETS: ReadonlyArray<{ name: string; re: RegExp }> = [
-  { name: 'lock_timeout', re: /\block_timeout\s*=\s*0\b/ },
-  { name: 'statement_timeout', re: /\bstatement_timeout\s*=\s*0\b/ },
+  { name: 'lock_timeout', re: /\block_timeout\s*=\s*(['"]?)0\1(?![A-Za-z0-9_.])/ },
+  { name: 'statement_timeout', re: /\bstatement_timeout\s*=\s*(['"]?)0\1(?![A-Za-z0-9_.])/ },
 ];
 
 /**

@@ -1441,13 +1441,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for packages/operator-core/lib/release/sync-batch-delta-check-deps.ts: every detected start is the file's own run() wrapper around spawnSync with an explicit per-leg timeout (SYNC_DELTA_TIMEOUTS_MS, 30s–25min) and killSignal:'SIGTERM'; each call is synchronous, bounded, and resolves to the deps contract's undetermined value on any failure rather than a fake result, so no call can wedge the routine tick or leave an independent resident queue behind.",
   },
   {
-    path: "apps/operator/bin/bundle-host-freshness.mjs",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for apps/operator/bin/bundle-host-freshness.mjs: every detected start is execFileSync('git', ...) used for bounded repository identity and dirty-state metadata with an explicit 30s timeout; each call is synchronous and awaited, creates no worker or resident queue, and must remain available to reject a stale host bundle before launch.",
-  },
-  {
     path: "packages/operator-core/lib/p2p/two-peer-commerce/commerce-peer-launcher.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1518,6 +1511,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed semantic disposition for packages/operator-core/lib/sync/hyperbee/read-merge.ts: its MergeCursor Maps (positions, winners, applyThrows, readThrows, readStalls, lateReadResults) are finite per-merge correlation state keyed by the active logs and positions being merged, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight merge workload and start no independent resident work.",
   },
   {
+    path: "scripts/lib/release-task-journal.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/release-task-journal.ts: its two execFileSync calls are bounded, awaited git show/ls-tree metadata reads against one pinned source SHA; they start no resident worker or queue and must complete before the journal identity can be accepted.",
+  },
+  {
     path: "scripts/lib/stale-swap-leftovers.mjs",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -1548,6 +1548,14 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "apps/operator/bin/bundle-host-freshness.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Every detected start is execFileSync('git', ...) for bounded repository identity and dirty-state metadata with an explicit 30s timeout; each call is synchronous and awaited, creates no worker or resident queue, and must remain available to reject a stale host bundle before launch.",
+    },
+  ],
   // ── cheap metadata reads: a git plumbing call that prints and exits ──────────
   // These are D-004's "cheap metadata operations that cannot materially increase
   // residency": single short-lived plumbing processes, awaited, no worker, no queue.

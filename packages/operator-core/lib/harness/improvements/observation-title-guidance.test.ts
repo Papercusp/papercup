@@ -250,7 +250,9 @@ describe('every surface that asks for an observation title states the rule', () 
     // The pre-existing contract it must not have lost.
     expect(description).toMatch(/copy that one verbatim/i);
     expect(description).toMatch(/scorecard:<rubricRef>:<sourceHive>/);
-    expect(description).toMatch(/Ignored outside lane:'observation'/);
+    expect(description).toContain('For an ordinary improvement/bug capture');
+    expect(description).toContain('exact-key coalescer');
+    expect(description).not.toMatch(/Ignored outside lane:'observation'/);
   });
 
   it('loop:checkpoint { insight } says its FIRST LINE becomes the observation title', () => {

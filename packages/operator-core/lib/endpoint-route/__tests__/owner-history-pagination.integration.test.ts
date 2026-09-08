@@ -33,7 +33,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await sql?.end({ timeout: 5 });
   if (admin) {
-    await admin.unsafe(`DROP DATABASE IF EXISTS "${database}"`);
+    await admin.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
     await admin.end({ timeout: 5 });
   }
 });

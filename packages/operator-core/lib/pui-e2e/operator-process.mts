@@ -1,0 +1,98 @@
+/** Isolated production Hono process for installed-PUI restart acceptance.
+ * Launched only by the Vitest fixture, with its migrated throwaway database.
+ * The observation channel never supplies model output or answers a card.
+ */
+import { createAdaptorServer } from '@hono/node-server';
+import type { AddressInfo } from 'node:net';
+import { randomUUID } from 'node:crypto';
+import { app } from '../../../../apps/operator/bin/host-app';
+import { getRegisteredSuSessionHost, type SuSessionHost } from '../su-session-host';
+import { getAdvSession } from '../adv-sessions';
+import { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } from '@papercusp/chat-protocol';
+
+if (!process.send || !process.env.PUI_OPERATOR_FIXTURE_WORKSPACE
+  || process.env.PAPERCUSP_WORKSPACE_ID !== process.env.PUI_OPERATOR_FIXTURE_WORKSPACE
+  || !process.env.HARNESS_ADMIN_DATABASE_URL) {
+  throw new Error('The PUI operator fixture requires IPC and an explicitly isolated workspace/database');
+}
+const workspaceId = process.env.PUI_OPERATOR_FIXTURE_WORKSPACE;
+const observed = new Set<SuSessionHost>();
+const instanceId = randomUUID();
+const send = (message: unknown) => { if (process.connected) process.send!(message); };
+for (const level of ['warn', 'error'] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: unknown[]) => {
+    send({ type: 'diagnostic', level, args: args.map((arg) => arg instanceof Error ? arg.message : arg) });
+    original(...args);
+  };
+}
+
+function observe(agentChatId: string, harnessSlug: string): void {
+  const host = getRegisteredSuSessionHost({ workspaceId, harnessSlug, agentChatId });
+  if (!host || observed.has(host)) return;
+  observed.add(host);
+  send({ type: 'host', descriptor: host.descriptor(), events: host.recent.map(({ event }) => event) });
+  void (async () => {
+    for await (const { event } of host.subscribe()) {
+      send({ type: 'event', descriptor: host.descriptor(), event });
+    }
+  })().catch((error) => { console.error('PUI fixture observation failed', error); });
+}
+
+const server = createAdaptorServer({ fetch: async (request, env) => {
+  const pathname = new URL(request.url).pathname;
+  const launch = request.method === 'POST' && pathname === '/api/adv/sessions/launch-su'
+    ? await request.clone().json() as { agent_chat_id: string; harness_slug: string } : null;
+  const response = await app.fetch(request, env);
+  if (launch) observe(launch.agent_chat_id, launch.harness_slug);
+  if (pathname.endsWith('/su-session/commands')) {
+    for (const host of observed) {
+      const row = await getAdvSession(host.descriptor().identity.advSessionId);
+      send({ type: 'host-state', descriptor: host.descriptor(), pid: row?.pid ?? null });
+    }
+  }
+  if (launch || pathname.endsWith('/card-response')) send({ type: 'response', path: pathname, status: response.status });
+  return response;
+} });
+await new Promise<void>((resolve, reject) => {
+  server.once('error', reject);
+  server.listen(Number(process.env.PUI_OPERATOR_FIXTURE_PORT ?? 0), '127.0.0.1', resolve);
+});
+const port = (server.address() as AddressInfo).port;
+process.env.PAPERCUSP_HONO_PORT = String(port);
+process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${port}`;
+process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${port}`;
+send({ type: 'ready', pid: process.pid, instanceId, port });
+
+let stopping = false;
+async function stop(): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  try {
+    for (const host of observed) {
+      if (!host.snapshot().terminal) {
+        const command = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
+          type: 'end', commandId: randomUUID(), issuedAt: new Date().toISOString(), target: host.descriptor().identity };
+        const dispatch = await host.acceptCommand(command);
+        const terminal = await dispatch.terminal;
+        if (terminal.status !== 'completed') throw new Error(`Native end refused: ${JSON.stringify(terminal)}`);
+      }
+    }
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const { drainDetached } = await import('../detached-imports');
+    await drainDetached();
+    const { stopInvalidationListener } = await import('../sync-sse');
+    await stopInvalidationListener();
+    const dbOrg = await import('@papercusp/db-org');
+    await dbOrg._resetForTests();
+    send({ type: 'stopped', pid: process.pid, instanceId });
+    process.exit(0);
+  } catch (error) {
+    console.error('PUI operator fixture shutdown failed', error);
+    process.exit(1);
+  }
+}
+process.on('message', (message: { type?: string }) => { if (message.type === 'stop') void stop(); });
+process.on('SIGTERM', () => { void stop(); });
+process.on('disconnect', () => { void stop(); });
