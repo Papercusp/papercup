@@ -19,6 +19,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { Sql, TransactionSql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
 import { resolvePlanScope } from './source';
 import { hashPlanContent } from './content-hash';
@@ -91,10 +92,27 @@ export interface RecordedRevision {
   contentHash: string;
 }
 
+/** A strict revision write failed before its enclosing plan transaction committed. */
+export class PlanRevisionUnavailableError extends Error {
+  readonly code = 'plan_revision_unavailable' as const;
+
+  constructor(planSlug: string, cause?: unknown) {
+    super(
+      `plan revision unavailable for '${planSlug}'` +
+        (cause instanceof Error && cause.message ? `: ${cause.message}` : ''),
+    );
+    this.name = 'PlanRevisionUnavailableError';
+    Object.assign(this, { cause });
+  }
+}
+
 // `withPlanLock` runs revision hooks after its transaction commits. Keep the
 // revision sequence allocation serialized independently of that plan lock so
 // concurrent post-commit hooks cannot both observe the same MAX(seq)+1.
 const PLAN_REVISION_ADVISORY_LOCK_NAMESPACE = 'plan_revisions';
+
+/** SQL client accepted by both the workspace wrapper and its bound transaction. */
+export type PlanRevisionSql = Sql | TransactionSql;
 
 /**
  * Classify the writer. `principal` identities are the in-process
@@ -106,6 +124,66 @@ const PLAN_REVISION_ADVISORY_LOCK_NAMESPACE = 'plan_revisions';
  */
 export function classifyAuthor(identity: AgentIdentity): PlanRevisionAuthorKind {
   return identity.source === 'principal' ? 'human' : 'agent';
+}
+
+/**
+ * Append one revision using an already-open workspace transaction.
+ *
+ * Unlike `recordPlanRevision`, this helper deliberately does not catch errors
+ * and does not open a nested transaction. Callers that need the plan body and
+ * its revision to commit as one unit should invoke it from their transaction;
+ * any insert failure then aborts the enclosing write.
+ */
+export async function recordPlanRevisionInTransaction(
+  tx: PlanRevisionSql,
+  args: RecordPlanRevisionArgs & { workspaceId: string; harnessSlug: string },
+): Promise<RecordedRevision> {
+  try {
+    const contentHash = args.contentHash ?? hashPlanContent(args.content);
+    const authorKind = classifyAuthor(args.identity);
+    const createdAt = Date.now();
+    // The enclosing plan lock serializes ordinary plan writers, while this
+    // separate lock also coordinates with post-commit best-effort writers for
+    // the same revision spine.
+    const revisionLockKey = `${args.workspaceId}:${args.harnessSlug}:${args.planSlug}`;
+    await tx`
+      SELECT pg_advisory_xact_lock(
+        hashtext(${PLAN_REVISION_ADVISORY_LOCK_NAMESPACE}),
+        hashtext(${revisionLockKey})
+      )
+    `;
+    const rows = await tx<{ seq: number }[]>`
+      INSERT INTO harness_shared.plan_revisions (
+        workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
+        author_kind, author_id, session_id, session_kind, created_at
+      )
+      SELECT
+        ${args.workspaceId},
+        ${args.harnessSlug},
+        ${args.planSlug},
+        COALESCE(MAX(seq), 0) + 1,
+        ${contentHash},
+        ${args.content},
+        ${args.rationale ?? null},
+        ${authorKind},
+        ${args.identity.ownerId},
+        ${args.sessionId ?? null},
+        ${args.sessionKind ?? null},
+        ${createdAt}
+      FROM harness_shared.plan_revisions
+      WHERE workspace_id = ${args.workspaceId}
+        AND harness_slug = ${args.harnessSlug} AND plan_slug = ${args.planSlug}
+      RETURNING seq
+    `;
+    const row = rows[0];
+    if (!row) {
+      throw new Error(`plan_revisions: failed to insert revision for ${args.planSlug}`);
+    }
+    return { seq: Number(row.seq), contentHash };
+  } catch (error) {
+    if (error instanceof PlanRevisionUnavailableError) throw error;
+    throw new PlanRevisionUnavailableError(args.planSlug, error);
+  }
 }
 
 /**
@@ -206,6 +284,17 @@ export interface PlanRevisionCapture {
   afterWrite: (
     writtenBody: string,
     scope?: { workspaceId: string; harnessSlug: string },
+  ) => Promise<void>;
+  /**
+   * Strict counterpart for a write that must atomically persist its revision.
+   * The callback is optional because ordinary plan writes retain the
+   * historical best-effort contract.
+   */
+  inTransaction?: (
+    tx: TransactionSql,
+    writtenBody: string,
+    scope: { workspaceId: string; harnessSlug: string },
+    writtenTemplateData: unknown,
   ) => Promise<void>;
   /**
    * Mutable cell — `afterWrite` writes the recorded revision (or
@@ -349,7 +438,27 @@ export function planRevisionCapture(
         /* no identity — best-effort skip */
       };
 
-  return { afterWrite, recorded };
+  const inTransaction = id
+    ? async (
+        tx: TransactionSql,
+        writtenBody: string,
+        scope: { workspaceId: string; harnessSlug: string },
+      ): Promise<void> => {
+        const sessionRef = await resolvePlanRevisionSessionRef(ctx, id);
+        recorded.current = await recordPlanRevisionInTransaction(tx, {
+          planSlug: slug,
+          harnessSlug: scope.harnessSlug,
+          workspaceId: scope.workspaceId,
+          content: writtenBody,
+          rationale: rationale ?? null,
+          identity: id,
+          sessionId: sessionRef.sessionId,
+          sessionKind: sessionRef.sessionKind,
+        });
+      }
+    : undefined;
+
+  return { afterWrite, inTransaction, recorded };
 }
 
 /**

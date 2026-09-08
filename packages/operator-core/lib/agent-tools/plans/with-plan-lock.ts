@@ -20,6 +20,7 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
+import type { TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { parsePlan } from '@papercusp/plan-parser';
 import {
@@ -206,6 +207,18 @@ export interface WithPlanLockOpts {
      * it), so revision hooks can capture one atomic body + structured snapshot
      * without re-reading a potentially newer concurrent revision.
      */
+    writtenTemplateData: unknown,
+  ) => Promise<void>;
+  /**
+   * Optional strict revision hook. Unlike afterWrite, this runs on the
+   * transaction that writes harness_plans, so any rejection aborts the
+   * entire plan mutation. Use this only for writes whose admission contract
+   * requires a matching revision row.
+   */
+  revisionInTransaction?: (
+    tx: TransactionSql,
+    writtenBody: string,
+    scope: { workspaceId: string; harnessSlug: string },
     writtenTemplateData: unknown,
   ) => Promise<void>;
 }
@@ -765,6 +778,18 @@ export async function withPlanLock<T>(
     // query this after the transaction, because another writer could commit a
     // newer structured revision before the audit row is appended.
     const writtenTemplateData = writesTemplateData ? templateData!.data : cur?.template_data ?? null;
+
+    // Strict revision capture is deliberately inside the same transaction as
+    // the plan upsert. A failure here rejects the withWorkspace callback and
+    // rolls back both the plan bytes/version and the revision insert.
+    if (writtenBody !== null && opts.revisionInTransaction) {
+      await opts.revisionInTransaction(
+        tx as unknown as TransactionSql,
+        writtenBody,
+        { workspaceId, harnessSlug },
+        writtenTemplateData,
+      );
+    }
 
     return {
       kind: 'applied',

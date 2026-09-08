@@ -91,13 +91,14 @@ async function insertRoutine(o: {
   active?: boolean;
   nextFireAt?: Date | 'infinity' | null;
   rescheduleIntervalSec?: number | null;
+  workspaceId?: string;
 }) {
   const nf = o.nextFireAt === 'infinity' ? null : (o.nextFireAt ?? null);
   await rootSql`
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id, reschedule_interval_sec)
     VALUES (${o.id}, 'web', ${o.id}, 'schedule', ${JSON.stringify(o.cfg)}::text::jsonb, 'system:loop-wake',
-            ${o.active ?? true}, ${nf}, 'ws1', ${o.rescheduleIntervalSec ?? null})`;
+            ${o.active ?? true}, ${nf}, ${o.workspaceId ?? 'ws1'}, ${o.rescheduleIntervalSec ?? null})`;
   // 'infinity' can't bind as a Date param — set it via SQL after insert (mirrors a parked loop).
   if (o.nextFireAt === 'infinity') {
     await rootSql`UPDATE harness_shared.routines SET next_fire_at = 'infinity'::timestamptz WHERE id = ${o.id}`;
@@ -107,7 +108,7 @@ async function insertRoutine(o: {
 describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
   it('reports an overdue CRON routine (a genuine engine-starvation signal)', async () => {
     await insertRoutine({ id: 'cron-dead', cfg: { cron: '*/30 * * * * *' }, nextFireAt: overduePast() });
-    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual(['cron-dead']);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual(['cron-dead']);
   });
 
   it('does NOT report an overdue PURE LOOP (busy fleet loop, not engine starvation)', async () => {
@@ -115,25 +116,25 @@ describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
     // interval' — 15min past here (the owner is running a long turn) — yet the engine
     // is fine. This is the exact false positive EI-11797 fixes.
     await insertRoutine({ id: 'loop-overdue', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: overduePast() });
-    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual([]);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual([]);
   });
 
   it('does NOT report a PARKED loop (next_fire_at=infinity, actively running)', async () => {
     await insertRoutine({ id: 'loop-parked', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: 'infinity' });
-    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual([]);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual([]);
   });
 
   it('STILL reports an overdue cron+loop (a recurrence the engine should be advancing)', async () => {
     // cron+loop has an interval AND a cron → claimDueRoutine advances it to cron-next
     // every tick (never parks it), so an overdue one genuinely means the engine is stuck.
     await insertRoutine({ id: 'cronloop-dead', cfg: { cron: '*/30 * * * * *' }, rescheduleIntervalSec: 60, nextFireAt: overduePast() });
-    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual(['cronloop-dead']);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual(['cronloop-dead']);
   });
 
   it('does NOT report a not-yet-due cron routine, nor an inactive one', async () => {
     await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
     await insertRoutine({ id: 'cron-inactive', cfg: { cron: '*/30 * * * * *' }, active: false, nextFireAt: overduePast() });
-    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual([]);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual([]);
   });
 
   it('mixes them: only genuine engine-starvation rows surface, loops excluded', async () => {
@@ -143,7 +144,16 @@ describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
     await insertRoutine({ id: 'loop-parked', cfg: {}, rescheduleIntervalSec: 1800, nextFireAt: 'infinity' });
     await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
     // Ordered by next_fire_at ASC → cron-dead (20m) before cronloop-dead (15m).
-    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual(['cron-dead', 'cronloop-dead']);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual(['cron-dead', 'cronloop-dead']);
+  });
+
+  it('scopes the census and denominator to the requested workspace', async () => {
+    await insertRoutine({ id: 'other-ws-dead', cfg: { cron: '*/30 * * * * *' }, nextFireAt: overduePast(), workspaceId: 'ws-other' });
+    await insertRoutine({ id: 'current-ws-dead', cfg: { cron: '*/30 * * * * *' }, nextFireAt: overduePast(), workspaceId: 'ws1' });
+    await insertRoutine({ id: 'current-ws-healthy', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future(), workspaceId: 'ws1' });
+
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
+    expect(census).toMatchObject({ count: 1, distinctCount: 1, totalInScope: 2, names: ['current-ws-dead'] });
   });
 });
 
@@ -159,7 +169,7 @@ describe('readDeadRoutines — census integrity under a WIDE freeze (EI-20045691
     await insertRoutine({ id: 'healthy-1', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
     await insertRoutine({ id: 'healthy-2', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
 
-    const census = await readDeadRoutines(rootSql, OVERDUE_MS);
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
     // ⚠ THE REGRESSION THIS GUARDS. The old code returned a bare `LIMIT 20` name list and the
     // panel set `deadRoutines = deadRoutineNames.length`, making the reported count a function
     // of the fetch cap. Measured in the wild 2026-08-10: the alarm broadcast "20 dead
@@ -185,7 +195,7 @@ describe('readDeadRoutines — census integrity under a WIDE freeze (EI-20045691
     }
     await insertRoutine({ id: 'git-sync', cfg: { cron: '*/30 * * * * *' }, nextFireAt: new Date(Date.now() - 11 * 60_000) });
 
-    const census = await readDeadRoutines(rootSql, OVERDUE_MS);
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
     expect(census.names[0]).toBe('git-sync');
     expect(census.criticalNames).toEqual(['git-sync']);
     expect(census.count).toBe(11);
@@ -193,7 +203,7 @@ describe('readDeadRoutines — census integrity under a WIDE freeze (EI-20045691
 
   it('reports a clean, unbounded zero when nothing is overdue', async () => {
     await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
-    const census = await readDeadRoutines(rootSql, OVERDUE_MS);
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
     expect(census).toMatchObject({ count: 0, names: [], criticalNames: [], namesTruncated: false, censusTruncated: false });
   });
 });

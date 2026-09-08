@@ -485,6 +485,19 @@ describe('loadRoleCapabilities', () => {
     expect(caps).toEqual(new Set(['agent_tools:read', ...CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS]));
   });
 
+  test('reviewer can inspect and claim adequacy-gate work without gaining plan writes', async () => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'reviewer');
+    for (const capability of ['work_items:read', 'work_items:write', 'plans:read']) {
+      expect(caps.has(capability), `reviewer missing ${capability}`).toBe(true);
+    }
+    expect(caps.has('plans:write')).toBe(false);
+    expect(caps.has('harness:write')).toBe(false);
+    expect(caps.has('agent_tools:read')).toBe(true);
+    for (const capability of CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS) {
+      expect(caps.has(capability), `reviewer missing ${capability}`).toBe(true);
+    }
+  });
+
   test('operator: a provisioned row is unioned with the hive-decider baseline', async () => {
     // autoloop-pot-operator-rebuild-2026-06-05 P-004: operator became a
     // blueprint-declared role (the pot's decider), so a STALE provisioned row

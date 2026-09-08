@@ -24,6 +24,11 @@ import {
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 const SESSION_TURN_TEXT_CHUNK_CAP = 1_500;
 const SESSION_TURN_TEXT_CHUNK_MAX = 4_000;
+const SESSION_SELECTOR_CONSTRAINT = 'pass exactly one of `ref` or `session`';
+const SESSION_REF_WINDOW_CONSTRAINT =
+  '`ref` forbids source_kind/around/from_idx/to_idx; context, tail or limit/order and text_offset/text_limit remain allowed';
+const SESSION_TAIL_CONSTRAINT =
+  "`tail:N` already means `order:'desc', limit:N`; do not combine it with `order` or `limit`";
 
 const readArgsSchema = z
   .object({
@@ -75,7 +80,7 @@ const readArgsSchema = z
   .strict()
   .superRefine((args, ctx) => {
     if (Boolean(args.ref) === Boolean(args.session)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass exactly one of `ref` or `session`' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: SESSION_SELECTOR_CONSTRAINT });
     }
     if (args.ref && !args.ref.startsWith(SESSION_TURN_REF_PREFIX)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ref'], message: `ref must start with ${SESSION_TURN_REF_PREFIX}` });
@@ -84,16 +89,23 @@ const readArgsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['ref'],
-        message: '`ref` already fixes source/session/turn; combine it only with `context`, `limit`/`order`, or the `tail` shorthand',
+        message: SESSION_REF_WINDOW_CONSTRAINT,
       });
     }
     if (args.tail != null && (args.order != null || args.limit != null)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['tail'],
-        message: "`tail:N` already means `order:'desc', limit:N`; do not combine it with `order` or `limit`",
+        message: SESSION_TAIL_CONSTRAINT,
       });
     }
+  })
+  .meta({
+    'x-papercusp-call-constraint': [
+      SESSION_SELECTOR_CONSTRAINT,
+      SESSION_REF_WINDOW_CONSTRAINT,
+      SESSION_TAIL_CONSTRAINT,
+    ].join('; '),
   });
 
 export default defineTool({

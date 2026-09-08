@@ -41,6 +41,9 @@ export const ADMISSION_GIT_IDENTITY = Object.freeze({
   email: 'green-checkpoint@papercusp.local',
 });
 
+/** Fixed commit dates keep a preview's plumbing commit identical to the confirmed commit. */
+export const ADMISSION_GIT_DATE = '2000-01-01T00:00:00Z';
+
 const SHA_RE = /^[0-9a-f]{40,64}$/;
 
 /** The gate-owned ref that carries a frozen candidate's judged lineage. */
@@ -408,8 +411,10 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const identityEnv: NodeJS.ProcessEnv = {
       GIT_AUTHOR_NAME: ADMISSION_GIT_IDENTITY.name,
       GIT_AUTHOR_EMAIL: ADMISSION_GIT_IDENTITY.email,
+      GIT_AUTHOR_DATE: ADMISSION_GIT_DATE,
       GIT_COMMITTER_NAME: ADMISSION_GIT_IDENTITY.name,
       GIT_COMMITTER_EMAIL: ADMISSION_GIT_IDENTITY.email,
+      GIT_COMMITTER_DATE: ADMISSION_GIT_DATE,
     };
     const ct = run(['commit-tree', tree, '-p', repairHeadSha, '-m', message], identityEnv);
     const commit = ct.stdout.trim();

@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { admitPathsOntoRepairHead } from './repair-head-admission';
+import { ADMISSION_GIT_DATE, admitPathsOntoRepairHead } from './repair-head-admission';
 import { buildHunkExactSource, summarizeForeignHunks } from './hunk-exact-admission';
 import type { FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
 
@@ -89,6 +89,21 @@ describe('buildHunkExactSource — only the caller\'s hunks enter (P-020 / D-008
     if (!admitted.ok) throw new Error(admitted.detail);
     expect(show(root, admitted.commit, 'lib/a.ts')).toBe('export const a = 10;\nexport const b = 2;\n');
     expect(admitted.diff).toEqual(['lib/a.ts']);
+  });
+
+  it('uses a stable source message and commit dates, so repeated builds ignore nowMs', () => {
+    const { root, candidate } = repo();
+    const ledger = [
+      row('me', 'lib/a.ts', { kind: 'edit', old: 'export const a = 1;', new: 'export const a = 10;', replaceAll: false }),
+    ];
+    const first = buildHunkExactSource({ root, candidate, repairHead: candidate, paths: ['lib/a.ts'], ledger, actor: 'me', nowMs: T0 });
+    const second = buildHunkExactSource({ root, candidate, repairHead: candidate, paths: ['lib/a.ts'], ledger, actor: 'me', nowMs: T0 + 86_400_000 });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.sourceCommit).toBe(first.sourceCommit);
+    const expectedGitDate = ADMISSION_GIT_DATE.replace(/Z$/, '+00:00');
+    expect(git(root, ['show', '-s', '--format=%aI %cI', first.sourceCommit])).toBe(`${expectedGitDate} ${expectedGitDate}`);
   });
 
   it('includeHunksFrom replays the named peer\'s hunks too — the explicit widening, never chosen by the tool', () => {

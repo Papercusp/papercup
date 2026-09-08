@@ -30,6 +30,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  ADMISSION_GIT_DATE,
   ADMISSION_GIT_IDENTITY,
   normalizeAdmissionPath,
   realAdmissionGit,
@@ -255,13 +256,15 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
     const identityEnv: NodeJS.ProcessEnv = {
       GIT_AUTHOR_NAME: ADMISSION_GIT_IDENTITY.name,
       GIT_AUTHOR_EMAIL: ADMISSION_GIT_IDENTITY.email,
+      GIT_AUTHOR_DATE: ADMISSION_GIT_DATE,
       GIT_COMMITTER_NAME: ADMISSION_GIT_IDENTITY.name,
       GIT_COMMITTER_EMAIL: ADMISSION_GIT_IDENTITY.email,
+      GIT_COMMITTER_DATE: ADMISSION_GIT_DATE,
     };
     const message =
       `hunk-exact source for ${input.actor.trim()} onto ${repairHead.slice(0, 12)} (candidate ${input.candidate.slice(0, 12)})\n\n` +
       perPath.map((p) => `${p.path}: ${p.applied} hunk(s) by ${p.agents.join(', ')}${p.foreignHunks ? `; ${p.foreignHunks} foreign hunk(s) NOT carried (${p.foreignAgents.join(', ')})` : ''}`).join('\n') +
-      `\n\nBuilt ${new Date(input.nowMs).toISOString()} by papercusp release:repair-queue admit (P-020 / D-008).\n`;
+      '\n\nBuilt deterministically by papercusp release:repair-queue admit (P-020 / D-008).\n';
     const ct = run(['commit-tree', tree, '-p', repairHead, '-m', message], identityEnv);
     const sourceCommit = ct.stdout.trim();
     if (ct.status !== 0 || !SHA_RE.test(sourceCommit)) return gitFailed('commit-tree', ct);

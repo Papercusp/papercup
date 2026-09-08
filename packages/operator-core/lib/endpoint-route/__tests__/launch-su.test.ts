@@ -201,10 +201,10 @@ const CTX: RouteContext = {
   signal: new AbortController().signal,
 };
 
-async function callPost(body: unknown): Promise<Response> {
+async function callPost(body: unknown, stream = false): Promise<Response> {
   const mod = await import('../routes/adv/launch-su');
   const route = (mod.default as Array<{ handler: (req: Request, ctx: RouteContext) => Promise<Response> }>)[0];
-  const req = new Request('http://localhost:3070/api/adv/sessions/launch-su', {
+  const req = new Request(`http://localhost:3070/api/adv/sessions/launch-su${stream ? '?stream=1' : ''}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -304,6 +304,40 @@ afterEach(() => {
 });
 
 describe('launch-su', () => {
+  it('streams launch progress before slow preflight and preserves the final refusal', async () => {
+    let release!: () => void;
+    floorMock.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ ok: false, reason: 'fixture admission refusal' });
+    }));
+    let opened: Response | undefined;
+    const pending = callPost({ agent: 'codex', harness_slug: 'papercup', attached_engine: true,
+      agent_chat_id: 'streamed-chat' }, true).then((response) => { opened = response; return response; });
+    try {
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(opened, 'launch progress must precede the ordinary route watchdog').toBeDefined();
+      expect(opened!.headers.get('content-type')).toContain('text/event-stream');
+    } finally {
+      release();
+      await pending;
+    }
+    const wire = await opened!.text();
+    expect(wire).toContain('event: launch-starting');
+    expect(wire).toContain('event: launch-result');
+    expect(wire).toContain('"httpStatus":429');
+    expect(wire).toContain('fixture admission refusal');
+    expect(realSpawns()).toHaveLength(0);
+  });
+
+  it('streams validation errors as terminal launch results', async () => {
+    const response = await callPost({ agent: 'unsupported' }, true);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const wire = await response.text();
+    expect(wire).toContain('event: launch-result');
+    expect(wire).toContain('"httpStatus":400');
+    expect(wire).toContain('agent must be one of');
+    expect(realSpawns()).toHaveLength(0);
+  });
+
   it('spawns psu --no-picker for a valid agent + harness + plan', async () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
     expect(res.status).toBe(200);

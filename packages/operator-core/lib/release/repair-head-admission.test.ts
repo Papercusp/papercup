@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   ADMISSION_GIT_IDENTITY,
+  ADMISSION_GIT_DATE,
   admitPathsOntoRepairHead,
   frozenLineageRef,
   normalizeAdmissionPath,
@@ -324,11 +325,14 @@ describe('dryRun — the exact verdict confirm would get, without publishing (P-
     // b.ts was NOT carried along (path-exact, never the tip).
     expect(blobAt(root, dry.commit, 'lib/b.ts')).toBe(blobAt(root, candidate, 'lib/b.ts'));
 
-    const real = admit(root, candidate, candidate, ['lib/a.ts']);
+    const real = admit(root, candidate, candidate, ['lib/a.ts'], { nowMs: T0 + 86_400_000 });
     expect(real.ok).toBe(true);
     if (!real.ok) return;
     expect(real.published).toBe(true);
     expect(real.tree).toBe(dry.tree);
+    expect(real.commit).toBe(dry.commit);
+    const expectedGitDate = ADMISSION_GIT_DATE.replace(/Z$/, '+00:00');
+    expect(git(root, ['show', '-s', '--format=%aI %cI', real.commit])).toBe(`${expectedGitDate} ${expectedGitDate}`);
     expect(refAt(root, frozenLineageRef(candidate))).toBe(real.commit);
   });
 

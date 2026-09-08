@@ -61,7 +61,11 @@ import { buildPromotedRows, upsertPromotedBlock } from '../coordination/tools/pr
 import { titleFromPlanItem } from '../../plan-workitem-promotion';
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 import type { ActivationAuditEditNotice } from '../../plan-audits';
-import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import {
+  planRevisionCapture,
+  PlanRevisionUnavailableError,
+  type PlanRevisionCtx,
+} from './revisions';
 
 /** Boolean that also accepts the exact wire strings 'true'/'false' — same
  * EI-302 manifest-pinned-schema tolerance as plans:new's `force`. */
@@ -476,6 +480,15 @@ export default defineTool({
             'plans:start → auto-approve draft',
             { workspaceId: startWorkspaceId, harnessSlug },
           );
+          if (!revision.inTransaction) {
+            return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: 'plan_revision_unavailable',
+              message: 'Cannot auto-approve a draft plan without an attributable transactional revision writer.',
+            };
+          }
           const flipResult = await withPlanLock<boolean | CommitRefusal>(
             ctx as never,
             {
@@ -483,7 +496,7 @@ export default defineTool({
               intent: 'plans:start → auto-approve draft',
               ...(harnessSlug ? { harnessSlug } : {}),
               workspaceId: startWorkspaceId,
-              afterWrite: revision.afterWrite,
+              revisionInTransaction: revision.inTransaction,
             },
             async (current, meta) => {
               // Earlier readiness/consult reads are not write authority.
@@ -549,6 +562,15 @@ export default defineTool({
             ? (flipResult.activationAudit ?? null)
             : null;
         } catch (error) {
+          if (error instanceof PlanRevisionUnavailableError) {
+            return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: error.code,
+              message: error.message,
+            };
+          }
           return {
             ok: false as const, slug, harnessSlug, error: 'plan_start_revalidation_unavailable',
             message: error instanceof Error ? error.message : String(error),

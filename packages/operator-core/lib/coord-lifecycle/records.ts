@@ -471,6 +471,12 @@ function contrastiveObservables(value: string): string[] {
     .filter(Boolean);
 }
 
+/** Shared by the successful-close gate and its compact discovery contract. */
+export const ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES = ['done', 'resolved', 'passed'] as const;
+export const ROOT_CAUSE_DISTINGUISHING_TEST_EXAMPLE = 'if H1 then A; if H2 then B';
+export const ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT =
+  `at least two different conditional observables, e.g. "${ROOT_CAUSE_DISTINGUISHING_TEST_EXAMPLE}" (equivalent conditional prose accepted)`;
+
 export const RootCauseVerificationSchema = z
   .object({
     hypothesis: z.string().trim().min(1).describe('The claimed originating cause.'),
@@ -479,9 +485,7 @@ export const RootCauseVerificationSchema = z
       .string()
       .trim()
       .min(1)
-      .describe(
-        'Two contrastive conditional arms with different observables, for example "if H1 then A; if H2 then B" or equivalent conditional prose.',
-      ),
+      .describe(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT),
     testResult: z.string().trim().min(1).describe('The actual pre-fix observable.'),
   })
   .strict()
@@ -498,8 +502,7 @@ export const RootCauseVerificationSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['distinguishingTest'],
-        message:
-          'distinguishingTest must state at least two different conditional observables, e.g. "if H1 then A; if H2 then B".',
+        message: `distinguishingTest must state ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}.`,
       });
     }
   });
@@ -885,7 +888,11 @@ export const CompletionRecordSchema = z.object({
   /** Queryable verification evidence; aliases below keep legacy callers cheap. */
   verification: CompletionVerificationEvidenceSchema.optional(),
   /** Required on successful bug/capability-gap closes; persisted with terminal evidence. */
-  rootCauseVerification: RootCauseVerificationSchema.optional(),
+  rootCauseVerification: RootCauseVerificationSchema.optional().meta({
+    'x-papercusp-call-constraint':
+      `successful bug/capability-gap close (state=${ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.join('|')}) => required; ` +
+      `hypothesis!=alternativeHypothesis; distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
+  }),
   /** Top-level alias for the structured verification coverage record (WI-37960). */
   coverage: CompletionCoverageSchema.optional(),
   filesChanged: FilesChangedSchema,
