@@ -125,7 +125,10 @@ const startTool = (await import('../start')).default;
 const { setupPlanPgFixture, cleanupPlans, seedPlan } = await import('./_pg-tool-fixture');
 
 const HARNESS = `zzz-start-flip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const SLUG = 'zzz-start-flip-plan-2026-06-16';
+// The baseline can still carry migration 1004's workspace+subjectPlan unique
+// index. Isolate the subject as well as its harness; never delete a peer's seed
+// or require a live schema migration just to exercise this class-change race.
+const SLUG = `${HARNESS}-plan`;
 const WS = DEFAULT_WORKSPACE_ID;
 
 async function seedLegacyPlan(status: 'draft' | 'ready') {
@@ -230,12 +233,17 @@ async function persistedStartState() {
 }
 
 async function cleanupFixture() {
-  // Clause identities/revisions are deliberately not cascaded from a plan.
-  // This fixture now authors them, so it must clean its own exact scope.
-  await admin`DELETE FROM harness_shared.plan_spec_clause_revisions
-    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
-  await admin`DELETE FROM harness_shared.plan_spec_clauses
-    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+  // Revisions are append-only, even for the test admin. Teardown on the
+  // injected throwaway database suppresses triggers on THIS transaction only:
+  // no shared ALTER TABLE and no changes to the production immutability guard.
+  await admin.begin(async (tx) => {
+    await tx`SET LOCAL session_replication_role = replica`;
+    await tx`DELETE FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+    await tx`DELETE FROM harness_shared.plan_spec_clauses
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+  });
+  expect((await admin`SHOW session_replication_role`)[0]?.session_replication_role).toBe('origin');
   await admin`DELETE FROM harness_shared.plan_items
     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
   await cleanupPlans(admin, WS, HARNESS);
@@ -354,6 +362,12 @@ describe('plans:start — refused approval leaves no persisted start (P-002)', (
       }))).toMatchObject({ status: 'created' });
       return listSpecClauses({ harnessSlug: HARNESS, planSlug: SLUG });
     });
+    // Positive control: cleanup must not leave the real write path with the
+    // revision guard disabled. This exact revision exists and rejects deletion.
+    expect(clauses).toHaveLength(1);
+    await expect(admin`DELETE FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`
+    ).rejects.toThrow(/immutable/);
     const cardFor = (classRef: 'plan-class-feature-ship' | 'plan-class-bugfix'): ScorecardRow => {
       const evaluation = evaluatePlanSpecQuality({
         planSlug: SLUG, harnessSlug: HARNESS, planItemIds: ['P-001'], clauses, classRef,
