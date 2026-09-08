@@ -470,8 +470,27 @@ const workItemIdentityResultSchema = z.object({
 const workItemsGetResultRowSchema = z.object({
   ok: z.boolean(),
   id: z.string(),
+  // These are existing reader fields, including explicit null/unavailable
+  // states. Declare them so discovery teaches their real paths instead of
+  // hiding the checkpoint and comment window behind passthrough.
+  checkpoint: z.string().nullable().optional(),
+  threadWindow: z.object({
+    total: z.number().int().nonnegative(),
+    posts: z.array(z.object({
+      id: z.number().int(),
+      body: z.string(),
+    }).passthrough()),
+  }).passthrough().nullable().optional(),
   availability: z.enum(['available', 'absent', 'unavailable']).optional(),
   workItem: workItemIdentityResultSchema.optional(),
+  checkpointAgeMs: z.number().nullable().optional(),
+  checkpointUpdatedAtMs: z.number().nullable().optional(),
+  checkpointContentHash: z.string().nullable().optional(),
+  threadWindowReadFailed: z.boolean().optional(),
+  threadLimitClamped: z.object({
+    requested: z.number().int(),
+    applied: z.number().int(),
+  }).optional(),
   error: z.string().optional(),
   retryable: z.boolean().optional(),
   phase: z.string().optional(),

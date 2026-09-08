@@ -22,6 +22,7 @@ import crossHarnessPlansSearch from '../cross_harness/plans_search';
 import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
+import workItemsGet from '../work_items/get';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
@@ -232,6 +233,19 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       type: 'array',
       items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     })).toContain('array{id:string}');
+  });
+
+  it('publishes checkpoint and bounded comment paths under the work-item result envelope', async () => {
+    expect(workItemsGet.name).toBe('work_items:get');
+    const out = await callHandler({ query: 'work_items:get', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'work_items:get');
+    expect(hit?.returnsSource).toBe('registered-output-schema');
+    expect(hit?.returns).toContain('results:array{');
+    expect(hit?.returns).toContain('checkpoint?:string|null');
+    expect(hit?.returns).toContain('threadWindow?:object|null{total:integer');
+    expect(hit?.returns).toContain('posts:array');
+    expect(hit?.returns).toContain('workItem?');
+    expect(hit?.returns?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
   it('uses the raw discovery schema for a release:trace-style path-or-sha union', () => {
