@@ -84,7 +84,13 @@ async function readOrientation() {
 
 describe('GOAL-holder complete agenda recovery through coord:orient', () => {
   it('keeps an omitted real agenda unseen until a full warm delivery and re-delivers after a cold boundary', async () => {
-    const read = vi.spyOn(obligationReader, 'readAgentObligationAgenda');
+    // The newly enabled holder is initially inside the reporting grace period.
+    // Advance the reader's supported clock, retaining its real PostgreSQL data
+    // and provider evaluation, to exercise an actual due opportunity.
+    const dueAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+    const readAgenda = obligationReader.readAgentObligationAgenda;
+    const read = vi.spyOn(obligationReader, 'readAgentObligationAgenda')
+      .mockImplementation((input) => readAgenda({ ...input, now: dueAt }));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await readOrientation();
     const canonical = await read.mock.results[0].value;

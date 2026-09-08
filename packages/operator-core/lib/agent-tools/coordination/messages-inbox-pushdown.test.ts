@@ -48,6 +48,20 @@ function primeSql(rows: { body: unknown }[]) {
   return seen;
 }
 
+function renderSqlValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(renderSqlValue).join(' ');
+  if (value && typeof value === 'object') {
+    const record = value as { fragment?: unknown; values?: unknown };
+    return [record.fragment, record.values].map(renderSqlValue).join(' ');
+  }
+  return '';
+}
+
+function renderedQuery(query: { text: string; values: unknown[] }): string {
+  return [query.text, ...query.values.map(renderSqlValue)].join(' ').replace(/\s+/g, ' ');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   fastPathState.on = true;
@@ -61,7 +75,7 @@ describe('readInbox recipient predicate remains GIN-indexable', () => {
     await readInbox('alice');
 
     expect(seen).toHaveLength(1);
-    const text = seen[0]!.text.replace(/\s+/g, ' ');
+    const text = renderedQuery(seen[0]!);
     expect(text).toContain("(body->'to') ?");
     expect(text).not.toContain('jsonb_exists');
   });
@@ -73,7 +87,7 @@ describe('readInbox recipient predicate remains GIN-indexable', () => {
 
     expect(result.exhausted).toBe(true);
     expect(seen).toHaveLength(1);
-    const text = seen[0]!.text.replace(/\s+/g, ' ');
+    const text = renderedQuery(seen[0]!);
     expect(text).toContain("(body->'to') ?");
     expect(text).not.toContain('jsonb_exists');
   });

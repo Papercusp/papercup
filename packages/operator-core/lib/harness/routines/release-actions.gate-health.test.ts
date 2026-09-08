@@ -1074,6 +1074,92 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
     expect(seen).toContainEqual(['rev-list', '--count', 'deadbeefcafe..staging']);
   });
 
+  it('does not fossilize a fresh verdict bound to an admitted detached repair head', async () => {
+    const frozenCandidate = 'a'.repeat(40);
+    const repairHead = 'c'.repeat(40);
+    const repairQueue = {
+      schemaVersion: 3,
+      phase: 'awaiting-fixer',
+      candidate: frozenCandidate,
+      base: null,
+      repairHead,
+      attempts: 0,
+      openedAtMs: Date.now() - 1_000,
+      updatedAtMs: Date.now(),
+      fixerSpawnId: null,
+      failingTests: ['pkgA/foo.test.ts'],
+    };
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now() };
+    seededRepairQueue = repairQueue;
+    let gitCalls = 0;
+    const detachedHeadRunner: GitCheckRunner = async () => {
+      gitCalls++;
+      // Admission-created heads have historically carried this epoch-like timestamp. The
+      // guard must keep it out of the freshness snapshot even if git can read it.
+      return { ok: true, stdout: '2000-01-01T00:00:00Z' };
+    };
+
+    await trackGateStall(
+      ctx,
+      'not-green',
+      repairHead,
+      ['pkgA/foo.test.ts'],
+      null,
+      undefined,
+      null,
+      detachedHeadRunner,
+      { repairQueue },
+    );
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(gitCalls).toBe(0);
+    expect(written!.candidateCommittedAt).toBeNull();
+    expect(written!.commitsBehindTip).toBeNull();
+    expect(written!.observedCandidate).toBe(repairHead.slice(0, 12));
+  });
+
+  it('still measures a queue whose repair head is the original tip candidate', async () => {
+    const candidate = 'd'.repeat(40);
+    const repairQueue = {
+      schemaVersion: 3,
+      phase: 'awaiting-fixer',
+      candidate,
+      base: null,
+      repairHead: candidate,
+      attempts: 0,
+      openedAtMs: Date.now() - 1_000,
+      updatedAtMs: Date.now(),
+      fixerSpawnId: null,
+      failingTests: ['pkgA/foo.test.ts'],
+    };
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now() };
+    seededRepairQueue = repairQueue;
+    const seen: string[][] = [];
+    const tipRunner: GitCheckRunner = async (_root, args) => {
+      seen.push(args);
+      return { ok: true, stdout: args[0] === 'log' ? '2026-09-08T20:00:00Z' : '7' };
+    };
+
+    await trackGateStall(
+      ctx,
+      'not-green',
+      candidate,
+      ['pkgA/foo.test.ts'],
+      null,
+      undefined,
+      null,
+      tipRunner,
+      { repairQueue },
+    );
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(seen).toHaveLength(2);
+    expect(written!.candidateCommittedAt).toBe('2026-09-08T20:00:00Z');
+    expect(written!.commitsBehindTip).toBe(7);
+  });
+
   it('is FAIL-SAFE — a git error yields nulls rather than throwing', async () => {
     const out = await measureCandidateStaleness('/repo', 'deadbeefcafe', stalenessRunner(null, null));
     expect(out.candidateCommittedAt).toBeNull();
