@@ -95,7 +95,6 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
   }
 
   it.each([
-    ['business failure', { ok: false, error: 'scope denied' }],
     ['absent result', undefined],
     ['null result', null],
     ['empty result', {}],
@@ -103,21 +102,32 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
     ['unparsed result', 'ok:true'],
   ])('preserves the completed claim on declaration %s', async (_label, declaration) => {
     const { call, calls } = claimedCall(() => declaration);
-    expect(await composePickup(args, call)).toMatchObject({
-      ok: false, step: 'declare-intent', item, claimed: true,
-      intentDeclared: false, laneClaimed: false,
-    });
+    const result = await composePickup(args, call);
+    expect(result).toMatchObject({ ok: false, step: 'declare-intent', item, claimed: true });
+    expect(result.intentDeclared).toBeUndefined();
+    expect(result.laneClaimed).toBeUndefined();
     expect(calls.map(({ name }) => name)).toEqual([
       'work_items:get', 'work_items:claim', 'coord:declare-intent',
     ]);
   });
 
-  it('reports a thrown declaration gate failure without hiding the completed claim', async () => {
-    const { call } = claimedCall(() => { throw new Error('capability revoked'); });
+  it('reports an explicit declaration refusal without hiding the completed claim', async () => {
+    const { call } = claimedCall(() => ({ ok: false, error: 'scope denied' }));
     expect(await composePickup(args, call)).toMatchObject({
-      ok: false, step: 'declare-intent', error: 'capability revoked',
+      ok: false, step: 'declare-intent', error: 'scope denied',
       item, claimed: true, intentDeclared: false, laneClaimed: false,
     });
+  });
+
+  it('reports a thrown declaration result as unknown without hiding the completed claim', async () => {
+    const { call } = claimedCall(() => { throw new Error('capability revoked'); });
+    const result = await composePickup(args, call);
+    expect(result).toMatchObject({
+      ok: false, step: 'declare-intent', error: 'intent declaration outcome unknown: capability revoked',
+      item, claimed: true,
+    });
+    expect(result.intentDeclared).toBeUndefined();
+    expect(result.laneClaimed).toBeUndefined();
   });
 
   it.each([
@@ -125,10 +135,6 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
     ['unknown id', { claimed: [], alreadyHeld: [], conflicts: [], unknown: ['P-001'] }],
     ['no positive receipt', { claimed: [], alreadyHeld: [], conflicts: [] }],
     ['wrong receipt', { claimed: ['P-002'], alreadyHeld: [], conflicts: [] }],
-    ['missing claims', undefined],
-    ['malformed claims', { claimed: 'P-001', alreadyHeld: [], conflicts: [] }],
-    ['malformed conflicts', { claimed: ['P-001'], alreadyHeld: [], conflicts: null }],
-    ['malformed unknowns', { claimed: ['P-001'], alreadyHeld: [], conflicts: [], unknown: 'P-002' }],
   ])('separates declared presence from a lane %s', async (_label, claims) => {
     const declaration = { ok: true, presence: { intent: args.intent }, claims };
     const { call } = claimedCall(() => declaration);
@@ -136,6 +142,41 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
       ok: false, step: 'lane', claimed: true, intentDeclared: true,
       laneClaimed: false, presence: declaration,
     });
+  });
+
+  it.each([
+    undefined,
+    { claimed: 'P-001', alreadyHeld: [], conflicts: [] },
+    { claimed: ['P-001'], alreadyHeld: [], conflicts: null },
+    { claimed: ['P-001'], alreadyHeld: [], conflicts: [], unknown: 'P-002' },
+  ])('does not infer an absent lane from a missing/malformed receipt: %j', async (claims) => {
+    const { call } = claimedCall(() => ({ ok: true, claims }));
+    const result = await composePickup(args, call);
+    expect(result).toMatchObject({ ok: false, step: 'lane', claimed: true, intentDeclared: true });
+    expect(result.laneClaimed).toBeUndefined();
+    expect(result.error).toContain('outcome unknown');
+  });
+
+  it('recovers after presence committed but its response was lost, without releasing or recreating', async () => {
+    let presenceWritten = false;
+    let interrupted = false;
+    const { call, calls } = claimedCall(() => {
+      presenceWritten = true;
+      if (!interrupted) {
+        interrupted = true;
+        throw new Error('response lost after presence commit');
+      }
+      return { ok: true, claims: { claimed: [], alreadyHeld: ['P-001'], conflicts: [] } };
+    });
+    const partial = await composePickup(args, call);
+    expect(presenceWritten).toBe(true);
+    expect(partial).toMatchObject({ ok: false, claimed: true });
+    expect(partial.intentDeclared).toBeUndefined();
+    expect(await composePickup(args, call)).toMatchObject({ ok: true, laneClaimed: true });
+    expect(calls.map(({ name }) => name)).toEqual([
+      'work_items:get', 'work_items:claim', 'coord:declare-intent',
+      'work_items:get', 'work_items:claim', 'coord:declare-intent',
+    ]);
   });
 
   it('accepts an already-held lane receipt on an authorized same-ID retry', async () => {

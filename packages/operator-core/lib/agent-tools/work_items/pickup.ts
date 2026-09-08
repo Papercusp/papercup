@@ -43,6 +43,7 @@ export interface PickupResult {
   /** The work-item (detailed from get, refreshed by claim when it succeeded). */
   item?: unknown;
   claimed?: boolean;
+  /** Omitted when declaration may have committed but no authoritative result returned. */
   intentDeclared?: boolean;
   /** Only present when a plan lane was requested; presence success is not a lane claim. */
   laneClaimed?: boolean;
@@ -100,10 +101,11 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
     } catch (error) {
       return {
         ok: false, step: 'declare-intent',
-        error: error instanceof Error ? error.message : 'intent declaration failed',
+        error: `intent declaration outcome unknown: ${error instanceof Error ? error.message : String(error)}`,
         item: claimed.workItem ?? gotItem.workItem,
-        claimed: true, intentDeclared: false,
-        ...(laneRequested ? { laneClaimed: false } : {}),
+        // A transport/handler throw can happen AFTER writePresence. Do not
+        // manufacture either a positive receipt or proof that nothing landed.
+        claimed: true,
       };
     }
     const declaration = presence as {
@@ -114,10 +116,13 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
     if (declaration?.ok !== true) {
       return {
         ok: false, step: 'declare-intent',
-        error: declaration?.error ?? 'intent declaration did not report success',
+        error: declaration?.error ?? 'intent declaration outcome unknown: no authoritative result',
         item: claimed.workItem ?? gotItem.workItem,
-        claimed: true, intentDeclared: false,
-        ...(laneRequested ? { laneClaimed: false } : {}),
+        claimed: true,
+        ...(declaration?.ok === false ? {
+          intentDeclared: false,
+          ...(laneRequested ? { laneClaimed: false } : {}),
+        } : {}),
         ...(presence != null ? { presence } : {}),
       };
     }
@@ -129,18 +134,23 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
       const claims = declaration.claims;
       const stringList = (value: unknown): value is string[] =>
         Array.isArray(value) && value.every((item) => typeof item === 'string');
-      const laneSucceeded = claims != null
+      const laneMeasured = claims != null
         && stringList(claims.claimed)
         && stringList(claims.alreadyHeld)
-        && Array.isArray(claims.conflicts) && claims.conflicts.length === 0
-        && (claims.unknown === undefined || (Array.isArray(claims.unknown) && claims.unknown.length === 0))
+        && Array.isArray(claims.conflicts)
+        && (claims.unknown === undefined || stringList(claims.unknown));
+      const laneSucceeded = laneMeasured
+        && (claims!.conflicts as unknown[]).length === 0
+        && (claims!.unknown === undefined || (claims!.unknown as string[]).length === 0)
         && args.items!.every((id) => (claims.claimed as string[]).includes(id)
           || (claims.alreadyHeld as string[]).includes(id));
       if (!laneSucceeded) {
         return {
-          ok: false, step: 'lane', error: 'requested plan lane was not fully claimed',
+          ok: false, step: 'lane',
+          error: laneMeasured ? 'requested plan lane was not fully claimed' : 'plan lane outcome unknown: no authoritative result',
           item: claimed.workItem ?? gotItem.workItem,
-          claimed: true, intentDeclared: true, laneClaimed: false, presence,
+          claimed: true, intentDeclared: true, presence,
+          ...(laneMeasured ? { laneClaimed: false } : {}),
         };
       }
     }
