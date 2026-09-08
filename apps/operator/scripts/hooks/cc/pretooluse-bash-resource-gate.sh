@@ -3928,7 +3928,7 @@ def _canonical_tree_root():
 # `**/.papercusp/scratch/`), so git-sync can never commit anything under it, and
 # a throwaway probe no peer edits has no lock worth contending for.
 #
-# Exempting it is what makes this guard's OWN remediation followable. The advice
+# Exempting it is what makes this guard's OWN remediation followable. The old advice
 # was "write it outside the tree (~/.papercusp/scratch or /tmp)" — but the single
 # most common scratch case on this repo, a tsx/node probe that IMPORTS repo
 # modules, cannot run from either: module resolution walks up from the FILE's
@@ -3936,6 +3936,10 @@ def _canonical_tree_root():
 # 2026-08-10: a probe under `~/.papercusp/scratch` dies with MODULE_NOT_FOUND.
 # So the guard denied the only location that works and recommended two that
 # don't, and the agent hit that wall mid-verification with no legal move.
+# External scratch is also shared across concurrent agents, so any external path
+# named in the remedy must be per-session/task-unique rather than a reusable bare
+# `/tmp/<name>` filename. The remedy below keeps the working in-tree location and
+# `code:run` route explicit while making that uniqueness requirement visible.
 #
 # ⚠ `/tmp` can LOOK viable: a stray `/tmp/node_modules` (a full dependency tree
 # left there on 2026-08-09) silently satisfies those imports for as long as it
@@ -3976,7 +3980,10 @@ def _is_sanctioned_scratch(resolved, canon):
 # shared rather than duplicated.
 _SCRATCH_REMEDY = (
     'Genuinely a scratch/log file? Write it outside the tree '
-    '(~/.papercusp/scratch or /tmp). But if it must IMPORT repo modules (the '
+    'under a per-session/task-unique directory (for example '
+    '`~/.papercusp/scratch/<session-or-task>/` or `/tmp/<session-or-task>/`); '
+    'never reuse a bare shared `/tmp` filename because concurrent agents can '
+    'overwrite it. But if it must IMPORT repo modules (the '
     'usual tsx/node probe), neither of those can resolve them — there is no repo '
     '`node_modules` above either — so either run it through `code:run` (executes '
     'in-tree with the tool namespace available), or write it under '

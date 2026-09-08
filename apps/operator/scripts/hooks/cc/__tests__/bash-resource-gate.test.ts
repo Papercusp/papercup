@@ -4906,6 +4906,7 @@ describe('read-only tree references do not trip the write guard (EI-188983659953
  */
 describe('sanctioned in-tree scratch exemption (EI-19372138838008750)', () => {
   const scratchRemedy = /\.papercusp\/scratch\/` INSIDE/;
+  const uniqueExternalScratchRemedy = /per-session\/task-unique directory/;
 
   it('ALLOWS a shell redirect into <tree>/.papercusp/scratch/', () => {
     expectAllow(
@@ -4966,6 +4967,15 @@ describe('sanctioned in-tree scratch exemption (EI-19372138838008750)', () => {
       runGate(bashCmd('echo hi > packages/operator-core/lib/evil.ts', { cwd: CANON }), CANON_ENV),
     );
     expect(reason).toContain('code:run');
+  });
+
+  it('requires external scratch paths to be unique instead of reusing bare /tmp names', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > packages/operator-core/lib/evil.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toMatch(uniqueExternalScratchRemedy);
+    expect(reason).toContain('never reuse a bare shared `/tmp` filename');
+    expect(reason).toContain('concurrent agents can overwrite it');
   });
 
   it('names the in-tree scratch location in the interpreter-write deny', () => {
