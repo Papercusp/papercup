@@ -206,6 +206,8 @@ export interface CompareResult {
   readonly diffRegions?: readonly DiffRegion[];
 
   readonly artifacts?: ComparisonArtifacts;
+  /** Structural/browser proof and its explicitly labelled review; never a pixel score. */
+  readonly renderObservation?: import('./render-matrix').RenderMatrixObservation;
 
   /**
    * The rendering host the implementation capture was produced on (P-011,

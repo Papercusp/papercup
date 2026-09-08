@@ -17,6 +17,7 @@ describe('leader checkpoint progress delivery (P-005)', () => {
             id: 'WI-A', harness: 'fixture', holderProof: { ownerId: 'owner', workspaceId: 'ws' },
             status: 'stored', checkpoint: 'x'.repeat(700), checkpointUpdatedAtMs: 90,
             checkpointContentHash: 'full-note-hash', checkpointTruncated: false, recovery,
+            freshness: { basis: 'relative-activity', stale: true, lagMs: 360_000, reason: 'Verify later work.' },
           }, {
             id: 'WI-B', status: 'unknown', checkpoint: null, checkpointTruncated: false,
           }],
@@ -31,8 +32,36 @@ describe('leader checkpoint progress delivery (P-005)', () => {
     expect(progress.items[0]).toMatchObject({
       id: 'WI-A', checkpointContentHash: 'full-note-hash', checkpointTruncated: true,
       checkpointUpdatedAtMs: 90, recovery,
+      freshness: { basis: 'relative-activity', stale: true, lagMs: 360_000, reason: 'Verify later work.' },
     });
     expect(progress.items[0].checkpoint.length).toBeLessThanOrEqual(240);
+  });
+
+  it.each([false, true])('emergency delivery preserves freshness unless admission blocks consume the member slot: %s', (admissionBlocked) => {
+    const input = largeBrief();
+    (input as Record<string, unknown>).admissionBlocked = admissionBlocked
+      ? [{ itemId: 'WI-blocked', member: 'owner', code: 'fleet_scope_violation' }]
+      : [];
+    const freshness = { basis: 'declared', verdict: 'recomputed', declared: 2, changed: 0, unresolvable: 1 };
+    (input.members[0] as Record<string, unknown>).checkpointProgress = {
+      status: 'read', source: 'work_items:checkpoint', snapshotOnly: true, readAtMs: 100,
+      rosterItems: 1, omitted: 0,
+      items: [{
+        id: 'WI-A', harness: 'fixture', status: 'stored', checkpoint: 'Next: verify.',
+        checkpointContentHash: 'source-hash', freshness,
+        recovery: { tool: 'work_items:get', args: { id: 'WI-A', harness: 'fixture' } },
+      }],
+    };
+    const out = shapeLeaderBrief(input, 'trimmed') as Record<string, any>;
+    expect(out.leaderBriefProjection.emergency).toBe(true);
+    if (!admissionBlocked) {
+      expect(out.members).toHaveLength(1);
+      expect(out.members[0].checkpointProgress.items[0].freshness).toEqual(freshness);
+      expect(out.members[0].checkpointProgress.snapshotOnly).toBe(true);
+    } else {
+      expect(out.members).toEqual([]);
+      expect(out.membersTruncated).toMatchObject({ shown: 0, total: 53 });
+    }
   });
 });
 

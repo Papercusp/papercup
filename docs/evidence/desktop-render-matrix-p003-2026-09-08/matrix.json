@@ -1,0 +1,1810 @@
+{
+  "contract": {
+    "schemaVersion": 1,
+    "reference": {
+      "schemaVersion": 1,
+      "featureId": "desktop-design-fidelity-repair-2026-09-08",
+      "referenceId": "desktop-option-b",
+      "revision": 1,
+      "contentSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663"
+    },
+    "cases": [
+      {
+        "caseId": "ready-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "ready-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "ready-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "ready-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "empty-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "empty-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "empty-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "empty-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      }
+    ]
+  },
+  "observations": [
+    {
+      "caseId": "ready-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-desktop-light.png",
+        "sha256": "6bc63fc9e37d88b243d961bb42f195cc4524563ef1138e41211c04a357f3d0af"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 491,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 427
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "ready-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-desktop-dark.png",
+        "sha256": "59f6e6cde84fe014f48540ae49126b0d3d37d7dab280e6fb900492a293d33e5e"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 491,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 427
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "ready-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-narrow-light.png",
+        "sha256": "27a8a442520cf3c492cbd409a376b4b79053bbded05f4bdee7a78ac05af1d33f"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 897.1875,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 170,
+          "width": 342,
+          "height": 427
+        },
+        "secondary": {
+          "x": 24,
+          "y": 613,
+          "width": 342,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "ready-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-narrow-dark.png",
+        "sha256": "e726996e15a634c825e2cc567122fca3285772973cc9eec3918a90621e75e786"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 897.1875,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 170,
+          "width": 342,
+          "height": 427
+        },
+        "secondary": {
+          "x": 24,
+          "y": 613,
+          "width": 342,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "empty-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-desktop-light.png",
+        "sha256": "968a0b2c3d1058f0ddb96151eaec21c7ee61f590356d95e1938059dcd88b1770"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "empty-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-desktop-dark.png",
+        "sha256": "6a5aa7193ca096b5c9c0c0d3a62427333947149d3195c4f5328e3ac72dafaa0c"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "empty-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-narrow-light.png",
+        "sha256": "fc2edba6b79f69b5c6e339fc47ec0c9be66a069a8d6d5dd00826f4254d6d6a41"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "empty-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-narrow-dark.png",
+        "sha256": "07124df6099c69498436c03f39378fda76eba4e8800ec83543631cfbc64a4df0"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "loading-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-desktop-light.png",
+        "sha256": "bd29a0b7264593b7576cb47f500b369a84efe5a29fd342d9555a29a078e5978a"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "loading-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-desktop-dark.png",
+        "sha256": "66623900a9f18865a1e06de7e131a44e39d11472e0266e368f0a6fc4b691d46d"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "loading-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-narrow-light.png",
+        "sha256": "433b5aa43f1511ac64b5004b054750d9d3350cea7befdddf499ad59466c45d7e"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "loading-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-narrow-dark.png",
+        "sha256": "5eb8430acf1fc60f74930056b153865d38571aa56e47bb19ad6baa4f0f2b2d3c"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "disconnected-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-desktop-light.png",
+        "sha256": "5093f4babbb6a01096ed2786e1d05f96d028fa57daede5626f73e9bb0b468ed2"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "disconnected-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-desktop-dark.png",
+        "sha256": "ac7781d9d261a6ef9a30cb9632eff803f445f285563b48310628778fc7b16fb0"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "disconnected-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-narrow-light.png",
+        "sha256": "b7b72be329356ff16c3c99a56d58172c6a4fcfec44dc7de57baf67ba28fc5ab1"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "disconnected-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-narrow-dark.png",
+        "sha256": "e0bbc4db591c61e0d62db320d3a584adf97ab5dfe5a76674d024b58608b992b0"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "error-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-desktop-light.png",
+        "sha256": "5743299dd1e4c897c1e701d3378d8a3312286fa2518183bc5236949c7cb341da"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 548,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 179,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 179,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "error-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-desktop-dark.png",
+        "sha256": "bbeb62cada6c4a51eebeacfe4299e06b2e0b6278fd59addb94878621290cd3fd"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 548,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 179,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 179,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "error-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-narrow-light.png",
+        "sha256": "eb9363f25cae35fb1e3ec28468231f9173720e85f601153614168511e59f043f"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 748,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 214,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 530,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    },
+    {
+      "caseId": "error-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:0d2036d2a64826d1d6d60c4cd5a7994513acfa60:00cb0a3b613b339cf51aca8471c1f00614eddb01ca7bd4603e002e6af63683fb"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-narrow-dark.png",
+        "sha256": "eb2c6a3d5d2a04b10a6334177f0ff87bd900af415b2a496ae060cfcdb7275097"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 748,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 214,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 530,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised"
+    }
+  ],
+  "referencePath": "scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png",
+  "disclosure": "Controlled component states and viewer fixture. No shell entry, real video, remote input, cloud provisioning or connectivity proof. Visual reviews are absent until an actual reviewer inspects the captures."
+}

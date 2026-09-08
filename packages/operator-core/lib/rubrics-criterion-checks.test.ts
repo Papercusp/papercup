@@ -775,6 +775,24 @@ const failRun = (files: string[]) => {
   };
 };
 
+const collectionFailRun = (files: string[], message: string) => {
+  const byFile = Object.fromEntries(
+    files.map((f, i) => [
+      f,
+      i === 0
+        ? { passed: 0, failed: 1, skipped: 0, collectionFailed: true }
+        : { passed: 3, failed: 0, skipped: 0, collectionFailed: false },
+    ]),
+  );
+  return {
+    ...passRun(files),
+    ok: false,
+    ...totalsOf(byFile),
+    failures: [{ file: files[0], test: '(file failed to collect)', message }],
+    byFile,
+  };
+};
+
 const CRITERIA = [
   { key: 'fuzzy', check: undefined },
   { key: 'det', check: testsCheck(['packages/x/real.test.ts']) },
@@ -885,6 +903,26 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
       expect(res.error).toBe('check_contradicted');
       expect(res.detail).toContain("'det'");
       expect(res.detail).toContain('FAILED');
+    }
+  });
+
+  it('preserves a collection-error message in the deterministic refusal', async () => {
+    const collectionMessage = "Expected ';' but found 'why' at unanswered-directed.ts:639:58";
+    const runner: CriterionCheckRunner = async ({ files }) => collectionFailRun(files, collectionMessage) as never;
+    const res = await evaluateCriterionTestChecks({
+      criteria: CRITERIA,
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('check_contradicted');
+      expect(res.detail).toContain(collectionMessage);
+      expect(res.run.kind).toBe('tests');
+      expect(res.run.failures?.[0]).toContain('(file failed to collect)');
+      expect(res.run.failures?.[0]).toContain(collectionMessage);
     }
   });
 

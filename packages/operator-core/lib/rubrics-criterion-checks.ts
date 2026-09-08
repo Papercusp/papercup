@@ -1081,6 +1081,20 @@ function ratingClaimsPass(rating: string): boolean {
   );
 }
 
+/** Preserve actionable detail when a deterministic check contradicts a rating. */
+const CRITERION_FAILURE_MESSAGE_MAX_CHARS = 500;
+
+function formatCriterionFailure(failure: { file?: unknown; test?: unknown; message?: unknown }): string {
+  const file = typeof failure.file === 'string' && failure.file.length > 0 ? failure.file : '?';
+  const test = typeof failure.test === 'string' && failure.test.length > 0 ? failure.test : '?';
+  const rawMessage = typeof failure.message === 'string' ? failure.message.replace(/\s+/g, ' ').trim() : '';
+  const message =
+    rawMessage.length > CRITERION_FAILURE_MESSAGE_MAX_CHARS
+      ? `${rawMessage.slice(0, CRITERION_FAILURE_MESSAGE_MAX_CHARS - 1)}…`
+      : rawMessage;
+  return `${file}: ${test}${message ? ` — ${message}` : ''}`;
+}
+
 type ReportedTestFileCounts = {
   passed: number;
   failed: number;
@@ -1305,7 +1319,7 @@ export async function evaluateCriterionTestChecks(input: {
                 return file !== undefined && fileIdentities.has(reportedTestFileIdentity(file, reportRoot));
               })
               .slice(0, 10)
-              .map((f) => `${(f as { file?: string }).file ?? '?'}: ${(f as { test?: string }).test ?? '?'}`),
+              .map((f) => formatCriterionFailure(f)),
           }
         : {}),
     };

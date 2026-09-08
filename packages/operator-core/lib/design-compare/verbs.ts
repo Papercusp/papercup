@@ -37,6 +37,10 @@
  *      environment was not the contracted one, the engine errored. This IS
  *      evidence, it is persisted, and it is never a silent pass.
  */
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { renderMatrixObservationSchema } from './render-matrix';
 import {
   COMPARE_RESULT_SCHEMA_VERSION,
   type CaptureEnvironment,
@@ -376,6 +380,8 @@ export interface CompareRenderInput {
   readonly renderHost?: string;
   /** Advisory prose. Recorded beside the evidence, never able to change it. */
   readonly advisoryNotes?: string;
+  /** Optional structured browser evidence, persisted in the existing compare artifact. */
+  readonly renderObservation?: CompareResult['renderObservation'];
 }
 
 export interface CompareRenderResult {
@@ -445,6 +451,34 @@ export async function compareRenderVerb(
 
   const identity = active.reference.identity;
   const capturedAt = deps.clock();
+
+  if (input.renderObservation !== undefined) {
+    const parsed = renderMatrixObservationSchema.safeParse(input.renderObservation);
+    if (!parsed.success) return refuse('validation-failed', 'malformed-render-observation');
+    const observation = parsed.data;
+    if (!environmentsMatch(observation.environment, input.environment) ||
+        observation.target.targetId !== input.target.targetId ||
+        observation.target.targetKind !== input.target.targetKind ||
+        observation.target.implementationRevision !== input.target.implementationRevision) {
+      return refuse('validation-failed', 'render-observation-target-or-environment-mismatch');
+    }
+    if (observation.evidenceKind === 'fixture' && observation.connectivity !== 'not-exercised') {
+      return refuse('validation-failed', 'fixture-connectivity-claim');
+    }
+    if (observation.review && (observation.review.referenceSha256 !== identity.contentSha256 ||
+        observation.review.captureSha256 !== observation.capture.sha256)) {
+      return refuse('validation-failed', 'stale-render-observation-review');
+    }
+    try {
+      const bytes = await readFile(input.actualImagePath);
+      if (resolve(observation.capture.path) !== resolve(input.actualImagePath) ||
+          createHash('sha256').update(bytes).digest('hex') !== observation.capture.sha256) {
+        return refuse('validation-failed', 'render-observation-capture-bytes-mismatch');
+      }
+    } catch {
+      return refuse('validation-failed', 'render-observation-capture-unreadable');
+    }
+  }
 
   /** Build the request once, so every exit below stamps identical identity. */
   const requestFor = (referenceImagePath: string): ComparisonRequest => ({
@@ -581,9 +615,11 @@ async function persist(
   // and precondition refusals alike. Stamping it per-site is how the refusal
   // paths end up as the ones missing it, which are exactly the paths where a
   // reader most needs to know which machine produced the capture.
-  const result: CompareResult = input.renderHost
-    ? { ...incoming, renderHost: input.renderHost }
-    : incoming;
+  const result: CompareResult = {
+    ...incoming,
+    ...(input.renderHost ? { renderHost: input.renderHost } : {}),
+    ...(input.renderObservation ? { renderObservation: input.renderObservation } : {}),
+  };
   const artifactId = evidenceArtifactId(result);
   try {
     await deps.store.insertEvidence({
@@ -616,6 +652,8 @@ export interface GetDesignEvidenceInput {
  * record in which prose sits next to a verdict looking equally load-bearing.
  */
 export interface EvidenceView {
+  /** Kept outside the pixel verdict: this includes a separate human visual review. */
+  readonly renderObservation?: CompareResult['renderObservation'];
   readonly artifactId: string;
   /** Whether this evidence is bound to the CURRENTLY active reference revision. */
   readonly current: boolean;
@@ -729,6 +767,7 @@ export async function getDesignEvidenceVerb(
         activeRevisionNumber !== undefined &&
         r.reference.revision === activeRevisionNumber,
       schemaVersionMismatch,
+      ...(r.renderObservation ? { renderObservation: r.renderObservation } : {}),
       deterministic: {
         schemaVersion: r.schemaVersion,
         verdict: r.verdict,

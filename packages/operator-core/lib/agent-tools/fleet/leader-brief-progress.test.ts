@@ -3,6 +3,7 @@ import type { AgentClaim } from '../../fleet/assignments';
 import { renderCarryBriefText, type CarryBrief, type CarryBriefHeldItem } from '../../carry-brief';
 import { renderCarryDoc, type CarryDoc } from '../../carry-doc';
 import { shortCarryHash, withCarryNoteChecks, withCarryNoteWalls } from '../../carry-note';
+vi.mock('../../work-item-checkpoint', () => ({ getWorkItemCheckpointFreshness: vi.fn(async () => undefined) }));
 import {
   LEADER_PROGRESS_ITEM_LIMIT, LEADER_PROGRESS_MEMBER_LIMIT, LEADER_PROGRESS_TEXT_LIMIT,
   readLeaderCheckpointProgress,
@@ -151,5 +152,48 @@ describe('leader canonical checkpoint progress projection (P-005)', () => {
     expect((await readLeaderCheckpointProgress([member()], '*', { readHeldItems: reader })).get(owner)?.status)
       .toBe('unknown');
     expect(reader).not.toHaveBeenCalled();
+  });
+
+  it('uses genuine activity for relative freshness, leaving absent or invalid activity unmeasured', async () => {
+    const read = async (lastActiveAt: string | null) => (await readLeaderCheckpointProgress(
+      [{ ...member(), lastActiveAt }], ws, { readHeldItems: async () => [held('Next: verify.')] },
+    )).get(owner)!.items[0];
+    expect((await read(new Date(now + 6 * 60_000).toISOString())).freshness).toMatchObject({
+      basis: 'relative-activity', stale: true, lagMs: 6 * 60_000,
+    });
+    expect((await read(new Date(now).toISOString())).freshness).toMatchObject({
+      basis: 'relative-activity', stale: false, lagMs: 0,
+    });
+    for (const value of [null, 'invalid']) {
+      expect((await read(value)).freshness).toEqual({ basis: 'unknown' });
+    }
+  });
+
+  it('preserves declared verdict precedence and unresolved evidence with the exact workspace', async () => {
+    const readFreshness = vi.fn(async () => ({
+      verdict: 'recomputed' as const, declared: 2, changed: [], unresolvable: ['file:missing'],
+    }));
+    const result = (await readLeaderCheckpointProgress(
+      [{ ...member(), lastActiveAt: new Date(now + 60 * 60_000).toISOString() }], ws,
+      { readHeldItems: async () => [held('Next: verify.')], readFreshness },
+    )).get(owner)!.items[0];
+    expect(result.freshness).toEqual({
+      basis: 'declared', verdict: 'recomputed', declared: 2, changed: 0, unresolvable: 1,
+    });
+    expect(result.freshness).not.toHaveProperty('stale');
+    expect(readFreshness).toHaveBeenCalledWith({ harness: 'fixture', workItemId: 'WI-A', workspaceId: ws });
+  });
+
+  it('keeps the checkpoint but marks a failed freshness read unknown without falling back to activity', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = (await readLeaderCheckpointProgress(
+      [{ ...member(), lastActiveAt: new Date(now).toISOString() }], ws, {
+        readHeldItems: async () => [held('Next: verify.')],
+        readFreshness: async () => { throw new Error('unavailable'); },
+      },
+    )).get(owner)!.items[0];
+    expect(result.checkpoint).toBe('Next: verify.');
+    expect(result.freshness).toMatchObject({ basis: 'unknown' });
+    expect(result.freshness).not.toHaveProperty('stale');
   });
 });

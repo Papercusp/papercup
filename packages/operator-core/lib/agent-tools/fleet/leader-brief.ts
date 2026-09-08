@@ -4700,9 +4700,13 @@ export async function buildLeaderBrief(
   const repeatedRecovery = compactLeaderBriefRepeatedRecovery(membersWithVerdict);
   const detailMembers = prioritizeActionableMembers(membersWithVerdict);
   const claimsByOwner = new Map(grouped.map((agent) => [agent.agentId, agent.claims]));
+  const activityByOwner = new Map(presence.map((agent) => [agent.ownerId, agent.lastActiveAt]));
   // Only the bounded reader's first three candidates cost a held-item read.
   const progress = await readLeaderCheckpointProgress(
-    detailMembers.map((member) => ({ agentId: member.agentId, claims: claimsByOwner.get(member.agentId) ?? [] })),
+    detailMembers.map((member) => ({
+      agentId: member.agentId, claims: claimsByOwner.get(member.agentId) ?? [],
+      lastActiveAt: activityByOwner.get(member.agentId),
+    })),
     workspaceId,
     { timeoutMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS, nowMs },
   );

@@ -27,6 +27,7 @@ const issueFloorMissM = vi.hoisted(() => vi.fn());
 const terminalExhaustionM = vi.hoisted(() => vi.fn());
 const planTerminalityM = vi.hoisted(() => vi.fn());
 const leaderLivenessM = vi.hoisted(() => vi.fn());
+const featureFamilyMatchM = vi.hoisted(() => vi.fn());
 const fleetScopedMissM = vi.hoisted(() => vi.fn());
 const cooldownMissM = vi.hoisted(() => vi.fn());
 
@@ -68,7 +69,7 @@ vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
   diagnoseFleetScopeLeaderLiveness: leaderLivenessM,
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 — none of this
   // file's fixtures do (survivors/drained are both 22), so this is a defensive stub only.
-  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyMatch: featureFamilyMatchM,
   fleetScopedMiss: fleetScopedMissM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
@@ -106,6 +107,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     terminalExhaustionM.mockResolvedValue(null);
     planTerminalityM.mockResolvedValue(null);
     leaderLivenessM.mockResolvedValue(null);
+    featureFamilyMatchM.mockResolvedValue(null);
     fleetScopedMissM.mockReturnValue({ ok: false, error: 'miss', windDown: false });
   });
 
@@ -119,6 +121,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     const res = await call();
 
     expect(getNextForBeeM).toHaveBeenCalledTimes(2);
+    expect(getNextForBeeM.mock.calls[1]?.[0]).toMatchObject({ useDedicatedClaimPool: true });
     // the caller gets the work it came for — not an error telling it to file a bug
     expect(res.ok).toBe(true);
     expect(res.workItem.id).toBe('WI-1');
@@ -132,6 +135,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     const res = await call();
 
     expect(getNextForBeeM).toHaveBeenCalledTimes(2);
+    expect(getNextForBeeM.mock.calls[1]?.[0]).toMatchObject({ useDedicatedClaimPool: true });
     expect(issueFloorMissM).toHaveBeenCalledTimes(2);
     expect(missOpts()?.divergenceRecheck).toBe('confirmed-twice');
     expect(res.ok).toBe(false);
@@ -207,6 +211,22 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     expect(res.ok).toBe(true);
     expect(getNextForBeeM).toHaveBeenCalledTimes(1);
     expect(issueFloorMissM).not.toHaveBeenCalled();
+  });
+
+  it('uses the dedicated claim pool for a feature-family retry too', async () => {
+    const zeroMatches = { matchedByFilter: 0, claimable: 0, excluded: {} as never };
+    getNextForBeeM
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ workItem: { id: 'WI-feature', harness: 'papercusp' }, claimedUnder: 'drain', specSource: 'fleet' });
+    issueFloorMissM.mockResolvedValue(zeroMatches);
+    featureFamilyMatchM.mockResolvedValue(3);
+
+    const res = await call();
+
+    expect(getNextForBeeM).toHaveBeenCalledTimes(2);
+    expect(getNextForBeeM.mock.calls[1]?.[0]).toMatchObject({ useDedicatedClaimPool: true });
+    expect(res.ok).toBe(true);
+    expect(res.workItem.id).toBe('WI-feature');
   });
 
   it('an unavailable breakdown (diagnosis failed soft) never triggers a retry or a divergence claim', async () => {

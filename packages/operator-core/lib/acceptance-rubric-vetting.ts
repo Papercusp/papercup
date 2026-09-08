@@ -120,6 +120,11 @@ export async function getAcceptanceRubricVettingStatus(
   ]);
   const vettedCards = metaCards
     .filter((card) => card.rubricResolved && card.missingKeys.length === 0 && !card.synthesized)
+    // P-013: once a meta-scorecard carries a grade-the-grader stamp, only an
+    // independently audited pass is a settled attestation. Keep accepting
+    // unstamped cards for pre-P-013 history; a pending or failed stamp must
+    // never make an acceptance rubric appear vetted.
+    .filter((card) => !card.gradingAudit || card.gradingAudit.state === 'passed')
     // WI-41477: either critique channel counts — a get_feedback consult, or the
     // review work-item a launched independent reviewer's comments land on.
     .filter((card) => Boolean(card.vetting?.consultId || card.vetting?.workItemId))
@@ -174,4 +179,3 @@ export async function getAcceptanceRubricVettingStatus(
       : {}),
   };
 }
-

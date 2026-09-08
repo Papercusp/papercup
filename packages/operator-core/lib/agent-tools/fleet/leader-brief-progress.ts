@@ -7,6 +7,9 @@ import { assessHeldItemOwnership, readHeldWorkItems, type CarryBriefHeldItem } f
 import { shortCarryHash, splitCarryNoteChecks, splitCarryNoteWalls } from '../../carry-note';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AgentAssignment } from '../../fleet/assignments';
+import { computeCheckpointStaleness } from '../../checkpoint-staleness';
+import { getWorkItemCheckpointFreshness } from '../../work-item-checkpoint';
+import type { FreshnessVerdict } from '../../freshness';
 
 export const LEADER_PROGRESS_MEMBER_LIMIT = 3;
 export const LEADER_PROGRESS_ITEM_LIMIT = 3;
@@ -25,6 +28,16 @@ export interface LeaderCheckpointItem {
   checkpointChars: number | null;
   checks: number | null;
   walls: number | null;
+  freshness: {
+    basis: 'declared' | 'relative-activity' | 'unknown';
+    verdict?: FreshnessVerdict;
+    declared?: number;
+    changed?: number;
+    unresolvable?: number;
+    stale?: boolean;
+    lagMs?: number | null;
+    reason?: string;
+  };
   recovery: { tool: 'work_items:get'; args: { id: string; harness?: string } };
 }
 
@@ -58,6 +71,7 @@ function projectItem(item: CarryBriefHeldItem): LeaderCheckpointItem {
     checkpointChars: failed ? null : note?.length ?? 0,
     checks: failed ? null : splitCarryNoteChecks(note ?? '').checks.length,
     walls: failed ? null : splitCarryNoteWalls(note ?? '').walls.length,
+    freshness: { basis: 'unknown' },
     recovery: {
       tool: 'work_items:get',
       args: { id: item.id, ...(item.harness ? { harness: item.harness } : {}) },
@@ -67,9 +81,14 @@ function projectItem(item: CarryBriefHeldItem): LeaderCheckpointItem {
 
 /** Bounded owner/item reads; late timeout results never mutate a returned view. */
 export async function readLeaderCheckpointProgress(
-  members: readonly Pick<AgentAssignment, 'agentId' | 'claims'>[],
+  members: readonly (Pick<AgentAssignment, 'agentId' | 'claims'> & { lastActiveAt?: string | null })[],
   workspaceId: string,
-  opts: { readHeldItems?: typeof readHeldWorkItems; timeoutMs?: number; nowMs?: number } = {},
+  opts: {
+    readHeldItems?: typeof readHeldWorkItems;
+    readFreshness?: typeof getWorkItemCheckpointFreshness;
+    timeoutMs?: number;
+    nowMs?: number;
+  } = {},
 ): Promise<Map<string, LeaderCheckpointProgress>> {
   const reader = opts.readHeldItems ?? readHeldWorkItems;
   const readAtMs = opts.nowMs ?? Date.now();
@@ -108,7 +127,39 @@ export async function readLeaderCheckpointProgress(
       assessHeldItemOwnership(member.agentId, workspaceId, item).verified &&
       claims.some((claim) => claim.id === item.id && claim.harnessSlug === item.harness),
     );
-    progress.items = selected.map(projectItem);
+    progress.items = await Promise.all(selected.map(async (item) => {
+      const projected = projectItem(item);
+      if (!item.checkpoint || item.checkpointReadFailed) return projected;
+      const freshness = await withBoundedTimeout(
+        () => (opts.readFreshness ?? getWorkItemCheckpointFreshness)({
+          harness: item.harness, workItemId: item.id, workspaceId,
+        }),
+        { timeoutMs: opts.timeoutMs ?? 750, fallback: undefined, label: 'leader-checkpoint-freshness' },
+      );
+      if (freshness.degraded) {
+        projected.freshness.reason = 'Freshness read unavailable; recover the full item before acting.';
+      } else if (freshness.value !== undefined) {
+        // Match work_items:get: a declared dependency verdict takes precedence
+        // over activity heuristics. Counts retain unresolved dependencies even
+        // when the canonical warn-only verdict calls the resolved subset fresh.
+        const value = freshness.value;
+        projected.freshness = {
+          basis: 'declared', verdict: value.verdict, declared: value.declared,
+          changed: value.changed.length, unresolvable: value.unresolvable.length,
+          reason: value.reason,
+        };
+      } else {
+        const stale = computeCheckpointStaleness({
+          checkpointUpdatedAtMs: item.checkpointUpdatedAtMs,
+          // Genuine presence activity, never heartbeat or item progress time.
+          assigneeActiveAtMs: member.lastActiveAt ? Date.parse(member.lastActiveAt) : null,
+        });
+        projected.freshness = stale.lagMs === null
+          ? { basis: 'unknown' }
+          : { basis: 'relative-activity', ...stale };
+      }
+      return projected;
+    }));
     progress.omitted = Math.max(0, claims.length - selected.length);
     progress.status = selected.some((item) => item.checkpointReadFailed) || progress.omitted > 0
       ? 'unknown' : 'read';

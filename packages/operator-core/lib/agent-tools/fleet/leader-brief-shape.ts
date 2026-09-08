@@ -615,6 +615,9 @@ function compactMember(value: unknown): unknown {
           ], 140),
           checkpoint: clip(note, 240),
           checkpointTruncated: item.checkpointTruncated === true || (note?.length ?? 0) > 240,
+          freshness: pick(item.freshness, [
+            'basis', 'verdict', 'declared', 'changed', 'unresolvable', 'stale', 'lagMs', 'reason',
+          ], 220),
         };
       }),
       itemsOmittedByProjection: Math.max(0, items.length - 1),

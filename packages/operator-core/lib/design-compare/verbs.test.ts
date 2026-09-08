@@ -11,6 +11,10 @@
  * that the happy path exists, which was never in doubt.
  */
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   COMPARE_RESULT_SCHEMA_VERSION,
   type CaptureEnvironment,
@@ -32,6 +36,46 @@ import {
 const HARNESS = 'test-harness';
 const FEATURE = 'F-001';
 const REFERENCE = 'ref-login-panel';
+
+describe('structured render evidence on the existing comparison artifact', () => {
+  it('round-trips observations and refuses changed capture bytes before storage', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'render-observation-'));
+    try {
+      const actualImagePath = join(folder, 'actual.png');
+      const bytes = Buffer.from('controlled image probe input');
+      await writeFile(actualImagePath, bytes);
+      const environment = { ...ENV, state: 'ready', fixture: 'controlled-state' };
+      const d = deps();
+      await ratifyReferenceVerb(ratifyInput({ referenceEnvironment: environment,
+        requiredCases: [{ caseId: 'ready', environment, target: CASE_TARGET, rationale: 'ready state' }] }), CALLER, d);
+      const input = compareInput({ actualImagePath, environment });
+      const renderObservation: NonNullable<CompareResult['renderObservation']> = {
+        caseId: 'ready', environment, target: input.target, evidenceKind: 'fixture',
+        capture: { path: actualImagePath, sha256: createHash('sha256').update(bytes).digest('hex') },
+        geometry: { container: { x: 0, y: 0, width: 1280, height: 800, clientWidth: 1280, scrollWidth: 1280 },
+          primary: { x: 0, y: 0, width: 900, height: 600 }, secondary: { x: 920, y: 0, width: 340, height: 600 } },
+        controls: [{ name: 'Watch', visible: true, enabled: true }], readyContentVisible: true,
+        placeholderVisible: false, connectivity: 'not-exercised',
+      };
+      const good = await compareRenderVerb({ ...input, renderObservation }, CALLER, d);
+      expect(good.ok).toBe(true);
+      const read = await getDesignEvidenceVerb({ featureId: FEATURE, referenceId: REFERENCE }, CALLER, d);
+      expect(read.ok && read.evidence[0]?.renderObservation).toEqual(renderObservation);
+      expect(read.ok && read.evidence[0]?.deterministic.verdict).toBe('pass');
+      await writeFile(actualImagePath, 'changed after capture');
+      expect(await compareRenderVerb({ ...input, renderObservation }, CALLER, d)).toMatchObject({
+        ok: false, code: 'validation-failed', detail: 'render-observation-capture-bytes-mismatch',
+      });
+      expect(await compareRenderVerb({ ...input, renderObservation: { ...renderObservation, connectivity: 'connected' } }, CALLER, d))
+        .toMatchObject({ ok: false, detail: 'fixture-connectivity-claim' });
+      expect(await compareRenderVerb({ ...input, renderObservation: { ...renderObservation, target: { ...input.target, targetId: '/wrong' } } }, CALLER, d))
+        .toMatchObject({ ok: false, detail: 'render-observation-target-or-environment-mismatch' });
+      // Even an invalid pixel comparison cannot persist malformed metadata.
+      expect(await compareRenderVerb({ ...input, environment: { ...environment, theme: 'other' }, renderObservation }, CALLER, d))
+        .toMatchObject({ ok: false, detail: 'render-observation-target-or-environment-mismatch' });
+    } finally { await rm(folder, { recursive: true, force: true }); }
+  });
+});
 
 const ENV: CaptureEnvironment = {
   viewport: { width: 1280, height: 800 },

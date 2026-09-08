@@ -32,6 +32,7 @@ test.beforeAll(async () => {
     'apps/operator/app/harness/Button.tsx',
     'apps/operator/e2e/__fixtures__/desktop-render-matrix.tsx',
     'apps/operator/e2e/__fixtures__/desktop-render-viewer.tsx',
+    'apps/operator/e2e/desktop-render-matrix.spec.ts',
   ];
   const sourceHash = createHash('sha256');
   for (const file of sourceFiles) sourceHash.update(file).update(await readFile(path.join(root, file)));
@@ -39,8 +40,12 @@ test.beforeAll(async () => {
   server = await createServer({
     configFile: false, root, logLevel: 'error',
     esbuild: { jsx: 'automatic' },
+    css: { postcss: { plugins: [] } },
     resolve: { alias: { '@': path.join(root, 'apps/operator') } },
-    optimizeDeps: { include: ['react', 'react-dom/client', 'lucide-react', '@radix-ui/react-slot'] },
+    // A repository-wide HTML crawl includes projected docs and unrelated apps.
+    // This isolated fixture has exactly one entry and a closed dependency set.
+    optimizeDeps: { entries: ['apps/operator/e2e/__fixtures__/desktop-render-matrix.tsx'],
+      noDiscovery: true, include: ['react', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'lucide-react', '@radix-ui/react-slot'] },
     plugins: [{
       name: 'desktop-controlled-state-fixture',
       enforce: 'pre',
@@ -86,11 +91,16 @@ function contract(): RenderMatrixContract {
 
 for (const state of states) for (const [size, viewport] of Object.entries(sizes)) for (const theme of themes) {
   test(`[desktop.state.${state}][desktop.viewport.${size}] ${theme} renders truthful controls and option B geometry`, async ({ page }, testInfo) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
     await page.setViewportSize(viewport);
     await page.emulateMedia({ colorScheme: theme });
-    await page.goto(`${origin}/?state=${state}&theme=${theme}`);
+    await page.goto(`${origin}/?state=${state}&theme=${theme}`, { waitUntil: 'domcontentloaded' });
     const destination = page.getByRole('region', { name: 'Desktops for Design acceptance fixture', exact: true });
-    await expect(destination).toBeVisible();
+    await expect(destination).toBeVisible().catch(error => {
+      throw new Error(`${String(error)}\nBrowser errors: ${pageErrors.join(' | ')}`);
+    });
     await expect(page.getByRole('note')).toHaveText(`Controlled ${state} fixture · no real service connection`);
     const labels = { ready: 'Controlled desktop image', empty: 'No desktops are available yet', loading: 'Finding your desktops…', disconnected: 'Connect your workspace', error: 'Desktops could not be loaded' };
     await expect(destination.getByText(labels[state], { exact: true })).toBeVisible();

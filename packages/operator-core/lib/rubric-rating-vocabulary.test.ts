@@ -85,6 +85,55 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     expect(result.violations).toEqual([]);
   });
 
+  it.each([
+    ['"', '"'],
+    ["'", "'"],
+    ['`', '`'],
+    ['“', '”'],
+  ])('ignores quoted test titles between %s and %s while retaining explicit ratings', (open, close) => {
+    const cite = (title: string) => `${open}${title}${close}`;
+    const result = validateRubricRatingVocabulary(
+      [
+        criterion({
+          key: 'test-citations',
+          method:
+            'Run tests ' +
+            cite('leaves a sound all-accept batch unflagged solely for its acceptance rate') +
+            '; ' +
+            cite('labels a capped scan without inventing a zero error rate') +
+            ' and inspect their assertions. Grade healthy when they pass. Grade partial if evidence is missing.',
+        }),
+      ],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.instructions.map((instruction) => instruction.rating)).toEqual(['healthy', 'partial']);
+    expect(result.violations.map((violation) => violation.rating)).toEqual(['partial']);
+  });
+
+  it('ignores directives inside escaped citation text and nested code strings', () => {
+    const method =
+      String.raw`Run "retains a \"partial\" rating when quoted" and inspect ` +
+      '`const example = "Grade partial if missing"`' +
+      '. Grade broken if the actual probe fails.';
+
+    expect(
+      extractRubricRatingInstructions('escaped-citations', 'method', method).map((instruction) => instruction.rating),
+    ).toEqual(['broken']);
+  });
+
+  it('does not hide real directives after apostrophes or unmatched quotes', () => {
+    const method =
+      "The operator's evidence isn't optional. Grade partial if it is missing. " +
+      'An unmatched " citation must not hide this: Grade broken if the probe fails.';
+
+    expect(
+      extractRubricRatingInstructions('unbalanced-citations', 'method', method).map(
+        (instruction) => instruction.rating,
+      ),
+    ).toEqual(['partial', 'broken']);
+  });
+
   it('uses a criterion ratingScale override instead of the rubric default', () => {
     const result = validateRubricRatingVocabulary(
       [
