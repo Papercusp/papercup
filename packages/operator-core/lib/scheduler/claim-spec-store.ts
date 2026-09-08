@@ -4,8 +4,8 @@
  *
  *   setClaimSpec  — the Queen validates (validateClaimSpec) + stores a bee's versioned claim spec
  *                   (mig 555 `cup_claim_specs`, renamed from mig 372 `bee_claim_specs`), upserting and bumping the revision.
- *   getClaimSpec  — loads a bee's spec; DEFAULT_CLAIM_SPEC when none is set OR a stored spec no
- *                   longer validates (tolerate a stale spec rather than wedge the bee).
+ *   getClaimSpec  — loads a bee's effective spec; defaults only on confirmed absence.
+ *                   Invalid stored policy and authority read failures propagate.
  *   getNextForBee — the bee's get_next: load the bee's spec → getNextWorkItem(spec, bee, opts).
  *
  * Keyed by the bee's session/owner id (`cupId` — the identity a tool ctx resolves via actor-identity
@@ -446,8 +446,7 @@ export function fleetSpecBeeKey(fleetSlug: string): string {
 }
 
 /**
- * Load a bee's claim spec, or DEFAULT_CLAIM_SPEC when none is set / a stored spec is
- * invalid.
+ * Load a bee's claim spec, or DEFAULT_CLAIM_SPEC when none is set.
  *
  * Fleet inheritance (fleet-scheduler-hardening-2026-07-03 P-002): when the bee has NO
  * per-bee spec, fall back to its FLEET's spec (the `fleet:<slug>` sentinel row) via the
@@ -457,47 +456,15 @@ export function fleetSpecBeeKey(fleetSlug: string): string {
  * Resolution order: bee spec → fleet spec → DEFAULT_CLAIM_SPEC. A per-bee spec always
  * WINS over the fleet spec (the leader's targeted re-steer of one member sticks).
  * The record-returning resolver retains fleet membership when the fleet sentinel is
- * missing so get_next can fail closed during a membership transition; the bare spec
- * helper keeps its historical DEFAULT_CLAIM_SPEC contract for read-only callers.
+ * missing so get_next can fail closed during a membership transition. This bare helper
+ * preserves the confirmed-absence default, but shares the strict reader for errors:
+ * launch/re-steer callers must not overwrite authored policy with fabricated defaults.
  */
 export async function getClaimSpec(
   args: { cupId: string; workspaceId?: string },
   sqlOverride?: OrgSql,
 ): Promise<ClaimSpec> {
-  const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
-  const sql = sqlOverride ?? getOrgPg().sql;
-  const rows = (await sql`
-    SELECT spec, revision FROM harness_shared.cup_claim_specs
-     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as { spec: unknown; revision: number }[];
-  if (rows.length > 0) {
-    const row = rows[0]!;
-    const v = validateClaimSpec(row.spec);
-    return v.ok && v.spec ? withColumnRevision(v.spec, row.revision) : DEFAULT_CLAIM_SPEC;
-  }
-  // No per-bee spec — inherit the fleet's, when the bee belongs to one. Best-effort:
-  // any hiccup here degrades to DEFAULT_CLAIM_SPEC (== claim_next ordering), never a
-  // wedged bee. NOTE the partition rule (WI-1564): membership facts and spec rows are
-  // both read under the SAME caller-resolved workspace (resolveClaimSpecWorkspace).
-  try {
-    const { latestFleetMembership } = await import('../fleet-membership-store');
-    const membership = await latestFleetMembership(ws, args.cupId);
-    if (membership?.fleetSlug) {
-      const frows = (await sql`
-        SELECT spec, revision FROM harness_shared.cup_claim_specs
-         WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(membership.fleetSlug)} LIMIT 1`) as {
-        spec: unknown;
-        revision: number;
-      }[];
-      if (frows.length > 0) {
-        const frow = frows[0]!;
-        const fv = validateClaimSpec(frow.spec);
-        if (fv.ok && fv.spec) return withColumnRevision(fv.spec, frow.revision);
-      }
-    }
-  } catch {
-    /* fall through to the default */
-  }
-  return DEFAULT_CLAIM_SPEC;
+  return (await getClaimSpecRecord(args, sqlOverride)).spec;
 }
 
 /**
@@ -914,6 +881,8 @@ function effectiveClaimSpecRecord(record: ClaimSpecRecord): ClaimSpecRecord {
  * mirrors getClaimSpec's resolution order (bee spec → fleet spec → DEFAULT_CLAIM_SPEC) but
  * returns the row metadata instead of silently collapsing to just the resolved spec, so a
  * caller can tell an explicit override from an inherited or absent one.
+ * This record authorizes claims: only confirmed absence may use the default. A failed
+ * membership/spec read or malformed stored policy must propagate, never widen authority.
  */
 export async function getClaimSpecRecord(
   args: { cupId: string; workspaceId?: string },
@@ -942,9 +911,14 @@ export async function getClaimSpecRecord(
   if (rows.length > 0) {
     const row = rows[0]!;
     const v = validateClaimSpec(row.spec);
+    if (!v.ok || !v.spec) {
+      throw Object.assign(new Error(
+        `Invalid stored claim spec for ${args.cupId}; repair this target with scheduler:set_claim_spec before retrying: ${v.errors.join('; ')}`,
+      ), { code: 'invalid_claim_spec' });
+    }
     return {
       source: directFleetSlug ? 'fleet' : 'cup',
-      spec: v.ok && v.spec ? withColumnRevision(v.spec, row.revision) : DEFAULT_CLAIM_SPEC,
+      spec: withColumnRevision(v.spec, row.revision),
       revision: row.revision,
       updatedBy: row.updated_by,
       updatedAt: row.updated_at,
@@ -964,8 +938,8 @@ export async function getClaimSpecRecord(
   // their by-id claims stayed wide open — observed live 2026-07-17: a wound-down
   // scratch fleet's leader could never pull again, with a miss diagnosis reporting
   // hundreds of ready items.)
-  let transitionFleetSlug: string | undefined;
-  try {
+  let transitionFleetSlug = directFleetSlug;
+  if (!directFleetSlug) {
     const { latestFleetMembership } = await import('../fleet-membership-store');
     const membership = await latestFleetMembership(ws, args.cupId, sql);
     if (membership?.fleetSlug) {
@@ -983,21 +957,22 @@ export async function getClaimSpecRecord(
       if (frows.length > 0) {
         const frow = frows[0]!;
         const fv = validateClaimSpec(frow.spec);
-        if (fv.ok && fv.spec) {
-          return {
-            source: 'fleet',
-            spec: withColumnRevision(fv.spec, frow.revision),
-            revision: frow.revision,
-            updatedBy: frow.updated_by,
-            updatedAt: frow.updated_at,
-            harnessSlug: frow.harness_slug,
-            fleetSlug: membership.fleetSlug,
-          };
+        if (!fv.ok || !fv.spec) {
+          throw Object.assign(new Error(
+            `Invalid stored claim spec for ${fleetSpecBeeKey(membership.fleetSlug)}; repair this fleet with scheduler:set_claim_spec before retrying: ${fv.errors.join('; ')}`,
+          ), { code: 'invalid_claim_spec' });
         }
+        return {
+          source: 'fleet',
+          spec: withColumnRevision(fv.spec, frow.revision),
+          revision: frow.revision,
+          updatedBy: frow.updated_by,
+          updatedAt: frow.updated_at,
+          harnessSlug: frow.harness_slug,
+          fleetSlug: membership.fleetSlug,
+        };
       }
     }
-  } catch {
-    /* fall through to the default */
   }
   return {
     source: 'default',

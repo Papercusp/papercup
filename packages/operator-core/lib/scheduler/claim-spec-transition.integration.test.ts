@@ -29,7 +29,7 @@ const migration = (file: string) =>
     .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/i.test(line))
     .join('\n');
 
-const { getNextForBee, getClaimSpecRecord, setClaimSpec, fleetSpecBeeKey } = await import('./claim-spec-store');
+const { getNextForBee, getClaimSpec, getClaimSpecRecord, setClaimSpec, fleetSpecBeeKey } = await import('./claim-spec-store');
 const { appendFleetMembershipEvent } = await import('../fleet-membership-store');
 const { DEFAULT_CLAIM_SPEC, validateClaimSpec } = await import('./claim-spec');
 
@@ -101,6 +101,79 @@ afterAll(async () => {
 });
 
 describe('WI-4770 fleet membership transition guard', () => {
+  it.each(['cup', 'fleet', 'inherited'] as const)(
+    'P003 rejects a malformed %s policy instead of granting defaults, and repairs the same target',
+    async (source) => {
+      const target = source === 'cup' ? BEE : fleetSpecBeeKey(PARENT);
+      const reader = source === 'fleet' ? target : BEE;
+      await membership(BEE, PARENT, 'member');
+      await setClaimSpec({ cupId: target, spec: laneSpec('restricted', 'WI-allowed') }, db.sql);
+      await seedFeature('WI-outside', 'unrelated work must remain unclaimed');
+      await db.sql`
+        UPDATE harness_shared.cup_claim_specs SET spec = '{"specVersion":"invalid"}'::jsonb
+         WHERE workspace_id = ${WS} AND bee_id = ${target}`;
+
+      await expect(getClaimSpecRecord({ cupId: reader, workspaceId: WS }, db.sql))
+        .rejects.toMatchObject({ code: 'invalid_claim_spec' });
+      await expect(getClaimSpec({ cupId: reader, workspaceId: WS }, db.sql))
+        .rejects.toMatchObject({ code: 'invalid_claim_spec' });
+      await expect(getNextForBee({ cupId: reader, workspaceId: WS, harness: H }))
+        .rejects.toMatchObject({ code: 'invalid_claim_spec' });
+      expect(await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-outside'`)
+        .toEqual([{ taken_by: null }]);
+
+      // No replacement owner, fleet or task: the canonical writer repairs the
+      // existing policy and the same request resolves its new revision.
+      const repaired = await setClaimSpec({ cupId: target, spec: laneSpec('repaired', 'WI-allowed') }, db.sql);
+      expect(repaired.ok).toBe(true);
+      expect(await getClaimSpecRecord({ cupId: reader, workspaceId: WS }, db.sql)).toMatchObject({
+        source: source === 'cup' ? 'cup' : 'fleet',
+        revision: repaired.revision,
+        spec: { specId: 'repaired', view: { filter: { value: ['WI-allowed'] } } },
+      });
+    },
+  );
+
+  it('P003 propagates membership read failure, then retries against the restored ledger', async () => {
+    await membership(BEE, PARENT, 'member');
+    await setClaimSpec({ cupId: fleetSpecBeeKey(PARENT), spec: laneSpec('restricted', 'WI-allowed') }, db.sql);
+    // Real missing-relation failure in an isolated transaction; rejection rolls
+    // back the rename. Previously the catch returned solo DEFAULT_CLAIM_SPEC.
+    await expect(db.sql.begin(async (tx) => {
+      await tx`ALTER TABLE harness_shared.fleet_membership_events RENAME TO unavailable_membership`;
+      return getClaimSpecRecord({ cupId: BEE, workspaceId: WS }, tx as unknown as postgres.Sql);
+    })).rejects.toMatchObject({ code: '42P01' });
+    expect(await getClaimSpecRecord({ cupId: BEE, workspaceId: WS }, db.sql)).toMatchObject({
+      source: 'fleet', fleetSlug: PARENT, spec: { specId: 'restricted' },
+    });
+  });
+
+  it('P003 propagates an inherited policy read failure without a default receipt', async () => {
+    await membership(BEE, PARENT, 'member');
+    await setClaimSpec({ cupId: fleetSpecBeeKey(PARENT), spec: laneSpec('restricted', 'WI-allowed') }, db.sql);
+    const failure = new Error('injected inherited policy read failure');
+    const sql = new Proxy(db.sql, {
+      apply(target, thisArg, args) {
+        if (Array.isArray(args[0]) && args[0].join('').includes('FROM harness_shared.cup_claim_specs')
+          && args.includes(fleetSpecBeeKey(PARENT))) return Promise.reject(failure);
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    await expect(getClaimSpecRecord({ cupId: BEE, workspaceId: WS }, sql)).rejects.toBe(failure);
+    await expect(getClaimSpec({ cupId: BEE, workspaceId: WS }, sql)).rejects.toBe(failure);
+    expect(await getClaimSpecRecord({ cupId: BEE, workspaceId: WS }, db.sql)).toMatchObject({
+      source: 'fleet', fleetSlug: PARENT,
+    });
+  });
+
+  it('P003 preserves confirmed solo absence and a missing direct fleet sentinel as distinct states', async () => {
+    expect(await getClaimSpecRecord({ cupId: BEE, workspaceId: WS }, db.sql)).toEqual({
+      source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null,
+    });
+    expect(await getClaimSpecRecord({ cupId: fleetSpecBeeKey(PARENT), workspaceId: WS }, db.sql))
+      .toMatchObject({ source: 'default', fleetSlug: PARENT });
+  });
+
   it('fails closed across a fleet switch until the new lane is explicitly rebound', async () => {
     const outside = 'WI-3488';
     await setClaimSpec({ cupId: fleetSpecBeeKey(PARENT), spec: laneSpec('parent-lane', 'WI-in-scope') }, db.sql);

@@ -75,6 +75,13 @@ beforeAll(async () => {
   // The store's ON CONFLICT (workspace_id, bee_id) is column-based, so a
   // table-only rename is sufficient (constraint names are untouched, unreferenced).
   await db.sql.unsafe('ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs');
+  // The authoritative record reader must distinguish confirmed solo membership
+  // from an unreadable ledger; a missing fixture table is not an absence witness.
+  await db.sql.unsafe(`CREATE TABLE harness_shared.fleet_membership_events (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL, owner_id text NOT NULL,
+    fleet_slug text, fleet_role text
+  )`);
   // EI-11796: the production guard counts through the unified work_items view. This
   // claim-spec-only fixture does not need the full work-item schema; keep the smallest
   // real table that exercises the count and its terminal-state floor.
