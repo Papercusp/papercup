@@ -10,13 +10,17 @@ Description=Papercusp embed-sidecar worker probe (restart on failed /embed)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c '\
+# Keep the systemd command string double-quoted so the JSON's inner quotes reach
+# bash intact. The previous single-quoted systemd command used `\"` escapes,
+# which systemd consumed before bash parsed the script; every watchdog request
+# then arrived as `{model:gemma,...}` and got HTTP 400 (EI-22723128990468427).
+ExecStart=/usr/bin/bash -c "\
   set -o pipefail; \
   if systemctl --user is-active --quiet papercup-embed-sidecar.service; then \
     curl -fsS --max-time 15 \
-      -H "Content-Type: application/json" \
-      --data-binary "{\"model\":\"gemma\",\"kind\":\"query\",\"texts\":[\"papercup-embed-sidecar-watchdog\"],\"bypassCache\":true}" \
+      -H 'Content-Type: application/json' \
+      --data-binary '{\"model\":\"gemma\",\"kind\":\"query\",\"texts\":[\"papercup-embed-sidecar-watchdog\"],\"bypassCache\":true}' \
       http://127.0.0.1:3384/embed \
-      | jq -e "(.vectors | arrays | length == 1 and (.[0] | arrays | length > 0)) and (.cache | .hits == 0 and .coalesced == 0 and .inferred == 1)" >/dev/null \
-      || { echo "embed worker probe failed — restarting papercup-embed-sidecar"; systemctl --user restart papercup-embed-sidecar.service; }; \
-  fi'
+      | jq -e '(.vectors | arrays | length == 1 and (.[0] | arrays | length > 0)) and (.cache | .hits == 0 and .coalesced == 0 and .inferred == 1)' >/dev/null \
+      || { echo 'embed worker probe failed — restarting papercup-embed-sidecar'; systemctl --user restart papercup-embed-sidecar.service; }; \
+  fi"

@@ -32,4 +32,21 @@ describe('embed sidecar pressure supervision contract', () => {
     expect(watchdog).toContain('systemctl --user restart papercup-embed-sidecar.service');
     expect(watchdog).not.toContain('/healthz');
   });
+
+  it('keeps the JSON payload quoted through systemd and bash parsing', () => {
+    const watchdog = readFileSync(WATCHDOG_UNIT, 'utf8');
+    const dataLine = watchdog.split('\n').find((line) => line.includes('--data-binary'));
+    const jqLine = watchdog.split('\n').find((line) => line.includes('| jq -e'));
+
+    // systemd consumes the \\\" escapes while building bash's -c argument. The
+    // resulting shell command must still use single quotes around JSON; putting
+    // the payload in a double-quoted systemd argument makes those quotes vanish
+    // before bash parses it and turns a valid request into HTTP 400.
+    expect(dataLine).toMatch(
+      /--data-binary '\{\\"model\\":\\"gemma\\",\\"kind\\":\\"query\\",\\"texts\\":\[\\"papercup-embed-sidecar-watchdog\\"\],\\"bypassCache\\":true\}'/,
+    );
+    expect(dataLine).not.toMatch(/--data-binary "\{\\"model/);
+    expect(jqLine).toMatch(/\| jq -e '/);
+    expect(jqLine).not.toMatch(/\| jq -e "/);
+  });
 });
