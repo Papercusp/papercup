@@ -175,10 +175,25 @@ describe('account-wide hard bucket', () => {
 });
 
 describe('global soft login budget', () => {
-  itPg('limits distributed attempts and refunds a successful login slot', async () => {
-    for (let i = 0; i < mod!.RATE_LIMIT_CONSTANTS.GLOBAL_CAPACITY; i += 1) {
-      expect((await mod!.checkSoftGlobal()).ok).toBe(true);
-    }
+  itPg('enforces the configured capacity and refunds a successful login slot', async () => {
+    // The generic @papercusp/rate-limit suite exhaustively walks every slot.
+    // Seed this PG-backed adapter at capacity-1 so this integration test still
+    // proves the global key/configuration + refund boundary without performing
+    // 100 serialized GC/read/write cycles (which exceeded Vitest's 60s test
+    // timeout under fleet load).
+    const now = Date.now();
+    const recent = Array.from(
+      { length: mod!.RATE_LIMIT_CONSTANTS.GLOBAL_CAPACITY - 1 },
+      () => now,
+    );
+    await h.sql`
+      INSERT INTO harness_shared.auth_rate_limit (key, payload, updated_at)
+      VALUES ('global:login', ${JSON.stringify({ recent, lockedUntilMs: 0 })}::text::jsonb, ${now})
+      ON CONFLICT (key) DO UPDATE SET
+        payload = EXCLUDED.payload,
+        updated_at = EXCLUDED.updated_at
+    `;
+    expect((await mod!.checkSoftGlobal()).ok).toBe(true);
     expect((await mod!.checkSoftGlobal()).ok).toBe(false);
     await mod!.refundSoftGlobal();
     expect((await mod!.checkSoftGlobal()).ok).toBe(true);

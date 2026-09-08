@@ -97,11 +97,10 @@ describe('getClaimSpec fleet inheritance (P-002)', () => {
     expect(got).toBe(DEFAULT_CLAIM_SPEC);
   });
 
-  it('a membership-store failure degrades to DEFAULT (never wedges the bee)', async () => {
+  it('a membership-store failure propagates instead of widening authority to DEFAULT', async () => {
     membershipMock.mockRejectedValue(new Error('pg down'));
     const { sql } = makeSqlStub([[]]);
-    const got = await getClaimSpec({ cupId: 'su-member', workspaceId: 'ws1' }, sql);
-    expect(got).toBe(DEFAULT_CLAIM_SPEC);
+    await expect(getClaimSpec({ cupId: 'su-member', workspaceId: 'ws1' }, sql)).rejects.toThrow('pg down');
   });
 });
 
