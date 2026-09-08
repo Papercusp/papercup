@@ -74,6 +74,7 @@ import {
 import {
   CompletionRecordSchema,
   COMPLETION_COVERAGE_CONTRACT,
+  ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES,
   hasMalformedCoverageShape,
   stripNulBytesDeep,
   type CompletionCoverage,
@@ -2642,7 +2643,8 @@ async function completeOne(
       ),
     );
   const successfulClose =
-    Boolean(effectiveState) && ['done', 'resolved', 'passed'].includes(String(effectiveState).trim().toLowerCase());
+    Boolean(effectiveState) &&
+    ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some((state) => state === String(effectiveState).trim().toLowerCase());
   const rootCauseVerificationRequired =
     closeIntentRequested && successfulClose && (existing.kind === 'bug' || capabilityGapItem);
   if (rootCauseVerificationRequired && !it.completion.rootCauseVerification) {
