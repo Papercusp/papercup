@@ -768,7 +768,7 @@ export default defineTool({
             harness: workItem.harness,
             workItemId: workItem.id,
           })
-            .then((r) => ({ checkpoint: r.checkpoint, updatedAtMs: r.updatedAtMs, readFailed: false as const }))
+            .then((r) => ({ checkpoint: r.checkpoint, updatedAtMs: r.updatedAtMs, readFailed: r.readFailed === true }))
             .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
           if (checkpointRead.readFailed) {
             return {
@@ -862,6 +862,9 @@ export default defineTool({
             workItemId: workItem.id,
           })
             .then((r) => {
+              // The canonical reader fails soft IN BAND. Preserve that state
+              // through the same unknown projection as a rejected read.
+              if (r.readFailed) throw new Error('checkpoint_read_failed');
               const count = r.checkpoint === null ? 0 : splitCarryNoteChecks(r.checkpoint).checks.length;
               return {
                 checkpoint: r.checkpoint,
