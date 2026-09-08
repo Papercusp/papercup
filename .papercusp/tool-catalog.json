@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 875,
+  "count": 876,
   "tools": [
     {
       "name": "ablation:report",
@@ -29612,6 +29612,80 @@
       }
     },
     {
+      "name": "testing:record-run",
+      "http": {
+        "path": "/api/agent-tools/testing/record-run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.",
+      "capabilities": [
+        "testing:run"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A real Playwright, Cargo, node, shell, desktop, or other operational acceptance run already completed and needs an honest numeric execution-ledger anchor.",
+        "notWhen": "Executing Vitest files (use testing:run), recording a temporary /tmp log, or manufacturing proof for a run that did not happen. Commit a self-describing docs/evidence JSON artifact first.",
+        "chaining": "Run the operational check → write and commit its docs/evidence JSON artifact → testing:record-run → bind the returned numeric testRunIds with plans:bind-spec-evidence."
+      }
+    },
+    {
       "name": "testing:run",
       "http": {
         "path": "/api/agent-tools/testing/run",
@@ -32107,7 +32181,7 @@
       "guidance": {
         "when": "You have decided to work a SPECIFIC work-item id — pickup fetches its detail, claims it, and optionally declares your intent in one round-trip instead of work_items:get → work_items:claim → coord:declare-intent.",
         "notWhen": "You are still deciding whether to take it (inspect first with work_items:get), or you want the oldest unassigned item regardless of which (work_items:claim_next).",
-        "chaining": "work_items:list → work_items:pickup { id, intent } → work → work_items:complete."
+        "chaining": "work_items:list → work_items:pickup { id, intent } → work → work_items:complete. A failed declaration/lane can leave claimed:true; retry the same id after repair. Retries re-check current authorization — never create, force or rename a replacement."
       }
     },
     {

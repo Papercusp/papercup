@@ -25,6 +25,11 @@ const esmError = (): never => {
   throw e;
 };
 
+class WorkingSqlite {
+  prepare() { return { get: () => ({ value: 1 }) }; }
+  close() {}
+}
+
 describe('requiredAddonsFromEnv', () => {
   it('defaults to better-sqlite3', () => {
     expect(requiredAddonsFromEnv({} as NodeJS.ProcessEnv)).toEqual([...DEFAULT_REQUIRED_ADDONS]);
@@ -49,13 +54,32 @@ describe('loadAddon', () => {
     const r = loadAddon('x', esmError);
     expect(r.ok).toBeNull();
   });
+
+  it('fails when a JavaScript wrapper loads but the SQLite native constructor fails', () => {
+    const r = loadAddon('better-sqlite3', () => class {
+      constructor() { throw new Error('NODE_MODULE_VERSION mismatch in lazy binding'); }
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('NODE_MODULE_VERSION mismatch');
+  });
+
+  it('closes the temporary SQLite database when its native query fails', () => {
+    let closed = false;
+    const r = loadAddon('better-sqlite3', () => class {
+      prepare() { throw new Error('native query failed'); }
+      close() { closed = true; }
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('native query failed');
+    expect(closed).toBe(true);
+  });
 });
 
 describe('checkNativeAddons gate', () => {
   it('passes when every required addon loads; advisory failure does not gate', () => {
     const requireFn = (s: string) => {
       if (s === 'flaky-advisory') throw new Error('boom');
-      return {};
+      return WorkingSqlite;
     };
     const r = checkNativeAddons({
       requireFn,
@@ -88,7 +112,7 @@ describe('checkNativeAddons gate', () => {
 
   it('skips advisory bare-runtime packages (ok:null) without loading them', () => {
     let loaded: string[] = [];
-    const requireFn = (s: string) => { loaded.push(s); return {}; };
+    const requireFn = (s: string) => { loaded.push(s); return WorkingSqlite; };
     const r = checkNativeAddons({
       requireFn,
       required: ['better-sqlite3'],
@@ -109,7 +133,7 @@ describe('checkNativeAddons gate', () => {
 
   it('required wins when a name is in both required and advisory (no double-run)', () => {
     const r = checkNativeAddons({
-      requireFn: () => ({}),
+      requireFn: () => WorkingSqlite,
       required: ['better-sqlite3'],
       advisory: ['better-sqlite3'],
     });
@@ -119,7 +143,7 @@ describe('checkNativeAddons gate', () => {
 });
 
 describe('runBootAddonPreflight (A2 boot self-check)', () => {
-  const okRequire = () => ({});
+  const okRequire = () => WorkingSqlite;
   const failRequire = (s: string) => {
     if (s === 'better-sqlite3') throw new Error('Module did not self-register');
     return {};

@@ -289,7 +289,10 @@ describe('P-001 pickup stage baseline', () => {
           };
         case 'coord:declare-intent':
           return declareOk
-            ? { ok: true, presence: { intent: 'Review exact fixture' } }
+            ? {
+              ok: true, presence: { intent: 'Review exact fixture' },
+              claims: { claimed: ['P-001'], alreadyHeld: [], conflicts: [] },
+            }
             : { ok: false, error: 'claim_conflict' };
         default:
           throw new Error(`unexpected fixture dispatch: ${name}`);
@@ -323,10 +326,10 @@ describe('P-001 pickup stage baseline', () => {
     expect(calls).toHaveLength(metadataWorkflowTargets.deniedPickupDispatches.before);
   });
 
-  it('currently misreports a failed declaration as success after claiming', async () => {
+  it('reports the declaration failure without hiding the already-completed claim (P-003)', async () => {
     const { call, calls } = dispatcher(true, false);
     expect(await composePickup(args, call)).toMatchObject({
-      ok: true, claimed: true, intentDeclared: true,
+      ok: false, step: 'declare-intent', claimed: true, intentDeclared: false, laneClaimed: false,
       presence: { ok: false, error: 'claim_conflict' },
     });
     expect(calls).toEqual(['work_items:get', 'work_items:claim', 'coord:declare-intent']);

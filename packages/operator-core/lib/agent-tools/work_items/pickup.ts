@@ -38,12 +38,14 @@ export interface PickupArgs {
 export interface PickupResult {
   ok: boolean;
   /** Which sub-step failed, when ok=false. */
-  step?: 'get' | 'claim';
+  step?: 'get' | 'claim' | 'declare-intent' | 'lane';
   error?: string;
   /** The work-item (detailed from get, refreshed by claim when it succeeded). */
   item?: unknown;
   claimed?: boolean;
   intentDeclared?: boolean;
+  /** Only present when a plan lane was requested; presence success is not a lane claim. */
+  laneClaimed?: boolean;
   /** The declare-intent presence row, when intent was declared. */
   presence?: unknown;
 }
@@ -51,7 +53,10 @@ export interface PickupResult {
 /**
  * Pure composition: get(detail) → claim → optional declare-intent, over an injected
  * `call`. Business-level failures (item not found, already claimed) short-circuit with
- * `ok:false` + the failing step; a dispatch/gate failure throws out of `call`.
+ * `ok:false` + the failing step. A declaration failure after claim preserves the
+ * completed claim in the response, including when the inner dispatcher throws.
+ * Retrying uses this SAME id and re-dispatches claim under current authority;
+ * a prior success is never permission to skip a gate or create a replacement.
  */
 export async function composePickup(args: PickupArgs, call: InnerCall): Promise<PickupResult> {
   // work_items:get is bulk (bulk-endpoint-standardization-2026-06-21): a single
@@ -81,16 +86,64 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
 
   let presence: unknown;
   let intentDeclared = false;
+  const laneRequested = Boolean(args.intent && args.plan && args.items);
   if (args.intent) {
     // `items` is only meaningful with a plan (declare-intent rejects items without
     // current_plan_slug), so only forward the lane when a plan is given.
-    presence = await call('coord:declare-intent', {
-      intent: args.intent,
-      ...(args.plan ? { current_plan_slug: args.plan } : {}),
-      ...(args.plan && args.items ? { items: args.items } : {}),
-      ...(args.harness ? { harness: args.harness } : {}),
-    });
+    try {
+      presence = await call('coord:declare-intent', {
+        intent: args.intent,
+        ...(args.plan ? { current_plan_slug: args.plan } : {}),
+        ...(args.plan && args.items ? { items: args.items } : {}),
+        ...(args.harness ? { harness: args.harness } : {}),
+      });
+    } catch (error) {
+      return {
+        ok: false, step: 'declare-intent',
+        error: error instanceof Error ? error.message : 'intent declaration failed',
+        item: claimed.workItem ?? gotItem.workItem,
+        claimed: true, intentDeclared: false,
+        ...(laneRequested ? { laneClaimed: false } : {}),
+      };
+    }
+    const declaration = presence as {
+      ok?: unknown;
+      error?: string;
+      claims?: { claimed?: unknown; alreadyHeld?: unknown; conflicts?: unknown; unknown?: unknown };
+    } | undefined;
+    if (declaration?.ok !== true) {
+      return {
+        ok: false, step: 'declare-intent',
+        error: declaration?.error ?? 'intent declaration did not report success',
+        item: claimed.workItem ?? gotItem.workItem,
+        claimed: true, intentDeclared: false,
+        ...(laneRequested ? { laneClaimed: false } : {}),
+        ...(presence != null ? { presence } : {}),
+      };
+    }
     intentDeclared = true;
+    if (laneRequested) {
+      // declare-intent deliberately returns ok:true after writing presence even
+      // when lane reconciliation reports conflicts/unknown ids. Require positive
+      // receipts for EVERY requested id, not merely the absence of an error.
+      const claims = declaration.claims;
+      const stringList = (value: unknown): value is string[] =>
+        Array.isArray(value) && value.every((item) => typeof item === 'string');
+      const laneSucceeded = claims != null
+        && stringList(claims.claimed)
+        && stringList(claims.alreadyHeld)
+        && Array.isArray(claims.conflicts) && claims.conflicts.length === 0
+        && (claims.unknown === undefined || (Array.isArray(claims.unknown) && claims.unknown.length === 0))
+        && args.items!.every((id) => (claims.claimed as string[]).includes(id)
+          || (claims.alreadyHeld as string[]).includes(id));
+      if (!laneSucceeded) {
+        return {
+          ok: false, step: 'lane', error: 'requested plan lane was not fully claimed',
+          item: claimed.workItem ?? gotItem.workItem,
+          claimed: true, intentDeclared: true, laneClaimed: false, presence,
+        };
+      }
+    }
   }
 
   return {
@@ -98,6 +151,7 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
     item: claimed.workItem ?? gotItem.workItem,
     claimed: true,
     intentDeclared,
+    ...(laneRequested ? { laneClaimed: true } : {}),
     ...(presence ? { presence } : {}),
   };
 }
@@ -118,7 +172,9 @@ export default defineTool({
       'You are still deciding whether to take it (inspect first with work_items:get), ' +
       'or you want the oldest unassigned item regardless of which (work_items:claim_next).',
     chaining:
-      'work_items:list → work_items:pickup { id, intent } → work → work_items:complete.',
+      'work_items:list → work_items:pickup { id, intent } → work → work_items:complete. ' +
+      'A failed declaration/lane can leave claimed:true; retry the same id after repair. ' +
+      'Retries re-check current authorization — never create, force or rename a replacement.',
   },
   // Claims the item (write). effect:'write' is inferred from the :write capability
   // (B-CX-PRE), so pickup is dry-run-previewable like any mutating tool.

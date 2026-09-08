@@ -26,6 +26,7 @@ import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
 import { Session as InspectorSession } from 'node:inspector';
 import { performance } from 'node:perf_hooks';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
 import type { SuSessionCommand, SuSessionEvent } from '@papercusp/chat-protocol';
@@ -509,6 +510,8 @@ let optionalMemoryWarnings: string[] = [];
 let configurationWarnings: string[] = [];
 let nativeFrameDiagnostics: Array<Record<string, unknown>> = [];
 let readOmpDiagnosticState: (() => Promise<Record<string, unknown>>) | undefined;
+let nativeProviderOrigin: string | undefined;
+const nativeProviderEvents: Array<Record<string, unknown>> = [];
 
 // Drop command frames only for deliberate acknowledgement-loss cases. All other
 // production SSE events still traverse the real HTTP connection to the PTY.
@@ -716,6 +719,16 @@ beforeAll(async () => {
             queryKeys: url ? [...url.searchParams.keys()] : [],
             ownerMatches: url?.searchParams.get('client') === options.ownerId };
         });
+        if (process.env.PUI_TRACE_PROVIDER === '1') {
+          // A transparent fixture-only hop records request/response boundaries;
+          // the native engine still sends its real payload to the same provider.
+          const modelPath = path.join(options.env.PI_CODING_AGENT_DIR!, 'models.yml');
+          const models = parseYaml(readFileSync(modelPath, 'utf8'));
+          const provider = models.providers['papercusp-gateway'];
+          nativeProviderOrigin = provider.baseUrl;
+          provider.baseUrl = `${process.env.PAPERCUSP_OPERATOR_URL}/api/pui-provider-debug`;
+          writeFileSync(modelPath, stringifyYaml(models), { mode: 0o600 });
+        }
         const readNativeLogs = () => {
           const logDir = path.resolve(options.env.PI_CODING_AGENT_DIR!, '..', 'logs');
           if (!existsSync(logDir)) return [];
@@ -744,7 +757,7 @@ beforeAll(async () => {
             .catch((error: Error) => ({ stateReadError: error.message }));
           return { ...Object.fromEntries(['sessionId', 'sessionFile', 'isStreaming', 'isCompacting',
             'messageCount', 'queuedMessageCount', 'contextUsage', 'stateReadError'].map((key) => [key, state[key]])),
-          nativeLogs: readNativeLogs() };
+          nativeLogs: readNativeLogs(), nativeProviderEvents };
         };
         return { ...peer, async request(...args: Parameters<typeof peer.request>) {
           const result = await peer.request(...args);
@@ -779,6 +792,33 @@ beforeAll(async () => {
     fetch: async (request, env) => {
       const requestUrl = new URL(request.url);
       const pathname = requestUrl.pathname;
+      if (process.env.PUI_TRACE_PROVIDER === '1' && pathname.startsWith('/api/pui-provider-debug/') && nativeProviderOrigin) {
+        const suffix = pathname.slice('/api/pui-provider-debug'.length) + requestUrl.search;
+        const headers = new Headers(request.headers);
+        headers.delete('host');
+        nativeProviderEvents.push({ phase: 'request', path: pathname, at: new Date().toISOString(),
+          priority: headers.get('x-papercusp-priority'), owner: headers.get('x-papercusp-owner'),
+          account: headers.get('x-papercusp-account') });
+        try {
+          const response = await fetch(`${nativeProviderOrigin}${suffix}`, {
+            method: request.method, headers,
+            body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer(), signal: request.signal,
+          });
+          nativeProviderEvents.push({ phase: 'headers', status: response.status,
+            contentType: response.headers.get('content-type'), retryAfter: response.headers.get('retry-after'),
+            at: new Date().toISOString(),
+            errorBody: response.ok ? undefined : redactSensitiveText(await response.clone().text()).slice(0, 1_500) });
+          return response;
+        } catch (error) {
+          nativeProviderEvents.push({ phase: 'error', message: redactSensitiveText(String(error)), at: new Date().toISOString() });
+          throw error;
+        }
+      }
+      if (pathname === '/api/mcp' && request.method === 'POST' && process.env.PUI_DELAY_MCP_INITIALIZE_MS) {
+        const rpc = await request.clone().json().catch(() => ({})) as { method?: string };
+        if (rpc.method === 'initialize') await new Promise((resolve) => setTimeout(resolve,
+          Math.min(5_000, Math.max(0, Number(process.env.PUI_DELAY_MCP_INITIALIZE_MS) || 0))));
+      }
       const requestStarted = performance.now();
       const traceFields = { path: pathname, query: requestUrl.searchParams.get('name') };
       traceTiming('request-start', traceFields);

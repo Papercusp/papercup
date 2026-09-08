@@ -4186,7 +4186,9 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
       killGroup(holder);
       try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }
     }
-  }, 10_000);
+    // Both readiness waits use untilStderr's 30s observable-state budget. The
+    // outer test must not expire first under shared-host scheduler pressure.
+  }, 30_000);
 
   it('EI-21599206021092018: scoped test:affected --changed-paths uses the independent lane', async () => {
     plantLock(liveOwner());

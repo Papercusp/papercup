@@ -22,12 +22,16 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
     const { call, calls } = fakeCall({
       'work_items:get': () => ({ ok: true, results: [{ ok: true, id: 'WI-1', workItem: { id: 'WI-1', kind: 'task', title: 'T' } }] }),
       'work_items:claim': () => ({ ok: true, results: [{ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } }], counts: { ok: 1, failed: 0 } }),
-      'coord:declare-intent': () => ({ ok: true, presence: { intent: 'doing WI-1' } }),
+      'coord:declare-intent': () => ({
+        ok: true, presence: { intent: 'doing WI-1' },
+        claims: { claimed: ['P-001'], alreadyHeld: [], conflicts: [] },
+      }),
     });
     const r = await composePickup({ id: 'WI-1', intent: 'doing WI-1', plan: 'p', items: ['P-001'] }, call);
     expect(r.ok).toBe(true);
     expect(r.claimed).toBe(true);
     expect(r.intentDeclared).toBe(true);
+    expect(r.laneClaimed).toBe(true);
     expect((r.item as { assignee?: string }).assignee).toBe('me'); // claim's refreshed item wins
     expect(calls.map((c) => c.name)).toEqual(['work_items:get', 'work_items:claim', 'coord:declare-intent']);
     expect(calls[0].args).toMatchObject({ id: 'WI-1', detail: true });
@@ -78,5 +82,117 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
     const di = calls.find((c) => c.name === 'coord:declare-intent')!;
     expect(di.args.items).toBeUndefined();
     expect(di.args.current_plan_slug).toBeUndefined();
+  });
+
+  const item = { id: 'WI-5', assignee: 'me' };
+  const args = { id: item.id, intent: 'review existing task', plan: 'p', items: ['P-001'] };
+  function claimedCall(declare: () => unknown) {
+    return fakeCall({
+      'work_items:get': () => ({ ok: true, results: [{ ok: true, workItem: item }] }),
+      'work_items:claim': () => ({ ok: true, results: [{ ok: true, workItem: item }] }),
+      'coord:declare-intent': declare,
+    });
+  }
+
+  it.each([
+    ['business failure', { ok: false, error: 'scope denied' }],
+    ['absent result', undefined],
+    ['null result', null],
+    ['empty result', {}],
+    ['non-boolean success', { ok: 'true' }],
+    ['unparsed result', 'ok:true'],
+  ])('preserves the completed claim on declaration %s', async (_label, declaration) => {
+    const { call, calls } = claimedCall(() => declaration);
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: false, step: 'declare-intent', item, claimed: true,
+      intentDeclared: false, laneClaimed: false,
+    });
+    expect(calls.map(({ name }) => name)).toEqual([
+      'work_items:get', 'work_items:claim', 'coord:declare-intent',
+    ]);
+  });
+
+  it('reports a thrown declaration gate failure without hiding the completed claim', async () => {
+    const { call } = claimedCall(() => { throw new Error('capability revoked'); });
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: false, step: 'declare-intent', error: 'capability revoked',
+      item, claimed: true, intentDeclared: false, laneClaimed: false,
+    });
+  });
+
+  it.each([
+    ['conflict', { claimed: [], alreadyHeld: [], conflicts: [{ itemId: 'P-001', owner: 'peer' }] }],
+    ['unknown id', { claimed: [], alreadyHeld: [], conflicts: [], unknown: ['P-001'] }],
+    ['no positive receipt', { claimed: [], alreadyHeld: [], conflicts: [] }],
+    ['wrong receipt', { claimed: ['P-002'], alreadyHeld: [], conflicts: [] }],
+    ['missing claims', undefined],
+    ['malformed claims', { claimed: 'P-001', alreadyHeld: [], conflicts: [] }],
+    ['malformed conflicts', { claimed: ['P-001'], alreadyHeld: [], conflicts: null }],
+    ['malformed unknowns', { claimed: ['P-001'], alreadyHeld: [], conflicts: [], unknown: 'P-002' }],
+  ])('separates declared presence from a lane %s', async (_label, claims) => {
+    const declaration = { ok: true, presence: { intent: args.intent }, claims };
+    const { call } = claimedCall(() => declaration);
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: false, step: 'lane', claimed: true, intentDeclared: true,
+      laneClaimed: false, presence: declaration,
+    });
+  });
+
+  it('accepts an already-held lane receipt on an authorized same-ID retry', async () => {
+    let attempt = 0;
+    const { call, calls } = claimedCall(() => ++attempt === 1
+      ? { ok: false, error: 'screening still pending' }
+      : { ok: true, claims: { claimed: [], alreadyHeld: ['P-001'], conflicts: [] } });
+    expect(await composePickup(args, call)).toMatchObject({ ok: false, claimed: true });
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: true, claimed: true, intentDeclared: true, laneClaimed: true,
+    });
+    expect(calls.map(({ name }) => name)).toEqual([
+      'work_items:get', 'work_items:claim', 'coord:declare-intent',
+      'work_items:get', 'work_items:claim', 'coord:declare-intent',
+    ]);
+    expect(calls.filter(({ name }) => name === 'work_items:claim')
+      .map(({ args: claimArgs }) => claimArgs)).toEqual([{ id: item.id }, { id: item.id }]);
+  });
+
+  it('does not use a prior successful claim to bypass revoked authority on retry', async () => {
+    let allowed = true;
+    const { call, calls } = fakeCall({
+      'work_items:get': () => ({ ok: true, results: [{ ok: true, workItem: item }] }),
+      'work_items:claim': () => ({
+        ok: true, results: [allowed
+          ? { ok: true, workItem: item }
+          : { ok: false, error: 'fleet_scope_violation' }],
+      }),
+      'coord:declare-intent': () => ({ ok: false, error: 'declaration interrupted' }),
+    });
+    expect(await composePickup(args, call)).toMatchObject({ ok: false, claimed: true });
+    allowed = false;
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: false, claimed: false, step: 'claim', error: 'fleet_scope_violation',
+    });
+    expect(calls.map(({ name }) => name)).toEqual([
+      'work_items:get', 'work_items:claim', 'coord:declare-intent',
+      'work_items:get', 'work_items:claim',
+    ]);
+  });
+
+  it('does not convert a thrown claim authorization failure into a retry success', async () => {
+    const { call, calls } = fakeCall({
+      'work_items:get': () => ({ ok: true, results: [{ ok: true, workItem: item }] }),
+      'work_items:claim': () => { throw new Error('authorization revoked'); },
+    });
+    await expect(composePickup(args, call)).rejects.toThrow('authorization revoked');
+    expect(calls.map(({ name }) => name)).toEqual(['work_items:get', 'work_items:claim']);
+  });
+
+  it('requires all requested lane ids, including when some were already held', async () => {
+    const { call } = claimedCall(() => ({
+      ok: true, claims: { claimed: ['P-001'], alreadyHeld: ['P-002'], conflicts: [] },
+    }));
+    expect(await composePickup({ ...args, items: ['P-001', 'P-002'] }, call))
+      .toMatchObject({ ok: true, laneClaimed: true });
+    expect(await composePickup({ ...args, items: ['P-001', 'P-002', 'P-003'] }, call))
+      .toMatchObject({ ok: false, claimed: true, intentDeclared: true, laneClaimed: false });
   });
 });

@@ -129,13 +129,25 @@ function isEsmRequireError(err: unknown): boolean {
   return code === 'ERR_REQUIRE_ESM';
 }
 
-/** Attempt to load one package via the injected require. */
+/** Load the package and exercise a lazy native binding when its API requires it. */
 export function loadAddon(
   spec: string,
   requireFn: (s: string) => unknown,
 ): { ok: boolean | null; error?: string } {
   try {
-    requireFn(spec);
+    const loaded = requireFn(spec);
+    if (spec === 'better-sqlite3') {
+      // Its JavaScript wrapper imports successfully even when the .node addon
+      // targets a different ABI. Opening and querying an in-memory database
+      // follows the binding-load path used by mem0 without touching user data.
+      const Database = loaded as new (filename: string) => {
+        prepare(sql: string): { get(): unknown };
+        close(): void;
+      };
+      const db = new Database(':memory:');
+      try { db.prepare('SELECT 1').get(); }
+      finally { db.close(); }
+    }
     return { ok: true };
   } catch (err) {
     if (isEsmRequireError(err)) {
