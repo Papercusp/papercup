@@ -193,27 +193,31 @@ describe('P-001 input-contract preservation baseline', () => {
     expect(result.success).toBe(true);
   });
 
-  it('characterizes open-handoff fields that the input schema currently leaves optional', () => {
-    // P-006 must reconcile published constraints with handler-level refusal.
+  it('enforces open-handoff fields while preserving acceptance by existing identity', () => {
+    // P-006 reconciles the published input contract with handler-level refusal.
     // Only the schema is exercised; no handoff, flush gate, or wake is invoked.
-    expect(handoffTool.args.safeParse({}).success).toBe(true);
+    expect(handoffTool.args.safeParse({}).success).toBe(false);
     expect(handoffTool.args.safeParse({ accept_msg_id: 'fixture-existing-handoff' }).success).toBe(true);
   });
 
-  it('pins the schema/handler mismatch without writing or waking a recipient', async () => {
+  it('keeps schema and defensive handler errors aligned without writing or waking a recipient', async () => {
     const context: UnifiedToolContext = {
       harnessSlug: metadataHarness, workspaceId,
       log: () => {}, signal: new AbortController().signal,
       progress: () => {}, emit: () => {},
     };
-    const acceptedInput = handoffTool.args.parse({});
-    const result = await handoffTool.handler(acceptedInput, context);
+    const parsed = handoffTool.args.safeParse({});
+    expect(parsed.success).toBe(false);
+    // Direct handler callers retain the existing defensive refusal too.
+    const result = await handoffTool.handler({}, context);
     expect(result).toMatchObject({ isError: true });
     if (!('content' in result)) throw new Error('missing handler content');
     const text = result.content.find((part) => part.type === 'text');
     expect(text?.type).toBe('text');
     if (!text || text.type !== 'text') throw new Error('missing handler result');
-    expect(JSON.parse(text.text)).toMatchObject({ ok: false, error: 'missing_fields' });
+    const body = JSON.parse(text.text);
+    expect(body).toMatchObject({ ok: false, error: 'missing_fields' });
+    if (!parsed.success) expect(parsed.error.issues[0]?.message).toBe(body.detail);
     expect(io.putEvent).not.toHaveBeenCalled();
   });
 
