@@ -279,6 +279,19 @@ it('does not treat a launch-prompt mention of an OMP MCP path as a connected dev
   await expect(f.engine.ready).rejects.toThrow('OMP SU tools are not connected');
 });
 
+it.each(['papercusp-su', 'another-server'])('uses exact native connected-server evidence when the OMP map is bounded (%s)', async (server) => {
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_state' ? {
+    sessionId: 'native-omp', sessionFile: '/configured/omp/session.jsonl',
+    model: { provider: 'openai', id: 'omp-model' }, dumpTools: [{ name: 'read' }, { name: 'write' }],
+    systemPrompt: ['SU instructions mentioning papercusp-su\n\n## MCP Tool Routes\n\n- other → `xd://mcp__other_tool`\nAdditional mounted MCP tool mappings omitted: prompt bounded.\n\n## MCP Server Instructions\n\n' +
+      `### ${server}\nConnected server instructions.\n\n## Other section\n### papercusp-su\nAn unrelated mention.`],
+  } : undefined });
+  if (server === 'papercusp-su') {
+    await f.engine.ready;
+    expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+  } else await expect(f.engine.ready).rejects.toThrow('OMP SU tools are not connected');
+});
+
 it('rejects a Codex approval from a different thread before opening a card', async () => {
   const f = fixture('codex'); await f.engine.ready;
   expect(() => f.emit({ id: 'wrong', method: 'item/commandExecution/requestApproval',

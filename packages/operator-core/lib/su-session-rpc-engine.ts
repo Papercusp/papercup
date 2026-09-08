@@ -360,16 +360,25 @@ export function startSuRpcEngine(
       const id = string(state.sessionId);
       if (!id || nativeId() && id !== nativeId()) throw new Error('OMP did not return the requested native identity');
       const toolNames = Array.isArray(state.dumpTools) ? state.dumpTools.map((tool) => string(object(tool).name)) : [];
+      const promptParts = (Array.isArray(state.systemPrompt) ? state.systemPrompt : [])
+        .filter((part): part is string => typeof part === 'string');
       // OMP's current runtime mounts connected MCP tools as xd:// devices;
       // dumpTools lists only top-level tools. The separate generated mapping
       // section comes from its live MCP route registry. OMP can join it into
       // the base prompt string instead of returning a separate array entry.
-      const mountedRoutes = (Array.isArray(state.systemPrompt) ? state.systemPrompt : [])
-        .filter((part): part is string => typeof part === 'string')
+      const mountedRoutes = promptParts
         .flatMap((part) => part.split(/^## MCP Tool Routes\r?$/m).slice(1))
         .flatMap((section) => section.split(/^#{1,2} /m, 1)[0].match(/xd:\/\/[^`\s]+/g) ?? []);
       const suRoute = mountedRoutes.some((route) => /papercusp[-_]su/i.test(route));
-      if (!toolNames.some((name) => /papercusp/i.test(name)) && !suRoute) {
+      // The native route map is a bounded preview and can omit this server.
+      // OMP separately emits server instructions from MCPManager's connected
+      // registry after initialize, including each exact server name. Like
+      // Claude's connected status, this is positive native connection evidence.
+      const connectedServers = promptParts
+        .flatMap((part) => part.split(/^## MCP Server Instructions\r?$/m).slice(1))
+        .flatMap((section) => [...section.split(/^#{1,2} /m, 1)[0].matchAll(/^### ([^\r\n]+)\r?$/gm)]
+          .map((match) => match[1]));
+      if (!toolNames.some((name) => /papercusp/i.test(name)) && !suRoute && !connectedServers.includes('papercusp-su')) {
         throw new Error(`OMP SU tools are not connected (available: ${toolNames.slice(0, 30).join(', ') || 'none'}; mounted: ${mountedRoutes.slice(0, 8).join(', ') || 'none'})`);
       }
       nativePath = string(state.sessionFile) || null;
