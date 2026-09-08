@@ -289,8 +289,8 @@ it('keeps OMP input closed until the native SU connection arrives after RPC read
   } : undefined });
   await vi.waitFor(() => expect(f.sent.some((frame) => frame.type === 'get_state')).toBe(true));
   expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
-  await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal)
-    .resolves.toMatchObject({ status: 'refused' });
+  const pendingInput = await f.engine.adapter.host.acceptCommand(command(f.engine, 'owner_turn'));
+  await expect(pendingInput.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'session_not_ready' } });
   expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
   connected = true;
   await f.engine.ready;
