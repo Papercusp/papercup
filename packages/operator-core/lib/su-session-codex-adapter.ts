@@ -443,7 +443,9 @@ export class CodexSuSessionAdapter {
   }
 
   materializeRuntime(runtime: CodexSuRuntimeBinding): void {
-    this.host.materializeNativeSessionId(runtime.nativeSession.rolloutId);
+    if (this.host.descriptor().identity.nativeSessionId !== runtime.nativeSession.rolloutId) {
+      this.host.materializeNativeSessionId(runtime.nativeSession.rolloutId);
+    }
     this.runtimeValue = runtime;
   }
 
@@ -646,7 +648,7 @@ export class CodexSuSessionAdapter {
     if (!this.runtimeValue.rolloutPath) {
       throw new Error('Codex runtime has no resolved rollout path');
     }
-    await this.consumeNativeLines(readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath));
+    for await (const line of readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath)) this.ingestNativeLine(line);
   }
 
   /** P-004 calls this after an exact resume/carry replacement attaches. The

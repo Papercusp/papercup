@@ -383,7 +383,9 @@ export class OmpSuSessionAdapter {
   get runtime(): OmpSuRuntimeBinding { return this.runtimeValue; }
 
   materializeRuntime(runtime: OmpSuRuntimeBinding): void {
-    this.host.materializeNativeSessionId(runtime.nativeSession.ompThreadId);
+    if (this.host.descriptor().identity.nativeSessionId !== runtime.nativeSession.ompThreadId) {
+      this.host.materializeNativeSessionId(runtime.nativeSession.ompThreadId);
+    }
     this.runtimeValue = runtime;
   }
 
@@ -478,7 +480,7 @@ export class OmpSuSessionAdapter {
 
   async consumeTranscriptSnapshot(): Promise<void> {
     if (!this.runtimeValue.transcriptPath) throw new Error('OMP runtime has no resolved transcript path');
-    await this.consumeNativeLines(readOmpTranscriptSnapshotLines(this.runtimeValue.transcriptPath));
+    for await (const line of readOmpTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line);
   }
 
   replaceRuntime(runtime: OmpSuRuntimeBinding, reason = 'OMP runtime replaced'): void {

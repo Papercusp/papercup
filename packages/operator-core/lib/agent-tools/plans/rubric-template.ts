@@ -641,6 +641,9 @@ export const rubricTemplateDataSchema = z
         'acceptance-kind only: the slug of the plan this rubric is the definition-of-done FOR. ' +
           'An acceptance rubric names exactly one subject (subjectPlan or subjectGoal); refused on a standard rubric',
       ),
+    subjectHarnessSlug: z.string().trim().min(1).optional().describe(
+      'Harness of subjectPlan; resolved by canonical writers, independent of the rubric storage harness',
+    ),
     subjectGoal: z
       .string()
       .min(1)
@@ -782,6 +785,10 @@ export const rubricTemplateDataSchema = z
       }
     });
     const kind = rubricKindOf(d);
+    if (d.subjectHarnessSlug !== undefined && (kind !== 'acceptance' || !d.subjectPlan)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['subjectHarnessSlug'],
+        message: 'subjectHarnessSlug requires an acceptance rubric with subjectPlan' });
+    }
     if (kind === 'standard') {
       if (d.subjectPlan !== undefined) {
         ctx.addIssue({

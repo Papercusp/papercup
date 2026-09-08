@@ -172,6 +172,9 @@ export const rubricsProposeArgs = z
       .describe(
         "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot definition-of-done linked by subjectPlan (plan mode) or subjectGoal (goal mode), activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the work's implementation, before it may be marked done — the matching completion gate reads it",
       ),
+    subjectHarnessSlug: z.string().trim().min(1).optional().describe(
+      'Harness of subjectPlan. Omit when its slug resolves uniquely; required when the slug exists in several harnesses.',
+    ),
     subjectPlan: z
       .string()
       .min(1)
@@ -392,6 +395,7 @@ export default defineTool({
       rubricId: args.rubricRef,
       ...(args.kind ? { kind: args.kind } : {}),
       ...(args.subjectPlan ? { subjectPlan: args.subjectPlan } : {}),
+      ...(args.subjectHarnessSlug ? { subjectHarnessSlug: args.subjectHarnessSlug } : {}),
       ...(args.subjectGoal ? { subjectGoal: args.subjectGoal } : {}),
       ...(args.classRef ? { classRef: args.classRef } : {}),
       ...(args.composes !== undefined ? { composes: args.composes } : {}),

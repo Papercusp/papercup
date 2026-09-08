@@ -128,7 +128,7 @@ export async function checkPlanStartable(
   // P-003: every start/promotion door funnels through this function. A post-epoch
   // BAR contract may be METHOD-empty, but its identity/falsifier/provenance,
   // revision, mapping, and bounded-source invariants must already be complete.
-  const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start');
+  const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start', { harnessSlug: row.harnessSlug });
   if (!lifecycle.satisfied) {
     return {
       ok: false,

@@ -348,7 +348,7 @@ export function startSuRpcEngine(
       if (thread.cwd && resolve(string(thread.cwd)) !== resolve(boot.cwd)) throw new Error('Codex started in a different project');
       nativePath = string(thread.path) || null;
       native = { ...native as CodexNativeSessionHandle, rolloutId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
-      if (!host.descriptor().identity.nativeSessionId) (adapter as CodexSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, rolloutId: id }, rolloutPath: nativePath });
+      (adapter as CodexSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, rolloutId: id }, rolloutPath: nativePath });
       for (const frame of initializingFrames.splice(0)) onMessage(frame);
       initializingFrameBytes = 0;
       const servers = await peer.request({ method: 'mcpServerStatus/list', params: {} });
@@ -364,7 +364,7 @@ export function startSuRpcEngine(
       native = { ...native as OmpNativeSessionHandle, ompThreadId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
       const linked = await setAdvSessionOmpThreadId(binding.advSessionId, id);
       if (linked !== 'linked' && linked !== 'already_linked') throw new Error(`OMP native identity link failed (${linked})`);
-      if (!host.descriptor().identity.nativeSessionId) (adapter as OmpSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, ompThreadId: id }, transcriptPath: string(state.sessionFile) || null });
+      (adapter as OmpSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, ompThreadId: id }, transcriptPath: nativePath });
       const model = object(state.model);
       actualModel = [string(model.provider), string(model.id)].filter(Boolean).join('/');
     }
@@ -381,6 +381,12 @@ export function startSuRpcEngine(
     await refreshResumeEvidence();
     if (!await persistSuSessionDescriptor(binding.advSessionId, host.descriptor(), boot.workspaceId)) {
       throw new Error('Could not persist the native session identity and resume descriptor');
+    }
+    if (options.nativeSession) {
+      // The native runtime restores inference context; the adapter restores
+      // the owner's visible history before this connection accepts new input.
+      if (backend === 'codex') await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot();
+      else await (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot();
     }
     if (closed) throw new Error('Structured connection closed during startup');
     await options.beforeReady?.(peer.pid());

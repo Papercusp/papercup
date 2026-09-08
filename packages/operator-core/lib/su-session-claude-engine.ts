@@ -279,6 +279,7 @@ export function startClaudeSuEngine(
     if (suServer?.status !== 'connected') {
       throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
     }
+    if (options.resume) await adapter.consumeTranscriptSnapshot();
     if (closed) throw new Error('Claude connection closed during startup');
     await options.beforeReady?.(processId);
     if (closed) throw new Error('Claude connection closed while finalizing resume');

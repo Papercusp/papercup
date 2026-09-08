@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
@@ -23,8 +26,10 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({
 import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
 
 const engines: SuRpcEngine[] = [];
+const nativeDirs: string[] = [];
 afterEach(async () => {
   for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); }
+  for (const dir of nativeDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
   mocks.persist.mockResolvedValue(true);
 });
@@ -33,7 +38,16 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   nativeId?: string; tools?: boolean; model?: string;
   request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
   resume?: boolean;
+  history?: RpcFrame[];
+  missingTranscript?: boolean;
 } = {}) {
+  let nativePath = `/configured/${backend}/session.jsonl`;
+  if (overrides.resume) {
+    const dir = mkdtempSync(join(tmpdir(), `pui-${backend}-history-`));
+    nativeDirs.push(dir);
+    nativePath = join(dir, 'session.jsonl');
+    if (!overrides.missingTranscript) writeFileSync(nativePath, (overrides.history ?? []).map((row) => JSON.stringify(row) + '\n').join(''));
+  }
   const binding = { operation: 'created', backend, advSessionId: 71, ownerId: 'su-rpc-fixture',
     workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', nativeSession: null } as PuiSuSessionBinding & { backend: 'codex' | 'omp' };
   const boot: BootstrapSuResult = { status: 'ok', specificationRevision: 'spec', stateRevision: 'state', compositionSource: 'blueprint',
@@ -52,7 +66,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     const override = await overrides.request?.(frame);
     if (override) return override;
     if (frame.method === 'thread/start' || frame.method === 'thread/resume') return {
-      thread: { id: overrides.nativeId ?? 'native-codex', cwd: '/project', path: '/configured/codex/sessions/rollout.jsonl' },
+      thread: { id: overrides.nativeId ?? 'native-codex', cwd: '/project', path: nativePath },
       model: overrides.model ?? 'codex-model',
     };
     if (frame.method === 'mcpServerStatus/list') return { data: overrides.tools === false ? [] : [{ name: 'papercusp-su', tools: { 'coord:whoami': {} } }] };
@@ -62,7 +76,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     } });
     if (frame.type === 'abort') transport.onMessage({ type: 'agent_end' });
     if (frame.type === 'get_state') return {
-      sessionId: overrides.nativeId ?? 'native-omp', sessionFile: '/configured/omp/session.jsonl',
+      sessionId: overrides.nativeId ?? 'native-omp', sessionFile: nativePath,
       model: { provider: 'openai', id: overrides.model ?? 'omp-model' },
       dumpTools: overrides.tools === false ? [] : [{ name: 'mcp__papercusp_su__coord_whoami' }],
     };
@@ -89,6 +103,26 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) => {
+  it('restores historical assistant text before accepting resumed input', async () => {
+    const content = [{ type: backend === 'codex' ? 'output_text' : 'text', text: 'Saved assistant reply' }];
+    const message = { role: 'assistant', content };
+    const history = [backend === 'codex'
+      ? { type: 'response_item', payload: { type: 'message', ...message } }
+      : { type: 'message', id: 'saved-reply', message }];
+    const f = fixture(backend, { resume: true, history });
+    await f.engine.ready;
+    expect(f.engine.adapter.host.recent.map(({ event }) => event).filter((event) =>
+      event.type === 'transcript' && event.phase === 'completed' && event.role === 'assistant'))
+      .toEqual([expect.objectContaining({ content: 'Saved assistant reply' })]);
+    expect(f.sent.some((frame) => frame.method === 'turn/start' || frame.type === 'prompt')).toBe(false);
+  });
+
+  it('refuses resume readiness when saved history cannot be read', async () => {
+    const f = fixture(backend, { resume: true, missingTranscript: true });
+    await expect(f.engine.ready).rejects.toThrow('ENOENT');
+    expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+  });
+
   it('refuses readiness when the native identity cannot be persisted', async () => {
     mocks.persist.mockResolvedValue(false);
     const f = fixture(backend);

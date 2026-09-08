@@ -7,6 +7,7 @@ import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-a
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import { startClaudeSuEngine, type ClaudeEngineOptions, type ClaudeSuEngine } from './su-session-claude-engine';
+import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 
 vi.mock('./su-session-persistence', () => ({
   persistSuSessionDescriptor: vi.fn(async () => true),
@@ -85,8 +86,8 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
   };
   return { factory, output, prompts, close, interrupt, options: () => receivedOptions };
 }
-function open(p = peer(), extra: Partial<ClaudeEngineOptions> = {}) {
-  const engine = startClaudeSuEngine(boot, binding, runtime, { agentChatId: 'chat', accountRoute: 'default', carry: 'warm', query: p.factory, register: false, startupTimeoutMs: 300, ...extra });
+function open(p = peer(), extra: Partial<ClaudeEngineOptions> = {}, nativeRuntime: ClaudeSuRuntimeBinding = runtime) {
+  const engine = startClaudeSuEngine(boot, binding, nativeRuntime, { agentChatId: 'chat', accountRoute: 'default', carry: 'warm', query: p.factory, register: false, startupTimeoutMs: 300, ...extra });
   engines.push(engine);
   return engine;
 }
@@ -98,6 +99,25 @@ function command(engine: ClaudeSuEngine, type: 'owner_turn' | 'interrupt' | 'end
 }
 
 describe('structured Claude SU engine', () => {
+  it('restores historical assistant text without sending a new native turn', async () => {
+    const transcriptPath = join(dir, 'saved-history.jsonl');
+    writeFileSync(transcriptPath, JSON.stringify({ type: 'assistant', sessionId: nativeId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Saved assistant reply' }] } }) + '\n');
+    const p = peer();
+    const engine = open(p, { resume: true }, { ...runtime, transcriptPath });
+    await engine.ready;
+    expect(engine.adapter.host.recent.map(({ event }) => event).filter((event) =>
+      event.type === 'transcript' && event.phase === 'completed' && event.role === 'assistant'))
+      .toEqual([expect.objectContaining({ content: 'Saved assistant reply' })]);
+    expect(p.prompts).toHaveLength(0);
+  });
+
+  it('refuses resume readiness when saved history cannot be read', async () => {
+    const engine = open(peer(), { resume: true }, { ...runtime, transcriptPath: join(dir, 'missing.jsonl') });
+    await expect(engine.ready).rejects.toThrow('ENOENT');
+    expect(engine.adapter.host.snapshot().streamReady).toBe(false);
+  });
+
   it('requires initialized SDK controls and SU tools without inventing a startup model turn', async () => {
     const p = peer(); const engine = open(p);
     expect(engine.adapter.host.descriptor().lifecycle).toBe('starting');

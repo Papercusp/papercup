@@ -566,10 +566,11 @@ export class ClaudeSuSessionAdapter {
   }
 
   async consumeTranscriptSnapshot(): Promise<void> {
+    this.runtimeValue.transcriptPath ??= await findClaudeTranscript(this.runtimeValue.nativeSession);
     if (!this.runtimeValue.transcriptPath) {
       throw new Error('Claude runtime has no resolved transcript path');
     }
-    await this.consumeNativeLines(readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath));
+    for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line);
   }
 
   /** P-004 calls this after exact Claude resume/carry replacement attaches. The
