@@ -191,7 +191,13 @@ describe('hosted browser route boundary', () => {
         readConnection,
         upsertConnection,
         inspectConnection: async () => ({
-          validation: { ok: true, checkedAt: '2026-08-30T00:00:00.000Z', warnings: [], errors: [] },
+          validation: {
+            ok: true,
+            checkedAt: '2026-08-30T00:00:00.000Z',
+            identity: 'runtime@developer.gserviceaccount.com',
+            warnings: [],
+            errors: [],
+          },
           scopes: [],
           regions: [],
           sizes: [],

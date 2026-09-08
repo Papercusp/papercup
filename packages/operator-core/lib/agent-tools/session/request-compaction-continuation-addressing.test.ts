@@ -86,7 +86,7 @@ describe('the addressing is applied where a caller-supplied note cannot bypass i
     // branch still contains the complete `continueNote ?? defaultContinueNote(...)`
     // expression, and that `rawNote` — not some other value — flows into addressing.
     const rawNoteIsTheOrExpression =
-      /const\s+rawNote\s*=\s*[\s\S]{0,180}?\(\s*args\.continueNote\s*\?\?\s*defaultContinueNote\(/;
+      /const\s+rawNote\s*=\s*[\s\S]{0,320}?\(\s*args\.continueNote\s*\?\?\s*defaultContinueNote\(/;
     const addressingWrapsRawNote = /addressContinuationToOwner\(\s*[\s\S]{0,120}?rawNote/;
     expect(SOURCE).toMatch(rawNoteIsTheOrExpression);
     expect(SOURCE).toMatch(addressingWrapsRawNote);

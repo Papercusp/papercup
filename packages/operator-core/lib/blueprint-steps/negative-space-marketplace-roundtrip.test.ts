@@ -42,7 +42,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
-import { resolveBuiltinExtends } from '@papercusp/orchestrator/blueprint';
+import { resolveBuiltinExtends, validateAgentInputClosure } from '@papercusp/orchestrator/blueprint';
 import { makeComposedResolveExtends, resolveAndValidateBlueprint } from '@papercusp/blueprint-distribution';
 import {
   installBlueprintFromCupboardCore,
@@ -165,7 +165,9 @@ test('round-trip: a SECOND hive installs negative-space from the Cupboard and it
   assert.equal(res.abstract, false);
   assert.equal(res.installedTo, join(installedDir, 'negative-space'));
   assert.deepEqual(res.dependencies, { tools: [], packs: [], plugins: [], blueprints: [] });
-  assert.equal(res.depCheck, null);
+  assert.ok(res.depCheck, 'even a dependency-free blueprint must return its replayable package-pin closure');
+  assert.ok(res.depCheck.pins?.some((pin) => pin.packageKind === 'blueprint' && pin.ref === 'negative-space'));
+  assert.doesNotThrow(() => validateAgentInputClosure(res.depCheck!.pins!));
   // Physically placed in the second hive's installed tier; .git excluded.
   assert.ok(existsSync(join(installedDir, 'negative-space', 'blueprint.yaml')));
   assert.ok(!existsSync(join(installedDir, 'negative-space', '.git')));

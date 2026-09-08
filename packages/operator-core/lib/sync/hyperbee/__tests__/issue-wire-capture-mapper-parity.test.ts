@@ -78,9 +78,14 @@ const INTENTIONALLY_ABSENT: Readonly<Record<string, string>> = {
 
 /** The migration file that currently defines the live capture function. */
 function latestCaptureMigration(): { file: string; sql: string } {
+  const definesCaptureFunction =
+    /\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+harness_shared\.capture_work_items_outbox\s*\(/i;
   const candidates = readdirSync(SQL_DIR)
     .filter((f) => /^\d+-.*\.sql$/.test(f))
-    .filter((f) => readFileSync(resolve(SQL_DIR, f), 'utf8').includes(`FUNCTION ${CAPTURE_FN}`))
+    // Later trigger-only migrations mention the function in comments and
+    // EXECUTE clauses. Neither is a definition, so selecting on the bare words
+    // `FUNCTION <name>` can silently inspect a file with no wire-row builder.
+    .filter((f) => definesCaptureFunction.test(readFileSync(resolve(SQL_DIR, f), 'utf8')))
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
   const file = candidates[candidates.length - 1];
   if (!file) throw new Error(`no migration defines ${CAPTURE_FN}`);
