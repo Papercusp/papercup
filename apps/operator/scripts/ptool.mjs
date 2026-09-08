@@ -1290,6 +1290,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
   ['fleet:require-checkpoint', PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS],
   ['dev:restart', PTOOL_DEV_RESTART_TIMEOUT_MS],
+  // EI-22701666730811258: dev:pg_query bounds SQL execution, but the request
+  // can still spend time in proxy admission/queueing before that bound starts.
+  // Keep the ptool client outside the MCP transport floor on both direct and
+  // tools:invoke-wrapped calls so the server's typed result wins over the
+  // ordinary 30s client cutoff.
+  ['dev:pg_query', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
@@ -1411,6 +1417,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['loop:end', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['loop:status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['improvements:capture', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22598752399389413: coord:wake performs recipient resolution, a bounded
+  // roster preflight, and a bounded wake/diagnostic chain. Its tool definition
+  // has no explicit timeoutSec, so MCP uses the ~55s transport floor; the old
+  // 30s ptool default could report the wake as outcome-unknown while the server
+  // was still settling. Keep both direct and tools:invoke calls above that
+  // floor so the typed wake result wins instead of inviting a blind replay.
+  ['coord:wake', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21391922294549625: directed coordination sends can perform durable
   // delivery, close-notification, and wake work before returning. Under local
   // operator pressure the valid response can outlive the ordinary 30s client

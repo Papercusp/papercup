@@ -138,6 +138,20 @@ const passingReplay = {
   ],
 };
 
+const driftedRecipe = {
+  ...RERUN_RECIPE,
+  evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+};
+
+const driftedReplay = {
+  ...passingReplay,
+  evaluatorBuild: { sha: 'live-evaluator-sha', version: '1.2.3' },
+  evaluatorBuildDrift: {
+    recorded: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+    live: { sha: 'live-evaluator-sha', version: '1.2.3' },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   getRubric.mockResolvedValue(RUBRIC);
@@ -194,5 +208,30 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
       payloadTier: 'full',
     });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a pass-like card when the evaluator replay reports build drift', async () => {
+    const dispatchTool = vi.fn().mockResolvedValue(driftedReplay);
+
+    const result = await emitScorecard(
+      emitArgs({ rerunRecipe: driftedRecipe }),
+      { createdBy: 'su-grader' },
+      { dispatchTool },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining('evaluator-build drift'),
+    });
+    expect(result).toMatchObject({ error: expect.stringContaining('no pass-like rating was persisted') });
+    expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
+      ...RERUN_RECIPE.args,
+      evaluatorBuild: driftedRecipe.evaluatorBuild,
+      payloadTier: 'full',
+    });
+    expect(getRubricPlanRevision).not.toHaveBeenCalled();
+    expect(listScorecards).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 });

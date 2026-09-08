@@ -73,6 +73,8 @@ export interface ActivePresence {
 export interface AudienceResolvers {
   /** Explicit subscribers of a subscription target (object|topic) → ownerIds. */
   listTargetSubscribers(targetKind: 'object' | 'topic', targetRef: string): Promise<string[]>;
+  /** Current assignee/holder ownerIds for a canonical issue or feature object ref. */
+  listObjectOwners?(objectKind: 'issue' | 'feature', objectRef: string): Promise<string[]>;
   /** Active presence rows. Called at most once per expandAudience call. */
   listActivePresence(): Promise<ActivePresence[]>;
   /** Topic slugs a coord object (kind, ref) is tagged to (coord_links rel='tagged'). */
@@ -300,6 +302,19 @@ async function resolveSelector(
         ids.add(id);
       }
     }
+    // A current work-item owner is a live audience even when they have not
+    // subscribed to the object or one of its tagged topics. Keep this seam
+    // optional for hosts that do not have the work-item store, and fail soft so
+    // a transient owner read cannot discard the subscription-derived audience.
+    if (lookup.ownerObject && resolvers.listObjectOwners) {
+      try {
+        for (const id of await resolvers.listObjectOwners(lookup.ownerObject.kind, lookup.ownerObject.ref)) {
+          ids.add(id);
+        }
+      } catch {
+        // Best-effort enrichment; the existing audience remains authoritative.
+      }
+    }
     return [...ids];
   }
 
@@ -355,6 +370,7 @@ async function resolveSelector(
 function objectTargetLookup(targetRef: string): {
   targetRefs: string[];
   taggedObject?: { kind: string; ref: string };
+  ownerObject?: { kind: 'issue' | 'feature'; ref: string };
 } {
   const colon = targetRef.indexOf(':');
   if (colon <= 0) return { targetRefs: [targetRef] };
@@ -362,7 +378,11 @@ function objectTargetLookup(targetRef: string): {
   const kind = targetRef.slice(0, colon);
   const ref = targetRef.slice(colon + 1);
   if (kind !== 'work_item' && kind !== 'work-item') {
-    return { targetRefs: [targetRef], taggedObject: { kind, ref } };
+    return {
+      targetRefs: [targetRef],
+      taggedObject: { kind, ref },
+      ownerObject: kind === 'issue' || kind === 'feature' ? { kind, ref } : undefined,
+    };
   }
 
   const canonicalKind = ref.includes('#') ? 'feature' : 'issue';
@@ -370,6 +390,7 @@ function objectTargetLookup(targetRef: string): {
   return {
     targetRefs: targetRef === canonicalTargetRef ? [targetRef] : [targetRef, canonicalTargetRef],
     taggedObject: { kind: canonicalKind, ref },
+    ownerObject: { kind: canonicalKind, ref },
   };
 }
 

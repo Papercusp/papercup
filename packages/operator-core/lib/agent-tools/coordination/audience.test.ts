@@ -19,6 +19,8 @@ function makeResolvers(opts: {
   presence?: ActivePresence[];
   /** `${objectKind}:${objectRef}` → topic slugs it is tagged to. */
   tagged?: Record<string, string[]>;
+  /** `${objectKind}:${objectRef}` → current assignee/holder ownerIds. */
+  objectOwners?: Record<string, string[]>;
   /** fleet slug → live member ownerIds. */
   fleets?: Record<string, string[]>;
   /** fleet slug → leader ownerId. */
@@ -32,6 +34,9 @@ function makeResolvers(opts: {
   return {
     async listTargetSubscribers(kind, ref) {
       return opts.subs?.[`${kind}:${ref}`] ?? [];
+    },
+    async listObjectOwners(kind, ref) {
+      return opts.objectOwners?.[`${kind}:${ref}`] ?? [];
     },
     async listActivePresence() {
       return opts.presence ?? [];
@@ -97,6 +102,29 @@ describe('expandAudience', () => {
     const r = makeResolvers({ subs: { 'object:issue:ISS-1': ['issue-watcher'] } });
     const out = await expandAudience([objectSelector({ kind: 'issue', ref: 'ISS-1' })], r);
     expect(out).toEqual(['issue-watcher']);
+  });
+
+  it('@object includes the current owner for canonical issue and feature refs', async () => {
+    const r = makeResolvers({
+      objectOwners: {
+        'issue:WI-1': ['issue-owner'],
+        'feature:demo#F-1': ['feature-owner'],
+      },
+    });
+
+    expect(await expandAudience(['@object:work_item:WI-1'], r)).toEqual(['issue-owner']);
+    expect(await expandAudience(['@object:work_item:demo#F-1'], r)).toEqual(['feature-owner']);
+  });
+
+  it('@object preserves subscription recipients when owner enrichment fails', async () => {
+    const r: AudienceResolvers = {
+      ...makeResolvers({ subs: { 'object:issue:WI-1': ['subscriber'] } }),
+      async listObjectOwners() {
+        throw new Error('work-item store unavailable');
+      },
+    };
+
+    await expect(expandAudience(['@object:issue:WI-1'], r)).resolves.toEqual(['subscriber']);
   });
 
   it('@object work_item/work-item aliases resolve canonical issue subscriptions', async () => {

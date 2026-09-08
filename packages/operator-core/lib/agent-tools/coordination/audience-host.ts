@@ -24,6 +24,7 @@ import { getFleet, fleetSlugFromName } from '../../agent-fleets-store';
 import { latestFleetLeader } from '../../fleet-membership-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
+import { isQualifiedFeatureRef } from '../../issue-blocks-merge';
 import {
   listFederatedFleetMembers,
   type FederatedFleetMemberRow,
@@ -86,6 +87,35 @@ export const hostAudienceResolvers: AudienceResolvers = {
   async listTargetSubscribers(targetKind, targetRef) {
     const rows = await subStore.listTargetSubscribers(targetKind, targetRef);
     return rows.map((r) => r.subscriber_id);
+  },
+  async listObjectOwners(objectKind, objectRef) {
+    try {
+      if (objectKind !== 'issue' && objectKind !== 'feature') return [];
+
+      let id = objectRef;
+      let harness: string | undefined;
+      if (objectKind === 'feature') {
+        if (!isQualifiedFeatureRef(objectRef)) return [];
+        const separator = objectRef.indexOf('#');
+        harness = objectRef.slice(0, separator);
+        id = objectRef.slice(separator + 1);
+      }
+
+      // Lazy-load the unified work-item facade so audience expansion does not
+      // create a module cycle for hosts that only use subscription selectors.
+      const { getWorkItem } = await import('../../work-items');
+      const item = await getWorkItem(id, harness);
+      if (!item || item.family !== objectKind) return [];
+      // Feature ObjectRefs are harness-qualified; reject a same-id row from a
+      // different harness rather than leaking its owner across projects.
+      if (objectKind === 'feature' && item.harness !== harness) return [];
+      const owner = item.assignee?.trim();
+      return owner ? [owner] : [];
+    } catch {
+      // Owner enrichment is additive; a work-item read failure must leave the
+      // subscription/topic audience deliverable.
+      return [];
+    }
   },
   async listActivePresence(): Promise<ActivePresence[]> {
     const recs = await listPresence();

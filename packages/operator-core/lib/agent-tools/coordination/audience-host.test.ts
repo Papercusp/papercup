@@ -19,6 +19,10 @@ vi.mock('./presence', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./presence')>()),
   listPresence: vi.fn(),
 }));
+const { getWorkItemMock } = vi.hoisted(() => ({ getWorkItemMock: vi.fn() }));
+vi.mock('../../work-items', () => ({
+  getWorkItem: (...args: unknown[]) => getWorkItemMock(...args),
+}));
 vi.mock('../../fleet/fleet-roster', () => ({ liveFleetMemberIds: vi.fn(async () => []) }));
 vi.mock('../../agent-fleets-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
@@ -64,6 +68,36 @@ import { readQueue } from '../locks/su-lock-store';
 
 const mockListPresence = listPresence as unknown as ReturnType<typeof vi.fn>;
 const mockReadQueue = readQueue as unknown as ReturnType<typeof vi.fn>;
+
+describe('hostAudienceResolvers.listObjectOwners — family-aware owner enrichment', () => {
+  beforeEach(() => {
+    getWorkItemMock.mockReset();
+    getWorkItemMock.mockResolvedValue(null);
+  });
+
+  it('returns the current issue assignee', async () => {
+    getWorkItemMock.mockResolvedValue({ family: 'issue', assignee: 'issue-owner' });
+
+    await expect(hostAudienceResolvers.listObjectOwners!('issue', 'WI-1')).resolves.toEqual(['issue-owner']);
+    expect(getWorkItemMock).toHaveBeenCalledWith('WI-1', undefined);
+  });
+
+  it('returns the current feature assignee only for the qualified matching harness', async () => {
+    getWorkItemMock.mockResolvedValue({ family: 'feature', harness: 'demo', assignee: 'feature-owner' });
+
+    await expect(hostAudienceResolvers.listObjectOwners!('feature', 'demo#F-1')).resolves.toEqual(['feature-owner']);
+    expect(getWorkItemMock).toHaveBeenCalledWith('F-1', 'demo');
+    await expect(hostAudienceResolvers.listObjectOwners!('feature', 'other#F-1')).resolves.toEqual([]);
+  });
+
+  it('rejects a wrong family and fails soft when the work-item read throws', async () => {
+    getWorkItemMock.mockResolvedValue({ family: 'feature', harness: 'demo', assignee: 'wrong-family' });
+    await expect(hostAudienceResolvers.listObjectOwners!('issue', 'WI-1')).resolves.toEqual([]);
+
+    getWorkItemMock.mockRejectedValue(new Error('work-item store unavailable'));
+    await expect(hostAudienceResolvers.listObjectOwners!('issue', 'WI-1')).resolves.toEqual([]);
+  });
+});
 
 const lock = (owner: string, path: string) => ({
   path,
