@@ -176,6 +176,9 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
             artifactIdentity: { sha256: inputHash },
             credential: { generation: 'generation-7', expiresAt: '2026-09-08T06:00:00.000Z' },
             cursor: 0,
+            currentStage: null,
+            currentState: null,
+            spentOperationIds: [],
             receipts: [],
           },
         },
@@ -220,6 +223,9 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
       source: { sha: 'b'.repeat(40), gitlinks: { desktop: 'c'.repeat(40) } },
       artifactIdentity: { sha256: inputHash },
       credential: { generation: 'generation-7' },
+      currentStage: 'publish.multipart.initiate',
+      currentState: 'committed',
+      spentOperationIds: ['multipart-init-01'],
     });
     expect(journal?.receipts.map(({ sequence, state }) => ({ sequence, state }))).toEqual([
       { sequence: 0, state: 'intent' },

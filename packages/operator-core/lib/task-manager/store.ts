@@ -730,6 +730,9 @@ export interface TaskReleaseJournal {
   schemaVersion: typeof TASK_RELEASE_JOURNAL_SCHEMA_VERSION;
   operationId: string;
   cursor: number;
+  currentStage: string | null;
+  currentState: TaskReleaseReceiptState | null;
+  spentOperationIds: string[];
   receipts: TaskReleaseReceipt[];
   [key: string]: unknown;
 }
@@ -789,6 +792,13 @@ export function taskReleaseJournalFromDetail(
     typeof value.operationId !== 'string' ||
     !Number.isSafeInteger(value.cursor) ||
     (value.cursor as number) < 0 ||
+    !(value.currentStage === null || typeof value.currentStage === 'string') ||
+    !(
+      value.currentState === null ||
+      ['intent', 'unknown', 'committed', 'refused'].includes(String(value.currentState))
+    ) ||
+    !Array.isArray(value.spentOperationIds) ||
+    !value.spentOperationIds.every((entry) => typeof entry === 'string') ||
     !Array.isArray(value.receipts)
   ) return null;
   const receipts = value.receipts.map(releaseReceiptFromUnknown);
@@ -854,14 +864,19 @@ export async function appendTaskReleaseReceipt(
   const rows = await sql<Array<{ release: unknown }>>`
     UPDATE harness_shared.task_ledger
        SET detail = jsonb_set(
-                      jsonb_set(
-                        detail,
-                        '{release,receipts}',
-                        (detail #> '{release,receipts}') || ${receiptJson}::text::jsonb,
-                        false
+                      detail,
+                      '{release}',
+                      (detail -> 'release') || jsonb_build_object(
+                        'receipts', (detail #> '{release,receipts}') || ${receiptJson}::text::jsonb,
+                        'cursor', ${expectedCursor + 1}::integer,
+                        'currentStage', ${receipt.stage}::text,
+                        'currentState', ${receipt.state}::text,
+                        'spentOperationIds', CASE
+                          WHEN ${receipt.state} = 'intent'
+                            THEN (detail #> '{release,spentOperationIds}') || jsonb_build_array(${receipt.requestIdentity}::text)
+                          ELSE detail #> '{release,spentOperationIds}'
+                        END
                       ),
-                      '{release,cursor}',
-                      to_jsonb(${expectedCursor + 1}::integer),
                       false
                     ),
            updated_at = now()
@@ -870,6 +885,7 @@ export async function appendTaskReleaseReceipt(
        AND detail #>> '{release,schemaVersion}' = ${String(TASK_RELEASE_JOURNAL_SCHEMA_VERSION)}
        AND detail #>> '{release,operationId}' = ${receipt.operationId}
        AND jsonb_typeof(detail #> '{release,receipts}') = 'array'
+       AND jsonb_typeof(detail #> '{release,spentOperationIds}') = 'array'
        AND (detail #>> '{release,cursor}') ~ '^[0-9]+$'
        AND (detail #>> '{release,cursor}')::integer = ${expectedCursor}
        AND NOT EXISTS (

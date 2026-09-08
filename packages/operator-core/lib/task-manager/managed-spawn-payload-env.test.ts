@@ -173,6 +173,36 @@ describe('confined payload env is not the client env (WI-40906)', () => {
     expect([l.command, ...l.args]).not.toContain('-i');
     expect([l.command, ...l.args].slice(-2)).toEqual(['zenity', '--info']);
   });
+
+  it('uses one caller-minted task identity for the ledger result and scope', async () => {
+    const taskId = 'releaseoperation01';
+    const emitter = Object.assign(new EventEmitter(), { pid: 4242, kill: () => true });
+    const seen: Launch[] = [];
+    const spawnFn = ((command: string, args: string[], options: SpawnOptions) => {
+      seen.push({ command, args, options });
+      return emitter as unknown as ChildProcess;
+    }) as unknown as typeof nodeSpawn;
+
+    const result = await managedSpawn('zenity', ['--info'], APP_SPEC, {
+      taskId,
+      scopeAvailable: true,
+      spawnFn,
+      fs: FS,
+    });
+
+    expect(result.taskId).toBe(taskId);
+    expect(result.row.taskId).toBe(taskId);
+    expect([seen[0]!.command, ...seen[0]!.args]).toContain(`--unit=pc-${taskId}.scope`);
+  });
+
+  it('rejects an invalid caller task identity before registration or spawn', async () => {
+    await expect(
+      managedSpawn('zenity', ['--info'], APP_SPEC, {
+        taskId: 'NOT/A/TASK',
+        scopeAvailable: false,
+      }),
+    ).rejects.toThrow(/invalid caller taskId/);
+  });
 });
 
 describe('buildExactEnvPayloadWithTransport', () => {
