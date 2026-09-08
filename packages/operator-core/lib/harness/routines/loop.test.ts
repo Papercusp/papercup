@@ -260,8 +260,16 @@ describe('computeLoopFireStarvation (EI-21301493615546911 — no post-arm fire)'
     ).toBe(false);
   });
 
-  it('stays quiet for an unparked loop or an inactive loop', () => {
+  it('stays quiet for an unparked loop when its next fire is unknown or still in the future', () => {
     expect(computeLoopFireStarvation({ ...base, parked: false })).toBe(false);
+    expect(computeLoopFireStarvation({ ...base, parked: false, nextFireAtMs: NOW + 1_000 })).toBe(false);
+  });
+
+  it('flags an active unparked loop when its concrete next fire is overdue', () => {
+    expect(computeLoopFireStarvation({ ...base, parked: false, nextFireAtMs: NOW - 1_000 })).toBe(true);
+  });
+
+  it('stays quiet for an inactive loop', () => {
     expect(computeLoopFireStarvation({ ...base, active: false })).toBe(false);
   });
 
@@ -1363,6 +1371,27 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
 
     expect(status.firesSinceArm).toBe(0);
     expect(status.expectedFiresSinceArm).toBeGreaterThanOrEqual(9);
+    expect(status.turnsStalled).toBe(false);
+    expect(status.stalled).toBe(true);
+  });
+
+  it('EI-22705233904760117: marks an unparked zero-fire loop stalled when its overdue next fire was never delivered', async () => {
+    const now = Date.now();
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 0,
+        fire_count_at_arm: 0,
+        armed_at: new Date(now - 35 * 60_000).toISOString(),
+        last_fired_at: null,
+        parked: false,
+        next_fire_at: new Date(now - 30 * 60_000).toISOString(),
+        presence_last_active_at: new Date(now - 60 * 60_000).toISOString(),
+      }) as unknown as Sql,
+    });
+    const status = out.get('su-x')!;
+
+    expect(status.firesSinceArm).toBe(0);
+    expect(status.expectedFiresSinceArm).toBeGreaterThanOrEqual(34);
     expect(status.turnsStalled).toBe(false);
     expect(status.stalled).toBe(true);
   });

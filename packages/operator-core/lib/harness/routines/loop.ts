@@ -1221,11 +1221,13 @@ export function computeLoopStall(input: {
 export const LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES = 3;
 
 /**
- * Pure verdict for the scheduler-wedge shape where an active loop is still
- * parked, several configured fire opportunities have elapsed, and no fire has
- * landed since the current arm. This is intentionally narrower than
- * `computeLoopStall`: the latter reasons from the most recent fire, while this
- * signal covers a re-arm whose schedule was orphaned before it produced one.
+ * Pure verdict for the scheduler-wedge shape where an active loop has had
+ * several configured fire opportunities without a fire since the current arm.
+ * A parked loop has no concrete next fire while its turn is in flight; an
+ * unparked loop must instead have a concrete next fire already overdue. This is
+ * intentionally narrower than `computeLoopStall`: the latter reasons from the
+ * most recent fire, while this signal covers a re-arm whose schedule was
+ * orphaned before it produced one.
  *
  * Missing or contradictory timestamps fail quiet. A recent presence beat also
  * suppresses the signal because a live owner may simply be in a legitimately
@@ -1241,10 +1243,12 @@ export function computeLoopFireStarvation(input: {
   armedAtMs: number | null;
   lastFiredAtMs: number | null;
   lastActiveAtMs?: number | null;
+  /** Required for the unparked scheduler-wedge shape; parked loops use the infinity sentinel. */
+  nextFireAtMs?: number | null;
   intervalSec: number | null;
   nowMs?: number;
 }): boolean {
-  if (!input.active || !input.parked) return false;
+  if (!input.active) return false;
 
   const expected = input.expectedFiresSinceArm;
   if (expected == null || !Number.isFinite(expected) || expected < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES) {
@@ -1273,7 +1277,15 @@ export function computeLoopFireStarvation(input: {
     lastActiveAtMs != null &&
     Number.isFinite(lastActiveAtMs) &&
     nowMs - lastActiveAtMs < turnsStalledFloorMs(input.intervalSec);
-  return !activeRecently;
+  if (activeRecently) return false;
+
+  // Parked loops carry no concrete nextFireAt by design: their current fire is
+  // already in flight, so the no-post-arm-fire evidence is sufficient. An
+  // unparked loop is only starved when the scheduler's concrete next fire is
+  // overdue; a future or missing timestamp is not evidence of a wedge.
+  if (input.parked) return true;
+  const nextFireAtMs = input.nextFireAtMs;
+  return nextFireAtMs != null && Number.isFinite(nextFireAtMs) && nextFireAtMs < nowMs;
 }
 
 /** Minimum fires before `computeTurnsStalled` will ever flag a loop — a freshly-armed loop
@@ -1857,6 +1869,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     armedAtMs,
     lastFiredAtMs: lastFiredMs,
     lastActiveAtMs: presenceMs,
+    nextFireAtMs: nextFireAtIso == null ? null : Date.parse(nextFireAtIso),
     intervalSec,
   });
   // EI-22138154596110669: gate on the RAW jsonb marker before parsing — isLoopStanddownPause
@@ -1901,9 +1914,10 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     maxFires: typeof pt?.maxFires === 'number' ? pt.maxFires : null,
     maxDurationSec: typeof pt?.maxDurationSec === 'number' ? pt.maxDurationSec : null,
     // `computeLoopStall` covers a parked turn after a delivered fire; the
-    // starvation signal covers an active parked loop whose current arm has
-    // delivered no fire at all. Keep the public field unified so callers do not
-    // need to know which scheduler failure produced the verdict.
+    // starvation signal covers an active loop whose current arm has delivered
+    // no fire at all (parked with a turn in flight, or unparked with an overdue
+    // concrete next fire). Keep the public field unified so callers do not need
+    // to know which scheduler failure produced the verdict.
     stalled: stall.stalled || fireStarved,
     stalledSinceMs: stall.stalledSinceMs,
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
