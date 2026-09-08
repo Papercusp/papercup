@@ -2249,6 +2249,9 @@ pub struct App {
     pub su_last_dispatch: Option<crate::su_session::SuDispatchDecision>,
     /// Durable SU-session binding + canonical lifecycle/sequence read-model.
     pub su_session: Option<crate::su_session::SuSessionState>,
+    /// A failed connection can precede the binding. Keep its diagnostic with
+    /// the selected conversation until reconnect succeeds or selection changes.
+    pub su_connection_error: Option<String>,
     /// All durable SU sessions discovered for the active harness.  This
     /// inventory is kept independently of the selected stream so ended and
     /// archived sessions remain available for inspection after a restart.
@@ -2585,6 +2588,7 @@ impl App {
             pui_runtime_class: None,
             su_last_dispatch: None,
             su_session: None,
+            su_connection_error: None,
             su_session_inventory: Vec::new(),
             su_adopted_sessions: BTreeSet::new(),
             su_command_counter: 0,
@@ -2764,6 +2768,7 @@ impl App {
         self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
         self.su_session = None;
+        self.su_connection_error = None;
         self.su_rendered_owner_turns.clear();
         // The previous conversation's dispatch policy must not outlive its
         // binding: leaving it set would let the NEXT conversation's first turn be
@@ -2786,6 +2791,7 @@ impl App {
     /// before the first stream event arrives.  A binding is not a transcript;
     /// the host snapshot/stream remains authoritative for lifecycle state.
     pub fn set_su_session_binding(&mut self, binding: crate::su_session::SuSessionBinding) {
+        self.su_connection_error = None;
         self.su_backend = Some(binding.backend);
         self.su_session = Some(crate::su_session::SuSessionState::from_binding(binding));
     }
@@ -8334,6 +8340,7 @@ impl App {
             }
             Event::SuSessionEvent(event) => self.apply_su_session_event(event),
             Event::SuSessionError(error) => {
+                self.su_connection_error = Some(error.clone());
                 if let Some(state) = self.su_session.as_mut() {
                     state.error = Some(error.clone());
                     state.stale = true;

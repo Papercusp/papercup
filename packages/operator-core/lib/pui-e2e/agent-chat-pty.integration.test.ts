@@ -805,6 +805,38 @@ beforeEach(async () => {
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
+  test('a refused reconnect stays visible without submitting a new owner turn', async () => {
+    const pane = new PuiPane(bin, operatorPort, home);
+    let saved: PersistedChat;
+    try {
+      await openComposer(pane);
+      const prompt = `saved reconnect ${randomUUID()}`;
+      pane.write(prompt); pane.enter();
+      saved = await waitForSavedTurn(prompt);
+      await pane.waitFor(scriptedEngine.successText);
+    } finally { await pane.stop(); }
+    await stopEngines();
+    await putViewState('Plans');
+    transportFault = 'startup-disconnect';
+    const reopened = new PuiPane(bin, operatorPort, home);
+    try {
+      await reopened.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      reopened.write('o');
+      await reopened.waitFor(`pot ${HARNESS} · role operator · session new`);
+      reopened.escape();
+      await reopened.waitFor('i type · v speak');
+      reopened.write('l');
+      await reopened.waitFor('Conversation — Enter select');
+      reopened.enter();
+      await reopened.waitFor('PUI-E2E startup connection interrupted');
+      await reopened.waitFor('choose session to reconnect');
+      expect(commandPosts.filter((command) => command.type === 'owner_turn')).toHaveLength(1);
+      expect(await persistedChats(db)).toEqual(expect.arrayContaining([expect.objectContaining({ id: saved!.id })]));
+      console.info('PUI_RECONNECT_REFUSAL_ACCEPTANCE', JSON.stringify({ binarySha256, chatId: saved!.id,
+        screen: reopened.screen(), commands: commandPosts.map((command) => command.type) }));
+    } finally { await reopened.stop(); }
+  });
+
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
     const prompt = '  PUI exact Unicode draft λ 雪  ';
     const pane = new PuiPane(bin, operatorPort, home);
@@ -1185,6 +1217,19 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await pane.stop();
       await engine.close();
       await engine.done;
+      const teardownRows = await db.adminSql`
+        SELECT s.session_id, s.omp_thread_id, s.ended_at, s.pid AS native_pid,
+               p.pid AS presence_pid, p.host AS presence_host,
+               p.last_active_at <= s.ended_at AS activity_before_end,
+               p.heartbeat_at <= s.ended_at AS heartbeat_before_end,
+               EXISTS (SELECT 1 FROM harness_shared.harness_features_consolidated WHERE taken_by = s.coord_owner_id) AS held_features,
+               EXISTS (SELECT 1 FROM harness_shared.engineer_issues WHERE assignee = s.coord_owner_id) AS held_issues,
+               EXISTS (SELECT 1 FROM harness_shared.work_item_claims WHERE owner = s.coord_owner_id) AS held_claims,
+               EXISTS (SELECT 1 FROM harness_shared.plan_item_claims WHERE owner = s.coord_owner_id) AS held_plan_claims
+        FROM harness_shared.adv_sessions s
+        LEFT JOIN harness_shared.coord_presence p ON p.owner_id = s.coord_owner_id
+        WHERE s.id = ${identity.advSessionId}`;
+      console.info('PUI_NATIVE_TEARDOWN_DIAGNOSTIC', JSON.stringify(teardownRows));
       engine.adapter.dispose();
       await putViewState('Plans');
       const resumedPane = new PuiPane(bin, operatorPort, home);
@@ -1205,15 +1250,23 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await vi.waitFor(() => expect(scriptedEngine.engines).toHaveLength(2), { timeout: 120_000, interval: 100 });
         const resumedEngine = scriptedEngine.engines[1];
         await resumedEngine.ready;
+        expect(resumedEngine.adapter.host.recent.map(({ event }) => event)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'transcript', phase: 'completed', role: 'assistant', content: followupReply }),
+        ]));
+        resumedPane.write('i');
+        await resumedPane.waitForReply(followupReply);
+        frames.history = resumedPane.screen();
         resumedDescriptor = resumedEngine.adapter.host.descriptor();
         expect(resumedDescriptor).toMatchObject({ identity, carry: savedDescriptor.carry,
           modes: savedDescriptor.modes, accountRoute: savedDescriptor.accountRoute,
           runtimeGeneration: savedDescriptor.runtimeGeneration + 1 });
-        resumedPane.write('i');
         resumedPane.write(resumePrompt);
         resumedPane.enter();
         const resumedChat = await waitForCorrelatedReply(resumePrompt, resumedReply);
-        await resumedPane.waitForReply(resumedReply);
+        // This answer is intentionally absent from the prompt: the saved
+        // native context supplies it. Correlation above proves its role/turn.
+        await resumedPane.waitFor(resumedReply);
+        await resumedPane.waitFor('Message — Enter send');
         expect(resumedChat.id).toBe(firstChat.id);
         frames.resumed = resumedPane.screen();
       } catch (cause) {
