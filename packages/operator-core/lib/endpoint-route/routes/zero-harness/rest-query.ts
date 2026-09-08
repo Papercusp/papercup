@@ -52,6 +52,8 @@ export default defineTool({
     if (req.signal.aborted) {
       return new Response(null, { status: 499 });
     }
+    const startedMs = Date.now();
+    let resolverFailureObserved = false;
     try {
       // P-022 cutover (2026-05-25): all 53 live queryNames are in the
       // v2 dispatcher; the legacy ZQL resolver fall-through has been
@@ -62,11 +64,11 @@ export default defineTool({
       // and its catch below returns a bare 500, so without this a read that
       // hung for ten seconds and failed left no trace anywhere — see
       // resolve-observability.ts (EI-19375505819043214).
-      const startedMs = Date.now();
       let v2: Awaited<ReturnType<typeof resolveNamedQueryV2>>;
       try {
         v2 = await resolveNamedQueryV2(name, args);
       } catch (err) {
+        resolverFailureObserved = true;
         observeResolve({
           name,
           argsJson,
@@ -158,6 +160,18 @@ export default defineTool({
       });
     } catch (err: any) {
       const msg = err?.message ?? String(err);
+      // The inner catch records resolver failures. Everything after a
+      // successful resolve (delta negotiation, JSON worker serialization,
+      // response assembly) reaches only this boundary. Record that distinct
+      // phase too, without double-counting an error already observed above.
+      if (!resolverFailureObserved) {
+        observeResolve({
+          name,
+          argsJson,
+          elapsedMs: Date.now() - startedMs,
+          error: new Error(`post-resolve response failed: ${msg}`),
+        });
+      }
       // ESM link failures happen before the optional resolver module evaluates,
       // so a try/catch inside that leg cannot protect this boundary. Diagnose
       // the stale-process class here, where every sync query already converges.

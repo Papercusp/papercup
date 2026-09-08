@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const resolveNamedQueryMock = vi.fn();
+const observeResolveMock = vi.fn();
+const serializeJsonResponseMock = vi.fn(async (value: unknown, _itemCount?: number) => JSON.stringify(value));
 
 vi.mock('../../../sync-resolver', () => ({
   resolveNamedQueryV2: (...args: unknown[]) => resolveNamedQueryMock(...args),
   NAME_NOT_FOUND: Symbol('NAME_NOT_FOUND'),
 }));
-vi.mock('../../../sync-resolver/resolve-observability', () => ({ observeResolve: vi.fn() }));
+vi.mock('../../../sync-resolver/resolve-observability', () => ({
+  observeResolve: (input: unknown) => observeResolveMock(input),
+}));
 vi.mock('../../../sync-resolver/resource-delta-config', () => ({ resourceDeltaConfig: () => undefined }));
 vi.mock('@papercusp/tooldef', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/tooldef')>()),
@@ -15,7 +19,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (input: unknown) => input }));
 vi.mock('../../../cpu-task-worker', () => ({
-  serializeJsonResponse: async (value: unknown) => JSON.stringify(value),
+  serializeJsonResponse: (value: unknown, itemCount: number) => serializeJsonResponseMock(value, itemCount),
 }));
 
 type RestRoute = {
@@ -29,6 +33,7 @@ async function route(): Promise<RestRoute> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  serializeJsonResponseMock.mockImplementation(async (value: unknown, _itemCount?: number) => JSON.stringify(value));
 });
 
 describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
@@ -70,6 +75,33 @@ describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
 
     expect(response.status).toBe(500);
     expect(body).toEqual({ error: 'database connection refused', name: 'plans.list' });
+    expect(observeResolveMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a post-resolver response failure before returning 500', async () => {
+    resolveNamedQueryMock.mockResolvedValueOnce([{ id: 'run-1' }]);
+    serializeJsonResponseMock.mockRejectedValueOnce(new Error('serialization worker unavailable'));
+
+    const response = await (await route()).handler(
+      new Request(
+        'http://localhost:3070/api/zero-harness/rest-query?name=workItemAdmission.runs&args=%7B%22harnessSlug%22%3A%22papercusp%22%2C%22limit%22%3A200%7D',
+      ),
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      error: 'serialization worker unavailable',
+      name: 'workItemAdmission.runs',
+    });
+    expect(observeResolveMock).toHaveBeenCalledTimes(2);
+    expect(observeResolveMock.mock.calls[1]?.[0]).toMatchObject({
+      name: 'workItemAdmission.runs',
+      argsJson: '{"harnessSlug":"papercusp","limit":200}',
+      error: expect.objectContaining({
+        message: 'post-resolve response failed: serialization worker unavailable',
+      }),
+    });
   });
 
   it('carries resolver timing with an explicit millisecond unit on successful reads', async () => {
