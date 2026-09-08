@@ -215,16 +215,36 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
   it.each([
     ['test-run id', { evidenceRef: '/tmp/session-proof.log', coverageEvidenceRef: null, testRunId: 43 }, 'durable'],
-    ['coverage evidence id', { evidenceRef: '/tmp/session-proof.log', coverageEvidenceRef: 42, testRunId: null }, 'durable'],
+    [
+      'coverage evidence id',
+      { evidenceRef: '/tmp/session-proof.log', coverageEvidenceRef: 42, testRunId: null },
+      'durable',
+    ],
     ['work-item ref', { evidenceRef: 'WI-10000512', coverageEvidenceRef: null, testRunId: null }, 'durable'],
-    ['engineer-issue ref', { evidenceRef: 'EI-22595744337561241', coverageEvidenceRef: null, testRunId: null }, 'durable'],
+    [
+      'engineer-issue ref',
+      { evidenceRef: 'EI-22595744337561241', coverageEvidenceRef: null, testRunId: null },
+      'durable',
+    ],
     ['feature ref', { evidenceRef: 'F-1234', coverageEvidenceRef: null, testRunId: null }, 'durable'],
     ['artifact ref', { evidenceRef: 'artifact:scorecard-42', coverageEvidenceRef: null, testRunId: null }, 'durable'],
     ['test-run ref', { evidenceRef: 'test-run:42', coverageEvidenceRef: null, testRunId: null }, 'durable'],
-    ['durable file probe', { evidenceRef: 'test/reconnect.integration.ts#proof', coverageEvidenceRef: null, testRunId: null }, 'durable'],
-    ['temporary path', { evidenceRef: '/tmp/pui-counterexample.log', coverageEvidenceRef: null, testRunId: null }, 'ephemeral'],
+    [
+      'durable file probe',
+      { evidenceRef: 'test/reconnect.integration.ts#proof', coverageEvidenceRef: null, testRunId: null },
+      'durable',
+    ],
+    [
+      'temporary path',
+      { evidenceRef: '/tmp/pui-counterexample.log', coverageEvidenceRef: null, testRunId: null },
+      'ephemeral',
+    ],
     ['bash command', { evidenceRef: 'bash -lc "run proof"', coverageEvidenceRef: null, testRunId: null }, 'ephemeral'],
-    ['session-local marker', { evidenceRef: 'session-local:proof', coverageEvidenceRef: null, testRunId: null }, 'ephemeral'],
+    [
+      'session-local marker',
+      { evidenceRef: 'session-local:proof', coverageEvidenceRef: null, testRunId: null },
+      'ephemeral',
+    ],
     ['unanchored ref', { evidenceRef: 'surface:reconnect', coverageEvidenceRef: null, testRunId: null }, 'unknown'],
   ] as const)('classifies %s evidence lineage as %s', (_label, over, expected) => {
     expect(classifySpecEvidenceLineage(over).lineage).toBe(expected);
@@ -233,7 +253,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   it('fails traceability and the overall verdict for ephemeral-only proof', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
-      evidence: [evidence({ evidenceRef: '/tmp/pui-p001-counterexample-guard.log', coverageEvidenceRef: null, testRunId: null })],
+      evidence: [
+        evidence({ evidenceRef: '/tmp/pui-p001-counterexample-guard.log', coverageEvidenceRef: null, testRunId: null }),
+      ],
       classRef: 'plan-class-feature-ship',
     });
 
@@ -451,9 +473,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.requiredProofFloor).toBe('l3');
     expect(result.ratings['plan-class-risk-floor']).toMatchObject({ rating: 'pass' });
-    expect(result.ratings['plan-class-risk-floor'].evidence).toContain(
-      'counterexample:reject-future-window',
-    );
+    expect(result.ratings['plan-class-risk-floor'].evidence).toContain('counterexample:reject-future-window');
     expect(result.verdict).toBe('pass');
   });
 
@@ -559,9 +579,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         overall: 'unknown',
         provenance: 'partially-server-measured',
         comparisonSupplied: true,
-        unknownReasons: [
-          'current-fingerprints-partially-attested-not-independently-measured:environment',
-        ],
+        unknownReasons: ['current-fingerprints-partially-attested-not-independently-measured:environment'],
       },
     });
     const result = evaluateSpecTestAdequacy({
@@ -669,9 +687,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
             test_run_id: row.testRunId,
             test_run_present: true,
           },
-          current.find(
-            (input) => input.evidenceKind === row.evidenceKind && input.evidenceRef === row.evidenceRef,
-          ),
+          current.find((input) => input.evidenceKind === row.evidenceKind && input.evidenceRef === row.evidenceRef),
         ),
       })),
       current,
@@ -714,6 +730,146 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['execution-integrity'].rating).toBe('unknown');
     expect(result.ratings['plan-class-risk-floor'].rating).toBe('unknown');
     expect(result.verdict).not.toBe('pass');
+  });
+
+  it('fails correct-layer until every canonical acceptance scenario has successful ledger-backed path proof', () => {
+    const scenarioClause = clause({
+      falsifier: {
+        observation: 'Stale or wrong-subject context wins.',
+        requiredScenarios: ['stale-vs-decision', 'wrong-subject-exclusion'],
+      },
+    });
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const staleDecision = evidence({
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#stale-vs-decision',
+      details: { adequacy: { ...baseAdequacy, scenarioIds: ['stale-vs-decision'] } },
+    });
+    const incomplete = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [staleDecision],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(incomplete.ratings['correct-layer'].rating).toBe('fail');
+    expect(incomplete.ratings['correct-layer'].evidence).toContain('wrong-subject-exclusion');
+
+    const wrongSubject = evidence({
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#wrong-subject-exclusion',
+      details: { adequacy: { ...baseAdequacy, scenarioIds: ['wrong-subject-exclusion'] } },
+    });
+    const complete = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [staleDecision, wrongSubject],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(complete.ratings['correct-layer'].rating).toBe('pass');
+    expect(complete.ratings['correct-layer'].evidence).toContain('Every canonical acceptance scenario');
+  });
+
+  it('does not count unexecuted or unbacked scenario tags as scenario coverage', () => {
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const scenarioClause = clause({
+      falsifier: { observation: 'The scenario is missed.', requiredScenarios: ['goal-auto-start'] },
+    });
+    const unbacked = evidence({
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#goal-auto-start',
+      testRunId: null,
+      coverageEvidenceRef: null,
+      details: { adequacy: { ...baseAdequacy, scenarioIds: ['goal-auto-start'] } },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [unbacked],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['correct-layer'].rating).toBe('fail');
+    expect(result.ratings['execution-integrity'].rating).toBe('unknown');
+  });
+
+  it('requires exactly one successful negative and repaired recurrence binding per causal pair id', () => {
+    const pairClause = clause({
+      falsifier: {
+        observation: 'The original failure recurs.',
+        causalPairing: 'one-to-one',
+      },
+    });
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const negative = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#before-missing-goal-history',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          outcome: 'killed',
+          causalPairIds: ['missing-goal-history'],
+        },
+      },
+    });
+    const withoutRecurrence = evaluateSpecTestAdequacy({
+      clause: pairClause,
+      evidence: [negative],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(withoutRecurrence.ratings['execution-integrity'].rating).toBe('fail');
+    expect(withoutRecurrence.ratings['execution-integrity'].evidence).toContain(
+      'missing-goal-history:expected 1 recurrence binding, found 0',
+    );
+
+    const recurrence = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#after-missing-goal-history',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          outcome: 'passed',
+          causalPairIds: ['missing-goal-history'],
+        },
+      },
+    });
+    const complete = evaluateSpecTestAdequacy({
+      clause: pairClause,
+      evidence: [negative, recurrence],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(complete.ratings['execution-integrity'].rating).toBe('pass');
+    expect(complete.ratings['execution-integrity'].evidence).toContain('Every original failure has exactly one');
+  });
+
+  it('rejects a multi-pair row and orphan recurrence under a one-to-one contract', () => {
+    const pairClause = clause({
+      falsifier: { observation: 'Either original failure recurs.', causalPairing: 'one-to-one' },
+    });
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const negative = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#combined-before',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          outcome: 'killed',
+          causalPairIds: ['missing-history', 'missing-recovery'],
+        },
+      },
+    });
+    const orphan = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/history.test.ts#orphan-after',
+      details: {
+        adequacy: {
+          ...baseAdequacy,
+          causalPairIds: ['unrelated-repair'],
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: pairClause,
+      evidence: [negative, orphan],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['execution-integrity'].rating).toBe('fail');
+    expect(result.ratings['execution-integrity'].evidence).toContain('expected exactly one causalPairId');
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'unrelated-repair:expected 1 negative binding, found 0',
+    );
   });
 });
 
