@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { getOrgPg } from '@papercusp/db-org';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import {
   detectAcceptanceGraderTerminalFailure,
@@ -25,6 +26,7 @@ import { killTask } from './task-manager/control';
 import { resolveIssueWorkspace } from './issues-engineer';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
+import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -107,6 +109,8 @@ export interface DispatchPendingGradingAuditsDeps {
   sleep?: (ms: number) => Promise<void>;
   terminalLogRecheckDelayMs?: number;
   terminalLogMaxRechecks?: number;
+  /** Read the active workspace-wide owner pause before dispatching new auditors. */
+  listWorkspaceWideLoopStanddownOwners?: (workspaceId: string, nowMs: number) => Promise<Set<string>>;
 }
 
 export type GradingAuditReservationStatus = 'claimed' | 'already-reserved' | 'not-pending';
@@ -255,6 +259,40 @@ export async function dispatchPendingGradingAudits(
   const launch = deps.launch ?? launchAgentTool.handler;
   const reserve = deps.reserve ?? reservePendingGradingAudit;
   const release = deps.release ?? releasePendingGradingAudit;
+  const workspaceId = input.ctx.workspaceId?.trim();
+  const readWorkspaceWideStanddowns =
+    deps.listWorkspaceWideLoopStanddownOwners ??
+    (async (id: string, nowMs: number) => {
+      try {
+        return await listLoopStanddownOwners(getOrgPg().sql, {
+          workspaceId: id,
+          nowMs,
+          workspaceWideOnly: true,
+        });
+      } catch (error) {
+        // This guard only suppresses new work. A read failure must preserve the
+        // pre-guard behavior rather than silently strand the audit queue.
+        console.warn(
+          `[grading-integrity] workspace stand-down read failed (non-fatal, failing open): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return new Set<string>();
+      }
+    });
+  if (workspaceId) {
+    const standdownOwners = await readWorkspaceWideStanddowns(workspaceId, Date.now());
+    if (standdownOwners.size > 0) {
+      return {
+        requestedTargetIds: explicitTargetIds,
+        receipts: explicitTargetIds.map((issueId) => ({
+          issueId,
+          state: 'skipped' as const,
+          reason: 'dispatch suppressed by active workspace-wide loop stand-down',
+        })),
+      };
+    }
+  }
   const cards = await readCards({
     includeSuperseded: true,
     includeRetracted: true,

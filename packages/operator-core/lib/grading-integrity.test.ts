@@ -62,10 +62,33 @@ function deps() {
     reservation: { key: 'grading-audit:test', reservedAt: '2026-09-08T00:00:00.000Z' },
   }));
   const release = vi.fn(async () => true);
-  return { listScorecards, getRubric, launch, reserve, release };
+  const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
+  return { listScorecards, getRubric, launch, reserve, release, listWorkspaceWideLoopStanddownOwners };
 }
 
 describe('dispatchPendingGradingAudits', () => {
+  it('suppresses terminal auditor dispatch during an active workspace-wide loop stand-down', async () => {
+    const d = deps();
+    d.listWorkspaceWideLoopStanddownOwners.mockResolvedValue(new Set(['su-owner']));
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-paused'], ctx }, d);
+
+    expect(result).toEqual({
+      requestedTargetIds: ['EI-paused'],
+      receipts: [
+        {
+          issueId: 'EI-paused',
+          state: 'skipped',
+          reason: 'dispatch suppressed by active workspace-wide loop stand-down',
+        },
+      ],
+    });
+    expect(d.listScorecards).not.toHaveBeenCalled();
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(d.listWorkspaceWideLoopStanddownOwners).toHaveBeenCalledWith('ws-test', expect.any(Number));
+  });
+
   it('launches a current standard target and maps a replay to a deduped receipt', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-audit-1')]);
