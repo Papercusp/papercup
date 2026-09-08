@@ -23,6 +23,7 @@ import type { PlanPgFixture } from './_pg-tool-fixture';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../../scorecards';
 import { metadataClauseWrite } from '../coordination-metadata-fixtures';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from '../spec-quality';
+import { parsePlan } from '../parser';
 
 // WI-5825: plans:start resolves its write key through resolvePlanScope — the SAME
 // authority its plan READ uses — not the ambient activeWorkspaceId(). Pin the resolver
@@ -228,18 +229,30 @@ async function persistedStartState() {
   return { plan: rows[0], revisions: await revisionRows() };
 }
 
+async function cleanupFixture() {
+  // Clause identities/revisions are deliberately not cascaded from a plan.
+  // This fixture now authors them, so it must clean its own exact scope.
+  await admin`DELETE FROM harness_shared.plan_spec_clause_revisions
+    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+  await admin`DELETE FROM harness_shared.plan_spec_clauses
+    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+  await admin`DELETE FROM harness_shared.plan_items
+    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+  await cleanupPlans(admin, WS, HARNESS);
+}
+
 beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
 }, 60_000);
 
 afterAll(async () => {
-  await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  await cleanupFixture();
   await fx?.dispose();
 });
 
 beforeEach(async () => {
-  await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  await cleanupFixture();
   MUG_KETTLE.on = true;
   START_GATES.activation.mockReset();
   START_GATES.activation.mockResolvedValue({ satisfied: true, auditSeq: 1 });
@@ -320,7 +333,8 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
 describe('plans:start — refused approval leaves no persisted start (P-002)', () => {
   it('rejects the old exact card when the persisted class changes after preflight, then starts with new-class evidence', async () => {
     await seedLegacyPlan('draft');
-    const content = `${planBody('draft')}\n## Phase\n- [ ] P-001: Submit an event\n`;
+    const content = `${planBody('draft')}\n## Phase\n- **P-001** \`todo\` Submit an event\n`;
+    expect(parsePlan(content).items.map((item) => item.id)).toEqual(['P-001']);
     await admin`UPDATE harness_shared.harness_plans SET content = ${content}, content_hash = md5(${content})
       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
     await admin`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status)
@@ -360,7 +374,7 @@ describe('plans:start — refused approval leaves no persisted start (P-002)', (
     expect(newCard.evidenceFingerprint).not.toBe(oldCard.evidenceFingerprint);
     START_GATES.listCards.mockResolvedValue([oldCard]);
     START_GATES.afterQuality.mockImplementationOnce(async (verdict) => {
-      expect(verdict).toMatchObject({ satisfied: true, classRef: 'plan-class-feature-ship' });
+      expect(verdict, JSON.stringify(verdict)).toMatchObject({ satisfied: true, classRef: 'plan-class-feature-ship' });
       await admin`UPDATE harness_shared.harness_plans
         SET template_data = jsonb_set(template_data, '{classRef}', '"plan-class-bugfix"'::jsonb)
         WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${rubricId}`;
