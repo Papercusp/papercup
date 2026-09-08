@@ -632,8 +632,36 @@ beforeAll(async () => {
   mkdirSync(path.join(home, '.papercusp'), { recursive: true });
   writeFileSync(path.join(home, '.papercusp', 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
 
+  const routedAccount = scriptedEngine.real && process.env.PUI_REAL_ACCOUNT === 'auto';
+  const catalogPath = process.env.PUI_NATIVE_ACCOUNT_CATALOG;
+  if (routedAccount && !catalogPath) {
+    throw new Error('Native routed-account acceptance requires PUI_NATIVE_ACCOUNT_CATALOG with accounts:list id/provider metadata');
+  }
+  const catalogBytes = routedAccount ? readFileSync(catalogPath!, 'utf8') : undefined;
+  const catalog = catalogBytes ? JSON.parse(catalogBytes) as { accounts?: unknown } : undefined;
+  const accountMetadata = catalog ? (() => {
+    if (!Array.isArray(catalog.accounts)) throw new Error('Native account catalogue must contain accounts');
+    return catalog.accounts.map((entry: unknown) => {
+      const row = entry as Record<string, unknown> | null;
+      if (!row || typeof row.id !== 'string' || !/^[A-Za-z0-9._-]+$/.test(row.id)
+        || !['claude', 'codex'].includes(String(row.provider))) throw new Error('Invalid native account metadata');
+      // The isolated operator needs only the catalogue for route validation.
+      // Credentials and all upstream selection remain in the real gateway.
+      return { id: row.id, provider: row.provider, credentialRef: '', addedAt: 0, boundTo: [] };
+    });
+  })() : [];
   const { createOrgTestDb } = await import('../../test/_org-test-db');
   db = await createOrgTestDb();
+  if (routedAccount) {
+    await db.adminSql`
+      INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
+      VALUES (${WORKSPACE}, ${JSON.stringify({ accounts: accountMetadata })}::jsonb, now())
+      ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
+    console.info('PUI_ACCOUNT_CATALOG_DIAGNOSTIC', JSON.stringify({
+      source: catalogPath, sha256: createHash('sha256').update(catalogBytes!).digest('hex'),
+      accounts: accountMetadata.map(({ id, provider }) => ({ id, provider })),
+    }));
+  }
   const keys = [
     'HARNESS_DATABASE_URL',
     'HARNESS_ADMIN_DATABASE_URL',
@@ -1508,7 +1536,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         frames.history = resumedPane.screen();
         resumedDescriptor = resumedEngine.adapter.host.descriptor();
         expect(resumedDescriptor).toMatchObject({ identity, carry: savedDescriptor.carry,
-          modes: savedDescriptor.modes, accountRoute: savedDescriptor.accountRoute,
+          modes: savedDescriptor.modes, accountRoute: savedDescriptor.accountRoute, model: savedDescriptor.model,
           runtimeGeneration: savedDescriptor.runtimeGeneration + 1 });
         resumedPane.write(resumePrompt);
         resumedPane.enter();
