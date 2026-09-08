@@ -392,6 +392,7 @@ export async function dispatchPendingGradingAudits(
               delayMs: deps.terminalLogRecheckDelayMs ?? GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS,
               maxRechecks: deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
               allowStandaloneWeeklyLimit: true,
+              allowInferenceGatewayError: true,
               detectStartupStall: false,
             })
           : null;

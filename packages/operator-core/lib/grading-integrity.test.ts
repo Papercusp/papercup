@@ -344,6 +344,66 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  it('retires a deduped auditor whose gateway-5xx turn completed and launches the Codex fallback', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-gateway-500')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: true,
+          launch: { tasks: [{ taskId: 'task-gateway-500', logPath: '/tmp/grading-gateway-500.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-fallback', logPath: '/tmp/grading-fallback.log' }] },
+        }),
+      );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const gatewayLog =
+      '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +
+      'issue, usually temporary — try again in a moment. If it persists, check your inference gateway ' +
+      '(127.0.0.1:8788).\r\n' +
+      '\u001b[38;5;246m✻ Cooked for 12m 56s · done 11:27 AM\u001b[0m\r\n❯';
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-gateway-500'], ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail: (path) => (path.includes('gateway-500') ? gatewayLog : 'healthy fallback boot'),
+        sleep: async () => undefined,
+        terminalLogRecheckDelayMs: 0,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(killTask).toHaveBeenCalledWith('task-gateway-500', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(d.launch.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        agent: 'codex',
+        account: 'default',
+        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' }],
+        idempotencyKey: expect.stringMatching(/^grading-audit:EI-gateway-500:recovery:[a-f0-9]{16}$/),
+      }),
+    );
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId: 'EI-gateway-500',
+        state: 'launched',
+        terminalRecovery: expect.objectContaining({
+          retiredTaskIds: ['task-gateway-500'],
+          codes: ['inference_gateway_error'],
+        }),
+      }),
+    ]);
+  });
+
   it('stops after one recovery when the fallback is quota-terminal too', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-double-quota')]);
