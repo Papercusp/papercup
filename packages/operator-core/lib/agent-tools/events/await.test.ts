@@ -1073,6 +1073,41 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
     });
     expect(out.already_fired).toBeUndefined();
   });
+
+  it('preserves a cancelled generation in the stale-pin response and requires a fresh declaration', async () => {
+    const eventKey = 'fleet:nonp2p-bug-drain-luna-max-50:owner-resume';
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      {
+        eventKey,
+        causalGeneration: 2,
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: '2026-09-08T22:03:00.000Z',
+        supersededAt: null,
+      },
+    ] as never);
+
+    const out = await call({ event: eventKey, after_generation: 2 });
+
+    expect(findAnnouncementsForKey).toHaveBeenCalledWith(eventKey, { includeCancelled: true });
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'await_generation_mismatch',
+      event: eventKey,
+      expected_generation: 2,
+      current_generation: 2,
+      current_state: 'cancelled',
+      resync: {
+        required: true,
+        reason: 'current_not_waitable',
+        authoritative_generation: 2,
+        next_verb: `events:status { event: "${eventKey}" }`,
+      },
+    });
+    expect(out.advice).toMatch(/cancelled and is not waitable/);
+    expect(out.advice).toMatch(/fresh declared generation/);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
 });
 
 describe('EI-13089 — the FAMILY-PREFIX-MISSING-REQUIRED-PARAM guard', () => {

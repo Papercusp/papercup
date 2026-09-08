@@ -180,7 +180,7 @@ export async function readDesignAcceptance(input: {
   } catch { return failure('current-identity-unavailable'); }
 }
 
-async function readBrowserFileRun(id: number) {
+export async function readBrowserFileRun(id: number) {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const rows = await sql<{ status: string; framework: string; filePath: string }[]>`

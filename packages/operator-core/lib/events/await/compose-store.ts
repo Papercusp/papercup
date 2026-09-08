@@ -349,9 +349,13 @@ export async function insertComposedRootDelivery(input: {
 
 /**
  * Whole-tree one-shot consumption (D-002): on root fire, void every UNFIRED descendant so no
- * survivor ever wakes the subscriber again — the leaves + anchor in event_awaits, and the
- * unfired interior nodes in event_await_nodes (the root itself is already fired). Two
- * root_id-scoped statements (one per table). Returns { leaves, nodes } voided.
+ * survivor ever wakes the subscriber again — the composed leaves in event_awaits and the
+ * unfired interior nodes in event_await_nodes (the root itself is already fired). The root
+ * anchor is deliberately preserved until its queued delivery crosses the pump boundary: the
+ * delivery joins back to that row for its wake_handle, and cancelling it would make the pump
+ * settle the just-created wake as a source-cancelled delivery (EI-22728474716596617). Explicit
+ * events:cancel still cascades to the anchor through cancelComposedTree. Two root_id-scoped
+ * statements (one per table). Returns { leaves, nodes } voided.
  */
 export async function voidTreeDescendants(rootId: number): Promise<{ leaves: number; nodes: number }> {
   const { sql } = getOrgPg();
@@ -360,6 +364,7 @@ export async function voidTreeDescendants(rootId: number): Promise<{ leaves: num
     UPDATE harness_shared.event_awaits
        SET cancelled_at = now()
      WHERE workspace_id = ${ws} AND root_id = ${rootId}
+       AND node_id IS NOT NULL
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;

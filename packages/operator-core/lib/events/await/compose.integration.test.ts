@@ -268,25 +268,41 @@ describe('composed threshold-tree awaits — store+engine end-to-end (real PG)',
 
   // ── 5. timeout: partial-state wake vs. silent expire ─────────────────────────
 
-  it('a `wake` root past its deadline delivers ONE partial-state timeout wake', async () => {
-    const r = await reg({ all: [{ event: 'to:a' }, { event: 'to:b' }] }, { timeoutSec: 300, timeoutBehavior: 'wake' });
-    if (!r.registered) throw new Error('expected registration');
+  it('a `wake` root past its deadline preserves the anchor so its timeout wake is not dropped', async () => {
+    const previousAutoPump = engine.setAutoPumpEnabledForTests(false);
+    try {
+      const r = await reg({ all: [{ event: 'to:a' }, { event: 'to:b' }] }, { timeoutSec: 300, timeoutBehavior: 'wake' });
+      if (!r.registered) throw new Error('expected registration');
 
-    await emit('to:a', { note: 'first-in' }); // partial: a fired, b pending, root still live
-    expect(await anchorDeliveries(r.anchorAwaitId)).toHaveLength(0);
+      await emit('to:a', { note: 'first-in' }); // partial: a fired, b pending, root still live
+      expect(await anchorDeliveries(r.anchorAwaitId)).toHaveLength(0);
 
-    // Force the deadline into the past, then run the sweeper (its claimDueComposedRoots
-    // atomically stamps fired_at, then fires the partial-state timeout wake + voids the tree).
-    await sql`UPDATE harness_shared.event_await_nodes SET expires_ts = now() - interval '1 minute' WHERE id = ${r.rootId}`;
-    await engine.sweepOnce(h.ws);
+      // Force the deadline into the past, then run the sweeper (its claimDueComposedRoots
+      // atomically stamps fired_at, then fires the partial-state timeout wake + voids the tree).
+      await sql`UPDATE harness_shared.event_await_nodes SET expires_ts = now() - interval '1 minute' WHERE id = ${r.rootId}`;
+      await engine.sweepOnce(h.ws);
 
-    const deliveries = await anchorDeliveries(r.anchorAwaitId);
-    expect(deliveries).toHaveLength(1);
-    const p = deliveries[0].payload;
-    expect(p).toMatchObject({ composed: true, satisfied: false, reason: 'timeout' });
-    expect((p.fired as Array<{ event: string }>).map((f) => f.event)).toEqual(['to:a']); // what fired
-    expect(p.pending).toEqual(['to:b']); // what didn't
-    expect(await liveLeafCount(r.rootId)).toBe(0); // tree voided by the timeout fire
+      const deliveries = await anchorDeliveries(r.anchorAwaitId);
+      expect(deliveries).toHaveLength(1);
+      const p = deliveries[0].payload;
+      expect(p).toMatchObject({ composed: true, satisfied: false, reason: 'timeout' });
+      expect((p.fired as Array<{ event: string }>).map((f) => f.event)).toEqual(['to:a']); // what fired
+      expect(p.pending).toEqual(['to:b']); // what didn't
+      expect(await liveLeafCount(r.rootId)).toBe(0); // tree voided by the timeout fire
+
+      // sweepOnce pumps the queued delivery before returning. The delivery's source is
+      // the synthetic anchor, so root cleanup must leave it uncancelled; otherwise the
+      // pump's cancellation guard drops this exact timeout wake before execution.
+      const settled = await sql`
+        SELECT d.status, d.channel, d.last_error, a.cancelled_at
+          FROM harness_shared.event_wake_deliveries d
+          JOIN harness_shared.event_awaits a ON a.id = d.await_id
+         WHERE d.await_id = ${r.anchorAwaitId}
+      `;
+      expect(settled).toEqual([{ status: 'delivered', channel: 'inbox', last_error: null, cancelled_at: null }]);
+    } finally {
+      engine.setAutoPumpEnabledForTests(previousAutoPump);
+    }
   });
 
   it("an `expire` root past its deadline lapses SILENTLY (no wake) but still voids the tree", async () => {

@@ -20,6 +20,19 @@ async function callHandler(args: unknown) {
 }
 
 describe('testing:run selector arbitration', () => {
+  it('keeps evidence recovery exclusive from starting another test process', async () => {
+    const recoverEvidence = { workItemId: 'WI-1', originRunId: 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad',
+      runId: 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad' };
+    expect(runTool.args.safeParse({ recoverEvidence }).success).toBe(true);
+    const data = await callHandler({ files: ['a.test.ts'], recoverEvidence });
+    expect(data.error).toBe('mutually_exclusive_selectors');
+  });
+
+  it('does not claim evidence from an affected-test plan that runs nothing', async () => {
+    const data = await callHandler({ changedPaths: ['src/a.ts'], evidence: { workItemId: 'WI-1', bindings: [] } });
+    expect(data.error).toBe('evidence_requires_executed_files');
+  });
+
   it('refuses a call with NEITHER selector instead of defaulting', async () => {
     const data = await callHandler({});
     expect(data.ok).toBe(false);

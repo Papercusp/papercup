@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "version": "desktop-rollout-2026-09-08.1",
+  "author": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+  "scopeMode": "explicit-approval",
+  "historical": {
+    "unadopted": "preserve-existing-policy",
+    "adopted": "preserve-obligation",
+    "migration": "new-approved-revision"
+  },
+  "canary": {
+    "featureId": "desktop-design-fidelity-repair-2026-09-08",
+    "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+    "original": {
+      "buildId": "5J8-nhZvCyUiBU5llWuxa",
+      "testRunRef": "test-run:17712295",
+      "outcome": "fail"
+    },
+    "repaired": {
+      "buildId": "YwYDgKxI3kL-64RCJTWa4",
+      "testRunRef": "test-run:17713845",
+      "outcome": "pass"
+    },
+    "evidence": {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08.json",
+      "sha256": "816efb43f4ce9c41676831f2cedf44e4afafc60566243b60242c89da832cf17e"
+    },
+    "connectivity": "not-established"
+  },
+  "controls": [
+    {
+      "id": "empty-host-entry",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-journey-p002-2026-09-08.json",
+        "sha256": "816efb43f4ce9c41676831f2cedf44e4afafc60566243b60242c89da832cf17e"
+      },
+      "negative": "fail",
+      "repaired": "pass"
+    },
+    {
+      "id": "wrong-route",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass"
+    },
+    {
+      "id": "missing-reference",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass"
+    },
+    {
+      "id": "failed-item-aggregation",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass"
+    },
+    {
+      "id": "stale-build",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass"
+    },
+    {
+      "id": "missing-responsive-state",
+      "evidence": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/reviewed-matrix.json",
+        "sha256": "d364b67990f1f0904556d104a07b34b6e23042b7d35fd7243345e09f81df83c7"
+      },
+      "negative": "fail",
+      "repaired": "pass"
+    },
+    {
+      "id": "placeholder-as-working",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass"
+    }
+  ],
+  "authorGuidance": {
+    "path": "docs/reports/design-acceptance-author-guidance-2026-09-08.md",
+    "sha256": "3a51ed6059972bbf8b3dc914edaf154cd306cfd79f0495597116ead638efa7fb"
+  },
+  "cohorts": [],
+  "exceptions": []
+}

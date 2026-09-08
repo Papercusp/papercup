@@ -2,7 +2,7 @@
  * This admits NEW obligations; it never waives an existing completion failure. */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { artifactBytes, designAcceptanceRoot } from './acceptance';
+import { artifactBytes, designAcceptanceRoot, readBrowserFileRun } from './acceptance';
 import type { DesignApprovalScope } from './ratification';
 import type { ScorecardEvidenceReadResult } from '../scorecards';
 
@@ -107,6 +107,7 @@ export function evaluateDesignRollout(input: {
  * existing adopted references are never weakened by a later policy change. */
 export async function readDesignRolloutAdmission(scope: RolloutScope, deps: {
   now: number; root?: string; readReview?: (id: string) => Promise<ScorecardEvidenceReadResult>;
+  readRun?: typeof readBrowserFileRun;
 }): Promise<RolloutAdmission> {
   if (scope.harnessSlug === DESKTOP_CANARY.harnessSlug && scope.featureId === DESKTOP_CANARY.featureId &&
       scope.referenceId === DESKTOP_CANARY.referenceId && scope.contentSha256 === DESKTOP_CANARY.contentSha256 &&
@@ -124,6 +125,25 @@ export async function readDesignRolloutAdmission(scope: RolloutScope, deps: {
     if (!parsed.success) return { satisfied: false, reason: 'invalid-rollout-policy' };
     for (const ref of [parsed.data.canary.evidence, parsed.data.authorGuidance, ...parsed.data.controls.map(row => row.evidence)]) {
       if (digest(await artifactBytes(root, ref.path)) !== ref.sha256) return { satisfied: false, reason: 'stale-rollout-evidence' };
+    }
+    const saved = JSON.parse((await artifactBytes(root, parsed.data.canary.evidence.path)).toString('utf8'));
+    const canary = parsed.data.canary;
+    const entries = ['clean', 'canonical', 'legacy', 'persisted', 'reload', 'history'];
+    if (saved.original?.build?.buildId !== canary.original.buildId ||
+        saved.positive?.build?.buildId !== canary.repaired.buildId || saved.positive?.status !== 'pass' ||
+        `test-run:${saved.original?.testRunId}` !== canary.original.testRunRef ||
+        `test-run:${saved.positive?.testRunId}` !== canary.repaired.testRunRef ||
+        entries.some(scenario => {
+          const id = `desktop.entry.${scenario}`;
+          const cases = saved.original?.cases?.filter((row: { scenarioId: string }) => row.scenarioId === id);
+          return cases?.length !== 1 || !cases[0].shellReady || cases[0].desktopWorkspacePresent !== false ||
+            !saved.positive?.scenarioIds?.includes(id);
+        })) return { satisfied: false, reason: 'canary-pair-unproven' };
+    for (const pair of [canary.original, canary.repaired]) {
+      const run = await (deps.readRun ?? readBrowserFileRun)(Number(pair.testRunRef.slice('test-run:'.length)));
+      if (!run || run.framework !== 'playwright' || run.status !== pair.outcome || run.filePath !== saved.sourceTest) {
+        return { satisfied: false, reason: 'canary-browser-run-unproven' };
+      }
     }
     const readReview = deps.readReview ?? (await import('../scorecards')).readScorecardEvidence;
     const review = await readReview(descriptor.reviewCardRef);

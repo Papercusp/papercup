@@ -31,7 +31,7 @@ function policy(): DesignRolloutPolicy {
     canary: { featureId: DESKTOP_CANARY.featureId, referenceSha256: DESKTOP_CANARY.contentSha256,
       original: { buildId: journey.original.build.buildId, testRunRef: `test-run:${journey.original.testRunId}`, outcome: 'fail' },
       repaired: { buildId: journey.positive.build.buildId, testRunRef: `test-run:${journey.positive.testRunId}`, outcome: 'pass' },
-      evidence, connectivity: 'not-established' },
+      evidence: { path: 'journey.json', sha256: sha(JSON.stringify(journey)) }, connectivity: 'not-established' },
     controls: DESIGN_ROLLOUT_CONTROLS.map(id => ({ id, evidence, negative: 'fail', repaired: 'pass' })),
     authorGuidance: evidence, cohorts: [cohort], exceptions: [],
   };
@@ -110,11 +110,13 @@ function diskFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'design-rollout-')); cleanup.push(dir);
   const candidate = policy(); const bytes = JSON.stringify(candidate); const digest = sha(bytes);
   writeFileSync(join(dir, 'policy.json'), bytes); writeFileSync(join(dir, 'evidence.txt'), 'saved evidence');
+  writeFileSync(join(dir, 'journey.json'), JSON.stringify(journey));
   const target = { ...scope, approval: { ...scope.approval, rollout: {
     schemaVersion: 1 as const, policyPath: 'policy.json', policySha256: digest, reviewCardRef: 'EI-123',
   } } };
   const readReview = vi.fn(async () => review(digest));
-  return { dir, candidate, target, readReview, read: () => readDesignRolloutAdmission(target, { root: dir, now, readReview }) };
+  const readRun = vi.fn(async (id: number) => ({ status: id === journey.original.testRunId ? 'fail' : 'pass', framework: 'playwright', filePath: journey.sourceTest }));
+  return { dir, candidate, target, readReview, readRun, read: () => readDesignRolloutAdmission(target, { root: dir, now, readReview, readRun }) };
 }
 describe('ratification integration with confined artifacts and independent review ledger', () => {
   it('re-hashes policy and every census/guidance artifact before admitting a wider obligation', async () => {
@@ -132,6 +134,19 @@ describe('ratification integration with confined artifacts and independent revie
       expect((await readDesignRolloutAdmission({ ...canary, ...change }, { now })).reason).toBe('rollout-registration-required');
     }
   });
+  it('checks the saved shell/destination pair and corroborates both browser FILE verdicts', async () => {
+    const fixture = diskFixture(); expect((await fixture.read()).satisfied).toBe(true);
+    expect(fixture.readRun).toHaveBeenCalledWith(journey.original.testRunId);
+    expect(fixture.readRun).toHaveBeenCalledWith(journey.positive.testRunId);
+    fixture.readRun.mockResolvedValueOnce({ status: 'pass', framework: 'vitest', filePath: journey.sourceTest });
+    expect((await fixture.read()).reason).toBe('canary-browser-run-unproven');
+    const changed = structuredClone(journey); changed.original.cases[0].desktopWorkspacePresent = true;
+    writeFileSync(join(fixture.dir, 'journey.json'), JSON.stringify(changed));
+    fixture.candidate.canary.evidence.sha256 = sha(JSON.stringify(changed));
+    const bytes = JSON.stringify(fixture.candidate); writeFileSync(join(fixture.dir, 'policy.json'), bytes);
+    fixture.target.approval.rollout.policySha256 = sha(bytes);
+    expect((await fixture.read()).reason).toBe('canary-pair-unproven');
+  });
   it('the actual ratification verb refuses absent rollout, accepts reviewed policy, and keeps historical scope unconstrained', async () => {
     const fixture = diskFixture(); const store = createInMemoryReferenceStore();
     const env = { viewport: { width: 1, height: 1 }, deviceScaleFactor: 1, browser: 'chromium', theme: 'light', fontSet: 'test', state: 'empty' };
@@ -142,7 +157,7 @@ describe('ratification integration with confined artifacts and independent revie
       provenance: { source: 'upload', sourceRef: 'test:image' }, approval: scope.approval };
     const deps: VerbDeps = { harnessSlug: scope.harnessSlug, store, now: () => now, clock: () => new Date(now).toISOString(),
       materializeReferenceImage: async () => ({ path: 'test:image', contentSha256: scope.contentSha256 }), comparison: {} as VerbDeps['comparison'],
-      rolloutAdmission: candidate => readDesignRolloutAdmission(candidate, { now, root: fixture.dir, readReview: fixture.readReview }) };
+      rolloutAdmission: candidate => readDesignRolloutAdmission(candidate, { now, root: fixture.dir, readReview: fixture.readReview, readRun: fixture.readRun }) };
     const caller = { actorId: scope.actorId, role: 'reviewer' };
     expect(await ratifyReferenceVerb(input, caller, deps)).toMatchObject({ ok: false, detail: 'rollout-registration-required' });
     expect(await store.listFeatureReferenceIds({ harnessSlug: scope.harnessSlug, featureId: scope.featureId })).toEqual([]);

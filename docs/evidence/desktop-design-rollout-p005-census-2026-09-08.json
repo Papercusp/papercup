@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "plan": "design-acceptance-journey-enforcement-2026-09-08",
+  "workItemId": "WI-10000757",
+  "specRef": "AUTO-BAR-R-5-P-005@2",
+  "status": "ready-for-independent-review",
+  "original": {
+    "testRunId": 17712295,
+    "buildId": "5J8-nhZvCyUiBU5llWuxa",
+    "outcome": "fail",
+    "scope": "Six actual portal navigation cases reach the shell then fail on the missing Desktop workspace; later actions were not reached."
+  },
+  "repaired": {
+    "testRunId": 17713845,
+    "buildId": "YwYDgKxI3kL-64RCJTWa4",
+    "outcome": "pass",
+    "scope": "Nine portal cases, including all six named navigation scenarios. Real canary remains disconnected."
+  },
+  "renderMatrix": {
+    "testRunId": 17714647,
+    "evidence": "docs/evidence/desktop-render-matrix-p003-2026-09-08/reviewed-matrix.json",
+    "sha256": "d364b67990f1f0904556d104a07b34b6e23042b7d35fd7243345e09f81df83c7",
+    "scope": "Twenty inspected captures; 29 browser tests. Actual workspace/viewer UI with local RFB fixtures; no cloud connection."
+  },
+  "controls": [
+    {
+      "id": "empty-host-entry",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-journey-p002-2026-09-08.json",
+        "sha256": "816efb43f4ce9c41676831f2cedf44e4afafc60566243b60242c89da832cf17e"
+      },
+      "negative": "fail",
+      "repaired": "pass",
+      "distinguishingObservation": "original17712295 loaded shell misses destination; repaired17713845 reaches destination",
+      "test": "current design acceptance rejects the original loaded shell with the empty desktop destination",
+      "testFile": "packages/operator-core/lib/design-compare/acceptance.test.ts"
+    },
+    {
+      "id": "wrong-route",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass",
+      "distinguishingObservation": "keep correct captures; change journey target; wrong-target",
+      "test": "[desktop.gate.wrong-target]",
+      "testFile": "packages/operator-core/lib/design-compare/acceptance.test.ts"
+    },
+    {
+      "id": "missing-reference",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass",
+      "distinguishingObservation": "remove implementing binding; approval-binding-missing",
+      "test": "[desktop.gate.missing-registration]",
+      "testFile": "packages/operator-core/lib/design-compare/acceptance.test.ts"
+    },
+    {
+      "id": "failed-item-aggregation",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass",
+      "distinguishingObservation": "earlier passing candidate cannot hide last failed journey",
+      "test": "[desktop.gate.failed-late-obligation]",
+      "testFile": "packages/operator-core/lib/design-compare/acceptance.test.ts"
+    },
+    {
+      "id": "stale-build",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass",
+      "distinguishingObservation": "change independently read build revision; stale-build",
+      "test": "[desktop.gate.stale-build]",
+      "testFile": "packages/operator-core/lib/design-compare/acceptance.test.ts"
+    },
+    {
+      "id": "missing-responsive-state",
+      "evidence": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/reviewed-matrix.json",
+        "sha256": "d364b67990f1f0904556d104a07b34b6e23042b7d35fd7243345e09f81df83c7"
+      },
+      "negative": "fail",
+      "repaired": "pass",
+      "distinguishingObservation": "remove ready-narrow-dark; missing-case-evidence",
+      "test": "[desktop.gate.missing-proof]",
+      "testFile": "packages/operator-core/lib/design-compare/acceptance.test.ts"
+    },
+    {
+      "id": "placeholder-as-working",
+      "evidence": {
+        "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+      },
+      "negative": "fail",
+      "repaired": "pass",
+      "distinguishingObservation": "ready placeholder with fixture connectivity; placeholder-is-not-ready and fixture-connectivity-claim",
+      "test": "rejects fixture connectivity and a placeholder labeled ready",
+      "testFile": "packages/operator-core/lib/design-compare/acceptance.test.ts"
+    }
+  ],
+  "limits": [
+    "Saved immutable browser outcomes are reused; this census does not claim a new browser run.",
+    "The integration reader corroborates browser FILE verdicts; per-scenario details are in the saved artifact.",
+    "No connected-cloud desktop, remote input/video, operator shipment or wider rollout is claimed.",
+    "The independent acceptance review is outstanding; this author's census is not that review."
+  ]
+}

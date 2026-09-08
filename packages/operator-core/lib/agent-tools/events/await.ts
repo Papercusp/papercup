@@ -120,9 +120,13 @@ function generationResyncReason(details: GenerationPinDetails): string {
 }
 
 function generationMismatchResponse(details: GenerationPinDetails) {
-  const nextStatus = details.currentGeneration == null
+  const hasRetryableDeclaration = details.currentGeneration != null && details.currentState === 'declared';
+  const nextStatus = !hasRetryableDeclaration
     ? `events:status { event: "${details.eventKey}" }`
     : `events:status { event: "${details.eventKey}", after_generation: ${details.currentGeneration} }`;
+  const advice = hasRetryableDeclaration
+    ? `The exact declaration for "${details.eventKey}" changed before this await could be registered. Re-read it with ${nextStatus}, then retry events:await using the returned current generation.`
+    : `The exact declaration for "${details.eventKey}" is ${details.currentState} and is not waitable. Re-read it with ${nextStatus}, then wait for a fresh declared generation before retrying events:await.`;
   return {
     ok: false,
     error: 'await_generation_mismatch',
@@ -139,7 +143,7 @@ function generationMismatchResponse(details: GenerationPinDetails) {
       rule: 'Replace the cached exact-key declaration with events:status before retrying events:await; never register against a generation that is no longer current and unfired.',
       next_verb: nextStatus,
     },
-    advice: `The exact declaration for "${details.eventKey}" changed before this await could be registered. Re-read it with ${nextStatus}, then retry events:await using the returned current generation.`,
+    advice,
   };
 }
 
@@ -462,7 +466,10 @@ export default defineTool({
     let nearMiss: Array<{ key: string; kind: 'await' | 'announce'; holders: number }> | null = null;
     if (!patternAwait) {
       try {
-        const anns = await findAnnouncementsForKey(eventKey);
+        const anns = await findAnnouncementsForKey(
+          eventKey,
+          args.after_generation != null ? { includeCancelled: true } : undefined,
+        );
         if (args.after_generation != null) {
           const current = anns.find((announcement) => !announcement.supersededAt) ?? anns[0] ?? null;
           const currentGeneration = current?.causalGeneration ?? null;

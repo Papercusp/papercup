@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10000757",
+  "specRef": "AUTO-BAR-R-5-P-005@2",
+  "status": "implementation-verified-review-pending",
+  "testGroup": "design-rollout-p005-final-20260908",
+  "testedCommit": "974c56a3a9c91a7223a5844afb1e377f9b2f180b",
+  "worktreeDirty": true,
+  "runner": {
+    "command": "PAPERCUSP_HARNESS_SLUG=papercusp PAPERCUSP_TEST_RUN_GROUP=design-rollout-p005-final-20260908 npm run test:file -- packages/operator-core/lib/design-compare/rollout.test.ts packages/operator-core/lib/design-compare/acceptance.test.ts packages/operator-core/lib/design-compare/host-install.test.ts packages/operator-core/lib/design-compare/ratification.test.ts packages/operator-core/lib/design-compare/verbs.test.ts packages/operator-core/lib/design-phase-plugin-bridge.test.ts",
+    "exitCode": 0,
+    "passedTests": 100,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "files": {
+      "rollout.test.ts": 10,
+      "acceptance.test.ts": 24,
+      "host-install.test.ts": 4,
+      "ratification.test.ts": 28,
+      "verbs.test.ts": 22,
+      "design-phase-plugin-bridge.test.ts": 12
+    },
+    "evidence": "Completed test:file tool output in successor Codex session 01a08315-1c4f-7d42-a3fa-44fd6acd9452; TEST_FILE_RESULT requested=6 executed=6 matched=6 status=passed, and Vitest Tests 100 passed. The wrapper's temporary JSON report was removed on completion; it is not cited as a retained artifact."
+  },
+  "ledger": {
+    "rollout": 17723595,
+    "pluginBridge": 17723596,
+    "scope": "These two rows independently resolved in the exact group. Four other file rows were absent from that read; no IDs are invented for them.",
+    "persistenceFollowup": "EI-22734423315063289"
+  },
+  "browserEvidence": {
+    "original": 17712295,
+    "repaired": 17713845,
+    "renderMatrix": 17714647,
+    "scope": "Previously measured browser outcomes and inspected captures, reused unchanged; no new browser or connected-cloud claim."
+  },
+  "policy": "docs/evidence/desktop-design-rollout-policy-2026-09-08.json",
+  "census": "docs/evidence/desktop-design-rollout-p005-census-2026-09-08.json",
+  "guidance": "docs/reports/design-acceptance-author-guidance-2026-09-08.md",
+  "rollout": "Exact desktop option-B canary only. No additional cohort or exception is granted. Independent review and final plan settlement remain outstanding."
+}
