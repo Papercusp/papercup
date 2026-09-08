@@ -1,6 +1,8 @@
 /** scorecards:emit — the typed write facade over the canonical observation ledger. */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { decode } from '@papercusp/result-encoding';
+import { parseJsonWithTrailer } from '@papercusp/tooldef';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
@@ -318,6 +320,146 @@ type SpecTestAdequacyBindingError = {
   error: string;
 };
 
+type SpecTestAdequacyReplayRow = {
+  specId?: unknown;
+  specRevision?: unknown;
+  specFingerprint?: unknown;
+  verdict?: unknown;
+  wouldBlock?: unknown;
+  ratings?: unknown;
+};
+
+/**
+ * `ctx.dispatchTool` returns a ToolResult, while in-process test seams commonly
+ * return the already-unwrapped evaluator payload. Accept both forms and decode
+ * the lossless TOON form used by the MCP serializer. A replay guard that reads
+ * compact text as if it were JSON would silently skip the very check it exists
+ * to enforce.
+ */
+function unwrapSpecTestAdequacyReplay(result: unknown): unknown {
+  if (!result || typeof result !== 'object') return result;
+  const candidate = result as {
+    structuredContent?: unknown;
+    content?: ReadonlyArray<unknown>;
+    data?: unknown;
+  };
+  if (candidate.structuredContent !== undefined) return unwrapSpecTestAdequacyReplay(candidate.structuredContent);
+  if (candidate.data !== undefined && !Array.isArray(candidate.content)) {
+    return unwrapSpecTestAdequacyReplay(candidate.data);
+  }
+  const textItem = candidate.content?.find(
+    (item): item is { text: string } =>
+      !!item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string',
+  );
+  if (!textItem) return result;
+  const text = textItem.text;
+  const toonMarker = /^format:\s*toon\n/.exec(text);
+  if (toonMarker) {
+    try {
+      return unwrapSpecTestAdequacyReplay(decode(text.slice(toonMarker[0].length), 'toon'));
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    return unwrapSpecTestAdequacyReplay(JSON.parse(text));
+  } catch {
+    return unwrapSpecTestAdequacyReplay(parseJsonWithTrailer(text)?.value);
+  }
+}
+
+/**
+ * Re-run the evaluator before persisting a spec-test-adequacy card. The card's
+ * ratings are caller input; the evaluator is the policy writer for
+ * plan-class-risk-floor. Without this read-back, a caller can submit `pass`
+ * for a criterion whose exact replay is `unknown`/blocked and the ledger will
+ * preserve the over-claim as if it were measured evidence.
+ */
+async function validateSpecTestAdequacyReplay(
+  args: z.infer<typeof scorecardEmitArgs>,
+  dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+): Promise<SpecTestAdequacyBindingError | undefined> {
+  if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF || !args.rerunRecipe || !dispatchTool) return undefined;
+
+  const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(args.rerunRecipe);
+  if (!parsedRecipe.success) return undefined;
+  const submittedPasses = Object.entries(args.ratings ?? {}).filter(
+    ([, entry]) => ratingVerdict(entry.rating) === 'pass',
+  );
+  if (submittedPasses.length === 0) return undefined;
+
+  let replay: unknown;
+  try {
+    replay = unwrapSpecTestAdequacyReplay(
+      await dispatchTool('plans:evaluate-spec-test-adequacy', {
+        ...parsedRecipe.data.args,
+        payloadTier: 'full',
+      }),
+    );
+  } catch (error) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' could not replay its evaluator before filing: ` +
+        `${error instanceof Error ? error.message : String(error)}; no pass-like rating was persisted`,
+    };
+  }
+
+  const payload = replay && typeof replay === 'object' && !Array.isArray(replay) ? replay as {
+    ok?: unknown;
+    rows?: unknown;
+    error?: unknown;
+  } : null;
+  if (payload?.ok === false) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator replay refused: ` +
+        `${typeof payload.error === 'string' ? payload.error : 'unknown evaluator error'}; no pass-like rating was persisted`,
+    };
+  }
+  const rows = Array.isArray(payload?.rows) ? payload.rows as SpecTestAdequacyReplayRow[] : [];
+  const selection = parsedRecipe.data.selection;
+  const row = rows.find(
+    (candidate) =>
+      candidate &&
+      candidate.specId === selection.specId &&
+      candidate.specRevision === selection.specRevision &&
+      (candidate.specFingerprint === undefined || candidate.specFingerprint === selection.specFingerprint),
+  );
+  if (!row) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator replay returned no row for ` +
+        `${selection.planSlug}/${selection.specId}@${selection.specRevision}; no pass-like rating was persisted`,
+    };
+  }
+
+  const replayRatings =
+    row.ratings && typeof row.ratings === 'object' && !Array.isArray(row.ratings)
+      ? row.ratings as Record<string, { rating?: unknown }>
+      : {};
+  const wouldBlock = Array.isArray(row.wouldBlock) ? row.wouldBlock.filter((key): key is string => typeof key === 'string') : [];
+  for (const [criterion, submitted] of submittedPasses) {
+    const replayRating = replayRatings[criterion];
+    const replayVerdict = replayRating && typeof replayRating.rating === 'string'
+      ? ratingVerdict(replayRating.rating)
+      : null;
+    if (replayVerdict !== 'pass' || wouldBlock.includes(criterion)) {
+      return {
+        code: 'invalid_spec_test_adequacy_binding',
+        error:
+          `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot claim ${criterion}='${submitted.rating}' ` +
+          `when the exact evaluator replay returns '${typeof replayRating?.rating === 'string' ? replayRating.rating : 'unknown'}' ` +
+          `${wouldBlock.includes(criterion) ? `and wouldBlock includes '${criterion}'` : ''}; ` +
+          'use the evaluator ratings returned by plans:evaluate-spec-test-adequacy',
+      };
+    }
+  }
+  return undefined;
+}
+
 /**
  * The completion gate can only match a spec-test-adequacy card to the exact
  * clause revision selected by the evaluator. Refuse malformed or mismatched
@@ -555,6 +697,8 @@ export async function emitScorecard(
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   try {
+    const specTestAdequacyReplayError = await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
+    if (specTestAdequacyReplayError) return { ok: false as const, ...specTestAdequacyReplayError };
     // EI-21765534049482705: a meta-rubric card whose subject is an active
     // acceptance rubric is the vetting attestation consumed by the completion
     // gates. Without a linked critique channel it looks like a successful

@@ -3394,7 +3394,12 @@ async function amendAcceptanceBarRubric(
       const nextTemplateData = guard.data as { barContract?: { adoptionEpoch?: number | null } };
       const startedBar =
         stored.barContract?.adoptionEpoch != null || nextTemplateData.barContract?.adoptionEpoch != null;
-      if (startedBar) {
+      // A classRef bind is metadata-only: it changes neither the BAR set nor any
+      // criterion meaning. Do not make this repair depend on the started contract
+      // being ready for vetting; draft plans intentionally reach this path before
+      // METHOD/check fields are authored. Meaning-changing amendments still take
+      // the full pre-vetting lifecycle gate below.
+      if (startedBar && changedBars.length > 0) {
         const lifecycle = evaluateAcceptanceBarLifecycle(
           candidate.applicable ? candidate : { ...candidate, applicable: true },
           'pre-vetting',
@@ -3614,13 +3619,11 @@ async function amendAcceptanceBarRubric(
              AND e.harness_slug = ${subjectScope.harnessSlug}
              AND e.plan_slug = ${subjectPlanHint}
              AND e.spec_id = ${clause.spec_id}
-             AND e.spec_revision = ${priorRevision}
-             AND w.status NOT IN ('done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated')`;
+             AND e.spec_revision = ${priorRevision}`;
         const covered = await tx<{ work_item_id: string }[]>`
           SELECT w.feature_id AS work_item_id
             FROM harness_shared.work_items w
            WHERE w.workspace_id=${subjectScope.workspaceId} AND w.harness_slug=${subjectScope.harnessSlug}
-             AND w.status NOT IN ('done','dropped','resolved','closed','passed','deprecated')
              AND (
                (w.source_plan_slug=${subjectPlanHint} AND ${clause.plan_item_id}=ANY(COALESCE(w.source_plan_item_ids,ARRAY[]::text[])))
                OR (w.payload->'plan_item'->>'slug'=${subjectPlanHint} AND w.payload->'plan_item'->>'item'=${clause.plan_item_id})
