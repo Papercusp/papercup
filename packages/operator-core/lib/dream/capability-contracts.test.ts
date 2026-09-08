@@ -141,6 +141,30 @@ describe('capability evidence packet contracts', () => {
     const input = fault === 'extra-field' ? { ...p, trusted: true } : p;
     expect(CapabilityPacketSchema.safeParse(input).success).toBe(false);
   });
+  it.each([
+    'contracts',
+    'inputs',
+    'outputs',
+    'events',
+    'state',
+    'guarantees',
+    'prerequisites',
+    'failureModes',
+    'resourceConstraints',
+  ] as const)('rejects a missing required contract field: %s', (field) => {
+    const p = packet();
+    expect(CapabilityPacketSchema.safeParse(p).success).toBe(true);
+    if (field === 'contracts') delete (p.unit as Partial<typeof p.unit>).contracts;
+    else delete (p.unit.contracts as Partial<typeof p.unit.contracts>)[field];
+    // Keep the hash consistent: a stale hash must not stand in for the contract detector.
+    p.unitHash = capabilityHash(JSON.stringify(p.unit));
+    const result = CapabilityPacketSchema.safeParse(p);
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('Missing contract field was admitted');
+    expect(result.error.issues.map((issue) => issue.path)).toContainEqual(
+      field === 'contracts' ? ['unit', 'contracts'] : ['unit', 'contracts', field],
+    );
+  });
   it('bounds source excerpts instead of silently truncating evidence', () => {
     const p = packet();
     p.sources[0]!.excerpt = 'x'.repeat(12_001);
