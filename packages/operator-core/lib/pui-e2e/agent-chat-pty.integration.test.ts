@@ -508,6 +508,7 @@ let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
 let initializeWarnings: Array<Record<string, unknown>> = [];
 let optionalMemoryWarnings: string[] = [];
 let configurationWarnings: string[] = [];
+let intentPivotWarnings: string[] = [];
 let nativeFrameDiagnostics: Array<Record<string, unknown>> = [];
 let readOmpDiagnosticState: (() => Promise<Record<string, unknown>>) | undefined;
 let nativeProviderOrigin: string | undefined;
@@ -760,7 +761,16 @@ beforeAll(async () => {
           nativeLogs: readNativeLogs(), nativeProviderEvents };
         };
         return { ...peer, async request(...args: Parameters<typeof peer.request>) {
-          const result = await peer.request(...args);
+          const command = args[0].type;
+          const recordControl = (phase: string) => {
+            if (command === 'prompt' || command === 'abort') {
+              nativeFrameDiagnostics.push({ type: 'rpc_control', command, phase, at: new Date().toISOString() });
+            }
+          };
+          recordControl('sent');
+          const result = await peer.request(...args).then((result) => {
+            recordControl('acknowledged'); return result;
+          }, (error) => { recordControl('failed'); throw error; });
           if (args[0].type === 'get_state') {
             const prompt = Array.isArray(result.systemPrompt) ? result.systemPrompt : [result.systemPrompt];
             console.info('PUI_OMP_STATE_DIAGNOSTIC', JSON.stringify({
@@ -956,6 +966,7 @@ beforeEach(async () => {
   initializeWarnings = [];
   optionalMemoryWarnings = [];
   configurationWarnings = [];
+  intentPivotWarnings = [];
   nativeFrameDiagnostics = [];
   if (scriptedEngine.real) {
     const error = console.error.bind(console);
@@ -985,6 +996,13 @@ beforeEach(async () => {
         // every other warning still fail this test (EI-22628413686876169).
         optionalMemoryWarnings.push(String(args[0]));
         console.info('PUI_OPTIONAL_MEMORY_DIAGNOSTIC', args[0]);
+      } else if (args.length === 1 && args[0] === '[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback') {
+        // detectIntentPivot deliberately returns the lexical method within
+        // this budget. Its unit suite exercises that fallback. Retain this
+        // exact advisory diagnostic in native acceptance; unexpected warnings
+        // still fail, and this says nothing about embedding service health.
+        intentPivotWarnings.push(String(args[0]));
+        console.info('PUI_INTENT_PIVOT_DIAGNOSTIC', args[0]);
       } else {
         if (typeof args[0] === 'string' && /^\[bounded-timeout\].* exceeded \d+ms/.test(args[0])) {
           traceTiming('diagnostic-warning', { label: args[0] });
@@ -1496,14 +1514,15 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
         greetingReply, fileResult, followupReply, resumedReply, resumedDescriptor, readStart, readEnd,
         commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
-        initializeWarnings, optionalMemoryWarnings, configurationWarnings,
+        initializeWarnings, optionalMemoryWarnings, configurationWarnings, intentPivotWarnings,
+        nativeFrames: nativeFrameDiagnostics, nativeProviderEvents,
         assistantReplies: scriptedEngine.events.filter((event) => event.type === 'transcript'
           && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'),
       }));
     } catch (cause) {
       const nativeState = await readOmpDiagnosticState?.().catch((error: Error) => ({ stateReadError: error.message }));
       console.info('PUI_INSTALLED_REAL_ENGINE_FAILURE', JSON.stringify({
-        backend: scriptedEngine.backend, binary: bin, binarySha256, frames, nativeState, ...pane.failureEvidence(),
+        backend: scriptedEngine.backend, binary: bin, binarySha256, frames, nativeState, intentPivotWarnings, ...pane.failureEvidence(),
       }));
       throw cause;
     } finally { await pane.stop().catch(() => {}); }
