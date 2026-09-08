@@ -43,6 +43,7 @@ import runTool, {
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
   selectTestFileRoot,
+  shouldResolveHarnessTestRunIds,
   shouldIngestVitestLedgerInProcess,
 } from '../run';
 import { cancelRun, getRun } from '../../../testing-run-store';
@@ -729,6 +730,12 @@ describe('testing:run (integration)', () => {
     expect(hint).toContain('owning Vitest config');
     expect(hint).not.toContain('capability:inspect');
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain('capability:inspect');
+  });
+
+  it('returns timeout recovery before optional execution-ledger readback', () => {
+    expect(shouldResolveHarnessTestRunIds({ ok: false, error: 'timeout' })).toBe(false);
+    expect(shouldResolveHarnessTestRunIds({ ok: false, error: 'route_error' })).toBe(true);
+    expect(shouldResolveHarnessTestRunIds({ ok: true })).toBe(true);
   });
 
   it('builds a fresh store-backed router request without the foreground report path', () => {

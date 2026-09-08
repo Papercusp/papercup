@@ -849,6 +849,18 @@ export type TestFilesCoreResult =
     };
 
 /**
+ * A foreground timeout must return its detached recovery handle without waiting on
+ * optional execution-ledger readback. The timeout path has no completed foreground
+ * verdict to bind, and an unbounded test_runs query can consume the remaining MCP
+ * transport margin under database contention (EI-22687291136362768).
+ */
+export function shouldResolveHarnessTestRunIds(
+  result: Pick<TestFilesCoreResult, 'ok' | 'error'>,
+): boolean {
+  return !(result.ok === false && result.error === 'timeout');
+}
+
+/**
  * EI-21909191824649521: a run that COLLECTED tests and executed NONE of them produced no
  * evidence — yet vitest exits 0, and the two fields a reader treats as the verdict (`ok:true`
  * and `failed:0`) both read as success while `skipped:N` sits below them, outranked.
@@ -1947,7 +1959,7 @@ export default defineTool({
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
     const testRunIds =
-      ctx.workspaceId && ctx.workspaceId !== '*' && harnessSlug
+      shouldResolveHarnessTestRunIds(result) && ctx.workspaceId && ctx.workspaceId !== '*' && harnessSlug
         ? await findHarnessTestRunIds({
             workspaceId: ctx.workspaceId,
             harnessSlug,
