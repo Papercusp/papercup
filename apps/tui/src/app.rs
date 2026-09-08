@@ -16145,6 +16145,85 @@ mod tests {
     }
 
     #[test]
+    fn view_state_loaded_after_navigation_preserves_the_current_view() {
+        let mut a = App::new();
+        a.update(key('6', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Docs);
+        a.update(Event::ViewStateLoaded(ViewState {
+            tab: Some("Plans".into()),
+            harness: Some("previous-pot".into()),
+            scope: Some("pot".into()),
+            ..Default::default()
+        }));
+        assert_eq!(a.tab, Tab::Docs);
+        assert_ne!(a.harness, "previous-pot");
+        assert!(a.all_pots);
+    }
+
+    #[test]
+    fn view_state_loaded_after_composing_does_not_hide_the_chat() {
+        let mut a = App::new();
+        // The startup tab is already Agent Chat: input must supersede the
+        // pending restore even when navigation has not changed a saved field.
+        a.update(key('i', KeyModifiers::NONE));
+        a.update(Event::Paste("hello while startup is loading".into()));
+        assert!(a.chat_composing);
+        a.update(Event::ViewStateLoaded(ViewState {
+            tab: Some("Plans".into()),
+            ..Default::default()
+        }));
+        assert_eq!(a.tab, Tab::Operator);
+        assert!(a.chat_composing);
+        assert_eq!(a.chat_input, "hello while startup is loading");
+    }
+
+    #[test]
+    fn view_state_loaded_after_control_intent_preserves_the_selected_pot() {
+        let mut a = App::new();
+        a.update(Event::TuiIntent {
+            id: 1,
+            intent: "set_harness".into(),
+            args: json!({"slug": "chosen-pot"}),
+        });
+        assert_eq!(a.harness, "chosen-pot");
+        a.update(Event::ViewStateLoaded(ViewState {
+            tab: Some("Plans".into()),
+            harness: Some("previous-pot".into()),
+            ..Default::default()
+        }));
+        assert_eq!(a.harness, "chosen-pot");
+        assert_eq!(*a.active_harness.lock().unwrap(), "chosen-pot");
+    }
+
+    #[test]
+    fn view_state_loaded_restores_once_after_background_data_and_read_intents() {
+        let mut a = App::new();
+        a.update(Event::Plans(Vec::new()));
+        a.update(Event::TuiIntent {
+            id: 2,
+            intent: "get_state".into(),
+            args: json!({}),
+        });
+        a.update(Event::ViewStateLoaded(ViewState {
+            tab: Some("Fleet".into()),
+            harness: Some("saved-pot".into()),
+            scope: Some("pot".into()),
+            fleet_agent_sel: 5,
+            ..Default::default()
+        }));
+        assert_eq!(a.tab, Tab::Fleet);
+        assert_eq!(a.harness, "saved-pot");
+        assert!(!a.all_pots);
+        assert_eq!(a.fleet.agent_sel, 5);
+        a.update(Event::ViewStateLoaded(ViewState {
+            tab: Some("Plans".into()),
+            ..Default::default()
+        }));
+        assert_eq!(a.tab, Tab::Fleet);
+        assert_eq!(a.harness, "saved-pot");
+    }
+
+    #[test]
     fn apply_view_state_ignores_unknown_tab_and_blank_harness() {
         let mut a = App::new();
         let original_tab = a.tab;
