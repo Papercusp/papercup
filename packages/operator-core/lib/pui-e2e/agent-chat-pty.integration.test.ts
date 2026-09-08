@@ -43,6 +43,26 @@ const scriptedEngine = vi.hoisted(() => ({
   initialization: Promise.resolve(),
 }));
 
+// Observe real maintenance scheduling so the fixture can dispose its own
+// timers before dropping their database. Production passes still run normally.
+const maintenance = vi.hoisted(() => ({ jobs: [] as Array<{ stop(): Promise<void> }> }));
+vi.mock('../session-end-lease-release-hook', async (original) => {
+  const actual = await original<typeof import('../session-end-lease-release-hook')>();
+  return { ...actual, scheduleSessionEndLeaseRelease(...args: Parameters<typeof actual.scheduleSessionEndLeaseRelease>) {
+    const job = actual.scheduleSessionEndLeaseRelease(...args);
+    maintenance.jobs.push(job);
+    return job;
+  } };
+});
+vi.mock('../session-archive-hook', async (original) => {
+  const actual = await original<typeof import('../session-archive-hook')>();
+  return { ...actual, async scheduleArchiveForAdvSession(...args: Parameters<typeof actual.scheduleArchiveForAdvSession>) {
+    const job = await actual.scheduleArchiveForAdvSession(...args);
+    if (job) maintenance.jobs.push(job);
+    return job;
+  } };
+});
+
 vi.mock('../su-session-claude-engine', async (original) => {
   const actual = await original<typeof import('../su-session-claude-engine')>();
   return {
@@ -345,9 +365,11 @@ class PuiPane {
   async waitForReply(needle: string): Promise<void> {
     try {
       await vi.waitFor(() => {
-        // One occurrence is the owner's echoed request; the second must render
-        // as the assistant's reply. A matching composer draft alone cannot pass.
-        expect(this.screen().split(needle).length - 1).toBeGreaterThanOrEqual(2);
+        // Match the rendered assistant bubble itself. History can scroll the
+        // echoed owner request away (especially after a long interrupted reply),
+        // and a context-dependent answer need not occur in the request at all.
+        const lines = this.screen().split('\n').map((line) => line.replace(/^│|│$/g, '').trim());
+        expect(lines.some((line, index) => line === 'agent' && lines[index + 1]?.includes(needle))).toBe(true);
       }, { timeout: 120_000, interval: 100 });
     } catch (cause) {
       const engineState = scriptedEngine.engines.map((engine) => ({ pid: engine.pid(),
@@ -743,6 +765,9 @@ beforeAll(async () => {
 afterAll(async () => {
   await stopEngines();
   await close(operatorServer);
+  const { drainDetached } = await import('../detached-imports');
+  await drainDetached();
+  for (const job of maintenance.jobs.splice(0)) await job.stop();
   const { stopInvalidationListener } = await import('../sync-sse');
   await stopInvalidationListener();
   const dbOrg = await import('@papercusp/db-org');
@@ -1265,10 +1290,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         resumedPane.write(resumePrompt);
         resumedPane.enter();
         const resumedChat = await waitForCorrelatedReply(resumePrompt, resumedReply);
-        // This answer is intentionally absent from the prompt: the saved
-        // native context supplies it. Correlation above proves its role/turn.
-        await resumedPane.waitFor(resumedReply);
-        await resumedPane.waitFor('Message — Enter send');
+        await resumedPane.waitForReply(resumedReply);
         expect(resumedChat.id).toBe(firstChat.id);
         frames.resumed = resumedPane.screen();
       } catch (cause) {
