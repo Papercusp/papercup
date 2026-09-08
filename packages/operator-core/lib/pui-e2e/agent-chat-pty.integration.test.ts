@@ -705,10 +705,20 @@ beforeAll(async () => {
       const stdio = await import('../su-session-stdio-peer');
       const startPeer = stdio.startSuStdioPeer;
       vi.spyOn(stdio, 'startSuStdioPeer').mockImplementation(async (options) => {
+        const mcpConfigPath = path.join(options.env.PI_CODING_AGENT_DIR!, 'mcp.json');
+        const mcpConfig = JSON.parse(readFileSync(mcpConfigPath, 'utf8')) as {
+          mcpServers?: Record<string, { url?: string }>;
+        };
+        const configuredServers = Object.entries(mcpConfig.mcpServers ?? {}).map(([name, server]) => {
+          const url = server.url ? new URL(server.url) : null;
+          return { name, origin: url?.origin, pathname: url?.pathname,
+            queryKeys: url ? [...url.searchParams.keys()] : [],
+            ownerMatches: url?.searchParams.get('client') === options.ownerId };
+        });
         const peer = await startPeer({ ...options, onMessage(frame) {
           if (nativeFrameDiagnostics.length < 50) {
             nativeFrameDiagnostics.push({ type: frame.type, command: frame.command,
-              method: frame.method, keys: Object.keys(frame),
+              method: frame.method, keys: Object.keys(frame), at: new Date().toISOString(),
               messageRole: (frame.message as { role?: string })?.role,
               assistantEvent: (frame.assistantMessageEvent as { type?: string })?.type });
           }
@@ -726,12 +736,15 @@ beforeAll(async () => {
             console.info('PUI_OMP_STATE_DIAGNOSTIC', JSON.stringify({
               pid: peer.pid(), agentHome: options.env.PI_CODING_AGENT_DIR,
               configDir: options.env.PI_CONFIG_DIR, keys: Object.keys(result),
+              configuredServers, isStreaming: result.isStreaming, messageCount: result.messageCount,
               model: { id: (result.model as { id?: string })?.id,
                 provider: (result.model as { provider?: string })?.provider }, promptType: typeof result.systemPrompt,
               promptParts: prompt.map((part) => {
                 const text: string = typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '';
                 return { type: typeof part, keys: typeof part === 'object' && part ? Object.keys(part) : [],
                   headings: text.match(/^#{1,3} .+$/gm)?.filter((heading) => heading.includes('MCP')),
+                  connectedServers: text.split(/^## MCP Server Instructions\r?$/m).slice(1)
+                    .flatMap((section) => section.split(/^#{1,2} /m, 1)[0].match(/^### [^\r\n]+/gm) ?? []),
                   routes: text.match(/xd:\/\/[^`\s]+/g)?.filter((route) => /papercusp[-_]su/i.test(route)).slice(0, 8) };
               }),
             }));
