@@ -14,7 +14,7 @@
  * final assertion reads testing_surface_depth, so a green result proves the
  * evidence is persistent and capable of moving the ladder above depth zero.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import postgres, { type Sql } from 'postgres';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { registerRoute } from '../../endpoint-route/define-route';
 import healthRoute from '../../endpoint-route/routes/misc/health';
+import restQueryRoute from '../../endpoint-route/routes/zero-harness/rest-query';
 import { PROJECTED_DEPS, flushPendingTelemetry } from '../../projected-tool-deps';
 import { toWorkspaceRel } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
@@ -36,13 +37,23 @@ import {
 } from './sink';
 import { createPgEvidenceStore } from './pg-evidence-store';
 
-// Register the real read-only tool before looking it up in the projected catalog.
-await import('../../agent-tools/facts/list');
+// Register the real tools before looking them up in the projected catalog. The change-queue
+// probes below deliberately select each tool's non-mutating path.
+await Promise.all([
+  import('../../agent-tools/facts/list'),
+  import('../../agent-tools/improvements/capture'),
+  import('../../agent-tools/work_items/bulk_dedup'),
+]);
 
 const WORKSPACE = 'papercusp-workspace';
 const HARNESS = 'papercusp';
 const TEST_FILE = toWorkspaceRel(fileURLToPath(import.meta.url));
 const EXPECTED_SURFACES = ['GET /health', 'facts:list'] as const;
+const CHANGE_QUEUE_SURFACES = [
+  'improvements:capture',
+  'work_items:bulk_dedup',
+  'GET /zero-harness/rest-query',
+] as const;
 
 let sql: Sql;
 const savedEnv = new Map<string, string | undefined>();
@@ -78,6 +89,19 @@ function dispatchContext(): Record<string, unknown> {
     },
     tx: sql,
   };
+}
+
+async function dispatchTool(toolName: string, args: Record<string, unknown>): Promise<void> {
+  const tool = lookupByMcpName(toolName);
+  expect(tool, `${toolName} must remain in the projected tool catalog`).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(
+    tool!,
+    toolName,
+    args,
+    dispatchContext() as never,
+    PROJECTED_DEPS,
+  );
+  expect(dispatched.ok, JSON.stringify(dispatched.error ?? null)).toBe(true);
 }
 
 beforeAll(() => {
@@ -163,5 +187,97 @@ describe('persistent coverage-attribution venue', () => {
     expect(new Set(rows.map((row) => row.surface_id))).toEqual(new Set(EXPECTED_SURFACES));
     expect(rows.every((row) => row.meets_l1 && Number(row.depth) >= 1)).toBe(true);
     expect(rows.every((row) => row.test_file === TEST_FILE)).toBe(true);
+  });
+
+  it('attributes non-mutating change-queue intake, cleanup preview, and readiness reads at L3', async () => {
+    const app = new Hono();
+    registerRoute(app, restQueryRoute);
+
+    await dispatchTool('improvements:capture', {
+      title: 'coverage attribution change-queue readiness probe',
+      kind: 'change',
+      body: 'Read-only duplicate probe for the persistent coverage-attribution venue.',
+      harness: HARNESS,
+      checkDuplicatesOnly: true,
+    });
+
+    await dispatchTool('work_items:bulk_dedup', {
+      op: 'preview-reviewed',
+      harness: HARNESS,
+      workspace: WORKSPACE,
+      confirm: true,
+      reviewedEntries: [
+        {
+          itemId: 'EI-coverage-attribution-missing-control',
+          action: 'preserve',
+          evidence: {
+            status: 'unknown',
+            ref: 'test:persistent-coverage-attribution-venue',
+            reason: 'A deliberately absent item is the no-mutation preview control.',
+          },
+        },
+      ],
+    });
+
+    const queryArgs = encodeURIComponent(JSON.stringify({ harnessSlug: HARNESS, limit: 1 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let readiness: Response | undefined;
+    try {
+      readiness = await app.request(
+        `http://localhost/zero-harness/rest-query?name=workItemAdmission.runs&args=${queryArgs}`,
+      );
+    } finally {
+      expect(
+        warn.mock.calls.filter(
+          ([message]) => !String(message).startsWith('[sync-slow] name=workItemAdmission.runs'),
+        ),
+      ).toEqual([]);
+      warn.mockRestore();
+    }
+    expect(readiness).toBeDefined();
+    if (!readiness) throw new Error('workItemAdmission.runs did not return a response');
+    expect(readiness.status).toBe(200);
+    const readinessBody = (await readiness.json()) as {
+      rows?: unknown[];
+      timing?: { unit?: string };
+    };
+    expect(Array.isArray(readinessBody.rows)).toBe(true);
+    expect(readinessBody.timing?.unit).toBe('ms');
+
+    await flushPendingTelemetry();
+    await flushTrafficEvidence();
+
+    expect(attributionStatus()).toMatchObject({
+      armed: true,
+      disabled: false,
+      buffered: 0,
+      unmatchedSurfaces: 0,
+      lastError: null,
+    });
+    expect(attributionStatus().written).toBeGreaterThanOrEqual(CHANGE_QUEUE_SURFACES.length);
+
+    const rows = await sql<{
+      surface_id: string;
+      meets_l1: boolean;
+      meets_l3: boolean;
+      test_file: string | null;
+      test_case: string | null;
+      verdict: string;
+    }[]>`
+      SELECT d.surface_id, d.meets_l1, d.meets_l3,
+             e.test_file, e.test_case, e.verdict
+        FROM harness_shared.testing_surface_depth d
+        JOIN harness_shared.coverage_evidence e ON e.surface_ref = d.id
+       WHERE d.workspace_id = ${WORKSPACE}
+         AND d.harness_slug = ${HARNESS}
+         AND d.surface_id = ANY(${[...CHANGE_QUEUE_SURFACES]}::text[])
+         AND e.evidence_kind = 'traffic'
+         AND e.test_file = ${TEST_FILE}
+         AND e.test_case LIKE '%non-mutating change-queue intake%'
+    `;
+
+    expect(new Set(rows.map((row) => row.surface_id))).toEqual(new Set(CHANGE_QUEUE_SURFACES));
+    expect(rows.every((row) => row.meets_l1 && row.meets_l3 && row.verdict === 'pass')).toBe(true);
+    expect(rows.every((row) => row.test_file === TEST_FILE && row.test_case !== null)).toBe(true);
   });
 });
