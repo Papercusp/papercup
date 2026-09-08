@@ -9,7 +9,11 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { appendGoalHistory } from '@papercusp/agent-mcp';
+import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { workItemCheckpointScope, setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { readGoalHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
+import { buildGoalKickoffBrief } from '../goals/start';
 import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
 import { fleetSpecBeeKey, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { buildLeaderBrief } from '../fleet/leader-brief';
@@ -22,6 +26,9 @@ const HARNESS = `zzz-plan-history-${RUN}`;
 const PLAN = `plan-history-consumers-${RUN}`;
 const CHILD = `WI-plan-history-${RUN}`;
 const FLEET = `plan-history-fleet-${RUN}`;
+const GOAL = `goal-history-consumers-${RUN}`;
+const GOAL_LESSON = 'A measured correction replaced the stale goal stop condition.';
+const CHILD_ROOT_CAUSE = 'the delivery cursor advanced before projection';
 const CHILD_LESSON =
   'Outcome: the descendant repair shipped. Root cause: the delivery cursor advanced before projection. Residue: preserve the exact recovery reference.';
 
@@ -72,6 +79,28 @@ beforeAll(async () => {
   process.env.PAPERCUSP_WORKSPACE_ID = fx.workspaceId;
 
   await seedPlan(admin, fx.workspaceId, HARNESS, PLAN, PLAN_CONTENT);
+  await insertGoalRow(admin, {
+    id: GOAL,
+    installSlug: HARNESS,
+    workspaceId: fx.workspaceId,
+    title: 'Goal history consumer integration',
+    body: 'Prove the goal holder receives goal, plan and item history.',
+    killCriterion: 'the bounded history consumer omits an admitted descendant',
+    status: 'active',
+  });
+  await admin`
+    UPDATE harness_shared.harness_plans
+       SET goal_id = ${GOAL}
+     WHERE workspace_id = ${fx.workspaceId}
+       AND harness_slug = ${HARNESS}
+       AND plan_slug = ${PLAN}
+  `;
+  await appendGoalHistory(admin, {
+    workspaceId: fx.workspaceId,
+    goalId: GOAL,
+    author: 'su-goal-history-consumer-integration',
+    detail: { kind: 'finding', summary: GOAL_LESSON, refs: [CHILD] },
+  });
   await admin`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
@@ -119,6 +148,16 @@ afterAll(async () => {
        AND bee_id = ${fleetSpecBeeKey(FLEET)}
   `.catch(() => {});
   await cleanupPlans(admin, fx.workspaceId, HARNESS).catch(() => {});
+  await admin`
+    DELETE FROM harness_shared.audit_log
+     WHERE workspace_id = ${fx.workspaceId}
+       AND subject = ${GOAL}
+  `.catch(() => {});
+  await admin`
+    DELETE FROM harness_shared.goals
+     WHERE workspace_id = ${fx.workspaceId}
+       AND id = ${GOAL}
+  `.catch(() => {});
   if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
   await fx?.dispose();
@@ -182,5 +221,38 @@ describe('bounded plan history production consumers', () => {
     }
     expect(JSON.stringify(leader.data.planHistory)).toContain(CHILD_LESSON);
     expect(JSON.stringify(leader.data.planHistory)).toContain(rawRef);
+  }, 60_000);
+
+  it('delivers goal-owned, related-plan and child-item history into the goal holder brief with raw recovery', async () => {
+    const history = await readGoalHistoryContext(GOAL);
+    const serialized = JSON.stringify(history);
+    expect(history.status).toBe('available');
+    expect(serialized).toContain(GOAL_LESSON);
+    expect(serialized).toContain('Preserve the current correction');
+    expect(serialized).toContain(CHILD_ROOT_CAUSE);
+    expect(history.brief?.fanOut).toMatchObject({ truncated: false });
+
+    const childRef = history.brief?.rawRefs.find((ref) => ref === `${CHILD}#checkpoint`);
+    expect(childRef).toBe(`${CHILD}#checkpoint`);
+    const recovered = await resolvePriorAttemptRefs({
+      target: { kind: 'goal', ref: GOAL },
+      rawRefs: [childRef!],
+    });
+    expect(recovered?.unresolved).toEqual([]);
+    expect(recovered?.records[0]?.text).toContain(CHILD_LESSON);
+
+    const kickoff = buildGoalKickoffBrief({
+      goalId: GOAL,
+      title: 'Goal history consumer integration',
+      killCriterion: 'the current goal stop condition',
+      history,
+    });
+    expect(kickoff).toContain('GOAL HISTORY — own and bounded descendant evidence');
+    expect(kickoff).toContain(GOAL_LESSON);
+    expect(kickoff).toContain('Preserve the current correction');
+    expect(kickoff).toContain(CHILD_ROOT_CAUSE);
+    expect(kickoff.indexOf('KILL THIS IF — the current goal stop condition')).toBeLessThan(
+      kickoff.indexOf('GOAL HISTORY — own and bounded descendant evidence'),
+    );
   }, 60_000);
 });
