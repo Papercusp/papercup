@@ -81,6 +81,35 @@ describe('resolveOperatorBase precedence', () => {
   });
 });
 
+describe('resolveOperatorBase self-host precedence', () => {
+  it('keeps a staging host on its own port instead of an inherited green URL', () => {
+    const home = homeWithOperatorJson(null);
+    expect(resolveOperatorBase({}, {
+      PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+    }, { home, preferSelfPort: true })).toBe('http://127.0.0.1:3170');
+  });
+
+  it('uses the proxy when it explicitly fronts the self host', () => {
+    const home = homeWithOperatorJson(null);
+    expect(resolveOperatorBase({}, {
+      PAPERCUSP_HONO_PORT: '3070',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    }, { home, preferSelfPort: true })).toBe('http://127.0.0.1:9071');
+  });
+
+  it('ignores an invalid self port and falls back to the normal env route', () => {
+    const home = homeWithOperatorJson(null);
+    expect(resolveOperatorBase({}, {
+      PAPERCUSP_HONO_PORT: '0',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+    }, { home, preferSelfPort: true })).toBe('http://127.0.0.1:3070');
+  });
+});
+
 // The caller appends its own `/api/mcp`, but `PAPERCUSP_OPERATOR_URL` is OVERLOADED:
 // `apps/operator/.env.local` exports it WITH the endpoint path for MCP-config
 // consumers, and every process sourcing that file inherits the suffixed form. Without

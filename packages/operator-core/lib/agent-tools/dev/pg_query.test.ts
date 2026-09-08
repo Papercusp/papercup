@@ -133,6 +133,14 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(chaining).toContain('substring(text from start for n)');
   });
 
+  it('maps work-item response vocabulary to canonical SQL columns before raw queries', () => {
+    const chaining = (pgQueryTool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
+    expect(chaining).toContain("`state` maps to table `status`");
+    expect(chaining).toContain("`id` maps to `feature_id`");
+    expect(chaining).toContain('`completion_ref` / `terminal_completion_ref`');
+    expect(chaining).toContain('describe `harness_shared.work_items`');
+  });
+
   it('returns a relation description as structured data for transport-safe shaping', async () => {
     const description = {
       relation: 'harness_shared.tool_invocations',

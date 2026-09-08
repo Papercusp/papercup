@@ -15,6 +15,7 @@ import {
   resolveContextTier,
   resolvePayloadHarnessScope,
   resolveHarnessScope,
+  resolvePtoolOperatorBase,
   resolveTokenPath,
   resolveTokenPaths,
   dispatchScriptedToolWithoutCatalog,
@@ -28,6 +29,7 @@ import {
   stdoutDeliveryError,
   PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
+  PTOOL_CHECKPOINT_RUN_TIMEOUT_MS,
   PTOOL_COORD_ORIENT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
@@ -206,6 +208,25 @@ describe('ptool MCP identity binding', () => {
   });
 });
 
+describe('ptool operator routing', () => {
+  it('routes a staging invocation to the current host instead of inherited green', () => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+    })).toBe('http://127.0.0.1:3170');
+  });
+
+  it('keeps the resilient proxy when it fronts the current host', () => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_HONO_PORT: '3070',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    })).toBe('http://127.0.0.1:9071');
+  });
+});
+
 describe('ptool bearer-token resolution', () => {
   it('keeps explicit and environment token overrides authoritative', () => {
     const env: NodeJS.ProcessEnv = {
@@ -344,6 +365,16 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-22646214305093468: checkpoint-run detaches the ~55min suite, but its
+    // admission/launch receipt still crosses the 55s MCP floor. Keep both
+    // transport shapes beyond that floor instead of abandoning the receipt at
+    // ptool's ordinary 30s deadline.
+    expect(timeoutForTool('release:checkpoint-run')).toBe(PTOOL_CHECKPOINT_RUN_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:checkpoint-run',
+      args: { reason: 'timeout mapping regression' },
+    })).toBe(PTOOL_CHECKPOINT_RUN_TIMEOUT_MS);
+    expect(PTOOL_CHECKPOINT_RUN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:cancel')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('work_items:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21565982575605857: required friction filing must outlive the MCP

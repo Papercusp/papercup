@@ -81,9 +81,15 @@ import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-
  * }} ToolCatalogEntry
  */
 
-// env → ~/.papercusp/operator.json (packaged installs run the operator on a
-// per-boot dynamic port; :3070 is dev-box-only) → dev fallback.
-const OPERATOR_URL = resolveOperatorBase({}, process.env);
+// When ptool is launched from an operator host, prefer that host's serving
+// port over the inherited `.env.local` green pin. This keeps plan/rubric writes
+// on the current staging source tree; packaged installs without a host-port
+// identity retain operator.json discovery and the resilient proxy/default.
+export function resolvePtoolOperatorBase(env = process.env) {
+  return resolveOperatorBase({}, env, { preferSelfPort: true });
+}
+
+const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
 
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
@@ -1182,6 +1188,15 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-22646214305093468: release:checkpoint-run launches the green-checkpoint
+// suite detached, but its pre-launch admission path still runs inside the MCP
+// call. The tool declares no timeoutSec, so MCP uses its 55s deadline floor;
+// ptool's ordinary 30s deadline could abandon the launch receipt first and
+// leave the caller unable to tell whether the gate run was scheduled. Keep the
+// client just beyond that server floor, matching the other bounded foreground
+// calls without pretending to wait for the detached suite itself.
+export const PTOOL_CHECKPOINT_RUN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
 // EI-22613070628418671: db:migrate declares timeoutSec=1020
 // (MAX_DRAIN_SEC 300 + 2*MAX_LOCK_TIMEOUT_SQL_SEC 600 + 120). The MCP
 // transport adds a 5s settlement buffer, so the effective server deadline is
@@ -1279,6 +1294,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
   ['scorecards:emit', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
+  ['release:checkpoint-run', PTOOL_CHECKPOINT_RUN_TIMEOUT_MS],
   ['testing:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
@@ -2457,7 +2473,7 @@ Flags:
   --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)
   PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)
   --raw                           print the raw result text (no JSON pretty-print)
-  --url=<http://host:port>        operator URL (default $PAPERCUSP_OPERATOR_URL or :3070)
+  --url=<http://host:port>        operator URL (default current PAPERCUSP_HONO_PORT host, then $PAPERCUSP_OPERATOR_URL or :3070)
   -h, --help                      this help
 `;
 

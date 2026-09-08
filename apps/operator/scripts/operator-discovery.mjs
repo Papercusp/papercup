@@ -37,6 +37,9 @@ export function discoverOperatorUrl({ home = homedir() } = {}) {
 /**
  * Standard CLI precedence: explicit --operator-url arg → PAPERCUSP_OPERATOR_URL
  * env override → live desktop discovery (operator.json) → dev-box :3070.
+ * Callers that run inside an operator host can opt into self-host precedence;
+ * that inserts the host's valid PAPERCUSP_HONO_PORT before the inherited env
+ * override, preventing a staging process from routing its writes to green.
  *
  * Returns a BASE ORIGIN — callers append their own path (ptool posts to
  * `base + '/api/mcp'`). `PAPERCUSP_OPERATOR_URL` is OVERLOADED and cannot be
@@ -52,18 +55,50 @@ export function discoverOperatorUrl({ home = homedir() } = {}) {
  *
  * @param {{operatorUrl?: string | null}} [args]
  * @param {EnvironmentMap} [env]
- * @param {{home?: string}} [opts]
+ * @param {{home?: string, preferSelfPort?: boolean}} [opts]
  * @returns {string}
  */
 export function resolveOperatorBase(args = {}, env = process.env, opts = {}) {
+  const selfPort = opts.preferSelfPort ? validLocalPort(env.PAPERCUSP_HONO_PORT) : null;
+  const selfBase = selfPort
+    ? operatorBaseForSelfPort(selfPort, env)
+    : null;
   return (
     args.operatorUrl ??
+    selfBase ??
     env.PAPERCUSP_OPERATOR_URL ??
     discoverOperatorUrl(opts) ??
     'http://127.0.0.1:3070'
   )
     .replace(/\/api\/mcp\/?$/, '')
     .replace(/\/$/, '');
+}
+
+/**
+ * Return a dialable TCP port from an operator-host environment. `0` means
+ * "bind any free port" and is not an address callers can connect to; malformed
+ * and out-of-range values are likewise ignored so the normal discovery chain
+ * remains authoritative.
+ */
+function validLocalPort(raw) {
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!/^\d+$/.test(value)) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? value : null;
+}
+
+/**
+ * Resolve the current host's MCP base, preserving the resilient proxy only
+ * when it fronts this exact host. A staging host must otherwise stay on its
+ * own source tree even when `.env.local` handed it green's URL.
+ */
+function operatorBaseForSelfPort(selfPort, env) {
+  const proxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+    ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+    : '';
+  const proxyTargetPort = validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT ?? '3070') ?? '3070';
+  if (proxyBase && selfPort === proxyTargetPort) return proxyBase;
+  return `http://127.0.0.1:${selfPort}`;
 }
 
 /**
