@@ -2,6 +2,7 @@ import type { Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import type { Principal } from '@papercusp/agent-mcp';
+import { SUPERUSER_FALLBACK_CLIENT_ID } from '../../../agent-tools/coordination/identity';
 
 /**
  * Capabilities granted to **blueprint-declared roles** — agents a blueprint spawns
@@ -475,6 +476,33 @@ export function synthesizeTransportPrincipal(spawnCtx: {
     authMethod: isSuperuser ? 'bearer-token' : unsignedLegacy ? 'host-loopback' : 'spawn-url',
     trust: isSuperuser || !unsignedLegacy ? 'trusted' : 'unverified-loopback',
     capabilities: new Set<string>(),
+  };
+}
+
+/**
+ * Build the principal used by MCP resources/list and resources/read after the
+ * transport has already authenticated a spawn context. Unlike projected tool
+ * dispatch, resource authorization needs the caller's capability set and the
+ * stable result-door owner id. A superuser's bearer is intentionally absent
+ * from agent-mcp's token_index, so passing that raw bearer to resolveBearer()
+ * would reject every scratch reference as invalid_bearer.
+ */
+export function synthesizeResourcePrincipal(spawnCtx: {
+  workspaceId: string;
+  isSuperuser?: boolean;
+  uiClientId?: string | null;
+  authenticatedPrincipal?: Principal;
+}): Principal | null {
+  if (spawnCtx.authenticatedPrincipal) return spawnCtx.authenticatedPrincipal;
+  if (spawnCtx.isSuperuser !== true || !spawnCtx.workspaceId) return null;
+  const ownerId = spawnCtx.uiClientId?.trim() || SUPERUSER_FALLBACK_CLIENT_ID;
+  return {
+    kind: 'system',
+    slug: ownerId,
+    workspaceId: spawnCtx.workspaceId,
+    authMethod: 'bearer-token',
+    trust: 'trusted',
+    capabilities: new Set(['*']),
   };
 }
 

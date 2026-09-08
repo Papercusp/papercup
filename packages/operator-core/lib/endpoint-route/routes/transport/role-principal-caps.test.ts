@@ -13,6 +13,7 @@ import {
   effectiveDispatchWorkspace,
   loadRoleCapabilities,
   synthesizeDispatchPrincipal,
+  synthesizeResourcePrincipal,
   synthesizeTransportPrincipal,
 } from './role-principal-caps.js';
 import { FLEET_CAPABILITY_ROLES } from '@papercusp/orchestrator';
@@ -715,6 +716,54 @@ describe('synthesizeTransportPrincipal — no-tx telemetry provenance', () => {
       role: 'papercup',
       authenticatedPrincipal,
     })).toBe(authenticatedPrincipal);
+  });
+});
+
+describe('synthesizeResourcePrincipal — transport-authenticated resources', () => {
+  test('superuser keeps the result-door owner id and gets wildcard resource access', () => {
+    const principal = synthesizeResourcePrincipal({
+      workspaceId: 'ws',
+      isSuperuser: true,
+      uiClientId: 'su-session-42',
+    });
+    expect(principal).toMatchObject({
+      kind: 'system',
+      slug: 'su-session-42',
+      workspaceId: 'ws',
+      authMethod: 'bearer-token',
+      trust: 'trusted',
+    });
+    expect(principal?.capabilities).toEqual(new Set(['*']));
+  });
+
+  test('client-less superuser uses the same stable fallback as coordination identity', () => {
+    expect(
+      synthesizeResourcePrincipal({ workspaceId: '*', isSuperuser: true }),
+    ).toMatchObject({
+      slug: 'su-loopback',
+      workspaceId: '*',
+    });
+  });
+
+  test('verified authenticated principals pass through without capability inflation', () => {
+    const authenticatedPrincipal = {
+      kind: 'pi' as const,
+      slug: 'pi:public-chat',
+      workspaceId: 'ws',
+      authMethod: 'bearer-token' as const,
+      trust: 'trusted' as const,
+      capabilities: new Set(['chat:write']),
+    };
+    expect(
+      synthesizeResourcePrincipal({
+        workspaceId: 'ws',
+        authenticatedPrincipal,
+      }),
+    ).toBe(authenticatedPrincipal);
+  });
+
+  test('unsigned non-superuser transport has no resource principal', () => {
+    expect(synthesizeResourcePrincipal({ workspaceId: 'ws' })).toBeNull();
   });
 });
 

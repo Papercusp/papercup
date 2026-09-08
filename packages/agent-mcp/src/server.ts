@@ -336,9 +336,18 @@ export interface ListResourcesResult {
   error?: { code: string; message: string };
 }
 
+/**
+ * Authentication already established by an outer transport. Most callers
+ * still provide a bearer string; the HTTP MCP transport can hand off its
+ * validated superuser/PI principal directly when that bearer is not indexed
+ * as an agent-mcp token.
+ */
+export type ResourceAuth = string | { bearer: string } | { principal: Principal };
+
 export interface ReadResourceOptions {
   uri: string;
-  bearer: string;
+  bearer?: string;
+  principal?: Principal;
 }
 
 export interface ReadResourceResult {
@@ -349,6 +358,12 @@ export interface ReadResourceResult {
 
 function isScratchResourceUri(uri: string): boolean {
   return uri.startsWith(`${SCRATCH_SCHEME}/`);
+}
+
+async function resolveResourcePrincipal(auth: ResourceAuth): Promise<Principal | null> {
+  if (typeof auth !== 'string' && 'principal' in auth) return auth.principal;
+  const bearer = typeof auth === 'string' ? auth : auth.bearer;
+  return bearer ? resolveBearer(bearer) : null;
 }
 
 function scratchMimeType(basename: string): string {
@@ -395,7 +410,13 @@ async function readScratchResource(
     };
   }
 
-  if (parts.workspaceId !== principal.workspaceId) {
+  // A wildcard workspace is only produced by the explicitly authenticated
+  // superuser transport principal (which carries the wildcard capability).
+  // Keep ordinary principals strictly workspace-scoped while allowing an
+  // intentional `all_workspaces=1` superuser session to follow the URI's
+  // concrete workspace into the scratch store.
+  const unscopedSuperuser = principal.workspaceId === '*' && principal.capabilities.has('*');
+  if (parts.workspaceId !== principal.workspaceId && !unscopedSuperuser) {
     return {
       ok: false,
       error: {
@@ -446,7 +467,7 @@ async function readScratchResource(
     const reference = parseScratchReference(bytes);
     if (reference) {
       authorizeScratchReference(reference.manifest, {
-        workspaceId: principal.workspaceId,
+        workspaceId: unscopedSuperuser ? reference.manifest.workspaceId : principal.workspaceId,
         // The bearer principal is the only caller identity available at this
         // transport seam; result-door owner references use that same stable
         // principal slug when they are produced outside a request context.
@@ -476,14 +497,14 @@ async function readScratchResource(
  * resources expand via their `list` callback (one URI per harness, etc.);
  * concrete resources contribute one entry each.
  */
-export async function listResources(bearer: string): Promise<ListResourcesResult> {
-  const principal = await resolveBearer(bearer);
+export async function listResources(auth: ResourceAuth): Promise<ListResourcesResult> {
+  const principal = await resolveResourcePrincipal(auth);
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
 
   const visible = getResourceCatalog().filter((r) =>
-    principal.capabilities.has(r.capability),
+    principal.capabilities.has('*') || principal.capabilities.has(r.capability),
   );
 
   try {
@@ -540,7 +561,9 @@ export async function listResources(bearer: string): Promise<ListResourcesResult
  */
 export async function readResource(opts: ReadResourceOptions): Promise<ReadResourceResult> {
   if (isScratchResourceUri(opts.uri)) {
-    const principal = await resolveBearer(opts.bearer);
+    const principal = await resolveResourcePrincipal(
+      opts.principal ? { principal: opts.principal } : { bearer: opts.bearer ?? '' },
+    );
     if (!principal) {
       return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
     }
@@ -551,11 +574,13 @@ export async function readResource(opts: ReadResourceOptions): Promise<ReadResou
   if (!matched) {
     return { ok: false, error: { code: 'unknown_resource', message: `No resource matches URI "${opts.uri}"` } };
   }
-  const principal = await resolveBearer(opts.bearer);
+  const principal = await resolveResourcePrincipal(
+    opts.principal ? { principal: opts.principal } : { bearer: opts.bearer ?? '' },
+  );
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
-  if (!principal.capabilities.has(matched.def.capability)) {
+  if (!principal.capabilities.has('*') && !principal.capabilities.has(matched.def.capability)) {
     return {
       ok: false,
       error: {

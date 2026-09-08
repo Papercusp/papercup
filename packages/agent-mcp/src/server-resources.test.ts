@@ -41,6 +41,15 @@ const principal = (slug = OWNER, workspaceId = WORKSPACE) => ({
   trust: 'trusted' as const,
 });
 
+const superuserPrincipal = (workspaceId = WORKSPACE) => ({
+  kind: 'system' as const,
+  slug: OWNER,
+  workspaceId,
+  capabilities: new Set(['*']),
+  authMethod: 'bearer-token' as const,
+  trust: 'trusted' as const,
+});
+
 let scratchRoot: string;
 let previousScratchRoot: string | undefined;
 
@@ -98,6 +107,51 @@ describe('readResource scratch references', () => {
     const result = await readResource({ uri: scratchUri('missing.spill'), bearer: 'invalid-bearer' });
 
     expect(result).toMatchObject({ ok: false, error: { code: 'invalid_bearer' } });
+  });
+
+  it('reads a scratch spill from an already-authenticated superuser principal', async () => {
+    resolveBearerMock.mockResolvedValue(null);
+    writeScratchReference({
+      filePath: scratchPath(),
+      payload: '{"from":"superuser"}',
+      workspaceId: WORKSPACE,
+      ownerId: OWNER,
+      audience: 'owner',
+      mediaType: 'application/json',
+    });
+
+    const result = await readResource({ uri: scratchUri(), principal: superuserPrincipal() });
+
+    expect(result).toEqual({
+      ok: true,
+      contents: {
+        uri: scratchUri(),
+        mimeType: 'application/json',
+        text: '{"from":"superuser"}',
+      },
+    });
+    expect(resolveBearerMock).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicitly unscoped superuser follow the URI workspace', async () => {
+    writeScratchReference({
+      filePath: scratchPath(),
+      payload: 'all-workspaces',
+      workspaceId: WORKSPACE,
+      ownerId: OWNER,
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+
+    const result = await readResource({
+      uri: scratchUri(),
+      principal: superuserPrincipal('*'),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      contents: { uri: scratchUri(), text: 'all-workspaces' },
+    });
   });
 
   it('enforces workspace and owner boundaries for scratch references', async () => {
