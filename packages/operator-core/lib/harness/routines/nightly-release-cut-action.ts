@@ -10,11 +10,13 @@
  * version files and commits them as part of its normal lifecycle.
  */
 
+import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, openSync, readFileSync, closeSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { managedSpawn } from '../../task-manager/managed-spawn';
+import { newTaskId } from '../../task-manager/types';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
@@ -71,6 +73,24 @@ export function readDesktopVersionAtSource(sourceRoot: string, sourceSha: string
   const parsed = JSON.parse(body) as { version?: unknown };
   if (typeof parsed.version !== 'string') throw new Error(`pinned papercusp-desktop ${match[1]} has no string version`);
   return parsed.version;
+}
+
+/** Every gitlink in the exact superproject tree, keyed by repository-relative path. */
+export function readSourceGitlinks(sourceRoot: string, sourceSha: string): Record<string, string> {
+  const output = execFileSync(
+    'git',
+    ['-C', sourceRoot, 'ls-tree', '-r', '--full-tree', sourceSha],
+    { encoding: 'utf8' },
+  );
+  const gitlinks: Record<string, string> = {};
+  for (const line of output.split('\n')) {
+    const match = /^160000 commit ([0-9a-f]{40}|[0-9a-f]{64})\t(.+)$/.exec(line);
+    if (match) gitlinks[match[2]] = match[1];
+  }
+  if (Object.keys(gitlinks).length === 0) {
+    throw new Error(`source ${sourceSha} has no committed gitlinks`);
+  }
+  return Object.fromEntries(Object.entries(gitlinks).sort(([left], [right]) => left.localeCompare(right)));
 }
 
 export function integrationRoot(): string {
@@ -225,7 +245,10 @@ export async function runNightlyCut(
     lockPath?: string;
     spawnFn?: typeof managedSpawn;
     readVersion?: (sourceRoot: string, sourceSha: string) => string;
+    readGitlinks?: (sourceRoot: string, sourceSha: string) => Record<string, string>;
     sourceSha?: string;
+    taskId?: string;
+    operationId?: string;
   } = {},
 ): Promise<NightlyCutRunResult> {
   if (process.platform !== 'linux') return { status: 'skipped', reason: 'nightly cuts are Linux-only' };
@@ -244,7 +267,12 @@ export async function runNightlyCut(
     ? opts.readVersion(sourceRoot, sourceSha)
     : readDesktopVersionAtSource(sourceRoot, sourceSha);
   const version = nextNightlyVersion(baseVersion, opts.now);
+  const gitlinks = (opts.readGitlinks ?? readSourceGitlinks)(sourceRoot, sourceSha);
+  const taskId = opts.taskId ?? newTaskId();
+  const operationId = opts.operationId ?? randomUUID();
   const invocation = buildNightlyCutInvocation(root, sourceRoot, version, sourceSha, ownerName, env);
+  invocation.env.PAPERCUSP_RELEASE_TASK_ID = taskId;
+  invocation.env.PAPERCUSP_RELEASE_OPERATION_ID = operationId;
   const lockPath = opts.lockPath ?? NIGHTLY_RELEASE_LOCK_PATH;
   if (!acquireNightlyLock(lockPath, version)) return { status: 'skipped', reason: 'a nightly release cut is already running' };
 
@@ -262,10 +290,35 @@ export async function runNightlyCut(
         harnessSlug: ctx.installSlug || operatorHomeHarnessSlug(),
         memoryMaxBytes: NIGHTLY_RELEASE_MEMORY_MAX_BYTES,
         runtimeMaxSec: NIGHTLY_RELEASE_RUNTIME_MAX_SEC,
-        detail: { channel: 'nightly', version, sourceSha },
+        detail: {
+          channel: 'nightly',
+          version,
+          sourceSha,
+          release: {
+            schemaVersion: 1,
+            operationId,
+            source: { sha: sourceSha, gitlinks },
+            artifactIdentity: {
+              kind: 'papercusp-desktop-release',
+              channel: 'nightly',
+              sourceSha,
+              version,
+            },
+            credential: {
+              generation: invocation.env.PAPERCUSP_RELEASE_CREDENTIAL_GENERATION ?? null,
+              expiresAt: invocation.env.PAPERCUSP_RELEASE_CREDENTIAL_EXPIRES_AT ?? null,
+            },
+            cursor: 0,
+            currentStage: null,
+            currentState: null,
+            spentOperationIds: [],
+            receipts: [],
+          },
+        },
       },
       {
         workspaceId: ctx.workspaceId,
+        taskId,
         spawnOptions: { cwd: invocation.cwd, env: invocation.env, detached: true, stdio: 'inherit' },
       },
     );

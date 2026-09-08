@@ -54,6 +54,8 @@ export interface DispatchArgs {
   /** Concrete promoted work-items for stable-agent execution. Mutually exclusive
    *  with `items`; `planSlug` may still be supplied as message provenance. */
   workItemIds?: string[];
+  /** Persist a screening/dispatch retry on the original work item. */
+  resumeAdmission?: boolean;
   body?: string;
   harness?: string;
   /** Directed-pair pilot only. Identity/session/role are loaded from the
@@ -738,6 +740,9 @@ export default defineTool({
         .max(120)
         .optional()
         .describe("Harness scope for the lane assignment (default: the plan's harness)."),
+      resumeAdmission: z.boolean().optional().describe(
+        'Resume one exact existing work item through its active durable admission promoter, then assignment/wake. Requires harness and one workItemId. No replacement item is created; queued never means picked up.',
+      ),
       pilotBinding: z
         .object({
           itemId: z.string().min(1).max(120),
@@ -747,6 +752,10 @@ export default defineTool({
         .describe('directed-pair pilot only: link the delivered role/session to a canonical binding receipt'),
     })
     .superRefine((args, ctx) => {
+      if (args.resumeAdmission && (!args.harness || args.workItemIds?.length !== 1 || args.pilotBinding)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['resumeAdmission'],
+          message: 'admission recovery requires harness and exactly one workItemId; pilot dispatch uses its existing receipt path' });
+      }
       if ((args.items?.length ?? 0) > 0 && (args.workItemIds?.length ?? 0) > 0) {
         ctx.addIssue({
           code: 'custom',
@@ -757,6 +766,30 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const dispatchArgs = args as DispatchArgs;
+    if (dispatchArgs.resumeAdmission) {
+      const identity = resolveAgentIdentity(ctx);
+      const { requestAdmissionRecovery, AdmissionRecoveryRefused } = await import('../../../work-item-admission-recovery');
+      const { resolveStableAgentTarget } = await import('../actionable-work-item-dispatch');
+      try {
+        if (!identity.workspaceId) throw new AdmissionRecoveryRefused('recovery requires a concrete caller workspace');
+        const target = await resolveStableAgentTarget({
+          targetAgent: dispatchArgs.to, workspaceId: identity.workspaceId, harness: dispatchArgs.harness,
+        });
+        const result = await requestAdmissionRecovery({
+          workspaceId: identity.workspaceId, harnessSlug: dispatchArgs.harness!,
+          workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: target.ownerId,
+        });
+        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      } catch (error) {
+        if (!(error instanceof AdmissionRecoveryRefused)) throw error;
+        return { content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: false, error: 'admission_recovery_refused', reason: error.message,
+          workItemId: dispatchArgs.workItemIds![0], responsibleActor: identity.ownerId,
+          nextAction: 'Repair the named authority/routine/hold, then retry this same item with resumeAdmission:true.',
+          pickupConfirmed: false,
+        }) }] };
+      }
+    }
     const result = await composeDispatch(dispatchArgs, inProcessCall(ctx));
     const identity = resolveAgentIdentity(ctx);
     const finalized = await finalizePilotDispatchReceipt(dispatchArgs, result, {

@@ -1,0 +1,248 @@
+/** Original-item admission recovery, stored on the item and run by its existing promoter. */
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
+import { z } from 'zod';
+import { getPresence } from './agent-tools/coordination/presence';
+import {
+  authorizeWorkItemDispatch,
+  assignAndWakeActionableWorkItems,
+} from './agent-tools/coordination/actionable-work-item-dispatch';
+import { WORK_ITEM_ADMISSION_PROMOTER } from './work-items-admission-promoter';
+import { decodeOperatorSecretKey } from './operator-secret-key';
+import { getModes } from './modes/store';
+import { AUDIT_MODE, auditModeMutationDenyReason } from './capability-envelope/audit-mode-guard';
+
+const requestSchema = z.object({
+  version: z.literal(1),
+  requestId: z.string().uuid(),
+  caller: z.string().min(1),
+  target: z.string().min(1),
+  routineId: z.string().min(1),
+  signature: z.string().regex(/^[a-f0-9]{64}$/),
+  state: z.enum(['queued', 'delivered', 'held']),
+  requestedAt: z.string(),
+  updatedAt: z.string(),
+  reason: z.string().optional(),
+  /** Only a later target-owned pickup can establish execution. */
+  pickupConfirmed: z.literal(false),
+});
+export type AdmissionRecoveryRequest = z.infer<typeof requestSchema>;
+export interface AdmissionRecoveryScope {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+}
+interface RecoveryItem {
+  feature_id: string;
+  status: string;
+  origin: string;
+  taken_by: string | null;
+  admission: string | null;
+  payload: Record<string, unknown> | null;
+}
+export interface AdmissionRecoveryDeps {
+  authorize: (scope: AdmissionRecoveryScope, request: Pick<AdmissionRecoveryRequest, 'caller' | 'target'>) => Promise<void>;
+  screen: (scope: AdmissionRecoveryScope, beforePersist: () => Promise<void>) => Promise<unknown>;
+  dispatch: typeof assignAndWakeActionableWorkItems;
+}
+
+export class AdmissionRecoveryRefused extends Error {}
+
+/** Read permissions again; the saved request is never an authorization grant. */
+export async function authorizeAdmissionRecovery(
+  scope: AdmissionRecoveryScope,
+  request: Pick<AdmissionRecoveryRequest, 'caller' | 'target'>,
+): Promise<void> {
+  for (const actor of new Set([request.caller, request.target])) {
+    const presence = await getPresence(actor);
+    if (!presence || presence.revoked || presence.workspaceId !== scope.workspaceId) {
+      throw new AdmissionRecoveryRefused(`actor ${actor} is absent, revoked, or outside this workspace`);
+    }
+    if ((await getModes(scope.workspaceId, actor)).some((mode) => mode.mode === AUDIT_MODE)) {
+      throw new AdmissionRecoveryRefused(auditModeMutationDenyReason({ toolName: 'work_items:claim', ownerId: actor }));
+    }
+    const permission = await authorizeWorkItemDispatch({
+      workItemId: scope.workItemId, target: actor, harness: scope.harnessSlug, workspaceId: scope.workspaceId,
+    });
+    if (!permission.allowed) throw new AdmissionRecoveryRefused(`${actor}: ${permission.reason}`);
+  }
+}
+
+function savedRequest(item: RecoveryItem): AdmissionRecoveryRequest | null {
+  const value = item.payload?._admissionRecovery;
+  return value == null ? null : requestSchema.parse(value);
+}
+
+/** Payload is caller-writable on feature creation. Bind provenance to the existing
+ * operator key, domain-separated from spawn tokens; a claimed caller name is not proof. */
+async function requestSignature(sql: Sql, scope: AdmissionRecoveryScope, request: Omit<AdmissionRecoveryRequest, 'signature'>): Promise<string> {
+  const [key] = await sql<{ value_b64: string }[]>`
+    SELECT value_b64 FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key'`;
+  if (!key) throw new AdmissionRecoveryRefused('operator signing key unavailable; recovery was not authorized');
+  return createHmac('sha256', decodeOperatorSecretKey(key.value_b64, 'spawn-signing-key'))
+    .update(JSON.stringify(['admission-recovery-v1', scope.workspaceId, scope.harnessSlug, scope.workItemId,
+      request.requestId, request.caller, request.target, request.routineId, request.requestedAt]))
+    .digest('hex');
+}
+
+async function verifyRequest(sql: Sql, scope: AdmissionRecoveryScope, request: AdmissionRecoveryRequest): Promise<void> {
+  const expected = await requestSignature(sql, scope, request);
+  if (!timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(request.signature, 'hex'))) {
+    throw new AdmissionRecoveryRefused('recovery provenance is invalid for this exact item and caller');
+  }
+}
+
+async function readItem(sql: Sql, scope: AdmissionRecoveryScope): Promise<RecoveryItem> {
+  const [item] = await sql<RecoveryItem[]>`
+    SELECT feature_id, status, origin, taken_by, admission, payload
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND feature_id = ${scope.workItemId}`;
+  if (!item) throw new AdmissionRecoveryRefused('the exact original work item was not found in this scope');
+  return item;
+}
+
+function assertItemEligible(item: RecoveryItem, target: string): void {
+  if (!['open', 'todo', 'failing', 'wip', 'in_progress', 'validating'].includes(item.status)) {
+    throw new AdmissionRecoveryRefused(`original item is ${item.status}; recovery does not reopen it`);
+  }
+  if (item.origin !== 'local') throw new AdmissionRecoveryRefused('remote work must be repaired by its originating actor');
+  if (item.taken_by && item.taken_by !== target) throw new AdmissionRecoveryRefused(`item is held by ${item.taken_by}`);
+  if (item.payload?._claimHold === true || item.payload?.needsOwnerAction === true) {
+    throw new AdmissionRecoveryRefused('original item has an owner-action or claim hold');
+  }
+}
+
+async function assertRoutineActive(sql: Sql, scope: AdmissionRecoveryScope, id?: string): Promise<string> {
+  const rows = await sql<{ id: string }[]>`
+    SELECT id FROM harness_shared.routines
+     WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.harnessSlug}
+       AND name = ${WORK_ITEM_ADMISSION_PROMOTER}
+       AND target_role = ${`system:${WORK_ITEM_ADMISSION_PROMOTER}`} AND active = true
+       AND (trigger_config->>'cron' IS NOT NULL OR trigger_config->>'rrule' IS NOT NULL)
+       AND (${id ?? null}::text IS NULL OR id = ${id ?? null})`;
+  if (rows.length !== 1) throw new AdmissionRecoveryRefused('the existing recurring admission promoter must be present and active');
+  return rows[0]!.id;
+}
+
+async function writeRequest(sql: Sql, scope: AdmissionRecoveryScope, request: AdmissionRecoveryRequest): Promise<void> {
+  await sql`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{_admissionRecovery}', ${sql.json(request)}, true)
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND feature_id = ${scope.workItemId}`;
+}
+
+async function lockRequest(sql: Sql, scope: AdmissionRecoveryScope): Promise<boolean> {
+  const [row] = await sql<{ locked: boolean }[]>`
+    SELECT pg_try_advisory_xact_lock(hashtextextended(
+      ${JSON.stringify(['admission-recovery', scope.workspaceId, scope.harnessSlug, scope.workItemId])}, 0)) AS locked`;
+  return row?.locked === true;
+}
+
+/** One item, one durable request. No create, re-title, claim override, or screening bypass. */
+export async function requestAdmissionRecovery(
+  input: AdmissionRecoveryScope & { caller: string; target: string },
+  deps: Pick<AdmissionRecoveryDeps, 'authorize'> = { authorize: authorizeAdmissionRecovery },
+  sql: Sql = getOrgPg().sql,
+): Promise<{ ok: true; workItemId: string; request: AdmissionRecoveryRequest; inProgress: boolean }> {
+  if (![input.workspaceId, input.harnessSlug, input.workItemId, input.caller, input.target].every((s) => s.trim())) {
+    throw new AdmissionRecoveryRefused('recovery requires exact workspace, harness, item, caller, and target identities');
+  }
+  await deps.authorize(input, input);
+  return sql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Sql;
+    const locked = await lockRequest(tx, input);
+    const item = await readItem(tx, input);
+    assertItemEligible(item, input.target);
+    const previous = savedRequest(item);
+    if (previous) await verifyRequest(tx, input, previous);
+    if (previous && (previous.caller !== input.caller || previous.target !== input.target)) {
+      throw new AdmissionRecoveryRefused(`existing recovery belongs to ${previous.caller} for ${previous.target}`);
+    }
+    if (!locked) {
+      if (!previous) throw new AdmissionRecoveryRefused('original-item recovery is being registered; retry this same item');
+      return { ok: true as const, workItemId: input.workItemId, request: previous, inProgress: true };
+    }
+    const routineId = await assertRoutineActive(tx, input, previous?.routineId);
+    // Recheck after serialization too: a retry is not cached permission.
+    await deps.authorize(input, input);
+    const now = new Date().toISOString();
+    const unsigned: Omit<AdmissionRecoveryRequest, 'signature'> = {
+      version: 1, requestId: previous?.requestId ?? randomUUID(), caller: input.caller, target: input.target,
+      routineId, requestedAt: previous?.requestedAt ?? now, updatedAt: now,
+      state: 'queued', pickupConfirmed: false,
+    };
+    const request = { ...unsigned, signature: await requestSignature(tx, input, unsigned) };
+    await writeRequest(tx, input, request);
+    if (request.state === 'queued') {
+      // Queueing and acceleration commit together. The routine engine still owns its fire.
+      const updated = await tx`
+        UPDATE harness_shared.routines SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now())
+         WHERE id = ${routineId} AND active = true RETURNING id`;
+      if (updated.length !== 1) throw new AdmissionRecoveryRefused('promoter was paused during recovery registration');
+    }
+    return { ok: true as const, workItemId: input.workItemId, request, inProgress: false };
+  });
+}
+
+/** Called inside the existing durable promoter action; a crash retries the original item. */
+export async function runAdmissionRecoveries(
+  scope: Omit<AdmissionRecoveryScope, 'workItemId'>,
+  deps: AdmissionRecoveryDeps,
+  sql: Sql = getOrgPg().sql,
+): Promise<number> {
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id FROM harness_shared.work_items
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND payload->'_admissionRecovery'->>'state' = 'queued'
+     ORDER BY feature_id LIMIT 20`;
+  for (const row of rows) {
+    const exact = { ...scope, workItemId: row.feature_id };
+    await sql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as Sql;
+      if (!await lockRequest(tx, exact)) return;
+      const request = savedRequest(await readItem(tx, exact));
+      if (!request || request.state !== 'queued') return;
+      const assertAllowed = async () => {
+        await verifyRequest(sql, exact, request);
+        await assertRoutineActive(sql, exact, request.routineId);
+        const live = await readItem(sql, exact);
+        const current = savedRequest(live);
+        if (current?.requestId !== request.requestId || current.caller !== request.caller || current.target !== request.target) {
+          throw new AdmissionRecoveryRefused('original recovery identity changed');
+        }
+        await verifyRequest(sql, exact, current);
+        assertItemEligible(live, request.target);
+        await deps.authorize(exact, request);
+      };
+      try {
+        await assertAllowed();
+        const item = await readItem(sql, exact);
+        if (item.admission === 'pending' || item.admission === 'unreviewed') await deps.screen(exact, assertAllowed);
+        await assertAllowed();
+        const result = await deps.dispatch({
+          workItemIds: [exact.workItemId], targetAgent: request.target,
+          harness: exact.harnessSlug, workspaceId: exact.workspaceId,
+          summary: `Resume original work item ${exact.workItemId} after admission recovery`,
+          source: 'system:work-item-admission-recovery',
+        });
+        // Assignment and wake have their own durable writes. A crash here rolls back only
+        // this receipt; retry retains that assignment and reuses the normal wake substrate.
+        const queued = (result.wake?.woken ?? 0) > 0;
+        await writeRequest(tx, exact, {
+          ...request, state: result.ok && queued ? 'delivered' : 'held',
+          reason: result.warning ?? (queued ? 'wake queued; target pickup remains unconfirmed' : 'dispatch did not queue a wake'),
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        if (!(error instanceof AdmissionRecoveryRefused)) throw error;
+        await writeRequest(tx, exact, {
+          ...request, state: 'held', reason: error.message.slice(0, 2000), updatedAt: new Date().toISOString(),
+        });
+      }
+    });
+  }
+  return rows.length;
+}

@@ -14,6 +14,7 @@ import {
   nextNightlyVersion,
   nightlyReleaseRoot,
   readDesktopVersionAtSource,
+  readSourceGitlinks,
   runNightlyCut,
 } from './nightly-release-cut-action';
 
@@ -36,6 +37,14 @@ describe('readDesktopVersionAtSource', () => {
     const sourceRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../..');
     const sourceSha = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim();
     expect(readDesktopVersionAtSource(sourceRoot, sourceSha)).toMatch(/^\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?$/);
+  });
+
+  it('reads the complete exact gitlink map from the same source tree', () => {
+    const sourceRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../..');
+    const sourceSha = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim();
+    const gitlinks = readSourceGitlinks(sourceRoot, sourceSha);
+    expect(gitlinks['papercusp-desktop']).toMatch(/^[0-9a-f]{40}$/);
+    expect(Object.keys(gitlinks)).toEqual([...Object.keys(gitlinks)].sort());
   });
 });
 
@@ -121,8 +130,15 @@ describe('nightly cut runtime guards', () => {
           PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
         },
         lockPath: lock,
+        now: new Date('2026-09-08T05:46:00.000Z'),
         sourceSha: 'b'.repeat(40),
         readVersion,
+        readGitlinks: () => ({
+          'libs/papercusp': 'c'.repeat(40),
+          'papercusp-desktop': 'd'.repeat(40),
+        }),
+        taskId: 'nightlytask01',
+        operationId: '11111111-1111-4111-8111-111111111111',
       },
     );
     expect(result.status).toBe('launched');
@@ -130,10 +146,44 @@ describe('nightly cut runtime guards', () => {
     const [command, args, spec, opts] = taskManager.managedSpawn.mock.calls[0];
     expect(command).toBe('bash');
     expect(args.join(' ')).toContain('nightly');
-    expect(spec).toMatchObject({ class: 'deploy', runtimeMaxSec: 3 * 60 * 60, launchedBy: 'system:nightly-release-cut' });
+    expect(spec).toMatchObject({
+      class: 'deploy',
+      runtimeMaxSec: 3 * 60 * 60,
+      launchedBy: 'system:nightly-release-cut',
+      detail: {
+        channel: 'nightly',
+        version: '0.0.19-20260908.0546',
+        sourceSha: 'b'.repeat(40),
+        release: {
+          schemaVersion: 1,
+          operationId: '11111111-1111-4111-8111-111111111111',
+          source: {
+            sha: 'b'.repeat(40),
+            gitlinks: {
+              'libs/papercusp': 'c'.repeat(40),
+              'papercusp-desktop': 'd'.repeat(40),
+            },
+          },
+          artifactIdentity: {
+            kind: 'papercusp-desktop-release',
+            channel: 'nightly',
+            sourceSha: 'b'.repeat(40),
+            version: '0.0.19-20260908.0546',
+          },
+          cursor: 0,
+          receipts: [],
+          spentOperationIds: [],
+        },
+      },
+    });
     expect(opts.workspaceId).toBe('papercusp-workspace');
+    expect(opts.taskId).toBe('nightlytask01');
     expect(opts.spawnOptions.detached).toBe(true);
     expect(opts.spawnOptions.env.PAPERCUSP_RELEASE_OWNER_NAME).toBe('Avi');
+    expect(opts.spawnOptions.env.PAPERCUSP_RELEASE_TASK_ID).toBe('nightlytask01');
+    expect(opts.spawnOptions.env.PAPERCUSP_RELEASE_OPERATION_ID).toBe(
+      '11111111-1111-4111-8111-111111111111',
+    );
     rmSync(root, { recursive: true, force: true });
   });
 });

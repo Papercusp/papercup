@@ -936,7 +936,7 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
 export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }> = [
   {
     head: 'Already-fixed check FIRST',
-    body: "Before building anything, spend ~2 min confirming the fix has not already shipped — check code/tests, `git log`, sibling work-items. Re-implementing a peer's fix is the single biggest fleet-time waste. If already done, close it as already-fixed WITH the evidence you checked — do not rebuild it.",
+    body: "Before building, spend ~2 min checking code/tests, `git log`, and sibling work-items for an existing fix. If it shipped, close as already-fixed WITH that evidence; do not rebuild it.",
   },
   {
     // EI-8318: members were completing exactly ONE item per external wake, then ending
@@ -945,7 +945,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     // EI-8393: kept tight — this rule is the single biggest driver of the P-013
     // prompt-bloat budget; trim further before adding anything to it.
     head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
-    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }` to drain it. Each wake, pull via `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat; the loop re-wakes you. Call `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when your spec has no claimable work or you are blocked. No armed loop at turn end parks you (EI-8318) until the leader re-wakes you, capping fleet throughput.',
+    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }`. Each wake, `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat. Call `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when no claimable work remains or you are blocked; otherwise ending without the loop parks you until a leader wake (EI-8318).',
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
@@ -1025,7 +1025,7 @@ export function renderMemberBaseline(opts: {
     '',
     `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, ${plan ? `working plan \`${plan}\`` : 'draining your fleet claim-lane backlog'}. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
-    "Your loop: **pull** via `scheduler:get_next { harness: '<your-harness>' }` (`heldPaths`; `states` — only `open|failing`; omit `states` unless deliberately filtering; never pass retired `todo` or floor/terminal states; `rigAvailable`; omit `specId`/`revision` — inherited identity is in `claimedUnder`; leader steers via `scheduler:set_claim_spec`; NOT `work_items:claim_next`; PICKUP is yours) → **read** (`work_items:get`) → **act** (fix / fixed / blocked) → terminal evidence → repeat. Do NOT self-prioritize by scanning `work_items:list`.",
+    "Loop: **pull** with `scheduler:get_next { harness: '<your-harness>' }` (`heldPaths`; `states` only when filtering and only `open|failing`, never `todo`/terminal; `rigAvailable`; omit `specId`/`revision`; inspect `claimedUnder`; leader steers via `scheduler:set_claim_spec`; NOT `work_items:claim_next`; PICKUP is yours) → **read** with `work_items:get` → **act** → terminal evidence → repeat. Do NOT self-prioritize by scanning `work_items:list`.",
     '',
     '## Non-negotiables',
     rules,
