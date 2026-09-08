@@ -218,6 +218,9 @@ export async function persistSuSessionDescriptor(
   workspaceId = activeWorkspaceId(),
 ): Promise<boolean> {
   if (!isPersistedSuSessionDescriptor(descriptor)) return false;
+  const nativeId = descriptor.identity.nativeSessionId?.trim() || null;
+  const backend = descriptor.identity.backend;
+  if (descriptor.identity.advSessionId !== advSessionId || descriptor.identity.workspaceId !== workspaceId) return false;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
@@ -226,8 +229,15 @@ export async function persistSuSessionDescriptor(
              su_session_descriptor = ${JSON.stringify(descriptor)}::jsonb,
              su_session_state = ${descriptor.lifecycle},
              su_runtime_generation = GREATEST(su_runtime_generation, ${descriptor.runtimeGeneration}),
-             su_session_updated_at = now()
+             su_session_updated_at = now(),
+             session_id = CASE WHEN ${backend} = 'omp' THEN session_id ELSE COALESCE(${nativeId}, session_id) END,
+             omp_thread_id = CASE WHEN ${backend} = 'omp' THEN COALESCE(${nativeId}, omp_thread_id) ELSE omp_thread_id END
        WHERE id = ${advSessionId} AND workspace_id = ${workspaceId}
+         AND agent = ${backend} AND coord_owner_id = ${descriptor.identity.ownerId}
+         AND (${nativeId}::text IS NULL OR
+              CASE WHEN ${backend} = 'omp' THEN omp_thread_id ELSE session_id END IS NULL OR
+              CASE WHEN ${backend} = 'omp' THEN omp_thread_id ELSE session_id END = ${nativeId})
+         AND su_runtime_generation <= ${descriptor.runtimeGeneration}
        RETURNING id`;
     return rows.length > 0;
   } catch {

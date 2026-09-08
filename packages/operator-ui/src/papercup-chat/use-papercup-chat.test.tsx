@@ -142,8 +142,15 @@ describe('ported portal helpers (parity pt-refusal-state / pt-error-taxonomy / p
     expect(askErrorMessage('some_unknown_code', 'turn')).not.toMatch(/some_unknown_code/);
   });
 
-  it('askCompletedTurn names an empty answer instead of leaving a blank bubble', () => {
+  it('askCompletedTurn distinguishes a successful tool-only answer from an empty turn', () => {
     expect(askCompletedTurn({ ...EMPTY_TURN, text: 'ok', done: true })).toEqual({ content: 'ok', error: false });
+    expect(
+      askCompletedTurn({
+        ...EMPTY_TURN,
+        toolCalls: [{ name: 'chat:ask_choice' }],
+        done: true,
+      }),
+    ).toEqual({ content: '', error: false });
     expect(askCompletedTurn({ ...EMPTY_TURN, done: true })).toEqual({ content: 'That turn ended without an answer.', error: true });
     expect(askCompletedTurn({ ...EMPTY_TURN, errorCode: 'portal_chat_not_found', done: true })).toEqual({
       content: 'This conversation is no longer available.',

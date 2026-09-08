@@ -161,6 +161,10 @@ export default defineTool({
         classRef: args.classRef,
         harness: harnessSlug,
         current,
+        rerunSelection: {
+          workItemIds: args.workItemIds,
+          planItemIds: args.planItemIds,
+        },
         now,
       }),
     );

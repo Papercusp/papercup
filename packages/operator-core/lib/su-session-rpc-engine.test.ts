@@ -5,7 +5,7 @@ import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootst
 import type { PuiSuSessionBinding } from './launch-agent';
 import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
 
-const mocks = vi.hoisted(() => ({ link: vi.fn(async () => 'linked'), persist: vi.fn(async () => undefined) }));
+const mocks = vi.hoisted(() => ({ link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true) }));
 vi.mock('./adv-sessions', () => ({ setAdvSessionOmpThreadId: mocks.link }));
 vi.mock('./su-session-persistence', () => ({
   bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })),
@@ -26,6 +26,7 @@ const engines: SuRpcEngine[] = [];
 afterEach(async () => {
   for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); }
   vi.clearAllMocks();
+  mocks.persist.mockResolvedValue(true);
 });
 
 function fixture(backend: 'codex' | 'omp', overrides: {
@@ -88,6 +89,14 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) => {
+  it('refuses readiness when the native identity cannot be persisted', async () => {
+    mocks.persist.mockResolvedValue(false);
+    const f = fixture(backend);
+    await expect(f.engine.ready).rejects.toThrow('Could not persist the native session identity');
+    expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+    expect(f.close).toHaveBeenCalled();
+  });
+
   it('binds the native identity only after protocol and SU-tool initialization', async () => {
     const f = fixture(backend);
     expect(f.engine.adapter.host.snapshot()).toMatchObject({ executorAttached: false, streamReady: false });

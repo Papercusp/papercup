@@ -1194,8 +1194,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       try {
         await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
         resumedPane.write('o');
-        await resumedPane.waitFor(followupReply, { timeoutMs: 60_000 });
+        // Opening Agent Chat starts at the new-conversation composer. Select
+        // the saved conversation before expecting any of its history.
+        await resumedPane.waitFor(`pot ${HARNESS} · role operator · session new`);
         resumedPane.escape();
+        await resumedPane.waitFor('i type · v speak');
         resumedPane.write('l');
         await resumedPane.waitFor('Conversation — Enter select');
         resumedPane.enter();

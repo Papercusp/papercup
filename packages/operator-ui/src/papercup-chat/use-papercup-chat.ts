@@ -330,13 +330,16 @@ export function askErrorMessage(
  * What the transcript records for a turn that has ENDED. A turn can end having
  * produced nothing at all (the host closes the stream on an upstream drop
  * WITHOUT an `error` frame), and a blank bubble under the question is
- * indistinguishable from an answer that was genuinely empty — so say so.
+ * indistinguishable from an answer that was genuinely empty — so say so. A
+ * tool-only turn is not empty: interactive tools can deliberately return no
+ * prose, and their card/tool UI is the answer.
  */
 export function askCompletedTurn(final: AskTurnState): { content: string; error: boolean } {
   if (final.errorCode) {
     return { content: askErrorMessage(final.errorCode, 'turn', final.retryAfterMs), error: true };
   }
   if (final.text.trim()) return { content: final.text, error: false };
+  if (final.toolCalls.length > 0) return { content: '', error: false };
   return { content: 'That turn ended without an answer.', error: true };
 }
 

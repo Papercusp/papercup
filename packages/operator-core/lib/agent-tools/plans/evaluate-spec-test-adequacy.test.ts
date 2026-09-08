@@ -94,6 +94,25 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result.rows).toHaveLength(1);
   });
 
+  it('preserves exact work-item and plan-item selectors in the emitted rerun recipe', async () => {
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      workItemIds: ['WI-123'],
+      planItemIds: ['P-001'],
+      includeDraft: true,
+    });
+
+    expect(result).toMatchObject({ ok: true, count: 1 });
+    expect(result.rows[0].scorecardDraft.rerunRecipe.args).toMatchObject({
+      workItemIds: ['WI-123'],
+      planItemIds: ['P-001'],
+    });
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ workItemIds: ['WI-123'] }));
+    expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-001'] }));
+  });
+
   it('accepts the persisted rerunRecipe.current wrapper and normalizes it to current[]', async () => {
     const current = [
       {

@@ -199,6 +199,10 @@ export interface SpecTestAdequacyRerunRecipe {
     slug: string;
     classRef: string;
     specIds: string[];
+    /** Preserve the evidence-population selector used by the original evaluation. */
+    workItemIds?: string[];
+    /** Preserve an explicit plan-item selector instead of widening the replay. */
+    planItemIds?: string[];
     includeDraft: true;
     current?: SpecTestAdequacyCurrentFingerprint[];
   };

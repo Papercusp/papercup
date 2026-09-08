@@ -379,7 +379,9 @@ export function startSuRpcEngine(
     } } as SuSessionEventInput<Backend>);
     if (!options.peerFactory) recordSessionOwner(nativeId(), binding.ownerId, { advSessionId: binding.advSessionId });
     await refreshResumeEvidence();
-    await persistSuSessionDescriptor(binding.advSessionId, host.descriptor());
+    if (!await persistSuSessionDescriptor(binding.advSessionId, host.descriptor(), boot.workspaceId)) {
+      throw new Error('Could not persist the native session identity and resume descriptor');
+    }
     if (closed) throw new Error('Structured connection closed during startup');
     await options.beforeReady?.(peer.pid());
     if (closed) throw new Error(`${backend} closed while finalizing resume`);

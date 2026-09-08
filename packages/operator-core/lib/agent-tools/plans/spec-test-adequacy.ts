@@ -502,6 +502,7 @@ function rerunRecipeFor(
   current: EvidenceCurrentInput[] | undefined,
   harness: string | undefined,
   classRef: PlanClassRubricRef,
+  selection: { workItemIds?: string[]; planItemIds?: string[] } | undefined,
 ): SpecTestAdequacyRerunRecipe {
   const evaluatorBuild = getBuildInfo();
   const selectedEvidence = [...new Map(
@@ -545,6 +546,8 @@ function rerunRecipeFor(
       slug: clause.planSlug,
       classRef,
       specIds: [clause.specId],
+      ...(selection?.workItemIds?.length ? { workItemIds: [...selection.workItemIds] } : {}),
+      ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
       // These inputs select the current cohort as well as classify freshness.
       // Omitting them revives historical bindings on an otherwise valid replay.
@@ -594,6 +597,8 @@ export function evaluateSpecTestAdequacy(input: {
   harness?: string;
   /** The caller-attested current fingerprints used by listSpecEvidence. */
   current?: EvidenceCurrentInput[];
+  /** Exact caller selectors that constrain the evidence population on replay. */
+  rerunSelection?: { workItemIds?: string[]; planItemIds?: string[] };
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
@@ -907,7 +912,14 @@ export function evaluateSpecTestAdequacy(input: {
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date());
   ratings['plan-class-risk-floor'] = risk.rating;
 
-  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef);
+  const rerunRecipe = rerunRecipeFor(
+    clause,
+    evidence,
+    input.current,
+    input.harness,
+    classRef,
+    input.rerunSelection,
+  );
   appendRatingRerunProbes(ratings, rerunRecipe);
 
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));

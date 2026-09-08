@@ -62,7 +62,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: h.sql }),
 }));
 
-const { bindSuSessionToAdvSession, readDurableSuSession } = await import('./su-session-persistence');
+const { bindSuSessionToAdvSession, readDurableSuSession, persistSuSessionDescriptor } = await import('./su-session-persistence');
 const {
   _resetSuSessionHostsForTest,
   getRegisteredSuSessionHost,
@@ -257,6 +257,24 @@ async function rehydrate(backend: SuSessionBackend, overrides: { harnessSlug?: s
 }
 
 describe('durability', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('links asynchronous %s native identity without replacing an existing binding', async (backend) => {
+    const id = await seedBoundSession({ backend, agentChatId: `chat-native-${backend}`,
+      nativeSessionId: null, pid: null, endedAt: null, lifecycle: 'starting' });
+    const descriptor = descriptorFor({ backend, agentChatId: `chat-native-${backend}`,
+      advSessionId: id, nativeSessionId: `native-${backend}`, lifecycle: 'ready' });
+    expect(await persistSuSessionDescriptor(id, descriptor, WORKSPACE)).toBe(true);
+    const readBinding = () => sql<{ session_id: string | null; omp_thread_id: string | null; native_id: string }[]>`
+      SELECT session_id, omp_thread_id, su_session_descriptor->'identity'->>'nativeSessionId' AS native_id
+      FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    const expected = { session_id: backend === 'omp' ? null : `native-${backend}`,
+      omp_thread_id: backend === 'omp' ? `native-${backend}` : null, native_id: `native-${backend}` };
+    expect((await readBinding())[0]).toEqual(expected);
+    expect(await persistSuSessionDescriptor(id, descriptor, WORKSPACE)).toBe(true);
+    expect(await persistSuSessionDescriptor(id, { ...descriptor,
+      identity: { ...descriptor.identity, nativeSessionId: 'different-thread' } }, WORKSPACE)).toBe(false);
+    expect((await readBinding())[0]).toEqual(expected);
+  });
+
   it('persists every backend descriptor to the adv row itself', async () => {
     const ids = await seedFleet();
 
