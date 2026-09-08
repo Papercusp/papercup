@@ -205,6 +205,12 @@ export interface SpecTestAdequacyRerunRecipe {
     evidenceRefs?: string[];
     /** Preserve an explicit plan-item selector instead of widening the replay. */
     planItemIds?: string[];
+    /** Pin replay to the exact immutable clause revision graded by the emitter. */
+    specRevision?: number;
+    /** Content hash paired with specRevision for an exact immutable clause pin. */
+    specFingerprint?: string;
+    /** Reuse current fingerprints as the graded server-measured snapshot. */
+    replaySnapshot?: true;
     includeDraft: true;
     current?: SpecTestAdequacyCurrentFingerprint[];
   };
@@ -1193,6 +1199,20 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     const workItemIds = optionalSelector(rawArgs?.workItemIds, 500, 200);
     const evidenceRefs = optionalSelector(rawArgs?.evidenceRefs, 500, 2000);
     const planItemIds = optionalSelector(rawArgs?.planItemIds, 200, 200, /^P-\d{3,}$/);
+    const specRevision =
+      rawArgs?.specRevision === undefined
+        ? undefined
+        : Number.isInteger(rawArgs.specRevision) && Number(rawArgs.specRevision) > 0
+          ? Number(rawArgs.specRevision)
+          : null;
+    const specFingerprint =
+      rawArgs?.specFingerprint === undefined
+        ? undefined
+        : typeof rawArgs.specFingerprint === 'string' && rawArgs.specFingerprint.trim()
+          ? rawArgs.specFingerprint
+          : null;
+    const replaySnapshot =
+      rawArgs?.replaySnapshot === undefined ? undefined : rawArgs.replaySnapshot === true ? true : null;
     // Historical cards omitted args.harness even though the scorecard itself
     // carries sourceHive. Prefer an explicitly recorded evaluator arg, then use
     // sourceHive as the lossless fallback needed to replay those cards.
@@ -1229,6 +1249,10 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       workItemIds !== null &&
       evidenceRefs !== null &&
       planItemIds !== null &&
+      specRevision !== null &&
+      specFingerprint !== null &&
+      replaySnapshot !== null &&
+      (replaySnapshot !== true || (specRevision !== undefined && specFingerprint !== undefined)) &&
       derivation?.kind === 'listSpecEvidence.currentness' &&
       derivation.classifier === 'classifySpecEvidenceCurrentness' &&
       derivation.unknownWhenMissing === true
@@ -1248,6 +1272,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ...(workItemIds ? { workItemIds } : {}),
           ...(evidenceRefs ? { evidenceRefs } : {}),
           ...(planItemIds ? { planItemIds } : {}),
+          ...(specRevision !== undefined ? { specRevision } : {}),
+          ...(specFingerprint !== undefined ? { specFingerprint } : {}),
+          ...(replaySnapshot === true ? { replaySnapshot: true as const } : {}),
           includeDraft: true,
           ...(current.supplied ? { current: fingerprints } : {}),
         },

@@ -4,7 +4,11 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { listSpecClauses } from './spec-clauses-store';
-import { listSpecEvidence, evidenceCurrentInputSchema } from './spec-evidence-store';
+import {
+  listSpecEvidence,
+  evidenceCurrentInputSchema,
+  type EvidenceCurrentInput,
+} from './spec-evidence-store';
 import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 
 /**
@@ -22,6 +26,11 @@ export const argsSchema = z.object({
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  /** Immutable clause revision/fingerprint selected by a persisted replay recipe. */
+  specRevision: z.number().int().positive().optional(),
+  specFingerprint: z.string().trim().min(1).max(256).optional(),
+  /** Reuse the supplied current tuple as a prior server measurement; do not re-measure live files. */
+  replaySnapshot: z.boolean().optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   current: z
     .union([
@@ -40,6 +49,21 @@ export const argsSchema = z.object({
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),
   limit: z.number().int().min(1).max(1000).optional(),
+}).superRefine((args, ctx) => {
+  if ((args.specRevision === undefined) !== (args.specFingerprint === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['specRevision'],
+      message: 'specRevision and specFingerprint must be supplied together for an immutable clause pin',
+    });
+  }
+  if (args.replaySnapshot === true && (args.specRevision === undefined || args.specFingerprint === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['replaySnapshot'],
+      message: 'replaySnapshot requires specRevision and specFingerprint',
+    });
+  }
 });
 
 export default defineTool({
@@ -76,6 +100,9 @@ export default defineTool({
       planSlugs: [args.slug],
       workItemIds: args.workItemIds,
       specIds: args.specIds,
+      specRevision: args.specRevision,
+      specFingerprint: args.specFingerprint,
+      replaySnapshot: args.replaySnapshot === true,
       evidenceRefs: args.evidenceRefs,
       current,
       limit: evidenceLimit,
@@ -129,8 +156,12 @@ export default defineTool({
       planSlug: args.slug,
       specIds: requestedSpecIds,
       planItemIds: args.planItemIds,
+      revision: args.specRevision,
     });
-    const eligible = clauses.filter(
+    const pinnedClauses = args.specFingerprint
+      ? clauses.filter((clause) => clause.contentHash === args.specFingerprint)
+      : clauses;
+    const eligible = pinnedClauses.filter(
       (clause) => args.includeDraft === true || clause.lifecycleStatus === 'active' || clause.lifecycleStatus === 'accepted',
     );
     if (explicitSelection && eligible.length === 0) {
@@ -151,7 +182,7 @@ export default defineTool({
             evidenceRefs: args.evidenceRefs ?? null,
             planItemIds: args.planItemIds ?? null,
           },
-          excludedClauses: clauses.map((clause) => ({
+          excludedClauses: pinnedClauses.map((clause) => ({
             specId: clause.specId,
             revision: clause.revision,
             lifecycleStatus: clause.lifecycleStatus,
@@ -170,7 +201,18 @@ export default defineTool({
         evidence: allEvidence,
         classRef: args.classRef,
         harness: harnessSlug,
-        current,
+        current: (() => {
+          const merged = new Map<string, EvidenceCurrentInput>();
+          for (const input of current ?? []) merged.set(`${input.evidenceKind}\0${input.evidenceRef}`, input);
+          for (const row of allEvidence) {
+            if (row.serverMeasurement?.status !== 'measured') continue;
+            merged.set(
+              `${row.evidenceKind}\0${row.evidenceRef}`,
+              row.serverMeasurement.current,
+            );
+          }
+          return merged.size > 0 ? [...merged.values()] : undefined;
+        })(),
         rerunSelection: {
           workItemIds: args.workItemIds,
           evidenceRefs: args.evidenceRefs,
