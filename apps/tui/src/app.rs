@@ -32,6 +32,7 @@ pub struct PendingSuTurn {
     pub content: String,
     pub command: Option<Value>,
     pub uncertain: bool,
+    pub error: Option<String>,
 }
 
 /// Fallback Cupboard kind order for legacy workers that do not return
@@ -2713,6 +2714,7 @@ impl App {
         let pending_draft = self.su_pending_turn.is_some();
         if let Some(pending) = self.su_pending_turn.as_mut() {
             pending.uncertain = uncertain;
+            pending.error = Some(message.to_string());
             if self.chat_input.is_empty() {
                 self.chat_input = pending.content.clone();
             }
@@ -9618,6 +9620,7 @@ impl App {
                             content: text.clone(),
                             command: None,
                             uncertain: false,
+                            error: None,
                         });
                         text
                     };

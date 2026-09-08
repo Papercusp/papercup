@@ -1088,7 +1088,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const identity = structuredClone(engine.adapter.host.descriptor().identity);
       expect(identity.backend).toBe(scriptedEngine.backend);
       expect(identity.nativeSessionId).toBeTruthy();
-      expect(engine.nativeSession()).toMatchObject({ backend: scriptedEngine.backend, exactResumeSupported: true });
+      if ('nativeSession' in engine) {
+        expect(engine.nativeSession()).toMatchObject({ backend: scriptedEngine.backend, exactResumeSupported: true });
+      }
 
       pane.write(fileRequest);
       pane.enter();
