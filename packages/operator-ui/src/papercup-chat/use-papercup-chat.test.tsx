@@ -180,6 +180,26 @@ describe('ported portal helpers (parity pt-refusal-state / pt-error-taxonomy / p
     expect(askChoiceArgsFromToolCall({ name: 'work_items:get', input: { question: 'x', options: [] } })).toBeNull();
     expect(askChoiceArgsFromToolCall({ name: 'chat:ask_choice', input: { question: 'x', options: [] } })).toBeNull();
   });
+
+  it('restores the portal card when its tool input stored options as JSON text', () => {
+    const options = [
+      { id: 'template', label: 'From a template (papercusp-app, mobile, etc)', style: 'primary', hint: 'Scaffolds a pot + kicks off a builder' },
+      { id: 'blank', label: 'Blank harness from a blueprint', hint: 'harness_create with coding/research blueprint' },
+      { id: 'browse', label: 'Show me what templates exist first' },
+    ];
+    const input = { question: 'Two routes to a new app — which?', options };
+    const restored = askChoiceArgsFromToolCall({
+      name: 'chat:ask_choice', input: { ...input, options: JSON.stringify(options) },
+    });
+    expect(restored).toEqual(input);
+    expect(restored).toEqual(askChoiceArgsFromToolCall({ name: 'chat:ask_choice', input }));
+  });
+
+  it.each(['not json', '{}', 'null', '"nested string"', '[]', '[null, 1, {}]'])(
+    'rejects malformed or unusable persisted options %s', (options) => {
+      expect(askChoiceArgsFromToolCall({ name: 'chat:ask_choice', input: { question: 'Pick', options } })).toBeNull();
+    },
+  );
 });
 
 describe('usePapercupChat — the hook over a fake adapter', () => {

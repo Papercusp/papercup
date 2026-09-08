@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   parseChatEvent,
+  decodeCardOptions,
   type CardResponse,
   type ChatEvent,
   type ChatTurn,
@@ -412,9 +413,12 @@ export function askChoiceArgsFromToolCall(call: ChatTurnToolCall): AskChoiceTool
   if (call.name !== ASK_CHOICE_TOOL) return null;
   const input = asRecord(call.input);
   if (!input || typeof input.question !== 'string') return null;
-  if (!Array.isArray(input.options)) return null;
+  // The tool accepts arrays and JSON-encoded arrays. Persisted tool calls
+  // contain the original wire input, before the handler normalizes it.
+  const rawOptions = decodeCardOptions(input.options);
+  if (!rawOptions) return null;
   const options: AskChoiceToolInput['options'] = [];
-  for (const raw of input.options) {
+  for (const raw of rawOptions) {
     const o = asRecord(raw);
     if (!o || typeof o.id !== 'string' || typeof o.label !== 'string') continue;
     const style = o.style === 'primary' || o.style === 'danger' || o.style === 'default' ? o.style : undefined;
