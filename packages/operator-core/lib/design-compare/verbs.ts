@@ -49,6 +49,8 @@ import {
 } from './contract';
 import type { PngDimensions } from './png-header';
 import type {
+  DesignApprovalScope,
+  DesignReferenceBinding,
   RatifiedReference,
   ReferenceProvenance,
   RequiredCase,
@@ -205,6 +207,7 @@ export interface RatifyReferenceInput {
   readonly image: ReferenceImageRef;
   readonly referenceEnvironment: CaptureEnvironment;
   readonly requiredCases: readonly RequiredCase[];
+  readonly approval?: DesignApprovalScope;
   readonly provenance: {
     readonly source: string;
     readonly sourceRef: string;
@@ -228,6 +231,8 @@ export interface RatifyReferenceResult {
   readonly revision: number;
   readonly ratifiedBy: string;
   readonly ratifiedAt: string;
+  /** Copy into payload.designReferences; the stored reference owns its scope. */
+  readonly binding?: DesignReferenceBinding;
   readonly supersededRevision?: number;
   /**
    * Evidence this ratification just made unusable. Reported, never rewritten —
@@ -283,6 +288,7 @@ export async function ratifyReferenceVerb(
     provenance,
     referenceEnvironment: input.referenceEnvironment,
     requiredCases: input.requiredCases,
+    ...(input.approval !== undefined ? { approval: input.approval } : {}),
   };
 
   try {
@@ -299,6 +305,10 @@ export async function ratifyReferenceVerb(
       revision: input.revision,
       ratifiedBy,
       ratifiedAt,
+      ...(candidate.approval ? { binding: {
+        schemaVersion: 1 as const, featureId: input.featureId, referenceId: input.referenceId,
+        revision: input.revision, contentSha256: input.contentSha256,
+      } } : {}),
       ...(outcome.supersededRevision !== undefined
         ? { supersededRevision: outcome.supersededRevision }
         : {}),
@@ -622,6 +632,7 @@ export interface GetDesignEvidenceResult {
     readonly referenceEnvironment: CaptureEnvironment;
     readonly ratifiedBy: string;
     readonly ratifiedAt: string;
+    readonly approval?: DesignApprovalScope;
     /**
      * The rendering host the reference IMAGE was captured on (P-011/D-023).
      * Absent for uploads, Figma exports, and anything ratified before the field
@@ -730,6 +741,7 @@ export async function getDesignEvidenceVerb(
           referenceEnvironment: active.reference.referenceEnvironment,
           ratifiedBy: active.reference.provenance.ratifiedBy,
           ratifiedAt: active.reference.provenance.ratifiedAt,
+          ...(active.reference.approval ? { approval: active.reference.approval } : {}),
           ...(active.reference.provenance.capturedOnRenderHost
             ? { capturedOnRenderHost: active.reference.provenance.capturedOnRenderHost }
             : {}),

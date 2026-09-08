@@ -10,6 +10,7 @@
  * absence of a ratification record rather than as a state we track.
  */
 
+import { z } from 'zod';
 import {
   type CaptureEnvironment,
   type ImplementationTarget,
@@ -32,6 +33,38 @@ export const RATIFICATION_STATES = [
   'retracted',
 ] as const;
 export type RatificationState = (typeof RATIFICATION_STATES)[number];
+
+/** Explicit adoption of the UI approval contract; absent on historical references. */
+export interface DesignApprovalScope {
+  readonly schemaVersion: 1;
+  readonly approvalRef: string;
+  readonly planSlug: string;
+  readonly planItemIds: readonly string[];
+  readonly targetRoute: string;
+  readonly adaptations?: readonly { readonly reason: string; readonly approvalRef: string }[];
+}
+
+export const designApprovalScopeSchema = z.object({
+  schemaVersion: z.literal(1),
+  approvalRef: z.string().trim().min(1),
+  planSlug: z.string().trim().min(1),
+  planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(40)
+    .refine(ids => new Set(ids).size === ids.length, 'implementing items must be unique'),
+  targetRoute: z.string().regex(/^\/(?!\/)/, 'targetRoute must be an application route'),
+  adaptations: z.array(z.object({
+    reason: z.string().trim().min(1), approvalRef: z.string().trim().min(1),
+  }).strict()).max(32).optional(),
+}).strict();
+
+/** Stored in the existing work-item payload.designReferences array. */
+export const designReferenceBindingSchema = z.object({
+  schemaVersion: z.literal(1),
+  featureId: z.string().trim().min(1),
+  referenceId: z.string().trim().min(1),
+  revision: z.number().int().positive(),
+  contentSha256: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+export type DesignReferenceBinding = z.infer<typeof designReferenceBindingSchema>;
 
 /** Where the reference image came from, recorded immutably at ratification. */
 export interface ReferenceProvenance {
@@ -127,6 +160,8 @@ export interface RatifiedReference {
   readonly identity: ReferenceIdentity;
   readonly state: RatificationState;
   readonly provenance: ReferenceProvenance;
+  /** Immutable alongside the image identity and required cases. */
+  readonly approval?: DesignApprovalScope;
   /** The environment the reference image itself is contracted at. */
   readonly referenceEnvironment: CaptureEnvironment;
   /** Every case that must pass before dependent work may complete. */
@@ -146,7 +181,9 @@ export interface RatificationError {
     | 'case-environment-mismatch'
     | 'revision-not-monotonic'
     | 'class-mismatch'
-    | 'missing-derivation';
+    | 'missing-derivation'
+    | 'invalid-approval'
+    | 'approval-downgrade';
   readonly message: string;
 }
 
@@ -161,6 +198,28 @@ export function validateRatification(
   previous?: RatifiedReference,
 ): readonly RatificationError[] {
   const errors: RatificationError[] = [];
+
+  if (previous?.approval && !candidate.approval) {
+    errors.push({ code: 'approval-downgrade', message: 'a new reference revision cannot remove its adopted approval contract' });
+  }
+  if (candidate.approval !== undefined) {
+    const approval = designApprovalScopeSchema.safeParse(candidate.approval);
+    if (!approval.success) {
+      return [{ code: 'invalid-approval', message: `invalid approval scope: ${approval.error.message}` }];
+    }
+    if (!/^[0-9a-f]{64}$/.test(candidate.identity.contentSha256)) {
+      errors.push({ code: 'invalid-approval', message: 'an approved reference must pin a SHA-256 image digest' });
+    }
+    for (const c of candidate.requiredCases) {
+      const env = c.environment;
+      if (!env.state?.trim() || !env.theme?.trim() ||
+          !Number.isSafeInteger(env.viewport.width) || env.viewport.width <= 0 ||
+          !Number.isSafeInteger(env.viewport.height) || env.viewport.height <= 0 ||
+          c.target?.targetKind !== 'page-route' || c.target.targetId !== approval.data.targetRoute) {
+        errors.push({ code: 'invalid-approval', message: `approved case '${c.caseId}' must name its state, viewport, theme and exact target route` });
+      }
+    }
+  }
 
   if (candidate.requiredCases.length === 0) {
     errors.push({

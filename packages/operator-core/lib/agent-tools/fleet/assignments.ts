@@ -1187,6 +1187,7 @@ export default defineTool({
               () => endedRecordedOwnerIds(ids),
               new Set<string>(),
             ),
+          RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
         ),
       ),
       // P-001 (fleet-member-dx): stamp `parkedOn` — active non-inbox-wake

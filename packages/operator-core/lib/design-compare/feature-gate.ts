@@ -19,10 +19,12 @@ import {
   type EnforceabilityOutcome,
 } from './enforceability';
 import type { FeatureScope, ReferenceStorePort } from './reference-store';
-import { getDesignEvidenceVerb, type VerbCaller, type VerbDeps } from './verbs';
+import { getDesignEvidenceVerb, type GetDesignEvidenceResult, type VerbCaller, type VerbDeps } from './verbs';
 
 export interface FeatureGateReference {
   readonly referenceId: string;
+  /** Authoritative approval identity from the existing evidence read. */
+  readonly reference?: GetDesignEvidenceResult['reference'];
   readonly verdict: DesignGateVerdict;
   /**
    * Whether this reference's verdict may REFUSE a completion, as opposed to
@@ -125,6 +127,7 @@ export async function evaluateFeatureDesignGate(
     }
     references.push({
       referenceId,
+      reference: read.reference,
       verdict: evaluateDesignGate(read),
       // Read from the reference's own ratification provenance, which the
       // completing agent cannot influence at completion time. Deriving it from

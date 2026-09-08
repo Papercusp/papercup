@@ -1452,11 +1452,14 @@ export async function composeOrient(
   // door that defence does not cover. A recovery orient happens once per compaction, so
   // the extra fold is negligible against the cost the monitor-only gate is protecting.
   if (effectiveFleetMembership?.fleetRole === 'leader' && effectiveFleetMembership.fleetSlug) {
-    try {
-      const brief = await call('fleet:leader-brief', {
-        fleet: effectiveFleetMembership.fleetSlug,
-        ...(args.harness ? { harness: args.harness } : {}),
-      });
+    const fleetSlug = effectiveFleetMembership.fleetSlug;
+    const leaderBriefFold = await withBoundedTimeout(
+      (async () => {
+        try {
+          const brief = await call('fleet:leader-brief', {
+            fleet: fleetSlug,
+            ...(args.harness ? { harness: args.harness } : {}),
+          });
       // P-015: hydrate the EXISTING leader brief instead of introducing a parallel
       // monitor surface. These are authoritative reads a leader otherwise re-calls
       // immediately after orient; each remains independently fail-soft.
@@ -1530,19 +1533,34 @@ export async function composeOrient(
           ...(args.harness ? { harness: args.harness } : {}),
         });
       } catch {
-        hydrated.walls = null;
+          hydrated.walls = null;
       }
-      result.leaderBrief = hydrated;
-    } catch {
-      result.leaderBrief = {
+          return hydrated;
+        } catch {
+          return {
+            orientProjection: {
+              schemaVersion: ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
+              status: 'unavailable',
+              reason: 'fleet:leader-brief read failed',
+              recoverVia: `fleet:leader-brief { fleet: '${fleetSlug}' }`,
+            },
+          };
+        }
+      })(),
+      { fallback: null, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label: 'orient:fleet:leader-brief' },
+    );
+    result.leaderBrief =
+      leaderBriefFold.value ?? {
         orientProjection: {
           schemaVersion: ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
           status: 'unavailable',
-          reason: 'fleet:leader-brief read failed',
-          recoverVia: `fleet:leader-brief { fleet: '${effectiveFleetMembership.fleetSlug}' }`,
+          reason: 'fleet:leader-brief fold timed out',
+          recoverVia: `fleet:leader-brief { fleet: '${fleetSlug}' }`,
         },
       };
-    }
+    // Preserve the safety-critical leader projection in the aggregate fallback
+    // before later advisory folds can consume the outer deadline.
+    reportProgress(result);
   }
 
   if (
@@ -3443,6 +3461,19 @@ export default defineTool({
             }
           })()
         : undefined;
+    // Recovery is safety-critical context, not an optional late decoration. Copy it
+    // into the stable aggregate fallback as soon as its independently bounded promise
+    // settles, so a slower assignments/leader fold cannot return an unknown partial
+    // envelope that falsely omits the recovery block.
+    if (compactionRecoveryPromise) {
+      void compactionRecoveryPromise
+        .then((recovery) => {
+          if (recovery) snapshotOrientAggregate(aggregateFallback, { recovery } as OrientResult);
+        })
+        .catch(() => {
+          /* the main await remains fail-soft; the fallback must stay honest */
+        });
+    }
     // EI-21239843876346650: composeOrient must consume the recovered fleet route
     // before its first assignments read, while the full recovery payload remains
     // folded after composition as before. Reuse the already-bounded promise so this

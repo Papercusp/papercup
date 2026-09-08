@@ -443,6 +443,107 @@ describe('coord:orient args', () => {
     }
   });
 
+  it('keeps recovery in the aggregate fallback when a post-composition fold stalls', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ownerId = 'su-orient-recovery-fallback-test';
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    let governorStartedResolve!: () => void;
+    const governorStarted = new Promise<void>((resolve) => {
+      governorStartedResolve = resolve;
+    });
+    readGovernorStateSnapshotMock.mockImplementation(async () => {
+      governorStartedResolve();
+      return new Promise(() => {});
+    });
+
+    const resultPromise = orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    );
+
+    try {
+      await governorStarted;
+      // Let the recovery promise's early aggregate-fallback observer run before
+      // the later enrichment stalls the handler.
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+      const result = (await resultPromise) as { data: Record<string, unknown> };
+
+      expect(result.data).toMatchObject({
+        ok: true,
+        status: 'unknown',
+        degraded: true,
+        degradedReason: 'aggregate_timeout',
+        partial: true,
+        recovery,
+        me: {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        },
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+    } finally {
+      inProcessCallMock.mockReset();
+      getModesMock.mockReset();
+      getModesMock.mockResolvedValue(null);
+      readOwnerPresenceMock.mockReset();
+      readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+      getFlagMock.mockReset();
+      getFlagMock.mockResolvedValue(false);
+      resolvePresenceFleetMock.mockReset();
+      resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+      fetchOrientPipelineMock.mockReset();
+      fetchOrientPipelineMock.mockResolvedValue(null);
+      buildCompactionRecoveryMock.mockReset();
+      buildCompactionRecoveryMock.mockResolvedValue(recovery);
+      readGovernorStateSnapshotMock.mockReset();
+      readGovernorStateSnapshotMock.mockResolvedValue(null);
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('reports both the early core and final composition snapshots', async () => {
     const progress = vi.fn();
     const { call } = fakeCall({ ...CORE });

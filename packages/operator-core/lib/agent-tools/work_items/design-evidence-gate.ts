@@ -16,6 +16,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { z } from 'zod';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { designReferenceBindingSchema } from '../../design-compare/ratification';
 import {
   DesignGateUnavailableError,
   evaluateFeatureDesignGate,
@@ -79,18 +80,24 @@ export interface DesignEvidenceGateDeps {
   readonly isEnforcing?: () => Promise<boolean>;
   /** Persist on the work item's existing payload when an approved design is a deliverable. */
   readonly requiredReferences?: unknown;
+  readonly workScope?: {
+    readonly planSlug?: string | null;
+    readonly planItemIds?: readonly string[] | null;
+  };
 }
 
 const requiredReferencesSchema = z
   .array(
-    z
+    z.union([designReferenceBindingSchema, z
       .object({
         featureId: z.string().trim().min(1),
         referenceId: z.string().trim().min(1),
       })
-      .strict(),
+      .strict()]),
   )
-  .max(32);
+  .max(32)
+  .refine(refs => new Set(refs.map(ref => JSON.stringify([ref.featureId, ref.referenceId]))).size === refs.length,
+    'each required reference must have one binding');
 
 async function flagOrFalse(read: () => Promise<boolean>): Promise<boolean> {
   try {
@@ -129,7 +136,7 @@ export async function designEvidenceCompletionGate(
       status: 'unavailable',
       enforced,
       report:
-        'design-evidence gate: payload.designReferences must be an array of { featureId, referenceId } obligations; no design check was skipped.',
+        'design-evidence gate: approval-binding-malformed: payload.designReferences must contain unique { featureId, referenceId } obligations or versioned revision/SHA-256 bindings; no design check was skipped.',
     };
   }
   const featureIds = [...new Set([...candidates, ...declared.data.map((ref) => ref.featureId)])];
@@ -139,6 +146,27 @@ export async function designEvidenceCompletionGate(
   for (const featureId of featureIds) {
     try {
       const result = await deps.evaluate(featureId);
+      for (const reference of result.references) {
+        const current = reference.reference;
+        const approval = current?.approval;
+        const binding = declared.data.find(ref => ref.featureId === featureId && ref.referenceId === reference.referenceId);
+        const pinned = binding && 'schemaVersion' in binding ? binding : undefined;
+        const inScope = approval && deps.workScope?.planSlug === approval.planSlug &&
+          deps.workScope.planItemIds?.some(id => approval.planItemIds.includes(id));
+        // A plan's other items do not inherit this scoped approval. Naming its
+        // binding explicitly, however, is an assertion that must be checked.
+        if (!pinned && (!approval || (deps.workScope?.planItemIds?.length && !inScope))) continue;
+        let reason: string | undefined;
+        if (approval && !inScope) reason = 'approval-scope-mismatch';
+        else if (!approval || !pinned) reason = 'approval-binding-missing';
+        else if (pinned.revision !== current.activeRevision || pinned.contentSha256 !== current.contentSha256) {
+          reason = 'approval-reference-replaced';
+        }
+        if (reason) {
+          failures.push({ featureId, referenceIds: [reference.referenceId], enforced });
+          reports.push(`design '${featureId}': ${reason} for '${reference.referenceId}'. Bind the implementing item to the exact approved revision and image hash; changing the image requires reviewed re-approval.`);
+        }
+      }
       const missing = declared.data.filter(
         (ref) =>
           ref.featureId === featureId &&

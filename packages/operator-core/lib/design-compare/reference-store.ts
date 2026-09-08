@@ -456,7 +456,13 @@ export async function ratifyReference(
     );
   }
 
-  const errors = validateRatification(candidate, previousActive?.reference);
+  // Retraction is explicit, but re-ratifying the same identity must not erase
+  // its adoption history and turn a required binding back into legacy metadata.
+  const priorApproved = [...rows].reverse().find(row => row.reference.approval)?.reference;
+  const errors = [...validateRatification(candidate, previousActive?.reference ?? priorApproved)];
+  if (candidate.approval && candidate.approval.planSlug !== scope.featureId) {
+    errors.push({ code: 'invalid-approval', message: 'approval planSlug must equal featureId so implementing items can discover the obligation without a supplied binding' });
+  }
   if (errors.length > 0) {
     throw new ReferenceStoreError(
       `ratification refused: ${errors.map((e) => e.message).join('; ')}`,

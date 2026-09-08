@@ -136,7 +136,7 @@
     },
     {
       "feature_id": "WI-2146843",
-      "status": "open",
+      "status": "done",
       "payload": {
         "shard": 50,
         "shardCount": 50,
@@ -155,7 +155,7 @@
     },
     {
       "feature_id": "WI-2146842",
-      "status": "open",
+      "status": "done",
       "payload": {
         "shard": 49,
         "shardCount": 50,
@@ -174,7 +174,7 @@
     },
     {
       "feature_id": "WI-2146841",
-      "status": "open",
+      "status": "done",
       "payload": {
         "shard": 47,
         "shardCount": 50,
@@ -193,7 +193,7 @@
     },
     {
       "feature_id": "WI-2146837",
-      "status": "open",
+      "status": "done",
       "payload": {
         "shard": 44,
         "shardCount": 50,
