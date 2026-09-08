@@ -349,16 +349,11 @@ export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number
     b.consecutiveFailures += 1;
     b.probeStartedAtMs = null;
     if (b.consecutiveFailures >= SIDECAR_BREAKER_TRIP_AFTER) {
-      const wasOpen = b.openedAtMs !== null;
+      // No separate warn here: the trip rides the throttled per-subsystem line
+      // below (see `breakerNote`), so the hot path still emits at most one warn
+      // per interval — the invariant git-via-sidecar-fallback-stats.test.ts pins.
+      if (b.openedAtMs === null) b.trips += 1;
       b.openedAtMs = nowMs;
-      if (!wasOpen) {
-        b.trips += 1;
-        console.warn(
-          `[${subsystem}] spawner sidecar circuit OPEN after ${b.consecutiveFailures} consecutive fallbacks ` +
-            `(last: ${reason}) — git goes straight to local spawn for ${SIDECAR_BREAKER_COOLDOWN_MS / 1000}s, ` +
-            `then one probe`,
-        );
-      }
     }
   }
   const prev = __sidecarFallbacks.bySubsystem.get(subsystem);
@@ -382,7 +377,12 @@ export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number
   const entry = __sidecarFallbacks.bySubsystem.get(subsystem)!;
   const since =
     entry.count > 1 ? ` (${entry.count} fallbacks since ${new Date(entry.firstAtMs).toISOString()})` : '';
-  console.warn(`[${subsystem}] spawner-sidecar git unavailable, using local spawn${since}: ${reason}`);
+  const breaker = getSidecarBreakerState(nowMs);
+  const breakerNote =
+    breaker.state === 'closed'
+      ? ''
+      : ` [circuit ${breaker.state}: ${breaker.shortCircuited} call(s) skipped the sidecar, trips=${breaker.trips}]`;
+  console.warn(`[${subsystem}] spawner-sidecar git unavailable, using local spawn${since}${breakerNote}: ${reason}`);
 }
 
 /**
@@ -541,6 +541,7 @@ export async function runGitStdinViaSpawnerSidecar(
         `spawner sidecar handoff size mismatch: git wrote ${res.stdoutBytes} bytes, read back ${stdout.length}`,
       );
     }
+    noteSidecarSuccess();
     return { code: res.code, stdout, stderr: res.stderr ?? '' };
   } finally {
     // Never leave blob contents lying around, on success or failure.
