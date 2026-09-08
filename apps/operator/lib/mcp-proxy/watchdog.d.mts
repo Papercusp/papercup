@@ -34,6 +34,107 @@ export const LIVENESS_PROBE_PATH: string;
 
 export function livenessProbeUrl(port?: number): string;
 
+/** Runtime files loaded by the proxy service from the integration working tree. */
+export const MCP_PROXY_COMMITTED_HOT_PATHS: readonly string[];
+
+export type MpcProxyHotPathActivationCode =
+  | 'activate'
+  | 'generation_unknown'
+  | 'clock_unknown'
+  | 'commit_unknown'
+  | 'commit_time_future'
+  | 'generation_current'
+  | 'cleanliness_unknown'
+  | 'hot_paths_dirty'
+  | 'throttled_or_in_flight'
+  | 'ptool_failed'
+  | 'ptool_result_unknown'
+  | 'restart_suppressed'
+  | 'restarted'
+  | 'coalesced'
+  | 'no_restart'
+  | 'probe_failed';
+
+export interface MpcProxyHotPathActivationInput {
+  activeForSec: number | null;
+  latestCommitMs: number | null;
+  latestCommitHash: string | null;
+  nowMs: number | null;
+  dirtyEntries: string[] | null;
+}
+
+export interface MpcProxyHotPathActivationVerdict {
+  activate: boolean;
+  code: MpcProxyHotPathActivationCode | string;
+  bootMs?: number;
+  latestCommitMs?: number;
+  latestCommitHash?: string;
+  dirtyCount?: number;
+  dirtySample?: string[];
+}
+
+/** Fail-closed gate for activating newer committed proxy code. */
+export function evaluateMcpProxyHotPathActivation(
+  input: MpcProxyHotPathActivationInput,
+): MpcProxyHotPathActivationVerdict;
+
+/** Throttle/reentrancy gate for the low-frequency committed-code check. */
+export function shouldCheckMcpProxyHotPathActivation(input: {
+  inFlight: boolean;
+  lastCheckMs: number;
+  nowMs: number;
+  intervalMs: number;
+}): boolean;
+
+export interface MpcProxyHotPathShellResult {
+  err: Error | null;
+  stdout: string;
+  stderr?: string;
+}
+
+export interface MpcProxyHotPathShellOptions {
+  cwd?: string;
+  maxBuffer?: number;
+  stdin?: string;
+  timeout?: number;
+}
+
+/** Read committed proxy generation evidence; unreadable signals remain unknown. */
+export function readMcpProxyHotPathState(deps?: {
+  root?: string;
+  sh?: (
+    command: string,
+    args: string[],
+    options?: MpcProxyHotPathShellOptions,
+  ) => Promise<MpcProxyHotPathShellResult>;
+}): Promise<{
+  root: string | null;
+  latestCommitMs: number | null;
+  latestCommitHash: string | null;
+  dirtyEntries: string[] | null;
+  error: string | null;
+}>;
+
+/** Invoke the coordinated restart surface for the mcp-proxy service. */
+export function requestMcpProxyHotPathRestart(
+  latestCommitHash: string,
+  deps?: {
+    ptoolScript?: string;
+    sh?: (
+      command: string,
+      args: string[],
+      options?: MpcProxyHotPathShellOptions,
+    ) => Promise<MpcProxyHotPathShellResult>;
+  },
+): Promise<{
+  ok: boolean;
+  restarted: boolean;
+  coalesced: boolean;
+  code: MpcProxyHotPathActivationCode | string;
+  body?: unknown;
+  error?: string;
+}>;
+
 export function shouldRestart(
   unreachableSinceMs: number,
   nowMs: number,

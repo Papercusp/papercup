@@ -23,6 +23,8 @@ const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_PATHS_PROBED = 60;
 const OBJECT_SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const DOCUMENTED_GITIGNORED_SCRATCH_PREFIX = '.papercusp/scratch/';
+const DOCUMENTED_GITIGNORED_TMP_PREFIX = '.papercusp/tmp/';
+const DOCUMENTED_GITIGNORED_TMP_ROOT_PREFIX = '.papercusp/tmp-';
 
 /**
  * EI-22344624691081449: a deletion is caller-owned evidence, but the server
@@ -335,6 +337,7 @@ export type UnprovenContentIdentityReason =
   | 'absent-from-both'
   | 'absent-from-working-tree'
   | 'gitignored-scratch-path'
+  | 'gitignored-tmp-path'
   | 'deletion-present-in-working-tree'
   | 'deletion-present-in-commit';
 
@@ -369,9 +372,10 @@ export function describeUnprovenContentIdentity(
   const neverRemedy = neverSettles
     .map((row) => {
       const rendered = `\`${row.path}\` (${row.reason})`;
-      if (row.reason === 'gitignored-scratch-path') {
+      if (row.reason === 'gitignored-scratch-path' || row.reason === 'gitignored-tmp-path') {
+        const prefix = row.reason === 'gitignored-scratch-path' ? '.papercusp/scratch/' : '.papercusp/tmp/ or .papercusp/tmp-*';
         return (
-          `${rendered} is under the documented gitignored \`.papercusp/scratch/\` prefix, so NO sweep can ` +
+          `${rendered} is under the documented gitignored \`${prefix}\` prefix, so NO sweep can ` +
           `ever commit it. Remove it from \`filesChanged\` or cite durable storage instead.`
         );
       }
@@ -431,6 +435,12 @@ export function unprovenContentIdentityPaths(
       if (normalizedPath.startsWith(DOCUMENTED_GITIGNORED_SCRATCH_PREFIX)) {
         return [{ path: entry.path, reason: 'gitignored-scratch-path', settles: 'never' as const }];
       }
+      if (
+        normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_PREFIX) ||
+        normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_ROOT_PREFIX)
+      ) {
+        return [{ path: entry.path, reason: 'gitignored-tmp-path', settles: 'never' as const }];
+      }
       return [{ path: entry.path, reason: 'missing-from-commit' as const, settles: 'sweep' as const }];
     }
     if (!inTree && inHead) {
@@ -439,6 +449,12 @@ export function unprovenContentIdentityPaths(
     const normalizedPath = entry.path.replaceAll('\\', '/').replace(/^\.\/+/, '');
     if (normalizedPath.startsWith(DOCUMENTED_GITIGNORED_SCRATCH_PREFIX)) {
       return [{ path: entry.path, reason: 'gitignored-scratch-path', settles: 'never' as const }];
+    }
+    if (
+      normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_PREFIX) ||
+      normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_ROOT_PREFIX)
+    ) {
+      return [{ path: entry.path, reason: 'gitignored-tmp-path', settles: 'never' as const }];
     }
     return [{ path: entry.path, reason: 'absent-from-both' as const, settles: 'never' as const }];
   });

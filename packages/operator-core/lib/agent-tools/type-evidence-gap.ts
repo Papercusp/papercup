@@ -3,7 +3,7 @@ import type { CompletionVerificationEvidence } from '../coord-lifecycle/records'
 /** Source files whose correctness a test run says nothing about. */
 const TYPECHECKED_SOURCE_RE = /\.(?:[cm]?ts|tsx)$/i;
 /** Any mention of a real type check, in the caller's OWN evidence prose. */
-const TYPECHECK_MENTION_RE = /\b(?:tsc|typecheck|type-check|lint:tsc|build:typecheck)\b/i;
+const TYPECHECK_MENTION_RE = /\b(?:tsc|typecheck|type-check|lint:tsc|build:typecheck|typescript\s+(?:type\s+)?check)\b/i;
 
 /**
  * A passing unit/integration run proves behaviour, not TypeScript correctness.

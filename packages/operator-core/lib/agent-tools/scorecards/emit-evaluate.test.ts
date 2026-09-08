@@ -463,6 +463,32 @@ describe('emitScorecard', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
+  it('refuses freshness=pass when the evaluator recipe records that current fingerprints were not supplied', async () => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
+    const omittedCurrent = {
+      ...RERUN_RECIPE,
+      current: { supplied: false, fingerprints: [] },
+    };
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'spec-test-adequacy',
+        ratings: { freshness: { rating: 'pass', evidence: 'Every bound proof dimension is current.' } },
+        rerunRecipe: omittedCurrent,
+        subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
+      },
+      { createdBy: 'su-1' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining('current fingerprints'),
+    });
+    expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('accepts and persists the evaluator-owned plan subject for spec-test-adequacy', async () => {
     getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
 

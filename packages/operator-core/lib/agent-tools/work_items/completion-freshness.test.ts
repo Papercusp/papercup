@@ -282,6 +282,20 @@ describe('unprovenContentIdentityPaths (EI-21970667079827352)', () => {
     ]);
   });
 
+  it('classifies documented gitignored tmp paths as never-settling, including tmp-* roots', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [
+          { path: '.papercusp/tmp/p013-tauri-live.mjs', workingTreeBlobSha: sha('c'), headBlobSha: null },
+          { path: './.papercusp\\tmp-run-42\\driver.mjs', workingTreeBlobSha: sha('d'), headBlobSha: null },
+        ],
+      }),
+    ).toEqual([
+      { path: '.papercusp/tmp/p013-tauri-live.mjs', reason: 'gitignored-tmp-path', settles: 'never' },
+      { path: './.papercusp\\tmp-run-42\\driver.mjs', reason: 'gitignored-tmp-path', settles: 'never' },
+    ]);
+  });
+
   it('two differing blobs is content-mismatch, and a SWEEP settles it', () => {
     expect(
       unprovenContentIdentityPaths({
@@ -395,6 +409,21 @@ describe('describeUnprovenContentIdentity (EI-21970667079827352)', () => {
     const out = describeUnprovenContentIdentity([scratch], 1)!;
     expect(out).toContain('WAITING WILL NOT SETTLE THIS');
     expect(out).toContain('documented gitignored `.papercusp/scratch/` prefix');
+    expect(out).toContain('NO sweep can ever commit it');
+    expect(out).toContain('Remove it from `filesChanged`');
+    expect(out).not.toContain('WAITING SETTLES THIS');
+    expect(out).not.toContain('absent from the working tree');
+  });
+
+  it('names gitignored tmp paths as permanently non-committable instead of waitable', () => {
+    const tmp = {
+      path: '.papercusp/tmp/p013-tauri-live.mjs',
+      reason: 'gitignored-tmp-path' as const,
+      settles: 'never' as const,
+    };
+    const out = describeUnprovenContentIdentity([tmp], 1)!;
+    expect(out).toContain('WAITING WILL NOT SETTLE THIS');
+    expect(out).toContain('documented gitignored `.papercusp/tmp/ or .papercusp/tmp-*` prefix');
     expect(out).toContain('NO sweep can ever commit it');
     expect(out).toContain('Remove it from `filesChanged`');
     expect(out).not.toContain('WAITING SETTLES THIS');

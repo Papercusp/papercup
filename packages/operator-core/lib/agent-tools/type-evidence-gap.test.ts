@@ -25,6 +25,17 @@ describe('type-evidence advisory shared by terminal surfaces', () => {
     ).toBeUndefined();
   });
 
+  it('stays silent when the evidence cites a scoped TypeScript check', () => {
+    expect(
+      typeEvidenceGapInCompletion({
+        verifiedHow: 'unit',
+        filesChanged: ['example.ts'],
+        testsRun: 'scoped TypeScript check',
+        testResult: 'LINT_TSC_RESULT scope=files exit=0 status=clean',
+      }),
+    ).toBeUndefined();
+  });
+
   it('warns when a done plan-item flip omits verification evidence', () => {
     expect(
       typeEvidenceWarningForPlanItem({
