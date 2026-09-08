@@ -22,23 +22,15 @@ import { listDiskEntriesAsync, type DiskWalkBudget } from './disk';
 /** The fixed "trim older than" thresholds (days) the page offers + projects. */
 export const TRIM_THRESHOLD_DAYS = [30, 90, 365] as const;
 
-/** Statement-timeout budget for the per-table age-distribution count (ms). */
-const BUCKET_TIMEOUT_MS = 4000;
+/** Statement-timeout cap for each bounded storage query (ms). */
+const QUERY_TIMEOUT_CAP_MS = 4000;
 
 /**
- * Wall-clock budget for the whole synchronous on-disk sizing pass (EI-6045).
- * The per-table PG scans are already bounded (catalog size is instant; the
- * age-distribution count runs under BUCKET_TIMEOUT_MS), so the only unbounded
- * cost was the recursive `du`-style walk of every session dir — which blocked
- * the event loop for minutes on a large install and tripped the 300s MCP idle
- * abort. Cap the aggregate disk walk here; over-budget categories return partial
- * sizes with a note. Comfortably under the 300s idle limit even with the PG
- * phase (≤ ~6 × 4s).
- *
- * This is the READ-PATH default, and it stays 20s: it is what the flag-OFF
- * inline fallback uses, where a user is waiting.
+ * Aggregate wall-clock budget for the direct `storage:usage` read path. The
+ * composed `code:run` foreground budget is 50s; leave room for dispatch and
+ * shaping while still allowing several slow-but-useful catalog reads.
  */
-const DISK_BUDGET_MS = 20_000;
+const STORAGE_READ_BUDGET_MS = 30_000;
 
 /**
  * The budget used when this runs OFF the read path — from the
@@ -52,7 +44,43 @@ const DISK_BUDGET_MS = 20_000;
  * instead of one panel. Raising it (rather than removing it) buys complete,
  * accurate sizes on a large store while keeping the stall bounded.
  */
-const DISK_BUDGET_PRECOMPUTE_MS = 120_000;
+const STORAGE_PRECOMPUTE_BUDGET_MS = 120_000;
+
+class StorageReadDeadlineExceeded extends Error {
+  constructor(phase: string) {
+    super(`storage usage read deadline exhausted before ${phase}`);
+    this.name = 'StorageReadDeadlineExceeded';
+  }
+}
+
+function queryTimeoutMs(budget: DiskWalkBudget, phase: string): number {
+  const remaining = budget.deadlineMs - Date.now();
+  if (remaining <= 0) {
+    budget.truncated = true;
+    throw new StorageReadDeadlineExceeded(phase);
+  }
+  return Math.max(1, Math.min(QUERY_TIMEOUT_CAP_MS, remaining));
+}
+
+/** Run one storage query under the remaining aggregate read deadline. */
+async function runBoundedStorageQuery<T>(
+  sql: Sql,
+  budget: DiskWalkBudget,
+  phase: string,
+  run: (tx: Sql) => Promise<T>,
+): Promise<T> {
+  const timeoutMs = queryTimeoutMs(budget, phase);
+  return sql.begin(async (tx) => {
+    // statement_timeout bounds server execution. The deadline check above
+    // bounds how much of the aggregate budget this phase may consume.
+    await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
+    return run(tx);
+  });
+}
+
+function storageReadNote(err: unknown, fallback: string): string {
+  return err instanceof StorageReadDeadlineExceeded ? err.message : fallback;
+}
 
 /** A cumulative slice: rows/entries strictly older than `olderThanDays`. A null
  *  threshold is the TOTAL (everything — the "trim all" target). */
@@ -105,14 +133,20 @@ async function catalogSize(
   sql: Sql,
   schema: string,
   table: string,
+  budget: DiskWalkBudget,
 ): Promise<{ totalBytes: number; rowsEstimate: number }> {
-  const rows = await sql`
-    SELECT pg_total_relation_size(c.oid)::bigint AS total_bytes,
-           GREATEST(c.reltuples, 0)::bigint       AS rows_estimate
-      FROM pg_class c
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = ${schema} AND c.relname = ${table} AND c.relkind = 'r'
-     LIMIT 1`;
+  const rows = await runBoundedStorageQuery(
+    sql,
+    budget,
+    `catalog sizing for ${table}`,
+    (tx) => tx`
+      SELECT pg_total_relation_size(c.oid)::bigint AS total_bytes,
+             GREATEST(c.reltuples, 0)::bigint       AS rows_estimate
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = ${schema} AND c.relname = ${table} AND c.relkind = 'r'
+       LIMIT 1`,
+  );
   const r = rows[0];
   return { totalBytes: num(r?.total_bytes), rowsEstimate: num(r?.rows_estimate) };
 }
@@ -132,9 +166,9 @@ function bucketSql(
       ? `${col} < now() - make_interval(days => ${days})`
       : `${col} < (extract(epoch from now()) * 1000)::bigint - ${days}::bigint * 86400000`;
   const where = drainedGuard ? 'WHERE drained_at IS NOT NULL' : '';
-  const filters = TRIM_THRESHOLD_DAYS.map(
-    (d) => `count(*) FILTER (WHERE ${cond(d)})::bigint AS d${d}`,
-  ).join(',\n         ');
+  const filters = TRIM_THRESHOLD_DAYS.map((d) => `count(*) FILTER (WHERE ${cond(d)})::bigint AS d${d}`).join(
+    ',\n         ',
+  );
   return `
     SELECT count(*)::bigint AS total,
            ${filters}
@@ -145,7 +179,7 @@ function bucketSql(
 async function computePgUsage(
   sql: Sql,
   cat: StorageCategory & { kind: 'pg' },
-  opts: { sizesOnly?: boolean } = {},
+  opts: { sizesOnly?: boolean; budget: DiskWalkBudget },
 ): Promise<StorageUsageRow> {
   const base: StorageUsageRow = {
     id: cat.id,
@@ -161,11 +195,11 @@ async function computePgUsage(
     description: cat.description,
   };
   try {
-    const { totalBytes, rowsEstimate } = await catalogSize(sql, cat.schema, cat.table);
+    const { totalBytes, rowsEstimate } = await catalogSize(sql, cat.schema, cat.table, opts.budget);
     base.totalBytes = totalBytes;
     base.totalRows = rowsEstimate;
   } catch (err) {
-    base.note = `size unavailable: ${(err as Error)?.message ?? 'error'}`;
+    base.note = storageReadNote(err, `size unavailable: ${(err as Error)?.message ?? 'error'}`);
     return base;
   }
 
@@ -178,10 +212,9 @@ async function computePgUsage(
 
   try {
     const q = bucketSql(cat.schema, cat.table, cat.ageColumn, cat.ageColumnType, Boolean(cat.drainedGuard));
-    const rows = await sql.begin(async (tx) => {
-      await tx.unsafe(`SET LOCAL statement_timeout = ${BUCKET_TIMEOUT_MS}`);
-      return tx.unsafe(q);
-    });
+    const rows = await runBoundedStorageQuery(sql, opts.budget, `age distribution for ${cat.table}`, (tx) =>
+      tx.unsafe(q),
+    );
     const r = rows[0] ?? {};
     const total = num(r.total);
     const perRow = total > 0 ? base.totalBytes / total : 0;
@@ -196,7 +229,10 @@ async function computePgUsage(
     buckets.push({ olderThanDays: null, rows: total, bytes: totalBytes });
     base.ageBuckets = buckets;
   } catch (err) {
-    base.note = `age distribution unavailable (table too large to scan in ${BUCKET_TIMEOUT_MS}ms)`;
+    base.note = storageReadNote(
+      err,
+      `age distribution unavailable (table too large to scan in ${QUERY_TIMEOUT_CAP_MS}ms)`,
+    );
     void err;
   }
   return base;
@@ -232,31 +268,47 @@ async function computeDiskUsage(
     minOlderThanDays: cat.minOlderThanDays,
     description: cat.description,
     // Sizes are partial when the shared disk-walk budget was exhausted (EI-6045).
-    note: budget?.truncated
-      ? `disk sizes are partial (sizing budget exceeded on a large store)`
-      : undefined,
+    note: budget?.truncated ? `disk sizes are partial (sizing budget exceeded on a large store)` : undefined,
   };
 }
 
 /** Compute usage for every category. Sequential (gentle on the DB); a failing
  *  category degrades to size-only with a note rather than failing the page. */
 export async function computeStorageUsage(
-  opts: { sizesOnly?: boolean; offReadPath?: boolean } = {},
+  opts: { sizesOnly?: boolean; offReadPath?: boolean; deadlineMs?: number } = {},
 ): Promise<StorageUsageRow[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql as unknown as Sql;
   const out: StorageUsageRow[] = [];
-  // One shared wall-clock budget for the whole synchronous disk-sizing pass so
-  // the aggregate `du` walk can never block the event loop (EI-6045).
-  // Over-budget categories degrade to partial sizes with a note. `offReadPath`
-  // (the precompute routine) gets the larger budget — no user is waiting there,
-  // so the walk can finish and report complete sizes.
-  const budgetMs = opts.offReadPath ? DISK_BUDGET_PRECOMPUTE_MS : DISK_BUDGET_MS;
-  const diskBudget: DiskWalkBudget = { deadlineMs: Date.now() + budgetMs };
+  // One shared wall-clock budget spans catalog sizing, age distributions, and
+  // disk sizing. Previously the per-query PG caps and disk cap were independent,
+  // so seven sequential age scans could consume the entire code:run foreground
+  // budget before the caller received even a partial result. Over-budget rows
+  // remain in the response with an explicit note.
+  const budgetMs = opts.offReadPath ? STORAGE_PRECOMPUTE_BUDGET_MS : STORAGE_READ_BUDGET_MS;
+  const diskBudget: DiskWalkBudget = { deadlineMs: opts.deadlineMs ?? Date.now() + budgetMs };
   for (const cat of STORAGE_CATEGORIES) {
     if (cat.kind === 'pg') {
-      out.push(await computePgUsage(sql, cat, opts));
+      out.push(await computePgUsage(sql, cat, { sizesOnly: opts.sizesOnly, budget: diskBudget }));
     } else {
+      if (diskBudget.deadlineMs <= Date.now()) {
+        diskBudget.truncated = true;
+        out.push({
+          id: cat.id,
+          label: cat.label,
+          kind: 'disk',
+          federation: cat.federation,
+          trimmable: true,
+          bloats: false,
+          totalBytes: 0,
+          totalRows: null,
+          ageBuckets: [],
+          minOlderThanDays: cat.minOlderThanDays,
+          description: cat.description,
+          note: `storage usage read deadline exhausted before disk sizing for ${cat.id}`,
+        });
+        continue;
+      }
       try {
         out.push(await computeDiskUsage(cat, diskBudget));
       } catch (err) {

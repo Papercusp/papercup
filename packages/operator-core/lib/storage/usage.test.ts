@@ -2,20 +2,36 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
+  catalogCalls: 0,
+  ageCalls: 0,
 }));
 
 function makeSql() {
-  const sql: unknown = () => Promise.resolve([{ total_bytes: 1000n, rows_estimate: 100n }]);
-  const s = sql as { unsafe: (q: string) => Promise<unknown[]>; begin: (fn: (x: unknown) => Promise<unknown>) => Promise<unknown> };
+  const sql: unknown = (strings: TemplateStringsArray) => {
+    const query = Array.from(strings).join(' ');
+    if (query.includes('pg_total_relation_size')) {
+      h.catalogCalls += 1;
+      return Promise.resolve([{ total_bytes: 1000n, rows_estimate: 100n }]);
+    }
+    return Promise.resolve([{ total: 80n, d30: 50n, d90: 30n, d365: 10n }]);
+  };
+  const s = sql as {
+    unsafe: (q: string) => Promise<unknown[]>;
+    begin: (fn: (x: unknown) => Promise<unknown>) => Promise<unknown>;
+  };
   s.unsafe = (q: string) => {
     if (q.includes('SET LOCAL')) return Promise.resolve([]);
+    h.ageCalls += 1;
     return Promise.resolve([{ total: 80n, d30: 50n, d90: 30n, d365: 10n }]);
   };
   s.begin = (fn) => fn(sql);
   return sql;
 }
 
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: makeSql() }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: makeSql() }),
+}));
 vi.mock('./disk', () => ({
   listDiskEntries: () => h.diskEntries,
   // computeStorageUsage now walks disk via the event-loop-cooperative async twin
@@ -27,6 +43,8 @@ import { computeStorageUsage, TRIM_THRESHOLD_DAYS } from './usage';
 import { STORAGE_CATEGORIES } from './categories';
 
 beforeEach(() => {
+  h.catalogCalls = 0;
+  h.ageCalls = 0;
   const now = Date.now();
   h.diskEntries = [
     { path: '/d/old', mtimeMs: now - 400 * 86400000, sizeBytes: 700 },
@@ -70,5 +88,14 @@ describe('computeStorageUsage', () => {
     const b365 = scratch.ageBuckets.find((b) => b.olderThanDays === 365)!;
     expect(b365.rows).toBe(1); // only the 400-day entry
     expect(b365.bytes).toBe(700);
+  });
+
+  it('uses one aggregate deadline and preserves partial rows when it is already exhausted', async () => {
+    const rows = await computeStorageUsage({ deadlineMs: Date.now() - 1 });
+
+    expect(rows).toHaveLength(STORAGE_CATEGORIES.length);
+    expect(rows.every((row) => row.note?.includes('storage usage read deadline exhausted'))).toBe(true);
+    expect(h.catalogCalls).toBe(0);
+    expect(h.ageCalls).toBe(0);
   });
 });
