@@ -398,86 +398,6 @@ export default defineTool({
           }
         }
 
-        // P-047 / D-010: the op_status axis retires with the Mug/Kettle tier.
-        // Fail-CLOSED via mugKettleSystemEnabled (an unreadable flag resolves to
-        // retired) — a false `true` re-reserves a plan's items for a dispatcher
-        // that is not running, which is the failure this gate exists to stop.
-        const axisLive = await mugKettleSystemEnabled();
-
-        type StartRow = { op_status: string | null; op_updated_at: string | null; prev_op_status: string | null };
-        // RETIRED branch: READ the row instead of writing it, on the SAME
-        // (workspace, harness, slug) key the UPDATE used — so the plan_not_found
-        // detection below (WI-5825) keeps working identically. `prev_op_status`
-        // mirrors the current value, so `transitioned` is false by construction.
-        const rows: StartRow[] = !axisLive
-          ? await withWorkspace(startWorkspaceId, async (tx) => {
-              return tx<StartRow[]>`
-                SELECT op_status, op_updated_at, op_status AS prev_op_status
-                  FROM harness_shared.harness_plans
-                 WHERE workspace_id = ${startWorkspaceId}
-                   AND harness_slug = ${harnessSlug}
-                   AND plan_slug    = ${slug}
-                 LIMIT 1
-              `;
-            })
-          : await withWorkspace(startWorkspaceId, async (tx) => {
-              return tx<StartRow[]>`
-                UPDATE harness_shared.harness_plans AS p
-                   SET op_status     = 'started',
-                       op_started_at = COALESCE(p.op_started_at, ${now}),
-                       op_updated_at = ${now}
-                  FROM (
-                    SELECT plan_slug, op_status AS prev_op_status
-                      FROM harness_shared.harness_plans
-                     WHERE workspace_id = ${startWorkspaceId}
-                       AND harness_slug = ${harnessSlug}
-                       AND plan_slug    = ${slug}
-                       FOR UPDATE
-                  ) prev
-                 WHERE p.workspace_id = ${startWorkspaceId}
-                   AND p.harness_slug = ${harnessSlug}
-                   AND p.plan_slug    = prev.plan_slug
-                RETURNING p.op_status, p.op_updated_at, prev.prev_op_status
-              `;
-            });
-
-        const row = rows[0];
-        // WI-5825: 0 rows means no such plan in this (workspace, harness) —
-        // report it. This handler used to return ok:true / status:'started'
-        // regardless of rows affected, so a mis-scoped UPDATE announced a start
-        // that never happened (and then emitted the `plan started` demand event
-        // on it). A write that matched nothing is a failure, not a start.
-        if (!row) {
-          ctxAny.metadata?.({ slug, harnessSlug, refused: 'plan_not_found' });
-          return {
-            ok: false as const,
-            slug,
-            harnessSlug,
-            error: 'plan_not_found',
-            message: `no plan '${slug}' in ${startWorkspaceId}/${harnessSlug}`,
-          };
-        }
-        // `axisLive &&` is load-bearing, not belt-and-braces: in the retired
-        // branch prev_op_status is the row's CURRENT value, so a never-started
-        // plan would otherwise score `null !== 'started'` = transitioned and fire
-        // the demand event for a start that never happened.
-        const transitioned = axisLive && row.prev_op_status !== 'started';
-
-        if (transitioned) {
-          void Promise.all([import('../../calibration/capture'), import('../coordination/identity')])
-            .then(([cal, ident]) =>
-              cal.recordPrediction({
-                predictor: ident.resolveAgentIdentity(ctx).ownerId,
-                domain: 'plan-ship',
-                subjectKind: 'plan',
-                subjectId: slug,
-                claim: `plan ${slug} reaches status shipped within the horizon of its start`,
-                harnessSlug: harnessSlug ?? null,
-              }),
-            )
-            .catch(() => {});
-        }
-
         let autoApproved = false;
         let activationAudit: ActivationAuditEditNotice | null = null;
         type CommitRefusal = {
@@ -567,6 +487,89 @@ export default defineTool({
             ok: false as const, slug, harnessSlug, error: 'plan_start_revalidation_unavailable',
             message: error instanceof Error ? error.message : String(error),
           };
+        }
+
+        // Commit-boundary refusals (including the body writer's own gates)
+        // must leave operational state and calibration untouched. Begin those
+        // side effects only after locked approval has successfully returned.
+        // P-047 / D-010: the op_status axis retires with the Mug/Kettle tier.
+        // Fail-CLOSED via mugKettleSystemEnabled (an unreadable flag resolves to
+        // retired) — a false `true` re-reserves a plan's items for a dispatcher
+        // that is not running, which is the failure this gate exists to stop.
+        const axisLive = await mugKettleSystemEnabled();
+
+        type StartRow = { op_status: string | null; op_updated_at: string | null; prev_op_status: string | null };
+        // RETIRED branch: READ the row instead of writing it, on the SAME
+        // (workspace, harness, slug) key the UPDATE used — so the plan_not_found
+        // detection below (WI-5825) keeps working identically. `prev_op_status`
+        // mirrors the current value, so `transitioned` is false by construction.
+        const rows: StartRow[] = !axisLive
+          ? await withWorkspace(startWorkspaceId, async (tx) => {
+              return tx<StartRow[]>`
+                SELECT op_status, op_updated_at, op_status AS prev_op_status
+                  FROM harness_shared.harness_plans
+                 WHERE workspace_id = ${startWorkspaceId}
+                   AND harness_slug = ${harnessSlug}
+                   AND plan_slug    = ${slug}
+                 LIMIT 1
+              `;
+            })
+          : await withWorkspace(startWorkspaceId, async (tx) => {
+              return tx<StartRow[]>`
+                UPDATE harness_shared.harness_plans AS p
+                   SET op_status     = 'started',
+                       op_started_at = COALESCE(p.op_started_at, ${now}),
+                       op_updated_at = ${now}
+                  FROM (
+                    SELECT plan_slug, op_status AS prev_op_status
+                      FROM harness_shared.harness_plans
+                     WHERE workspace_id = ${startWorkspaceId}
+                       AND harness_slug = ${harnessSlug}
+                       AND plan_slug    = ${slug}
+                       FOR UPDATE
+                  ) prev
+                 WHERE p.workspace_id = ${startWorkspaceId}
+                   AND p.harness_slug = ${harnessSlug}
+                   AND p.plan_slug    = prev.plan_slug
+                RETURNING p.op_status, p.op_updated_at, prev.prev_op_status
+              `;
+            });
+
+        const row = rows[0];
+        // WI-5825: 0 rows means no such plan in this (workspace, harness) —
+        // report it. This handler used to return ok:true / status:'started'
+        // regardless of rows affected, so a mis-scoped UPDATE announced a start
+        // that never happened (and then emitted the `plan started` demand event
+        // on it). A write that matched nothing is a failure, not a start.
+        if (!row) {
+          ctxAny.metadata?.({ slug, harnessSlug, refused: 'plan_not_found' });
+          return {
+            ok: false as const,
+            slug,
+            harnessSlug,
+            error: 'plan_not_found',
+            message: `no plan '${slug}' in ${startWorkspaceId}/${harnessSlug}`,
+          };
+        }
+        // `axisLive &&` is load-bearing, not belt-and-braces: in the retired
+        // branch prev_op_status is the row's CURRENT value, so a never-started
+        // plan would otherwise score `null !== 'started'` = transitioned and fire
+        // the demand event for a start that never happened.
+        const transitioned = axisLive && row.prev_op_status !== 'started';
+
+        if (transitioned) {
+          void Promise.all([import('../../calibration/capture'), import('../coordination/identity')])
+            .then(([cal, ident]) =>
+              cal.recordPrediction({
+                predictor: ident.resolveAgentIdentity(ctx).ownerId,
+                domain: 'plan-ship',
+                subjectKind: 'plan',
+                subjectId: slug,
+                claim: `plan ${slug} reaches status shipped within the horizon of its start`,
+                harnessSlug: harnessSlug ?? null,
+              }),
+            )
+            .catch(() => {});
         }
 
         ctxAny.metadata?.({ slug, harnessSlug, status: row?.op_status, autoApproved, transitioned });

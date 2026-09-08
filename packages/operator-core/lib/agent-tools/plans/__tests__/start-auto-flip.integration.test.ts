@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
+import { runWithWorkspace } from '../../../workspace-als';
 import type { PlanPgFixture } from './_pg-tool-fixture';
 
 // WI-5825: plans:start resolves its write key through resolvePlanScope — the SAME
@@ -58,7 +59,18 @@ const START_GATES = vi.hoisted(() => ({
   activation: vi.fn(),
   admission: vi.fn(),
   claimSpec: vi.fn(),
+  startable: vi.fn(),
+  promotion: vi.fn(),
+  prediction: vi.fn(),
 }));
+vi.mock('../plan-start-gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plan-start-gate')>();
+  return {
+    ...actual,
+    checkPlanStartable: async (...args: Parameters<typeof actual.checkPlanStartable>) =>
+      START_GATES.startable(await actual.checkPlanStartable(...args)),
+  };
+});
 vi.mock('../plan-activation-gate', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../plan-activation-gate')>();
   return {
@@ -74,7 +86,10 @@ vi.mock('../plan-admission-preflight', async (importOriginal) => {
   };
 });
 vi.mock('../../../plan-workitem-promotion-run', () => ({
-  promotePlanItems: vi.fn(async () => ({ promoted: 0, skipped: 0, flagOff: false, workItems: [] })),
+  promotePlanItems: (...args: unknown[]) => START_GATES.promotion(...args),
+}));
+vi.mock('../../../calibration/capture', () => ({
+  recordPrediction: (...args: unknown[]) => START_GATES.prediction(...args),
 }));
 vi.mock('../../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../scheduler/claim-spec-store')>();
@@ -93,6 +108,19 @@ const { setupPlanPgFixture, cleanupPlans, seedPlan } = await import('./_pg-tool-
 const HARNESS = `zzz-start-flip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SLUG = 'zzz-start-flip-plan-2026-06-16';
 const WS = DEFAULT_WORKSPACE_ID;
+
+async function seedLegacyPlan(status: 'draft' | 'ready') {
+  await seedPlan(admin, WS, HARNESS, SLUG, planBody(status));
+  // Migration 1111 marks every INSERT as post-epoch. These approval/revision
+  // fixtures deliberately represent existing legacy plans, which have no BAR
+  // contract. Seed that identity in the throwaway DB; keep the real reader and
+  // evaluator so a missing/unknown subject can never masquerade as legacy.
+  await admin`
+    UPDATE harness_shared.harness_plans
+       SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+  `;
+}
 
 function planBody(status: 'draft' | 'ready'): string {
   return `---
@@ -141,12 +169,14 @@ async function runStart(): Promise<{ data: Record<string, unknown>; isError: boo
   // This fixture isolates the draft→ready write and revision spine; explicitly
   // override the unrelated live-peer checkpoint consult so fleet liveness cannot
   // turn the deterministic auto-flip assertion into a consult_available refusal.
-  const res = (await startTool.handler({
+  // Direct handler invocation omits the dispatcher's request workspace. Bind
+  // it here so canonical snapshot readers see this fixture's seeded plan too.
+  const res = (await runWithWorkspace(WS, () => startTool.handler({
     harness: HARNESS,
     slug: SLUG,
     consulted: false,
     consult_reason: 'auto-flip integration fixture isolates revisioned approval write',
-  } as never, makeCtx())) as {
+  } as never, makeCtx()))) as {
     data: { results: Record<string, unknown>[]; counts?: { failed?: number } };
   };
   return { data: res.data.results[0], isError: (res.data.counts?.failed ?? 0) > 0 };
@@ -171,6 +201,15 @@ async function revisionRows(): Promise<Array<{ seq: number; content_hash: string
   `;
 }
 
+async function persistedStartState() {
+  const rows = await admin`
+    SELECT content, content_hash, version, op_status, op_started_at, op_updated_at
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+  `;
+  return { plan: rows[0], revisions: await revisionRows() };
+}
+
 beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
@@ -183,6 +222,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  MUG_KETTLE.on = true;
   START_GATES.activation.mockReset();
   START_GATES.activation.mockResolvedValue({ satisfied: true, auditSeq: 1 });
   START_GATES.admission.mockReset();
@@ -194,15 +234,21 @@ beforeEach(async () => {
   });
   START_GATES.claimSpec.mockReset();
   START_GATES.claimSpec.mockResolvedValue({ ok: true, errors: [], revision: 1 });
+  START_GATES.startable.mockReset();
+  START_GATES.startable.mockImplementation((gate) => gate);
+  START_GATES.promotion.mockReset();
+  START_GATES.promotion.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false, workItems: [] });
+  START_GATES.prediction.mockReset();
+  START_GATES.prediction.mockResolvedValue(undefined);
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
   it('starting a DRAFT plan flips its frontmatter to ready and reports autoApproved:true', async () => {
-    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
+    await seedLegacyPlan('draft');
     expect(await frontmatterStatus()).toBe('draft');
 
     const { data, isError } = await runStart();
-    expect(isError).toBe(false);
+    expect(isError, JSON.stringify(data)).toBe(false);
     expect(data).toMatchObject({ status: 'started', autoApproved: true, transitioned: true });
 
     // The real withPlanLock flip landed: the frontmatter now reads ready.
@@ -220,7 +266,7 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
   });
 
   it('re-starting the now-ready plan does NOT flip again (autoApproved:false)', async () => {
-    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
+    await seedLegacyPlan('draft');
     const first = await runStart();
     expect(first.data.autoApproved).toBe(true);
     expect(await frontmatterStatus()).toBe('ready');
@@ -238,7 +284,7 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
   });
 
   it('starting a plan that is ALREADY ready does not auto-approve', async () => {
-    await seedPlan(admin, WS, HARNESS, SLUG, planBody('ready'));
+    await seedLegacyPlan('ready');
     expect(await frontmatterStatus()).toBe('ready');
 
     const { data, isError } = await runStart();
@@ -246,6 +292,67 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
     expect(data).toMatchObject({ status: 'started', autoApproved: false, transitioned: true });
     // Frontmatter untouched — it was never a draft.
     expect(await frontmatterStatus()).toBe('ready');
+  });
+});
+
+describe('plans:start — refused approval leaves no persisted start (P-002)', () => {
+  it.each(['draft', 'ready'] as const)('preserves the %s row when the locked admission recheck refuses, then retries the same plan', async (status) => {
+    await seedLegacyPlan(status);
+    const before = await persistedStartState();
+    START_GATES.startable
+      .mockImplementationOnce((gate) => gate)
+      .mockImplementationOnce((gate) => ({
+        ok: false,
+        kind: 'admission',
+        row: gate.row,
+        refusal: { error: 'plan_not_admitted', code: 'plan_not_admitted', slug: SLUG },
+      }));
+
+    const refused = await runStart();
+    expect(refused.isError).toBe(true);
+    expect(refused.data).toMatchObject({ ok: false, error: 'plan_not_admitted' });
+    expect(START_GATES.startable).toHaveBeenCalledTimes(2);
+    expect(await persistedStartState()).toEqual(before);
+    expect(START_GATES.promotion).not.toHaveBeenCalled();
+    expect(START_GATES.prediction).not.toHaveBeenCalled();
+
+    const retry = await runStart();
+    expect(retry.isError).toBe(false);
+    expect(retry.data).toMatchObject({ status: 'started', transitioned: true, autoApproved: status === 'draft' });
+    expect(await frontmatterStatus()).toBe('ready');
+    expect(await revisionRows()).toHaveLength(status === 'draft' ? 1 : 0);
+    expect(START_GATES.promotion).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the row when the canonical body writer refuses activation after the mutator passes', async () => {
+    await seedLegacyPlan('draft');
+    const before = await persistedStartState();
+    START_GATES.activation
+      .mockResolvedValueOnce({ satisfied: true, auditSeq: 1 })
+      .mockResolvedValueOnce({ satisfied: false, code: 'conversation_audit_required' });
+
+    const refused = await runStart();
+    expect(refused.isError).toBe(true);
+    expect(refused.data).toMatchObject({ ok: false, error: 'conversation_audit_required' });
+    expect(START_GATES.activation).toHaveBeenCalledTimes(2);
+    expect(await persistedStartState()).toEqual(before);
+    expect(START_GATES.promotion).not.toHaveBeenCalled();
+    expect(START_GATES.prediction).not.toHaveBeenCalled();
+  });
+
+  it('preserves the row when the locked prerequisite reader throws', async () => {
+    await seedLegacyPlan('draft');
+    const before = await persistedStartState();
+    START_GATES.startable
+      .mockImplementationOnce((gate) => gate)
+      .mockRejectedValueOnce(new Error('prerequisite reader unavailable'));
+
+    const refused = await runStart();
+    expect(refused.isError).toBe(true);
+    expect(refused.data).toMatchObject({ ok: false, error: 'plan_start_revalidation_unavailable' });
+    expect(await persistedStartState()).toEqual(before);
+    expect(START_GATES.promotion).not.toHaveBeenCalled();
+    expect(START_GATES.prediction).not.toHaveBeenCalled();
   });
 });
 
@@ -267,7 +374,7 @@ describe('plans:start — draft auto-approve survives the retired op_status axis
   });
 
   it('flips draft→ready and reports the retirement, without ever writing op_status', async () => {
-    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
+    await seedLegacyPlan('draft');
 
     const { data, isError } = await runStart();
     expect(isError).toBe(false);
