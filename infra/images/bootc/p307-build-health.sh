@@ -71,6 +71,12 @@ is_uint "$STALLED_AFTER_SEC" || die "--stalled-after-sec must be a non-negative 
 PROC_ROOT="${PROC_ROOT%/}"
 STORAGE_ROOT="${STORAGE_ROOT%/}"
 
+# A non-root monitor cannot reliably inspect rootful Podman descendants.  Keep
+# the distinction explicit: an unreadable process tree is useful diagnostic
+# evidence, but it is not enough evidence for a STALLED verdict.
+MONITOR_CAN_READ_PRIVILEGED_PROC=0
+[ "$(id -u)" -eq 0 ] && MONITOR_CAN_READ_PRIVILEGED_PROC=1
+
 proc_file() {
   # $1 is a decimal pid; $2 is a path beginning with /.
   printf '%s/%s%s' "$PROC_ROOT" "$1" "$2"
@@ -99,6 +105,13 @@ read_process_state() {
   # The comm field may contain spaces and parentheses.  The state is the first
   # token after the final ')' in /proc/<pid>/stat.
   printf '%s\n' "${stat_line##*) }" | awk '{print $1}'
+}
+
+process_is_rootful_wrapper() {
+  local pid="$1" comm cmdline
+  comm="$(cat "$(proc_file "$pid" /comm)" 2>/dev/null || true)"
+  cmdline="$(tr '\0' ' ' < "$(proc_file "$pid" /cmdline)" 2>/dev/null || true)"
+  [ "$comm" = "sudo" ] && [[ "$cmdline" == *podman* ]]
 }
 
 root_is_live() {
@@ -242,10 +255,14 @@ report_waiters() {
 }
 
 report_snapshot() {
-  local status="$1" idle_sec="$2" now="$3" pids pid stats state log_state
+  local status="$1" idle_sec="$2" now="$3" reason="${4:-}" pids pid stats state log_state
   mapfile -t pids < <(process_tree "$PID")
   log_state="$(log_signature)"
-  echo "P307_BUILD_HEALTH status=$status pid=$PID idle_sec=$idle_sec threshold_sec=$STALLED_AFTER_SEC log=${LOG:-none} log_signature=$log_state at_epoch=$now"
+  if [ -n "$reason" ]; then
+    echo "P307_BUILD_HEALTH status=$status pid=$PID idle_sec=$idle_sec threshold_sec=$STALLED_AFTER_SEC reason=$reason log=${LOG:-none} log_signature=$log_state at_epoch=$now"
+  else
+    echo "P307_BUILD_HEALTH status=$status pid=$PID idle_sec=$idle_sec threshold_sec=$STALLED_AFTER_SEC log=${LOG:-none} log_signature=$log_state at_epoch=$now"
+  fi
   if [ "${#pids[@]}" -eq 0 ]; then
     echo "P307_BUILD_HEALTH process_tree=unavailable pid=$PID"
   else
@@ -276,11 +293,22 @@ while kill -0 "$PID" 2>/dev/null && root_is_live; do
   root_is_live || break
   now="$(date +%s)"
   activity=0
+  io_observation_complete=1
   mapfile -t current_pids < <(process_tree "$PID")
+  [ "${#current_pids[@]}" -gt 0 ] || io_observation_complete=0
 
   for pid in "${current_pids[@]}"; do
     stats="$(read_io "$pid" 2>/dev/null || true)"
-    [ -n "$stats" ] || continue
+    if [ -z "$stats" ]; then
+      io_observation_complete=0
+      continue
+    fi
+    # sudo remains as the monitored parent while rootful podman does the
+    # actual work. Its own counters can stay flat while the privileged child
+    # advances, so a non-root caller must not call that partial view STALLED.
+    if [ "$MONITOR_CAN_READ_PRIVILEGED_PROC" -eq 0 ] && process_is_rootful_wrapper "$pid"; then
+      io_observation_complete=0
+    fi
     if [ -n "${previous_io[$pid]+seen}" ]; then
       read -r rchar wchar read_bytes write_bytes <<<"$stats"
       read -r old_rchar old_wchar old_read_bytes old_write_bytes <<<"${previous_io[$pid]}"
@@ -305,7 +333,11 @@ while kill -0 "$PID" 2>/dev/null && root_is_live; do
   idle_sec=$((now - last_progress_epoch))
   if [ "$idle_sec" -ge "$STALLED_AFTER_SEC" ] \
     && { [ "$last_report_epoch" -eq 0 ] || [ $((now - last_report_epoch)) -ge "$STALLED_AFTER_SEC" ]; }; then
-    report_snapshot STALLED "$idle_sec" "$now"
+    if [ "$io_observation_complete" -eq 0 ]; then
+      report_snapshot UNKNOWN "$idle_sec" "$now" process_io_unavailable
+    else
+      report_snapshot STALLED "$idle_sec" "$now"
+    fi
     last_report_epoch="$now"
   fi
 done

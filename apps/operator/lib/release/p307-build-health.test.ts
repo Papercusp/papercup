@@ -143,6 +143,55 @@ wait "$pid" 2>/dev/null || true
 
     expectSuccessfulHarness(result);
   });
+
+  it('downgrades a rootful wrapper with incomplete process I/O to UNKNOWN', () => {
+    const root = tempRoot('p307-rootful-unknown-');
+    const result = shellHarness(
+      String.raw`set -u
+: >"$TMP/build.log"
+(sleep 30) &
+pid=$!
+proc="$TMP/proc"
+mkdir -p "$proc/$pid/task/$pid" "$proc/$((pid + 1))/task/$((pid + 1))"
+printf '%s (sudo) S 0 0 0\n' "$pid" >"$proc/$pid/stat"
+printf 'sudo\n' >"$proc/$pid/comm"
+printf 'sudo\0-n\0podman\0run\0' >"$proc/$pid/cmdline"
+printf 'rchar: 1\nwchar: 1\nread_bytes: 1\nwrite_bytes: 1\n' >"$proc/$pid/io"
+printf '%s (podman) S 0 0 0\n' "$((pid + 1))" >"$proc/$((pid + 1))/stat"
+printf 'podman\n' >"$proc/$((pid + 1))/comm"
+printf 'rchar: 1\nwchar: 1\nread_bytes: 1\nwrite_bytes: 1\n' >"$proc/$((pid + 1))/io"
+(
+  for n in $(seq 2 80); do
+    printf 'rchar: %s\nwchar: %s\nread_bytes: %s\nwrite_bytes: %s\n' \
+      "$n" "$n" "$n" "$n" >"$proc/$((pid + 1))/io"
+    sleep 0.05
+  done
+) &
+advancer=$!
+# The privileged descendant's counters advance, but an unprivileged monitor
+# cannot traverse it from the sudo wrapper's process tree.
+bash "$P307_SCRIPT" --pid "$pid" --log "$TMP/build.log" \
+  --proc-root "$proc" --interval-sec 1 --stalled-after-sec 1 >"$TMP/monitor.out" 2>&1 &
+monitor=$!
+for _ in $(seq 1 80); do
+  grep -q 'status=UNKNOWN' "$TMP/monitor.out" && break
+  sleep 0.05
+done
+grep -q 'status=UNKNOWN' "$TMP/monitor.out"
+kill "$monitor" 2>/dev/null || true
+wait "$monitor" 2>/dev/null || true
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+wait "$advancer" 2>/dev/null || true
+test "$(awk '$1 == "rchar:" {print $2}' "$proc/$((pid + 1))/io")" -gt 1
+grep -q 'reason=process_io_unavailable' "$TMP/monitor.out"
+! grep -q 'status=STALLED' "$TMP/monitor.out"
+`,
+      root,
+    );
+
+    expectSuccessfulHarness(result);
+  });
 });
 
 describe('P-307 diagnostic mount ownership (EI-22359882088161242)', () => {
