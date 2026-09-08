@@ -125,7 +125,7 @@ describe('P-002 workflow measurements against frozen P-001 targets', () => {
     expect(result).not.toHaveProperty('data.scorecardDraft');
     expect(stores.readPlan).toHaveBeenCalledTimes(1);
     expect(stores.listClauses).toHaveBeenCalledTimes(1);
-    expect(stores.listRubrics).toHaveBeenCalledWith(metadataPlanSlug, { strict: true });
+    expect(stores.listRubrics).toHaveBeenCalledWith(metadataPlanSlug, { harnessSlug: metadataHarness, strict: true });
   });
 
   it('derives the unambiguous persisted class with no caller metadata and stable retry identity', async () => {
