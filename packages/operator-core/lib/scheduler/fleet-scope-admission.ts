@@ -1624,6 +1624,15 @@ export async function diagnoseFleetScopeFeatureFamilyMatch(args: FeatureFamilyDi
  * spec `p2p-release-lane@8` matched 0 of 1250 rows for 4.5h while two members separately ruled
  * out a spec bug in good faith).
  */
+/**
+ * Smallest whole-call budget that can safely START the bounded issue-family
+ * diagnostic. boundedPgReadTxn owns two independently floored DB legs
+ * (acquisition + statement, 100ms each) plus its fixed cleanup allowance.
+ * Callers below this threshold must report the read as unavailable instead of
+ * launching work that their own deadline will abandon.
+ */
+export const FLEET_SCOPE_ISSUE_DIAG_MIN_TOTAL_BUDGET_MS = PG_READ_QUERY_CALL_OVERHEAD_MS + 200;
+
 export async function diagnoseFleetScopeIssueFloorMiss(args: {
   scope: FleetScopeContext;
   harness: string;
@@ -1640,11 +1649,11 @@ export async function diagnoseFleetScopeIssueFloorMiss(args: {
     const totalBudgetMs = Number.isFinite(args.totalBudgetMs)
       ? Math.trunc(args.totalBudgetMs as number)
       : FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS;
-    const databaseBudgetMs = totalBudgetMs - PG_READ_QUERY_CALL_OVERHEAD_MS;
     // boundedPgReadTxn clamps each leg to at least 100ms. Do not start a transaction
     // when those two minimums plus its fixed whole-call overhead cannot fit inside
     // the caller's remaining allowance.
-    if (databaseBudgetMs < 200) return null;
+    if (totalBudgetMs < FLEET_SCOPE_ISSUE_DIAG_MIN_TOTAL_BUDGET_MS) return null;
+    const databaseBudgetMs = totalBudgetMs - PG_READ_QUERY_CALL_OVERHEAD_MS;
     const acquireTimeoutMs = Math.max(100, Math.floor(databaseBudgetMs / 4));
     const timeoutMs = databaseBudgetMs - acquireTimeoutMs;
     const spec = args.scope.record.spec;

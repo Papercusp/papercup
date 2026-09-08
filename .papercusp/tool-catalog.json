@@ -20322,7 +20322,7 @@
           "POST"
         ]
       },
-      "description": "Record a plan audit: `completion` (default) re-resolves each item's code/test citations and preserves provenance; `activation` maps canonical `session_turn` refs to P-NNN/D-NNN/sections, resolves them, and records the current revision. Post-epoch activation also transactionally seeds acceptance BARs from the plan's `## Requirements`/`### Bar-to-work map`; parse, map, or projection failures roll back. No parallel review tool exists.",
+      "description": "Record a plan audit: `completion` (default) re-resolves each item's code/test citations and preserves provenance; `activation` maps canonical `session_turn` refs to P-NNN/D-NNN/sections, resolves them, records the current revision, and returns an advisory activation-readiness consult preview. Post-epoch activation also transactionally seeds acceptance BARs from the plan's `## Requirements`/`### Bar-to-work map`; parse, map, or projection failures roll back. No parallel review tool.",
       "capabilities": [
         "plans:write"
       ],
@@ -25498,7 +25498,7 @@
       "guidance": {
         "when": "You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is using CPU or memory right now, or whether anything bypassed the spawn chokepoint. Also the honest answer to \"is my background job still alive\" for anything started through managedSpawn.",
         "notWhen": "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
-        "chaining": "Pass `taskId` to inspect one exact ledger row, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
+        "chaining": "Pass `taskId`, `scopeUnit`, or `invocationId` to inspect one exact ledger identity before the result limit is applied. Then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
       }
     },
     {

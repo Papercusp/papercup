@@ -219,6 +219,8 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(c.args).toContain('--exclude-table-data=harness_shared.session_turn_chunks');
     expect(c.args).toContain('--exclude-table-data=harness_shared.session_turn_parts');
     expect(c.args).toContain('--exclude-table-data=harness_shared.gateway_payload_blobs');
+    expect(c.args).toContain('--exclude-table-data=harness_shared.memory_recall_stats');
+    expect(c.args).toContain('--exclude-table-data=harness_shared.memory_recall_query_text');
     expect(c.args).not.toContain('-t');
   });
 

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   resolveFleetClaimSpec: vi.fn(),
   resolveClaimSpecWorkspace: vi.fn(() => 'ws-x'),
   aggregateIssueClaimExclusions: vi.fn(),
+  diagnoseFleetScopeIssueFloorMiss: vi.fn(),
   diagnoseFleetScopeFeatureFamilyExclusions: vi.fn(),
 }));
 
@@ -17,10 +18,12 @@ vi.mock('../scheduler/get-next', () => ({
   aggregateIssueClaimExclusions: mocks.aggregateIssueClaimExclusions,
 }));
 vi.mock('../scheduler/fleet-scope-admission', () => ({
+  FLEET_SCOPE_ISSUE_DIAG_MIN_TOTAL_BUDGET_MS: 3_200,
+  diagnoseFleetScopeIssueFloorMiss: mocks.diagnoseFleetScopeIssueFloorMiss,
   diagnoseFleetScopeFeatureFamilyExclusions: mocks.diagnoseFleetScopeFeatureFamilyExclusions,
 }));
 
-import { readFleetLaneHealth } from './lane-health';
+import { readFleetLaneHealth, readFleetLaneHealthDiagnosed } from './lane-health';
 
 const planFilter: FilterNode = { field: 'plan', op: '=', value: 'p' };
 
@@ -56,6 +59,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.resolveFleetClaimSpec.mockResolvedValue(resolved());
   mocks.aggregateIssueClaimExclusions.mockResolvedValue({
+    claimable: 0,
+    matchedByFilter: 0,
+    excluded: {},
+  });
+  mocks.diagnoseFleetScopeIssueFloorMiss.mockResolvedValue({
     claimable: 0,
     matchedByFilter: 0,
     excluded: {},
@@ -191,5 +199,66 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
     );
     expect(health?.effective.claimable).toBe(6);
     expect(health?.spec.assigneeScoped).toBeNull();
+  });
+
+  it('does not launch a large observation-heavy issue aggregate behind a 750ms leader budget', async () => {
+    const textFence: FilterNode = {
+      all: [
+        { field: 'kind', op: 'in', value: ['feature', 'change'] },
+        {
+          not: {
+            any: Array.from({ length: 24 }, (_, index) => ({
+              field: index % 2 === 0 ? 'title' : 'summary',
+              op: 'word' as const,
+              value: `excluded-term-${index}`,
+            })),
+          },
+        },
+      ],
+    };
+    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(resolved({
+      ...spec,
+      view: { filter: textFence },
+    }));
+
+    const reading = await readFleetLaneHealthDiagnosed({
+      fleet: 'fleet-x',
+      harness: 'papercusp',
+      workspaceId: 'ws-x',
+      issueFamilyTotalBudgetMs: 750,
+    });
+
+    expect(reading.laneHealth).toBeNull();
+    expect(reading.unavailable).toMatchObject({
+      code: 'issue-family-budget-insufficient',
+      stage: 'issue-family',
+      basis: 'issue+feature-family',
+      spec: { ref: 'feature-plan (spec rev 7)', harness: 'papercusp' },
+      recoverVia: expect.stringContaining('work_items:claimable'),
+    });
+    expect(reading.unavailable?.detail).toContain('aggregate was not launched');
+    expect(mocks.aggregateIssueClaimExclusions).not.toHaveBeenCalled();
+    expect(mocks.diagnoseFleetScopeIssueFloorMiss).not.toHaveBeenCalled();
+    expect(mocks.diagnoseFleetScopeFeatureFamilyExclusions).not.toHaveBeenCalled();
+  });
+
+  it('reuses the bounded fleet-scope issue diagnostic when the caller supplies a sufficient budget', async () => {
+    const reading = await readFleetLaneHealthDiagnosed({
+      fleet: 'fleet-x',
+      harness: 'papercusp',
+      workspaceId: 'ws-x',
+      issueFamilyTotalBudgetMs: 5_000,
+    });
+
+    expect(reading.laneHealth?.effective.claimable).toBe(4);
+    expect(reading.unavailable).toBeNull();
+    expect(mocks.diagnoseFleetScopeIssueFloorMiss).toHaveBeenCalledWith(
+      expect.objectContaining({
+        harness: 'papercusp',
+        workspaceId: 'ws-x',
+        totalBudgetMs: 5_000,
+      }),
+    );
+    expect(mocks.aggregateIssueClaimExclusions).not.toHaveBeenCalled();
   });
 });

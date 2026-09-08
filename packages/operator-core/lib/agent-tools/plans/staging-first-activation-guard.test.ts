@@ -308,6 +308,39 @@ Related: P-001`,
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
 
+  it('does not treat a browser build waterfall as a deployed-main wait', () => {
+    const browserWaterfall =
+      'The body stays unrendered until mounted flips, so the chunk request cannot begin until: ' +
+      'main bundle -> parse -> hydrate -> effect flush -> re-render -> fetch.';
+    const parsed = plan(
+      ['- **P-001** `todo` Measure portal tab performance on staging.'],
+      `### D-010 — Embedded-pane browser waterfall
+Date: 2026-09-07
+${browserWaterfall}
+Related: P-001`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'P-001',
+        itemText: 'Measure portal tab performance on staging.',
+        blockerText: browserWaterfall,
+        kind: 'runtime',
+      }),
+    ).toBeNull();
+  });
+
+  it('still recognizes an until clause whose object is the release plane', () => {
+    const parsed = plan(['- **P-001** `todo` Validate the interactive client on staging.'], '', `## Now
+
+**State:** P-001 cannot continue until :3070 serves the implementation.`);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-001', code: 'non_final_deployed_main_wait' }),
+    ]);
+  });
+
   it('still rejects blocker semantics around deployment', () => {
     const parsed = plan(['- **P-001** `todo` P-001 is blocked on deployment before continuing implementation.']);
 

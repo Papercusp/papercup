@@ -23,9 +23,19 @@ export interface StagingFirstBlockerProblem {
   detail: string;
 }
 
-const DEPLOYED_ENV_RE = /(?:\bmain\b|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
+// `main` is overloaded: it can mean the release branch, or a browser build
+// artifact (`main bundle`, `main chunk`, ...). Only the former belongs to the
+// staging-first release guard. Keep this lexical fence close to the token so a
+// later gate phrase in the same sentence cannot turn build prose into a wait.
+const DEPLOYED_ENV_RE =
+  /(?:\bmain\b(?!(?:\s+|-)\b(?:bundle|chunk|entry|thread)\b)|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const STRONG_GATE_RE =
-  /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b.{0,40}\b(?:on|until|before|by)\b|\bprerequisite\b|\bonly\s+after\b|\buntil\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
+  /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b.{0,40}\b(?:on|until|before|by)\b|\bprerequisite\b|\bonly\s+after\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
+// A bare `until` is ordinary ordering prose. It is a strong gate only when
+// its object is itself a release-plane token. This prevents e.g. `main bundle
+// ... cannot begin until: parse` from pairing unrelated words.
+const RELEASE_PLANE_UNTIL_RE =
+  /\buntil\b\s*:?[\s,-]*(?:(?:the\s+)?main\b(?!(?:\s+|-)\b(?:bundle|chunk|entry|thread)\b)|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const NEGATED_OR_META_GATE_RE =
   /(?:\b(?:reject|refus|forbid|prevent|detect|flag|exclud)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bno\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnot\s+(?:an?\s+)?(?:\w+[- ]){0,3}(?:prerequisite|wait|block(?:er|ing)?|gate)\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnever\s+(?:an?\s+)?(?:block|wait|require|prerequisite)\w*\b|\bwithout\s+wait(?:ing)?\s+(?:for|on)\b|\binstead\s+of\s+wait(?:ing)?\s+(?:for|on)\b)/i;
 const FINAL_LIFECYCLE_RE =
@@ -132,7 +142,10 @@ function hasStrongDeployedGate(text: string): boolean {
   return text
     .split(/\n+|(?<=[.!?])\s+/)
     .some(
-      (clause) => DEPLOYED_ENV_RE.test(clause) && STRONG_GATE_RE.test(clause) && !NEGATED_OR_META_GATE_RE.test(clause),
+      (clause) =>
+        DEPLOYED_ENV_RE.test(clause) &&
+        (STRONG_GATE_RE.test(clause) || RELEASE_PLANE_UNTIL_RE.test(clause)) &&
+        !NEGATED_OR_META_GATE_RE.test(clause),
     );
 }
 

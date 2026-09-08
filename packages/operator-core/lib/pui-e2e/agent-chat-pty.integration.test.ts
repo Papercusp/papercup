@@ -1559,7 +1559,26 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(second.instanceId).not.toBe(first.instanceId);
       await openAgentChat(resumedPane);
       resumedPane.escape(); await resumedPane.waitFor('i type · v speak');
-      resumedPane.write('l'); await resumedPane.waitFor('Conversation — Enter select'); resumedPane.enter();
+      resumedPane.write('l'); await resumedPane.waitFor('Conversation — Enter select');
+      frames.conversationPicker = resumedPane.screen();
+      // Select the saved identity explicitly. The picker starts at row zero,
+      // which can be another (empty) conversation in the production inventory.
+      await resumedPane.waitFor(chatId!);
+      const selectedHint = () => {
+        const rows = resumedPane.screen().split('\n');
+        const title = rows.findIndex((row) => row.includes('Conversation — Enter select'));
+        const index = rows.findIndex((row, index) => index > title && row.includes('│> '));
+        return index >= 0 ? rows[index + 1] ?? '' : '';
+      };
+      for (let row = 0; row < 100 && !selectedHint().includes(chatId!); row++) {
+        const previous = selectedHint();
+        expect(previous, 'Conversation picker has no rendered selected row').not.toBe('');
+        resumedPane.write('j');
+        await vi.waitFor(() => expect(selectedHint()).not.toBe(previous), { timeout: 2_000, interval: 50 });
+      }
+      expect(selectedHint()).toContain(chatId!);
+      frames.selectedConversation = resumedPane.screen();
+      resumedPane.enter();
       resumedPane.write('i'); await resumedPane.waitForReply(greetingReply);
       frames.history = resumedPane.screen();
       await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });

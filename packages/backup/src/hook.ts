@@ -85,6 +85,16 @@ const EXCLUDED_TABLE_DATA = [
   'harness_shared.agent_usage_samples',
   'harness_shared.telemetry_reports_archive',
   'harness_shared.audit_log',
+  // Recall-quality telemetry is derived diagnostics, not restore-critical
+  // state. It has grown to ~1.7 GB heap on the dev cluster (plus the
+  // query-text companion) and was the remaining included COPY workload after
+  // the transcript/archive exclusions; retaining it in every hot snapshot
+  // makes the 15-minute dump watchdog elapse before the receipt can be marked
+  // database-backed. The schema stays in the dump so the tables remain
+  // available after restore; only their high-volume rows come from the
+  // hourly host-level backup when needed.
+  'harness_shared.memory_recall_stats',
+  'harness_shared.memory_recall_query_text',
   // Gateway request bodies are a durable-admission spool, not workspace
   // state. Receipts retain these rows only until execution settles, and the
   // live table can still grow by tens of GiB between hourly sweeps. Keeping

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FleetLaneHealth } from '../../fleet/lane-health';
+import type { FleetLaneHealth, FleetLaneHealthUnavailable } from '../../fleet/lane-health';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 
 function laneHealth(claimable: number | null): FleetLaneHealth {
@@ -99,6 +99,50 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
       unknown: { code: 'not-measured' },
       interpretation: { state: 'unknown', exactness: { status: 'unknown' } },
     });
+  });
+
+  it('preserves a resolved population, typed cause, and exact recovery call when the issue read is skipped', () => {
+    const unavailable: FleetLaneHealthUnavailable = {
+      code: 'issue-family-budget-insufficient',
+      stage: 'issue-family',
+      detail: 'The 750ms caller budget is below the safe-start floor, so the aggregate was not launched.',
+      recoverVia:
+        'work_items:claimable {"harness":"papercusp","spec":"observability-fleet","breakdownOnly":true}',
+      spec: {
+        ref: 'fleet-lane@4',
+        specId: 'fleet-lane',
+        revision: 4,
+        matchedBy: 'fleet-slug',
+        harness: 'papercusp',
+        assigneeScoped: null,
+        planScoped: false,
+      },
+      basis: 'issue+feature-family',
+    };
+
+    const aggregate = buildClaimableNowAggregate({
+      fleet: 'observability-fleet',
+      requestedHarness: 'papercusp',
+      laneHealth: null,
+      unavailable,
+      fleetPaused: false,
+    });
+
+    expect(aggregate).toMatchObject({
+      value: null,
+      population: {
+        harness: 'papercusp',
+        spec: { ref: 'fleet-lane@4', matchedBy: 'fleet-slug', assigneeScoped: null },
+        basis: 'issue+feature-family',
+      },
+      unknown: {
+        code: 'issue-family-budget-insufficient',
+        detail: expect.stringContaining('aggregate was not launched'),
+        recoverVia: unavailable.recoverVia,
+      },
+      interpretation: { state: 'unknown' },
+    });
+    expect(aggregate.population.note).toContain(unavailable.recoverVia);
   });
 
   it.each([

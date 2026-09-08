@@ -157,6 +157,55 @@ export interface FleetLaneHealth {
   };
 }
 
+export type FleetLaneHealthUnavailableCode =
+  | 'claim-spec-unresolved'
+  | 'issue-family-budget-insufficient'
+  | 'lane-health-unavailable'
+  | 'leader-brief-budget-exceeded';
+
+/** A typed explanation for an UNKNOWN lane-health read. Never synthesize zero. */
+export interface FleetLaneHealthUnavailable {
+  code: FleetLaneHealthUnavailableCode;
+  stage: 'claim-spec' | 'issue-family' | 'feature-family' | 'leader-brief';
+  detail: string;
+  recoverVia: string;
+  /** Resolved population identity when resolution completed before the read failed. */
+  spec: FleetLaneHealth['spec'] | null;
+  basis: FleetLaneHealth['effective']['basis'] | null;
+}
+
+export interface FleetLaneHealthReadResult {
+  laneHealth: FleetLaneHealth | null;
+  unavailable: FleetLaneHealthUnavailable | null;
+}
+
+export interface ReadClaimSpecLaneHealthArgs {
+  spec: ClaimSpec;
+  record: ClaimSpecRecord;
+  fleet: string;
+  harness: string;
+  /** Omit for a caller-neutral population read; pass an owner id for a per-member claim verdict. */
+  workspaceId?: string | null;
+  assignee?: string;
+  rigAvailable?: boolean;
+  matchedBy?: string;
+  /**
+   * Whole-call budget for the issue-family diagnostic. When supplied, lane
+   * health reuses diagnoseFleetScopeIssueFloorMiss's acquisition + DB-side
+   * statement bounds instead of the standalone 15s aggregate.
+   */
+  issueFamilyTotalBudgetMs?: number;
+}
+
+export interface ReadFleetLaneHealthArgs {
+  fleet: string;
+  harness?: string;
+  workspaceId?: string | null;
+  assignee?: string;
+  rigAvailable?: boolean;
+  issueFamilyTotalBudgetMs?: number;
+}
+
 type Possible = { yes: boolean; no: boolean };
 const SUBJECT: ClaimSpecSubject = {
   id: null, title: null, summary: null, kind: null, priority: null, tags: [], paths: [], plan: null,
@@ -218,26 +267,76 @@ export function claimSpecFamilyReachability(spec: ClaimSpec): ClaimSpecFamilyRea
   };
 }
 
+function effectiveBasis(reachability: ClaimSpecFamilyReachability): FleetLaneHealth['effective']['basis'] {
+  if (reachability.issue && reachability.feature) return 'issue+feature-family';
+  if (reachability.issue) return 'issue-family';
+  if (reachability.feature) return 'feature-family';
+  return 'no-family';
+}
+
+function resolvedSpec(args: ReadClaimSpecLaneHealthArgs): FleetLaneHealth['spec'] {
+  return {
+    ref: formatSpecRef(args.spec.specId, args.spec.revision ?? args.record.revision),
+    specId: args.spec.specId,
+    revision: args.spec.revision ?? args.record.revision,
+    matchedBy: args.matchedBy ?? 'supplied',
+    harness: args.harness,
+    assigneeScoped: args.assignee ?? null,
+    planScoped:
+      claimSpecReferencesField(args.spec, 'plan') || claimSpecReferencesField(args.spec, 'plan_item'),
+  };
+}
+
+function claimabilityRecovery(fleet: string, harness: string): string {
+  return `work_items:claimable ${JSON.stringify({ harness, spec: fleet, breakdownOnly: true })}`;
+}
+
+function unavailableForResolvedSpec(
+  args: ReadClaimSpecLaneHealthArgs,
+  input: Pick<FleetLaneHealthUnavailable, 'code' | 'stage' | 'detail'>,
+): FleetLaneHealthUnavailable {
+  const reachability = claimSpecFamilyReachability(args.spec);
+  return {
+    ...input,
+    recoverVia: claimabilityRecovery(args.fleet, args.harness),
+    spec: resolvedSpec(args),
+    basis: effectiveBasis(reachability),
+  };
+}
+
 /** Read every structurally reachable family for a supplied, already-validated spec. */
-export async function readClaimSpecLaneHealth(args: {
-  spec: ClaimSpec; record: ClaimSpecRecord; fleet: string; harness: string;
-  /** Omit for a caller-neutral population read; pass an owner id for a per-member claim verdict. */
-  workspaceId?: string | null; assignee?: string; rigAvailable?: boolean; matchedBy?: string;
-}): Promise<FleetLaneHealth | null> {
+export async function readClaimSpecLaneHealth(args: ReadClaimSpecLaneHealthArgs): Promise<FleetLaneHealth | null> {
   try {
     const { resolveClaimSpecWorkspace } = await import('../scheduler/claim-spec-store');
     const { aggregateIssueClaimExclusions } = await import('../scheduler/get-next');
     const ws = resolveClaimSpecWorkspace(args.workspaceId ?? undefined);
     const familyReachability = claimSpecFamilyReachability(args.spec);
-    const issueFamily = familyReachability.issue
-      ? await aggregateIssueClaimExclusions(args.spec.view.filter, {
-          harness: args.harness, workspaceId: ws, states: args.spec.states,
-          assignee: args.assignee, rigAvailable: args.rigAvailable,
-        }).then((value) => ({
-          claimable: value.claimable,
-          matchedByFilter: value.matchedByFilter,
-          excluded: value.excluded as unknown as Record<string, number>,
-        }))
+    const issueBreakdown = familyReachability.issue
+      ? args.issueFamilyTotalBudgetMs === undefined
+        ? await aggregateIssueClaimExclusions(args.spec.view.filter, {
+            harness: args.harness, workspaceId: ws, states: args.spec.states,
+            assignee: args.assignee, rigAvailable: args.rigAvailable,
+          })
+        : ws
+          ? await import('../scheduler/fleet-scope-admission').then(({ diagnoseFleetScopeIssueFloorMiss }) =>
+              diagnoseFleetScopeIssueFloorMiss({
+                scope: {
+                  ownerId: args.assignee ?? '', fleetSlug: args.fleet, fleetRole: 'member',
+                  record: args.record, workspaceId: ws,
+                },
+                harness: args.harness, workspaceId: ws, states: args.spec.states,
+                rigAvailable: args.rigAvailable, totalBudgetMs: args.issueFamilyTotalBudgetMs,
+              }),
+            )
+          : null
+      : null;
+    if (familyReachability.issue && issueBreakdown == null) return null;
+    const issueFamily = issueBreakdown
+      ? {
+          claimable: issueBreakdown.claimable,
+          matchedByFilter: issueBreakdown.matchedByFilter,
+          excluded: issueBreakdown.excluded as unknown as Record<string, number>,
+        }
       : { claimable: 0, matchedByFilter: 0, excluded: {} };
 
     let featureFamily: FleetLaneHealth['featureFamily'] = null;
@@ -297,24 +396,115 @@ export async function readClaimSpecLaneHealth(args: {
   }
 }
 
+/**
+ * Diagnosed sibling for observability callers. It preserves the resolved spec
+ * and a concrete recovery path when an exact family-complete read cannot fit.
+ */
+export async function readClaimSpecLaneHealthDiagnosed(
+  args: ReadClaimSpecLaneHealthArgs,
+): Promise<FleetLaneHealthReadResult> {
+  const familyReachability = claimSpecFamilyReachability(args.spec);
+  if (familyReachability.issue && args.issueFamilyTotalBudgetMs !== undefined) {
+    try {
+      const { FLEET_SCOPE_ISSUE_DIAG_MIN_TOTAL_BUDGET_MS } = await import(
+        '../scheduler/fleet-scope-admission'
+      );
+      if (args.issueFamilyTotalBudgetMs < FLEET_SCOPE_ISSUE_DIAG_MIN_TOTAL_BUDGET_MS) {
+        return {
+          laneHealth: null,
+          unavailable: unavailableForResolvedSpec(args, {
+            code: 'issue-family-budget-insufficient',
+            stage: 'issue-family',
+            detail:
+              `The ${args.issueFamilyTotalBudgetMs}ms caller budget is below the bounded issue-family ` +
+              `diagnostic's ${FLEET_SCOPE_ISSUE_DIAG_MIN_TOTAL_BUDGET_MS}ms safe-start floor ` +
+              '(connection acquisition + PostgreSQL statement cancellation + cleanup), so the expensive ' +
+              'aggregate was not launched and no zero was inferred.',
+          }),
+        };
+      }
+    } catch {
+      // The normal reader below preserves its existing fail-soft behavior. The
+      // diagnosed wrapper will turn its null into an explicit unavailable result.
+    }
+  }
+
+  const laneHealth = await readClaimSpecLaneHealth(args);
+  if (laneHealth?.effective.claimable != null) return { laneHealth, unavailable: null };
+  const stage: FleetLaneHealthUnavailable['stage'] = familyReachability.issue
+    ? 'issue-family'
+    : familyReachability.feature
+      ? 'feature-family'
+      : 'claim-spec';
+  return {
+    laneHealth,
+    unavailable: unavailableForResolvedSpec(args, {
+      code: 'lane-health-unavailable',
+      stage,
+      detail:
+        'A reachable storage-family diagnostic did not produce an exact measurement; ' +
+        'the lane remains UNKNOWN and no zero was inferred.',
+    }),
+  };
+}
+
 /** Resolve a persisted fleet spec, then delegate to the family-complete raw reader. */
-export async function readFleetLaneHealth(args: {
-  fleet: string; harness?: string; workspaceId?: string | null;
-  assignee?: string; rigAvailable?: boolean;
-}): Promise<FleetLaneHealth | null> {
+export async function readFleetLaneHealthDiagnosed(
+  args: ReadFleetLaneHealthArgs,
+): Promise<FleetLaneHealthReadResult> {
   try {
     const { resolveFleetClaimSpec, resolveClaimSpecWorkspace } = await import('../scheduler/claim-spec-store');
     const ws = resolveClaimSpecWorkspace(args.workspaceId ?? undefined);
     const resolved = await resolveFleetClaimSpec({ spec: args.fleet, workspaceId: ws });
-    if (!resolved) return null;
+    if (!resolved) {
+      return {
+        laneHealth: null,
+        unavailable: {
+          code: 'claim-spec-unresolved',
+          stage: 'claim-spec',
+          detail: `No unique persisted claim spec resolved for fleet '${args.fleet}'; no lane count was inferred.`,
+          recoverVia: `scheduler:get_claim_spec ${JSON.stringify({ fleet: args.fleet, history: 0 })}`,
+          spec: null,
+          basis: null,
+        },
+      };
+    }
     const harness = args.harness ?? resolved.record.harnessSlug ?? null;
-    if (!harness) return null;
-    return readClaimSpecLaneHealth({
+    if (!harness) {
+      return {
+        laneHealth: null,
+        unavailable: {
+          code: 'claim-spec-unresolved',
+          stage: 'claim-spec',
+          detail: `Fleet '${args.fleet}' resolved a claim spec without a concrete harness; no lane count was inferred.`,
+          recoverVia: `scheduler:get_claim_spec ${JSON.stringify({ fleet: args.fleet, history: 0 })}`,
+          spec: null,
+          basis: null,
+        },
+      };
+    }
+    return readClaimSpecLaneHealthDiagnosed({
       spec: resolved.record.spec, record: resolved.record, fleet: resolved.fleetSlug,
       harness, workspaceId: ws, assignee: args.assignee, rigAvailable: args.rigAvailable,
-      matchedBy: resolved.matchedBy,
+      matchedBy: resolved.matchedBy, issueFamilyTotalBudgetMs: args.issueFamilyTotalBudgetMs,
     });
-  } catch {
-    return null;
+  } catch (error) {
+    const suffix = error instanceof Error && error.message ? `: ${error.message}` : '';
+    return {
+      laneHealth: null,
+      unavailable: {
+        code: 'claim-spec-unresolved',
+        stage: 'claim-spec',
+        detail: `Fleet claim-spec resolution failed${suffix}; no lane count was inferred.`,
+        recoverVia: `scheduler:get_claim_spec ${JSON.stringify({ fleet: args.fleet, history: 0 })}`,
+        spec: null,
+        basis: null,
+      },
+    };
   }
+}
+
+/** Compatibility reader for decision callers that consume null as UNKNOWN. */
+export async function readFleetLaneHealth(args: ReadFleetLaneHealthArgs): Promise<FleetLaneHealth | null> {
+  return (await readFleetLaneHealthDiagnosed(args)).laneHealth;
 }

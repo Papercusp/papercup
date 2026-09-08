@@ -278,6 +278,72 @@ export default defineTool({
           }
         }
 
+        // EI-22641157890335835: establish that the exact-plan claim lane is
+        // measurable BEFORE approval, promotion, or the generated Promoted
+        // block write. The full admission check below intentionally runs again
+        // after promotion because it is the authoritative coverage verdict;
+        // this earlier read only prevents a lane-health UNKNOWN from allowing
+        // durable start mutations that end in an admission_refused response.
+        let laneHealthPreflight: Awaited<
+          ReturnType<typeof import('./plan-admission-preflight').preflightExactPlanLaneHealth>
+        > | null = null;
+        let laneHealthPreflightError: string | null = null;
+        try {
+          const [{ preflightExactPlanLaneHealth }, { resolveAgentIdentity }] = await Promise.all([
+            import('./plan-admission-preflight'),
+            import('../coordination/identity'),
+          ]);
+          const ownerId = resolveAgentIdentity(ctx).ownerId;
+          laneHealthPreflight = await preflightExactPlanLaneHealth({
+            workspaceId: startWorkspaceId,
+            harnessSlug,
+            planSlug: slug,
+            actor: ownerId,
+            claimant: ownerId,
+            specId: `plans-start-${slug}`,
+          });
+          if (!laneHealthPreflight || laneHealthPreflight.effective.claimable == null) {
+            const message = laneHealthPreflight
+              ? 'The exact-plan claim lane could not be read completely before approval or promotion.'
+              : 'The exact-plan claim lane could not be measured before approval or promotion.';
+            ctxAny.metadata?.({
+              slug,
+              harnessSlug,
+              refused: 'admission_refused',
+              admissionReason: 'lane-unknown',
+              laneHealthPreflight: laneHealthPreflight ? 'unknown' : 'unavailable',
+            });
+            return {
+              ok: false as const,
+              error: 'admission_refused' as const,
+              slug,
+              harnessSlug,
+              admissionReason: 'lane-unknown' as const,
+              laneHealthPreflight,
+              message,
+            };
+          }
+        } catch (error) {
+          laneHealthPreflightError = error instanceof Error ? error.message : String(error);
+          ctxAny.metadata?.({
+            slug,
+            harnessSlug,
+            refused: 'admission_refused',
+            admissionReason: 'lane-unknown',
+            laneHealthPreflight: 'error',
+          });
+          return {
+            ok: false as const,
+            error: 'admission_refused' as const,
+            slug,
+            harnessSlug,
+            admissionReason: 'lane-unknown' as const,
+            laneHealthPreflight,
+            laneHealthPreflightError,
+            message: `The exact-plan claim lane could not be measured before approval or promotion: ${laneHealthPreflightError}`,
+          };
+        }
+
         // P-010 (get-feedback-relevance-consults-2026-08-16) as amended by
         // consult-min-max-and-rubric-vetting-2026-08-17 P-002 (D-001 §2): the
         // plan-start CHECKPOINT consult runs with min:1 — a plan never
@@ -721,6 +787,8 @@ export default defineTool({
             ? `Item promotion is blocked by the spec triad (missing: ${(promotion.specTriadMissing ?? []).join(', ') || 'required sections'}).${promotion.specTriadWorkItem ? ` Resolve ${promotion.specTriadWorkItem}, then rerun plans:start.` : ''}`
             : promotion?.specQualityBlocked
               ? 'Item promotion is blocked by the current first-class spec-quality verdict; inspect `promotion.specQuality` before retrying.'
+              : promotion?.acceptanceBarBlocked
+                ? `Item promotion is blocked by the acceptance BAR contract: ${promotion.acceptanceBarLifecycle?.message ?? 'inspect `promotion.acceptanceBarLifecycle` before retrying.'}`
               : promotion?.flagOff
                 ? 'Item promotion is disabled by papercusp-plan-workitem-promotion; no queue rows were minted.'
                 : promotion

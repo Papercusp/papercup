@@ -2,6 +2,7 @@ import {
   interpretFleetClaimability,
   type FleetClaimabilityInterpretation,
   type FleetLaneHealth,
+  type FleetLaneHealthUnavailable,
 } from '../../fleet/lane-health';
 
 export interface ClaimableNowPopulation {
@@ -36,8 +37,9 @@ export interface ClaimableNowAggregate {
   interpretation: FleetClaimabilityInterpretation;
   /** Present exactly when `value` is unknown. A null without a reason is forbidden. */
   unknown?: {
-    code: 'not-measured';
+    code: 'not-measured' | FleetLaneHealthUnavailable['code'];
     detail: string;
+    recoverVia: string;
   };
 }
 
@@ -51,10 +53,12 @@ export function buildClaimableNowAggregate(input: {
   fleet: string;
   requestedHarness?: string | null;
   laneHealth: FleetLaneHealth | null;
+  unavailable?: FleetLaneHealthUnavailable | null;
   /** null means the control-state read was unavailable; false is a measured active state. */
   fleetPaused?: boolean | null;
 }): ClaimableNowAggregate {
   const { fleet, laneHealth } = input;
+  const unavailable = input.unavailable ?? null;
   const population: ClaimableNowPopulation = laneHealth
     ? {
         kind: 'fleet-claim-spec',
@@ -81,18 +85,32 @@ export function buildClaimableNowAggregate(input: {
           '(assigneeScoped:null): it intentionally omits the reading leader, so caller-specific ' +
           'release-cooldown and reserved-plan-lane floors do not apply. work_items:claimable is ' +
           'caller-scoped and may therefore return a different count even when passed this exact ' +
-          'spec+harness; without a spec it also asks the different default-spec, harness-wide question.',
+          'spec+harness; without a spec it also asks the different default-spec, harness-wide question.' +
+          (unavailable
+            ? ` Measurement incomplete: ${unavailable.detail} Recover via ${unavailable.recoverVia}.`
+            : ''),
       }
     : {
         kind: 'fleet-claim-spec',
         fleet,
-        harness: input.requestedHarness ?? null,
-        spec: null,
-        basis: null,
+        harness: unavailable?.spec?.harness ?? input.requestedHarness ?? null,
+        spec: unavailable?.spec
+          ? {
+              ref: unavailable.spec.ref,
+              revision: unavailable.spec.revision,
+              matchedBy: unavailable.spec.matchedBy,
+              assigneeScoped: unavailable.spec.assigneeScoped,
+              ...(unavailable.spec.planScoped !== undefined
+                ? { planScoped: unavailable.spec.planScoped }
+                : {}),
+            }
+          : null,
+        basis: unavailable?.basis ?? null,
         matchedByFilter: null,
-        note:
-          'claimable_now was not measured on this brief; the requested fleet+harness is ' +
-          'preserved, but no claim-spec population was resolved.',
+        note: unavailable
+          ? `claimable_now was not measured: ${unavailable.detail} Recover via ${unavailable.recoverVia}.`
+          : 'claimable_now was not measured on this brief; the requested fleet+harness is ' +
+            'preserved, but no claim-spec population was resolved.',
       };
 
   const value = laneHealth?.effective.claimable ?? null;
@@ -109,10 +127,16 @@ export function buildClaimableNowAggregate(input: {
       population,
       interpretation,
       unknown: {
-        code: 'not-measured',
-        detail:
+        code: unavailable?.code ?? 'not-measured',
+        detail: unavailable?.detail ??
           'Fleet lane health did not produce a family-complete claimable count for this brief; ' +
           'do not read the lane as drained.',
+        recoverVia: unavailable?.recoverVia ??
+          `work_items:claimable ${JSON.stringify({
+            harness: input.requestedHarness ?? '<resolved-fleet-harness>',
+            spec: fleet,
+            breakdownOnly: true,
+          })}`,
       },
     };
   }

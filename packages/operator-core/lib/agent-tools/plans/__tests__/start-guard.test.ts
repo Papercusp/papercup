@@ -16,7 +16,7 @@ import {
   type AcceptanceBarContractSnapshotInput,
 } from '../../../acceptance-bar-contract-snapshot';
 
-const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
+const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn(), laneHealth: vi.fn() }));
 const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn() }));
 const activationMocks = vi.hoisted(() => ({ gate: vi.fn() }));
 const planLockMocks = vi.hoisted(() => ({ withPlanLock: vi.fn() }));
@@ -139,6 +139,7 @@ vi.mock('../plan-admission-preflight', async (orig) => {
   const actual = await orig<typeof import('../plan-admission-preflight')>();
   return {
     ...actual,
+    preflightExactPlanLaneHealth: (...args: unknown[]) => admissionMocks.laneHealth(...args),
     preflightExactPlanAdmission: (...args: unknown[]) => admissionMocks.preflight(...args),
   };
 });
@@ -250,6 +251,8 @@ beforeEach(() => {
     message: 'exact-plan admission ready',
     claimKinds: ['bug', 'change', 'task'],
   });
+  admissionMocks.laneHealth.mockReset();
+  admissionMocks.laneHealth.mockResolvedValue({ effective: { claimable: 1 } });
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
@@ -493,6 +496,24 @@ describe('plans:start terminal guard', () => {
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 
+  it('refuses before approval and promotion when the pre-promotion lane is unknown', async () => {
+    admissionMocks.laneHealth.mockResolvedValueOnce({ effective: { claimable: null } });
+
+    const result = await run({ slug: 'live-plan-2026-06-02', consulted: true });
+
+    expect(result.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(result.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'admission_refused',
+      admissionReason: 'lane-unknown',
+      laneHealthPreflight: { effective: { claimable: null } },
+    });
+    expect(result.data.results[0].message).toContain('before approval or promotion');
+    expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(admissionMocks.preflight).not.toHaveBeenCalled();
+  });
+
   it('fails closed before promotion when an adopted spec set lacks a current quality verdict', async () => {
     H.state.specQuality = {
       satisfied: false,
@@ -630,6 +651,33 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     });
     expect(res.data.results[0].message).toContain('requirements, design');
     expect(res.data.results[0].message).toContain('WI-TRIAD-1');
+  });
+
+  it('surfaces an acceptance BAR promotion refusal instead of claiming completion', async () => {
+    promotePlanItemsMock.mockResolvedValue({
+      promoted: 0,
+      skipped: 4,
+      acceptanceBarBlocked: true,
+      acceptanceBarLifecycle: {
+        message: 'acceptance BAR contract is not ready for start — 1 of 1 BAR(s) blocking',
+      },
+      ...NO_EDGES,
+    });
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.results[0]).toMatchObject({
+      ok: true,
+      promotion: {
+        promoted: 0,
+        skipped: 4,
+        acceptanceBarBlocked: true,
+      },
+    });
+    expect(res.data.results[0].message).toContain(
+      'Item promotion is blocked by the acceptance BAR contract: acceptance BAR contract is not ready for start',
+    );
+    expect(res.data.results[0].message).not.toContain('promotion completed before this response');
   });
 
   it('keeps approval best-effort but reports a promotion exception explicitly', async () => {
