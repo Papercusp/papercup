@@ -258,10 +258,11 @@ pub enum Action {
         mutation: crate::agent_chats::AgentChatTaskMutation,
     },
     /// Answer the focused inline card (sentinel-tui-shared-backend-and-cards
-    /// Phase 2a) — the run loop POSTs `/card-response`. The reducer has already
-    /// optimistically dismissed the card from `card_state`. `payload` is the
+    /// Phase 2a) — the run loop POSTs `/card-response`. The card stays visible
+    /// until its authoritative close so a failed request can be retried. `payload` is the
     /// submit body (`{picks:[…]}` / `{value:…}`), absent for decline/cancel.
     CardRespond {
+        conversation_id: String,
         correlation_id: String,
         /// The card's own workspace (the wire `VersionedSnapshot.workspaceId`),
         /// preferred over the loop-resolved fallback for the `/card-response`
@@ -3224,7 +3225,7 @@ impl App {
                 if let Some(snapshot) =
                     crate::card_view::SnapshotEnvelope::from_json(&snapshot.to_string())
                 {
-                    self.card_state.apply_snapshot(snapshot);
+                    self.card_state.apply_delta(snapshot, correlation_id.as_deref());
                 }
                 if phase == "closed" {
                     self.session_note = Some(format!(
@@ -3486,8 +3487,8 @@ impl App {
 
     /// Drive the focused inline card (sentinel-tui-shared-backend-and-cards
     /// Phase 2a). Returns `Action::CardRespond` when the user commits an answer
-    /// (the reducer has already optimistically dismissed the card so the next
-    /// card surfaces immediately), else `Action::Render` for navigation.
+    /// (the server's close event advances the card queue), else
+    /// `Action::Render` for navigation.
     ///
     /// Keymap by presentation:
     ///   - radio:    ↑/↓ k/j move · Enter / 1-9 pick (commits) · Esc declines/cancels
@@ -3565,8 +3566,7 @@ impl App {
         }
     }
 
-    /// Turn a committed `CardResponse` into a `/card-response` Action, after
-    /// optimistically dismissing the focused card so the next one surfaces.
+    /// Turn a committed `CardResponse` into a `/card-response` Action.
     fn card_finish(&mut self, resp: crate::card_view::CardResponse) -> Action {
         use crate::card_view::CardResponse;
         match resp {
@@ -3581,8 +3581,8 @@ impl App {
         }
     }
 
-    /// Dismiss the focused card locally + emit the POST action. `None` when no
-    /// card is focused (defensive).
+    /// Freeze the conversation and card identity for the POST. Keep the card
+    /// visible until the server closes it, including after a failed POST.
     fn card_respond_action(
         &mut self,
         action: String,
@@ -3591,9 +3591,14 @@ impl App {
         let Some(correlation_id) = self.card_state.focused_correlation_id() else {
             return Action::Render;
         };
+        let Some(conversation_id) = self.agent_chat_id.as_ref().or(self.conversation_id.as_ref())
+            .filter(|id| !id.trim().is_empty()).cloned() else {
+            self.error = Some("Reconnect this conversation before answering its card".into());
+            return Action::Render;
+        };
         let workspace_id = self.card_state.focused_workspace_id();
-        self.card_state.dismiss(&correlation_id);
         Action::CardRespond {
+            conversation_id,
             correlation_id,
             workspace_id,
             action,
@@ -11483,6 +11488,54 @@ mod tests {
             "at": "2026-08-28T00:00:00Z",
             "session": {"agentChatId":"chat-1","advSessionId":7,"backend":"claude","nativeSessionId":"native-1","ownerId":"su-1","workspaceId":"ws-1","harnessSlug":"papercup"}
         })
+    }
+
+    #[test]
+    fn su_native_cards_preserve_siblings_when_one_request_closes() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        for (sequence, id) in [(1, "first"), (2, "second")] {
+            let mut event = su_event_base("card", sequence);
+            event["turnId"] = json!("same-turn");
+            event["phase"] = json!("opened");
+            event["card"] = json!({"correlationId":id,"prompt":id,"createdAt":sequence,
+                "presentation":{"kind":"radio","options":[{"id":"yes","label":"Yes"}]}});
+            app.apply_su_session_event(su_event(event));
+        }
+        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("first"));
+        assert_eq!(app.card_state.remaining(), 1);
+        let mut closed = su_event_base("card", 3);
+        closed["turnId"] = json!("same-turn");
+        closed["phase"] = json!("closed");
+        closed["correlationId"] = json!("first");
+        closed["resolution"] = json!("cancelled");
+        app.apply_su_session_event(su_event(closed));
+        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("second"));
+        assert_eq!(app.card_state.focused_workspace_id().as_deref(), Some("ws-1"));
+    }
+
+    #[test]
+    fn su_native_card_answer_uses_agent_chat_and_waits_for_authoritative_close() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-1".into());
+        app.conversation_id = None;
+        app.set_su_session_binding(su_binding());
+        let mut event = su_event_base("card", 1);
+        event["turnId"] = json!("turn-1");
+        event["phase"] = json!("opened");
+        event["card"] = json!({"correlationId":"question","prompt":"Choose?","createdAt":1,
+            "presentation":{"kind":"radio","options":[{"id":"0","label":"Keep"},{"id":"1","label":"Change"}]}});
+        app.apply_su_session_event(su_event(event));
+        let action = app.on_key(KeyCode::Char('2'), KeyModifiers::NONE);
+        assert!(matches!(action, Action::CardRespond { conversation_id, correlation_id, workspace_id, payload: Some(payload), .. }
+            if conversation_id == "chat-1" && correlation_id == "question" && workspace_id.as_deref() == Some("ws-1")
+                && payload == json!({"picks":["1"]})));
+        assert!(app.card_state.has_card(), "a failed POST must leave the question answerable");
+        app.agent_chat_id = None;
+        assert!(matches!(app.on_key(KeyCode::Char('2'), KeyModifiers::NONE), Action::Render));
+        assert!(app.card_state.has_card(), "a missing conversation must not hide the question");
     }
 
     #[test]

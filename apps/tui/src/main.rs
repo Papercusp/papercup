@@ -1998,6 +1998,7 @@ async fn run<B: Backend>(
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::CardRespond {
+                    conversation_id,
                     correlation_id,
                     workspace_id,
                     action,
@@ -2005,13 +2006,13 @@ async fn run<B: Backend>(
                 } => {
                     // Inline card answer (sentinel-tui-shared-backend-and-cards Phase
                     // 2a): POST /card-response so the server resolves the brain's
-                    // blocked tool call. The reducer already optimistically dismissed
-                    // the card; a fresh state-snapshot is the authoritative removal.
+                    // blocked tool call. The server's close event removes the card;
+                    // a failed POST leaves the same response available to retry.
                     // Prefer the card's OWN workspace (wire snapshot) over the
                     // loop-resolved one for the defense-in-depth gate.
                     let ws = workspace_id.or_else(|| app.card_workspace.clone());
                     tokio::spawn(card_respond_send(
-                        app.conversation_id.clone(),
+                        conversation_id,
                         correlation_id,
                         ws,
                         action,
@@ -5941,7 +5942,7 @@ async fn card_snapshot_loop(tx: UnboundedSender<Event>) {
 /// optimistically dismissed; the next snapshot reconciles if the POST didn't
 /// land). `conversation_id` only feeds the route's audit segment.
 async fn card_respond_send(
-    conversation_id: Option<String>,
+    conversation_id: String,
     correlation_id: String,
     workspace_id: Option<String>,
     action: String,
@@ -5955,17 +5956,12 @@ async fn card_respond_send(
             return;
         }
     };
-    // The route needs SOME :id segment; the correlator looks up by correlationId.
-    let conv = conversation_id.unwrap_or_default();
-    // The route's `expectedWorkspaceId` gate is required server-side (the body
-    // validator rejects an empty workspaceId). Fall back to the unscoped '*'
-    // marker when we couldn't resolve one — the correlator's workspace check
-    // skips when the gate matches the card's own workspace; an unresolved
-    // workspace means a dev/unscoped session where the card registered under
-    // the same activeWorkspaceId() this client reads.
-    let ws = workspace_id.unwrap_or_else(|| "*".to_string());
+    let Some(ws) = workspace_id.filter(|id| !id.trim().is_empty()) else {
+        let _ = tx.send(Event::ChatError("Reconnect this conversation to resolve the card's workspace".into()));
+        return;
+    };
     if let Err(e) = client
-        .card_respond(&conv, &correlation_id, &ws, &action, payload, None)
+        .card_respond(&conversation_id, &correlation_id, &ws, &action, payload, None)
         .await
     {
         let _ = tx.send(Event::ChatError(format!("card-response: {e}")));

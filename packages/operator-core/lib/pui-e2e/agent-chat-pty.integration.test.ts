@@ -506,6 +506,7 @@ type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'w
 let transportFault: TransportFault = 'none';
 let commandPosts: SuSessionCommand[] = [];
 let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
+let cardReplies: Array<{ path: string; status: number }> = [];
 let initializeWarnings: Array<Record<string, unknown>> = [];
 let optionalMemoryWarnings: string[] = [];
 let configurationWarnings: string[] = [];
@@ -899,6 +900,7 @@ beforeAll(async () => {
       const host = scriptedEngine.engines.at(-1)?.adapter.host;
       if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
       let response = await app.fetch(request, env);
+      if (pathname.endsWith('/card-response')) cardReplies.push({ path: pathname, status: response.status });
       traceTiming('request-end', { ...traceFields, elapsedMs: performance.now() - requestStarted, status: response.status });
       if (pathname === '/api/zero-harness/rest-query' && traceFields.query) {
         namedQueryReplies.push({ name: traceFields.query, status: response.status });
@@ -996,6 +998,7 @@ beforeEach(async () => {
   sessionTraffic = [];
   commandPosts = [];
   commandReplies = [];
+  cardReplies = [];
   transportFault = 'none';
   scriptedEngine.mode = 'success';
   scriptedEngine.successText = 'PUI structured engine replied';
@@ -1400,14 +1403,17 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const engine = scriptedEngine.engines[0];
       const card = pendingNativeCards()[0];
       expect(card.prompt).toBe(question);
-      if (card.presentation.kind !== 'radio') throw new Error('The native question did not produce a PUI choice card');
+      if (card.presentation?.kind !== 'radio' || !card.presentation.options) throw new Error('The native question did not produce a PUI choice card');
       const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
       expect(choiceIndex).toBeGreaterThanOrEqual(0);
       await pane.waitFor(question);
+      await pane.waitFor('Operator asks');
       await pane.waitFor('Change');
       const questionFrame = pane.screen();
       expect(scriptedEngine.events.some((event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId)).toBe(false);
       pane.write(String(choiceIndex + 1));
+      await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 15_000, interval: 100 });
+      expect(cardReplies[0]).toMatchObject({ status: 200 });
       const chat = await waitForCorrelatedReply(request, expected);
       await pane.waitForReply(expected);
       const start = scriptedEngine.events.find((event) => event.type === 'tool' && event.phase === 'started' && event.name === 'AskUserQuestion');
@@ -1419,11 +1425,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
       console.info('PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
         identity: engine.adapter.host.descriptor().identity, descriptor: engine.adapter.host.descriptor(), chatId: chat.id,
-        question, selected: 'Change', card, expected, questionFrame, answeredFrame: pane.screen(),
+        question, selected: 'Change', card, cardReplies, expected, questionFrame, answeredFrame: pane.screen(),
         toolEvents: scriptedEngine.events.filter((event) => event.type === 'tool' && event.callId === start.callId),
       }));
     } catch (error) {
-      console.info('PUI_INSTALLED_NATIVE_QUESTION_FAILURE', JSON.stringify(pane.failureEvidence()));
+      console.info('PUI_INSTALLED_NATIVE_QUESTION_FAILURE', JSON.stringify({ ...pane.failureEvidence(), cardReplies }));
       throw error;
     } finally { await pane.stop().catch(() => {}); }
   }, 300_000);
