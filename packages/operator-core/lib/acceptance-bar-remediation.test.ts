@@ -33,6 +33,14 @@ function warnsDeclarationAloneIsNotEnough(action: string): boolean {
     && /bar_snapshot_proof_inadequate/.test(action);
 }
 
+/** The remediation must price the BAR amendment against verification already held. */
+function warnsHeldVerificationMayBeInvalidated(action: string): boolean {
+  return /meaning revision/i.test(action)
+    && /invalidate an existing independent grading card/i.test(action)
+    && /vetting attestation/i.test(action)
+    && /re-grade and re-vet/i.test(action);
+}
+
 /** The remediation must warn that a read-only probe cannot establish freshness. */
 function warnsReadOnlyProbeCannotClear(action: string): boolean {
   return /read-only/i.test(action) && /current fingerprints/i.test(action);
@@ -62,6 +70,7 @@ describe('acceptance-bar ship-gate proof remediations (EI-22495407709800667)', (
     // Without this, a predicate broken into always-true would let every assertion below pass.
     expect(namesEvidenceHalf(PRE_FIX_DEPTH_MISSING)).toBe(false);
     expect(warnsDeclarationAloneIsNotEnough(PRE_FIX_DEPTH_MISSING)).toBe(false);
+    expect(warnsHeldVerificationMayBeInvalidated(PRE_FIX_DEPTH_MISSING)).toBe(false);
     expect(warnsReadOnlyProbeCannotClear(PRE_FIX_INADEQUATE)).toBe(false);
     expect(namesServingBuildCheck(PRE_FIX_REVISION_MISMATCH)).toBe(false);
   });
@@ -73,6 +82,7 @@ describe('acceptance-bar ship-gate proof remediations (EI-22495407709800667)', (
 
     expect(namesEvidenceHalf(action)).toBe(true);
     expect(warnsDeclarationAloneIsNotEnough(action)).toBe(true);
+    expect(warnsHeldVerificationMayBeInvalidated(action)).toBe(true);
     // Still names the declaration half — the fix adds to the instruction, it does not replace it.
     expect(action).toMatch(/requiredTestLayers/);
   });

@@ -116,7 +116,7 @@ export interface FleetMemberObservation {
   wakeable?: boolean | null;
   /** Total active claims, including plan-item and work-item claims. */
   claimCount?: number;
-  /** Whether this member currently holds a claim whose progress is stalled. */
+  /** Whether the current assignment read classifies this member as stalled. */
   stalled?: boolean | null;
   /** Measured consecutive checkpoint-bounded recovery-only cycles. Null means
    * dual-ledger coverage was incomplete or intervention is suppressed. */
@@ -125,8 +125,6 @@ export interface FleetMemberObservation {
   isRegisteredLeader?: boolean;
   /** A current claim has canonical activity='progressing'. */
   hasProgressingClaim?: boolean;
-  /** Whether the current assignment read still classifies this member as stalled. */
-  stalled?: boolean | null;
 }
 
 /**

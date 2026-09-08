@@ -1525,20 +1525,29 @@ export default defineTool({
     // that registered AFTER this instant can belong to this call.
     const spawnStartedAt = Date.now();
     const memberLabels = memberCommands.map((_, i) => (count > 1 ? `${label} (${i + 1}/${count})` : label));
+    // A headless process can be alive and have a durable task/log identity even
+    // when the bounded native-transcript kickoff receipt times out. Keep that
+    // evidence separate from the SpawnConsoleResult status: turning an `ok`
+    // result into `{ status: 'error' }` loses the identity, makes `opened` lie,
+    // and releases the idempotency claim so a caller retry can duplicate it.
+    const memberBriefs = memberCommands.map((_, i) =>
+      isSuccessor
+        ? (successorBrief ?? undefined)
+        : ((memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined),
+    );
+    const kickoffProofRequired = memberBriefs.map((brief) => Boolean(brief || args.plan));
     const results = await Promise.all(
       memberCommands.map(async (cmd, i) => {
-        const memberBrief = isSuccessor
-          ? (successorBrief ?? undefined)
-          : ((memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined);
+        const memberBrief = memberBriefs[i];
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
         const memberLabel = memberLabels[i];
         const targetOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
-        // Any scripted brief is a real first-turn obligation. The headless
-        // spawner already has a native-transcript receipt for that obligation;
-        // require it here so a stale wrapper that ignores the option (missing
-        // receipt) and a host that reports negative proof both fail closed
-        // before the slower session-ledger verifier can return `null`.
-        const requireKickoffProof = Boolean(memberBrief || args.plan);
+        // Any scripted brief is a real first-turn obligation. Ask the headless
+        // spawner for its native-transcript receipt so a stale wrapper that
+        // ignores the option (missing receipt) and a host that reports negative
+        // proof are surfaced in the recoverable partial result below rather
+        // than being mistaken for a clean launch.
+        const requireKickoffProof = kickoffProofRequired[i];
         try {
           return await spawnGovernedAgentProcess(
           {
@@ -1572,16 +1581,10 @@ export default defineTool({
                 // no stamp because it mints a distinct identity at boot.
                 coordOwnerId: targetOwnerId,
               });
-              if (result.status === 'ok' && requireKickoffProof && result.kickoffProof?.persisted !== true) {
-                return {
-                  status: 'error' as const,
-                  code: 502,
-                  error:
-                    `headless agent kickoff was not proven in the backend's native transcript ` +
-                    `(${result.kickoffProof?.reason ?? 'kickoff-proof-missing'}). ` +
-                    `Refusing launch success before the first turn; see ${result.logPath ?? 'the headless launch log'}.`,
-                };
-              }
+              // Preserve the successful spawn result. The process/task/log
+              // identity is recoverable evidence even though the first-turn
+              // receipt is not; the summary below reports this as a partial
+              // launch and keeps the caller's idempotency claim.
               return result;
             }
             return spawnConsole({
@@ -1627,6 +1630,34 @@ export default defineTool({
 
     const opened = results.filter((r) => r.status === 'ok');
     const failed = results.filter((r) => r.status !== 'ok');
+    const kickoffProofFailures = results.flatMap((result, i) => {
+      if (
+        result.status !== 'ok' ||
+        !foldedConfigs[i].headless ||
+        !kickoffProofRequired[i] ||
+        result.kickoffProof?.persisted === true
+      ) return [];
+      return [
+        {
+          memberIndex: i,
+          reason: result.kickoffProof?.reason ?? 'kickoff-proof-missing',
+          nativeRef: result.kickoffProof?.nativeRef ?? null,
+          taskId: result.taskId ?? null,
+          logPath: result.logPath ?? null,
+        },
+      ];
+    });
+    const partialLaunch = kickoffProofFailures.length > 0 || (opened.length > 0 && failed.length > 0);
+    for (const failure of kickoffProofFailures) {
+      const keyNote = args.idempotencyKey?.trim()
+        ? ` idempotencyKey ${JSON.stringify(args.idempotencyKey)} remains claimed; do not retry it without first inspecting the opened identity.`
+        : '';
+      notes.push(
+        `⚠ RECOVERABLE PARTIAL LAUNCH — ${memberLabels[failure.memberIndex]} opened a process (task ${failure.taskId ?? 'unavailable'}), but its native ` +
+          `kickoff proof was not persisted (${failure.reason}). The task/log identity is retained for recovery; ` +
+          `see ${failure.logPath ?? 'the headless launch log'}.${keyNote}`,
+      );
+    }
     let launchClaimReleased = false;
     if (opened.length === 0 && args.idempotencyKey?.trim()) {
       launchClaimReleased = await releaseAgentLaunchClaim({
@@ -1921,6 +1952,7 @@ export default defineTool({
       deduped: false,
       opened: opened.length,
       failed: failed.length,
+      partial: partialLaunch,
       command,
       fleet: fleetSlug,
       independent: args.independent === true,
@@ -1934,6 +1966,22 @@ export default defineTool({
         : null,
       mode: isSuccessor ? 'successor' : isResume ? (fork ? 'fork' : 'resume') : 'fresh',
       resumedOwnerId: resumeOwnerId,
+      ...(kickoffProofFailures.length > 0
+        ? {
+            kickoffProof: {
+              required: true,
+              persisted: false,
+              failures: kickoffProofFailures.map((failure) => ({
+                memberIndex: failure.memberIndex,
+                label: memberLabels[failure.memberIndex],
+                reason: failure.reason,
+                nativeRef: failure.nativeRef,
+                taskId: failure.taskId,
+                logPath: failure.logPath,
+              })),
+            },
+          }
+        : {}),
       tasks: results.flatMap((result, i) =>
         result.status === 'ok'
           ? [
@@ -1945,6 +1993,7 @@ export default defineTool({
                 terminalPid: result.terminalPid ?? null,
                 label: memberLabels[i],
                 headless: !!foldedConfigs[i].headless,
+                kickoffProof: result.kickoffProof ?? null,
               },
             ]
           : [],

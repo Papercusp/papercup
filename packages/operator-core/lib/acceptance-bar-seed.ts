@@ -191,7 +191,10 @@ export function parseRequirementBars(planContent: string):
       bars.push({
         barKey: current.barKey,
         title: current.title,
-        model: `${current.title.replace(/[.\s]+$/g, '')}. ${outcome}`,
+        // The heading is a human-readable label, not part of the observable
+        // contract. Prefixing it made every plain-text BAR two sentences and
+        // caused the generated AUTO-BAR clause to fail spec atomicity.
+        model: outcome,
       });
     }
   };

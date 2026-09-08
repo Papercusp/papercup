@@ -378,6 +378,93 @@ function isTextItem(it: unknown): it is { type: 'text'; text: string } {
   );
 }
 
+const SPEC_TEST_ADEQUACY_TOOL = 'plans:evaluate-spec-test-adequacy';
+const PIPELINE_POSITION_TOOL = 'dev:pipeline_position';
+/**
+ * `dev:pipeline_position`'s marker argument exists to settle these verdicts,
+ * but the handler's compact response places them after the verbose gate/queue
+ * fields. Keep the marker result and the two legs it corrects addressable when
+ * this later, generic door has to project the response again.
+ */
+const PIPELINE_POSITION_PRESERVE_PATHS = [
+  'changeInCandidate.markerJudging',
+  'changeInCandidate.markerNext',
+  'changeInCandidate.judgingSha',
+  'changeInCandidate.nextCandidateSha',
+  'changeInCandidate.judgingContainsPath',
+  'changeInCandidate.nextContainsPath',
+  'changeInCandidate.missingReason',
+  'positions.inMain',
+  'positions.deployed',
+  'positionsMarker',
+] as const;
+type JsonObject = Record<string, unknown>;
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Keep evaluator decisions inline; verbose evidence remains in the spill. */
+function compactSpecTestAdequacyRatings(value: unknown): JsonObject | null {
+  if (!isJsonObject(value)) return null;
+  const compact: JsonObject = {};
+  for (const [criterion, entry] of Object.entries(value)) {
+    if (!isJsonObject(entry) || typeof entry.rating !== 'string') return null;
+    compact[criterion] = { rating: entry.rating, _partial: true };
+  }
+  return Object.keys(compact).length > 0 ? compact : null;
+}
+
+function copyJsonKeys(source: JsonObject, target: JsonObject, keys: readonly string[]): void {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) target[key] = source[key];
+  }
+}
+
+function compactSpecTestAdequacyRow(value: unknown): JsonObject | null {
+  if (!isJsonObject(value)) return null;
+  const ratings = compactSpecTestAdequacyRatings(value.ratings);
+  if (!ratings) return null;
+  const compact: JsonObject = { ratings };
+  copyJsonKeys(value, compact, [
+    'planSlug', 'specId', 'specRevision', 'specFingerprint', 'planItemId',
+    'classRef', 'behaviorClass', 'requiredProofFloor', 'verdict', 'wouldBlock',
+  ]);
+  const draft = isJsonObject(value.scorecardDraft) ? value.scorecardDraft : null;
+  if (draft) {
+    const compactDraft: JsonObject = { ratings };
+    copyJsonKeys(draft, compactDraft, ['rubricRef', 'subject', 'title', 'rerunRecipe', 'terminal']);
+    if (Object.prototype.hasOwnProperty.call(draft, 'body')) compactDraft._partial = true;
+    compact.scorecardDraft = compactDraft;
+  }
+  return compact;
+}
+
+function compactSpecTestAdequacyBody(body: unknown): JsonObject | null {
+  if (!isJsonObject(body) || body.ok !== true || !Array.isArray(body.rows)) return null;
+  const rows = body.rows.map(compactSpecTestAdequacyRow);
+  if (rows.some((row) => row === null)) return null;
+  const compact: JsonObject = { rows };
+  copyJsonKeys(body, compact, [
+    'ok', 'slug', 'harnessSlug', 'classRef', 'rubricRef', 'count', 'verdicts',
+    'wouldBlock', 'uncoveredWorkItemSelection',
+  ]);
+  compact._compactProjection = {
+    kind: 'evaluator-specific',
+    tool: SPEC_TEST_ADEQUACY_TOOL,
+    preserves: [
+      'rows[].ratings.<criterion>.rating', 'rows[].requiredProofFloor',
+      'rows[].verdict', 'rows[].wouldBlock', 'verdicts', 'wouldBlock',
+    ],
+    omits: [
+      'rows[].ratings.<criterion>.evidence', 'rows[].ratings.<criterion>.suggestion',
+      'rows[].scorecardDraft.body',
+    ],
+    recovery: 'full result is in _projection.cursor',
+  };
+  return compact;
+}
+
 /** Shape the parts so buildScratchUri's validators accept them (fail-soft names,
  *  never fail-the-spill on a weird caller identity). */
 function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: string; runId: string } {
@@ -1282,6 +1369,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // items array announces its own truncation in band, so a cut there is visible.
     const preservePaths = [
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
+      ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
       // work_items:complete writes these fields before its bulky echoes, and its
       // tier shaper deliberately spreads them through unchanged. The generic
       // result-door is a later, independent projection seam, though: without an
@@ -1314,7 +1402,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       budgetChars -
         (structuralProjectionWarning ? Buffer.byteLength(structuralProjectionWarning, 'utf8') : 0),
     );
-    const projected = projectBoundedPayload(parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }, {
+    const evaluatorCompactBody =
+      parsedJsonBody && opts.toolName === SPEC_TEST_ADEQUACY_TOOL
+        ? compactSpecTestAdequacyBody(bodyShape.json!.parsed)
+        : null;
+    const projected = projectBoundedPayload(
+      evaluatorCompactBody ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
+      {
       toolName: opts.toolName,
       tier: 'trimmed',
       forced: true,
@@ -1336,7 +1430,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['event_inspection'] as const }
           : {}),
-      ...(preservePaths.length > 0 ? { preservePaths } : {}),
+      ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
     });
     const structuralText = JSON.stringify(projected);
     let inserted = false;
@@ -1364,6 +1458,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         resultDoor: {
           ...baseResultDoorMeta,
           structural: true,
+          ...(evaluatorCompactBody != null
+            ? { compactProjection: 'evaluator-specific:plans:evaluate-spec-test-adequacy' }
+            : {}),
           recoveryCursor: recovery.cursor,
         },
       },

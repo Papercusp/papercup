@@ -344,6 +344,58 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     }
   });
 
+  it('preserves immutable clause pins and replay mode in adequacy rerun recipes', () => {
+    const fingerprints = [
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'test/reconnect.test.ts#terminal-close',
+        sourceFingerprint: 'git:spec-v2',
+        testFingerprint: 'sha256:test-v2',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+    ];
+    const recipe = {
+      schemaVersion: 1 as const,
+      evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'reconnect-plan',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-003-01'],
+        specRevision: 2,
+        specFingerprint: 'sha256:spec-v2',
+        replaySnapshot: true as const,
+        includeDraft: true,
+        current: fingerprints,
+      },
+      selection: {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 2,
+        specFingerprint: 'sha256:spec-v2',
+        evidence: [
+          { evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts#terminal-close' },
+        ],
+      },
+      current: { supplied: true, fingerprints },
+      derivation: {
+        kind: 'listSpecEvidence.currentness' as const,
+        classifier: 'classifySpecEvidenceCurrentness' as const,
+        unknownWhenMissing: true as const,
+      },
+    };
+
+    expect(asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe?.args).toMatchObject({
+      specRevision: 2,
+      specFingerprint: 'sha256:spec-v2',
+      replaySnapshot: true,
+      current: fingerprints,
+    });
+  });
+
   it('round-trips native Cargo check runs and drops malformed native records', () => {
     const out = asStructuredObservation({
       rubricRef: 'pui-tui-remediation-and-consolidation-2026-08-27-acceptance',

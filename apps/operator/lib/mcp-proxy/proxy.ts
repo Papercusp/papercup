@@ -3583,6 +3583,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             startedAtMs: inFlightStartedAt,
             traceId: requestTraceId,
             tools: coordSendTools,
+            conflictKeys: null,
           });
         } else if (criticalContinuation) {
           criticalContinuationInFlight++;

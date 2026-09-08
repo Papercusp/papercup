@@ -465,6 +465,118 @@ describe('applyResultDoor', () => {
     expect(control.results.some((row) => row.completionAuthority === undefined)).toBe(true);
   });
 
+  it('REGRESSION (EI-22652581729405439): evaluator compact preview keeps all eight ratings and verdict metadata', () => {
+    const criteria = [
+      'traceability', 'fixture-calibration', 'falsifiability', 'correct-layer',
+      'oracle-independence', 'execution-integrity', 'freshness', 'plan-class-risk-floor',
+    ];
+    const ratings = Object.fromEntries(criteria.map((criterion, index) => [criterion, {
+      rating: index % 2 === 0 ? 'fail' : 'unknown',
+      evidence: `${criterion} evidence `.repeat(120),
+      suggestion: `${criterion} suggestion `.repeat(80),
+    }]));
+    const row = {
+      specId: 'SPEC-22652581729405439', specRevision: 5, planItemId: 'P-001', ratings,
+      requiredProofFloor: 'l4', verdict: 'fail', wouldBlock: criteria.slice(0, 3),
+      scorecardDraft: {
+        rubricRef: 'spec-test-adequacy', subject: { kind: 'plan', ref: 'adequacy-plan' },
+        title: 'Adequacy draft', body: 'draft body '.repeat(800), ratings,
+        rerunRecipe: { evaluator: 'plans:evaluate-spec-test-adequacy', args: { slug: 'adequacy-plan' } },
+        terminal: true,
+      },
+    };
+    const payload = {
+      ok: true, slug: 'adequacy-plan', harnessSlug: 'papercusp',
+      classRef: 'plan-class-feature-ship', rubricRef: 'spec-test-adequacy', rows: [row], count: 1,
+      verdicts: { pass: 0, fail: 1, unknown: 0 },
+      wouldBlock: [{ specId: row.specId, revision: row.specRevision, criteria: row.wouldBlock }],
+    };
+    const original = JSON.stringify(payload);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'plans:evaluate-spec-test-adequacy', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const kept = JSON.parse((doored.content[0] as { text: string }).text) as any;
+    expect(kept._projection.truncated).toBe(true);
+    expect(Object.keys(kept.rows[0].ratings)).toEqual(criteria);
+    expect(Object.fromEntries(Object.entries(kept.rows[0].ratings).map(([key, value]: any) => [key, value.rating]))).toEqual(
+      Object.fromEntries(criteria.map((criterion, index) => [criterion, index % 2 === 0 ? 'fail' : 'unknown'])),
+    );
+    expect(kept.rows[0]).toMatchObject({ requiredProofFloor: 'l4', verdict: 'fail', wouldBlock: criteria.slice(0, 3) });
+    expect(kept.verdicts).toEqual({ pass: 0, fail: 1, unknown: 0 });
+    expect(kept.wouldBlock).toEqual(payload.wouldBlock);
+    expect(kept._compactProjection).toMatchObject({ kind: 'evaluator-specific' });
+    expect(kept.rows[0].scorecardDraft).toMatchObject({ terminal: true, rubricRef: 'spec-test-adequacy' });
+    expect(kept.rows[0].scorecardDraft.body).toBeUndefined();
+    expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
+
+    const control = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'plans:list', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const controlBody = JSON.parse((control.content[0] as { text: string }).text) as any;
+    expect(Object.keys(controlBody.rows[0].ratings ?? {})).not.toEqual(criteria);
+  });
+
+  it('REGRESSION (EI-22663465512565342): marker pipeline verdicts survive a generic door re-projection', () => {
+    const marker = 'pipeline-marker-added-by-this-change';
+    const admissions = Array.from({ length: 24 }, (_, index) => ({
+      paths: [`packages/operator-core/lib/changed-${index}.ts`],
+      unchanged: [`packages/operator-core/lib/unchanged-${index}.ts`],
+      detail: `admission detail ${index} `.repeat(180),
+    }));
+    const payload = {
+      input: { path: 'packages/operator-core/lib/changed.ts', sha: null },
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      positionsMarker: { marker, inMain: true, deployed: true },
+      gate: {
+        stalled: false,
+        repairQueue: { status: 'frozen', admissions },
+      },
+      changeInCandidate: {
+        judgingSha: 'judged-sha',
+        judgingShaSource: 'marker',
+        judgingContainsPath: false,
+        nextCandidateSha: 'next-sha',
+        nextContainsPath: false,
+        missingReason: 'newer-commit',
+        markerJudging: { marker, present: true, count: 1 },
+        markerNext: { marker, present: true, count: 1 },
+        detail: 'marker settles the judged candidate and next candidate',
+      },
+      summary: 'pipeline summary',
+    };
+    const original = JSON.stringify(payload);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'dev:pipeline_position', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const kept = JSON.parse((doored.content[0] as { text: string }).text) as any;
+    expect(kept._projection.truncated).toBe(true);
+    expect(kept.changeInCandidate).toMatchObject({
+      judgingSha: 'judged-sha',
+      nextCandidateSha: 'next-sha',
+      markerJudging: { marker, present: true, count: 1 },
+      markerNext: { marker, present: true, count: 1 },
+    });
+    expect(kept.positions).toMatchObject({ inMain: false, deployed: false });
+    expect(kept.positionsMarker).toMatchObject({ marker, inMain: true, deployed: true });
+
+    // FALSIFIABILITY CONTROL: the same oversized bytes through an ordinary tool
+    // have no marker-verdict policy and should still demonstrate the old drop.
+    const control = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'plans:list', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const controlBody = JSON.parse((control.content[0] as { text: string }).text) as any;
+    expect(controlBody._projection.truncated).toBe(true);
+    expect(controlBody.changeInCandidate).toBeUndefined();
+  });
+
   it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
     const original = JSON.stringify({
       ok: true,

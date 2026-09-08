@@ -177,7 +177,7 @@ async function gatherCurrentFleetMemberObservation(
 ): Promise<
   Pick<
     FleetMemberObservation,
-    'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim'
+    'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim' | 'stalled'
   > | null
 > {
   const agents = groupByAgent(await listFleetAssignments({ fleet: fleetSlug, agent: agentId }));

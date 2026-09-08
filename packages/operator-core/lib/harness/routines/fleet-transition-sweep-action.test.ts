@@ -13,6 +13,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const productionMocks = vi.hoisted(() => ({
   listFleetAssignments: vi.fn(),
   reconcileWakeability: vi.fn(),
+  decorateParkedOn: vi.fn(),
+  decorateLoopMonitorStates: vi.fn(),
   fetchContextPressure: vi.fn(),
   readFleetAdmissionBlocks: vi.fn(),
   readFleetRepeatedRecoveryStates: vi.fn(),
@@ -25,6 +27,8 @@ vi.mock('../../fleet/assignments', async (importOriginal) => ({
 vi.mock('../../agent-tools/fleet/assignments', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-tools/fleet/assignments')>()),
   reconcileWakeability: productionMocks.reconcileWakeability,
+  decorateParkedOn: productionMocks.decorateParkedOn,
+  decorateLoopMonitorStates: productionMocks.decorateLoopMonitorStates,
 }));
 vi.mock('../../agent-tools/coordination/context-pressure', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-tools/coordination/context-pressure')>()),
@@ -108,6 +112,10 @@ beforeEach(() => {
   __resetFleetTransitionSnapshotForTests();
   productionMocks.listFleetAssignments.mockReset();
   productionMocks.reconcileWakeability.mockReset();
+  productionMocks.decorateParkedOn.mockReset();
+  productionMocks.decorateLoopMonitorStates.mockReset();
+  productionMocks.decorateParkedOn.mockImplementation(async (agents: unknown[]) => agents);
+  productionMocks.decorateLoopMonitorStates.mockImplementation(async (agents: unknown[]) => agents);
   productionMocks.fetchContextPressure.mockReset();
   productionMocks.readFleetAdmissionBlocks.mockReset();
   productionMocks.readFleetRepeatedRecoveryStates.mockReset();
@@ -214,42 +222,36 @@ describe('runFleetTransitionSweep', () => {
   });
 
   it('wires member-stalled production edges to a last-moment assignment revalidation', async () => {
+    let gatherStalled = false;
     let currentStalled = true;
+    const claimRow = (stalled: boolean) => ({
+      ...presenceRow('claim'),
+      source: 'work_item_claim' as const,
+      workItemId: 'WI-1',
+      detail: 'claim',
+      claimActive: true,
+      holderPresent: true,
+      stalled,
+    });
     productionMocks.listFleetAssignments.mockImplementation(async (options?: { fleet?: string }) => [
       presenceRow(options?.fleet ? 'current' : 'gather'),
+      claimRow(options?.fleet ? currentStalled : gatherStalled),
     ]);
     productionMocks.reconcileWakeability.mockImplementation(async (agents: Array<{ intent: string }>) =>
-      agents.map((agent) => ({
-        ...agent,
-        // The production current-state helper's loop decoration is exercised
-        // by the event emitter seam below; this mock only supplies the
-        // liveness half of the revalidation.
-        sessionState: 'live',
-        wakeable: true,
-      })),
+      agents.map((agent) => ({ ...agent, sessionState: 'live', wakeable: true })),
     );
     productionMocks.fetchContextPressure.mockResolvedValue(new Map());
 
     await runFleetTransitionSweep({ gatherAdmissions: async () => [], emit: vi.fn() });
     const emit = vi.fn().mockResolvedValue(undefined);
+    gatherStalled = true;
     currentStalled = false;
 
-    await runFleetTransitionSweep({
-      gather: async () => [member({ stalled: true })],
-      gatherAdmissions: async () => [],
-      emit,
-      currentMemberObservation: async () => ({
-        sessionState: 'parked',
-        wakeable: true,
-        claimCount: 1,
-        stalled: currentStalled,
-      }),
-    });
+    await runFleetTransitionSweep({ gatherAdmissions: async () => [], emit });
     await settle();
 
-    // Injected gather intentionally bypasses the production wiring, so this
-    // assertion pins the emitter's stale-edge guard independently.
     expect(emit).not.toHaveBeenCalled();
+    expect(productionMocks.listFleetAssignments).toHaveBeenCalledWith({ fleet: 'fleet-a', agent: 'su-a' });
   });
 
   it('does not snapshot recorded, non-wakeable, claimless stand-down residue', async () => {

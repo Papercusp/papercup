@@ -2585,7 +2585,13 @@ export default defineTool({
     // That is not hypothetical: a stub whose shape predated this gate made
     // `found.row` undefined, and the resulting TypeError was reported as a
     // resolution failure in 40 tests at once (EI-19310192267009629).
-    if (planSlug && planRow) {
+    // Existing-fleet top-ups are enrollment into an already-running fleet, not a
+    // second attempt to start the plan. The fleet's persisted claim spec/profile
+    // is authoritative for that wave; re-entering checkPlanStartable here would
+    // re-read the plan's BAR contract and can refuse a valid top-up with a stale
+    // or unrelated bar_snapshot_* result. New fleets still take the full start
+    // gate before any fleet/terminal mutation.
+    if (planSlug && planRow && !existingFleet) {
       let gate: Awaited<ReturnType<typeof checkPlanStartable>>;
       try {
         gate = await checkPlanStartable(

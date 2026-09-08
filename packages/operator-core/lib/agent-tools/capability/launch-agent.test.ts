@@ -546,6 +546,7 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(textOf(res)).toContain('first turn');
     expect(textOf(res)).toContain('launcher pid 4242; terminal pid 4343');
     expect(dataOf(res)?.launch).toMatchObject({
+      partial: false,
       tasks: [{ pid: 4242, terminalPid: 4343, headless: false }],
     });
   });
@@ -961,16 +962,38 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       { persisted: false, nativeRef: null, reason: 'native-turn-marker-timeout' },
       'native-turn-marker-timeout',
     ],
-  ])('fails closed on a %s native kickoff proof before reporting a headless launch', async (_label, proof, reason) => {
+  ])('keeps a started process recoverable when its %s native kickoff proof is not persisted', async (_label, proof, reason) => {
     spawnHeadlessMock.mockResolvedValueOnce(headlessSpawnResult(undefined, proof));
 
-    const res = await launchAgent.handler({ brief: 'grade the item independently', headless: true }, ctx);
+    const idempotencyKey = `kickoff-proof-${_label}`;
+    const res = await launchAgent.handler(
+      { brief: 'grade the item independently', headless: true, idempotencyKey },
+      ctx,
+    );
 
-    expect(isError(res)).toBe(true);
+    expect(isError(res)).toBe(false);
     expect(textOf(res)).toContain(reason);
-    expect(textOf(res)).toContain('Refusing launch success before the first turn');
-    expect(verifyFreshLaunchStartedMock).not.toHaveBeenCalled();
-    expect(dataOf(res)?.launch).toMatchObject({ opened: 0, failed: 1 });
+    expect(textOf(res)).toContain('RECOVERABLE PARTIAL LAUNCH');
+    expect(textOf(res)).toContain('task777');
+    expect(verifyFreshLaunchStartedMock).toHaveBeenCalled();
+    expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey,
+        summary: expect.objectContaining({ opened: 1, failed: 0, partial: true }),
+      }),
+    );
+    expect(dataOf(res)?.launch).toMatchObject({
+      opened: 1,
+      failed: 0,
+      partial: true,
+      kickoffProof: {
+        required: true,
+        persisted: false,
+        failures: [{ reason, taskId: 'task777' }],
+      },
+      tasks: [{ taskId: 'task777', logPath: '/tmp/papercusp-ws/fleet-logs/judge.log' }],
+    });
   });
 });
 

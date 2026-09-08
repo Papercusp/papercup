@@ -6,6 +6,7 @@ import {
 } from './acceptance-bar-seed';
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
+import { specBehaviorNonAtomicReason } from './agent-tools/plans/spec-clause-compiler';
 
 function plan(opts: { requirements?: string; map?: string } = {}): string {
   return `---
@@ -57,10 +58,12 @@ describe('Requirements BAR parser', () => {
     expect(parsed).toMatchObject({
       ok: true,
       bars: [
-        { barKey: 'R-1', title: 'First outcome' },
-        { barKey: 'R-2', title: 'Runtime outcome' },
+        { barKey: 'R-1', title: 'First outcome', model: 'The writer persists one canonical bar.' },
+        { barKey: 'R-2', title: 'Runtime outcome', model: 'The live service exposes the current verdict.' },
       ],
     });
+    if (!parsed.ok) throw new Error('expected plain-text requirements to parse');
+    expect(parsed.bars.every((bar) => specBehaviorNonAtomicReason(bar.model) === null)).toBe(true);
 
     const malformed = parseRequirementBars(plan({
       requirements: '**R-1 First outcome.** Missing the required dash delimiter.',
@@ -157,6 +160,7 @@ describe('acceptance BAR seed builder', () => {
     });
     expect(built.criteria[0]?.method).toBeUndefined();
     expect(built.projections).toHaveLength(3);
+    expect(built.projections.every((clause) => specBehaviorNonAtomicReason(clause.behavior) === null)).toBe(true);
     expect(built.projections.map((clause) => clause.behaviorClass)).toEqual([
       'happy-path', 'happy-path', 'non-automated',
     ]);

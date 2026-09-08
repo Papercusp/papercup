@@ -2941,6 +2941,49 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
         });
 
+        /**
+         * EI-22669633054802773: a compacted 7,276-character checkpoint carrying
+         * the full 12-row set was refused as `append_body_overflow` when a normal
+         * append also refreshed one keyed row. The prior body was well below the
+         * 32,000-character cap; pin the exact shape so the append guard cannot
+         * regress into treating the carried note length as check-row-only usage.
+         */
+        it('accepts an append plus keyed check refresh on the reported 7,276-char compacted prior', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            id: `compact-${String(i + 1).padStart(2, '0')}`,
+            claim: `COMPACT-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe compact ${i + 1}`,
+            verified: `measured compact ${i + 1}`,
+          }));
+          const checksOnly = withCarryNoteChecks('', atCap);
+          const prior = withCarryNoteChecks('B'.repeat(7276 - checksOnly.length - '\n\n'.length), atCap);
+          expect(prior).toHaveLength(7276);
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'new progress after compaction',
+            append: true,
+            rowsMode: 'merge',
+            checks: [
+              {
+                id: 'compact-06',
+                claim: 'COMPACT-06 refreshed holds',
+                recheck: 'probe compact refreshed 6',
+                verified: 'measured immediately after compaction',
+              },
+            ],
+          })) as { ok: boolean; errorCode?: string; checks?: number };
+
+          expect(r).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS });
+          expect(r.errorCode).toBeUndefined();
+          const stored = readCurrent();
+          expect(stored).toContain('new progress after compaction');
+          expect(stored).toContain('COMPACT-06 refreshed holds');
+          expect(stored).not.toContain('COMPACT-06 holds');
+          expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+        });
+
         it('uses a vacant slot before reporting the remaining supplied row as not retained', async () => {
           const oneVacancy = Array.from({ length: CARRY_NOTE_MAX_CHECKS - 1 }, (_, i) => ({
             claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
