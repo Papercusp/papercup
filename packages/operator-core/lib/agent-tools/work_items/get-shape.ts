@@ -996,6 +996,10 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
 export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknown {
   const d = data as ({ results?: unknown[] } & Row) | null | undefined;
   if (!d || !Array.isArray(d.results)) return data;
+  if (d.__resumeOnly === true) {
+    const { __resumeOnly: _marker, ...resume } = d;
+    return resume; // The one-item producer budgets whole fields before the result door.
+  }
   if (d.__checksOnly === true) return shapeChecksOnly(d, tier);
   const caps = FIELD_CAPS[tier];
   const rows = d.results.map((r) => (r && typeof r === "object" ? (r as Row) : ({} as Row)));

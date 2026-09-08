@@ -4,7 +4,11 @@
   "workItemId": "WI-10000756",
   "specRef": "AUTO-BAR-R-4-P-004@3",
   "specFingerprint": "5b58935f59e40973596a111b97b9d9144ef99366294a5c839f2ddb68f6c0bad0",
-  "status": "implementation-verified-independent-audit-pending",
+  "status": "complete",
+  "adequacyCard": "EI-22728973201597463",
+  "independentAudit": "EI-22729270661168973",
+  "independentAuditResult": "passed",
+  "completionAuthority": "committed",
   "testGroup": "design-gate-p004-final-20260908",
   "testedCommit": "65c41bf2ee20af822127400c84f1c09ae1f6d4d4",
   "testRuns": {

@@ -1,0 +1,68 @@
+import { describe, expect, it, vi } from 'vitest';
+import { renderCarryNote } from '../../carry-note';
+import { shapeWorkItemsGet } from './get-shape';
+import { buildWorkItemResume, readWorkItemResume, RESUME_PACKET_BUDGET } from './resume';
+
+const item = { id: 'WI-resume', harness: 'h1', assignee: 'su-current', state: 'open',
+  payload: { plan_item: { plan_slug: 'resume-plan', item_id: 'P-001' } } };
+const next = 'Bind test-run:17717253 to the current clause, then request independent acceptance.';
+const checkpoint = { checkpoint: renderCarryNote({ did: 'Historical detail. '.repeat(900), next }), updatedAtMs: 1234 };
+const build = (overrides: Partial<Parameters<typeof buildWorkItemResume>[0]> = {}) => buildWorkItemResume({
+  item, checkpoint, freshness: { verdict: 'fresh' }, evidence: [], ...overrides,
+});
+
+describe('bounded work-item resume', () => {
+  it('preserves the complete next action beyond a long historical prefix through the real payload shaper', () => {
+    const legacy = shapeWorkItemsGet({ ok: true, results: [{ ok: true, id: item.id, workItem: item,
+      checkpoint: checkpoint.checkpoint }], counts: { ok: 1, failed: 0 } }, 'trimmed');
+    // Counterexample: the ordinary historical read cannot deliver this tail intact.
+    expect(JSON.stringify(legacy)).not.toContain(next);
+    const packet = build();
+    for (const tier of ['standard', 'trimmed'] as const) {
+      const result = shapeWorkItemsGet({ ok: true, __resumeOnly: true,
+        results: [{ ok: true, id: item.id, resume: packet }], counts: { ok: 1, failed: 0 } }, tier) as any;
+      expect(result.results[0].resume.nextAction).toEqual({ status: 'available', text: next });
+      expect(result.results[0].resume.claim.assignee).toBe('su-current');
+      expect(result).not.toHaveProperty('__resumeOnly');
+      expect(JSON.stringify(result).length).toBeLessThan(6_000);
+    }
+  });
+
+  it('keeps unavailable, absent, unstructured and oversized next actions distinct', () => {
+    expect(build({ checkpoint: { checkpoint: null, updatedAtMs: null, readFailed: true } }).nextAction.status).toBe('unknown');
+    expect(build({ checkpoint: { checkpoint: null, updatedAtMs: null } }).checkpoint.status).toBe('absent');
+    expect(build({ checkpoint: { checkpoint: 'Historical prose only', updatedAtMs: 1 } }).nextAction.status).toBe('missing');
+    expect(build({ checkpoint: { checkpoint: renderCarryNote({ next: 'Long instruction '.repeat(500) }), updatedAtMs: 1 } }).nextAction)
+      .toEqual({ status: 'oversized', text: null });
+  });
+
+  it('budgets whole proof and check rows while preserving outcome, currentness and omitted counts', () => {
+    const proofs = Array.from({ length: 9 }, (_, id) => ({ id, specId: 'S-1', specRevision: 2,
+      evidenceKind: 'test', evidenceRef: 'test-run:' + id, testRunId: id + 1, coverageEvidenceRef: null,
+      details: { adequacy: { outcome: id === 0 ? 'fail' : 'pass', causalPairIds: ['original-failure'] } },
+      currentness: { overall: id === 0 ? 'stale' : 'current' } })) as never;
+    const result = build({ evidence: proofs, checkpoint: { ...checkpoint, checkpoint: renderCarryNote({
+      next, checks: Array.from({ length: 12 }, (_, id) => ({ id: String(id), claim: 'Large claim '.repeat(100),
+        verified: 'test-run:' + id })), walls: [{ claim: 'Preserve independent approval.' }],
+    }) } });
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+    expect(result.evidence.rows[0]).toMatchObject({ testRunId: 1, outcome: 'fail', currentness: 'stale' });
+    expect(result.evidence.hasMore).toBe(true);
+    expect(result.evidence.rows.length + result.evidence.omittedFromWindow!).toBe(9);
+    expect(result.checks.rows.length + result.checks.omitted).toBe(12);
+    expect(result.checkpoint.readRef.args).toMatchObject({ id: item.id, harness: 'h1' });
+    expect(result.nextAction.text).toBe(next);
+  });
+
+  it('reads the canonical item scope once and exposes evidence-store failures as unknown', async () => {
+    const deps = { checkpoint: vi.fn().mockResolvedValue(checkpoint), freshness: vi.fn().mockResolvedValue(undefined),
+      evidence: vi.fn().mockRejectedValue(new Error('database unavailable')) };
+    const result = await readWorkItemResume(item, deps);
+    expect(deps.checkpoint).toHaveBeenCalledExactlyOnceWith({ harness: 'h1', workItemId: item.id });
+    expect(deps.evidence).toHaveBeenCalledExactlyOnceWith({ harnessSlug: 'h1', planSlugs: ['resume-plan'],
+      workItemIds: [item.id], limit: 9 });
+    expect(result.evidence).toMatchObject({ status: 'unknown', hasMore: null, omittedFromWindow: null });
+    expect(result.checkpoint.freshness).toMatchObject({ verdict: 'unknown' });
+    expect(result.nextAction.text).toBe(next);
+  });
+});

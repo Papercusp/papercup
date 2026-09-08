@@ -115,6 +115,49 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ workItemsGet: out.data.read }));
   });
 
+  it('keeps detail:true with threadLimit:0 on the lean completion-evidence source path', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-terminal-detail-projection',
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercusp',
+      state: 'resolved',
+      title: 'terminal item',
+      terminalCompletionEvidence: { summary: 'already verified' },
+    });
+
+    const out = await get.handler(
+      {
+        id: 'WI-terminal-detail-projection',
+        detail: true,
+        threadLimit: 0,
+      } as never,
+      {
+        ...ctx,
+        sourceProjection: {
+          pick: [
+            'results[].id',
+            'results[].workItem.terminalCompletionEvidence',
+            'counts',
+            'read',
+          ],
+        },
+      } as never,
+    ) as Out;
+
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    expect(getWorkItem).toHaveBeenCalledWith(
+      'WI-terminal-detail-projection',
+      undefined,
+      { includeBody: false, payloadProjection: 'completionEvidence' },
+    );
+    expect(out.data.results[0]).toMatchObject({
+      ok: true,
+      id: 'WI-terminal-detail-projection',
+      availability: 'available',
+    });
+  });
+
   it('returns cancelled as unavailable and consumes a late storage rejection', async () => {
     let rejectRead!: (error: Error) => void;
     getWorkItem.mockImplementation(() => new Promise((_resolve, reject) => { rejectRead = reject; }));

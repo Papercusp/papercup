@@ -1984,4 +1984,17 @@ describe('scorecards:evaluate input ownership is explicit', () => {
     expect(evaluate.guidance?.chaining).toContain('`subject` is an emit-only field');
     expect(evaluate.guidance?.chaining).toContain('do not pass it to either evaluate call');
   });
+
+  it('documents source-vs-target hive ownership for cross-hive grading', () => {
+    const evaluateSourceHive = scorecardEvaluateArgs.shape.sourceHive.description ?? '';
+    const emitSourceHive = scorecardEmitArgs.shape.sourceHive.description ?? '';
+    const emitTargetHive = scorecardEmitArgs.shape.targetHive.description ?? '';
+
+    expect(evaluateSourceHive).toContain('hive that produced/filed the scorecard');
+    expect(evaluateSourceHive).toContain('not the harness that owns the rubric subject plan');
+    expect(emitSourceHive).toContain('grader/source hive');
+    expect(emitSourceHive).toContain('use targetHive for that subject hive');
+    expect(emitTargetHive).toContain("rubric subject plan's harness");
+    expect(emitTargetHive).toContain('does not change sourceHive');
+  });
 });

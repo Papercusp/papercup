@@ -34,6 +34,11 @@ const getWorkItemCheckpointWithMeta = vi.fn();
 // checkpoint declared no dependencies, so these suites keep exercising the TIME
 // heuristics (the documented fallback). The override case gets its own suite below.
 const getWorkItemCheckpointFreshness = vi.fn();
+const resumeEvidence = vi.fn();
+vi.mock('../plans/spec-evidence-store', async (original) => ({
+  ...(await original<typeof import('../plans/spec-evidence-store')>()),
+  listSpecEvidence: (...args: unknown[]) => resumeEvidence(...args),
+}));
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...a: unknown[]) => getWorkItemCheckpointWithMeta(...a),
   getWorkItemCheckpointFreshness: (...a: unknown[]) => getWorkItemCheckpointFreshness(...a),
@@ -133,6 +138,25 @@ const env = async (x: unknown) => {
   return res.data;
 };
 const one = async (x: unknown) => (await env(x)).results[0];
+
+it('resume reaches the saved checkpoint and evidence without loading history or full item detail', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-resume', harness: 'canonical', assignee: 'su-current', state: 'open',
+    payload: { plan_item: { plan_slug: 'resume-plan', item_id: 'P-001' } } });
+  getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: '## Did\n' + 'history '.repeat(1500) + '\n\n## Next action\nUse test-run:44 for acceptance.', updatedAtMs: 123 });
+  getWorkItemCheckpointFreshness.mockResolvedValue({ verdict: 'fresh' });
+  resumeEvidence.mockResolvedValue([]);
+  const result = await one({ id: 'WI-resume', harness: 'requested', resume: true });
+  expect(result.resume.nextAction).toEqual({ status: 'available', text: 'Use test-run:44 for acceptance.' });
+  expect(result.resume.claim.assignee).toBe('su-current');
+  expect(resumeEvidence).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'canonical', workItemIds: ['WI-resume'] }));
+  expect(getWorkItemDetail).not.toHaveBeenCalled();
+  expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
+});
+
+it('resume refuses ambiguous multi-item and combined detail requests', () => {
+  expect(() => parse({ ids: ['WI-a', 'WI-b'], resume: true })).toThrow(/resume requires one item/);
+  expect(() => parse({ id: 'WI-a', resume: true, detail: true })).toThrow(/resume requires one item/);
+});
 
 it('declares the actual checkpoint/comment window output with writer-owned numeric post identity', async () => {
   getWorkItem.mockResolvedValue({ id: 'WI-contract', title: 'contract' });

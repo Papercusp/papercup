@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
 vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
+  normalizeModelSpecForAgent: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).normalizeModelSpecForAgent,
   buildResumeEnv: (row: any, opts: any) => ({ PAPERCUSP_SID: row.coordOwnerId,
     PAPERCUSP_ADV_SESSION_ID: String(row.id), ...opts.accountEnv.env }),
   codexThreadWriterHolder: () => ({ held: false, reason: 'no-lock-file' }),
@@ -91,6 +92,21 @@ describe('structured exact resume preparation', () => {
     expect(m.release).not.toHaveBeenCalled();
     await resume.onExit();
     expect(m.ended).toHaveBeenCalledWith(42, null, 'cleanup', { throwOnError: true });
+  });
+
+  it('restores Claude default-1M window semantics when only the resolved native model was persisted', async () => {
+    const saved = fixture('claude');
+    saved.descriptor!.model = 'claude-fable-5-1';
+    m.spec.mockResolvedValue({ agent: 'claude', workspaceId: 'workspace', harnessSlug: 'project',
+      profile: 'engineer', model: null, planSlug: 'saved-plan',
+      specificationRevision: 'spec-1', stateRevision: 'state-2' });
+
+    const resume = await prepareStructuredSuResume(saved);
+
+    expect(resume.options.model).toBe('claude-fable-5-1[1m]');
+    expect(m.account).toHaveBeenCalledWith(
+      'workspace', 'named-account', 'claude', 'saved-owner', true, 'claude-fable-5-1[1m]',
+    );
   });
 
   it('refuses scope mismatch and a competing host before reserving or touching credentials', async () => {

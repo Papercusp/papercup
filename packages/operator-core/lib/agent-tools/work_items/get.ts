@@ -35,6 +35,7 @@ import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../../agent-facts/cited-facts";
 import { shapeWorkItemsGet } from "./get-shape";
+import { readWorkItemResume } from './resume';
 import {
   CARRY_NOTE_MAX_CHECKS,
   CHECKPOINT_BODY_CAP_CHARS,
@@ -582,6 +583,9 @@ export default defineTool({
         .describe(
           'return only the stored checkpoint check-row ledger (`checkpointChecks.rows` with caller-facing id/claim identities) plus recency/failure metadata; omit the checkpoint narrative and other enrichments. Use this before building `retireIds` instead of fetching the full checkpoint body.',
         ),
+      resume: z.boolean().optional().describe(
+        'One-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit.',
+      ),
       priorAttemptRefs: z
         .array(z.string().min(1))
         .max(20)
@@ -618,6 +622,9 @@ export default defineTool({
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
+    })
+    .refine((a) => !a.resume || (mergeIds(a.id, a.ids).length === 1 && !a.checksOnly && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined), {
+      message: 'resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs',
     }),
   // EI-19447969329510166: without a declared shaper this tool fell through to the
   // framework's GENERIC bounded projection, which clips every string at a flat 800
@@ -676,10 +683,10 @@ export default defineTool({
       sourceSelection,
       'workItem.posts', 'workItem.topics', 'workItem.links', 'workItem.detailOmitted',
     );
-    const readDetail = !checksOnly && args.detail === true && !hasThreadLimit && needsWorkItemDetail;
+    const readDetail = !args.resume && !checksOnly && args.detail === true && !hasThreadLimit && needsWorkItemDetail;
     const sourceReadOptions = checksOnly
       ? { includeBody: false, payloadProjection: 'none' as const }
-      : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
+      : args.resume ? undefined : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
     const baseOnlyProjection = sourceSelection !== null && !checksOnly && !readDetail &&
       !needsCheckpoint && !needsPlanItemBlocked && !needsClaimCollision && !needsPlanItemTextDrift &&
       !needsHolder && !(boundedThread && needsThreadWindow) && !needsCompletionFreshness &&
@@ -758,6 +765,12 @@ export default defineTool({
         const workItem = workItemRead;
         if (!workItem) {
           return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
+        }
+        if (args.resume) {
+          const started = Date.now();
+          const resume = await readWorkItemResume(workItem);
+          stage.enrichmentMs = Date.now() - started;
+          return { ok: true as const, id, availability: 'available' as const, resume };
         }
         // `checksOnly` is the retire-id recovery path. Read the item only far enough
         // to resolve its canonical harness, then read the checkpoint ledger and stop:
@@ -1208,6 +1221,6 @@ export default defineTool({
       outerStageAttribution: 'tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time' as const,
     };
     ctx.metadata?.({ workItemsGet: read });
-    return bulkContent({ ...env, read });
+    return bulkContent({ ...env, read, ...(args.resume ? { __resumeOnly: true } : {}) });
   },
 });

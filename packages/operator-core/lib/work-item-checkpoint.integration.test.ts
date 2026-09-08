@@ -114,6 +114,28 @@ async function rowCount(): Promise<number> {
 }
 
 describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote semantics', () => {
+  it('resumes the latest durable next action after a successor boundary without historical paging', async () => {
+    const { renderCarryNote } = await import('./carry-note');
+    const { readWorkItemResume } = await import('./agent-tools/work_items/resume');
+    const { shapeWorkItemsGet } = await import('./agent-tools/work_items/get-shape');
+    const ref = { harness: HARNESS, workItemId: 'WI-resume-roundtrip' };
+    const source = { id: ref.workItemId, harness: HARNESS, state: 'open', assignee: 'successor' };
+    const deps = { checkpoint: getWorkItemCheckpointWithMeta,
+      freshness: async () => undefined, evidence: async () => [] };
+    await setWorkItemCheckpoint(ref, renderCarryNote({ did: 'Prior detail '.repeat(700),
+      next: 'Reuse test-run:44; request independent acceptance.' }));
+    const resume = await readWorkItemResume(source, deps);
+    const shaped = shapeWorkItemsGet({ ok: true, __resumeOnly: true,
+      results: [{ ok: true, id: source.id, resume }], counts: { ok: 1, failed: 0 } }, 'trimmed') as any;
+    expect(shaped.results[0].resume.nextAction.text).toBe('Reuse test-run:44; request independent acceptance.');
+    expect(shaped.results[0].resume.claim.assignee).toBe('successor');
+    expect(JSON.stringify(shaped).length).toBeLessThan(6_000);
+    await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Acceptance is complete; advance the next item.' }));
+    const updated = await readWorkItemResume(source, deps);
+    expect(updated.nextAction.text).toBe('Acceptance is complete; advance the next item.');
+    expect(updated.checkpoint.contentHash).not.toBe(resume.checkpoint.contentHash);
+  });
+
   it('one persisted checkpoint write updates item, carry and leader views without a loop copy (P-005)', async () => {
     const ownerId = 'progress-fixture-owner';
     const workspaceId = 'default';

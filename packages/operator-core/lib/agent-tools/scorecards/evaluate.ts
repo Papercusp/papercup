@@ -70,7 +70,14 @@ export const scorecardTestedShaSchema = z
 export const scorecardEvaluateArgs = z
   .object({
     rubricRef: z.string().min(1).max(120),
-    sourceHive: z.string().min(1).max(120).optional(),
+    sourceHive: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'Restrict to the hive that produced/filed the scorecard (normally the caller/grader hive), not the harness that owns the rubric subject plan. For cross-hive grading, use the grader/source hive here; scorecards:emit uses targetHive for the subject hive.',
+      ),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema).optional(),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     testedSha: scorecardTestedShaSchema.optional(),

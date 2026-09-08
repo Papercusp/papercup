@@ -9,6 +9,7 @@ import {
   codexThreadWriterHolder, ensureCodexHomeViaOperator, ensureInteractiveConfigViaOperator,
   ensureResumeTranscriptPresent, isClaudeConfigDirLaunchReady, isCodexHomeLaunchReady,
   normalizeArgvProbeResumeLocalLivenessEvidence, normalizeCodexResumeLocalLivenessEvidence,
+  normalizeModelSpecForAgent,
   ompTrackedResumeEnv, rehealResumeCodexAuth, rehealResumeCredentials, sessionProcessHolder, tryRematerializeFromArchive,
   resolveOmpSessionModel,
 } from '../../../apps/operator/scripts/psu-launcher.mjs';
@@ -92,6 +93,14 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     const { resolveAccountPin } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     const account = saved.accountRoute ?? 'default';
     let model = spec.model ?? saved.model;
+    // The native init frame reports only the resolved model id, never the
+    // Claude Code `[1m]` window marker. A PUI conversation launched on the
+    // implicit/default model can therefore have only `saved.model` available
+    // after an operator restart. Reapply the launcher's canonical Claude-only
+    // normalization before both route resolution and SDK startup; otherwise a
+    // restored 1M transcript is locally rejected against Claude's 200K window
+    // before its next request can reach the gateway.
+    if (record.backend === 'claude') model = normalizeModelSpecForAgent('claude', model);
     const accountPin = await resolveAccountPin(record.workspaceId, account, record.backend, record.ownerId, true, model);
     if (accountPin.error) throw new Error(accountPin.error);
     const accountRoute = { mode: accountPin.gatewayAuto || account === 'auto' || account === 'gateway' ? 'auto'

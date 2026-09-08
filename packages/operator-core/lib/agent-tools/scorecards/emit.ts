@@ -222,8 +222,22 @@ const specTestAdequacyRerunRecipeSchema = z
 export const scorecardEmitArgs = z
   .object({
     rubricRef: z.string().min(1).max(120),
-    sourceHive: z.string().min(1).max(120).optional(),
-    targetHive: z.string().min(1).max(120).optional(),
+    sourceHive: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        "Hive that produced/filed this scorecard; omitted defaults to the caller's hive. In cross-hive grading, use the grader/source hive here, not the harness owning the rubric subject plan; use targetHive for that subject hive.",
+      ),
+    targetHive: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        "Hive whose plan/repository is being graded. In cross-hive acceptance grading, this is the rubric subject plan's harness and directs deterministic checks to the subject tree; it does not change sourceHive.",
+      ),
     title: z.string().min(1).max(240).optional(),
     body: z.string().max(8000).optional(),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema),
