@@ -18,7 +18,7 @@ import {
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as Sql,
   denied: false, revoked: false,
-  wake: vi.fn(), model: vi.fn(), claim: vi.fn(), invocations: vi.fn(),
+  wake: vi.fn(), model: vi.fn(), claim: vi.fn(), dispatches: vi.fn(),
   denyPickupClaim: false,
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -45,7 +45,10 @@ vi.mock('./operator-state-pg', async (orig) => ({
 vi.mock('./projected-tool-deps', () => ({
   PROJECTED_DEPS: {
     defaultDeny: true,
-    recordInvocation: (...args: unknown[]) => h.invocations(...args),
+    onDispatchStart: ({ toolName }: { toolName: string }) => h.dispatches(toolName),
+    kernelEnforcement: async () => h.revoked
+      ? { decision: 'deny', code: 'revoked', reason: 'target authority revoked' }
+      : { decision: 'allow' },
     checkCapabilityEnvelope: async ({ toolName }: { toolName: string }) =>
       h.denyPickupClaim && toolName === 'work_items:claim'
         ? { decision: 'deny', reason: 'current target claim confinement' } : null,
@@ -133,7 +136,7 @@ beforeEach(async () => {
   h.denied = false;
   h.revoked = false;
   h.denyPickupClaim = false;
-  h.invocations.mockReset();
+  h.dispatches.mockReset();
   h.model.mockReset().mockRejectedValue(new Error('unexpected external model call'));
   h.wake.mockReset().mockResolvedValue({ queued: 1, woken: 0, staged: 0, timedOutTargets: [] });
   h.claim.mockReset().mockImplementation(wi.claimWorkItem);
@@ -194,6 +197,7 @@ async function pickup(id: string, role: UnifiedToolContext['role'] = 'reviewer')
   const ctx: UnifiedToolContext = {
     role, principal, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
     uiClientId: 'reviewer', sigVerifiedSpawn: true, spawnId: 'reviewer-turn', tx: db.sql,
+    log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
   };
   return inProcessCall(ctx)('work_items:pickup', { id, harness: scope.harnessSlug, detail: false });
 }
@@ -225,8 +229,8 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     });
     expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
     expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: 'reviewer' } });
-    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual([
-      'work_items:get', 'work_items:claim', 'work_items:pickup',
+    expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual([
+      'work_items:pickup', 'work_items:get', 'work_items:claim',
     ]);
     // The delivery record does not retroactively become proof of execution.
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
@@ -238,7 +242,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     await request(original.id);
     await tick();
     await expect(pickup(original.id, 'judge')).rejects.toThrow('role_not_allowed');
-    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual(['work_items:pickup']);
+    expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual(['work_items:pickup']);
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
   });
 
@@ -248,7 +252,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     await tick();
     await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read"]'`;
     await expect(pickup(original.id)).rejects.toThrow('missing_capability');
-    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual(['work_items:pickup']);
+    expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual(['work_items:pickup']);
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
     await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read","work_items:write"]'`;
     await expect(pickup(original.id)).resolves.toMatchObject({ ok: true, claimed: true });
@@ -260,8 +264,8 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     await tick();
     h.denyPickupClaim = true;
     await expect(pickup(original.id)).rejects.toThrow('current target claim confinement');
-    expect(h.invocations.mock.calls.map(([event]) => event.toolName)).toEqual([
-      'work_items:get', 'work_items:claim', 'work_items:pickup',
+    expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual([
+      'work_items:pickup', 'work_items:get', 'work_items:claim',
     ]);
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
     h.denyPickupClaim = false;
