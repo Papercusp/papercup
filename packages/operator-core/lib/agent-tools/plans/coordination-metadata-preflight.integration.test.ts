@@ -44,7 +44,7 @@ vi.mock('../../hive-federation', async (original) => ({
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { setSpecClause } = await import('./spec-clauses-store');
-const { getAcceptanceRubricsForPlan, proposeRubric } = await import('../../rubrics');
+const { getAcceptanceRubricForPlan, getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan, proposeRubric } = await import('../../rubrics');
 const evaluate = (await import('./evaluate-spec-quality')).default;
 const { readAcceptanceBarContractSnapshot } = await import('../../acceptance-bar-contract-snapshot');
 let db: OrgTestDb;
@@ -144,6 +144,20 @@ describe('P002 real-store metadata preflight', () => {
     expect(result.ok).toBe(false);
     expect(result.blockers).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'spec_quality_class_missing' })]));
     expect(result).not.toHaveProperty('scorecardDraft');
+  });
+
+  it('scopes singleton and retired views to the subject, never the rubric library', async () => {
+    await plan(A); await plan(B);
+    await rubric('acceptance-a', A); await rubric('acceptance-b', B);
+    expect(await inWorkspace(() => getAcceptanceRubricForPlan(metadataPlanSlug))).toBeNull();
+    expect(await inWorkspace(() => getAcceptanceRubricForPlan(metadataPlanSlug, { harnessSlug: B })))
+      .toMatchObject({ rubricId: 'acceptance-b', subjectHarnessSlug: B });
+    await h.sql`UPDATE harness_shared.harness_plans SET status = 'superseded'
+      WHERE workspace_id = ${WS} AND harness_slug = 'rubric-library'`;
+    expect(await inWorkspace(() => getRetiredAcceptanceRubricsForPlan(metadataPlanSlug, { harnessSlug: A })))
+      .toEqual([expect.objectContaining({ rubricId: 'acceptance-a' })]);
+    expect(await inWorkspace(() => getRetiredAcceptanceRubricsForPlan(metadataPlanSlug, { harnessSlug: B })))
+      .toEqual([expect.objectContaining({ rubricId: 'acceptance-b' })]);
   });
 
   it('keeps legacy single-subject lookup and enforces uniqueness within each subject harness', async () => {
