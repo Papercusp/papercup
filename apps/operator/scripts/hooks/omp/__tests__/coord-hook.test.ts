@@ -1901,12 +1901,15 @@ describe('isAskCall + askBlockReason (interactive ask-gate guard, ornith iter10 
 
 describe('onToolCall ask guard (agent sessions only)', () => {
   const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  const prevArgv = process.argv;
   beforeEach(() => {
+    process.argv = ['bun', 'omp'];
     global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
     resetToolCallLoopState();
     resetReflexiveBlockBudget();
   });
   afterEach(() => {
+    process.argv = prevArgv;
     resetToolCallLoopState();
     resetReflexiveBlockBudget();
     if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
@@ -1927,6 +1930,28 @@ describe('onToolCall ask guard (agent sessions only)', () => {
   it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
     delete process.env.PAPERCUSP_AGENT_SESSION;
     expect((await askCall()).block).toBeUndefined();
+  });
+
+  it('allows a native question through the attached rpc-ui transport', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    process.argv = ['bun', 'omp', '--mode', 'rpc-ui'];
+    const result = await onToolCall({ type: 'tool_call', toolName: 'ask', toolCallId: 'rpc-question',
+      input: { questions: [] } }, { hasUI: true });
+    expect(result.block).toBeUndefined();
+  });
+
+  it.each(['rpc', 'text'])('keeps unanswered native questions blocked in %s mode', async (mode) => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    process.argv = ['bun', 'omp', '--mode', mode];
+    const result = await onToolCall({ type: 'tool_call', toolName: 'ask', toolCallId: 'no-question-ui',
+      input: { questions: [] } }, { hasUI: true });
+    expect(result.reason).toContain('ask-blocked');
+  });
+
+  it('requires an attached UI context even when rpc-ui was requested', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    process.argv = ['bun', 'omp', '--mode', 'rpc-ui'];
+    expect((await askCall()).reason).toContain('ask-blocked');
   });
 
   it('leaves the `task`-family and coord:ask-owner tools to their own handling (no ask sweep)', async () => {

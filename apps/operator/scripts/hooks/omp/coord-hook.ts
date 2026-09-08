@@ -4585,7 +4585,13 @@ export async function onToolCall(
   // session self-terminates — the generic identical-call breaker is NOT enough (iter16 proved it:
   // 482 blocked `irc` calls slipped past it, so `ask` gets the same halt). Owner sessions
   // unrestricted (D-003).
-  if (isAgentSession() && isAskCall(event.toolName)) {
+  // PUI connects the native rpc-ui callbacks to an owner-operated card. It
+  // still carries the managed-session marker, but the no-UI premise of this
+  // guard does not apply. Require both the native transport and its attached
+  // UI context; a bare rpc/headless or unattended terminal keeps this guard.
+  const hasRpcQuestionUi = (ctx as { hasUI?: boolean } | undefined)?.hasUI === true
+    && process.argv.some((arg, index, argv) => arg === '--mode' && argv[index + 1] === 'rpc-ui');
+  if (isAgentSession() && isAskCall(event.toolName) && !hasRpcQuestionUi) {
     const n = noteReflexiveBlock('ask');
     return { block: true, reason: askBlockReason(n) };
   }

@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
-import { lookupByMcpName, papercuspGateBypass, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { appliedExecutionRevision, lookupByMcpName, papercuspGateBypass, sameKernelRevision, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { preflightDispatchStack } from '@papercusp/tooldef';
 import { decodeOperatorSecretKey } from './operator-secret-key';
 import { readSuperuserToken } from './superuser-token';
@@ -43,11 +43,17 @@ export function bindAdmissionAuthority(
   ctx: UnifiedToolContext & AdmissionAuthorityContext,
 ): AdmissionRecoveryAuthority | undefined {
   if (!ctx.admissionRecoveryAuthority) return undefined;
-  // A persisted activation/ownership snapshot is NOT a current kernel grant.
-  // Until a renewable source exists for those seats, refuse instead of silently
-  // dropping them (or promoting old snapshots into live authority).
+  // The final dispatcher stamps its verified applied revision on the handler.
+  // That observation is renewable through the current control anchor, and is
+  // deliberately NOT persisted as a grant or replayed as today's applied state.
+  // An unverified input snapshot still cannot be silently dropped.
+  const applied = appliedExecutionRevision(ctx.kernelEnforcement, 'enforce');
+  const verifiedAppliedStamp = Boolean(ctx.kernelEnforcement?.decision === 'allow' &&
+    ctx.kernelEnforcement.applied === true && applied && ctx.executionRevision &&
+    sameKernelRevision(applied, ctx.executionRevision) && ctx.appliedExecutionRevision &&
+    sameKernelRevision(applied, ctx.appliedExecutionRevision));
   if (ctx.kernelState || ctx.kernelOwnership || ctx.kernelBoundary || ctx.dispatchBoundary ||
-      ctx.requestedExecutionRevision || ctx.appliedExecutionRevision || ctx.reactionCause ||
+      ctx.requestedExecutionRevision || (ctx.appliedExecutionRevision && !verifiedAppliedStamp) || ctx.reactionCause ||
       ctx.telemetrySurface) {
     throw new AdmissionAuthorityRefused('explicit kernel/reaction dispatch context is not renewable for admission recovery');
   }

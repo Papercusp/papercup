@@ -105,6 +105,27 @@ function openCards(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  it('keeps restored history in startup until the new executor is ready', async () => {
+    const transcriptPath = join(dir, 'history-readiness.jsonl');
+    writeFileSync(transcriptPath, [
+      { type: 'user', sessionId: nativeId, uuid: 'saved-user', message: { role: 'user', content: 'Saved greeting' } },
+      { type: 'assistant', sessionId: nativeId, uuid: 'saved-reply', message: { role: 'assistant', content: [{ type: 'text', text: 'Saved reply' }] } },
+      { type: 'result', sessionId: nativeId, subtype: 'success', is_error: false },
+    ].map((record) => JSON.stringify(record) + '\n').join(''));
+    let beforeReady: ReturnType<ClaudeSuEngine['adapter']['host']['snapshot']> | undefined;
+    const engine = open(peer(), { resume: true, beforeReady: async () => {
+      beforeReady = engine.adapter.host.snapshot();
+    } }, { ...runtime, transcriptPath });
+    await engine.ready;
+    expect(beforeReady).toMatchObject({ streamReady: false, executorAttached: false,
+      descriptor: { lifecycle: expect.stringMatching(/^(starting|resuming)$/) } });
+    expect(engine.adapter.host.recent.map(({ event }) => event)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'transcript', phase: 'completed', role: 'assistant', content: 'Saved reply' }),
+    ]));
+    expect(engine.adapter.host.snapshot()).toMatchObject({ streamReady: true, executorAttached: true,
+      descriptor: { lifecycle: 'ready' } });
+  });
+
   it('restores historical assistant text without sending a new native turn', async () => {
     const transcriptPath = join(dir, 'saved-history.jsonl');
     writeFileSync(transcriptPath, JSON.stringify({ type: 'assistant', sessionId: nativeId,

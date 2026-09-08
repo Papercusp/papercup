@@ -14,6 +14,8 @@ import dispatch from './dispatch';
 import type { HydratableRef, HydratedRef } from '../ref-hydrate';
 import type { RefResolvers } from '../ref-hydrate-resolve';
 import { AdmissionRecoveryRefused } from '../../../work-item-admission-recovery';
+import { lookupByMcpName, papercuspGateBypass } from '@papercusp/agent-mcp';
+import { runDispatchStack } from '@papercusp/tooldef';
 
 const recoveryIO = vi.hoisted(() => ({ request: vi.fn(), target: vi.fn() }));
 vi.mock('../../../work-item-admission-recovery', async (original) => ({
@@ -96,6 +98,25 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
       responsibleActor: 'su-requester', pickupConfirmed: false,
       reason: 'member override denied original item', nextAction: expect.stringContaining('retry this same item'),
     });
+  });
+
+  it('accepts the real dispatchers applied stamp without saving it as authority', async () => {
+    const revision = { specificationRevision: 'b'.repeat(64), stateRevision: 'applied-now' };
+    const result = await runDispatchStack(lookupByMcpName('coord:dispatch')!, 'coord:dispatch', base, {
+      ...context, role: 'operator', gateBypass: papercuspGateBypass({ isSuperuser: true }),
+      signal: new AbortController().signal, log: () => {}, emit: () => {}, progress: () => {},
+    } as Parameters<typeof runDispatchStack>[3], {
+      kernelEnforcement: async () => ({
+        decision: 'allow', applied: true, revisionSource: 'applied', executionRevision: revision,
+      }),
+    });
+    expect(result.ok).toBe(true);
+    expect(recoveryIO.request).toHaveBeenCalledOnce();
+    const authority = recoveryIO.request.mock.calls[0]![0].authority;
+    expect(authority.context).toMatchObject({ runId: 'original-run', harnessSlug: 'original-harness' });
+    for (const field of ['kernelState', 'kernelEnforcement', 'appliedExecutionRevision', 'executionRevision']) {
+      expect(authority.context).not.toHaveProperty(field);
+    }
   });
 
   it('does not enqueue without a concrete authenticated workspace or hide infrastructure errors', async () => {

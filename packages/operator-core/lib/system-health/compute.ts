@@ -1626,7 +1626,10 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
     // push-failure", which is false and is what the summary below was built on.
     const syncFailing = status === 'crit';
     const syncMetricTone: PanelStatus | undefined =
-      syncFailing || data.gitSyncStatus === 'degraded' || data.gitSyncOversizedCount > 0
+      syncFailing ||
+      data.gitSyncStatus === 'degraded' ||
+      data.gitSyncStatus === 'quarantined' ||
+      data.gitSyncOversizedCount > 0
         ? syncFailing ? 'crit' : 'warn'
         : undefined;
     return {
