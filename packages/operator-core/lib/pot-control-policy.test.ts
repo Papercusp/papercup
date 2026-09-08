@@ -34,7 +34,7 @@ vi.mock('./sync-sse', () => ({
   }),
 }));
 
-const { placementOverride, refreshPotControlPolicy } = await import('./pot-control-policy');
+const { placementOverride, refreshPotControlPolicy, readPotControlPolicy } = await import('./pot-control-policy');
 
 beforeEach(() => {
   state.stored = {};
@@ -43,6 +43,12 @@ beforeEach(() => {
 });
 
 describe('work-scope policy cache invalidation', () => {
+  it('reads the explicitly requested workspace for dispatch authorization', async () => {
+    const { readOperatorState } = await import('./operator-state-pg');
+    await readPotControlPolicy('dispatch-workspace');
+    expect(readOperatorState).toHaveBeenLastCalledWith('operator_pot_control_policy', 'dispatch-workspace');
+  });
+
   it('refreshes a peer process cache when workScope.policy is invalidated', async () => {
     state.stored = { workScope: { mode: 'enforce', allowHarnesses: ['papercusp'] } };
 

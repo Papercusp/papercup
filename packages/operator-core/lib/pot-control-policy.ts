@@ -119,8 +119,8 @@ managedSetInterval('config-refresh:pot-control-policy', 60_000, () => refreshPot
   classification: 'must-sample',
 });
 
-export async function readPotControlPolicy(): Promise<PotControlPolicy> {
-  return (await readOperatorState<PotControlPolicy>('operator_pot_control_policy')) ?? {};
+export async function readPotControlPolicy(workspaceId?: string): Promise<PotControlPolicy> {
+  return (await readOperatorState<PotControlPolicy>('operator_pot_control_policy', workspaceId)) ?? {};
 }
 
 export async function writePotControlPolicy(patch: PotControlPolicy): Promise<PotControlPolicy> {
