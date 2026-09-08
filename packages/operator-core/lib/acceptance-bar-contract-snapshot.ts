@@ -564,7 +564,12 @@ export function nextRepair(
       + 'evidence: as far as this read knows it is intact, and amending it would destroy any in-flight grading card.',
     bar_snapshot_rubric_missing: "Seed or restore the plan's canonical acceptance rubric.",
     bar_snapshot_rubric_ambiguous: 'Retire the competing active acceptance rubric before continuing.',
-    bar_snapshot_rubric_revision_mismatch: 'Re-seed or amend atomically so subject and rubric revision pins agree.',
+    bar_snapshot_rubric_revision_mismatch:
+      'Before mutating BAR state, run dev:pipeline_position { path: ' +
+      '"packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts", ' +
+      'marker: "synchronizeAcceptanceBarSubjectRevision" } to distinguish a stale serving build ' +
+      'from a live guard. If the synchronizer is not deployed, land/redeploy it first; otherwise ' +
+      're-seed or amend atomically so subject and rubric revision pins agree.',
     bar_snapshot_bar_set_empty: 'Declare at least one canonical outcome BAR for this post-epoch plan.',
     bar_snapshot_bar_set_too_large: 'Reduce the BAR set to the declared bounded contract limit.',
     bar_snapshot_bar_key_duplicate: 'Give every BAR one unique stable barKey.',
