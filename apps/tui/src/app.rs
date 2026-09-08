@@ -3037,7 +3037,8 @@ impl App {
                     | crate::su_session::SuSessionLifecycleState::Resuming => {
                         self.chat_streaming = true;
                     }
-                    crate::su_session::SuSessionLifecycleState::WaitingForOwner
+                    crate::su_session::SuSessionLifecycleState::Ready
+                    | crate::su_session::SuSessionLifecycleState::WaitingForOwner
                     | crate::su_session::SuSessionLifecycleState::Interrupted
                     | crate::su_session::SuSessionLifecycleState::Ended
                     | crate::su_session::SuSessionLifecycleState::Failed => {
@@ -16533,6 +16534,40 @@ mod tests {
             app.apply_su_session_event(su_event(completed));
             assert!(!app.chat_streaming);
         }
+    }
+
+    #[test]
+    fn su_resume_ready_unlocks_after_historical_assistant_replay() {
+        let mut app = composing("");
+        app.set_su_session_binding(su_binding());
+        app.agent_chat_id = Some("chat-1".into());
+        let mut running = su_event_base("lifecycle", 1);
+        running["state"] = json!("running");
+        running["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(running));
+        for (offset, phase) in ["started", "delta", "completed"].into_iter().enumerate() {
+            let mut reply = su_event_base("transcript", offset as u64 + 2);
+            reply["phase"] = json!(phase);
+            reply["turnId"] = json!("historical-turn");
+            reply["role"] = json!("assistant");
+            reply["channel"] = json!("text");
+            if phase != "started" {
+                reply["content"] = json!("restored reply");
+            }
+            app.apply_su_session_event(su_event(reply));
+        }
+        assert!(app.chat_streaming, "replay has not reached current readiness");
+        let mut ready = su_event_base("lifecycle", 5);
+        ready["state"] = json!("ready");
+        ready["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(ready));
+        assert!(!app.chat_streaming);
+        assert_eq!(app.chat_messages.last().unwrap().content, "restored reply");
+        app.chat_input = "continue this session".into();
+        assert_eq!(
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::SendSuSessionTurn("continue this session".into())
+        );
     }
 
     #[test]
