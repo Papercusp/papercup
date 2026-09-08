@@ -1393,6 +1393,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const followup = `Reply with exactly ${followupReply} and no other text. Do not resume the interrupted task.`;
     const pane = new PuiPane(bin, operatorPort, home);
     const frames: Record<string, string> = {};
+    let streamingEvidence: Record<string, unknown> | undefined;
     try {
       await openComposer(pane);
       pane.write(greeting);
@@ -1438,6 +1439,22 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           commandType: 'owner_turn', status: 'completed', session: longCommand.target }),
       ])), { timeout: 120_000, interval: 100 });
       await pane.waitFor('Running — input locked');
+      await vi.waitFor(() => {
+        const partialText = scriptedEngine.events.flatMap((event) => event.type === 'transcript'
+          && event.role === 'assistant' && event.phase === 'delta' && event.turnId === longCommand.turnId
+          ? [event.content] : []).join('');
+        expect(partialText, 'native text must reach the host before completion').toMatch(/\b1\s+2\s+3\b/);
+        const visibleNumbers = pane.screen().split('\n')
+          .map((line) => line.replace(/^│|│$/g, '').trim())
+          .filter((line) => /^\d+$/.test(line)).map(Number);
+        expect(visibleNumbers.some((value, index) => visibleNumbers[index + 1] === value + 1
+          && visibleNumbers[index + 2] === value + 2), 'the installed PUI must paint incremental assistant text').toBe(true);
+        expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
+        expect(scriptedEngine.events.some((event) => event.type === 'transcript' && event.role === 'assistant'
+          && event.phase === 'completed' && event.turnId === longCommand.turnId)).toBe(false);
+        streamingEvidence = { turnId: longCommand.turnId, observedAt: new Date().toISOString(),
+          partialText: partialText.slice(0, 200), visibleNumbers: visibleNumbers.slice(0, 8), lifecycle: 'running', completed: false };
+      }, { timeout: 120_000, interval: 50 });
       expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
       expect(scriptedEngine.events.some((event) => event.type === 'transcript'
         && event.role === 'assistant' && event.phase === 'completed' && event.turnId === longCommand.turnId),
@@ -1552,7 +1569,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(pipelineCellRequests).toEqual([]);
       console.info('PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
-        greetingReply, fileResult, followupReply, resumedReply, resumedDescriptor, readStart, readEnd,
+        greetingReply, fileResult, followupReply, resumedReply, resumedDescriptor, readStart, readEnd, streamingEvidence,
         commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
         initializeWarnings, optionalMemoryWarnings, configurationWarnings, intentPivotWarnings,
         nativeFrames: nativeFrameDiagnostics, nativeProviderEvents,
