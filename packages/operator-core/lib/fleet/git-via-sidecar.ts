@@ -187,12 +187,180 @@ const __sidecarFallbacks = pinModuleState<{
 const FALLBACK_WARN_INTERVAL_MS = 60_000;
 
 /**
+ * Sidecar CIRCUIT BREAKER (WI-10000740).
+ *
+ * Counting the fallbacks (above) made a dead sidecar VISIBLE; it did not make it
+ * CHEAP. Every seam below calls `spawnSpawnerSidecar()` on every git call, and
+ * when the sidecar cannot come up — its owner pid is gone, the socket is stale,
+ * the respawn window is exhausted — each call waits the FULL startup timeout
+ * (10s, `spawner-sidecar-spawn.ts`) before rejecting onto the local fallback.
+ * A phase that runs hundreds of sequential git ops then turns into ~10s × N of
+ * pure waiting. Measured 2026-09-08 on the papercusp green-checkpoint: the
+ * post-suite repair-dispatch phase logged 265+ `Spawner sidecar startup
+ * timeout` fallbacks over ~35 min, alive at ~15% of a core, holding the shared
+ * run-lock the whole time — so the next verification could not even start.
+ *
+ * The breaker turns that into a bounded cost: after
+ * {@link SIDECAR_BREAKER_TRIP_AFTER} CONSECUTIVE real fallbacks the seams
+ * reject IMMEDIATELY (no module load, no spawn attempt, no 10s wait) with a
+ * {@link SidecarCircuitOpenError} for {@link SIDECAR_BREAKER_COOLDOWN_MS};
+ * then exactly ONE call is let through as a half-open probe (the rest keep
+ * short-circuiting while it is in flight); a probe that succeeds CLOSES the
+ * breaker, a probe that fails re-opens it for another cooldown. Callers change
+ * nothing — the rejection lands in the same `catch` that already falls back to
+ * a local spawn, and `noteSidecarFallback` still counts it (a short-circuited
+ * call DOES pay the local fork, which is what the counter measures).
+ *
+ * The breaker is process-global, not per subsystem: there is one sidecar per
+ * owner process, so when it is down it is down for every seam. The state is
+ * PINNED for the same reason the counters are — a split module record would
+ * give each copy its own breaker, and a breaker that never trips because its
+ * failures are being counted in another shard reads exactly like a healthy
+ * sidecar.
+ */
+export const SIDECAR_BREAKER_TRIP_AFTER = 3;
+export const SIDECAR_BREAKER_COOLDOWN_MS = 60_000;
+/**
+ * A half-open probe that never reports back (a caller that swallowed the
+ * rejection without `noteSidecarFallback`) must not pin the breaker half-open
+ * forever: past this age the next call is allowed to probe again.
+ */
+export const SIDECAR_BREAKER_PROBE_STALE_MS = 2 * SIDECAR_BREAKER_COOLDOWN_MS;
+
+/**
+ * The rejection a seam raises while the breaker is open. Distinct class so
+ * {@link noteSidecarFallback} can tell a SHORT-CIRCUITED fallback (the breaker
+ * working) from a REAL one (the sidecar failing) — only the latter feeds the
+ * trip counter, otherwise the breaker would re-trip on its own rejections and
+ * never half-open.
+ */
+export class SidecarCircuitOpenError extends Error {
+  readonly code = 'SIDECAR_CIRCUIT_OPEN' as const;
+  constructor(readonly retryAfterMs: number) {
+    super(
+      `spawner sidecar circuit OPEN — skipping the sidecar for ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s ` +
+        `(${SIDECAR_BREAKER_TRIP_AFTER} consecutive real fallbacks; local spawn is being used instead)`,
+    );
+    this.name = 'SidecarCircuitOpenError';
+  }
+}
+
+interface MutableBreakerState {
+  /** Real (non-short-circuited) fallbacks since the last sidecar success. */
+  consecutiveFailures: number;
+  /** When the breaker last opened; null while closed. */
+  openedAtMs: number | null;
+  /** When the current half-open probe was let through; null when none is in flight. */
+  probeStartedAtMs: number | null;
+  /** Lifetime count of closed→open transitions in this process. */
+  trips: number;
+  /** Lifetime count of calls the breaker short-circuited (each one saved a startup-timeout wait). */
+  shortCircuited: number;
+}
+
+const __sidecarBreaker = pinModuleState<MutableBreakerState>(
+  '@papercusp/operator-core.fleet.git-via-sidecar.breaker',
+  () => ({
+    consecutiveFailures: 0,
+    openedAtMs: null,
+    probeStartedAtMs: null,
+    trips: 0,
+    shortCircuited: 0,
+  }),
+);
+
+export interface SidecarBreakerSnapshot {
+  readonly state: 'closed' | 'open' | 'half-open';
+  readonly consecutiveFailures: number;
+  readonly openedAtMs: number | null;
+  readonly trips: number;
+  readonly shortCircuited: number;
+  /** ms until the next probe is allowed; 0 when closed or already half-open. */
+  readonly retryAfterMs: number;
+}
+
+/** The breaker's current state — a health read, never a control. */
+export function getSidecarBreakerState(nowMs: number = Date.now()): SidecarBreakerSnapshot {
+  const b = __sidecarBreaker;
+  let state: SidecarBreakerSnapshot['state'] = 'closed';
+  let retryAfterMs = 0;
+  if (b.openedAtMs !== null) {
+    const elapsed = nowMs - b.openedAtMs;
+    if (elapsed < SIDECAR_BREAKER_COOLDOWN_MS) {
+      state = 'open';
+      retryAfterMs = SIDECAR_BREAKER_COOLDOWN_MS - elapsed;
+    } else {
+      state = 'half-open';
+    }
+  }
+  return {
+    state,
+    consecutiveFailures: b.consecutiveFailures,
+    openedAtMs: b.openedAtMs,
+    trips: b.trips,
+    shortCircuited: b.shortCircuited,
+    retryAfterMs,
+  };
+}
+
+/**
+ * Gate every sidecar seam: throws {@link SidecarCircuitOpenError} while the
+ * breaker is open, lets exactly one probe through once the cooldown has
+ * elapsed, and is a no-op while closed. Called BEFORE the module load and the
+ * spawn attempt, which is the whole point — nothing that can wait 10s runs
+ * behind an open breaker.
+ */
+function assertSidecarCircuitClosed(nowMs: number = Date.now()): void {
+  const b = __sidecarBreaker;
+  if (b.openedAtMs === null) return;
+  const elapsed = nowMs - b.openedAtMs;
+  if (elapsed < SIDECAR_BREAKER_COOLDOWN_MS) {
+    b.shortCircuited += 1;
+    throw new SidecarCircuitOpenError(SIDECAR_BREAKER_COOLDOWN_MS - elapsed);
+  }
+  // Cooldown elapsed: half-open. One probe at a time; a stale probe (its caller
+  // never reported back) is abandoned rather than pinning us here.
+  if (b.probeStartedAtMs !== null && nowMs - b.probeStartedAtMs < SIDECAR_BREAKER_PROBE_STALE_MS) {
+    b.shortCircuited += 1;
+    throw new SidecarCircuitOpenError(1_000);
+  }
+  b.probeStartedAtMs = nowMs;
+}
+
+/** A sidecar call completed: the sidecar is reachable, so close the breaker. */
+function noteSidecarSuccess(): void {
+  const b = __sidecarBreaker;
+  b.consecutiveFailures = 0;
+  b.openedAtMs = null;
+  b.probeStartedAtMs = null;
+}
+
+/**
  * Record that `subsystem` fell back to a local spawn because the sidecar was
  * unavailable. Safe to call on every fallback — it is two Map operations and,
- * at most once a minute per subsystem, one `console.warn`.
+ * at most once a minute per subsystem, one `console.warn`. A REAL failure
+ * (anything but the breaker's own {@link SidecarCircuitOpenError}) also feeds
+ * the circuit breaker above.
  */
 export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number = Date.now()): void {
   const reason = e instanceof Error ? e.message : String(e);
+  if (!(e instanceof SidecarCircuitOpenError)) {
+    const b = __sidecarBreaker;
+    b.consecutiveFailures += 1;
+    b.probeStartedAtMs = null;
+    if (b.consecutiveFailures >= SIDECAR_BREAKER_TRIP_AFTER) {
+      const wasOpen = b.openedAtMs !== null;
+      b.openedAtMs = nowMs;
+      if (!wasOpen) {
+        b.trips += 1;
+        console.warn(
+          `[${subsystem}] spawner sidecar circuit OPEN after ${b.consecutiveFailures} consecutive fallbacks ` +
+            `(last: ${reason}) — git goes straight to local spawn for ${SIDECAR_BREAKER_COOLDOWN_MS / 1000}s, ` +
+            `then one probe`,
+        );
+      }
+    }
+  }
   const prev = __sidecarFallbacks.bySubsystem.get(subsystem);
   if (prev) {
     prev.count += 1;
@@ -231,10 +399,15 @@ export function getSidecarFallbackStats(): SidecarFallbackStats {
   return { total, bySubsystem };
 }
 
-/** Test-only: clear the accounting between cases. */
+/** Test-only: clear the accounting (and the breaker) between cases. */
 export function resetSidecarFallbackStatsForTest(): void {
   __sidecarFallbacks.bySubsystem.clear();
   __sidecarFallbacks.lastWarnAtMs.clear();
+  __sidecarBreaker.consecutiveFailures = 0;
+  __sidecarBreaker.openedAtMs = null;
+  __sidecarBreaker.probeStartedAtMs = null;
+  __sidecarBreaker.trips = 0;
+  __sidecarBreaker.shortCircuited = 0;
 }
 
 /**
@@ -253,13 +426,16 @@ export async function runGitViaSpawnerSidecar(
   env: NodeJS.ProcessEnv,
   opts: { idleTimeoutMs?: number } = {},
 ): Promise<GitRunResult> {
+  assertSidecarCircuitClosed();
   const { spawnSpawnerSidecar, getSpawnerIpcClient } = await loadSidecarModules();
   await spawnSpawnerSidecar();
-  return getSpawnerIpcClient().call<GitRunResult>(
+  const res = await getSpawnerIpcClient().call<GitRunResult>(
     'process:exec',
     { command: 'git', args, cwd, env, timeoutMs, idleTimeoutMs: opts.idleTimeoutMs },
     { timeoutMs: timeoutMs + 35_000 },
   );
+  noteSidecarSuccess();
+  return res;
 }
 
 /**
@@ -334,6 +510,7 @@ export async function runGitStdinViaSpawnerSidecar(
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
 ): Promise<GitStdinRunResult> {
+  assertSidecarCircuitClosed();
   const { spawnSpawnerSidecar, getSpawnerIpcClient } = await loadSidecarModules();
   await spawnSpawnerSidecar();
   const dir = await handoffDir();

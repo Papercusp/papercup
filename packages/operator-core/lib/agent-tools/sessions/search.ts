@@ -24,8 +24,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import {
   sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef,
   formatSessionTurnRef,
-  refreshLiveSessionsBeforeRead, refreshResolvedSessionBeforeRead,
-  refreshTargetSessionBeforeRead, type WindowTurn,
+  refreshLiveSessionsBeforeRead, refreshTargetSessionBeforeRead, type WindowTurn,
 } from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-origin';
@@ -162,14 +161,7 @@ export default defineTool({
     const effectiveArgs = { ...args, until: snapshotUntil };
 
     const { filters, selfSession: resolvedSelfSession } = await resolveSearchFilters(
-      tx,
-      effectiveArgs,
-      callerOwnerId,
-      // This tool owns the refresh receipt below. Avoid the old double-tail:
-      // resolveSearchFilters is also used by search:fulltext/semantic, but
-      // sessions:search can refresh the already-resolved transcript exactly
-      // once and keep the result bounded.
-      { workspaceId, liveTailSelf: false },
+      tx, effectiveArgs, callerOwnerId, { workspaceId },
     );
     // EI-21699129692862363: this refresh is what makes session:'self' able to
     // find a turn written seconds ago — it tails the live transcript into the
@@ -186,8 +178,6 @@ export default defineTool({
     // turning a targeted read into unrelated filesystem work (EI-217206...).
     const liveRefresh = filters?.sessionId
       ? await refreshTargetSessionBeforeRead(tx, filters.sourceKind, filters.sessionId)
-      : args.session === 'self' && resolvedSelfSession
-        ? await refreshResolvedSessionBeforeRead(resolvedSelfSession, callerOwnerId)
       : await refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null);
     const refreshDegraded = liveRefresh.attempted > liveRefresh.refreshed;
 

@@ -18,6 +18,7 @@ describe('resolveSearchFilters session:self timeout', () => {
 
   it('degrades a wedged self-session resolver instead of holding the search tool', async () => {
     vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     resolveSelfSession.mockReturnValue(new Promise<never>(() => {}));
 
     const pending = resolveSearchFilters(noSql, { session: 'self' }, 'su-self');
@@ -27,5 +28,7 @@ describe('resolveSearchFilters session:self timeout', () => {
       filters: { owners: ['su-self'] },
       selfSession: null,
     });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sessions:self resolve'));
+    warn.mockRestore();
   });
 });

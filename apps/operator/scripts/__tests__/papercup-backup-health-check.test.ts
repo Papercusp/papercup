@@ -19,11 +19,7 @@ describe('papercup-backup-health-check.sh', () => {
   it('passes the shipped self-test, including disk-headroom discrimination', () => {
     const output = execFileSync('bash', [SCRIPT, '--self-test'], {
       encoding: 'utf8',
-      // The self-test runs 47 shell probes. On the shared fleet its governed
-      // worker can spend >60s on the probes even though the shell completes
-      // successfully; keep the child budget above that measured runtime while
-      // still bounding a genuine hang.
-      timeout: 180_000,
+      timeout: 120_000,
       maxBuffer: 1024 * 1024,
     });
     expect(output).toContain('post disk-headroom block');
@@ -36,5 +32,5 @@ describe('papercup-backup-health-check.sh', () => {
     expect(output).toContain('post shell-runtime-error block');
     expect(output).toContain('no bash runtime error on any exercised probe path');
     expect(output).not.toMatch(/FAIL/);
-  });
+  }, 150_000);
 });

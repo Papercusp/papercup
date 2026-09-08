@@ -1,0 +1,198 @@
+/**
+ * Focused regression coverage for the spec-test-adequacy replay guard in
+ * scorecards:emit (EI-22661784888485365).
+ *
+ * A caller can preserve the current[] fingerprints from an older evaluator
+ * result while the exact replay now returns an unknown/blocked criterion. The
+ * write boundary must compare the submitted pass-like rating with that replay
+ * before reading revisions, deduplicating, or filing the scorecard.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { encode } from '@papercusp/result-encoding';
+
+const getRubric = vi.fn();
+const getRubricPlanRevision = vi.fn();
+const readRubricPlanRevision = vi.fn();
+const listScorecards = vi.fn();
+const captureImprovement = vi.fn();
+
+vi.mock('../../rubrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rubrics')>();
+  return {
+    ...actual,
+    getRubric: (...args: unknown[]) => getRubric(...args),
+    getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
+    readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
+  };
+});
+vi.mock('../../scorecards', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../scorecards')>();
+  return { ...actual, listScorecards: (...args: unknown[]) => listScorecards(...args) };
+});
+vi.mock('../../harness/improvements/capture-core', () => ({
+  captureImprovement: (...args: unknown[]) => captureImprovement(...args),
+}));
+vi.mock('../../scout/generation-watermark', () => ({
+  readRunningGeneration: async () => null,
+}));
+vi.mock('../../issues-engineer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../issues-engineer')>();
+  return { ...actual, getIssue: async () => null };
+});
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
+vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
+
+import { emitScorecard } from './emit';
+
+const RUBRIC = {
+  rubricId: 'spec-test-adequacy',
+  workspaceId: 'ws-test',
+  kind: 'standard',
+  characteristic: 'plan-proof',
+  title: 'Spec-test adequacy',
+  description: '',
+  criteria: [{ key: 'plan-class-risk-floor', title: 'Risk floor', model: 'm', method: 'm', driftMarkers: 'd' }],
+  ratingScale: ['pass', 'unknown', 'fail'],
+  methodRef: null,
+  status: 'active',
+  createdBy: null,
+  proposedBy: null,
+  ratifiedBy: null,
+};
+
+const RERUN_RECIPE = {
+  schemaVersion: 1 as const,
+  evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  classRef: 'plan-class-feature-ship' as const,
+  args: {
+    slug: 'reconnect-plan',
+    classRef: 'plan-class-feature-ship' as const,
+    specIds: ['SPEC-003-01'],
+    includeDraft: true as const,
+  },
+  selection: {
+    planSlug: 'reconnect-plan',
+    specId: 'SPEC-003-01',
+    specRevision: 1,
+    specFingerprint: 'sha256:spec-v1',
+    evidence: [{ evidenceKind: 'integration fixture', evidenceRef: 'surface:reconnect' }],
+  },
+  current: {
+    supplied: true,
+    fingerprints: [
+      {
+        evidenceKind: 'integration fixture',
+        evidenceRef: 'surface:reconnect',
+        sourceFingerprint: 'git:abc',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: 'sha256:fixture',
+        rubricFingerprint: 'sha256:rubric',
+        environmentFingerprint: 'node:24',
+      },
+    ],
+  },
+  derivation: {
+    kind: 'listSpecEvidence.currentness' as const,
+    classifier: 'classifySpecEvidenceCurrentness' as const,
+    unknownWhenMissing: true as const,
+  },
+};
+
+const emitArgs = (over: Record<string, unknown> = {}) => ({
+  rubricRef: 'spec-test-adequacy',
+  ratings: {
+    'plan-class-risk-floor': { rating: 'pass', evidence: 'risk floor is satisfied' },
+  },
+  rerunRecipe: RERUN_RECIPE,
+  subject: { kind: 'plan' as const, ref: 'reconnect-plan#SPEC-003-01@1' },
+  ...over,
+});
+
+const blockedReplay = {
+  ok: true,
+  rows: [
+    {
+      specId: 'SPEC-003-01',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      ratings: {
+        'plan-class-risk-floor': { rating: 'unknown', evidence: 'the proof floor could not be established' },
+      },
+      wouldBlock: ['plan-class-risk-floor'],
+    },
+  ],
+};
+
+const passingReplay = {
+  ok: true,
+  rows: [
+    {
+      specId: 'SPEC-003-01',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      ratings: {
+        'plan-class-risk-floor': { rating: 'pass', evidence: 'the proof floor is established' },
+      },
+      wouldBlock: [],
+    },
+  ],
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  getRubric.mockResolvedValue(RUBRIC);
+  getRubricPlanRevision.mockResolvedValue(7);
+  readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
+  listScorecards.mockResolvedValue([]);
+  captureImprovement.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-1' } });
+});
+
+describe('scorecards:emit spec-test-adequacy replay guard', () => {
+  it('rejects a pass-like card when the exact replay is unknown and wouldBlock includes the criterion', async () => {
+    const dispatchTool = vi.fn().mockResolvedValue(blockedReplay);
+
+    const result = await emitScorecard(emitArgs(), { createdBy: 'su-grader' }, { dispatchTool });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining("returns 'unknown'"),
+    });
+    expect(result).toMatchObject({ error: expect.stringContaining("wouldBlock includes 'plan-class-risk-floor'") });
+    expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
+      ...RERUN_RECIPE.args,
+      payloadTier: 'full',
+    });
+    expect(getRubricPlanRevision).not.toHaveBeenCalled();
+    expect(listScorecards).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('applies the same refusal when the dispatcher returns the evaluator as a TOON ToolResult', async () => {
+    const dispatchTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: `format: toon\n${encode(blockedReplay, 'toon')}` }],
+    });
+
+    const result = await emitScorecard(emitArgs(), { createdBy: 'su-grader' }, { dispatchTool });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining("returns 'unknown'"),
+    });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('allows filing when the exact replay also passes and does not block the criterion', async () => {
+    const dispatchTool = vi.fn().mockResolvedValue(passingReplay);
+
+    const result = await emitScorecard(emitArgs(), { createdBy: 'su-grader' }, { dispatchTool });
+
+    expect(result).toMatchObject({ ok: true, created: true, issueId: 'EI-1' });
+    expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
+      ...RERUN_RECIPE.args,
+      payloadTier: 'full',
+    });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+});

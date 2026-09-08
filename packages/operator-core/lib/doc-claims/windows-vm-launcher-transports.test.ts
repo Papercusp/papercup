@@ -145,6 +145,45 @@ const CONTROL_VNC_ONLY = [
   '',
 ].join('\n');
 
+// The rig runs WSL2 inside Hyper-V inside KVM, not merely a Windows guest.
+// QEMU does not enable Hyper-V enlightenments for a bare "-cpu host".
+// Inspect the reachable exec argv, not comments that mention the desired flags.
+function nestedHypervProfile(script: string): Set<string> {
+  const argv = execContinuation(script).lines.join(' ');
+  const cpu = argv.match(/(?:^|\s)-cpu\s+([^\s\\]+)/)?.[1] ?? '';
+  return new Set(cpu.split(','));
+}
+
+describe.skipIf(NO_TRACKED)('windows-vm launcher: nested Hyper-V profile', () => {
+  const required = [
+    'host', 'hv-vpindex', 'hv-vapic', 'hv-time', 'hv-synic',
+    'hv-stimer', 'hv-stimer-direct', 'hv-tlbflush', 'hv-ipi',
+  ];
+
+  it('exposes nested direct timers and their dependencies', () => {
+    const profile = nestedHypervProfile(TRACKED);
+    for (const flag of required) expect(profile.has(flag), flag).toBe(true);
+  });
+
+  it('preserves watchdogs and does not enable Intel-only eVMCS on AMD', () => {
+    const profile = nestedHypervProfile(TRACKED);
+    expect([...profile].some((flag) => /^hv-relaxed(?:=|$)/.test(flag))).toBe(false);
+    expect([...profile].some((flag) => /^hv-evmcs(?:=|$)/.test(flag))).toBe(false);
+  });
+
+  it('CONTROL: bare host fails even when comments name every required feature', () => {
+    const control = `# ${required.join(',')}\nexec qemu-system-x86_64 -cpu host`;
+    expect(required.every((flag) => nestedHypervProfile(control).has(flag))).toBe(false);
+  });
+
+  it('CONTROL: removal of direct mode is detected separately from classic timers', () => {
+    const control = `exec qemu-system-x86_64 -cpu ${required.filter((flag) =>
+      flag !== 'hv-stimer-direct').join(',')}`;
+    expect(nestedHypervProfile(control).has('hv-stimer')).toBe(true);
+    expect(nestedHypervProfile(control).has('hv-stimer-direct')).toBe(false);
+  });
+});
+
 describe.skipIf(NO_TRACKED)(`windows-vm launcher: display transports are pinned${
   NO_TRACKED ? ` [SKIPPED: ${NO_TRACKED_REASON}]` : ''
 }`, () => {

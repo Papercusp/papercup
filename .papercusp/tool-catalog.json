@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 876,
+  "count": 877,
   "tools": [
     {
       "name": "ablation:report",
@@ -26369,6 +26369,37 @@
       }
     },
     {
+      "name": "release:checkpoint-cancel",
+      "http": {
+        "path": "/api/agent-tools/release/checkpoint-cancel",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Cancel one known-unsafe detached green-checkpoint runner by exact logical attempt id and exact recorded systemd unit. The protected SIGTERM path is invoked only after the same-row attempt/unit CAS succeeds; the qualification becomes terminal code-inconclusive and the frozen repair queue is preserved.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A live detached checkpoint is proven unsafe or is judging a candidate that must not be allowed to produce a verdict. Obtain attemptId and unit from the qualification/run evidence first.",
+        "notWhen": "Do not use this as a generic retry or stale-run heuristic. Use release:checkpoint-run { replaceStale:true } for the separately guarded stale-candidate recovery path.",
+        "chaining": "read the exact qualification attempt/unit → release:checkpoint-cancel → inspect the inconclusive evidence and preserved repair queue before starting a successor."
+      }
+    },
+    {
       "name": "release:checkpoint-config",
       "http": {
         "path": "/api/agent-tools/release/checkpoint-config",
@@ -26508,7 +26539,7 @@
           "POST"
         ]
       },
-      "description": "Inspect, admit onto, claim-leg{leg} (take one manifest row; claims its paths), or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.",
+      "description": "Inspect, admit onto, claim-leg{leg} (take one manifest row; claims its paths), or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths, expectedCandidate?, expectedRepairHead?, expectedUpdatedAtMs?} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. The optional expected* fields are an all-or-none queue snapshot; a stale tuple is refused before building, and a confirmed tuple also guards the queue-row write with expectedUpdatedAtMs. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.",
       "capabilities": [
         "operator:write"
       ],
@@ -26529,7 +26560,7 @@
       "guidance": {
         "when": "You fixed a gate red on staging (git-sync committed it) and need it on the judged sha — admit{paths} naming exactly the files you changed. Or a release read reports repair-in-progress, a fossil/blocked queue, or a definitely-dead fixer.",
         "notWhen": "Do not pass harness or workspace: workspace-global, target derived internally. admit is path-exact — never name paths you did not fix to \"catch up\" to the tip. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify work, or merely to make the gate move. Never re-cut a fresh candidate for a phantom red. Does not launch a checkpoint or deploy.",
-        "chaining": "Landing a fix: admit{paths} (dry run) → verdict would-admit + proof → re-call confirm:true → admitted, phase ready-to-verify; the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true."
+        "chaining": "Landing a fix: get → admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs} (dry run) → verdict would-admit + proof → re-call confirm:true with the same complete tuple → admitted, phase ready-to-verify; a stale tuple is refused before any build and the confirmed queue write is version-CAS guarded, while the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true."
       }
     },
     {
