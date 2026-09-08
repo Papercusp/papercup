@@ -342,8 +342,8 @@ export interface AcceptanceBarContractSnapshot {
 }
 
 export interface AcceptanceBarSnapshotDeps {
-  readPlans: (planSlug: string) => Promise<BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>>;
-  readRubrics: (planSlug: string) => Promise<BoundedAcceptanceBarRows<Rubric>>;
+  readPlans: (planSlug: string, scope?: { harnessSlug: string }) => Promise<BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>>;
+  readRubrics: (planSlug: string, scope?: { harnessSlug: string }) => Promise<BoundedAcceptanceBarRows<Rubric>>;
   readPlanItems: (
     plan: AcceptanceBarSubjectPlanSource,
   ) => Promise<BoundedAcceptanceBarRows<AcceptanceBarPlanItemSource>>;
@@ -1256,7 +1256,7 @@ async function captured<T>(
   }
 }
 
-async function defaultReadPlans(planSlug: string): Promise<BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>> {
+async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string }): Promise<BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
   const rows = await sql<
@@ -1283,6 +1283,7 @@ async function defaultReadPlans(planSlug: string): Promise<BoundedAcceptanceBarR
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId}
        AND plan_slug = ${planSlug}
+       AND ${scope ? sql`harness_slug = ${scope.harnessSlug}` : sql`TRUE`}
      ORDER BY updated_at DESC NULLS LAST, harness_slug
      LIMIT ${2}`;
   return bounded(
@@ -1305,9 +1306,11 @@ async function defaultReadPlans(planSlug: string): Promise<BoundedAcceptanceBarR
   );
 }
 
-async function defaultReadRubrics(planSlug: string): Promise<BoundedAcceptanceBarRows<Rubric>> {
+async function defaultReadRubrics(planSlug: string, scope?: { harnessSlug: string }): Promise<BoundedAcceptanceBarRows<Rubric>> {
   const rows = await getAcceptanceRubricsForPlan(planSlug, {
     limit: ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT + 1,
+    strict: true,
+    ...(scope ? { harnessSlug: scope.harnessSlug } : {}),
   });
   return bounded(rows, ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT);
 }
@@ -1486,15 +1489,15 @@ const DEFAULT_DEPS: AcceptanceBarSnapshotDeps = {
 export async function readAcceptanceBarContractSnapshot(
   planSlug: string,
   deps: Partial<AcceptanceBarSnapshotDeps> = {},
-  options: { current?: EvidenceCurrentInput[] } = {},
+  options: { current?: EvidenceCurrentInput[]; harnessSlug?: string } = {},
 ): Promise<AcceptanceBarContractSnapshot> {
   const d: AcceptanceBarSnapshotDeps = { ...DEFAULT_DEPS, ...deps };
   const failures: Partial<Record<AcceptanceBarSnapshotSource, string>> = {};
   const [planRead, rubricRead] = await Promise.all([
-    captured('plan', () => d.readPlans(planSlug), emptyBounded<AcceptanceBarSubjectPlanSource>(1)),
+    captured('plan', () => options.harnessSlug ? d.readPlans(planSlug, { harnessSlug: options.harnessSlug }) : d.readPlans(planSlug), emptyBounded<AcceptanceBarSubjectPlanSource>(1)),
     captured(
       'rubric',
-      () => d.readRubrics(planSlug),
+      () => options.harnessSlug ? d.readRubrics(planSlug, { harnessSlug: options.harnessSlug }) : d.readRubrics(planSlug),
       emptyBounded<Rubric>(ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT),
     ),
   ]);

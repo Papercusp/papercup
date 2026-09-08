@@ -219,6 +219,8 @@ export interface Rubric {
   kind: RubricKind;
   /** acceptance-kind only: the plan this rubric is the definition-of-done FOR. */
   subjectPlan?: string | null;
+  /** Subject plan identity; independent of the harness storing this rubric. */
+  subjectHarnessSlug?: string;
   /** acceptance-kind only: the GOAL this rubric is the definition-of-done FOR — the
    *  goal-mode 'achieved' gate keys off it (consult-min-max-…-2026-08-17 D-004 §2).
    *  Exactly one of subjectPlan/subjectGoal on an acceptance rubric. */
@@ -427,6 +429,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
     workspaceId: row.workspace_id,
     kind,
     ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
+    ...(d.subjectHarnessSlug ? { subjectHarnessSlug: d.subjectHarnessSlug } : {}),
     ...(d.subjectGoal ? { subjectGoal: d.subjectGoal } : {}),
     ...(d.classRef ? { classRef: d.classRef } : {}),
     ...(d.composes ? { composes: d.composes } : {}),
@@ -1099,11 +1102,23 @@ export async function getRubricCriteriaHash(rubricId: string): Promise<string | 
  */
 export async function getAcceptanceRubricsForPlan(
   planSlug: string,
-  options: { limit?: number; strict?: boolean } = {},
+  options: { limit?: number; strict?: boolean; harnessSlug?: string } = {},
 ): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
     const limit = options.limit == null ? null : Math.min(Math.max(Math.trunc(options.limit), 1), 500);
+    // Rubrics may live in the operator harness. Their storage key is NOT the
+    // subject's key. Legacy metadata is usable only when the subject resolves
+    // uniquely to the requested harness; never guess from the rubric's location.
+    const subjectScope = options.harnessSlug == null ? sql`TRUE` : sql`(
+      template_data->>'subjectHarnessSlug' = ${options.harnessSlug}
+      OR (template_data->>'subjectHarnessSlug' IS NULL AND (
+        SELECT count(*) = 1 AND bool_and(subject.harness_slug = ${options.harnessSlug})
+          FROM harness_shared.harness_plans AS subject
+         WHERE subject.workspace_id = ${rubricsScopeWorkspace()}
+           AND subject.plan_slug = ${planSlug}
+      ))
+    )`;
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
@@ -1115,9 +1130,11 @@ export async function getAcceptanceRubricsForPlan(
          AND status IN ('active', 'ready')
          AND template_data->>'kind' = 'acceptance'
          AND template_data->>'subjectPlan' = ${planSlug}
+         AND ${subjectScope}
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
        ${limit == null ? sql`` : sql`LIMIT ${limit}`}`;
-    return (await mapRubricPlanRows(rows)).filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug);
+    return (await mapRubricPlanRows(rows)).filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug &&
+      (!options.harnessSlug || !r.subjectHarnessSlug || r.subjectHarnessSlug === options.harnessSlug));
   } catch (error) {
     if (options.strict) throw error;
     return [];
@@ -1381,6 +1398,8 @@ export interface ProposeRubricInput {
   kind?: RubricKind;
   /** acceptance-kind only: the plan this rubric is the definition-of-done FOR. */
   subjectPlan?: string;
+  /** Optional assertion; derived from the unique subject when omitted. */
+  subjectHarnessSlug?: string;
   /** acceptance-kind only: the GOAL id this rubric is the definition-of-done FOR (validated to
    *  EXIST — the goal-mode 'achieved' gate keys off it). Exactly one of subjectPlan/subjectGoal. */
   subjectGoal?: string;
@@ -1796,6 +1815,7 @@ function buildRubricTemplateData(
     // standard criteria fully-specified, …).
     ...(input.kind ? { kind: input.kind } : {}),
     ...(input.subjectPlan ? { subjectPlan: input.subjectPlan } : {}),
+    ...(input.subjectHarnessSlug ? { subjectHarnessSlug: input.subjectHarnessSlug } : {}),
     ...(input.subjectGoal ? { subjectGoal: input.subjectGoal } : {}),
     ...(input.classRef ? { classRef: input.classRef } : {}),
     ...(input.composes !== undefined ? { composes: normalizeRubricCompositionRefs(input.composes) } : {}),
@@ -1842,6 +1862,7 @@ function buildRubricTemplateData(
 export interface AcceptanceLinkResolution {
   /** The subject plan's stored `status` (`null` when no subjectPlan was named). */
   subjectPlanStatus: string | null;
+  subjectHarnessSlug?: string;
   /** The resolved standard class, used to inherit its vocabulary for class-only
    * acceptance rubrics and to validate its current revision in read-side hashes. */
   classRubric: Pick<Rubric, 'ratingScale' | 'revision'> | null;
@@ -2006,16 +2027,22 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
   const subjectPlan = input.subjectPlan;
   const subjectGoal = input.subjectGoal;
   let subjectPlanStatus: string | null = null;
+  let subjectHarnessSlug: string | undefined;
   let classRubric: Pick<Rubric, 'ratingScale' | 'revision'> | null = null;
   if (subjectPlan) {
     const { sql } = getOrgPg();
-    const subj = await sql<{ plan_slug: string; template: string | null; status: string | null }[]>`
-      SELECT plan_slug, template, status
+    const subj = await sql<{ plan_slug: string; harness_slug: string; template: string | null; status: string | null }[]>`
+      SELECT plan_slug, harness_slug, template, status
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND plan_slug = ${subjectPlan}
-       LIMIT 1`;
+         AND ${input.subjectHarnessSlug ? sql`harness_slug = ${input.subjectHarnessSlug}` : sql`TRUE`}
+       LIMIT 2`;
+    if (subj.length > 1) {
+      throw new Error(`invalid_args: proposeRubric: subjectPlan '${subjectPlan}' is ambiguous across harnesses; supply subjectHarnessSlug`);
+    }
     const subjRow = subj.find((r) => r.plan_slug === subjectPlan);
+    subjectHarnessSlug = subjRow?.harness_slug;
     subjectPlanStatus = subjRow?.status ?? null;
     if (!subjRow) {
       throw new Error(
@@ -2070,7 +2097,7 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
     }
     classRubric = cls;
   }
-  return { subjectPlanStatus, classRubric };
+  return { subjectPlanStatus, subjectHarnessSlug, classRubric };
 }
 
 /** Keep one live acceptance contract per subject plan; migration 1004 is the
@@ -2080,7 +2107,9 @@ async function assertAcceptanceSubjectPlanAvailable(
   rubricStatus: RubricStatus,
 ): Promise<void> {
   if (input.kind !== 'acceptance' || !input.subjectPlan || rubricStatus !== 'active') return;
-  const conflicts = (await getAcceptanceRubricsForPlan(input.subjectPlan)).filter(
+  const conflicts = (await getAcceptanceRubricsForPlan(input.subjectPlan, {
+    harnessSlug: input.subjectHarnessSlug, strict: true,
+  })).filter(
     (rubric) => rubric.rubricId !== input.rubricId,
   );
   if (conflicts.length === 0) return;
@@ -2386,8 +2415,16 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   }
   // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
   // subjectPlan would never gate anything, silently.
-  const links = kind === 'acceptance' ? await assertAcceptanceLinksResolve(input) : null;
   const stored = await getRubric(input.rubricId);
+  if (stored?.subjectHarnessSlug) {
+    if ((input.subjectHarnessSlug && input.subjectHarnessSlug !== stored.subjectHarnessSlug) ||
+        input.subjectPlan !== stored.subjectPlan) {
+      throw new Error('invalid_args: proposeRubric: an existing acceptance rubric cannot change its subject identity');
+    }
+    input = { ...input, subjectHarnessSlug: stored.subjectHarnessSlug };
+  }
+  const links = kind === 'acceptance' ? await assertAcceptanceLinksResolve(input) : null;
+  if (links?.subjectHarnessSlug) input = { ...input, subjectHarnessSlug: links.subjectHarnessSlug };
   // Composition edges are unpinned, but they are not unchecked strings: every
   // target must resolve to a reusable standard rubric before this document can
   // be written. Keep this beside the acceptance-link guard so both identity
@@ -2435,7 +2472,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // ratingScale so a class-only acceptance rubric inherits the RESOLVED class
   // vocabulary, while ordinary re-proposes preserve the existing rubric's scale
   // instead of silently reverting it to DEFAULT_RATING_SCALE.
-  if (input.ratingScale === undefined && (stored?.ratingScale || links?.classRubric)) {
+  if (links?.subjectHarnessSlug || (input.ratingScale === undefined && (stored?.ratingScale || links?.classRubric))) {
     builtTemplateData = buildRubricTemplateData(input, stored, links?.classRubric);
     templateData = builtTemplateData.data;
     compatibilityAudit = builtTemplateData.compatibility;
@@ -2776,6 +2813,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     // orphan its subjectPlan link — the WI-4287 loss class, on identity fields.
     ...(stored.kind !== 'standard' ? { kind: stored.kind } : {}),
     ...(stored.subjectPlan ? { subjectPlan: stored.subjectPlan } : {}),
+    ...(stored.subjectHarnessSlug ? { subjectHarnessSlug: stored.subjectHarnessSlug } : {}),
     ...(stored.subjectGoal ? { subjectGoal: stored.subjectGoal } : {}),
     ...(classRef || stored.classRef ? { classRef: classRef ?? stored.classRef! } : {}),
     ...(input.composes !== undefined
