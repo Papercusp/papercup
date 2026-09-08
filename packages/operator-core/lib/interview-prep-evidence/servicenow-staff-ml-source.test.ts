@@ -2,7 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 interface ReviewManifest {
@@ -57,6 +57,38 @@ describe('ServiceNow Staff ML interview-prep source contract', () => {
     expect(manifest.manualReview.result).toBe('pass');
     expect(manifest.manualReview.scope.length).toBeGreaterThanOrEqual(6);
     expect(manifest.manualReview.falsifierCoverage.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('keeps every generated standalone page discoverable from the full collection', () => {
+    const collectionSlugs = [
+      'mcp-cicd-study-faq',
+      'papercusp-answer-bank',
+      'rtx-hirevue-prep',
+      'servicenow-staff-ml-interview-prep',
+      'twg-recruiter-screen',
+    ];
+    const expectedTargets = collectionSlugs.map((slug) => `${slug}-standalone.html`).sort();
+    const collectionDir = dirname(sourcePath);
+    const buildScript = readFileSync(resolve(collectionDir, 'build-standalone.sh'), 'utf8');
+
+    for (const slug of collectionSlugs) {
+      expect(buildScript, `build omits ${slug}.html`).toContain(`"${slug}.html"`);
+      const standalonePath = resolve(collectionDir, `${slug}-standalone.html`);
+      expect(existsSync(standalonePath), `missing ${standalonePath}`).toBe(true);
+      const standalone = new DOMParser().parseFromString(readFileSync(standalonePath, 'utf8'), 'text/html');
+      const targets = [
+        ...new Set(
+          [...standalone.querySelectorAll<HTMLAnchorElement>('a[href$="-standalone.html"]')]
+            .map((link) => link.getAttribute('href'))
+            .filter((href): href is string => href !== null),
+        ),
+      ].sort();
+
+      expect(standalone.compatMode, `${slug} rendered in quirks mode`).toBe('CSS1Compat');
+      expect(standalone.querySelector('meta[name="viewport"]'), `${slug} lacks viewport metadata`).not.toBeNull();
+      expect(targets, `${slug} does not expose the exact reciprocal collection`).toEqual(expectedTargets);
+      expect(targets).not.toContain('nonexistent-interview-prep-standalone.html');
+    }
   });
 
   it('preserves supplied meeting details without exposing them in the tracked test', () => {
