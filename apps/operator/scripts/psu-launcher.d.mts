@@ -1148,8 +1148,12 @@ export function rewriteModelsJsonFields(jsonText: any, bareId: any, fields: any)
 export function ompDefaultModel(home?: string): string | null;
 /** Resolve a structured session's model without substituting its provider or account.
  * A copied native default is still a real selection: validate it before the
- * legacy config writer can repair a retired model by choosing a gateway. */
-export function resolveOmpSessionModel(model: any, accountRoute?: string, home?: string): string | null;
+ * legacy config writer can repair a retired model by choosing a gateway.
+ * @param {string | null | undefined} model
+ * @param {string | null | undefined} [accountRoute]
+ * @param {string} [home]
+ */
+export function resolveOmpSessionModel(model: string | null | undefined, accountRoute?: string | null | undefined, home?: string): string | null;
 /** Append `?tools=<names>` to every papercusp `/api/mcp` server URL in an OMP mcp.json that
  *  doesn't already carry one, so the superuser MCP advertises ONLY the core spine (weak-model
  *  trim). Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the

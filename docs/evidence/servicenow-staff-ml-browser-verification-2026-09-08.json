@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "ServiceNow staff ML standalone browser verification",
+  "framework": "playwright",
+  "command": [
+    "verdict chain: Chromium file-URL probe at 1280x800 with DOM, layout, console, network, fragment, and navigation-geometry assertions",
+    "verdict chain: Chromium file-URL probe at 390x844 with the same layout and console assertions",
+    "Playwright: desktop, mobile, print-media, blocked-font, screenshot, keyboard, local-target, and script-free assertions",
+    "HTTP link census: 11 direct responses; independent web resolution for the 3 ServiceNow-host targets that reject or stall local programmatic probes"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-08T05:35:48.548Z",
+  "finishedAt": "2026-09-08T05:36:01.459Z",
+  "summary": "13/13 browser assertions passed. Desktop, mobile, print media, and blocked-font fallback preserve all 11 substantive sections with no overflow, clipping, navigation overlap, missing fragments, or unexpected console errors. All 5 local siblings exist and all 14 public source links received a live disposition; privacy-sensitive captures were inspected and retained only in the owner-local evidence directory.",
+  "assertions": [
+    {
+      "id": "desktop-standards-ready",
+      "passed": true,
+      "evidence": "readyState=complete; compatMode=CSS1Compat at 1280x800"
+    },
+    {
+      "id": "desktop-layout",
+      "passed": true,
+      "evidence": "horizontalOverflow=false; clippedSections=0; navigationOverlaps=0"
+    },
+    {
+      "id": "desktop-content-visible",
+      "passed": true,
+      "evidence": "main sections=11; hidden substantive sections=0"
+    },
+    {
+      "id": "desktop-console",
+      "passed": true,
+      "evidence": "consoleErrors=0; external font resources loaded with HTTP 200 responses"
+    },
+    {
+      "id": "mobile-layout",
+      "passed": true,
+      "evidence": "viewport=390x844; horizontalOverflow=false; clippedSections=0; navigationOverlaps=0"
+    },
+    {
+      "id": "mobile-content-visible",
+      "passed": true,
+      "evidence": "main sections=11; hidden substantive sections=0"
+    },
+    {
+      "id": "mobile-console",
+      "passed": true,
+      "evidence": "consoleErrors=0"
+    },
+    {
+      "id": "print-media",
+      "passed": true,
+      "evidence": "matchMedia(print)=true; sections=11; hidden=0; clipped=0; horizontalOverflow=false"
+    },
+    {
+      "id": "fragments-and-keyboard",
+      "passed": true,
+      "evidence": "missingFragments=0; visible focusable controls=40; controls with negative tab order=0"
+    },
+    {
+      "id": "local-siblings",
+      "passed": true,
+      "evidence": "5 distinct local standalone targets checked; missing files=0"
+    },
+    {
+      "id": "javascript-free",
+      "passed": true,
+      "evidence": "desktop/mobile/print script counts=0/0/0"
+    },
+    {
+      "id": "font-failure-resilience",
+      "passed": true,
+      "evidence": "external font request deliberately blocked; sections=11; hidden=0; clipped=0; horizontalOverflow=false"
+    },
+    {
+      "id": "external-links",
+      "passed": true,
+      "evidence": "14/14 unique public source targets are valid HTTPS URLs; 11 returned direct HTTP dispositions and 3 ServiceNow-host targets were independently resolved by the web fetcher; broken targets=0"
+    }
+  ],
+  "subject": {
+    "logicalPath": "~/interview-prep/servicenow-staff-ml-interview-prep-standalone.html",
+    "sha256": "fde35459fcabb4179681647074c70386c96733eb1e0a780a67417bbb70d9aeb3"
+  },
+  "metrics": {
+    "desktop": {
+      "viewport": "1280x800",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "sections": 11,
+      "focusableControls": 40
+    },
+    "mobile": {
+      "viewport": "390x844",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "sections": 11,
+      "focusableControls": 40
+    },
+    "print": {
+      "viewport": "1280x900",
+      "mediaPrint": true,
+      "sections": 11
+    },
+    "links": {
+      "local": 5,
+      "localMissing": 0,
+      "external": 14,
+      "externalDirectResponses": 11,
+      "externalIndependentResolutions": 3,
+      "externalBroken": 0
+    }
+  },
+  "captures": {
+    "privacy": "Owner-supplied meeting details may be visible in captures, so images are intentionally excluded from source control and retained in the owner-local evidence directory. Only content hashes are committed here.",
+    "desktopSha256": "b9243f04da982dd7c3163f0d9504f45e921d336028f11778252d12a3d3933b6c",
+    "mobileSha256": "7021a60067066303f1eb320222958fd303764caed910eae0224eee4217dd5465",
+    "printSha256": "0ba1d282bc80382a30e35592bf45edfe5dfdc38250633159b1388df221065f9d",
+    "visualInspection": "pass: desktop, mobile, and print captures show coherent hierarchy, readable content, intact cards/tables, and no visible collisions or truncation"
+  }
+}

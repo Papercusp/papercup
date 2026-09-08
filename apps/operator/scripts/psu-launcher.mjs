@@ -4015,7 +4015,11 @@ export function ompDefaultModel(home = homedir()) {
 
 /** Resolve a structured session's model without substituting its provider or account.
  * A copied native default is still a real selection: validate it before the
- * legacy config writer can repair a retired model by choosing a gateway. */
+ * legacy config writer can repair a retired model by choosing a gateway.
+ * @param {string | null | undefined} model
+ * @param {string | null | undefined} [accountRoute]
+ * @param {string} [home]
+ */
 export function resolveOmpSessionModel(model, accountRoute = "default", home = homedir()) {
   const selected = String(model || ompDefaultModel(home) || "").trim();
   if (!selected) return null;
