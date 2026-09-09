@@ -52,7 +52,11 @@ import {
   type BundleHostState,
   type BundleAppInstallResult,
 } from './bundle-app-manifest';
-import { resolveAndInstallDeps, type DepSet } from './resolve-and-install';
+import {
+  resolveAndInstallDeps,
+  type DepSet,
+  type ResolveAndInstallResult,
+} from './resolve-and-install';
 
 export interface InstallBundleAppInput {
   /** Resolve the repo URL + listing_ref from the Cupboard 'app' listing (delivery_type must be 'bundle'). */
@@ -62,6 +66,19 @@ export interface InstallBundleAppInput {
   listingRef?: string;
   /** Proceed even when the review finds unresolved conflicts (mirrors installBundleApp's opt-in). */
   allowConflicts?: boolean;
+}
+
+export interface InstallBundleAppOptions {
+  workspaceId: string;
+  /**
+   * Install a content-only bundle before the operator/PG runtime exists. The
+   * manifest is fail-closed to blueprints/templates/rubrics, catalog reads stay
+   * local, and the ordinary dependency/datatype install paths remain disabled.
+   */
+  offlineContentOnly?: boolean;
+  /** Place rubric directories now and let the ordinary post-PG lazy seed make
+   * them live. Every interactive/API caller keeps the default seeded contract. */
+  deferRubricSeed?: boolean;
 }
 
 export type InstallBundleAppOutcome =
@@ -143,11 +160,20 @@ export async function writeBundleSource(dir: string, unit: BundleContentUnit): P
 
 /** Real `BundleHostState` — the live workspace's datatype registry + pack
  *  catalog + installed-blueprint provenance. */
-function makeHostState(workspaceId: string): BundleHostState {
-  const sql = getOrgPg().sql;
+function makeHostState(workspaceId: string, opts: InstallBundleAppOptions): BundleHostState {
   return {
-    hasDatatype: async (id) => (await getDatatype(sql, workspaceId, id)) != null,
-    deriveCatalog: () => derivePackCatalog({}),
+    hasDatatype: async (id) => {
+      if (opts.offlineContentOnly) {
+        throw new Error(`offline content bootstrap refuses datatype "${id}"`);
+      }
+      return (await getDatatype(getOrgPg().sql, workspaceId, id)) != null;
+    },
+    deriveCatalog: () =>
+      derivePackCatalog(
+        opts.offlineContentOnly
+          ? { includeCupboard: false, warmHost: false }
+          : {},
+      ),
     installedBlueprintSource: (unit) => readBundleSource(join(INSTALLED_BLUEPRINTS_DIR(), unit.id), 'blueprint.yaml'),
     installedTemplateSource: (unit) =>
       readBundleSource(join(userTemplatesDir(), unit.listingRef ?? unit.id), 'template.yaml'),
@@ -160,16 +186,40 @@ function makeHostState(workspaceId: string): BundleHostState {
  *  packs/plugins (D-002: no second install runtime), `installPublishedDatatype`
  *  for datatypes, and `installBlueprintFromCupboardCore` (+ the provenance
  *  sidecar) for the optional blueprint leg. */
-function makeInstallers(workspaceId: string) {
-  const sql = getOrgPg().sql;
+/** @internal Exported for the offline/deferred-seed recurrence guard. */
+export function makeBundleAppInstallers(workspaceId: string, opts: InstallBundleAppOptions) {
   return {
-    resolveAndInstallDeps: (declared: Partial<DepSet>) =>
-      resolveAndInstallDeps(
+    resolveAndInstallDeps: (declared: Partial<DepSet>): Promise<ResolveAndInstallResult> => {
+      if (opts.offlineContentOnly) {
+        const packs = declared.packs ?? [];
+        const plugins = declared.plugins ?? [];
+        if (packs.length > 0 || plugins.length > 0) {
+          return Promise.resolve({
+            ok: false,
+            installed: [],
+            stillMissing: { tools: [], packs, plugins, events: [] },
+            advisory: ['offline content bootstrap refuses pack/plugin installation'],
+            rounds: 0,
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          installed: [],
+          stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+          advisory: [],
+          rounds: 0,
+        });
+      }
+      return resolveAndInstallDeps(
         { packs: declared.packs ?? [], plugins: declared.plugins ?? [] },
         { deriveCatalog: () => derivePackCatalog({}), installUnit: (u) => installCupboardUnitFromListing(u) },
-      ),
+      );
+    },
     installDatatype: async (id: string) => {
-      const res = await installPublishedDatatype(sql, id, workspaceId);
+      if (opts.offlineContentOnly) {
+        return { ok: false as const, error: `offline content bootstrap refuses datatype "${id}"` };
+      }
+      const res = await installPublishedDatatype(getOrgPg().sql, id, workspaceId);
       return res.ok ? { ok: true as const } : { ok: false as const, error: res.reason };
     },
     installBlueprint: async (blueprint: BundleContentUnit) => {
@@ -182,8 +232,14 @@ function makeInstallers(workspaceId: string) {
             tmpDir: tmpdir,
             resolveExtends: operatorResolveExtends(),
             resolveHostSets: async () => {
-              const catalog = await derivePackCatalog({});
-              const cupboardBlueprints = await fetchCupboardBlueprintIds();
+              const catalog = await derivePackCatalog(
+                opts.offlineContentOnly
+                  ? { includeCupboard: false, warmHost: false }
+                  : {},
+              );
+              const cupboardBlueprints = opts.offlineContentOnly
+                ? new Set<string>()
+                : await fetchCupboardBlueprintIds();
               return {
                 ...depHostSetsFromCatalog(catalog),
                 cupboardBlueprints,
@@ -228,6 +284,7 @@ function makeInstallers(workspaceId: string) {
       const res = await installRubricFromCupboard({
         githubUrl: rubric.githubUrl,
         listingRef: rubric.listingRef ?? rubric.id,
+        skipSeed: opts.deferRubricSeed === true,
       });
       if (!res.ok) return { ok: false as const, error: res.error };
       if (res.result.rubricId !== rubric.id) {
@@ -241,7 +298,7 @@ function makeInstallers(workspaceId: string) {
       } catch (e) {
         return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
       }
-      if (!res.result.seeded) {
+      if (!res.result.seeded && !opts.deferRubricSeed) {
         return {
           ok: false as const,
           error: `rubric "${rubric.id}" installed but did not seed${res.result.seedError ? `: ${res.result.seedError}` : ''}`,
@@ -260,7 +317,7 @@ function makeInstallers(workspaceId: string) {
  */
 export async function installBundleAppFromCupboard(
   input: InstallBundleAppInput,
-  opts: { workspaceId: string },
+  opts: InstallBundleAppOptions,
 ): Promise<InstallBundleAppOutcome> {
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
@@ -287,8 +344,20 @@ export async function installBundleAppFromCupboard(
   }
 
   try {
-    const host = makeHostState(opts.workspaceId);
-    const installers = makeInstallers(opts.workspaceId);
+    if (
+      opts.offlineContentOnly &&
+      ((manifest.datatypes?.length ?? 0) > 0 ||
+        (manifest.packs?.length ?? 0) > 0 ||
+        (manifest.plugins?.length ?? 0) > 0)
+    ) {
+      return {
+        ok: false,
+        status: 422,
+        error: 'offline content bootstrap accepts only blueprints, templates, and rubrics',
+      };
+    }
+    const host = makeHostState(opts.workspaceId, opts);
+    const installers = makeBundleAppInstallers(opts.workspaceId, opts);
     const result = await installBundleApp(manifest, host, installers, {
       allowConflicts: input.allowConflicts === true,
     });
@@ -340,7 +409,7 @@ export async function reviewBundleAppFromCupboard(
   }
 
   try {
-    const review = await planBundleAppInstall(manifest, makeHostState(opts.workspaceId));
+    const review = await planBundleAppInstall(manifest, makeHostState(opts.workspaceId, opts));
     return { ok: true, manifest, review };
   } catch (e) {
     return {
