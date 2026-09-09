@@ -176,7 +176,7 @@ describe('durable detached snapshots', () => {
     // A running remote snapshot also checks the reporter's durable verdict
     // ledger. No completed test rows means it must remain running.
     expect(sql).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(sql).mock.calls[1]![0].join(' ')).toContain('FROM harness_shared.test_runs');
+    expect(vi.mocked(sql).mock.calls[1]?.[0]?.join(' ')).toContain('FROM harness_shared.test_runs');
   });
 
   it('prefers the local process-control snapshot without querying shared storage', async () => {

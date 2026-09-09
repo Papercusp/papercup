@@ -66,6 +66,7 @@
 
 import { emitAwaitedEvent } from './events/await/engine';
 import type { ContextPressureBucket } from './agent-tools/coordination/context-pressure';
+import type { WorkItem } from './work-items';
 
 /** The transition families this module publishes, as they appear in the key. */
 export type FleetTransitionKind =
@@ -481,6 +482,10 @@ export interface FleetTransitionEventsDeps {
   /** Resolve an agent's current fleet. Default = the canonical append-only
    *  membership fact; injected as a stub in tests. */
   fleetOfAgent?: (workspaceId: string, ownerId: string) => Promise<string | null>;
+  /** Confirm that a released item belongs to the fleet's authored claim lane.
+   * Injected in unit tests; the default reads the fleet sentinel and reuses the
+   * scheduler's WorkItem matcher. */
+  fleetClaimScopeMatches?: (workspaceId: string, fleetSlug: string, item: WorkItem) => Promise<boolean>;
 }
 
 /**
@@ -533,6 +538,32 @@ export async function fleetSlugOfAgent(
   } catch {
     return null;
   }
+}
+
+/**
+ * Keep a fleet-scoped release wake tied to the work its fleet can actually claim.
+ *
+ * Membership identifies the actor that released the item, not the item's lane.
+ * A leader can therefore belong to fleet A while releasing a cross-harness item
+ * from harness B. Read the fleet sentinel (rather than the member's possibly
+ * overridden spec), require an authored fleet spec and its concrete harness
+ * binding, then reuse the scheduler's WorkItem matcher for the remaining filter.
+ * Any read or matcher failure fails closed: this is a wake optimization and must
+ * never manufacture a cross-scope signal.
+ */
+async function defaultFleetClaimScopeMatches(
+  workspaceId: string,
+  fleetSlug: string,
+  item: WorkItem,
+): Promise<boolean> {
+  const [{ getClaimSpecRecord, fleetSpecBeeKey }, { matchesWorkItemClaimSpec }] = await Promise.all([
+    import('./scheduler/claim-spec-store'),
+    import('./scheduler/claim-spec-match'),
+  ]);
+  const record = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId });
+  if (record.source !== 'fleet' || record.fleetSlug !== fleetSlug) return false;
+  if (record.harnessSlug && item.harness !== record.harnessSlug) return false;
+  return matchesWorkItemClaimSpec(item, record.spec);
 }
 
 /**
@@ -780,7 +811,7 @@ export interface FleetAnnounceDeps extends FleetTransitionEventsDeps {
  */
 export function announceFleetClaimReleased(
   priorAssignee: string | null | undefined,
-  item: { id: string; title?: string | null; harness?: string | null },
+  item: WorkItem,
   deps: FleetAnnounceDeps = {},
 ): void {
   if (!priorAssignee) return; // an unheld item's release is not a fleet transition
@@ -788,6 +819,9 @@ export function announceFleetClaimReleased(
     .then(async () => {
       const ws = await (deps.workspaceId ?? defaultWorkspaceId)();
       const fleetSlug = await fleetSlugOfAgent(ws, priorAssignee, deps);
+      if (!fleetSlug) return;
+      const inFleetScope = await (deps.fleetClaimScopeMatches ?? defaultFleetClaimScopeMatches)(ws, fleetSlug, item);
+      if (!inFleetScope) return;
       emitFleetClaimReleasedEvent(fleetSlug, item, priorAssignee, deps);
     })
     .catch((e: unknown) => failSoft(`claim-released announce for ${item.id}`, e));

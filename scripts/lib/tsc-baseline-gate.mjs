@@ -2468,18 +2468,18 @@ export function lintTscScopeFromArgv(argv) {
  * more specific claim about WHY nothing was typechecked (in practice they are mutually
  * exclusive: the coverage branch exits before the preflight runs).
  *
- * ## EI-21985804122617157 — `filesRouted` is the fifth shape, and it is NOT a status
+ * ## EI-22405627533381152 — `filesRoutedAway` names the fifth shape, and it is NOT a status
  *
  * A MIXED `--files` set now delegates its out-of-project files to the owning gate and keeps
  * compiling its own (see `runTscBaselineGate`'s coverage branch). That run's verdict is still
  * this gate's own — `clean` or `regressed` — so `status` must NOT change; what would otherwise
- * be lost is that part of the answer came from a delegate. `filesRouted=N` is therefore an
+ * be lost is that part of the answer came from a delegate. `filesRoutedAway=N` is therefore an
  * additive FIELD beside `filesUnchecked`, never a status value: a caller grepping
  * `status=clean` still matches a fully-covered run, which is the property EI-20712456514085524
  * established and this must not break. `routed`/`routed-failed` remain reserved for the case
  * where this gate had NO verdict of its own and handed the whole request over.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, concurrentEditInconclusive?: boolean, filesUnchecked?: number, filesRouted?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, concurrentEditInconclusive?: boolean, filesUnchecked?: number, filesRoutedAway?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
  * @returns {string}
  */
 export function formatLintTscResultMarker({
@@ -2490,7 +2490,7 @@ export function formatLintTscResultMarker({
   preflightFailed = false,
   concurrentEditInconclusive = false,
   filesUnchecked = 0,
-  filesRouted = 0,
+  filesRoutedAway = 0,
   routed = false,
   // EI-19323399466378077 — run-start stamp, OPTIONAL and APPENDED LAST. Every existing call site
   // in this file's own test suite omits these two, so their exact `.toBe(...)` assertions on the
@@ -2533,9 +2533,9 @@ export function formatLintTscResultMarker({
   // Appended AFTER filesUnchecked so every existing marker string stays a byte-identical prefix
   // of the new one: a run that routed nothing is unchanged, and the two fields can legitimately
   // co-occur (some uncovered files routed, others with no known owner left unchecked).
-  const routedCount = Number.isFinite(filesRouted) && filesRouted > 0 ? filesRouted : 0;
+  const routedAwayCount = Number.isFinite(filesRoutedAway) && filesRoutedAway > 0 ? filesRoutedAway : 0;
   const withRouted =
-    routedCount > 0 ? `${withUnchecked} filesRouted=${routedCount}` : withUnchecked;
+    routedAwayCount > 0 ? `${withUnchecked} filesRoutedAway=${routedAwayCount}` : withUnchecked;
   // EI-19323399466378077 — a backgrounded run's log body is byte-identical whether it is 30
   // seconds or three hours old, and filesystem mtime cannot disambiguate on a tree git-sync
   // commits on a schedule (the commit time is when the SWEEP ran, not when the edit landed).
@@ -2725,7 +2725,7 @@ export async function runTscBaselineGate({
   // whole request over". Here the parent keeps its own verdict and a sibling gate judged the
   // remainder, so `status` must stay the parent's own word (`clean`/`regressed`) while the
   // marker still discloses that part of the answer came from somewhere else.
-  let filesRouted = 0;
+  let filesRoutedAway = 0;
 
   // EI-19323399466378077 — captured HERE, before anything else runs, so it is the run's actual
   // start (not the compile's) and survives into the exit-hook closure below regardless of which
@@ -2743,7 +2743,7 @@ export async function runTscBaselineGate({
         preflightFailed,
         concurrentEditInconclusive,
         filesUnchecked,
-        filesRouted,
+        filesRoutedAway,
         routed: autoRouted,
         runStartIso,
         headSha: headShaAtStart,
@@ -2907,7 +2907,7 @@ export async function runTscBaselineGate({
         //  - every delegate PASSED => keep going and let this gate's OWN compile decide the
         //    exit code. `autoRouted` stays FALSE on purpose: setting it would make a later
         //    operator-core regression print `routed-failed` and hide a real red behind a
-        //    routing label. The delegation is disclosed by `filesRouted=N` instead.
+        //    routing label. The delegation is disclosed by `filesRoutedAway=N` instead.
         //
         // `filesUnchecked` drops to 0 because every uncovered file WAS compiled — by the owning
         // gate. Leaving it set would keep reporting `status=partial` about files that now have a
@@ -2918,7 +2918,7 @@ export async function runTscBaselineGate({
             autoRouted = true;
             process.exit(routedExit);
           }
-          filesRouted = uncovered.length;
+          filesRoutedAway = uncovered.length;
           filesUnchecked = 0;
         }
       }

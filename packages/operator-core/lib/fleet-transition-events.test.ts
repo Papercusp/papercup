@@ -7,7 +7,9 @@
  * cries wolf is worse than no monitor — the leader learns to ignore it.
  */
 import { describe, expect, it, vi } from 'vitest';
+import type { WorkItem } from './work-items';
 import {
+  announceFleetClaimReleased,
   announceFleetItemCompleted,
   detectFleetTransitions,
   emitFleetClaimReleasedEvent,
@@ -31,6 +33,42 @@ const member = (over: Partial<FleetMemberObservation> = {}): FleetMemberObservat
 
 /** Await the fire-and-forget microtask chain the emitters use. */
 const settle = () => new Promise((r) => setImmediate(r));
+
+function releasedItem(overrides: Partial<WorkItem> = {}): WorkItem {
+  return {
+    id: 'EI-1',
+    kind: 'change',
+    family: 'issue',
+    harness: 'papercusp',
+    title: 'released item',
+    summary: '',
+    state: 'open',
+    assignee: null,
+    takenAt: null,
+    lastProgressAt: null,
+    assignedBy: null,
+    createdBy: null,
+    severity: 'minor',
+    goalId: null,
+    parent: null,
+    payload: {},
+    origin: 'local',
+    auditVerdict: null,
+    verifiedAuthorGithubUserId: null,
+    rank: null,
+    rankWriter: null,
+    rankUpdatedAt: null,
+    priority: null,
+    terminalOwner: null,
+    terminalCompletionRef: null,
+    terminalCompletionEvidence: null,
+    completionAuthority: null,
+    createdAt: '2026-09-09T00:00:00.000Z',
+    updatedAt: '2026-09-09T00:00:00.000Z',
+    closedAt: null,
+    ...overrides,
+  };
+}
 
 describe('fleetTransitionKey', () => {
   it('builds the fleet-scoped key shape the catalog advertises', () => {
@@ -387,6 +425,42 @@ describe('emitFleetTransitionEdge', () => {
 });
 
 describe('the work-item co-fires', () => {
+  it('suppresses a release wake when the released item is outside the holder fleet scope', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const fleetClaimScopeMatches = vi.fn().mockResolvedValue(false);
+
+    announceFleetClaimReleased('su-a', releasedItem({ harness: 'papercusp' }), {
+      emit,
+      fleetOfAgent: async () => 'sidestage-fleet',
+      fleetClaimScopeMatches,
+      workspaceId: async () => 'workspace-1',
+    });
+    await settle();
+
+    expect(fleetClaimScopeMatches).toHaveBeenCalledWith('workspace-1', 'sidestage-fleet', expect.anything());
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('emits a release wake when the released item matches the holder fleet scope', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const fleetClaimScopeMatches = vi.fn().mockResolvedValue(true);
+
+    announceFleetClaimReleased('su-a', releasedItem(), {
+      emit,
+      fleetOfAgent: async () => 'push-not-poll',
+      fleetClaimScopeMatches,
+      workspaceId: async () => 'workspace-1',
+    });
+    await settle();
+
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'fleet:claim-released:push-not-poll',
+        payload: expect.objectContaining({ id: 'EI-1', priorAssignee: 'su-a' }),
+      }),
+    );
+  });
+
   it('emits fleet:<slug>:claim-released carrying the PRIOR holder', async () => {
     const emit = vi.fn().mockResolvedValue(undefined);
     emitFleetClaimReleasedEvent('push-not-poll', { id: 'WI-1', title: 't', harness: 'papercusp' }, 'su-a', { emit });

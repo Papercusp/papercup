@@ -4000,16 +4000,16 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
     // own and handed the whole request over". A partial run keeps its OWN verdict, so stamping it
     // `routed` would make a genuine operator-core regression print `routed-failed` and read as
     // somebody else's failure.
-    it('keeps status=clean and appends filesRouted when a delegate covered the remainder', () => {
+    it('keeps status=clean and appends filesRoutedAway when a delegate covered the remainder', () => {
       expect(
         formatLintTscResultMarker({
           label: 'operator-core',
           scope: 'files',
           code: 0,
           filesUnchecked: 0,
-          filesRouted: 1,
+          filesRoutedAway: 1,
         }),
-      ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean filesRouted=1');
+      ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean filesRoutedAway=1');
     });
 
     it('a REGRESSION in this gate still reads regressed - never routed-failed - when files were routed', () => {
@@ -4017,39 +4017,39 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
         label: 'operator-core',
         scope: 'files',
         code: 1,
-        filesRouted: 2,
+        filesRoutedAway: 2,
       });
       expect(marker).toContain('status=regressed');
       expect(marker).not.toContain('routed-failed');
-      expect(marker).toContain('filesRouted=2');
+      expect(marker).toContain('filesRoutedAway=2');
     });
 
     // Both fields can legitimately co-occur: some uncovered files had a known owner and were
     // routed, others had none and genuinely went unchecked. Suppressing either is a false claim.
-    it('reports filesUnchecked and filesRouted together, in that order', () => {
+    it('reports filesUnchecked and filesRoutedAway together, in that order', () => {
       expect(
         formatLintTscResultMarker({
           label: 'operator-core',
           scope: 'files',
           code: 0,
           filesUnchecked: 2,
-          filesRouted: 1,
+          filesRoutedAway: 1,
         }),
       ).toBe(
-        'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial filesUnchecked=2 filesRouted=1',
+        'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial filesUnchecked=2 filesRoutedAway=1',
       );
     });
 
     // Additive-only: a run that routed nothing must be byte-identical to before this change, or
     // every existing consumer assertion in this file is silently measuring new behaviour.
     it('is byte-identical to the pre-change marker when nothing was routed', () => {
-      for (const filesRouted of [0, undefined]) {
+      for (const filesRoutedAway of [0, undefined]) {
         expect(
           formatLintTscResultMarker({
             label: 'operator-core',
             scope: 'files',
             code: 0,
-            filesRouted,
+            filesRoutedAway,
           }),
         ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean');
       }
@@ -4141,12 +4141,12 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       }
     }
 
-    it('executes the owning gate for the out-of-project file and reports filesRouted, not partial', () => {
+    it('executes the owning gate for the out-of-project file and reports filesRoutedAway, not partial', () => {
       const { out, code } = runMixedGate('node -e "console.log(\'DELEGATE-RAN\')"');
       // The delegate genuinely executed - not merely named in a banner, which is what the
       // pre-fix behaviour did and what let the gap survive.
       expect(out).toContain('DELEGATE-RAN');
-      expect(out).toContain('filesRouted=1');
+      expect(out).toContain('filesRoutedAway=1');
       // The whole point: the file is no longer reported as never-compiled.
       expect(out).not.toContain('status=partial');
       expect(out).not.toContain('filesUnchecked=1');
@@ -4181,7 +4181,7 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       expect(out).not.toContain('DELEGATE-RAN'); // the delegate never ran
       expect(out).toContain('status=partial');
       expect(out).toContain('filesUnchecked=1');
-      expect(out).not.toContain('filesRouted=');
+      expect(out).not.toContain('filesRoutedAway=');
       // The defect in one line: a file the caller named was never compiled, and the run passed.
       expect(code).toBe(0);
     });

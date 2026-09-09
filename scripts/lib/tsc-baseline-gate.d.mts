@@ -1121,21 +1121,21 @@ export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" 
  * more specific claim about WHY nothing was typechecked (in practice they are mutually
  * exclusive: the coverage branch exits before the preflight runs).
  *
- * ## EI-21985804122617157 — `filesRouted` is the fifth shape, and it is NOT a status
+ * ## EI-22405627533381152 — `filesRoutedAway` names the fifth shape, and it is NOT a status
  *
  * A MIXED `--files` set now delegates its out-of-project files to the owning gate and keeps
  * compiling its own (see `runTscBaselineGate`'s coverage branch). That run's verdict is still
  * this gate's own — `clean` or `regressed` — so `status` must NOT change; what would otherwise
- * be lost is that part of the answer came from a delegate. `filesRouted=N` is therefore an
+ * be lost is that part of the answer came from a delegate. `filesRoutedAway=N` is therefore an
  * additive FIELD beside `filesUnchecked`, never a status value: a caller grepping
  * `status=clean` still matches a fully-covered run, which is the property EI-20712456514085524
  * established and this must not break. `routed`/`routed-failed` remain reserved for the case
  * where this gate had NO verdict of its own and handed the whole request over.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, concurrentEditInconclusive?: boolean, filesUnchecked?: number, filesRouted?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, concurrentEditInconclusive?: boolean, filesUnchecked?: number, filesRoutedAway?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, preflightFailed, concurrentEditInconclusive, filesUnchecked, filesRouted, routed, runStartIso, headSha, }: {
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, preflightFailed, concurrentEditInconclusive, filesUnchecked, filesRoutedAway, routed, runStartIso, headSha, }: {
     label: string;
     scope: string;
     code: number;
@@ -1143,7 +1143,7 @@ export function formatLintTscResultMarker({ label, scope, code, nothingTypecheck
     preflightFailed?: boolean;
     concurrentEditInconclusive?: boolean;
     filesUnchecked?: number;
-    filesRouted?: number;
+    filesRoutedAway?: number;
     routed?: boolean;
     runStartIso?: string | null;
     headSha?: string | null;
