@@ -5090,6 +5090,40 @@ describe('buildActivityArgs (OMP activity port)', () => {
     expect(args.tool_name).toBe('bash');
   });
 
+  it("forwards PAPERCUSP_ROLE and falls back to PAPERCUSP_AGENT_ROLE", () => {
+    const previousRole = process.env.PAPERCUSP_ROLE;
+    const previousAgentRole = process.env.PAPERCUSP_AGENT_ROLE;
+    try {
+      process.env.PAPERCUSP_ROLE = "judge";
+      delete process.env.PAPERCUSP_AGENT_ROLE;
+      expect(
+        buildActivityArgs({
+          type: "tool_call",
+          toolName: "bash",
+          toolCallId: "role-1",
+          input: {},
+        }),
+      ).toMatchObject({ role: "judge" });
+
+      delete process.env.PAPERCUSP_ROLE;
+      process.env.PAPERCUSP_AGENT_ROLE = "worker";
+      expect(
+        buildActivityArgs({
+          type: "tool_call",
+          toolName: "bash",
+          toolCallId: "role-2",
+          input: {},
+        }),
+      ).toMatchObject({ role: "worker" });
+    } finally {
+      if (previousRole === undefined) delete process.env.PAPERCUSP_ROLE;
+      else process.env.PAPERCUSP_ROLE = previousRole;
+      if (previousAgentRole === undefined)
+        delete process.env.PAPERCUSP_AGENT_ROLE;
+      else process.env.PAPERCUSP_AGENT_ROLE = previousAgentRole;
+    }
+  });
+
   it('suppresses burst-duplicate reports for the same OMP tool call', async () => {
     const originalFetch = global.fetch;
     const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
@@ -5191,6 +5225,23 @@ describe('reportLifecycle (OMP session lifecycle → activity bridge)', () => {
     expect(p?.name).toBe('activity:report');
     expect(p?.arguments).toMatchObject({ agent: 'omp', kind: 'lifecycle', summary: '▶ session started' });
     expect(String(p?.arguments.owner)).toMatch(/^omp-/);
+  });
+
+  it("forwards the fine-grained launch role on lifecycle reports", async () => {
+    const previousRole = process.env.PAPERCUSP_ROLE;
+    const previousAgentRole = process.env.PAPERCUSP_AGENT_ROLE;
+    try {
+      process.env.PAPERCUSP_ROLE = "judge";
+      delete process.env.PAPERCUSP_AGENT_ROLE;
+      const p = await capture("start");
+      expect(p?.arguments).toMatchObject({ role: "judge" });
+    } finally {
+      if (previousRole === undefined) delete process.env.PAPERCUSP_ROLE;
+      else process.env.PAPERCUSP_ROLE = previousRole;
+      if (previousAgentRole === undefined)
+        delete process.env.PAPERCUSP_AGENT_ROLE;
+      else process.env.PAPERCUSP_AGENT_ROLE = previousAgentRole;
+    }
   });
 
   it('reports a "■ session ended" lifecycle row on shutdown', async () => {

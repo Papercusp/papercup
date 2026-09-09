@@ -138,6 +138,13 @@ function cursorFor(sid: string): HookCursor | null {
 }
 
 describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operator)", () => {
+  it("forwards the fine-grained launch role into activity:report", async () => {
+    nextResult = { ok: true, id: 0 };
+    const r = await run("sid-role", { PAPERCUSP_ROLE: "judge" });
+    expect(r.status).toBe(0);
+    expect(lastRequest?.body.params.arguments).toMatchObject({ role: "judge" });
+  });
+
   it("native Grep no-result response emits the unmeasured-result advisory", async () => {
     nextResult = { ok: true, id: 1 }; // no fold response; the local advisory is independent
     const r = await run(

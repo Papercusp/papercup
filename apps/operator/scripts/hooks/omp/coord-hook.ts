@@ -2667,6 +2667,15 @@ function currentHarnessSlug(): string | null {
   return slug || null;
 }
 
+/** Fine-grained role stamped by role-scoped or generic child launchers. */
+function currentLaunchRole(): string | null {
+  for (const value of [process.env.PAPERCUSP_ROLE, process.env.PAPERCUSP_AGENT_ROLE]) {
+    const role = value?.trim();
+    if (role) return role;
+  }
+  return null;
+}
+
 export interface ActivityHookBundle {
   schemaVersion?: string;
   generation?: string;
@@ -2694,6 +2703,8 @@ export function buildActivityArgs(event: ToolCallEvent): Record<string, unknown>
   };
   const harnessSlug = currentHarnessSlug();
   if (harnessSlug) args.harness_slug = harnessSlug;
+  const role = currentLaunchRole();
+  if (role) args.role = role;
   const todos = (event.input as Record<string, unknown> | undefined)?.todos;
   if (ACTIVITY_TODO_TOOLS.has(lower) && Array.isArray(todos)) {
     args.todos = todos.slice(0, 100);
@@ -2776,12 +2787,14 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
  */
 export async function reportLifecycle(phase: 'start' | 'shutdown'): Promise<void> {
   const harnessSlug = currentHarnessSlug();
+  const role = currentLaunchRole();
   await callMcpTool('activity:report', {
     owner: hookOwnerId(),
     agent: 'omp',
     kind: 'lifecycle',
     summary: phase === 'start' ? '▶ session started' : '■ session ended',
     ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
+    ...(role ? { role } : {}),
   });
 }
 

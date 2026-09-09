@@ -134,6 +134,7 @@ if not isinstance(tool_input, dict):
 tool_use_id = first('tool_use_id', 'toolCallId', 'tool_call_id') or ''
 session_id = first('session_id', 'sessionId') or ''
 cwd = first('cwd') or ''
+role = (os.environ.get('PAPERCUSP_ROLE') or os.environ.get('PAPERCUSP_AGENT_ROLE') or '').strip()
 
 
 def cap(v):
@@ -158,6 +159,8 @@ args = {
 }
 if agent:
     args['agent'] = agent
+if role:
+    args['role'] = role
 if harness_slug:
     args['harness_slug'] = harness_slug
 

@@ -129,6 +129,7 @@ session_id = first('session_id', 'sessionId') or ''
 cwd = first('cwd') or ''
 tool_response = first('tool_response', 'toolResponse')
 owner = coordination_owner_id(str(session_id), os.environ)
+role = (os.environ.get('PAPERCUSP_ROLE') or os.environ.get('PAPERCUSP_AGENT_ROLE') or '').strip()
 
 # Native Claude Grep reports a zero-result search as a plain "No files found"
 # or "No matches found" string.  Those strings do not distinguish a completed
@@ -231,6 +232,8 @@ args = {
 }
 if agent:
     args['agent'] = agent
+if role:
+    args['role'] = role
 if status:
     args['status'] = status
 if todos is not None:

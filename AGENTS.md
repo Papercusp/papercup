@@ -558,10 +558,12 @@ ride in — a peer's concurrent edit in the same file stays out — and the Post
 prints this exact command the moment you touch a file in the repair radius. An admission whose
 file imports a sibling you did not name is refused `admission-incomplete` naming that path
 (P-004): admit it too — **the tip is NEVER widened for you.** Do NOT fire
-`release:checkpoint-run` to "try again": it always cuts a FRESH candidate at the current tip
-(`candidateSource: tip`, and it exposes no candidate arg), which silently restarts the treadmill
-on a tree where ~100 agents commit continuously. Do not hand-pin with `--candidate` either —
-that fights the mechanism instead of using it.
+`release:checkpoint-run` to "try again" as a way to bypass this queue: when a frozen queue
+exists, it applies the queue policy and resumes the exact frozen lineage (`ready-to-test` uses
+`queue.candidate`; `ready-to-verify` uses `queue.repairHead`; non-suite states refuse before
+launch). Only when no frozen queue exists does it cut a fresh candidate from the current quiet
+cut at tip. Do not hand-pin with `--candidate` either — that fights the mechanism instead of
+using it.
 
 `release:repair-queue { op:'retire' }` clears ONE queue ROW, not the mechanism, and is **not a
 "make the gate move" lever**. Retire ONLY when the queue is provably *unreachable-green*: its

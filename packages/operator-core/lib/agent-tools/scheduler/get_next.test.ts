@@ -67,6 +67,9 @@ const diagnoseFleetScopeLeaderLivenessM = vi.hoisted(() => vi.fn(async () => nul
 const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
 const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
 const releaseWorkItemM = vi.hoisted(() => vi.fn(async () => undefined));
+const readClaimConcurrencyM = vi.hoisted(() =>
+  vi.fn(async () => ({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] as string[] })),
+);
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
@@ -136,7 +139,12 @@ vi.mock('../plans/source', async (importOriginal) => ({
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
-  return { ...actual, getNextForBee: getNextM, getClaimSpecRecord: getClaimSpecRecordM };
+  return {
+    ...actual,
+    getNextForBee: getNextM,
+    getClaimSpecRecord: getClaimSpecRecordM,
+    readClaimConcurrency: readClaimConcurrencyM,
+  };
 });
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   reconcileFleetScopeClaims: reconcileFleetScopeClaimsM,
@@ -194,7 +202,12 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   }),
 }));
 
-import getNextTool, { GET_NEXT_BUDGET_MS, GET_NEXT_ISSUE_DIAG_BUDGET_MS, GET_NEXT_TOTAL_BUDGET_MS } from './get_next';
+import getNextTool, {
+  GET_NEXT_BUDGET_MS,
+  GET_NEXT_ISSUE_DIAG_BUDGET_MS,
+  GET_NEXT_TIMEOUT_RECONCILIATION_BUDGET_MS,
+  GET_NEXT_TOTAL_BUDGET_MS,
+} from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
@@ -707,6 +720,7 @@ describe('scheduler:get_next harness-existence gate (EI-16057)', () => {
 describe('scheduler:get_next bounds the claim path against a silent hang (EI-18167154191955470)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    readClaimConcurrencyM.mockResolvedValue({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] });
     scopeState.scope = null;
     scopeState.quarantinedIds = [];
     scopeState.windingDown = false;
@@ -739,6 +753,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
       error: 'timeout',
       retryable: true,
       budgetMs: GET_NEXT_BUDGET_MS,
+      possiblyClaimed: true,
+      heldIds: [],
+      claimReconciliation: 'none-observed',
     });
     expect(typeof b.message).toBe('string');
     // The message must point the caller at the real failure (idle-timeout abort) + the retry.
@@ -747,6 +764,87 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(b.windDown).toBeUndefined();
     // The bounded-timeout deadline fired (the fail-fast) — assert it explicitly.
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:claim exceeded'));
+    expect(readClaimConcurrencyM).toHaveBeenCalledWith({ cupId: 'su-member', workspaceId: 'ws-1' });
+    warnSpy.mockRestore();
+  });
+
+  it('reports held ids when the timeout reconciliation sees a committed claim', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getNextM.mockImplementation(() => new Promise(() => {}));
+    readClaimConcurrencyM.mockResolvedValue({
+      blocked: true,
+      activeClaims: 1,
+      maxConcurrentClaims: 1,
+      heldIds: ['EI-late-claim'],
+    });
+
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      content: Array<{ text: string }>;
+    }>;
+    await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
+    const out = await p;
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      possiblyClaimed: true,
+      heldIds: ['EI-late-claim'],
+      claimReconciliation: 'held',
+    });
+    expect(body.message).toContain('may be among them');
+    warnSpy.mockRestore();
+  });
+
+  it('keeps the timeout claim disposition unknown when reconciliation fails', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getNextM.mockImplementation(() => new Promise(() => {}));
+    readClaimConcurrencyM.mockRejectedValue(new Error('pool still unavailable'));
+
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      content: Array<{ text: string }>;
+    }>;
+    await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
+    const out = await p;
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      possiblyClaimed: true,
+      heldIds: [],
+      claimReconciliation: 'unknown',
+    });
+    expect(body.message).toContain('inconclusive');
+    expect(body.message).not.toContain('no claims for this caller');
+    warnSpy.mockRestore();
+  });
+
+  it('bounds a hanging timeout reconciliation and preserves the unknown disposition', async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getNextM.mockImplementation(() => new Promise(() => {}));
+    readClaimConcurrencyM.mockImplementation(() => new Promise(() => {}));
+
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      content: Array<{ text: string }>;
+    }>;
+    await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + GET_NEXT_TIMEOUT_RECONCILIATION_BUDGET_MS + 100);
+    const out = await p;
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      possiblyClaimed: true,
+      heldIds: [],
+      claimReconciliation: 'unknown',
+    });
+    expect(Date.now() - startedAt).toBe(GET_NEXT_BUDGET_MS + GET_NEXT_TIMEOUT_RECONCILIATION_BUDGET_MS + 100);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:timeoutReconciliation exceeded'));
     warnSpy.mockRestore();
   });
 

@@ -593,6 +593,9 @@ describe("cc PreToolUse activity-report hook — operator-independent paths", ()
     const src = fs.readFileSync(PRE_ACTIVITY_HOOK, "utf8");
     expect(src).toContain("'phase': 'pre'");
     expect(src).not.toContain("'phase': 'post'");
+    expect(src).toContain("PAPERCUSP_ROLE");
+    expect(src).toContain("PAPERCUSP_AGENT_ROLE");
+    expect(src).toContain("args['role'] = role");
   });
 });
 
@@ -641,6 +644,7 @@ function runLifecycle(
 async function runLifecycleAgainstDisposition(
   disposition: "terminal" | "continuation",
   advSessionId?: string,
+  roleEnv: Record<string, string> = {},
 ) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const server = createServer((req, res) => {
@@ -693,6 +697,7 @@ async function runLifecycleAgainstDisposition(
       PAPERCUSP_AGENT: "codex",
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
       ...(advSessionId ? { PAPERCUSP_ADV_SESSION_ID: advSessionId } : {}),
+      ...roleEnv,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -758,8 +763,11 @@ describe("cc lifecycle hook — operator-independent paths", () => {
   });
 
   it("a terminal SessionEnd reports first, then reuses the audited admin fleet:kill route", async () => {
-    const { exitCode, requests } =
-      await runLifecycleAgainstDisposition("terminal", "42");
+    const { exitCode, requests } = await runLifecycleAgainstDisposition(
+      "terminal",
+      "42",
+      { PAPERCUSP_ROLE: "judge" },
+    );
     expect(exitCode).toBe(0);
     expect(requests.map((r) => r.path)).toEqual([
       expect.stringMatching(/^\/api\/mcp\?/),
@@ -773,6 +781,7 @@ describe("cc lifecycle hook — operator-independent paths", () => {
       kind: "lifecycle",
       summary: "■ session ended",
       adv_session_id: 42,
+      role: "judge",
     });
     expect(requests[1].body).toMatchObject({
       owner: "su-lifecycle-terminal",
@@ -781,11 +790,18 @@ describe("cc lifecycle hook — operator-independent paths", () => {
   });
 
   it("a carry/reset continuation SessionEnd never kills the managed host", async () => {
-    const { exitCode, requests } =
-      await runLifecycleAgainstDisposition("continuation");
+    const { exitCode, requests } = await runLifecycleAgainstDisposition(
+      "continuation",
+      undefined,
+      { PAPERCUSP_AGENT_ROLE: "judge" },
+    );
     expect(exitCode).toBe(0);
     expect(requests).toHaveLength(1);
     expect(requests[0].path).toMatch(/^\/api\/mcp\?/);
+    expect(
+      (requests[0].body.params as { arguments?: Record<string, unknown> })
+        .arguments,
+    ).toMatchObject({ role: "judge" });
   });
 });
 

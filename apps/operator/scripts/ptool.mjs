@@ -1526,7 +1526,7 @@ export function isLoopPressureShed(error) {
     seen.add(current);
     if (
       Number(current.code) === 429 &&
-      /\bmcp_proxy_(?:overloaded|handshake_overloaded|(?:handshake|coord_send|critical_continuation)_queue_(?:full|dwell))\b/i.test(
+      /\bmcp_proxy_(?:overloaded|handshake_overloaded|(?:handshake|coord_send|critical_continuation|improvements_capture)_queue_(?:full|dwell))\b/i.test(
         String(current?.message ?? current ?? ''),
       )
     ) return true;

@@ -69,6 +69,11 @@ elif name in ('SessionEnd', 'Stop'):
 else:
     sys.exit(0)
 
+# Role-scoped launches expose PAPERCUSP_ROLE; generic harness children expose
+# PAPERCUSP_AGENT_ROLE. Forward the fine-grained role so activity:report can
+# apply role-specific lifecycle policy (notably judge's no-inbox-wake rule).
+role = (os.environ.get('PAPERCUSP_ROLE') or os.environ.get('PAPERCUSP_AGENT_ROLE') or '').strip()
+
 args = {
     'owner': owner,
     'kind': 'lifecycle',
@@ -90,6 +95,8 @@ if adv_session_id:
         pass
 if agent:
     args['agent'] = agent
+if role:
+    args['role'] = role
 if harness_slug:
     args['harness_slug'] = harness_slug
 

@@ -1,0 +1,106 @@
+import { readFile, appendFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
+import { installFlagOverrideStore } from '../../packages/operator-core/lib/flag-override-store.ts';
+import { productionDreamCycle } from '../../packages/operator-core/lib/dream/dream-cycle-action.ts';
+import { dreamEvaluationProtocolHash, DreamPilotPinSchema } from '../../packages/operator-core/lib/dream/dream-evaluation.ts';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, '../..');
+const workspaceId = 'papercusp-workspace';
+process.env.PAPERCUSP_WORKSPACE_ID = workspaceId;
+const frozen = JSON.parse(await readFile(resolve(here, 'protocol.json'), 'utf8'));
+if (dreamEvaluationProtocolHash(frozen.protocol) !== frozen.pin) throw new Error('Study protocol hash changed');
+const arm = process.argv.find(arg => ['uniform-pair', 'structured-pair', 'structured-triple'].includes(arg)) ?? 'uniform-pair';
+const pilot = DreamPilotPinSchema.parse({ ...frozen, arm });
+const log = async (entry: unknown) => {
+  const line = JSON.stringify({ at: new Date().toISOString(), entry });
+  await appendFile(resolve(here, 'cycle-events.jsonl'), line + '\n');
+  console.log(line);
+};
+async function tool(name: string, args: object) {
+  const raw = await new Promise<string>((done, fail) => {
+    const child = spawn('ptool', [name, '--url=http://127.0.0.1:3170', '--workspace=' + workspaceId, '--harness=papercusp', '--json', '-'], {
+      cwd: root, stdio: ['pipe', 'pipe', 'pipe'], timeout: 90_000,
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', fail);
+    child.on('close', code => code === 0 ? done(stdout) : fail(new Error(name + ' exit ' + code + ': ' + stderr.slice(-1000))));
+    child.stdin.end(JSON.stringify(args));
+  });
+  let result = JSON.parse(raw);
+  if (Array.isArray(result.content)) {
+    const text = result.content.find((c: { type: string; text?: string }) => c.type === 'text' && c.text?.trim().startsWith('{'));
+    if (text) result = JSON.parse(text.text);
+  }
+  await log({ tool: name, result });
+  if (result.ok !== true || result.applied === false || result.reverted === true) throw new Error(name + ' did not confirm success');
+  return result;
+}
+installFlagOverrideStore();
+const { sql } = getOrgPg();
+const master = await sql<Array<{ enabled: boolean }>>`
+  SELECT enabled FROM harness_shared.learning_pot_scope
+  WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'`;
+if (master.length !== 1 || master[0]!.enabled !== false) throw new Error('Expected disabled master; inspect current owner state before this temporary restore protocol');
+const totals = await sql<Array<{ arm: string; attempts: number; cost: number }>>`
+  SELECT outcome->'capabilityRun'->'evaluation'->>'arm' AS arm,
+         COUNT(*)::int AS attempts, SUM(cost_usd)::float8 AS cost
+    FROM harness_shared.dream_runs
+   WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'
+     AND outcome->'capabilityRun'->'evaluation'->>'protocolPin' = ${frozen.pin}
+   GROUP BY 1`;
+const used = totals.find(row => row.arm === arm);
+if ((used?.attempts ?? 0) >= frozen.protocol.limits.attemptsPerArm ||
+    (used?.cost ?? 0) + frozen.protocol.limits.cycleUsd > frozen.protocol.limits.discoveryUsdPerArm)
+  throw new Error('Arm attempt or conservative monetary admission cap reached');
+await log({ phase: 'prepared', arm, protocolPin: frozen.pin, masterEnabled: false, priorStudyArms: totals });
+if (!process.argv.includes('--run')) {
+  await log({ phase: 'dry-run', message: 'No settings changed and no provider called. Pass --run for one governed attempt.' });
+  await sql.end();
+  process.exit(0);
+}
+let routineAudit: string | undefined;
+let masterAttempted = false;
+try {
+  const routine = await tool('routines:set', {
+    name: 'dream-cycle-manual', installSlug: 'papercusp',
+    cron: '0 0 0 1 1 *', active: true,
+    payloadTemplate: {
+      mode: 'manual', pilot,
+      cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
+      sampler: { mode: arm === 'uniform-pair' ? 'random-control' : 'structured', arity: arm === 'structured-triple' ? 3 : 2 },
+      pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
+    },
+  });
+  routineAudit = routine.revertHandle?.args?.auditId ?? routine.auditId;
+  if (!routineAudit) throw new Error('No durable routine revert handle; inspect mutation outcome before any spend');
+  masterAttempted = true;
+  await tool('learning:set-pot-scope', { pots: ['papercusp'], enabled: true });
+  const result = await productionDreamCycle({ workspaceId, installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null }, {
+    mode: 'manual', pilot,
+    cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
+    sampler: { mode: arm === 'uniform-pair' ? 'random-control' : 'structured', arity: arm === 'structured-triple' ? 3 : 2 },
+    pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
+  });
+  await log({ phase: 'cycle-result', arm, protocolPin: frozen.pin, result });
+} finally {
+  const cleanupErrors: unknown[] = [];
+  if (masterAttempted) {
+    try { await tool('learning:set-pot-scope', { pots: ['papercusp'], enabled: false }); }
+    catch (error) { cleanupErrors.push(error); }
+  }
+  if (routineAudit) {
+    try { await tool('routines:revert', { auditId: routineAudit }); }
+    catch (error) { cleanupErrors.push(error); }
+  }
+  await log({ phase: 'restoration', success: cleanupErrors.length === 0, errors: cleanupErrors.map(String) });
+  await sql.end();
+  if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Study restoration needs immediate attention');
+}
+process.exit(0);
+
