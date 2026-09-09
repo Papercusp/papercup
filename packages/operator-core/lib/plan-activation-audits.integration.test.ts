@@ -549,8 +549,10 @@ describe('migration 938 activation-audit ledger', () => {
       barSeed: { rubricRevision: 2, rubricChanged: false } });
     expect(await currentProjection()).toEqual(projected);
 
-    // Advancing the source revision does not grant this preservation path to a
-    // direct Requirements edit: the existing started-BAR guard still refuses it.
+    // A semantic Requirements edit needs a fresh source-conversation audit before
+    // its outside-lineage BAR amendment. The audit records the exact new subject
+    // revision but neither rewrites the started rubric nor projects unapproved
+    // clauses; the stale subject pin remains the lifecycle backstop.
     const changed = postEpochContent.replace('One acceptance criterion remains the BAR authority.',
       'A weaker promise replaces the canonical BAR.');
     const hash = hashPlanContent(changed);
@@ -559,7 +561,19 @@ describe('migration 938 activation-audit ledger', () => {
     await db.sql`INSERT INTO harness_shared.plan_revisions
       (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
       VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 72, ${hash}, ${changed})`;
-    await expect(recordCurrentActivationAudit(input)).rejects.toThrow('BAR meaning cannot change');
+    const changedAudit = await recordCurrentActivationAudit(input);
+    expect(changedAudit).toMatchObject({
+      ok: true,
+      auditedPlanRevision: { seq: 72 },
+      barSeed: null,
+      barSeedPendingAmendment: {
+        rubricSlug: 'acceptance-post-epoch-seed-target',
+        previousSubjectPlanRevision: 9,
+        currentSubjectPlanRevision: 10,
+        currentPlanContentHash: hash,
+        reason: 'acceptance_bar_source_changed',
+      },
+    });
     const [unchanged] = await db.sql<Array<{ template_data: unknown }>>`
       SELECT template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
@@ -572,11 +586,38 @@ describe('migration 938 activation-audit ledger', () => {
     await db.sql`INSERT INTO harness_shared.plan_revisions
       (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
       VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 73, ${mapHash}, ${changedMap})`;
-    await expect(recordCurrentActivationAudit(input)).rejects.toThrow('BAR meaning cannot change');
+    const changedMapAudit = await recordCurrentActivationAudit(input);
+    expect(changedMapAudit).toMatchObject({
+      ok: true,
+      auditedPlanRevision: { seq: 73 },
+      barSeed: null,
+      barSeedPendingAmendment: {
+        rubricSlug: 'acceptance-post-epoch-seed-target',
+        previousSubjectPlanRevision: 9,
+        currentSubjectPlanRevision: 11,
+        currentPlanContentHash: mapHash,
+        reason: 'acceptance_bar_source_changed',
+      },
+    });
     const [afterMap] = await db.sql<Array<{ template_data: unknown }>>`
       SELECT template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
     expect(afterMap!.template_data).toEqual(expectedNeutral);
+
+    const repeatedMapAudit = await recordCurrentActivationAudit(input);
+    expect(repeatedMapAudit).toMatchObject({
+      ok: true,
+      barSeed: null,
+      barSeedPendingAmendment: {
+        previousSubjectPlanRevision: 9,
+        currentSubjectPlanRevision: 11,
+        currentPlanContentHash: mapHash,
+      },
+    });
+    const [afterRepeat] = await db.sql<Array<{ template_data: unknown }>>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    expect(afterRepeat!.template_data).toEqual(expectedNeutral);
   });
 
   it.each([

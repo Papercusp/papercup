@@ -71,6 +71,8 @@ import {
 } from './agent-tools/plans/activation-audit-repair';
 import {
   AcceptanceBarSeedAbort,
+  parseBarMappings,
+  parseRequirementBars,
   seedAcceptanceBarsInTransaction,
   type AcceptanceBarSeedCode,
   type AcceptanceBarSeedProblem,
@@ -78,7 +80,10 @@ import {
 } from './acceptance-bar-seed';
 import type { PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
-import { synchronizeAcceptanceBarSubjectRevision } from './acceptance-bar-amendment';
+import {
+  acceptanceBarSourceFingerprint,
+  synchronizeAcceptanceBarSubjectRevision,
+} from './acceptance-bar-amendment';
 
 // ── the record ────────────────────────────────────────────────────────────────
 
@@ -186,6 +191,15 @@ export interface ActivationAuditPayload {
   repairedOmissions: string[];
   rejectedOrSuperseded: string[];
   unresolvedBlockers: string[];
+  /** Server-written only. Repeated re-audits must stay pending until the
+   * reviewed BAR amendment advances the stale subject pin. */
+  barSeedPendingAmendment?: {
+    rubricSlug: string;
+    previousSubjectPlanRevision: number;
+    currentSubjectPlanRevision: number;
+    currentPlanContentHash: string;
+    reason: 'acceptance_bar_source_changed';
+  };
 }
 
 export interface ActivationAuditCoverageConflict {
@@ -1707,6 +1721,17 @@ export type RecordCurrentActivationAuditResult =
       /** Atomic post-epoch seed result. Historical cohorts omit it and retain the
        * legacy non-fatal draft-clause derivation path. */
       barSeed?: TransactionalAcceptanceBarSeedSuccess | null;
+      /** A changed started BAR is audit-able but not seed-able. The audit records
+       * source coverage for the exact subject revision while the canonical
+       * amendment path remains the only writer allowed to change rubric meaning
+       * or clause projections. */
+      barSeedPendingAmendment?: {
+        rubricSlug: string;
+        previousSubjectPlanRevision: number;
+        currentSubjectPlanRevision: number;
+        currentPlanContentHash: string;
+        reason: 'acceptance_bar_source_changed';
+      };
     }
   | {
       ok: false;
@@ -2013,6 +2038,9 @@ export async function recordCurrentActivationAudit(
       contentHash: revision.content_hash,
     };
     let barSeed: TransactionalAcceptanceBarSeedSuccess | null = null;
+    let barSeedPendingAmendment:
+      | NonNullable<Extract<RecordCurrentActivationAuditResult, { ok: true }>['barSeedPendingAmendment']>
+      | undefined;
     if (current.acceptance_bar_epoch != null) {
       if (current.acceptance_bar_rubric_slug) {
         // A successful activation adopted the BARs against this exact snapshot.
@@ -2020,11 +2048,13 @@ export async function recordCurrentActivationAudit(
         // resolve the audit's identity, never use the BAR's version as a seq.
         const [previous] = await executor<Array<{
           content_snapshot: string; content_hash: string; subject_version: string | null;
+          previous_activation: ActivationAuditPayload;
         }>>`
           SELECT r.content_snapshot, r.content_hash,
-                 rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version
+                 rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version,
+                 a.activation AS previous_activation
             FROM (
-              SELECT audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash
+              SELECT activation, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash
                 FROM harness_shared.plan_audits
                WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
                  AND plan_slug = ${input.planSlug} AND audit_kind = 'activation'
@@ -2039,35 +2069,92 @@ export async function recordCurrentActivationAudit(
               ON rubric.workspace_id = ${input.workspaceId} AND rubric.harness_slug = ${input.harnessSlug}
              AND rubric.plan_slug = ${current.acceptance_bar_rubric_slug}`;
         if (previous && hashPlanContent(previous.content_snapshot) === previous.content_hash) {
-          // This reuses the Requirements/map fingerprint and canonical BAR/hash
-          // validation. Only the derived subject pin moves; METHOD, rubric version,
-          // and existing evidence identities remain intact. A real source change
-          // leaves the pin stale for the amendment guard below to refuse.
-          await synchronizeAcceptanceBarSubjectRevision(tx, {
-            workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
-            previousBody: previous.content_snapshot, nextBody: current.content,
-            previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
-          });
+          const priorPending = previous.previous_activation?.barSeedPendingAmendment;
+          const [previousSource, currentSource] = await Promise.all([
+            acceptanceBarSourceFingerprint(previous.content_snapshot),
+            acceptanceBarSourceFingerprint(current.content),
+          ]);
+          if (
+            priorPending?.rubricSlug === current.acceptance_bar_rubric_slug &&
+            priorPending.previousSubjectPlanRevision === Number(previous.subject_version) &&
+            priorPending.currentSubjectPlanRevision === Number(current.version) &&
+            priorPending.currentPlanContentHash === current.content_hash
+          ) {
+            // The latest audit already recorded this exact semantic revision as
+            // pending. Do not let its own snapshot become a new neutral baseline
+            // that advances the still-stale rubric pin on a repeat call.
+            barSeedPendingAmendment = priorPending;
+          } else if (
+            previous.subject_version != null &&
+            previousSource != null &&
+            currentSource != null &&
+            previousSource !== currentSource
+          ) {
+            // Audit authority and BAR-amendment authority are deliberately
+            // separate. A semantic Requirements/map edit still needs a fresh
+            // conversation audit against its exact plan revision, but that audit
+            // must not rewrite a started rubric or project unapproved clauses.
+            // Validate the authored BAR source now, record the audit below, and
+            // leave the old subject pin in place so every lifecycle reader stays
+            // blocked until rubrics:amend performs the reviewed atomic mutation.
+            const requirements = parseRequirementBars(current.content);
+            if (!requirements.ok) {
+              return {
+                ok: false as const,
+                error: requirements.problems[0]!.code,
+                message: `${requirements.problems.length} BAR requirement problem(s): ${requirements.problems.map((problem) => problem.detail).join('; ')}`,
+              };
+            }
+            const mappings = parseBarMappings(
+              current.content,
+              new Set(requirements.bars.map((candidate) => candidate.barKey)),
+            );
+            if (!mappings.ok) {
+              return {
+                ok: false as const,
+                error: mappings.problems[0]!.code,
+                message: `${mappings.problems.length} BAR mapping problem(s): ${mappings.problems.map((problem) => problem.detail).join('; ')}`,
+              };
+            }
+            barSeedPendingAmendment = {
+              rubricSlug: current.acceptance_bar_rubric_slug,
+              previousSubjectPlanRevision: Number(previous.subject_version),
+              currentSubjectPlanRevision: Number(current.version),
+              currentPlanContentHash: current.content_hash,
+              reason: 'acceptance_bar_source_changed',
+            };
+          } else {
+            // This reuses the Requirements/map fingerprint and canonical BAR/hash
+            // validation. Only the derived subject pin moves; METHOD, rubric version,
+            // and existing evidence identities remain intact.
+            await synchronizeAcceptanceBarSubjectRevision(tx, {
+              workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
+              previousBody: previous.content_snapshot, nextBody: current.content,
+              previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
+            });
+          }
         }
       }
-      const seeded = await seedAcceptanceBarsInTransaction({
-        executor,
-        workspaceId: input.workspaceId,
-        harnessSlug: input.harnessSlug,
-        planSlug: input.planSlug,
-        planContent: current.content,
-        planTitle: current.title,
-        planStatus: current.status,
-        planVersion: Number(current.version),
-        adoptionEpoch: Number(current.acceptance_bar_epoch),
-        cohort: current.acceptance_bar_cohort ?? 'post-epoch',
-        actorId: input.createdBy,
-        classRef: input.classRef,
-        now: new Date(),
-      });
-      // Catch-up may already have updated the derived pin in this transaction.
-      if (!seeded.ok) throw new AcceptanceBarSeedAbort(seeded);
-      barSeed = seeded;
+      if (!barSeedPendingAmendment) {
+        const seeded = await seedAcceptanceBarsInTransaction({
+          executor,
+          workspaceId: input.workspaceId,
+          harnessSlug: input.harnessSlug,
+          planSlug: input.planSlug,
+          planContent: current.content,
+          planTitle: current.title,
+          planStatus: current.status,
+          planVersion: Number(current.version),
+          adoptionEpoch: Number(current.acceptance_bar_epoch),
+          cohort: current.acceptance_bar_cohort ?? 'post-epoch',
+          actorId: input.createdBy,
+          classRef: input.classRef,
+          now: new Date(),
+        });
+        // Catch-up may already have updated the derived pin in this transaction.
+        if (!seeded.ok) throw new AcceptanceBarSeedAbort(seeded);
+        barSeed = seeded;
+      }
     }
     const audit = await insertPlanAudit(
       {
@@ -2075,14 +2162,23 @@ export async function recordCurrentActivationAudit(
         planSlug: input.planSlug,
         harnessSlug: input.harnessSlug,
         createdBy: input.createdBy,
-        activation: input.activation,
+        activation: {
+          ...input.activation,
+          ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
+        },
         auditedPlanRevision,
         summary: input.summary ?? null,
       },
       executor,
       input.workspaceId,
     );
-    return { ok: true as const, audit, auditedPlanRevision, barSeed };
+    return {
+      ok: true as const,
+      audit,
+      auditedPlanRevision,
+      barSeed,
+      ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
+    };
     })) as RecordCurrentActivationAuditResult;
   } catch (error) {
     if (error instanceof AcceptanceBarSeedAbort) return error.result;
