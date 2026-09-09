@@ -6,7 +6,7 @@
  * (owner bug 2026-06-11). Valid bodies persist verbatim.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MODEL_EFFORT_LEVELS } from '../../agent-config-constants';
+import { DEFAULT_MODEL_TIERS, MODEL_EFFORT_LEVELS } from '../../agent-config-constants';
 import { launchableModes } from '../../modes/registry';
 
 // writeAgentConfig hits PG + process.env — mock the write, keep the real
@@ -146,12 +146,50 @@ beforeEach(() => {
 });
 
 describe('GET /agent-config diagnostics', () => {
+  it('projects the effective default tier menu without a second agent-tool request', async () => {
+    const json = await (await callGet()).json();
+    expect(json.effectiveTiers.map(({ name, spec }: { name: string; spec: string }) => ({ name, spec }))).toEqual(
+      DEFAULT_MODEL_TIERS.map(({ name, spec }) => ({ name, spec })),
+    );
+    expect(json.effectiveTiers.every((tier: { loopCapability?: unknown }) => tier.loopCapability != null)).toBe(true);
+  });
+
+  it('projects a stored tier menu wholesale and classifies unsupported Agent Chat rows', async () => {
+    readMock.mockResolvedValue({
+      backend: 'omp',
+      cmd: '',
+      models: {},
+      backends: {},
+      surfaceModels: {},
+      tiers: [
+        {
+          name: 'workspace-only',
+          spec: 'openrouter/stealth/ox-alpha:max',
+          backend: 'omp',
+          when: 'special OMP work',
+        },
+      ],
+      tierCeilings: {},
+      resolverProfiles: {},
+    });
+
+    const json = await (await callGet()).json();
+    expect(json.effectiveTiers).toEqual([
+      expect.objectContaining({
+        name: 'workspace-only',
+        spec: 'openrouter/stealth/ox-alpha:max',
+        loopCapability: expect.objectContaining({
+          executable: false,
+          reason: expect.stringContaining('unsupported loop provider'),
+        }),
+      }),
+    ]);
+  });
+
   it('projects the canonical PSU effort and launch-mode registries for clients', async () => {
     const json = await (await callGet()).json();
     expect(json.effortLevels).toEqual([...MODEL_EFFORT_LEVELS]);
-    expect(json.launchableModes).toEqual(
-      launchableModes().map(({ id, title, oneLiner }) => ({ id, title, oneLiner })),
-    );
+    expect(json.launchableModes).toEqual(launchableModes().map(({ id, title, oneLiner }) => ({ id, title, oneLiner })));
   });
 
   it('returns codex binary detection and the latest tracked Codex CODEX_HOME diagnostics', async () => {

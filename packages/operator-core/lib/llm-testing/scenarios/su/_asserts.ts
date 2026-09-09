@@ -215,6 +215,24 @@ export function assertToolMatch(
   };
 }
 
+/** ERROR unless a matching action is followed by a matching verification call. */
+export function assertToolSequence(
+  action: (tc: ToolCallEvent) => boolean,
+  verification: (tc: ToolCallEvent) => boolean,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const calls = allToolCalls(run);
+      const actionIndex = calls.findIndex(action);
+      const verified = actionIndex >= 0 && calls.slice(actionIndex + 1).some(verification);
+      return verified ? [] : [violation(meta)];
+    },
+  };
+}
+
 /** ERROR if ANY turn's assistant text matches `pattern` (a banned behavior the
  *  model expresses in prose — e.g. proposing a raw SQL write or a browser nav
  *  to :3070). Stronger than `text_excludes`, which is warn-only. */

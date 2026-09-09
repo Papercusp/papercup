@@ -15,7 +15,7 @@ import { PgThreadStore } from '@papercusp/coordination/capabilities';
 import { workItemCheckpointScope, setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { getClaimTimePriorAttemptBrief, readGoalHistoryContext, readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
 import { postLearnedAtLevel } from '../../effort-thread';
-import { commentWorkItem, getWorkItem } from '../../work-items';
+import { getWorkItem } from '../../work-items';
 import { buildGoalKickoffBrief } from '../goals/start';
 import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
 import { fleetSpecBeeKey, setClaimSpec } from '../../scheduler/claim-spec-store';
@@ -114,19 +114,19 @@ beforeAll(async () => {
   await admin`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
-       source_plan_slug, source_plan_item_ids, goal_id, payload, last_progress_at)
+       source_plan_slug, source_plan_item_ids, goal_id, payload, last_progress_at, created_ts, updated_ts)
     VALUES
       (${fx.workspaceId}, ${HARNESS}, ${CHILD}, 'bug', 'Descendant delivery repair',
        'A completed child with a lesson the plan must inherit.', 'open', ${PLAN}, ARRAY['P-001'],
        ${GOAL}, ${admin.json({
          plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS },
-       })}, now()),
+       })}, now(), ${Date.now()}, ${Date.now()}),
       (${fx.workspaceId}, ${HARNESS}, ${DIRECT_GOAL_ITEM}, 'bug', 'Direct goal repair',
        'A directly attached goal item with no plan edge.', 'open', NULL, NULL, ${GOAL},
-       ${admin.json({})}, now()),
+       ${admin.json({})}, now(), ${Date.now()}, ${Date.now()}),
       (${fx.workspaceId}, ${HARNESS}, ${UNRELATED_ITEM}, 'bug', 'Unrelated sibling',
        'A same-harness item outside the goal and plan graph.', 'open', NULL, NULL, NULL,
-       ${admin.json({})}, now())
+       ${admin.json({})}, now(), ${Date.now()}, ${Date.now()})
   `;
   await setWorkItemCheckpoint({ harness: HARNESS, workItemId: CHILD, workspaceId: fx.workspaceId }, CHILD_LESSON);
   await setWorkItemCheckpoint(
@@ -213,16 +213,13 @@ describe('bounded plan history production consumers', () => {
       'Outcome: the item claimant recovered the stored correction.',
       'Residue: validate the remaining callers.',
     ].join('\n');
-    expect(await getWorkItem(CHILD, HARNESS)).not.toBeNull();
+    // Match the real create writer: a hand-seeded null created_ts turns into
+    // createdAt:"", which is not a valid timestamp for a new issue thread.
+    expect((await getWorkItem(CHILD, HARNESS))?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     capturedThreadIds.add(`issue-thread-${CHILD}`);
     const captured = await postLearnedAtLevel({
       workItemId: CHILD, harness: HARNESS, level: 'work_item', text: note,
       workspaceId: fx.workspaceId, authorId: 'su-item-capture-integration',
-    });
-    // If the capture wrapper reports a failure, expose the real store error
-    // rather than obscuring a fixture fault behind posted:false.
-    if (!captured.posted) await commentWorkItem(CHILD, note, 'su-item-capture-integration', {
-      workspaceId: fx.workspaceId, harness: HARNESS,
     });
     expect(captured, JSON.stringify(captured)).toMatchObject({
       posted: true, level: 'work_item', requestedLevel: 'work_item', fellBack: false,

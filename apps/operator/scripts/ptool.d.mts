@@ -206,6 +206,7 @@ export function coerceArg(kind: any, raw: any): any;
  * @param {Record<string, unknown>} args
  * @param {{workspace?: unknown, harness?: unknown}} convenience
  * @param {{properties?: Record<string, unknown>} | null | undefined} inputSchema
+ * @param {{toolName?: string | null}} [options]
  * @returns {Record<string, unknown>}
  */
 export function mergeConvenienceArgs(args: Record<string, unknown>, { workspace, harness }: {
@@ -213,7 +214,9 @@ export function mergeConvenienceArgs(args: Record<string, unknown>, { workspace,
     harness?: unknown;
 }, inputSchema: {
     properties?: Record<string, unknown>;
-} | null | undefined): Record<string, unknown>;
+} | null | undefined, { toolName }?: {
+    toolName?: string | null;
+}): Record<string, unknown>;
 /**
  * Add a caller-owned result projection to a direct tool call. The MCP
  * transport reserves `projection` at the dispatch layer, so it must travel

@@ -799,6 +799,52 @@ class SuSession implements ChatSession {
     name: string,
     input: unknown,
   ): Promise<{ text: string; isError: boolean }> {
+    const direct = await this.resolveScenarioOverride(name, input);
+    if (direct) return direct;
+
+    // `tools:invoke` is a real DISPATCH wrapper, not a benign acknowledgement.
+    // A scenario may override the wrapper itself (S31 does); otherwise forward
+    // the exact discovered colon-form name + args into the same hermetic world.
+    // Falling back to `{ok:true}` here made nested writes look successful while
+    // nothing changed, then taught the model to claim an unverified edit (S04).
+    if (name === 'tools:invoke') {
+      const envelope = (input ?? {}) as Record<string, unknown>;
+      const nestedName = typeof envelope.name === 'string' ? envelope.name.trim() : '';
+      const nestedInput = envelope.args && typeof envelope.args === 'object' ? envelope.args : {};
+      if (!nestedName || nestedName === 'tools:invoke') {
+        return {
+          text: JSON.stringify({
+            ok: false,
+            error: !nestedName
+              ? 'tools:invoke requires a non-empty nested tool name'
+              : 'tools:invoke cannot invoke itself recursively',
+          }),
+          isError: true,
+        };
+      }
+      const nested = await this.resolveScenarioOverride(nestedName, nestedInput);
+      if (nested) return nested;
+      return {
+        text: JSON.stringify({
+          ok: false,
+          error: `nested tool ${nestedName} is not available in this scenario world`,
+        }),
+        isError: true,
+      };
+    }
+
+    const fallback = defaultToolResultForModel(name);
+    return {
+      text: fallback.content[0]?.text ?? JSON.stringify({ ok: true }),
+      isError: EXEC_TOOLS.has(name),
+    };
+  }
+
+  /** Resolve one canonical tool against the scenario-owned hermetic dispatcher. */
+  private async resolveScenarioOverride(
+    name: string,
+    input: unknown,
+  ): Promise<{ text: string; isError: boolean } | null> {
     const override = this.state.override;
     if (override) {
       // Match either the canonical name or the mcp-prefixed alias, like the
@@ -820,11 +866,7 @@ class SuSession implements ChatSession {
         }
       }
     }
-    const fallback = defaultToolResultForModel(name);
-    return {
-      text: fallback.content[0]?.text ?? JSON.stringify({ ok: true }),
-      isError: EXEC_TOOLS.has(name),
-    };
+    return null;
   }
 }
 

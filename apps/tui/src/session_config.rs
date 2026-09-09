@@ -8,13 +8,11 @@
 //!   • ACCOUNT — which inference-gateway pool account the agent routes through.
 //!
 //! ── THE MODEL MENU IS SERVER-OWNED (do not hardcode it here) ──
-//! `GET /api/agent-config` returns `defaultTiers` (the committed baseline) and
-//! `config.tiers` (the workspace override). A tier list hardcoded in the pui
+//! `GET /api/agent-config` returns `effectiveTiers`: the workspace override when
+//! present, otherwise the committed baseline. A tier list hardcoded in the pui
 //! would be a second copy of a truth the server owns — the derived-truth-ladder
 //! failure — and would silently diverge the moment someone edits the workspace
-//! tiers. The route surfaces `defaultTiers` explicitly so a client gets the
-//! baseline "without a client-side operator-core constant import"; that is this
-//! caller. So the menu is whatever the server said, and an EMPTY menu renders as
+//! tiers. So the menu is whatever the server said, and an EMPTY menu renders as
 //! empty rather than falling back to invented rows.
 //!
 //! ── THE ACCOUNT SEMANTICS ARE INHERITED, NOT INVENTED ──
@@ -82,7 +80,7 @@ pub struct ModelTier {
     pub backend: Option<String>,
     /// Server-side classification against the in-process Agent Chat loop.
     /// `None` is retained for compatibility with older operators; current
-    /// `config:tiers-get` responses annotate every effective tier.
+    /// `/api/agent-config.effectiveTiers` rows annotate every effective tier.
     #[serde(default)]
     pub loop_capability: Option<LoopModelCapability>,
 }

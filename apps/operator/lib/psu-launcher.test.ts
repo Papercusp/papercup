@@ -1493,6 +1493,90 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it.each(["uds", "auto"])("preserves %s and authoritative SU identity through a new-shell resume", (mode) => {
+    vi.stubEnv("PAPERCUSP_MCP_TRANSPORT", mode);
+    vi.stubEnv("WSL_INTEROP", "");
+    vi.stubEnv("WSL_DISTRO_NAME", "");
+    vi.stubEnv("PAPERCUSP_IPC_TCP", "");
+    vi.stubEnv("PAPERCUSP_SID", "su-stale-parent");
+    vi.stubEnv("PAPERCUSP_WORKSPACE", "stale-parent-workspace");
+    vi.stubEnv("PAPERCUSP_PROFILE", "stale-parent-profile");
+    try {
+      const source = {
+        mcpServers: {
+          "papercusp-su": {
+            type: "http",
+            url: "http://localhost:3070/api/mcp?superuser=1&client=machine",
+            headers: {
+              Authorization: "Bearer FIXTURE",
+              "x-papercusp-client": '!printf %s "${PAPERCUSP_SID:-}"',
+              "x-papercusp-workspace": '!printf %s "${PAPERCUSP_WORKSPACE:-}"',
+              "x-papercusp-profile": '!printf %s "${PAPERCUSP_PROFILE:-}"',
+            },
+          },
+        },
+      };
+      writeFileSync(join(home, ".omp", "agent", "mcp.json"), JSON.stringify(source));
+      const mcpEnv = {
+        PAPERCUSP_SID: "su-current",
+        PAPERCUSP_WORKSPACE: "current-workspace",
+        PAPERCUSP_PROFILE: "current-profile",
+      };
+      const dir = writeOmpSessionConfigDir("native", {
+        nativeMcp: true, clientId: "su-current", mcpEnv,
+      }, home);
+      const saved = JSON.parse(readFileSync(agentPath("native", "mcp.json"), "utf8"));
+      expect(saved.mcpServers).toEqual({});
+      expect(saved.papercuspNativeMcp).toMatchObject({ version: 1, mode, home });
+      const server = saved.papercuspNativeMcp.servers["papercusp-su"];
+      expect(new URL(server.url).searchParams.get("client")).toBe("su-current");
+      expect(server.headers).toEqual({
+        Authorization: "Bearer FIXTURE",
+        "x-papercusp-client": "su-current",
+        "x-papercusp-workspace": "current-workspace",
+        "x-papercusp-profile": "current-profile",
+      });
+      expect(statSync(agentPath("native", "mcp.json")).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(join(home, ".omp", "agent", "mcp.json"), "utf8"))).toEqual(source);
+
+      // A new shell no longer exports the opt-in. The saved config, not this
+      // ambient default, must drive the actual argv or its moved tools vanish.
+      vi.stubEnv("PAPERCUSP_MCP_TRANSPORT", "");
+      const session = { agent: "omp", role: "su", id: "native", ompThreadId: "original-thread" };
+      const env = ompTrackedResumeEnv(session, { home });
+      expect(env).toMatchObject({
+        PI_CONFIG_DIR: dir, PI_CODING_AGENT_DIR: agentPath("native", ""),
+        PAPERCUSP_MCP_TRANSPORT: mode,
+      });
+      const resumed = resumeArgsFor(session, { env });
+      expect(resumed.bin).toBe("omp");
+      expect(resumed.args.slice(0, 2)).toEqual(["-r", "original-thread"]);
+      expect(resumed.args).toEqual(expect.arrayContaining(nativeOmpExtensionArgs("omp", env)));
+      expect(resumed.args.join(" ")).toContain("native-extension.mjs");
+      // A role must never gain the user SU adapter even with a native env.
+      expect(resumeArgsFor({ ...session, role: "reviewer" }, { env }).args.join(" "))
+        .not.toContain("native-extension.mjs");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("leaves role and unsupported remote entries on their existing HTTP client", () => {
+    vi.stubEnv("PAPERCUSP_MCP_TRANSPORT", "uds");
+    try {
+      writeOmpSessionConfigDir("role", { clientId: "role-current" }, home);
+      const role = JSON.parse(readFileSync(agentPath("role", "mcp.json"), "utf8"));
+      expect(role.papercuspNativeMcp).toBeUndefined();
+      expect(role.mcpServers["papercusp-su"].type).toBe("http");
+      const remote = { mcpServers: {
+        remote: { type: "http", url: "https://remote.example/api/mcp" },
+      } };
+      writeFileSync(join(home, ".omp", "agent", "mcp.json"), JSON.stringify(remote));
+      writeOmpSessionConfigDir("remote", { nativeMcp: true }, home);
+      const saved = JSON.parse(readFileSync(agentPath("remote", "mcp.json"), "utf8"));
+      expect(saved.papercuspNativeMcp).toBeUndefined();
+      expect(saved.mcpServers.remote.url).toBe(remote.mcpServers.remote.url);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   // NOT "full mode": discoveryOff accompanies the trimmed SEED and is explicitly not
   // the retired whole-catalog mode (see the discoveryOff doc on writeOmpSessionConfigDir).
   it("discoveryOff flips discoveryMode OFF, preserving modelRoles", () => {

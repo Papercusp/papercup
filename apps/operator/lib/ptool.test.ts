@@ -79,6 +79,7 @@ describe('ptool parseArgs', () => {
       raw: false,
       url: null,
       tokenFile: null,
+      transport: null,
       help: false,
     });
   });
@@ -1117,6 +1118,24 @@ describe('ptool mergeConvenienceArgs', () => {
 
   it('ignores null flags', () => {
     expect(mergeConvenienceArgs({ x: 1 }, { workspace: null, harness: null }, schema)).toEqual({ x: 1 });
+  });
+
+  it('does not inject ambient tenant scope into testing:runs, but preserves explicit filters', () => {
+    expect(mergeConvenienceArgs({}, { workspace: 'ambient-ws', harness: 'ambient-harness' }, schema, {
+      toolName: 'testing:runs',
+    })).toEqual({});
+    expect(mergeConvenienceArgs(
+      { workspace: 'explicit-ws', harness: 'explicit-harness' },
+      { workspace: 'ambient-ws', harness: 'ambient-harness' },
+      schema,
+      { toolName: 'testing:runs' },
+    )).toEqual({ workspace: 'explicit-ws', harness: 'explicit-harness' });
+  });
+
+  it('continues injecting declared scope filters for other tools', () => {
+    expect(mergeConvenienceArgs({}, { workspace: 'ambient-ws', harness: 'ambient-harness' }, schema, {
+      toolName: 'work_items:list',
+    })).toEqual({ workspace: 'ambient-ws', harness: 'ambient-harness' });
   });
 });
 

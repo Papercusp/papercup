@@ -123,6 +123,7 @@ export function parseArgs(argv = []) {
     raw: false,
     url: null,
     tokenFile: null,
+    transport: null,
     help: false,
   };
   // Value-bearing flags accept BOTH `--flag=value` and `--flag value`. Map a
@@ -139,6 +140,7 @@ export function parseArgs(argv = []) {
     '--idempotency-key': 'idempotencyKey',
     '--url': 'url',
     '--token-file': 'tokenFile',
+    '--transport': 'transport',
   };
   const stdinValueFlags = new Set(['--json', '--args', '--script']);
   let pendingStdinCapableValueFlag = null;
@@ -545,13 +547,20 @@ export function coerceArg(kind, raw) {
  * @param {Record<string, unknown>} args
  * @param {{workspace?: unknown, harness?: unknown}} convenience
  * @param {{properties?: Record<string, unknown>} | null | undefined} inputSchema
+ * @param {{toolName?: string | null}} [options]
  * @returns {Record<string, unknown>}
  */
-export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema) {
+export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema, { toolName = null } = {}) {
   const props = (inputSchema && inputSchema.properties) || {};
   const out = { ...args };
-  if (workspace != null && 'workspace' in props && !('workspace' in out)) out.workspace = workspace;
-  if (harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
+  // EI-22785520568687738: testing:runs declares workspace/harness as explicit
+  // ledger filters, but its CI rows intentionally store both columns NULL.
+  // The ptool session scope still belongs in the MCP URL; copying that ambient
+  // scope into this tool's args silently filters every CI row out. Callers that
+  // need a ledger filter can provide it explicitly in the JSON payload.
+  const injectScopeFilters = toolName !== 'testing:runs';
+  if (injectScopeFilters && workspace != null && 'workspace' in props && !('workspace' in out)) out.workspace = workspace;
+  if (injectScopeFilters && harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
   return out;
 }
 
@@ -2307,7 +2316,7 @@ export async function importSdkModuleWithInstallAwareness(
  *  it works regardless of whether the host also honors a per-call `workspace`
  *  arg (the newer EI-30 path). The flags are ALSO merged into the args object
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
-async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { timeoutMs } = {}) {
+async function connect(operatorUrl, { workspace, harness, tokenFile, transport: requestedTransport } = {}, { timeoutMs } = {}) {
   const { Client } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js');
   const { StreamableHTTPClientTransport } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/streamableHttp.js');
   const tokenPaths = resolveTokenPaths({ tokenFile });
@@ -2321,6 +2330,18 @@ async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { ti
     client: process.env.PAPERCUSP_SID,
     contextTier: resolveContextTier(),
   });
+  const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
+  if (!['http', 'uds', 'auto'].includes(mode)) throw new Error('Invalid MCP transport; expected http, uds or auto');
+  if (mode !== 'http') {
+    // Package-built plain JS: do not import a TS-only workspace package from
+    // the installed Node CLI or copy its wire implementation into this file.
+    const { default: native } = await import('../../../packages/omp-plugin/dist/native-client.cjs');
+    const connected = await native.connectAgentMcp({
+      url: url.href, headers: { Authorization: `Bearer ${token}` }, mode,
+      name: 'ptool', timeoutMs, home: process.env.PAPERCUSP_OPERATOR_HOME,
+    });
+    return connected.client;
+  }
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });
@@ -2530,6 +2551,7 @@ export const PTOOL_USAGE = `ptool — call any Papercusp defineTool endpoint fro
   return await tools.dev.build_status({});
   EOF
   ptool --list [filter]         print the catalog (optionally name-filtered)
+  ptool <tool> --transport=uds  require direct local MCP (http and auto also accepted)
 
 Prefer --json-file or --json - for any payload that is not a trivial,
 quote-free literal — especially loop:checkpoint checks/walls with recheck text.
@@ -2641,7 +2663,7 @@ async function main() {
     payload: jsonKind != null ? inputArgs : undefined,
     toolName: args.tool,
   });
-  const scope = { workspace, harness, tokenFile: args.tokenFile };
+  const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport };
   const rediscover = shouldRediscoverOperatorUrl(args, process.env) ? discoverOperatorUrl : null;
   const connectOperator = () => connectWithLocalRetry(connect, operatorUrl, scope, {
     rediscover,
@@ -2719,7 +2741,7 @@ async function main() {
     // interactively when no scripted source was provided.
     let callArgs = inputKind != null ? inputArgs : await collectArgs(tool.inputSchema);
     callArgs = mergeDispatchProjection(callArgs, projection);
-    callArgs = mergeConvenienceArgs(callArgs, { workspace, harness }, tool.inputSchema);
+    callArgs = mergeConvenienceArgs(callArgs, { workspace, harness }, tool.inputSchema, { toolName });
 
     // Interactive confirmation (only when we prompted — a scripted --json/
     // --json-file/stdin call is non-interactive by intent).

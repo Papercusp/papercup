@@ -38,7 +38,7 @@ function boundedEvidenceRead(scorecard: ScorecardEvidenceRow, args: z.infer<type
     }
     const full = { ok: true as const, scorecard, evidenceRead: { complete: true } };
     if (JSON.stringify(full).length <= INLINE_EVIDENCE_CHARS) return full;
-    return {
+    const index = {
       ok: true as const,
       scorecard: { ...scorecard, criteria: [] },
       evidenceRead: {
@@ -51,6 +51,14 @@ function boundedEvidenceRead(scorecard: ScorecardEvidenceRow, args: z.infer<type
         })),
       },
     };
+    if (JSON.stringify(index).length > INLINE_EVIDENCE_CHARS) {
+      return {
+        ok: false as const,
+        error: 'scorecard_index_exceeds_inline_budget',
+        message: 'No evidence was read. Select a criterionKey from the source rubric and read its pages.',
+      };
+    }
+    return index;
   }
   const criterion = scorecard.criteria.find(({ key }) => key === args.criterionKey);
   if (!criterion) return { ok: false as const, error: 'unknown_criterion' };
