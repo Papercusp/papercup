@@ -200,6 +200,16 @@ export interface ActivationAuditPayload {
     currentPlanContentHash: string;
     reason: 'acceptance_bar_source_changed';
   };
+  /** The audit is durable, but the pinned acceptance rubric is malformed. The
+   * repair path must fix the rubric before BAR seeding or clause projection can
+   * resume; activation must never overwrite the invalid stored data. */
+  barSeedPendingRepair?: {
+    rubricSlug: string;
+    currentSubjectPlanRevision: number;
+    currentPlanContentHash: string;
+    reason: 'acceptance_bar_rubric_invalid';
+    problems: AcceptanceBarSeedProblem[];
+  };
 }
 
 export interface ActivationAuditCoverageConflict {
@@ -1732,6 +1742,15 @@ export type RecordCurrentActivationAuditResult =
         currentPlanContentHash: string;
         reason: 'acceptance_bar_source_changed';
       };
+      /** The conversation/decision audit can land while the pinned rubric is
+       * invalid; the repair remains explicit and no BAR state is rewritten. */
+      barSeedPendingRepair?: {
+        rubricSlug: string;
+        currentSubjectPlanRevision: number;
+        currentPlanContentHash: string;
+        reason: 'acceptance_bar_rubric_invalid';
+        problems: AcceptanceBarSeedProblem[];
+      };
     }
   | {
       ok: false;
@@ -2041,6 +2060,9 @@ export async function recordCurrentActivationAudit(
     let barSeedPendingAmendment:
       | NonNullable<Extract<RecordCurrentActivationAuditResult, { ok: true }>['barSeedPendingAmendment']>
       | undefined;
+    let barSeedPendingRepair:
+      | NonNullable<Extract<RecordCurrentActivationAuditResult, { ok: true }>['barSeedPendingRepair']>
+      | undefined;
     if (current.acceptance_bar_epoch != null) {
       if (current.acceptance_bar_rubric_slug) {
         // A successful activation adopted the BARs against this exact snapshot.
@@ -2152,8 +2174,25 @@ export async function recordCurrentActivationAudit(
           now: new Date(),
         });
         // Catch-up may already have updated the derived pin in this transaction.
-        if (!seeded.ok) throw new AcceptanceBarSeedAbort(seeded);
-        barSeed = seeded;
+        if (!seeded.ok) {
+          const repairProblems = seeded.problems.filter(
+            (problem) => problem.repairable === 'invalid_template_data',
+          );
+          if (repairProblems.length > 0) {
+            const first = repairProblems[0]!;
+            barSeedPendingRepair = {
+              rubricSlug: first.rubricSlug ?? current.acceptance_bar_rubric_slug ?? `acceptance-${input.planSlug}`,
+              currentSubjectPlanRevision: Number(current.version),
+              currentPlanContentHash: current.content_hash,
+              reason: 'acceptance_bar_rubric_invalid',
+              problems: repairProblems,
+            };
+          } else {
+            throw new AcceptanceBarSeedAbort(seeded);
+          }
+        } else {
+          barSeed = seeded;
+        }
       }
     }
     const audit = await insertPlanAudit(
@@ -2165,6 +2204,7 @@ export async function recordCurrentActivationAudit(
         activation: {
           ...input.activation,
           ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
+          ...(barSeedPendingRepair ? { barSeedPendingRepair } : {}),
         },
         auditedPlanRevision,
         summary: input.summary ?? null,
@@ -2178,6 +2218,7 @@ export async function recordCurrentActivationAudit(
       auditedPlanRevision,
       barSeed,
       ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
+      ...(barSeedPendingRepair ? { barSeedPendingRepair } : {}),
     };
     })) as RecordCurrentActivationAuditResult;
   } catch (error) {

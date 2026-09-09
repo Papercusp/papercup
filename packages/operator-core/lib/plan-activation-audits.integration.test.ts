@@ -464,6 +464,80 @@ describe('migration 938 activation-audit ledger', () => {
     `).resolves.toEqual([{ n: 3, max_revision: 1 }]);
   });
 
+  it('records activation coverage while exposing an invalid pinned rubric as pending repair', async () => {
+    const revision = await seedPostEpochPlan();
+    const rubricSlug = 'acceptance-post-epoch-seed-target';
+    const activation = {
+      ...payload,
+      mappings: [{ ...payload.mappings[0], planTargets: ['P-001', 'P-002', 'section:Requirements'] }],
+    };
+    const first = await recordCurrentActivationAudit({
+      workspaceId: 'activation-audit-test',
+      harnessSlug: 'papercusp',
+      planSlug: 'post-epoch-seed-target',
+      createdBy: 'su-seeder',
+      classRef: evaluatedClassRef,
+      activation,
+    });
+    expect(first).toMatchObject({ ok: true, barSeed: { rubricSlug, rubricRevision: 1 } });
+    const invalidTemplateData = {
+      kind: 'acceptance',
+      subjectPlan: 'post-epoch-seed-target',
+      characteristic: 'plan-acceptance',
+      criteria: [],
+      ratingScale: ['healthy'],
+    };
+    await db.sql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = ${JSON.stringify(invalidTemplateData)}::text::jsonb
+       WHERE workspace_id = 'activation-audit-test'
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricSlug}`;
+
+    const result = await recordCurrentActivationAudit({
+      workspaceId: 'activation-audit-test',
+      harnessSlug: 'papercusp',
+      planSlug: 'post-epoch-seed-target',
+      createdBy: 'su-repair-auditor',
+      classRef: evaluatedClassRef,
+      activation,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      auditedPlanRevision: { id: revision.id, seq: 7, contentHash: revision.contentHash },
+      barSeed: null,
+      barSeedPendingRepair: {
+        rubricSlug,
+        currentSubjectPlanRevision: 7,
+        currentPlanContentHash: revision.contentHash,
+        reason: 'acceptance_bar_rubric_invalid',
+        problems: [{
+          code: 'bar_rubric_conflict',
+          detail: 'the active acceptance rubric has invalid template_data',
+          repairable: 'invalid_template_data',
+          rubricSlug,
+        }],
+      },
+    });
+    await expect(db.sql`SELECT count(*)::int AS count FROM harness_shared.plan_audits
+      WHERE plan_slug = 'post-epoch-seed-target'`).resolves.toEqual([{ count: 2 }]);
+    await expect(db.sql`
+      SELECT template_data, version::int AS version
+        FROM harness_shared.harness_plans
+       WHERE plan_slug = ${rubricSlug}
+    `).resolves.toEqual([{ template_data: invalidTemplateData, version: 1 }]);
+    await expect(db.sql`
+      SELECT acceptance_bar_set_hash, acceptance_bar_rubric_slug, acceptance_bar_rubric_revision
+        FROM harness_shared.harness_plans
+       WHERE plan_slug = 'post-epoch-seed-target'
+    `).resolves.toEqual([expect.objectContaining({
+      acceptance_bar_set_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      acceptance_bar_rubric_slug: rubricSlug,
+      acceptance_bar_rubric_revision: 1,
+    })]);
+  });
+
   it.each(['draft', 'active'])('re-audits an amended pinned %s revision without reverting its canonical BAR or METHOD', async (status) => {
     await seedPostEpochPlan();
     // Source version 7 and ledger seq 70 are deliberately different.
