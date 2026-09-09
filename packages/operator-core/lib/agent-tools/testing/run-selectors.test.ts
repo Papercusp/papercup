@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import runTool from './run';
+import runTool, { emptyDistilledRunRefusal } from './run';
 
 /**
  * `files` became OPTIONAL when `changedPaths` was added, which made `testing:run {}`
@@ -20,6 +20,40 @@ async function callHandler(args: unknown) {
 }
 
 describe('testing:run selector arbitration', () => {
+  const emptyRun = {
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    files: 0,
+    failures: [],
+    failuresTruncated: false,
+    durationMs: null,
+    byFile: {},
+  };
+
+  it('refuses an empty external Vitest report instead of returning an ambiguous all-zero verdict', () => {
+    expect(
+      emptyDistilledRunRefusal({
+        runs: [emptyRun],
+        runId: 'run-empty-report',
+        root: '/portal',
+        routerOutput: 'vitest exited 1 after writing an empty report',
+      }),
+    ).toMatchObject({ ok: false, error: 'no_report', runId: 'run-empty-report', root: '/portal' });
+  });
+
+  it('refuses a mixed report set when any workspace group produced no files', () => {
+    const measuredRun = { ...emptyRun, passed: 1, files: 1, byFile: { 'one.test.ts': { passed: 1, failed: 0, skipped: 0, collectionFailed: false } } };
+    expect(
+      emptyDistilledRunRefusal({
+        runs: [measuredRun, emptyRun],
+        runId: 'run-mixed-report',
+        root: '/papercusp',
+        routerOutput: 'one group passed; one group wrote an empty report',
+      }),
+    ).toMatchObject({ ok: false, error: 'no_report' });
+  });
+
   it('keeps evidence recovery exclusive from starting another test process', async () => {
     const recoverEvidence = { workItemId: 'WI-1', originRunId: 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad',
       runId: 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad' };

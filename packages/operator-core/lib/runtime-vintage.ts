@@ -22,6 +22,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { coerceJson } from './pg-jsonb';
 
+/** The tagged org-PG client, optionally supplied by a caller's read transaction. */
+export type RuntimeVintageSql = ReturnType<typeof getOrgPg>['sql'];
+
 export interface RuntimeVintageReport {
   /** Free-form reporting-process label — e.g. 'bg-host', 'staging-api',
    *  'dev-api', 'desktop-sidecar', 'watchdog', 'gateway'. Not an enum: new
@@ -54,7 +57,7 @@ export interface RuntimeVintageRow {
 
 export interface RuntimeVintageStore {
   report(input: RuntimeVintageReport): Promise<void>;
-  list(workspaceId?: string): Promise<RuntimeVintageRow[]>;
+  list(workspaceId?: string, client?: RuntimeVintageSql): Promise<RuntimeVintageRow[]>;
 }
 
 class PgRuntimeVintageStore implements RuntimeVintageStore {
@@ -84,8 +87,8 @@ class PgRuntimeVintageStore implements RuntimeVintageStore {
     `;
   }
 
-  async list(workspaceId?: string): Promise<RuntimeVintageRow[]> {
-    const { sql } = getOrgPg();
+  async list(workspaceId?: string, client?: RuntimeVintageSql): Promise<RuntimeVintageRow[]> {
+    const sql = client ?? getOrgPg().sql;
     const ws = workspaceId ?? activeWorkspaceId();
     const rows = await sql<Array<{
       workspace_id: string;
@@ -176,8 +179,11 @@ export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise
 }
 
 /** List every reported runtime's current vintage for a workspace. */
-export async function listRuntimeVintage(workspaceId?: string): Promise<RuntimeVintageRow[]> {
-  return store.list(workspaceId);
+export async function listRuntimeVintage(
+  workspaceId?: string,
+  client?: RuntimeVintageSql,
+): Promise<RuntimeVintageRow[]> {
+  return store.list(workspaceId, client);
 }
 
 /**
