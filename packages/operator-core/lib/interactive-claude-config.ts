@@ -380,12 +380,10 @@ function identityLine(intent) {
       recorded +
       ' → live ' +
       live +
-      '. Every ownerId-keyed surface (armed loop, loop carry-note + walls, plan/work claims, claim-spec, standing awaits, fleet membership + leadership, owner facts, held file locks) is still keyed to the OLD id. Run coord:rebind-identity { from: "' +
-      recorded +
-      '" } NOW, then coord:orient { afterCompaction: true }.'
+      '. Every ownerId-keyed surface (armed loop, loop carry-note + walls, plan/work claims, claim-spec, standing awaits, fleet membership + leadership, owner facts, held file locks) may still be keyed to the OLD id. VERIFY FIRST with coord:whoami and coord:orient { afterCompaction: true }: confirm the predecessor is dead and no protected predecessor state remains. This mismatch alone does not authorize an identity rebind or a force override.'
     );
   }
-  if (recorded) {
+  if (recorded && live) {
     return (
       '- Your papercusp identity is ' +
       recorded +
@@ -394,7 +392,13 @@ function identityLine(intent) {
       '" }.'
     );
   }
-  return '- No recorded PAPERCUSP_SID to compare against — verify your identity with coord:orient (self.ownerId) before trusting any ownerId-keyed state.';
+  if (recorded) {
+    return '- A recorded PAPERCUSP_SID (' + recorded + ') exists, but no live PAPERCUSP_SID is available to compare. VERIFY FIRST with coord:whoami and coord:orient (self.ownerId) before trusting or changing any ownerId-keyed state.';
+  }
+  if (live) {
+    return '- No recorded PAPERCUSP_SID to compare against (live env is ' + live + ') — VERIFY FIRST with coord:whoami and coord:orient (self.ownerId) before trusting any ownerId-keyed state.';
+  }
+  return '- No recorded or live PAPERCUSP_SID is available to compare — VERIFY FIRST with coord:whoami and coord:orient (self.ownerId) before trusting any ownerId-keyed state.';
 }
 
 // WI-3280: the argv-drop playbook recovery — returns the injection text, or
@@ -485,7 +489,7 @@ async function rebindIdentityIfChanged(intent) {
   const recorded = ((intent && intent.sid) || '').trim();
   if (!live || !recorded || live === recorded) return null;
   const head = '⚠ IDENTITY CHANGED ACROSS RELAUNCH — recorded PAPERCUSP_SID ' + recorded + ' → live ' + live + '. Your armed loop, loop carry-note (+walls), claims, claim-spec, standing awaits, fleet membership and open held work-items were keyed under the OLD id.';
-  const manual = 'Run coord:rebind-identity { from: \\'' + recorded + '\\', to: \\'' + live + '\\' } NOW (it needs NO force for an ended predecessor, even one whose heartbeat is still warm; add force:true only if it refuses with a live sessionState AND coord:presence confirms the old id is dead), then coord:orient { afterCompaction: true }.';
+  const manual = 'VERIFY FIRST: use coord:whoami and coord:orient { afterCompaction: true } to confirm this successor, that the predecessor is dead, and that no protected predecessor state remains (claims, held work, presence, membership, or leadership). This banner does not authorize an identity rebind or a force override.';
   const base = (process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:3070').replace(/\\/+$/, '');
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 4500);
@@ -511,7 +515,7 @@ async function rebindIdentityIfChanged(intent) {
     }
     if (body && body.refused === 'from_appears_live') {
       const st = body.fromSessionState ? ' as sessionState=' + body.fromSessionState : '';
-      return { rebound: false, to: live, text: head + ' AUTO-REBIND REFUSED — the old id still resolves' + st + ' through the liveness oracle, so a DIFFERENT live session may hold it. Note this is NOT the ordinary warm-heartbeat case (an ended predecessor rebinds automatically). Confirm with coord:presence, and only if it really is dead: ' + manual };
+      return { rebound: false, to: live, text: head + ' AUTO-REBIND REFUSED — the old id still resolves' + st + ' through the liveness oracle, so a DIFFERENT live session may hold it. ' + manual };
     }
     return { rebound: false, to: live, text: head + ' Auto-rebind did not complete. ' + manual };
   } catch {

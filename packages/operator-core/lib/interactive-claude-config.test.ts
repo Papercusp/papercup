@@ -937,7 +937,7 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
     }
   });
 
-  it('a REFUSED rebind (from appears live) surfaces the manual instruction and keeps the recorded sid', async () => {
+  it('a REFUSED rebind (from appears live) requires verification and keeps the recorded sid', async () => {
     const configDir = seedWithPlaybook('su-old-p7b');
     const { server } = rebindServer({ ok: false, refused: 'from_appears_live', surfaces: [], totalMoved: 0 });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -951,8 +951,11 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
       );
       const ctx = out.hookSpecificOutput.additionalContext as string;
       expect(ctx).toContain('AUTO-REBIND REFUSED');
-      expect(ctx).toContain("coord:rebind-identity { from: 'su-old-p7b', to: 'su-new-p7b' }");
-      expect(ctx).toContain('force:true');
+      expect(ctx).toContain('VERIFY FIRST');
+      expect(ctx).toContain('coord:whoami');
+      expect(ctx).toContain('coord:orient');
+      expect(ctx).not.toContain('force:true');
+      expect(ctx).not.toContain('NOW (it needs NO force');
       expect(JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8')).sid).toBe('su-old-p7b');
     } finally {
       await new Promise((r) => server.close(r));
@@ -969,7 +972,10 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
     );
     const ctx = out.hookSpecificOutput.additionalContext as string;
     expect(ctx).toContain('unreachable for auto-rebind');
-    expect(ctx).toContain("coord:rebind-identity { from: 'su-old-p7c', to: 'su-new-p7c' }");
+    expect(ctx).toContain('VERIFY FIRST');
+    expect(ctx).toContain('coord:whoami');
+    expect(ctx).toContain('coord:orient');
+    expect(ctx).not.toContain('force:true');
     expect(JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8')).sid).toBe('su-old-p7c');
   });
 
@@ -1264,13 +1270,17 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
     return fn({ sid: recordedSid }, { env: liveSid === undefined ? {} : { PAPERCUSP_SID: liveSid } });
   };
 
-  it('REPORTS THE FORK, and names the repair call, when the live sid differs', () => {
+  it('REPORTS THE FORK, and requires verification before any repair, when the live sid differs', () => {
     const line = runIdentityLine('su-OLD', 'su-NEW');
     expect(line).toMatch(/IDENTITY CHANGED/);
     expect(line).toContain('su-OLD');
     expect(line).toContain('su-NEW');
-    // The one call that repairs it must be handed over, pointed at the OLD id.
-    expect(line).toContain('coord:rebind-identity { from: "su-OLD" }');
+    expect(line).toContain('VERIFY FIRST');
+    expect(line).toContain('coord:whoami');
+    expect(line).toContain('coord:orient');
+    expect(line).toContain('predecessor is dead');
+    expect(line).not.toContain('coord:rebind-identity');
+    expect(line).not.toContain('force:true');
     // ...and it must NOT still be claiming continuity.
     expect(line).not.toMatch(/is unaffected/);
   });
@@ -1290,6 +1300,26 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
   it('stays honest when there is no recorded sid to compare', () => {
     const line = runIdentityLine(undefined, 'su-NEW');
     expect(line).not.toMatch(/is unaffected/);
+    expect(line).toContain('VERIFY FIRST');
+    expect(line).toContain('coord:whoami');
     expect(line).toMatch(/coord:orient/);
+  });
+
+  it('stays honest when there is a recorded sid but no live sid', () => {
+    const line = runIdentityLine('su-OLD', undefined);
+    expect(line).toContain('su-OLD');
+    expect(line).toContain('no live PAPERCUSP_SID');
+    expect(line).toContain('VERIFY FIRST');
+    expect(line).toContain('coord:whoami');
+    expect(line).toContain('coord:orient');
+    expect(line).not.toContain('coord:rebind-identity');
+  });
+
+  it('stays honest when neither sid is available', () => {
+    const line = runIdentityLine(undefined, undefined);
+    expect(line).toContain('No recorded or live PAPERCUSP_SID');
+    expect(line).toContain('VERIFY FIRST');
+    expect(line).toContain('coord:whoami');
+    expect(line).toContain('coord:orient');
   });
 });
