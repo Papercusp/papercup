@@ -13,6 +13,7 @@ import {
   buildP305RollbackScript,
   buildP305SwitchScript,
   normalizeP305LifecycleInput,
+  parseP305HostPrepareDiagnostics,
   parseP305PhaseMarker,
   parseP305UpdateReference,
   // @ts-expect-error -- side-effect-free .mjs command contract, deliberately untyped.
@@ -154,6 +155,39 @@ describe('P-305 guest lifecycle contract', () => {
     expect(script).toContain(`${P305_LIFECYCLE_MARKER} phase=%s`);
   });
 
+  it('preserves typed bounded host-prepare diagnostics before refusing the phase', () => {
+    const script = buildP305PhaseProbeScript({
+      phase: 'initial',
+      expectedVersion: BASE.expectedInitialVersion,
+      updateImageReference: UPDATE_REFERENCE,
+      sentinelToken: SENTINEL,
+    });
+    const diagnosticMarker = 'PAPERCUSP-P305-HOST-PREPARE-DIAGNOSTIC';
+    expect(script).toContain('systemctl show papercusp-host-prepare.service --property=ActiveState --value');
+    expect(script).toContain('systemctl status papercusp-host-prepare.service --no-pager --full');
+    expect(script).toContain('journalctl --unit=papercusp-host-prepare.service --boot');
+    expect(script.indexOf(diagnosticMarker)).toBeLessThan(script.indexOf('fail host-prepare-not-active'));
+
+    const parsed = parseP305HostPrepareDiagnostics(
+      [
+        'PAPERCUSP-P305-HOST-PREPARE-STATUS × papercusp-host-prepare.service',
+        'PAPERCUSP-P305-HOST-PREPARE-JOURNAL PAPERCUSP-HOST-PREPARE: FATAL firewall table missing',
+        `${diagnosticMarker} phase=initial active_state=failed sub_state=failed result=exit-code exec_main_status=1`,
+        'PAPERCUSP-P305-FAIL phase=initial host-prepare-not-active',
+      ].join('\n'),
+    );
+    expect(parsed).toEqual({
+      phase: 'initial',
+      activeState: 'failed',
+      subState: 'failed',
+      result: 'exit-code',
+      execMainStatus: 1,
+      statusExcerpt: ['× papercusp-host-prepare.service'],
+      journalExcerpt: ['PAPERCUSP-HOST-PREPARE: FATAL firewall table missing'],
+    });
+    expect(parseP305HostPrepareDiagnostics('PAPERCUSP-P305-FAIL phase=initial host-prepare-not-active')).toBeNull();
+  });
+
   it('stages an enforced signed switch and a direct rollback as distinct operations', () => {
     const switchScript = buildP305SwitchScript(UPDATE_REFERENCE);
     expect(switchScript).toContain(`update_ref='${UPDATE_REFERENCE}'`);
@@ -225,5 +259,7 @@ describe('P-305 guest lifecycle contract', () => {
       source.indexOf("['compute', 'images', 'create'"),
     );
     expect(source).toContain('privateIngressOnly: session.publicIpv4Assigned === false');
+    expect(source).toContain('const hostPrepareDiagnostics = parseP305HostPrepareDiagnostics(details.stderr)');
+    expect(source).toContain('...(hostPrepareDiagnostics ? { hostPrepareDiagnostics } : {})');
   });
 });
