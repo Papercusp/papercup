@@ -168,9 +168,12 @@ Canonical ASCII form:
 - **`blocked-by:`** — keyword. Parser reads it independent of any
   separator glyph. Comma-separated IDs: `blocked-by: P-003, P-005`.
   *Not* a status — see "Computed-blocked" below.
-- **Decision refs** — `D-NNN` tokens anywhere in the line; parser
-  picks them up by pattern, glyph-agnostic. The `→` arrow is
-  cosmetic.
+- **Decision refs** — explicit markers only: `→ D-NNN`, `-> D-NNN`,
+  `- see D-NNN`, `decision: D-NNN`, or `ref: D-NNN` (labels are
+  case-insensitive). A bare or qualified prose citation such as
+  `source D-NNN` or `other-plan#D-NNN` is not an in-plan reference;
+  this prevents citations to another record from becoming dangling local
+  decision refs. The visible item text is preserved unchanged.
 - **`importance:`** — keyword, glyph-agnostic like `blocked-by:`.
   Values `urgent | high | normal | low`; omit it for the `normal`
   default. A 4th axis orthogonal to status — see

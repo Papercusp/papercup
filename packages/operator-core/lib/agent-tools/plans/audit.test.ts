@@ -563,6 +563,40 @@ describe('plans:audit phase:activation', () => {
     }));
   });
 
+  it('reports a pending BAR amendment without running the legacy clause deriver', async () => {
+    mockRecordActivation.mockResolvedValue({
+      ok: true,
+      audit: { auditSeq: 8 } as never,
+      auditedPlanRevision: { id: 42, seq: 7, contentHash: 'b'.repeat(64) },
+      barSeed: null,
+      barSeedPendingAmendment: {
+        rubricSlug: 'acceptance-plan-a',
+        previousSubjectPlanRevision: 6,
+        currentSubjectPlanRevision: 7,
+        currentPlanContentHash: 'b'.repeat(64),
+        reason: 'acceptance_bar_source_changed',
+      },
+    });
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      auditSeq: 8,
+      barSeedPendingAmendment: {
+        rubricSlug: 'acceptance-plan-a',
+        previousSubjectPlanRevision: 6,
+        currentSubjectPlanRevision: 7,
+        currentPlanContentHash: 'b'.repeat(64),
+        reason: 'acceptance_bar_source_changed',
+      },
+    });
+    expect(result.derivedSpecClauses).toBeNull();
+    expect(mockItems).not.toHaveBeenCalled();
+    expect(mockSetSpecClause).not.toHaveBeenCalled();
+  });
+
   it('uses callable org SQL when skipWorkspaceTx leaves ctx.tx absent', async () => {
     const noTxCtx = {
       ...(ctx as unknown as Record<string, unknown>),

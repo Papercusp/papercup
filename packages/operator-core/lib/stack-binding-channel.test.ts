@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as blueprint from '@papercusp/orchestrator/blueprint';
-import { SU_MODE_REFS, SU_POSTURE_REFS, renderStackTransitionContext, stackRefsForModes, stackRefsForRoute, stackRefsForSession } from './stack-binding-channel';
+import { SU_MODE_REFS, SU_POSTURE_REFS, renderStackTransitionContext, renderStackTransitionContextResult, stackRefsForModes, stackRefsForRoute, stackRefsForSession } from './stack-binding-channel';
 import { normalizeControlAnchorState, type ControlAnchorState } from './agent-tools/coordination/control-anchor';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -116,5 +116,18 @@ describe('renderStackTransitionContext (P-012)', () => {
     );
     expect(broken).toBe('');
     expect(warnings[0]).toMatch(/stack transition not delivered/);
+  });
+
+  it('marks domain/client mutations fresh-context so the old host cannot acknowledge them', async () => {
+    const result = await renderStackTransitionContextResult(
+      {
+        state: state({ stack: ['domain:papercusp-engineer'] }),
+        stackBefore: [],
+      },
+      opts,
+    );
+    expect(result.rendered).toBe(true);
+    expect(result.requiresFreshContext).toBe(true);
+    expect(result.text).toContain('relaunch-with-carry');
   });
 });

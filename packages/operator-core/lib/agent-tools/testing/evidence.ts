@@ -7,7 +7,7 @@ import {
   ADHOC_WORK_ITEM_SPEC_SCOPE, repoFilesEvidenceMeasurementSchema,
   type BindSpecEvidenceInput, type RepoFilesEvidenceMeasurement,
 } from '../plans/spec-evidence-store';
-import { readHarnessTestRunEvidence } from '../../testing-run-store';
+import { readHarnessTestRunEvidence, type HarnessTestRunEvidence } from '../../testing-run-store';
 import type { TestFilesCoreResult } from './run';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from '../plans/spec-clauses-store';
 
@@ -41,6 +41,34 @@ const defaults: Deps = { bind: bindSpecEvidence, measure: measureRepoFilesEviden
   ledger: readHarnessTestRunEvidence, list: listSpecEvidence };
 const refFor = (runId: string, index: number) => `test-run-group:${runId}:${index}`;
 const succeeded = (status: string) => status === 'created' || status === 'unchanged';
+
+const executionDetailsSchema = z.object({
+  schemaVersion: z.literal(1), root: z.string().min(1), filePath: z.string().min(1),
+  runGroupId: z.string().uuid(), workspaceId: z.string().min(1), harnessSlug: z.string().min(1),
+  testNamePattern: z.string().nullable(),
+  passed: z.number().int().nonnegative().safe(), failed: z.number().int().nonnegative().safe(),
+  skipped: z.number().int().nonnegative().safe(), collectionFailed: z.boolean(),
+}).strict();
+
+/** Only a complete, exact reporter measurement can replace a lost foreground result. */
+function recoveredFileResult(run: HarnessTestRunEvidence | undefined, binding: Request['bindings'][number],
+  runId: string, scope: Scope): TestFilesCoreResult | undefined {
+  const parsed = executionDetailsSchema.safeParse(run?.execution_details);
+  if (!parsed.success || !run || binding.counterexample) return undefined;
+  const detail = parsed.data;
+  if (detail.runGroupId !== runId || detail.workspaceId !== scope.workspaceId
+    || detail.harnessSlug !== scope.harnessSlug || detail.root !== scope.root
+    || detail.filePath !== binding.testPath || run.file_path !== binding.testPath) return undefined;
+  // A pass row contradicting its measured failure must not manufacture proof.
+  if (run.status === 'pass' && (detail.failed > 0 || detail.collectionFailed)) return undefined;
+  return { ok: true, runId, root: scope.root, files: 1,
+    passed: detail.passed, failed: detail.failed, skipped: detail.skipped,
+    byFile: { [binding.testPath]: { passed: detail.passed, failed: detail.failed,
+      skipped: detail.skipped, collectionFailed: detail.collectionFailed } },
+    failures: [], failuresTruncated: false, durationMs: null,
+    ...(detail.testNamePattern ? { testNamePattern: detail.testNamePattern } : {}),
+  };
+}
 
 export async function prepareTestEvidence(request: Request, runId: string, files: string[], scope: Scope, deps: Deps = defaults) {
   const prepared: Prepared[] = [];
@@ -95,7 +123,7 @@ export function testEvidenceOutcome(binding: Request['bindings'][number], result
         : counts.skipped > 0
           ? 'skip'
           : 'unknown';
-  if (!nameFilterActive && counts.skipped > 0 && counts.failed === 0) outcome = 'skip';
+  if (!nameFilterActive && !counts.collectionFailed && counts.skipped > 0 && counts.failed === 0) outcome = 'skip';
   if (binding.counterexample && executed && counts.skipped === 0) {
     const negative = binding.counterexample;
     const exactFailure = result.failures.some(f => f.file === binding.testPath && f.test === negative.test && f.message.includes(negative.messageIncludes));
@@ -122,14 +150,16 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
         phase: sourceStable ? 'settled' : 'source-changed', outcome: priorProof?.outcome ?? 'unknown', bindingStatus: 'unchanged' });
       continue;
     }
-    const outcome = testEvidenceOutcome(row.binding, result);
-    // A recovered per-file status has no collection/skip counts. Preserve it as
-    // observation, never upgrade it to executable passing proof.
-    const phase = !run ? 'pending' : !sourceStable ? 'source-changed' : !result || result.error ? 'review-required' : 'settled';
+    const measuredResult = result ?? recoveredFileResult(run, row.binding, runId, scope);
+    const outcome = testEvidenceOutcome(row.binding, measuredResult);
+    // Legacy status-only rows remain unknown. Measured details are usable only
+    // after exact scope/file attribution and the existing before/after hash check.
+    const phase = !run ? 'pending' : !sourceStable ? 'source-changed'
+      : !measuredResult || measuredResult.error ? 'review-required' : 'settled';
     const details = {
       ...row.input.details,
         testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
-          ...(result?.testNamePattern ? { testNamePattern: result.testNamePattern } : {}),
+          ...(measuredResult?.testNamePattern ? { testNamePattern: measuredResult.testNamePattern } : {}),
           sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length, measuredOutcome: outcome.outcome,
         ...(result?.error ? { resultError: result.error } : {}),
       },

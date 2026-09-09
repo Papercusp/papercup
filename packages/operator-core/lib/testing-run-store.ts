@@ -1541,6 +1541,8 @@ export interface HarnessTestRunEvidence {
   file_path: string;
   status: string;
   finished_at: string | Date | null;
+  /** Nullable versioned reporter measurement. Consumers must validate, not cast. */
+  execution_details?: unknown;
 }
 
 /** Same scoped ledger as findHarnessTestRunIds; null distinguishes an unreadable ledger. */
@@ -1552,7 +1554,9 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     const rows = await sql`
-      SELECT id, file_path, status, finished_at FROM harness_shared.test_runs
+      SELECT id, file_path, status, finished_at,
+             to_jsonb(test_runs)->'execution_details' AS execution_details
+        FROM harness_shared.test_runs
        WHERE workspace_id = ${params.workspaceId} AND harness_slug = ${params.harnessSlug}
          AND run_group_id = ${params.runGroupId}
          AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})

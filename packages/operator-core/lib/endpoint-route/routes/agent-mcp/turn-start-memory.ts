@@ -186,6 +186,7 @@ const turnStartMemory = defineTool({
           // a failed layer render therefore remains pending for the next turn.
           let stack = '';
           let stackRendered = true;
+          let stackRequiresFreshContext = false;
           try {
             const { renderStackTransitionContextResult } = await import('../../../stack-binding-channel');
             const rendered = await renderStackTransitionContextResult(
@@ -202,6 +203,7 @@ const turnStartMemory = defineTool({
             );
             stack = rendered.text;
             stackRendered = rendered.rendered;
+            stackRequiresFreshContext = rendered.requiresFreshContext;
           } catch {
             /* the CTRL line is never lost to a stack-render fault */
             stackRendered = false;
@@ -217,7 +219,7 @@ const turnStartMemory = defineTool({
             ).catch(() => undefined);
           }
           let activationPrepared = true;
-          if (stackRendered && activationRevision) {
+          if (stackRendered && !stackRequiresFreshContext && activationRevision) {
             activationPrepared = await markControlTransitionPrepared(
               owner,
               workspaceId,
@@ -225,7 +227,12 @@ const turnStartMemory = defineTool({
               activationRevision,
             ).catch(() => false);
           }
-          if (stackRendered && activationPrepared && Number.isSafeInteger(transition.generation)) {
+          if (
+            stackRendered &&
+            !stackRequiresFreshContext &&
+            activationPrepared &&
+            Number.isSafeInteger(transition.generation)
+          ) {
             try {
               if (activationRevision) {
                 await acknowledgeControlTransition(owner, workspaceId, transition.generation, undefined, activationRevision);

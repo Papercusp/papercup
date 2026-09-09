@@ -77,6 +77,60 @@ exit 1
     }
   }, 5_000);
 
+  it('rejects an unknown command before spawning the persistent daemon', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-unknown-command-'));
+    const fakeNode = join(fixtureRoot, 'node');
+    const dataDir = join(fixtureRoot, 'data');
+    const markerFile = join(fixtureRoot, 'daemon-was-spawned.marker');
+
+    try {
+      await writeFile(
+        fakeNode,
+        `#!${process.execPath}
+require('node:fs').writeFileSync(${JSON.stringify(markerFile)}, String(process.pid));
+`,
+        'utf8',
+      );
+      await chmod(fakeNode, 0o755);
+
+      let failure: unknown = null;
+      try {
+        await execFileAsync(
+          process.execPath,
+          [require.resolve('verdict-cli/bin/browse.mjs'), '--help'],
+          {
+            env: {
+              ...process.env,
+              PATH: `${fixtureRoot}${delimiter}${process.env.PATH ?? ''}`,
+              VERDICT_DATA_DIR: dataDir,
+              VERDICT_SESSION: '',
+              PAPERCUSP_SID: '',
+              CODEX_SESSION_ID: '',
+            },
+            maxBuffer: 32 * 1024,
+            timeout: 5_000,
+          },
+        );
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).not.toBeNull();
+      const stderr =
+        typeof failure === 'object' && failure !== null && 'stderr' in failure
+          ? String((failure as { stderr?: unknown }).stderr ?? '')
+          : '';
+      expect(stderr).toContain('Unknown command: --help');
+      expect(stderr).toContain('verdict (with no command) for usage');
+      await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(join(dataDir, 'verdict.json'), 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 8_000);
+
   it('isolates Papercusp agent clients by their implicit session identity', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-session-isolation-'));
     const fakeNode = join(fixtureRoot, 'node');
