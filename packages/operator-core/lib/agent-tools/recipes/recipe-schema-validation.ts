@@ -134,6 +134,15 @@ export async function validateRecipeScriptAgainstCatalog(
     const name = mcpName(tool);
     if (name) byName.set(name, tool);
   }
+  // TypeScript is intentionally error-tolerant and may recover malformed JavaScript into an
+  // AST that contains pseudo-properties. Those nodes are useful for the advisory tool scan, but
+  // they are not reliable evidence for literal argument validation: an unescaped quote inside a
+  // shell command can otherwise become a false `unknown-key` refusal. Let the VM's compile step
+  // report the authoritative syntax error and skip only this schema inspection pass.
+  const staticToolNames = [...new Set(analysis.calls.map((call) => call.tool))].sort();
+  if (analysis.hasParseErrors) {
+    return { ok: true, issues: [], staticToolNames };
+  }
   // Unknown/disallowed references remain the runtime facade's concern: the
   // existing orchestration parser reports those with the caller's role-scoped
   // allow-set. This guard focuses on the failure class that survives name
@@ -161,6 +170,6 @@ export async function validateRecipeScriptAgainstCatalog(
   return {
     ok: issues.length === 0,
     issues,
-    staticToolNames: [...new Set(analysis.calls.map((call) => call.tool))].sort(),
+    staticToolNames,
   };
 }

@@ -137,6 +137,34 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('TypeScript annotations such as `: any` are not supported');
   });
 
+  it('lets malformed shell text reach the VM compile error instead of static arg preflight', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    const res = await tool.fn(
+      {
+        script: String.raw`const r = await tools.capability.bash({
+          command: "head -n 12 /tmp/x.log | awk '{print NR ":" substr($0,1,600)}' ; tail -n 18 /tmp/x.log | awk '{print NR ":" substr($0,1,600)}'",
+          cwd: "/tmp",
+          description: "Sample checkpoint log markers",
+          timeout: 15000
+        });
+        return { output: (r?.output || "").slice(-12000) };`,
+      },
+      {
+        log: () => {},
+        workspaceId: 'ws-test',
+        harnessSlug: 'alpha',
+        role: 'su',
+        isSuperuser: true,
+        uiClientId: 'su-test',
+      } as never,
+    );
+    const payload = JSON.parse(String((res as { content: { text: string }[] }).content[0].text));
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toMatch(/^compile_error:/);
+    expect(payload.argPreflight).toBeUndefined();
+  });
+
   it('documents colon-only namespace conversion and preserves underscores within segments', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const description = tool?.description ?? '';

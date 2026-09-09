@@ -133,4 +133,29 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     );
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:deploy'] });
   });
+
+  it('skips static argument validation when TypeScript recovered a malformed shell string', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      String.raw`const r = await tools.capability.bash({
+        command: "set +e; head -n 12 /tmp/x.log | awk '{print NR ":" substr($0,1,600)}' ; tail -n 18 /tmp/x.log | awk '{print NR ":" substr($0,1,600)}'",
+        cwd: "/tmp",
+        description: "Sample checkpoint log markers",
+        timeout: 15000
+      });
+      return { output: (r?.output || "").slice(-12000) };`,
+      [tool('capability:bash', {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+          cwd: { type: 'string' },
+          description: { type: 'string' },
+          timeout: { type: 'number' },
+        },
+        additionalProperties: false,
+      })],
+    );
+    // The malformed script must reach the VM, where it produces compile_error. The validator
+    // must not turn TypeScript's recovered pseudo-property into a misleading unknown-key refusal.
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['capability:bash'] });
+  });
 });
