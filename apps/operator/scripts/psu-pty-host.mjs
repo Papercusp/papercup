@@ -4759,10 +4759,11 @@ export function hostThroughPty(o) {
   // members as permanently walled.
   const quotaBlockDetector = makeQuotaBlockDetector({
     agent: env.PAPERCUSP_AGENT,
-    // EI-22609012864215464: an exact resume can repaint a quota error from
-    // its old account after routing has recovered. Do not block the first new
-    // submission on that replay; subsequent provider errors still block wakes.
-    deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' && args.includes('resume'),
+    // EI-22609012864215464 / EI-22800121604015331: both native resume and
+    // fork repaint the source transcript's old quota errors. Do not block the
+    // first new submission on that replay; subsequent errors still block wakes.
+    deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' &&
+      args.some((arg) => arg === 'resume' || arg === 'fork'),
   });
   // Output-quiet alone is not a startup-ready signal: before a backend-owned
   // marker, terminal probes can read as "quiet at prompt" even though a slow

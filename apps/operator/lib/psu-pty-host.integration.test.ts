@@ -51,8 +51,13 @@ function fakeIo() {
   };
 }
 
-describe('Codex resume quota history (EI-22609012864215464)', () => {
-  it.each(['control', 'kickoff'] as const)('%s submits after a replayed wall and still blocks a new wall', async (route) => {
+describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331)', () => {
+  it.each([
+    ['resume', 'control'],
+    ['resume', 'kickoff'],
+    ['fork', 'control'],
+    ['fork', 'kickoff'],
+  ] as const)('%s %s submits after a replayed wall and still blocks a new wall', async (subcommand, route) => {
     const ownerId = `su-quota-replay-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
     const meta = metaPathFor(ownerId);
@@ -67,7 +72,7 @@ describe('Codex resume quota history (EI-22609012864215464)', () => {
       'setTimeout(()=>process.exit(0),12000);';
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', childCode, 'resume', '11111111-1111-4111-8111-111111111111'],
+      args: ['-e', childCode, subcommand, '11111111-1111-4111-8111-111111111111'],
       cwd: '/tmp',
       env: {
         ...process.env,
