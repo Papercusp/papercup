@@ -157,6 +157,24 @@ describe('previewSpecPoolEffect — neutral floors define the pool', () => {
     expect(both.states).toEqual(['open', 'failing']);
   });
 
+  it('maps a legacy feature `todo` row to unified `open` for a plan-scoped recovery preview', async () => {
+    await seed('F-legacy-todo-plan', { status: 'todo', plan: PEER_PLAN });
+    await seed('F-other-plan', { plan: 'another-plan' });
+    await seed('I-legacy-todo-issue', { kind: 'bug', status: 'todo', plan: PEER_PLAN });
+
+    const r = await previewSpecPoolEffect(
+      spec({ all: [KIND_ALL, { field: 'plan', op: '=', value: PEER_PLAN }] }),
+      { workspaceId: WS, harness: H },
+    );
+
+    // claimFloorsWhereSql folds the retired feature-family storage token `todo` to
+    // logical `open`; preview must use the same fold or it falsely rejects the exact
+    // plan-scoped recovery spec as a zero-match lane.
+    expect(r.pool).toBe(2);
+    expect(r.matched).toBe(1);
+    expect(r.states).toEqual(['open']);
+  });
+
   it('scopes by harness when given, and counts workspace-wide when omitted', async () => {
     await seed('F-here');
     await seed('F-there', { harness: 'other-harness' });
