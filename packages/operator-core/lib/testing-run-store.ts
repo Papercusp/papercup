@@ -22,6 +22,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFile, rm } from 'node:fs/promises';
 import { isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { resolveGitContext } from './testing-branch-resolve';
@@ -551,6 +552,30 @@ export interface SpawnRequest {
    * leave the child and its running snapshot alive indefinitely.
    */
   runtimeMaxSec?: number | null;
+  /**
+   * JSON reports produced by detached Vitest commands that cannot load the
+   * Papercusp admin reporter (typically an independent checkout). The store
+   * ingests these on close, in the operator process where the tenant-scoped
+   * database handle is available. Managed commands keep their own reporter
+   * and must not provide an artifact here, or rows would be duplicated.
+   */
+  detachedReportArtifacts?: DetachedReportArtifact[];
+}
+
+export interface DetachedReportArtifact {
+  /** Absolute path to the child command's Vitest JSON output file. */
+  reportPath: string;
+  /** Worktree root used to relativize file names from the report. */
+  root: string;
+  /** Concrete tenant scope for the operator-side ledger write, when available. */
+  scope?: {
+    harnessSlug: string;
+    workspaceId: string;
+  };
+}
+
+interface PreparedDetachedReportArtifact extends DetachedReportArtifact {
+  worktreeBefore: WorktreeGitSnapshot;
 }
 
 /**
@@ -589,6 +614,7 @@ interface PreparedRun {
   enrolment: SyncEnrolment;
   scopeCgroupPath: string | null;
   wrapped: ReturnType<SyncEnrolment['wrap']>;
+  detachedReportArtifacts: PreparedDetachedReportArtifact[];
 }
 
 function prepareRun(req: SpawnRequest): PreparedRun {
@@ -613,6 +639,10 @@ function prepareRun(req: SpawnRequest): PreparedRun {
   // process.cwd() is therefore not a safe implicit tree for detached runs.
   const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
   const worktreeBefore = captureWorktreeSnapshot(cwd);
+  const detachedReportArtifacts = (req.detachedReportArtifacts ?? []).map((artifact) => ({
+    ...artifact,
+    worktreeBefore: artifact.root === cwd ? worktreeBefore : captureWorktreeSnapshot(artifact.root),
+  }));
   const childEnv = {
     ...process.env,
     ...req.env,
@@ -644,11 +674,76 @@ function prepareRun(req: SpawnRequest): PreparedRun {
   if (enrolment.enrolled) snapshot.taskId = enrolment.taskId;
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'test-run');
   const wrapped = enrolment.wrap(req.command, req.args, childEnv, cwd);
-  return { snapshot, cwd, worktreeBefore, childEnv, taskSpec, enrolment, scopeCgroupPath, wrapped };
+  return {
+    snapshot,
+    cwd,
+    worktreeBefore,
+    childEnv,
+    taskSpec,
+    enrolment,
+    scopeCgroupPath,
+    wrapped,
+    detachedReportArtifacts,
+  };
+}
+
+/**
+ * Ingest JSON reports emitted by detached Vitest commands that could not load
+ * the Papercusp admin reporter. This is intentionally close-time work: the
+ * child has flushed its report, and this operator process owns the scoped DB
+ * connection. Every step is fail-soft so report ingestion cannot change the
+ * process verdict or make a successful recovery fail.
+ */
+async function persistDetachedReportArtifacts(
+  snapshot: RunSnapshot,
+  artifacts: PreparedDetachedReportArtifact[],
+): Promise<void> {
+  await Promise.all(
+    artifacts.map(async (artifact) => {
+      try {
+        const reportText = await readFile(artifact.reportPath, 'utf8');
+        const rows = parseVitestJsonForHarnessRows(reportText, artifact.root);
+        if (rows.length > 0 && artifact.scope) {
+          const after = captureWorktreeSnapshot(artifact.root);
+          await persistHarnessTestRuns({
+            harnessSlug: artifact.scope.harnessSlug,
+            workspaceId: artifact.scope.workspaceId,
+            rows,
+            runGroupId: snapshot.runId,
+            source: 'local',
+            commit: after.commit,
+            worktreeDirty: computeWorktreeDirty(artifact.worktreeBefore, after),
+          });
+        }
+      } catch {
+        /* swallow — D-007 */
+      } finally {
+        await rm(artifact.reportPath, { force: true }).catch(() => {
+          /* swallow — report cleanup is best-effort */
+        });
+      }
+    }),
+  );
 }
 
 function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot: boolean }): RunSnapshot {
-  const { snapshot, cwd, worktreeBefore, childEnv, taskSpec, enrolment, scopeCgroupPath, wrapped } = prepared;
+  const {
+    snapshot,
+    cwd,
+    worktreeBefore,
+    childEnv,
+    taskSpec,
+    enrolment,
+    scopeCgroupPath,
+    wrapped,
+    detachedReportArtifacts,
+  } = prepared;
+  let detachedReportsSettled = false;
+  const settleDetachedReports = (): void => {
+    if (detachedReportsSettled || detachedReportArtifacts.length === 0) return;
+    detachedReportsSettled = true;
+    void persistDetachedReportArtifacts(snapshot, detachedReportArtifacts);
+  };
   let enrolmentFinished = false;
   const finishEnrolment = (outcome: Parameters<typeof finishSyncEnrolment>[1]): void => {
     // ChildProcess emits `error` followed by `close` for an asynchronous spawn
@@ -676,6 +771,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     snapshot.output = e instanceof Error ? e.message : String(e);
     _runs.set(snapshot.runId, { snapshot, proc: null, cwd, worktreeBefore });
     void persistRunSnapshot(snapshot);
+    settleDetachedReports();
     finishEnrolment({
       state: 'exited',
       exitCode: null,
@@ -696,6 +792,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
     void persistRunSnapshot(state.snapshot);
     void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
+    settleDetachedReports();
     finishEnrolment({
       state: 'exited',
       exitCode: null,
@@ -710,6 +807,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     }
     void persistRunSnapshot(state.snapshot);
     void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
+    settleDetachedReports();
     finishEnrolment({
       state: state.snapshot.status === 'cancelled' ? 'killed' : 'exited',
       exitCode: code,

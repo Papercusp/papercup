@@ -233,6 +233,9 @@ describe('su SUT systemPromptText replacement (self-learning-frontier P-023 / FB
     expect(body).toContain('You are running under Claude Code');
     expect(body).toContain('## Coordination glyph legend');
     expect(body).toContain('## Read the value; say what you want back');
+    expect(body).toContain('A request to verify creates a hard evidence gate');
+    expect(body).toContain('before your first substantive reply');
+    expect(body).toMatch(/If the first call\s+returns no procedure evidence, keep reading until one does\./);
     expect(body.length).toBeGreaterThan(10_000);
   });
 });

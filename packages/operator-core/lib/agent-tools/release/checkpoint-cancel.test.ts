@@ -58,8 +58,8 @@ const CTX = {
   signal: new AbortController().signal,
 } as never;
 
-type JsonResult = { content: Array<{ text: string }> };
-const body = (result: JsonResult) => JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+const body = (result: unknown) =>
+  JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text) as Record<string, unknown>;
 
 async function loadTool() {
   return (await import('./checkpoint-cancel')).default;

@@ -10,8 +10,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ADMISSION_GIT_DATE, admitPathsOntoRepairHead } from './repair-head-admission';
-import { buildHunkExactSource, summarizeForeignHunks } from './hunk-exact-admission';
+import { ADMISSION_GIT_DATE, admitPathsOntoRepairHead, realAdmissionGit } from './repair-head-admission';
+import type { AdmissionGitRunner } from './repair-head-admission';
+import { buildCommittedPatchSource, buildHunkExactSource, summarizeForeignHunks } from './hunk-exact-admission';
 import type { FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
 
 const TEMP: string[] = [];
@@ -64,6 +65,91 @@ const row = (agent: string, path: string, hunk: FrozenRepairEditLedgerRow['hunk'
   seq += 1;
   return { id: seq, candidate: 'c'.repeat(40), agent, path, hunk, atMs, toolUseId: `t${seq}`, editIndex: 0, workItem: null };
 };
+
+describe('committed patch recovery without fabricated hook attribution', () => {
+  const build = (root: string, repairHead: string, patchCommit: string, paths = ['lib/a.ts']) =>
+    buildCommittedPatchSource({ root, repairHead, patchCommit, paths, integrationRef: 'staging', reason: 'reviewed missing-capture repair' });
+
+  it('replays only the selected delta, excluding earlier/later same-file and other-file edits; leaves checkout/index/refs untouched', () => {
+    const { root } = repo();
+    const original = 'export const a = 1;\n' + Array.from({ length: 12 }, (_, i) => `// separator ${i}\n`).join('') + 'export const b = 2;\n';
+    const candidate = sweep(root, { 'lib/a.ts': original }, 'base');
+    const foreign = original.replace('b = 2', 'b = 20');
+    const parent = sweep(root, { 'lib/a.ts': foreign }, 'prior peer work');
+    const patchCommit = sweep(root, { 'lib/a.ts': foreign.replace('a = 1', 'a = 10'), 'lib/b.ts': 'unrelated sweep\n' }, 'mixed sweep');
+    const tip = sweep(root, { 'lib/a.ts': foreign.replace('a = 1', 'a = 100') }, 'later peer work');
+    const index = git(root, ['write-tree']);
+    write(root, 'lib/a.ts', 'uncommitted peer edit\n');
+    const result = build(root, candidate, patchCommit);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.detail);
+    expect(show(root, result.sourceCommit, 'lib/a.ts')).toBe(original.replace('a = 1', 'a = 10'));
+    expect(show(root, result.sourceCommit, 'lib/b.ts')).toBe('export const bb = 1;\n');
+    expect(result.patch).toEqual({ commit: patchCommit, parent, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(git(root, ['write-tree'])).toBe(index);
+    expect(git(root, ['rev-parse', 'HEAD'])).toBe(tip);
+    expect(git(root, ['diff', '--', 'lib/a.ts'])).toContain('uncommitted peer edit');
+    expect(build(root, candidate, patchCommit)).toEqual(result);
+    const admitted = admitPathsOntoRepairHead({ root, candidate, repairHead: candidate, paths: ['lib/a.ts'], source: { ref: result.sourceCommit }, actor: 'me', nowMs: T0, dryRun: true });
+    expect(admitted).toMatchObject({ ok: true, diff: ['lib/a.ts'], published: false });
+    expect(git(root, ['for-each-ref', '--format=%(refname)', 'refs/papercusp/frozen/'])).toBe('');
+  });
+
+  it('refuses a conflicting delta instead of copying its full blob or invoking a merge', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': BASE_A.replace('a = 1', 'a = 5') }, 'foreign prerequisite');
+    const patch = sweep(root, { 'lib/a.ts': BASE_A.replace('a = 1', 'a = 10') }, 'repair');
+    expect(build(root, candidate, patch)).toMatchObject({ ok: false, code: 'patch-conflict' });
+    expect(git(root, ['status', '--porcelain'])).toBe('');
+  });
+
+  it('rejects mutable, root, merge and non-integration sources', () => {
+    const { root, candidate } = repo();
+    const patch = sweep(root, { 'lib/a.ts': BASE_A.replace('a = 1', 'a = 10') }, 'repair');
+    const tree = git(root, ['rev-parse', `${patch}^{tree}`]);
+    const unlanded = git(root, ['commit-tree', tree, '-p', candidate, '-m', 'not landed']);
+    const merge = git(root, ['commit-tree', tree, '-p', patch, '-p', unlanded, '-m', 'merge']);
+    for (const sha of ['HEAD', candidate, unlanded, merge]) {
+      expect(build(root, candidate, sha)).toMatchObject({ ok: false, code: 'invalid-patch-source' });
+    }
+  });
+
+  it('requires reason and changed literal regular-file paths; supports additions/deletions', () => {
+    const { root, candidate } = repo();
+    const patch = sweep(root, { 'lib/a.ts': BASE_A.replace('a = 1', 'a = 10'), 'lib/[x].ts': 'literal\n', 'lib/x.ts': 'not selected\n' }, 'repair');
+    for (const paths of [[], ['lib'], ['../escape'], ['lib/*.ts'], ['lib/b.ts']]) {
+      expect(build(root, candidate, patch, paths).ok).toBe(false);
+    }
+    expect(buildCommittedPatchSource({ root, repairHead: candidate, patchCommit: patch, paths: ['lib/a.ts'], integrationRef: 'staging', reason: '' })).toMatchObject({ ok: false, code: 'invalid-patch-source' });
+    const literal = build(root, candidate, patch, ['lib/[x].ts']);
+    if (!literal.ok) throw new Error(literal.detail);
+    expect(git(root, ['ls-tree', '--name-only', '-r', literal.sourceCommit])).not.toContain('lib/x.ts');
+    expect(show(root, literal.sourceCommit, 'lib/[x].ts')).toBe('literal\n');
+    rmSync(join(root, 'lib/a.ts'));
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-qm', 'delete']);
+    expect(build(root, patch, git(root, ['rev-parse', 'HEAD']))).toMatchObject({ ok: true });
+  });
+
+  it('rejects non-blob source entries and fails closed if the replay proof sees a stray file', () => {
+    const { root, candidate } = repo();
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${candidate},submodule`]);
+    git(root, ['commit', '-qm', 'gitlink']);
+    expect(build(root, candidate, git(root, ['rev-parse', 'HEAD']), ['submodule'])).toMatchObject({ ok: false, code: 'not-a-blob' });
+    const patchCommit = sweep(root, { 'lib/a.ts': BASE_A.replace('a = 1', 'a = 10') }, 'repair');
+    let committed = false;
+    const sabotage: AdmissionGitRunner = (argv, opts) => {
+      if (argv[0] === 'commit-tree') committed = true;
+      if (argv[0] === 'diff' && argv.includes('--cached')) {
+        return { status: 0, stdout: 'lib/a.ts\0foreign.ts\0', stderr: '' };
+      }
+      return realAdmissionGit(argv, opts);
+    };
+    expect(buildCommittedPatchSource({ root, repairHead: candidate, patchCommit, paths: ['lib/a.ts'], integrationRef: 'staging', reason: 'reviewed bounded fix', git: sabotage }))
+      .toMatchObject({ ok: false, code: 'invalid-paths' });
+    expect(committed).toBe(false);
+  });
+});
 
 describe('buildHunkExactSource — only the caller\'s hunks enter (P-020 / D-008)', () => {
   it('replays the caller\'s hunks onto repairHead\'s blob and leaves a stranger\'s concurrent edit on staging OUT of the lineage', () => {

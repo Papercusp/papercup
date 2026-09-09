@@ -99,6 +99,28 @@ describe('processes:kill guidance matches what it can actually do', () => {
 });
 
 describe('processes:kill (bulk keyed-array, P-006)', () => {
+  it('runs independent task IDs concurrently within a bounded pool and preserves input order', async () => {
+    let active = 0;
+    let peak = 0;
+    const killTask = vi.fn(async (taskId: string) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return { ok: true as const, taskId, action: 'kill' };
+    });
+    vi.doMock('../../../task-manager/control', () => ({ killTask, killScopeUnit: vi.fn() }));
+    const processKillModule = await import('../kill');
+    const { default: tool, PROCESS_KILL_MAX_CONCURRENCY } = processKillModule;
+    const taskIds = ['task-a', 'task-b', 'task-c', 'task-d', 'task-e', 'task-f'];
+
+    const b = parseEnvelope((await tool.handler({ taskIds }, MAKE_PRINCIPAL_CTX())) as never);
+
+    expect(peak).toBe(PROCESS_KILL_MAX_CONCURRENCY);
+    expect(b.results.map((result) => result.taskId)).toEqual(taskIds);
+    expect(b.counts).toEqual({ ok: taskIds.length, failed: 0 });
+  });
+
   it('n=1 { pid }: passes pid + signal + actor + workspace through; one keyed result', async () => {
     const mock = vi.fn(async () => ({ ok: true, pid: 1234, kind: 'omp', signal: 'SIGTERM' }));
     vi.doMock('../../../process-kill', () => ({ killProcess: mock }));

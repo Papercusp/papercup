@@ -5,6 +5,8 @@
  * per test isolates the module-level _runs map.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 interface FakeChild {
   stdout: { on: (e: string, cb: (b: Buffer) => void) => void };
@@ -243,6 +245,63 @@ describe('task lifecycle handlers', () => {
       { state: 'exited', exitCode: 7 },
       { scopeCgroupPath: '/user.slice/pc-test-run.scope' },
     );
+  });
+
+  it('ingests a detached reporter-less JSON artifact on close and cleans it up', async () => {
+    const reportDir = await mkdtemp('/tmp/papercusp-testing-run-store-report-');
+    const reportPath = join(reportDir, 'report.json');
+    try {
+      // Warm the mocked database module before the close handler starts its
+      // fail-soft dynamic import; cold import resolution can exceed the
+      // lifecycle assertion's bounded wait under the full Vitest suite.
+      await import('@papercusp/db-org');
+      await writeFile(
+        reportPath,
+        JSON.stringify({
+          testResults: [
+            {
+              name: '/tmp/packages/external/example.test.ts',
+              status: 'passed',
+              startTime: 1_700_000_000_000,
+              endTime: 1_700_000_000_025,
+              assertionResults: [{ status: 'passed', title: 'works' }],
+            },
+          ],
+        }),
+      );
+      execFileSyncMock.mockImplementation((_command: string, args: string[]) =>
+        args[0] === 'rev-parse' ? 'detached-sha\n' : '',
+      );
+      persistSqlMock.mockImplementation(() => Promise.resolve([{ id: 42 }]));
+
+      const snapshot = store.startRun(
+        req({
+          detachedReportArtifacts: [
+            {
+              reportPath,
+              root: '/tmp',
+              scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+            },
+          ],
+        }),
+      );
+      lastChild._emitClose(0);
+
+      await vi.waitFor(() => expect(persistSqlMock).toHaveBeenCalled());
+      const [strings, ...values] = persistSqlMock.mock.calls.find((call) =>
+        call[0]?.join(' ').includes('INSERT INTO harness_shared.test_runs'),
+      ) ?? [];
+      expect(strings?.join(' ')).toContain('INSERT INTO harness_shared.test_runs');
+      expect(values[0]).toBe('packages/external/example.test.ts');
+      expect(values[2]).toBe('pass');
+      expect(values[7]).toBe(snapshot.runId);
+      expect(values[8]).toBe('local');
+      expect(values[11]).toBe('papercusp');
+      expect(values[12]).toBe('papercusp-workspace');
+      await vi.waitFor(async () => expect(readFile(reportPath)).rejects.toThrow());
+    } finally {
+      await rm(reportDir, { recursive: true, force: true });
+    }
   });
 });
 

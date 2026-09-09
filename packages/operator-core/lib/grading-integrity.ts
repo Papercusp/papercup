@@ -185,8 +185,8 @@ export async function reservePendingGradingAudit(
     ? JSON.stringify({
         state: 'pending',
         metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
-        rubricRevision: reopenStale.rubricRevision,
-        criteriaHash: reopenStale.criteriaHash,
+        rubricRevision: reopenIdentity.rubricRevision,
+        criteriaHash: reopenIdentity.criteriaHash,
         stampedAt: now.toISOString(),
         dispatchReservation: { key: reservationKey, reservedAt },
       })

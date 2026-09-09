@@ -529,6 +529,12 @@ describe('dispatchPendingGradingAudits', () => {
         "This request would exceed your account's rate limit. Please try again later.\u001b[0m\r\n\r\n" +
         '✻ Cogitated for 6m 49s · done 9:01 AM\r\n❯',
     },
+    {
+      screen: 'account-paced gateway 429',
+      gatewayLog:
+        "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
+        'paced/paused; retry after 60s\u001b[0m\r\n\r\n✻ Cooked for 13m 41s · done 9:33 AM\r\n❯',
+    },
   ])('retires a deduped auditor whose $screen turn completed and launches the Codex fallback', async ({ gatewayLog }) => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-gateway-500')]);

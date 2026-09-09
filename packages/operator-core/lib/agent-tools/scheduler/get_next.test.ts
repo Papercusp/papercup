@@ -63,7 +63,15 @@ const getFlagM = vi.hoisted(() => vi.fn(async () => true));
 const reconcileFleetScopeClaimsM = vi.hoisted(() => vi.fn());
 const readFleetPauseStateM = vi.hoisted(() => vi.fn());
 const diagnoseFleetScopeIssueFloorMissM = vi.hoisted(() => vi.fn(async () => null));
-const diagnoseFleetScopePlanTerminalityM = vi.hoisted(() => vi.fn(async () => null));
+const diagnoseFleetScopePlanTerminalityM = vi.hoisted(() =>
+  vi.fn(
+    async (): Promise<{
+      planSlugs: string[];
+      terminalPlanSlugs: string[];
+      allTerminal: boolean;
+    } | null> => null,
+  ),
+);
 const diagnoseFleetScopeLeaderLivenessM = vi.hoisted(() => vi.fn(async () => null as boolean | null));
 const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
 const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));

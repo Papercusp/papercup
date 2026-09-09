@@ -26562,7 +26562,7 @@
       "guidance": {
         "when": "After fixing a gate red on staging and git-sync commits it, use `admit{paths}` for exactly the changed files; also use it when a read reports repair-in-progress, a fossil/blocked queue, or a dead fixer.",
         "notWhen": "Workspace-global: never pass harness/workspace. `admit` is path-exact — do not catch up to the tip. Never retire a live/unknown fixer, active dispatch, ready-to-verify work, or a phantom red. This tool does not launch checkpoints or deploy.",
-        "chaining": "Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true` and the same tuple. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`."
+        "chaining": "Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true` and the same tuple. Missing hook capture: explicit `patchCommit:<full SHA>, reason` replays only that single-parent staging commit’s named-path delta, not its whole blobs; review every delta since a sweep may mix work. Never combine with wholeBlob/includeHunksFrom or fabricate record-edit. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`."
       }
     },
     {

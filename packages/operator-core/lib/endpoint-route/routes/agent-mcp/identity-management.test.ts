@@ -12,7 +12,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const H = vi.hoisted(() => ({
   isLoopbackRequest: vi.fn(() => true),
   readLaunchSpec: vi.fn(async (): Promise<unknown> => ({ launch: true })),
-  parseLaunchSpec: vi.fn(() => ({ autoMode: true, drainMode: false, loopArmed: true })),
+  parseLaunchSpec: vi.fn(
+    (): { autoMode: boolean; drainMode: boolean; loopArmed: boolean } | null => ({
+      autoMode: true,
+      drainMode: false,
+      loopArmed: true,
+    }),
+  ),
   mutate: vi.fn(async (_input: unknown) => ({ ok: true, changed: true })),
   modeSection: vi.fn(() => 'mode-section'),
   invalidate: vi.fn(async (_name: string) => {}),

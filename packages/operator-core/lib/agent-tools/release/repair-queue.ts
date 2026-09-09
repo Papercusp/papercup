@@ -34,7 +34,7 @@ import {
   recordFrozenRepairEdit,
   type FrozenRepairEditLedgerRow,
 } from '../../release/frozen-repair-edit-ledger';
-import { buildHunkExactSource, summarizeForeignHunks, type HunkExactSuccess } from '../../release/hunk-exact-admission';
+import { buildCommittedPatchSource, buildHunkExactSource, summarizeForeignHunks, type HunkExactSuccess } from '../../release/hunk-exact-admission';
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
 import { importCompletenessPreflight } from '../../release/admission-import-completeness';
 import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
@@ -107,6 +107,8 @@ const argsSchema = z.preprocess(
       includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
       /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
       wholeBlob: z.boolean().optional(),
+      /** Explicit reviewed single-commit delta from staging history when hook capture is missing. Requires reason; incompatible with other source options. */
+      patchCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
     }),
     z.object({
       /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
@@ -117,6 +119,7 @@ const argsSchema = z.preprocess(
       ...queueIdentityFields,
       includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
       wholeBlob: z.boolean().optional(),
+      patchCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
     }),
     z.object({
       /**
@@ -157,6 +160,10 @@ const argsSchema = z.preprocess(
     }),
   ]).superRefine((value, refinementCtx) => {
     if (value.op !== 'admit' && value.op !== 'converge') return;
+    if (value.patchCommit !== undefined && (value.wholeBlob === true || value.includeHunksFrom !== undefined || !value.reason || value.reason.trim().length < 8)) {
+      refinementCtx.addIssue({ code: z.ZodIssueCode.custom, path: ['patchCommit'],
+        message: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom' });
+    }
     const fields: Array<keyof QueueIdentityArgs> = [
       'expectedCandidate',
       'expectedRepairHead',
@@ -415,7 +422,7 @@ export default defineTool({
     notWhen:
       'Workspace-global: never pass harness/workspace. `admit` is path-exact — do not catch up to the tip. Never retire a live/unknown fixer, active dispatch, ready-to-verify work, or a phantom red. This tool does not launch checkpoints or deploy.',
     chaining:
-      'Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true` and the same tuple. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`.',
+      'Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true` and the same tuple. Missing hook capture: explicit `patchCommit:<full SHA>, reason` replays only that single-parent staging commit’s named-path delta, not its whole blobs; review every delta since a sweep may mix work. Never combine with wholeBlob/includeHunksFrom or fabricate record-edit. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`.',
     returns:
       '{ ok, op, verdict?, repairQueue?, repairQueueRead?, callerAuthorization?, admitted?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. `get` reports repairQueueRead plus phase/age/fixer/reservation/decision diagnostics and its manifest. `claim-leg` reports claimed/released or a refusal reason. `admit` reports no-frozen-queue, already-admitted, would-admit, admitted, or a refusal with proof/containment; `retire` refuses live/unknown fixers or active reservations and uses CAS.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
@@ -696,7 +703,12 @@ export default defineTool({
       // reason) is the explicit, ledgered widening; `includeHunksFrom` replays named peers.
       const wholeBlob = args.wholeBlob === true;
       const includeHunksFrom = (args.includeHunksFrom ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
-      const mode: 'hunk-exact' | 'whole-blob' = wholeBlob ? 'whole-blob' : 'hunk-exact';
+      const mode = args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
+      if (args.patchCommit !== undefined && (wholeBlob || args.includeHunksFrom !== undefined || !args.reason || args.reason.trim().length < 8)) {
+        return json({ ...base, ok: false, admitted: false, refused: true, dryRun, verdict: 'refused',
+          mode, reason: 'invalid-patch-source',
+          detail: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom' });
+      }
       let ledgerRows: FrozenRepairEditLedgerRow[] = [];
       let ledgerReadError: string | null = null;
       try {
@@ -711,8 +723,20 @@ export default defineTool({
       }
       let sourceRef = branch;
       let hunkExact: HunkExactSuccess | null = null;
+      let patch: FrozenRepairAdmission['patch'];
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
-      if (wholeBlob) {
+      if (args.patchCommit !== undefined) {
+        const built = buildCommittedPatchSource({
+          root, repairHead: queue.repairHead, patchCommit: args.patchCommit,
+          integrationRef: branch, paths, reason: args.reason!,
+        });
+        if (!built.ok) {
+          return json({ ...base, ok: false, admitted: false, refused: true, dryRun, verdict: 'refused',
+            mode, reason: built.code, detail: built.detail, judgedSha: queue.repairHead });
+        }
+        patch = built.patch;
+        sourceRef = built.sourceCommit;
+      } else if (wholeBlob) {
         if (!args.reason || args.reason.trim().length < 8) {
           return json({
             ok: false,
@@ -798,7 +822,7 @@ export default defineTool({
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
         : null;
-      const provenance = hunkExact
+      const provenance = patch ? { mode, patch, source: { ref: sourceRef, root } } : hunkExact
         ? {
             mode,
             hunks: hunksRecord,
@@ -857,7 +881,7 @@ export default defineTool({
       const entry: FrozenRepairAdmission = {
         ...outcome.entry,
         mode,
-        ...(hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+        ...(patch ? { patch } : hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
       };
       const proof = { diff: outcome.diff, unchanged: outcome.unchanged, blobs: outcome.entry.blobs, tree: outcome.tree };
       if (dryRun) {
@@ -876,6 +900,7 @@ export default defineTool({
             'and advance repairHead to it (phase ready-to-verify). The immutable candidate is never touched; ' +
             'the commit carries exactly proof.diff and nothing else from the tip.',
           ...base,
+          ...provenance,
         });
       }
       // Published: the lineage ref now points at the admission. The queue row is the second
@@ -933,7 +958,7 @@ export default defineTool({
         paths: outcome.entry.paths,
         unchanged: outcome.entry.unchanged,
         mode,
-        ...(hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+        ...(patch ? { patch } : hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
         persisted,
         ...(retracted === null ? {} : { retracted }),
       });

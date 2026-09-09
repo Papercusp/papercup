@@ -573,7 +573,9 @@ export interface FrozenRepairAdmission {
    * `foreignHunksAccepted` / `foreignAgents` say how much and whose, and `reason` says why.
    * Absent on a pre-P-020 entry (which was whole-blob by construction).
    */
-  mode?: 'hunk-exact' | 'whole-blob';
+  mode?: 'hunk-exact' | 'whole-blob' | 'committed-patch';
+  /** Explicit reviewed commit delta; provenance is NOT hook or agent authorship. */
+  patch?: { commit: string; parent: string; sha256: string };
   /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */
   hunks?: Record<string, { applied: number; agents: string[] }>;
   /** whole-blob: the number of ledgered hunks by OTHER agents the admitted blobs may carry. */
@@ -641,6 +643,11 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       }
     }
     const foreignAgents = strings(e.foreignAgents);
+    const patch = e.patch as Record<string, unknown> | null | undefined;
+    const validPatch = e.mode === 'committed-patch' && patch &&
+      typeof patch.commit === 'string' && /^[0-9a-f]{40,64}$/.test(patch.commit) &&
+      typeof patch.parent === 'string' && /^[0-9a-f]{40,64}$/.test(patch.parent) &&
+      typeof patch.sha256 === 'string' && /^[0-9a-f]{64}$/.test(patch.sha256);
     out.push({
       atMs: e.atMs as number,
       actor: e.actor as string,
@@ -651,7 +658,8 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       unchanged,
       blobs,
       ...(nonBlank(e.reason) ? { reason: e.reason as string } : {}),
-      ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' ? { mode: e.mode } : {}),
+      ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' || e.mode === 'committed-patch' ? { mode: e.mode } : {}),
+      ...(validPatch ? { patch: { commit: patch.commit as string, parent: patch.parent as string, sha256: patch.sha256 as string } } : {}),
       ...(hunksValid ? { hunks } : {}),
       ...(typeof e.foreignHunksAccepted === 'number' && Number.isFinite(e.foreignHunksAccepted)
         ? { foreignHunksAccepted: e.foreignHunksAccepted }

@@ -25,6 +25,13 @@ import { killProcess } from '../../process-kill';
 import { killScopeUnit, killTask } from '../../task-manager/control';
 import { toList, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
+/**
+ * Independent top-level task scopes may be torn down together, but keep the
+ * fan-out bounded so a caller-controlled batch cannot exhaust systemd/DB
+ * capacity. Descendants of one task remain serialized inside killTask().
+ */
+export const PROCESS_KILL_MAX_CONCURRENCY = 4;
+
 export default defineTool({
   name: 'processes:kill',
   profile: 'engineer',
@@ -120,7 +127,10 @@ export default defineTool({
               escalateAfterMs: args.escalateAfterMs,
               reapTerminalResidue: args.reapTerminalResidue,
             }),
-          { keyOf: (taskId) => ({ taskId }) },
+          {
+            keyOf: (taskId) => ({ taskId }),
+            maxConcurrency: Math.min(taskIds.length, PROCESS_KILL_MAX_CONCURRENCY),
+          },
         )
       : null;
 

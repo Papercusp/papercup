@@ -114,7 +114,7 @@ describe('retractScorecard', () => {
     expect(mergeIssuePayload).not.toHaveBeenCalled();
   });
 
-  it('only clears the settlement metadata for the audit currently cited by the subject', () => {
+  it('clears settlement metadata and preserves the retracted audit rubric identity on its subject', () => {
     const subject = {
       rubricRef: 'rubric-a',
       ratings: RATINGS,
@@ -128,6 +128,22 @@ describe('retractScorecard', () => {
       },
     };
 
+    expect(
+      resetGradingAuditStampForRetraction(subject, 'EI-AUDIT', {
+        rubricRevision: 6,
+        criteriaHash: 'hash-v6',
+      }),
+    ).toEqual({
+      rubricRef: 'rubric-a',
+      ratings: RATINGS,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-14T22:00:00.000Z',
+        rubricRevision: 6,
+        criteriaHash: 'hash-v6',
+      },
+    });
     expect(resetGradingAuditStampForRetraction(subject, 'EI-AUDIT')).toEqual({
       rubricRef: 'rubric-a',
       ratings: RATINGS,
@@ -137,6 +153,45 @@ describe('retractScorecard', () => {
         stampedAt: '2026-08-14T22:00:00.000Z',
       },
     });
+    const legacyReopened = {
+      ...subject,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-14T22:00:00.000Z',
+      },
+    };
+    expect(
+      resetGradingAuditStampForRetraction(legacyReopened, 'EI-AUDIT', {
+        rubricRevision: 6,
+        criteriaHash: 'hash-v6',
+      }),
+    ).toEqual({
+      ...legacyReopened,
+      gradingAudit: {
+        ...legacyReopened.gradingAudit,
+        rubricRevision: 6,
+        criteriaHash: 'hash-v6',
+      },
+    });
+    expect(
+      resetGradingAuditStampForRetraction(
+        {
+          ...legacyReopened,
+          gradingAudit: {
+            ...legacyReopened.gradingAudit,
+            dispatchReservation: { key: 'new-audit', reservedAt: '2026-08-14T23:30:00.000Z' },
+          },
+        },
+        'EI-AUDIT',
+        { rubricRevision: 6, criteriaHash: 'hash-v6' },
+      ),
+    ).toBeNull();
+    expect(
+      resetGradingAuditStampForRetraction(legacyReopened, 'EI-AUDIT', {
+        rubricRevision: 6,
+      }),
+    ).toBeNull();
     expect(
       resetGradingAuditStampForRetraction(
         { ...subject, gradingAudit: { ...subject.gradingAudit, auditIssueId: 'EI-LATER-CORRECTION', state: 'passed' } },

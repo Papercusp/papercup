@@ -392,7 +392,7 @@ export async function specTestAdequacyCompletionGate(
           !card.retracted &&
           card.issueId
         ) {
-          if (card.gradingAudit.state === 'pending' || needsIdentityReopen) {
+          if (card.gradingAudit?.state === 'pending' || needsIdentityReopen) {
             pendingGradingAuditTargetIds.add(card.issueId);
           } else failedGradingAuditTargetIds.add(card.issueId);
         }

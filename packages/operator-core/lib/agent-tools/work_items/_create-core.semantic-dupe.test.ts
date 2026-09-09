@@ -26,7 +26,7 @@ const occurrenceMocks = vi.hoisted(() => ({
 }));
 
 const sqlMocks = vi.hoisted(() => ({
-  query: vi.fn(async () => [] as Array<{ feature_id: string }>),
+  query: vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [] as Array<{ feature_id: string }>),
 }));
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));

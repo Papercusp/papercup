@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   presence: vi.fn(),
   // P-020: the hunk-exact source builder + the ledger read the admit op consults first.
   hunkExact: vi.fn(),
+  committedPatch: vi.fn(),
   foreign: vi.fn(),
   ledger: vi.fn(),
 }));
@@ -49,6 +50,7 @@ vi.mock('../../release/repair-head-admission', () => ({
 }));
 vi.mock('../../release/hunk-exact-admission', () => ({
   buildHunkExactSource: mocks.hunkExact,
+  buildCommittedPatchSource: mocks.committedPatch,
   summarizeForeignHunks: mocks.foreign,
 }));
 vi.mock('../../release/frozen-repair-edit-ledger', async (importOriginal) => ({
@@ -951,6 +953,72 @@ describe('release:repair-queue', () => {
   describe('P-020 hunk-exact admission (D-008 layers 2–3)', () => {
     const ctx = { role: 'su' } as never;
     type Written = { admissions: Array<Record<string, unknown>> };
+    const patch = { commit: 'e'.repeat(40), parent: 'f'.repeat(40), sha256: '1'.repeat(64) };
+    const patchArgs = {
+      op: 'admit', paths: ['lib/red.test.ts'], patchCommit: patch.commit, reason: 'reviewed missing hook capture',
+      expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs,
+    };
+
+    it('committed patch requires reason and excludes the other source modes, in schema AND direct handler', async () => {
+      expect(tool.args.safeParse(patchArgs).success).toBe(true);
+      expect(tool.args.safeParse({ ...patchArgs, op: 'converge' }).success).toBe(true);
+      for (const extra of [{ reason: undefined }, { wholeBlob: true }, { includeHunksFrom: [] }]) {
+        const args = { ...patchArgs, ...extra };
+        expect(tool.args.safeParse(args).success).toBe(false);
+        expect(body(await tool.handler(args as never, ctx))).toMatchObject({ ok: false, reason: 'invalid-patch-source' });
+      }
+      expect(mocks.committedPatch).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('committed patch confirm=%s retains path preflight, preview/CAS and durable provenance without hook attribution', async (confirm) => {
+      mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch });
+      mocks.admit.mockReturnValue(admissionOf(confirm));
+      // A missing/unavailable ledger cannot be invented or mislabeled as proof.
+      mocks.ledger.mockRejectedValueOnce(new Error('ledger unavailable'));
+      const result = body(await tool.handler({ ...patchArgs, confirm } as never, ctx));
+      expect(result).toMatchObject({ ok: true, admitted: confirm, mode: 'committed-patch', patch });
+      expect(mocks.hunkExact).not.toHaveBeenCalled();
+      expect(mocks.committedPatch).toHaveBeenCalledWith(expect.objectContaining({
+        root: '/repo', repairHead: queue.repairHead, integrationRef: 'staging', patchCommit: patch.commit, paths: patchArgs.paths,
+      }));
+      expect(mocks.admit).toHaveBeenCalledWith(expect.objectContaining({
+        source: { ref: HX_SOURCE }, dryRun: !confirm, paths: patchArgs.paths, preflight: expect.any(Function),
+      }));
+      if (confirm) {
+        expect(mocks.write).toHaveBeenCalledWith(expect.anything(), expect.anything(), { expectedUpdatedAtMs: queue.updatedAtMs });
+        const entry = (mocks.write.mock.calls[0]![1] as Written).admissions[0];
+        expect(entry).toMatchObject({ mode: 'committed-patch', patch });
+        expect(entry).not.toHaveProperty('hunks');
+        expect(entry).not.toHaveProperty('foreignHunksAccepted');
+        expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ mode: 'committed-patch', patch });
+      } else {
+        expect(mocks.write).not.toHaveBeenCalled();
+        expect(mocks.audit).not.toHaveBeenCalled();
+      }
+    });
+
+    it('committed patch refusal and stale queue never publish or write', async () => {
+      mocks.committedPatch.mockReturnValue({ ok: false, code: 'patch-conflict', detail: 'exact patch conflicts', exits: [] });
+      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({ ok: false, reason: 'patch-conflict' });
+      mocks.committedPatch.mockClear();
+      expect(body(await tool.handler({ ...patchArgs, expectedRepairHead: '0'.repeat(40), confirm: true } as never, ctx))).toMatchObject({ ok: false, reason: 'exact_queue_identity_mismatch' });
+      expect(mocks.committedPatch).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('committed patch keeps import preflight refusals and retracts publication on failed queue CAS', async () => {
+      mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch });
+      mocks.admit.mockReturnValueOnce({ ok: false, code: 'admission-incomplete', detail: 'missing sibling' });
+      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({ ok: false, reason: 'admission-incomplete' });
+      expect(mocks.write).not.toHaveBeenCalled();
+      mocks.admit.mockReturnValue(admissionOf(true));
+      mocks.write.mockRejectedValueOnce(new Error('queue CAS moved'));
+      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({ ok: false, admitted: false, reason: 'persist_failed' });
+      expect(mocks.retract).toHaveBeenCalledWith(expect.objectContaining({ published: NEW_HEAD, previousRepairHead: queue.repairHead }));
+    });
 
     it('DEFAULT: reads the ledger for the named paths, builds the hunk-exact source for the CALLER, admits FROM that commit, and the ledger entry + audit carry mode + hunks', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));

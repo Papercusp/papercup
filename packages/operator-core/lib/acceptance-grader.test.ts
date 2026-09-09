@@ -656,6 +656,21 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     ).toBeNull();
   });
 
+  it('matches the completed account-paced gateway 429 screen only for a controlled caller', () => {
+    const error =
+      "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
+      'paced/paused; retry after 60s\u001b[0m';
+    const raw = error + '\r\n\r\n\u001b[38;5;246m✻ Cooked for 13m 41s · done 9:33 AM\u001b[0m\r\n❯';
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(error, { allowInferenceGatewayError: true })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'inference_gateway_error',
+      evidence:
+        "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s ✻ Cooked for 13m 41s · done",
+    });
+  });
+
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),

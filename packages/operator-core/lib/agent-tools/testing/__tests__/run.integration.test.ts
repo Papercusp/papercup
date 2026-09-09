@@ -963,6 +963,51 @@ describe('testing:run (integration)', () => {
     expect(mixedRequest.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
   });
 
+  it('gives every direct Vitest route its own JSON report artifact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-artifacts-'));
+    selectorRoots.push(root);
+    await mkdir(join(root, '.git'));
+    await mkdir(join(root, 'packages', 'unit', 'src'), { recursive: true });
+    await mkdir(join(root, 'packages', 'integration', 'src'), { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    await writeFile(join(root, 'packages', 'unit', 'package.json'), JSON.stringify({ name: '@example/unit' }));
+    await writeFile(
+      join(root, 'packages', 'integration', 'package.json'),
+      JSON.stringify({ name: '@example/integration' }),
+    );
+    await writeFile(
+      join(root, 'packages', 'integration', 'vitest.integration.config.ts'),
+      'export default {}.\n',
+    );
+    const files = [
+      'packages/unit/src/unit.test.ts',
+      'packages/integration/src/integration.integration.test.ts',
+    ];
+    const request = buildDetachedMixedTestRunRequest({ groups: [{ root, files }] });
+    const artifacts = request.detachedReportArtifacts ?? [];
+    expect(artifacts).toHaveLength(2);
+
+    const reportPaths = artifacts.map((artifact) => artifact.reportPath);
+    expect(new Set(reportPaths).size).toBe(reportPaths.length);
+    expect(artifacts.every((artifact) => artifact.root === root)).toBe(true);
+
+    const script = request.args[1]!;
+    const marker = 'const commands = ';
+    const commandsStart = script.indexOf(marker) + marker.length;
+    const commandsEnd = script.indexOf(';\nlet exitCode', commandsStart);
+    expect(commandsStart).toBeGreaterThan(marker.length);
+    expect(commandsEnd).toBeGreaterThan(commandsStart);
+    const commands = JSON.parse(script.slice(commandsStart, commandsEnd)) as Array<{ args: string[] }>;
+    const commandReportPaths = commands.map((command) => {
+      const reportArg = command.args.find((arg) => arg.startsWith('--outputFile='));
+      expect(reportArg).toBeDefined();
+      return reportArg!.slice('--outputFile='.length);
+    });
+    expect(commandReportPaths).toHaveLength(2);
+    expect(new Set(commandReportPaths).size).toBe(commandReportPaths.length);
+    expect(commandReportPaths).toEqual(expect.arrayContaining(reportPaths));
+  });
+
   // EI-19324351741370770: the foreground timeout used to kill only the router
   // process (`scripts/test-files.mjs`'s own pid) — but the router launches the REAL
   // vitest run via a synchronous `spawnSync`, WITHOUT its own `detached: true`, so

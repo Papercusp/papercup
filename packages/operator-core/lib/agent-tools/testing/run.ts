@@ -258,6 +258,23 @@ export function buildDetachedMixedTestRunRequest(opts: {
   timeoutMs?: number;
 }): SpawnRequest {
   const commands: Array<{ command: string; args: string[]; cwd: string }> = [];
+  const detachedReportArtifacts: NonNullable<SpawnRequest['detachedReportArtifacts']> = [];
+  const reportPathFor = (root: string): string => {
+    // Reporter-less external checkouts need a machine-readable report after
+    // this function returns and the detached child outlives the foreground
+    // call. Keep each report in the shared, guarded tmp root and use one
+    // collision-free file per child command; the store removes it at close.
+    const tmpRoot = ensurePapercuspTmpdir() ?? tmpdir();
+    const reportPath = join(tmpRoot, `papercusp-testing-run-detached-${randomUUID()}.json`);
+    detachedReportArtifacts.push({
+      reportPath,
+      root,
+      ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
+        ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } }
+        : {}),
+    });
+    return reportPath;
+  };
   for (const group of opts.groups) {
     const adminReporterPath = resolveAdminTestRunsReporterPath(group.root);
     const vitestArgs = [
@@ -267,12 +284,26 @@ export function buildDetachedMixedTestRunRequest(opts: {
     if (existsSync(join(group.root, 'scripts', 'test-files.mjs'))) {
       commands.push({
         command: process.execPath,
-        args: [join(group.root, 'scripts', 'test-files.mjs'), ...group.files, '--', ...vitestArgs],
+        args: [
+          join(group.root, 'scripts', 'test-files.mjs'),
+          ...group.files,
+          '--',
+          ...(adminReporterPath
+            ? vitestArgs
+            : ['--reporter=json', `--outputFile=${reportPathFor(group.root)}`, ...vitestArgs]),
+        ],
         cwd: group.root,
       });
       continue;
     }
     for (const route of groupDirectVitestRoutes(group.files, group.root)) {
+      // A checkout can split into several direct routes (for example a unit
+      // file and an integration file with different Vitest configs). Vitest
+      // replaces --outputFile on each invocation, so each child needs its own
+      // artifact or the last route erases earlier ledger rows.
+      const routeVitestArgs = adminReporterPath
+        ? vitestArgs
+        : ['--reporter=json', `--outputFile=${reportPathFor(group.root)}`, ...vitestArgs];
       commands.push({
         command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
         args: [
@@ -280,7 +311,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
           'vitest',
           'run',
           ...(route.config ? ['--config', route.config] : []),
-          ...vitestArgs,
+          ...routeVitestArgs,
           ...route.files,
         ],
         cwd: route.cwd,
@@ -309,6 +340,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
     command: process.execPath,
     args: ['-e', script],
     cwd: root,
+    ...(detachedReportArtifacts.length > 0 ? { detachedReportArtifacts } : {}),
     // A detached continuation is a fresh operation, not the expired foreground
     // remainder. Keep the existing default recovery budget when a caller chose
     // the foreground transport ceiling.

@@ -920,9 +920,14 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
     if (!res.ok) {
       expect(res.error).toBe('check_contradicted');
       expect(res.detail).toContain(collectionMessage);
-      expect(res.run.kind).toBe('tests');
-      expect(res.run.failures?.[0]).toContain('(file failed to collect)');
-      expect(res.run.failures?.[0]).toContain(collectionMessage);
+      expect('run' in res).toBe(true);
+      if ('run' in res) {
+        expect(res.run.kind).toBe('tests');
+        if (res.run.kind === 'tests') {
+          expect(res.run.failures?.[0]).toContain('(file failed to collect)');
+          expect(res.run.failures?.[0]).toContain(collectionMessage);
+        }
+      }
     }
   });
 

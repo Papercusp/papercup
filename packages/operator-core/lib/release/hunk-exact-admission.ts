@@ -27,6 +27,7 @@
  * injectable runner. The scratch index and blob files are removed on every path.
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -38,6 +39,7 @@ import {
   type AdmissionGitRunner,
 } from './repair-head-admission';
 import { replayFrozenRepairHunks, type FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
+import type { FrozenRepairAdmission } from './frozen-candidate-repair-queue';
 
 const SHA_RE = /^[0-9a-f]{40,64}$/;
 
@@ -64,6 +66,8 @@ export type HunkExactRefusalCode =
   | 'hunk-conflict'
   | 'oversize'
   | 'not-a-blob'
+  | 'invalid-patch-source'
+  | 'patch-conflict'
   | 'git-failed';
 
 export interface HunkExactRefusal {
@@ -269,6 +273,112 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
     const sourceCommit = ct.stdout.trim();
     if (ct.status !== 0 || !SHA_RE.test(sourceCommit)) return gitFailed('commit-tree', ct);
     return { ok: true, sourceCommit, tree, perPath, allUnchanged: perPath.every((p) => p.unchanged) };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+export interface CommittedPatchSuccess {
+  ok: true;
+  sourceCommit: string;
+  tree: string;
+  patch: NonNullable<FrozenRepairAdmission['patch']>;
+}
+
+/**
+ * Explicit recovery when the hook never captured an edit (notably Codex apply_patch).
+ * Git proves the selected commit's DELTA, not its author. A reasoned opt-in accepts that
+ * delta; it never manufactures edit-ledger attribution or imports the source's whole blob.
+ * Only staging-authored, single-parent commits qualify. No checkout, real-index mutation,
+ * three-way merge, or ref publication occurs here; the ordinary admission door still
+ * performs its path proof, import preflight and queue/ref CAS.
+ */
+export function buildCommittedPatchSource(input: {
+  root: string;
+  repairHead: string;
+  patchCommit: string;
+  integrationRef: string;
+  paths: readonly string[];
+  reason: string;
+  git?: AdmissionGitRunner;
+}): CommittedPatchSuccess | HunkExactRefusal {
+  const git = input.git ?? realAdmissionGit;
+  const run = (args: string[], env?: NodeJS.ProcessEnv, stdin?: string) =>
+    git(args, { cwd: input.root, env: { ...process.env, GIT_LITERAL_PATHSPECS: '1', ...env }, input: stdin });
+  const refuse = (code: HunkExactRefusalCode, detail: string): HunkExactRefusal =>
+    ({ ok: false, code, detail, exits: [] });
+  const failed = (step: string, r: AdmissionGitResult) =>
+    refuse('git-failed', `${step} exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}`);
+  const paths = [...new Set(input.paths.map(normalizeAdmissionPath))];
+  if (!paths.length || paths.some((p) => p === null)) return refuse('invalid-paths', 'Name normal repository-relative paths');
+  const wanted = paths as string[];
+  if (!SHA_RE.test(input.patchCommit) || input.reason.trim().length < 8) {
+    return refuse('invalid-patch-source', 'patchCommit requires a full immutable SHA and an explicit review reason (at least 8 characters)');
+  }
+  const source = run(['rev-list', '--parents', '-n', '1', input.patchCommit, '--']);
+  if (source.status !== 0) return failed('resolve patch commit', source);
+  const parents = source.stdout.trim().split(/\s+/);
+  if (parents.length !== 2 || parents[0] !== input.patchCommit || !SHA_RE.test(parents[1]!)) {
+    return refuse('invalid-patch-source', 'The patch source must be a single-parent commit, never a root or merge commit');
+  }
+  const parent = parents[1]!;
+  const ancestor = run(['merge-base', '--is-ancestor', input.patchCommit, input.integrationRef]);
+  if (ancestor.status === 1) return refuse('invalid-patch-source', 'The patch commit is not an ancestor of the integration branch');
+  if (ancestor.status !== 0) return failed('prove integration ancestry', ancestor);
+  const head = run(['rev-parse', '--verify', `${input.repairHead}^{commit}`]);
+  if (head.status !== 0 || !SHA_RE.test(head.stdout.trim())) return failed('resolve repair head', head);
+  const repairHead = head.stdout.trim();
+  // Literal paths only: never expand a directory, wildcard, symlink or gitlink into a
+  // wider patch. Text additions/deletions are supported; git apply rejects conflicts.
+  for (const ref of [parent, input.patchCommit, repairHead]) {
+    const entries = run(['ls-tree', '-z', ref, '--', ...wanted]);
+    if (entries.status !== 0) return failed('read patch entries', entries);
+    for (const entry of entries.stdout.split('\0').filter(Boolean)) {
+      const match = /^(100644|100755) blob [0-9a-f]{40,64}\t(.+)$/.exec(entry);
+      if (!match || !wanted.includes(match[2]!)) {
+        return refuse('not-a-blob', 'Committed patch replay accepts exact regular-file paths only');
+      }
+    }
+  }
+  const changed = run(['diff', '--name-only', '-z', '--no-renames', parent, input.patchCommit, '--', ...wanted]);
+  if (changed.status !== 0) return failed('read patch paths', changed);
+  const sourcePaths = changed.stdout.split('\0').filter(Boolean);
+  if (wanted.some((p) => !sourcePaths.includes(p)) || sourcePaths.some((p) => !wanted.includes(p))) {
+    return refuse('invalid-paths', 'Every named path must change in the selected commit, with no expanded paths');
+  }
+  const diff = run(['diff', '--binary', '--full-index', '--no-renames', '--no-ext-diff', '--no-textconv', parent, input.patchCommit, '--', ...wanted]);
+  if (diff.status !== 0) return failed('read committed patch', diff);
+  if (!diff.stdout) return refuse('invalid-patch-source', 'The selected patch is empty');
+  const patch = { commit: input.patchCommit, parent, sha256: createHash('sha256').update(diff.stdout).digest('hex') };
+  const scratch = mkdtempSync(join(tmpdir(), 'papercusp-committed-patch-'));
+  const env = { GIT_INDEX_FILE: join(scratch, 'index') };
+  try {
+    const read = run(['read-tree', repairHead], env);
+    if (read.status !== 0) return failed('read-tree', read);
+    const apply = run(['apply', '--cached', '--whitespace=nowarn', '-'], env, diff.stdout);
+    if (apply.status !== 0) return refuse('patch-conflict', `The selected committed delta does not apply cleanly to repairHead: ${apply.stderr.trim().slice(0, 600)}`);
+    const proof = run(['diff', '--cached', '--name-only', '-z', repairHead, '--'], env);
+    if (proof.status !== 0) return failed('prove replay paths', proof);
+    const replayPaths = proof.stdout.split('\0').filter(Boolean);
+    if (!replayPaths.length || replayPaths.some((p) => !wanted.includes(p))) {
+      return refuse('invalid-paths', 'Replayed patch is empty or escaped the named path set');
+    }
+    const treeResult = run(['write-tree'], env);
+    const tree = treeResult.stdout.trim();
+    if (treeResult.status !== 0 || !SHA_RE.test(tree)) return failed('write-tree', treeResult);
+    const commit = run(['commit-tree', tree, '-p', repairHead, '-m',
+      `Committed patch source\n\ncommit: ${patch.commit}\nparent: ${patch.parent}\npatch-sha256: ${patch.sha256}\npaths: ${JSON.stringify(wanted)}\nreason: ${input.reason}\n\nCommit delta provenance only; no hook/agent authorship asserted.\n`,
+    ], {
+      ...env,
+      GIT_AUTHOR_NAME: ADMISSION_GIT_IDENTITY.name,
+      GIT_AUTHOR_EMAIL: ADMISSION_GIT_IDENTITY.email,
+      GIT_AUTHOR_DATE: ADMISSION_GIT_DATE,
+      GIT_COMMITTER_NAME: ADMISSION_GIT_IDENTITY.name,
+      GIT_COMMITTER_EMAIL: ADMISSION_GIT_IDENTITY.email,
+      GIT_COMMITTER_DATE: ADMISSION_GIT_DATE,
+    });
+    if (commit.status !== 0 || !SHA_RE.test(commit.stdout.trim())) return failed('commit-tree', commit);
+    return { ok: true, sourceCommit: commit.stdout.trim(), tree, patch };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

@@ -1324,7 +1324,7 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
 
   it('reuses an injected TransactionSql instead of opening a nested transaction', async () => {
     const transaction = rowSql() as TransactionalFakeSql & { begin?: TransactionalFakeSql['begin'] };
-    delete transaction.begin;
+    Reflect.deleteProperty(transaction, 'begin');
 
     const out = await getLoopStatuses(['su-x'], { sql: transaction as unknown as Sql });
 

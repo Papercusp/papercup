@@ -866,9 +866,36 @@ type RetractGradingAudit = (
 export function resetGradingAuditStampForRetraction(
   rawSubjectObservation: unknown,
   auditIssueId: string,
+  auditIdentity?: { rubricRevision?: number; criteriaHash?: string },
 ): Record<string, unknown> | null {
   const subjectObservation = asStructuredObservation(rawSubjectObservation);
-  if (subjectObservation?.gradingAudit?.auditIssueId !== auditIssueId) return null;
+  const gradingAudit = subjectObservation?.gradingAudit;
+  const auditRubricRevision =
+    Number.isInteger(auditIdentity?.rubricRevision) && (auditIdentity?.rubricRevision ?? 0) > 0
+      ? auditIdentity?.rubricRevision
+      : undefined;
+  const auditCriteriaHash =
+    typeof auditIdentity?.criteriaHash === 'string' && auditIdentity.criteriaHash.trim()
+      ? auditIdentity.criteriaHash.trim()
+      : undefined;
+  const completeAuditIdentity = auditRubricRevision != null && Boolean(auditCriteriaHash);
+  const citesRetractedAudit = gradingAudit?.auditIssueId === auditIssueId;
+  // A pre-identity reset already cleared auditIssueId before this repair shipped.
+  // Permit an idempotent replay to fill that single legacy shape, but never
+  // replace an active reservation, a partial/complete identity, or settlement
+  // metadata that could belong to a newer audit.
+  const isLegacyIdentityRepair = Boolean(
+    completeAuditIdentity &&
+    gradingAudit?.state === 'pending' &&
+    gradingAudit.metaRubricRef === GRADING_INTEGRITY_RUBRIC_REF &&
+    gradingAudit.auditIssueId == null &&
+    gradingAudit.auditor == null &&
+    gradingAudit.auditedAt == null &&
+    gradingAudit.dispatchReservation == null &&
+    gradingAudit.rubricRevision == null &&
+    gradingAudit.criteriaHash == null,
+  );
+  if (!citesRetractedAudit && !isLegacyIdentityRepair) return null;
   if (!rawSubjectObservation || typeof rawSubjectObservation !== 'object' || Array.isArray(rawSubjectObservation)) {
     return null;
   }
@@ -879,6 +906,14 @@ export function resetGradingAuditStampForRetraction(
     ...(rawGradingAudit as Record<string, unknown>),
     state: 'pending',
   };
+  // The retracted audit row is the authority for the meta-rubric identity it
+  // used. Carry the pair onto the reopened subject atomically so a replacement
+  // audit can settle against a complete current identity. Never synthesize or
+  // mix a partial pair; historical identity-less audits remain identity-less.
+  if (completeAuditIdentity) {
+    pendingGradingAudit.rubricRevision = auditRubricRevision;
+    pendingGradingAudit.criteriaHash = auditCriteriaHash;
+  }
   // A retracted audit re-opens the subject for dispatch. Do not carry the old
   // launch reservation across that boundary or the repaired subject would stay
   // blocked until the reservation TTL elapsed.
@@ -957,7 +992,10 @@ async function retractGradingAuditAtomically(
         ? (subjectRow.payload as Record<string, unknown>)
         : {};
     const rawSubjectObservation = subjectPayload.observation;
-    const resetSubjectObservation = resetGradingAuditStampForRetraction(rawSubjectObservation, auditIssueId);
+    const resetSubjectObservation = resetGradingAuditStampForRetraction(rawSubjectObservation, auditIssueId, {
+      rubricRevision: auditObservation.rubricRevision,
+      criteriaHash: auditObservation.criteriaHash,
+    });
     let subjectReset = false;
     if (resetSubjectObservation) {
       const updated = await tx<{ feature_id: string }[]>`

@@ -53,6 +53,23 @@ function fresh(): FrozenCandidateRepairQueue {
 }
 
 describe('frozen-candidate repair queue', () => {
+  it('round-trips committed patch provenance without relabeling it as hook attribution', () => {
+    const patch = { commit: C1, parent: C, sha256: 'f'.repeat(64) };
+    const admission = {
+      atMs: T0 + 1, actor: 'su-test', source: { ref: C2, sha: C2 },
+      fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 }, mode: 'committed-patch' as const, patch,
+      reason: 'explicit reviewed missing-capture repair',
+    };
+    const queue = markFrozenRepairAdmitted(fresh(), admission);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.admissions?.[0]).toMatchObject({ mode: 'committed-patch', patch });
+    expect(parsed?.admissions?.[0]).not.toHaveProperty('hunks');
+    const malformed = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, patch: { ...patch, sha256: 'bad' } }] });
+    expect(malformed?.admissions?.[0]).toMatchObject({ mode: 'committed-patch' });
+    expect(malformed?.admissions?.[0]).not.toHaveProperty('patch');
+  });
+
   it('persists the first red as an unassigned serialized queue without moving C', () => {
     const queue = fresh();
     expect(queue).toMatchObject({
