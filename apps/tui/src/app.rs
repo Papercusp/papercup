@@ -4250,7 +4250,48 @@ impl App {
 
     /// Settings tab (P10b): store the read-only operator-config overview.
     pub fn set_operator_config(&mut self, c: OperatorConfig) {
+        use crate::session_config::PickerAxis;
+
+        // The first operator-config read lands asynchronously. A user can open
+        // one of its pickers while that request is still in flight; leaving the
+        // already-open modal untouched would freeze its startup-empty rows even
+        // after the server returns the configured values. Rebuild only pickers
+        // backed by this snapshot and retain the highlighted value when it still
+        // exists in the refreshed menu.
+        let open_selection = self.session_picker.as_ref().and_then(|picker| {
+            matches!(
+                picker.axis,
+                PickerAxis::Model | PickerAxis::Effort | PickerAxis::Mode
+            )
+            .then(|| {
+                (
+                    picker.axis,
+                    picker
+                        .options
+                        .get(picker.sel)
+                        .map(|option| option.id.clone()),
+                )
+            })
+        });
         self.operator_config = c;
+        let Some((axis, selected_id)) = open_selection else {
+            return;
+        };
+        match axis {
+            PickerAxis::Model => self.open_model_picker(),
+            PickerAxis::Effort => self.open_effort_picker(),
+            PickerAxis::Mode => self.open_mode_picker(),
+            _ => unreachable!("only operator-config-backed pickers are captured above"),
+        }
+        if let (Some(selected_id), Some(picker)) = (selected_id, self.session_picker.as_mut()) {
+            if let Some(index) = picker
+                .options
+                .iter()
+                .position(|option| option.id == selected_id)
+            {
+                picker.sel = index;
+            }
+        }
     }
 
     pub fn set_account_rows(&mut self, rows: Vec<crate::session_config::AccountRow>) {
@@ -12197,6 +12238,57 @@ mod tests {
         let mut a = App::new();
         a.open_model_picker();
         assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 1);
+    }
+
+    #[test]
+    fn open_model_picker_refreshes_when_server_config_arrives() {
+        let mut a = App::new();
+        a.open_model_picker();
+        assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 1);
+
+        a.set_operator_config(OperatorConfig {
+            tiers: vec![tier("acceptance", "claude-sonnet-4-6")],
+            ..Default::default()
+        });
+
+        let picker = a
+            .session_picker
+            .as_ref()
+            .expect("the open picker remains open");
+        assert_eq!(picker.axis, crate::session_config::PickerAxis::Model);
+        assert_eq!(
+            picker
+                .options
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![crate::session_config::MODEL_INHERIT, "claude-sonnet-4-6"]
+        );
+    }
+
+    #[test]
+    fn operator_config_refresh_preserves_the_open_picker_selection() {
+        let mut a = app_with_tiers(vec![tier("quick", "haiku"), tier("deep", "opus:high")]);
+        a.open_model_picker();
+        a.session_picker.as_mut().unwrap().move_sel(2);
+
+        a.set_operator_config(OperatorConfig {
+            tiers: vec![
+                tier("quick", "haiku"),
+                tier("deep", "opus:high"),
+                tier("max", "opus:high[1m]"),
+            ],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            a.session_picker
+                .as_ref()
+                .unwrap()
+                .selected()
+                .map(|option| option.id.as_str()),
+            Some("opus:high")
+        );
     }
 
     #[test]
