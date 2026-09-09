@@ -58,7 +58,11 @@ const GRADING_AUDIT_FALLBACK = {
   agent: 'codex' as const,
   model: 'gpt-5.6-sol' as const,
   effort: 'high' as const,
-  account: 'default' as const,
+  // The system/default credential is a single-account escape hatch, not a
+  // capacity-safe recovery route. Keep the cross-backend retry on Codex's
+  // gateway pool so it can select a currently healthy account and fail over
+  // when the account that caused the terminal failure is walled.
+  account: GRADING_AUDIT_ACCOUNT,
 };
 
 export type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
