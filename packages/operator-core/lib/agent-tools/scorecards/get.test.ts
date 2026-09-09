@@ -43,7 +43,7 @@ const scorecard = {
   createdBy: 'su-grader',
   rubricRef: 'spec-test-adequacy',
   rubricRevision: 2,
-  subject: { kind: 'scorecard', ref: 'EI-subject' },
+  subject: { kind: 'scorecard' as const, ref: 'EI-subject' },
   criteria: Array.from({ length: 8 }, (_, i) => ({
     key: `criterion-${i + 1}`,
     rating: i === 7 ? 'partial' : 'pass',
@@ -115,6 +115,69 @@ describe('scorecards:get evidence-first projection', () => {
     await expect(getTool.handler({ issueId: 'WI-not-card' } as never, makeDispatchContext())).resolves.toMatchObject({
       data: { ok: false, error: "'WI-not-card' is not a scorecard" },
     });
+  });
+
+  it('makes oversized cards explicitly incomplete and recovers every probe through bounded dispatch pages', async () => {
+    const large = {
+      ...scorecard,
+      criteria: scorecard.criteria.map((criterion) => ({
+        ...criterion,
+        evidence: `${'"\\\n🙂'.repeat(4_000)} Re-run exact-probe ${criterion.key} with args={"frozen":true}`,
+      })),
+    };
+    expect(JSON.stringify(large).length).toBeGreaterThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: large });
+    const read = async (args: Record<string, unknown>) => {
+      const dispatched = await dispatchProjectedTool(
+        lookupByMcpName('scorecards:get')!, 'scorecards:get', args, makeDispatchContext(), {},
+      );
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      const payload = readJsonResult<{
+        ok: boolean;
+        scorecard: typeof scorecard;
+        evidenceRead: {
+          complete: boolean;
+          criteria?: Array<{ key: string; read: { tool: string; args: Record<string, unknown> } }>;
+          next?: { tool: string; args: Record<string, unknown> };
+        };
+        _projection?: unknown;
+      }>(dispatched.result!)!;
+      expect(payload._projection).toBeUndefined();
+      expect(JSON.stringify(payload).length).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+      return payload;
+    };
+    const index = await read({ issueId: large.issueId });
+    expect(index.evidenceRead.complete).toBe(false);
+    expect(index.scorecard.criteria).toEqual([]);
+    expect(index.evidenceRead.criteria?.map((entry) => entry.key)).toEqual(large.criteria.map((entry) => entry.key));
+    for (const entry of index.evidenceRead.criteria!) {
+      let args: Record<string, unknown> | undefined = entry.read.args;
+      let recovered = '';
+      let pages = 0;
+      while (args) {
+        expect(++pages).toBeLessThan(30);
+        const page = await read(args);
+        expect(page.scorecard.criteria).toHaveLength(1);
+        expect(page.scorecard.criteria[0].key).toBe(entry.key);
+        recovered += page.scorecard.criteria[0].evidence;
+        if (!page.evidenceRead.complete) expect(page.evidenceRead.next).toBeDefined();
+        args = page.evidenceRead.next?.args;
+      }
+      expect(pages).toBeGreaterThan(1);
+      expect(recovered).toBe(large.criteria.find((criterion) => criterion.key === entry.key)!.evidence);
+      expect(recovered).toContain(`Re-run exact-probe ${entry.key}`);
+    }
+  });
+
+  it('rejects unknown criterion keys and out-of-range offsets instead of returning empty evidence', async () => {
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard });
+    await expect(getTool.handler(
+      { issueId: scorecard.issueId, criterionKey: 'missing' } as never, makeDispatchContext(),
+    )).resolves.toMatchObject({ data: { ok: false, error: 'unknown_criterion' } });
+    await expect(getTool.handler(
+      { issueId: scorecard.issueId, criterionKey: 'criterion-1', evidenceOffset: 999_999 } as never,
+      makeDispatchContext(),
+    )).resolves.toMatchObject({ data: { ok: false, error: 'invalid_evidence_offset' } });
   });
 
   it('preserves typed transient contention failures', async () => {

@@ -1,10 +1,11 @@
 /** scorecards:get — evidence-first read of one scorecard for grading-integrity audits. */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { PAYLOAD_TIER_HARD_CEILING_CHARS } from '@papercusp/tooldef';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { readScorecardEvidence } from '../../scorecards';
+import { readScorecardEvidence, type ScorecardEvidenceRow } from '../../scorecards';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 
@@ -14,21 +15,90 @@ export const scorecardGetArgs = z.object({
     .min(1)
     .max(120)
     .describe('the scorecard issue id (EI-/WI-) whose criterion evidence must be re-run'),
+  criterionKey: z.string().min(1).max(200).optional()
+    .describe('Read one criterion from an oversized card index. Evidence remains exact; follow evidenceRead.next until complete.'),
+  evidenceOffset: z.number().int().min(0).optional()
+    .describe('UTF-16 offset from evidenceRead.next for one criterion. Concatenate pages in order; never grade from an incomplete page.'),
 });
+
+// Bound the JSON-encoded result BEFORE transport shaping, including escaping.
+// An ambient full tier alone does not bypass the shared hard ceiling. A large
+// card must advertise incomplete evidence, not lose the executable probe at its
+// tail and invite a false "not re-runnable" audit (EI-22760702558473393).
+const INLINE_EVIDENCE_CHARS = Math.floor(PAYLOAD_TIER_HARD_CEILING_CHARS / 2);
+const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0) => ({
+  tool: 'scorecards:get',
+  args: { issueId, criterionKey, evidenceOffset },
+});
+
+function boundedEvidenceRead(scorecard: ScorecardEvidenceRow, args: z.infer<typeof scorecardGetArgs>) {
+  if (args.criterionKey === undefined) {
+    if (args.evidenceOffset !== undefined) {
+      return { ok: false as const, error: 'criterion_required_for_offset' };
+    }
+    const full = { ok: true as const, scorecard, evidenceRead: { complete: true } };
+    if (JSON.stringify(full).length <= INLINE_EVIDENCE_CHARS) return full;
+    return {
+      ok: true as const,
+      scorecard: { ...scorecard, criteria: [] },
+      evidenceRead: {
+        complete: false,
+        reason: 'card-exceeds-inline-budget',
+        instruction: 'Evidence has NOT been read. Read every indexed criterion and concatenate its pages before grading; this index is not evidence of a missing probe.',
+        criteria: scorecard.criteria.map(({ key, rating, evidence }) => ({
+          key, rating, evidenceChars: evidence.length,
+          read: evidenceReadCall(args.issueId, key),
+        })),
+      },
+    };
+  }
+  const criterion = scorecard.criteria.find(({ key }) => key === args.criterionKey);
+  if (!criterion) return { ok: false as const, error: 'unknown_criterion' };
+  const offset = args.evidenceOffset ?? 0;
+  if (offset > criterion.evidence.length || (offset === criterion.evidence.length && offset !== 0)) {
+    return { ok: false as const, error: 'invalid_evidence_offset' };
+  }
+  let count = Math.min(INLINE_EVIDENCE_CHARS, criterion.evidence.length - offset);
+  const page = () => {
+    const nextOffset = offset + count;
+    const complete = nextOffset === criterion.evidence.length;
+    return {
+      ok: true as const,
+      scorecard: { ...scorecard, criteria: [{ ...criterion, evidence: criterion.evidence.slice(offset, nextOffset) }] },
+      evidenceRead: {
+        complete,
+        scope: 'selected-criterion',
+        offset,
+        totalChars: criterion.evidence.length,
+        instruction: 'Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index.',
+        ...(!complete ? { next: evidenceReadCall(args.issueId, criterion.key, nextOffset) } : {}),
+      },
+    };
+  };
+  let result = page();
+  while (JSON.stringify(result).length > INLINE_EVIDENCE_CHARS && count > 1) {
+    count = Math.max(1, Math.floor(count / 2));
+    result = page();
+  }
+  if (JSON.stringify(result).length > INLINE_EVIDENCE_CHARS) {
+    return { ok: false as const, error: 'scorecard_metadata_exceeds_inline_budget' };
+  }
+  return result;
+}
 
 export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. Returns the exact per-criterion `{key, rating, evidence}` strings plus minimal card identity and completeness fields; omits replay recipes, generation metadata, links, and other history-only payload. Use this before a grading-integrity audit so evidence is inline rather than hidden by a history-row projection or result-door spill.',
+    'Read ONE rubric scorecard by issue id using an evidence-first projection. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.',
   guidance: {
     when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.',
     notWhen:
       'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
     chaining:
-      'scorecards:get { issueId } → re-run every returned criteria[].evidence probe → scorecards:emit { rubricRef:"grading-integrity", subject:{kind:"scorecard",ref:issueId}, ratings } to settle the audit.',
+      'scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index and every next page → re-run every complete evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence.',
     returns:
-      'Returns `{ ok, scorecard }`; scorecard.criteria is an ordered array of exact `{key,rating,evidence}` entries, and missingKeys/extraKeys/rubricResolved make completeness explicit. It intentionally does not return the full scorecards:list row.',
+      'Returns `{ ok, scorecard, evidenceRead }`. Full reads contain every exact criterion; an oversized read contains criteria:[] plus an explicit index, not absent evidence. Criterion pages retain full-card nKeys/missingKeys and report offset/totalChars/next; concatenate before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',
@@ -44,6 +114,7 @@ export default defineTool({
     .object({
       ok: z.boolean(),
       scorecard: z.unknown().optional(),
+      evidenceRead: z.unknown().optional(),
       error: z.string().optional(),
       retryable: z.boolean().optional(),
       pgCode: z.string().optional(),
@@ -61,7 +132,7 @@ export default defineTool({
         if (result.kind === 'not_scorecard') {
           return { data: { ok: false as const, error: `'${args.issueId}' is not a scorecard` } };
         }
-        return { data: { ok: true as const, scorecard: result.scorecard } };
+        return { data: boundedEvidenceRead(result.scorecard, args) };
       } catch (error) {
         if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
           return {
