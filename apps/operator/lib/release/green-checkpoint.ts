@@ -1385,6 +1385,7 @@ export interface CheckpointResult {
     repairHeadVerdict:
       | "not-judged"
       | "same-as-frozen-full-gate-red"
+      | "full-gate-red"
       | "isolated-repair-green";
   };
   /** EI-203121: durable per-leg execution identity, capped by the producer. */

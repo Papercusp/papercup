@@ -825,6 +825,38 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(movingTip).not.toBe(frozen);
     expect(dispatchedHeads).toEqual([frozen]);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+
+    // EI-22767271786772554: a canonical red at a DISTINCT repair head is durable in
+    // convergenceRounds even after the queue moves back to awaiting-fixer. The public
+    // result must project that judgment instead of inferring "not-judged" from phase.
+    queue = {
+      ...queue!,
+      repairHead: movingTip,
+      convergenceRounds: [
+        ...(queue?.convergenceRounds ?? []),
+        {
+          round: 2,
+          head: movingTip,
+          failingCount: 1,
+          atMs: Date.now(),
+        },
+      ],
+    };
+    const third = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(third).toMatchObject({
+      green: null,
+      reason: "repair-in-progress",
+      candidate: frozen,
+      frozenCandidate: frozen,
+      repairHead: movingTip,
+      verdictProvenance: {
+        currentStatus: "no-suite",
+        frozenCandidateVerdict: "full-gate-red",
+        repairHeadVerdict: "full-gate-red",
+      },
+    });
+    expect(dispatchedHeads).toEqual([frozen]);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
   });
 
   it("reaps a dead fixer before a stale dispatch reservation and then recovers within budget", async () => {
