@@ -820,6 +820,7 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
     );
     expect(update).toBeDefined();
     const query = String(update![0]);
+    expectBalancedNestedJsonbSet(query, 3);
     expect(query).toMatch(
       /'\{gate_health,candidateSnapshot\}'\s*,\s*\$3::jsonb\s*,\s*true\s*\)\s*,\s*updated_at\s*=\s*now\(\)/,
     );
@@ -831,6 +832,66 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
       failingTests: ['lib/red.test.ts'],
       failingTestsMeasured: false,
     });
+  });
+
+  /**
+   * WI-10000844: the tick-legs branch of the same write carried FIVE nested jsonb_set layers
+   * but opened only FOUR calls, so its `'{gate_health,candidateSnapshot}', $6::jsonb, true)`
+   * tail dangled outside any call. Postgres rejected it (`syntax error at or near
+   * "'{gate_health,candidateSnapshot}'"`) on every repair tick for four days: the snapshot,
+   * repairTickLegs and refreshed failingTests were never persisted, the next fire found "no
+   * fresh candidate snapshot", skipped fixer dispatch, and the gate treadmilled with no
+   * verdict. A substring regex cannot see that shape — count the structure instead.
+   */
+  function expectBalancedNestedJsonbSet(query: string, layers: number): void {
+    const opens = (query.match(/\(/g) ?? []).length;
+    const closes = (query.match(/\)/g) ?? []).length;
+    expect(closes, `unbalanced parentheses: ${opens} open vs ${closes} close`).toBe(opens);
+    const calls = (query.match(/jsonb_set\(/g) ?? []).length;
+    const paths = (query.match(/'\{gate_health,[A-Za-z]+\}'/g) ?? []).length;
+    expect(calls, 'one jsonb_set( per layer').toBe(layers);
+    expect(paths, 'one gate_health path literal per layer').toBe(layers);
+    // Every layer opens BEFORE the innermost COALESCE(metadata …) — a layer opened later
+    // (or never) is the dangling-tail shape Postgres refuses.
+    expect(query).toMatch(new RegExp(`SET metadata = ${'jsonb_set\\(\\s*'.repeat(layers)}COALESCE\\(metadata`));
+  }
+
+  it('WI-10000844: the repair-tick (tick-legs) snapshot write is balanced five-layer nested jsonb_set SQL', async () => {
+    fakeSql.unsafe.mockClear();
+    const candidate = 'a'.repeat(40);
+    await trackGateStall(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      'repair-in-progress',
+      candidate,
+      ['lib/red.test.ts'],
+      'b'.repeat(40),
+      undefined,
+      'the serialized frozen-candidate repair queue owns this candidate',
+      undefined,
+      {
+        repairTickLegs: {
+          head: 'd'.repeat(40),
+          atMs: 5,
+          ok: false,
+          failingSignatures: ['lint:tsc'],
+          legs: [{ id: 'lint:tsc', status: 'fail', durationMs: 7, outputTail: 'x' }],
+        },
+      },
+    );
+
+    const update = fakeSql.unsafe.mock.calls.find(([query]) =>
+      String(query).includes("'{gate_health,repairTickLegs}'"),
+    );
+    expect(update).toBeDefined();
+    const query = String(update![0]);
+    expectBalancedNestedJsonbSet(query, 5);
+    expect(query).toMatch(
+      /'\{gate_health,candidateSnapshot\}'\s*,\s*\$6::jsonb\s*,\s*true\s*\)\s*,\s*updated_at\s*=\s*now\(\)/,
+    );
+    const params = update![1] as unknown[];
+    expect(params).toHaveLength(7);
+    expect(JSON.parse(String(params[2]))).toMatchObject({ head: 'd'.repeat(12), ok: false, failingSignatures: ['lint:tsc'] });
+    expect(JSON.parse(String(params[5]))).toMatchObject({ schemaVersion: 1, candidate, failingTestsMeasured: true });
   });
 });
 

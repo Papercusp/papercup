@@ -297,7 +297,7 @@ export const RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS: ReconcileWakeabilityOptio
   psuHostPositiveAuthority: true,
 };
 
-const fetchReconcilePresence: ReconcileWakeabilityOptions['fetchPresenceFn'] = async (ownerIds) => {
+const fetchReconcilePresence: NonNullable<ReconcileWakeabilityOptions['fetchPresenceFn']> = async (ownerIds) => {
   const rows = await listPresence({ ownerIds });
   return new Map(
     rows.map((row) => [

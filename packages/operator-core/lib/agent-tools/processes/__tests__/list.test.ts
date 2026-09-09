@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { mockResolvedTyped } from '../../../testing/typed-mock';
+import type { ReconcileTickResult } from '../../../task-manager/reconcile-tick';
 import type { TaskRow } from '../../../task-manager/types';
 
 const { LOCAL_SUPERUSER_BEARER } = vi.hoisted(() => ({

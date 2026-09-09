@@ -241,7 +241,7 @@ export async function refreshLiveSessionsBeforeRead(
 ): Promise<{ attempted: number; refreshed: number }> {
   let ownerIds = [...new Set((owners ?? []).filter(Boolean))].slice(0, 20);
   if (ownerIds.length === 0) {
-    const ownerRead = await withBoundedTimeout(
+    const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
       sql<Array<{ owner: string }>>`
         SELECT DISTINCT coord_owner_id AS owner
           FROM harness_shared.adv_sessions

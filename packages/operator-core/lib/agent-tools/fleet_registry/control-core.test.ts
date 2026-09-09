@@ -895,10 +895,10 @@ describe('applyFleetControl', () => {
       const holdsStarted = new Promise<void>((resolve) => {
         clearPauseHoldsM.mockImplementation(
           () =>
-            new Promise((resolveResult) => {
-              resolveHolds = resolveResult as typeof resolveHolds;
+            new Promise<{ items: never[]; failed: never[] }>((resolveResult) => {
+              resolveHolds = resolveResult;
               resolve();
-            }) as never,
+            }),
         );
       });
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
