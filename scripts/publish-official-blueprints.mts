@@ -41,6 +41,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BLUEPRINTS = join(REPO, 'libs/papercusp/packages/harness/blueprints');
@@ -262,6 +263,6 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   await main();
 }
