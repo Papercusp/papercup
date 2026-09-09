@@ -22,18 +22,13 @@
 # (the `-i` is load-bearing: without it the container exits 0 having run NOTHING.)
 #
 # ── What is NOT here, and why ─────────────────────────────────────────────────
-# ACLs, the three machine-local roots, and the sshd drop-in are applied ON EVERY
-# BOOT by `papercusp-host-prepare.service`, not baked. That is not a stylistic
-# choice — see the header of `papercusp-host-prepare.sh` for the two measured
-# reasons (POSIX ACLs do not survive a container commit; `/srv` and `/home` are
-# symlinks into machine-local `/var` on this base).
-#
-# EVERY boot, not first: `bootc upgrade` reboots into a NEW deployment root, and
-# the ACLs on /opt/papercusp went with the OLD one while /var persisted. A
-# first-boot stamp file would therefore skip precisely the hosts that took an
-# update — every file present and correctly sized, owned by the right names,
-# and unreadable by the identity that needs them, with the host reporting
-# healthy throughout.
+# The three machine-local roots, workspace ACL, and sshd drop-in are applied ON
+# EVERY BOOT by `papercusp-host-prepare.service`, not baked. `/srv` and `/home`
+# are symlinks into machine-local `/var` on this base. The immutable `/opt`
+# runtime is the opposite: POSIX ACL xattrs do not survive a container commit
+# (WI-2143115), and the first real P-305 boot proved `/opt` cannot be mutated at
+# boot. D-314 therefore bakes its access as ordinary group ownership and makes
+# host prepare verify that metadata without writing to `/opt`.
 
 FROM quay.io/centos-bootc/centos-bootc:stream9 AS workspace-host-os
 
@@ -60,6 +55,7 @@ ARG PAPERCUSP_WORKSPACE_USER=papercusp-workspace
 ARG PAPERCUSP_WORKSPACE_GROUP=papercusp-workspace
 ARG PAPERCUSP_AGENT_USER=papercusp-agent
 ARG PAPERCUSP_AGENT_GROUP=papercusp-agent
+ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 
 # ── Layer 1: packages ─────────────────────────────────────────────────────────
 #
@@ -235,17 +231,24 @@ COPY papercusp-sysusers.conf /usr/lib/sysusers.d/papercusp.conf
 RUN set -eux; \
     systemd-sysusers /usr/lib/sysusers.d/papercusp.conf; \
     getent passwd "$PAPERCUSP_SERVICE_USER" "$PAPERCUSP_WORKSPACE_USER" "$PAPERCUSP_AGENT_USER"; \
+    getent group "$PAPERCUSP_RUNTIME_READ_GROUP"; \
     test "$(id -u "$PAPERCUSP_SERVICE_USER")"   = 910; \
     test "$(id -g "$PAPERCUSP_SERVICE_USER")"   = 910; \
     test "$(id -u "$PAPERCUSP_AGENT_USER")"     = 911; \
     test "$(id -g "$PAPERCUSP_AGENT_USER")"     = 911; \
     test "$(id -u "$PAPERCUSP_WORKSPACE_USER")" = 1500; \
     test "$(id -g "$PAPERCUSP_WORKSPACE_USER")" = 1500; \
+    test "$(getent group "$PAPERCUSP_RUNTIME_READ_GROUP" | cut -d: -f3)" = 912; \
+    id -nG "$PAPERCUSP_SERVICE_USER" | tr ' ' '\n' | grep -Fx "$PAPERCUSP_RUNTIME_READ_GROUP"; \
+    id -nG "$PAPERCUSP_AGENT_USER" | tr ' ' '\n' | grep -Fx "$PAPERCUSP_RUNTIME_READ_GROUP"; \
     if id -nG "$PAPERCUSP_WORKSPACE_USER" | tr ' ' '\n' | grep -Fx "$PAPERCUSP_SERVICE_GROUP"; then \
       echo 'FATAL: workspace SSH user must not belong to the runtime service group' >&2; exit 1; \
     fi; \
     if id -nG "$PAPERCUSP_AGENT_USER" | tr ' ' '\n' | grep -Fx "$PAPERCUSP_SERVICE_GROUP"; then \
       echo 'FATAL: agent user must not belong to the runtime service group' >&2; exit 1; \
+    fi; \
+    if id -nG "$PAPERCUSP_WORKSPACE_USER" | tr ' ' '\n' | grep -Fx "$PAPERCUSP_RUNTIME_READ_GROUP"; then \
+      echo 'FATAL: workspace SSH user must not belong to the immutable runtime-read group' >&2; exit 1; \
     fi
 
 # ── Layer 3: the container signature policy (D-262 condition 1) ───────────────
@@ -446,7 +449,7 @@ RUN chmod 0755 /usr/libexec/papercusp/host-prepare.sh \
 # WI-2143115 (ACLs silently dropped by the container commit). The booted
 # assertion belongs to P-305, which already has to boot a VM for D-279's
 # `bootc upgrade` refusal.
-RUN install -d -o root -g "$PAPERCUSP_SERVICE_GROUP" -m 0750 \
+RUN install -d -o root -g "$PAPERCUSP_RUNTIME_READ_GROUP" -m 0750 \
       /opt/papercusp /opt/papercusp/releases
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
@@ -467,14 +470,13 @@ RUN bootc container lint
 # the repository merely to build it.
 #
 # The source release is produced with developer-friendly group/world modes.
-# Normalize it to the same root:$PAPERCUSP_SERVICE_GROUP, no-world-access shape
-# as the bundle bootstrap before committing it to the image.  POSIX ACLs cannot
-# survive a container commit, so papercusp-host-prepare.service reapplies the
-# papercusp-agent read/execute ACL recursively on every boot.
+# Normalize it to root:$PAPERCUSP_RUNTIME_READ_GROUP before committing it to the
+# image. Ordinary uid/gid/mode metadata survives the commit and bootc deployment,
+# unlike the named-user ACL that D-314 replaces. Host prepare only verifies it.
 #
 # Executable files retain read/execute for all classes because embedded-postgres
 # checks all 0555 bits before starting. The release and its parent directories
-# remain inaccessible to identities without the runtime ACL.
+# remain inaccessible to identities outside the runtime-read group.
 #
 # Podman 4.9/Buildah can omit metadata-only upperdir entries for hardlinked files
 # copied from a named context: chown/chmod read correctly inside this RUN, then
@@ -483,7 +485,7 @@ RUN bootc container lint
 # replace each with a same-directory fresh inode so the normalized metadata has a
 # durable upper-layer entry. The NUL-delimited snapshot keeps arbitrary paths safe.
 FROM workspace-host-os AS workspace-host-release
-ARG PAPERCUSP_SERVICE_GROUP=papercusp
+ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 ARG PAPERCUSP_RELEASE_VERSION
 COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/
 RUN set -eux; \
@@ -505,9 +507,10 @@ RUN set -eux; \
     xargs -0 -r sh -eu -c 'for path do fresh="$(mktemp --tmpdir="${path%/*}" .papercusp-fresh-inode.XXXXXX)"; cp --reflink=never --preserve=mode,timestamps -- "$path" "$fresh"; mv -f -- "$fresh" "$path"; done' sh < "$HARDLINK_PATHS"; \
     rm -f "$HARDLINK_PATHS"; \
     [ -z "$(find "$RELEASE_DIR" -type f -links +1 -print -quit)" ]; \
-    chown -R "root:${PAPERCUSP_SERVICE_GROUP}" "$RELEASE_DIR"; \
+    chown -R "root:${PAPERCUSP_RUNTIME_READ_GROUP}" "$RELEASE_DIR"; \
     chmod -R o-rwx "$RELEASE_DIR"; \
     find "$RELEASE_DIR" -type d -exec chmod g+rx {} +; \
+    chmod 0750 "$RELEASE_DIR"; \
     find "$RELEASE_DIR" -type f -exec chmod g+r {} +; \
     find "$RELEASE_DIR" -type f -perm /111 -exec chmod a+rx {} +; \
     ln -s "releases/${PAPERCUSP_RELEASE_VERSION}" /opt/papercusp/current; \

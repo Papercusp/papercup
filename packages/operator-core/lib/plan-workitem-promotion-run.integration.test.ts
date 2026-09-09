@@ -128,6 +128,16 @@ vi.mock('./agent-tools/plans/spec-evidence-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./agent-tools/plans/spec-evidence-store')>();
   return { ...actual, ensureWorkItemSpecRevisionEdges: async () => [] };
 });
+// This legacy promotion fixture intentionally omits the first-class acceptance-BAR
+// tables. Keep the lifecycle seam satisfied so these tests exercise promotion's
+// own minting and dependency-edge contract; the evaluator is covered separately.
+vi.mock('./acceptance-bar-lifecycle-evaluator', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./acceptance-bar-lifecycle-evaluator')>();
+  return {
+    ...actual,
+    readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+  };
+});
 vi.mock('./agent-tools/plans/plan-spec-quality-gate', () => ({
   evaluatePlanSpecQualityGate: vi.fn(async () => h.specQuality),
 }));

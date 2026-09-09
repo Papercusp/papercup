@@ -16,14 +16,15 @@
 #   * `bootc container lint` adds ZERO regressions against the bare base — the
 #     base's own warning count is measured in the same run as a CONTROL, so
 #     "clean" is a comparison rather than an absolute nobody can check;
-#   * the three identities exist with their PINNED uid/gid, and the two refused
-#     group memberships are absent;
+#   * the three identities and immutable runtime-read group exist with PINNED
+#     uid/gid, the exact service+agent allowlist is present, and refused
+#     memberships are absent;
 #   * the signature policy, firewall ruleset, sysusers file and both units are
 #     present and enabled;
 #   * the firewall ruleset PARSES, with a negative control proving the check can
 #     fail (a syntax check that cannot reject anything proves nothing).
 #   * a named release-context hardlink group commits as distinct normalized
-#     root:papercusp inodes, including paths containing spaces.
+#     root:papercusp-runtime-read inodes, including paths containing spaces.
 #
 # DOES NOT ESTABLISH — do not read a pass here as any of these:
 #   * that `/opt` survives as image content on a BOOTED host. That is the open
@@ -31,8 +32,8 @@
 #     runtime design holds at all, and no container-level probe can answer it —
 #     a container always shows the image's own view. `papercusp-host-prepare.sh`
 #     asserts it at boot; P-305 owes the booted run.
-#   * that ACLs apply correctly on the real image filesystem. They are applied at
-#     boot, on purpose (they do not survive a container commit — WI-2143115).
+#   * that the machine-local workspace ACL applies correctly on the booted image
+#     filesystem. Immutable `/opt` access is ordinary committed group metadata.
 #   * that a mis-signed image is refused by a booted `bootc upgrade`. D-279
 #     proved the enforcement path; the booted hop remains an inference.
 
@@ -110,6 +111,18 @@ papercusp 910 910
 papercusp-agent 911 911
 papercusp-workspace 1500 1500
 IDS
+runtime_gid="$(in_image "getent group papercusp-runtime-read | cut -d: -f3")"
+if [[ "$runtime_gid" == 912 ]]; then
+  pass "papercusp-runtime-read gid = 912 (pinned)"
+else
+  fail "papercusp-runtime-read gid = '$runtime_gid', expected 912"
+fi
+runtime_members="$(in_image "getent group papercusp-runtime-read | cut -d: -f4 | tr ',' '\n' | sed '/^$/d' | sort | paste -sd, -")"
+if [[ "$runtime_members" == "papercusp,papercusp-agent" ]]; then
+  pass "immutable runtime-read group contains exactly service + agent"
+else
+  fail "immutable runtime-read group members are '$runtime_members', expected papercusp,papercusp-agent"
+fi
 for u in papercusp-workspace papercusp-agent; do
   if [[ -z "$(in_image "id -nG $u | tr ' ' '\n' | grep -Fx papercusp")" ]]; then
     pass "$u is NOT in the runtime service group"
@@ -117,6 +130,17 @@ for u in papercusp-workspace papercusp-agent; do
     fail "$u IS in the runtime service group — isolation contract inverted"
   fi
 done
+if [[ -z "$(in_image "id -nG papercusp-workspace | tr ' ' '\n' | grep -Fx papercusp-runtime-read")" ]]; then
+  pass "workspace SSH user is NOT in the immutable runtime-read group"
+else
+  fail "workspace SSH user IS in the immutable runtime-read group — runtime exposed"
+fi
+runtime_root_metadata="$(in_image "stat -c '%u:%g:%a' /opt/papercusp /opt/papercusp/releases | sort -u")"
+if [[ "$runtime_root_metadata" == "0:912:750" ]]; then
+  pass "immutable runtime parents are root:papercusp-runtime-read 0750"
+else
+  fail "immutable runtime parent metadata is '$runtime_root_metadata', expected 0:912:750"
+fi
 if [[ "$(in_image 'getent passwd papercusp-workspace | cut -d: -f7')" == "/bin/bash" ]]; then
   pass "workspace user has a real shell (it is the customer's SSH login)"
 else
@@ -325,7 +349,7 @@ sect "7. host-prepare runs, and its last guard can actually fail"
 # dangling one. Without the fix the unit died on EVERY boot.
 prep_out="$(podman run --rm --privileged \
   --entrypoint /usr/libexec/papercusp/host-prepare.sh "$TAG" 2>&1)"
-for stage in runtime-root-is-image-content machine-local-roots runtime-acl \
+for stage in runtime-root-is-image-content machine-local-roots runtime-group \
              workspace-acl identity-separation; do
   if grep -qF "$stage PASS" <<<"$prep_out"; then pass "host-prepare: $stage"
   else fail "host-prepare: $stage did NOT pass — output: $(grep -F "$stage" <<<"$prep_out" || echo '<absent>')"; fi
@@ -341,7 +365,7 @@ sect "8. named release-context hardlinks survive COMMIT normalization"
 # Podman 4.9/Buildah can elide metadata-only upperdir entries for hardlinked
 # files copied from a named context. Exercise the real release target with a
 # small five-alias fixture: the source link count is the positive control, while
-# the committed image must contain five fresh 0:910/0640 inodes.
+# the committed image must contain five fresh 0:912/0640 inodes.
 RELEASE_PROBE_ROOT="$(mktemp -d /tmp/p306-release-hardlinks.XXXXXX)"
 trap 'rm -rf -- "$RELEASE_PROBE_ROOT"' EXIT
 RELEASE_PROBE_CONTEXT="$RELEASE_PROBE_ROOT/context"
@@ -372,11 +396,21 @@ if podman build \
   release_file_count="$(podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
     "find '/opt/papercusp/releases/p306-hardlink-probe/hardlink tree' -type f -print | wc -l" 2>/dev/null)"
   release_bad_count="$(podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
-    "find '/opt/papercusp/releases/p306-hardlink-probe/hardlink tree' -type f ! \\( -uid 0 -gid 910 -perm 0640 -links 1 \\) -print | wc -l" 2>/dev/null)"
+    "find '/opt/papercusp/releases/p306-hardlink-probe/hardlink tree' -type f ! \\( -uid 0 -gid 912 -perm 0640 -links 1 \\) -print | wc -l" 2>/dev/null)"
   if [[ "$release_file_count" == "5" && "$release_bad_count" == "0" ]]; then
-    pass "committed release hardlinks are five distinct 0:910/0640 inodes"
+    pass "committed release hardlinks are five distinct 0:912/0640 inodes"
   else
     fail "committed release hardlink normalization failed: files=$release_file_count bad=$release_bad_count"
+  fi
+  if podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
+       "runuser -u papercusp -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null \
+        && runuser -u papercusp-agent -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null \
+        && ! runuser -u papercusp-workspace -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null 2>&1 \
+        && ! runuser -u papercusp-agent -- test -r /var/lib/papercusp \
+        && ! runuser -u papercusp-workspace -- test -r /var/lib/papercusp"; then
+    pass "committed runtime readable by service+agent, hidden from SSH; state hidden from agent+SSH"
+  else
+    fail "committed immutable runtime/state access boundary is inverted"
   fi
 else
   fail "release hardlink recurrence image FAILED to build — see $RELEASE_PROBE_LOG"

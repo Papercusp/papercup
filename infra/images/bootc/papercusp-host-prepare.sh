@@ -5,14 +5,14 @@
 #
 # This is the half of the generated bootstrap's `harden-os` phase that CANNOT
 # become an image layer. Everything else moved into
-# `workspace-host.Containerfile`. Two measured reasons put these lines here and
-# not there, and neither is a style preference:
+# `workspace-host.Containerfile`. Two measured reasons put the MUTABLE lines here
+# and not there, and neither is a style preference:
 #
-#  1. POSIX ACLs DO NOT SURVIVE A CONTAINER COMMIT (WI-2143115). A `setfacl` in a
-#     Containerfile succeeds, `getfacl` in the very next RUN confirms it, and the
-#     ACL is gone from the committed layer. Every surrounding signal reads
-#     healthy. Since the D-043/D-248 identity separation is expressed ENTIRELY in
-#     ACLs, baking them yields a host whose isolation contract is silently absent.
+#  1. POSIX ACLs DO NOT SURVIVE A CONTAINER COMMIT (WI-2143115). This still means
+#     the machine-local workspace ACL must be applied here. It CANNOT mean an ACL
+#     on `/opt`: the first real P-305 boot proved `/opt` is immutable/read-only,
+#     so that write fails with EROFS. D-314 instead bakes immutable runtime access
+#     as a dedicated supplementary group and this unit verifies it read-only.
 #
 #  2. `/srv` AND `/home` ARE SYMLINKS INTO MACHINE-LOCAL `/var` on this base
 #     (measured 2026-09-04 against centos-bootc:stream9: `srv -> var/srv`,
@@ -20,11 +20,10 @@
 #     and does not reach a deployed host at all.
 #
 # ── Why EVERY boot rather than first ──────────────────────────────────────────
-# `/opt` is image content. After `bootc upgrade` the host reboots into a new
-# deployment, and the ACLs on `/opt/papercusp` went with the deployment that
-# carried them. `/var` and `/srv` are machine-local and persist. So the ACL work
-# has to re-run after every update; the directory work is idempotent and cheap.
-# Making this once-only would break precisely the hosts that take an update.
+# `/opt` is immutable image content and is replaced by `bootc upgrade`; its group
+# metadata must already be correct in every signed image. `/var` and `/srv` are
+# machine-local and persist, so their directory and ACL work remains idempotent
+# on every boot. Making that mutable work once-only would break upgraded hosts.
 #
 # ── Source of truth ───────────────────────────────────────────────────────────
 # Every path, mode, owner and ACL below is transcribed from the `harden-os` phase
@@ -40,6 +39,7 @@ WORKSPACE_USER=papercusp-workspace
 WORKSPACE_GROUP=papercusp-workspace
 AGENT_USER=papercusp-agent
 AGENT_GROUP=papercusp-agent
+RUNTIME_READ_GROUP=papercusp-runtime-read
 
 RUNTIME_ROOT=/opt/papercusp
 STATE_ROOT=/var/lib/papercusp
@@ -112,32 +112,47 @@ install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700 "/home/$WORKSPACE_
 install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700 "$AGENT_HOME"
 say "machine-local-roots PASS"
 
-# ── 2. Runtime root ownership + the agent's read ACL ──────────────────────────
-# The image already created these with this owner and mode; re-asserted because a
-# fresh deployment after `bootc upgrade` brings the image's copy back and the ACL
-# below has to be re-applied to it regardless.
-install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"
-
-# D-248: the agent identity reads the signed runtime; the SSH account does not.
-# This single ACL is the entire mechanism behind `runtimeReadableByAgentUser: true`
-# alongside `runtimeReadableByWorkspaceUser: false` in the attestation.
-setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"
-
-# The named-user grant must reach the immutable release tree as well as its two
-# parents.  The image layer intentionally strips world access, and the agent is
-# forbidden from joining $SERVICE_GROUP because that group also gates the state
-# root and delivered service credentials.  A parent-only ACL therefore lets the
-# agent traverse to a release it still cannot read or execute.  Reapply this
-# recursively on EVERY boot: POSIX ACLs are the metadata class that the
-# container commit drops, and each bootc deployment carries a fresh copy of the
-# release tree.
-setfacl -R -m "u:$AGENT_USER:rX" "$RUNTIME_ROOT/releases"
-
-# Assert rather than assume: this is the exact property that a container commit
-# silently drops, so on a booted host it is worth one grep to prove it took.
-getfacl -p "$RUNTIME_ROOT" 2>/dev/null | grep -q "^user:$AGENT_USER:r-x" \
-  || die "runtime-root ACL did not take effect (u:$AGENT_USER:r-x on $RUNTIME_ROOT)"
-say "runtime-acl PASS"
+# ── 2. Immutable runtime metadata — VERIFY ONLY, NEVER MUTATE /opt ─────────────
+# The service and agent share only this narrow capability group. The service's
+# primary `$SERVICE_GROUP` continues to gate state/credentials, while the
+# agent's primary `$AGENT_GROUP` continues to gate its credential home.
+[[ "$(getent group "$RUNTIME_READ_GROUP" | cut -d: -f3)" == 912 ]] \
+  || die "$RUNTIME_READ_GROUP is absent or no longer pinned to gid 912"
+for user in "$SERVICE_USER" "$AGENT_USER"; do
+  id -nG "$user" | tr ' ' '\n' | grep -Fx "$RUNTIME_READ_GROUP" >/dev/null \
+    || die "$user is not in immutable runtime-read group $RUNTIME_READ_GROUP"
+done
+runtime_member_count="$(getent group "$RUNTIME_READ_GROUP" | cut -d: -f4 | tr ',' '\n' | sed '/^$/d' | wc -l)"
+[[ "$runtime_member_count" == 2 ]] \
+  || die "$RUNTIME_READ_GROUP has $runtime_member_count supplementary members, expected exactly 2"
+if id -nG "$WORKSPACE_USER" | tr ' ' '\n' | grep -Fx "$RUNTIME_READ_GROUP" >/dev/null; then
+  die "workspace SSH user belongs to immutable runtime-read group $RUNTIME_READ_GROUP"
+fi
+for path in "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"; do
+  [[ "$(stat -c '%U:%G:%a' "$path")" == "root:$RUNTIME_READ_GROUP:750" ]] \
+    || die "$path immutable metadata is $(stat -c '%U:%G:%a' "$path"), expected root:$RUNTIME_READ_GROUP:750"
+done
+for user in "$SERVICE_USER" "$AGENT_USER"; do
+  runuser -u "$user" -- test -r "$RUNTIME_ROOT/releases" \
+    && runuser -u "$user" -- test -x "$RUNTIME_ROOT/releases" \
+    || die "$user cannot read/traverse immutable runtime releases"
+done
+if runuser -u "$WORKSPACE_USER" -- test -r "$RUNTIME_ROOT/releases"; then
+  die "workspace SSH user can read immutable runtime releases"
+fi
+if getfacl -cp "$RUNTIME_ROOT" 2>/dev/null | grep -q '^user:papercusp-agent:'; then
+  die "immutable runtime still relies on a named-user ACL instead of image metadata"
+fi
+if [[ -L "$RUNTIME_ROOT/current" ]]; then
+  release_dir="$(readlink -f "$RUNTIME_ROOT/current")"
+  [[ "$release_dir" == "$RUNTIME_ROOT/releases/"* ]] \
+    || die "current runtime resolves outside $RUNTIME_ROOT/releases"
+  [[ "$(stat -c '%U:%G:%a' "$release_dir")" == "root:$RUNTIME_READ_GROUP:750" ]] \
+    || die "$release_dir immutable metadata is $(stat -c '%U:%G:%a' "$release_dir"), expected root:$RUNTIME_READ_GROUP:750"
+  [[ -z "$(find "$release_dir" -xdev ! -group "$RUNTIME_READ_GROUP" -print -quit)" ]] \
+    || die "immutable release tree contains an entry outside $RUNTIME_READ_GROUP"
+fi
+say "runtime-group PASS"
 
 # ── 3. Workspace root: the three-way shared ACL ───────────────────────────────
 # Cleared first so a re-run cannot accumulate stale entries from an earlier image.
