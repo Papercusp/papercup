@@ -2065,26 +2065,15 @@ impl OperatorClient {
             }
             Err(_) => Vec::new(),
         };
-        // The EFFECTIVE model-tier menu for the chat pane's model picker
-        // (P-005, WI-41189). `config:tiers-get` returns "stored, else the
-        // committed defaults" — the server does the merge, so the pui never
-        // reimplements that rule (D-022 §1). Assembled here rather than fetched
-        // when the picker opens because this whole read is already on the
-        // periodic refetch, so the menu is warm on the keypress.
-        //
-        // A failure degrades to an EMPTY menu, never to an invented tier list:
-        // the picker still offers its inherit row, which is the honest default.
-        let tiers = match self
-            .run_tool("config:tiers-get", serde_json::json!({}))
-            .await
-        {
-            Ok(env) => run_tool_inner_json(&env)
-                .ok()
-                .and_then(|inner| inner.get("tiers").cloned())
-                .and_then(|t| serde_json::from_value(t).ok())
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
+        // `/api/agent-config` already carries the server-computed effective
+        // tier menu. Reuse it instead of issuing `config:tiers-get`: that tool
+        // rides the generic palette route, whose cold registry initialization
+        // can otherwise delay the startup picker beyond its deadline. A failed
+        // config read remains an empty menu (the honest unknown state).
+        let tiers = agent
+            .as_ref()
+            .map(|response| response.effective_tiers.clone())
+            .unwrap_or_default();
         Ok(OperatorConfig {
             agent,
             providers,
@@ -3490,6 +3479,23 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operator_config_reads_effective_tiers_from_agent_config_without_palette_dispatch() {
+        let src = include_str!("client.rs");
+        let body = src
+            .split_once("pub async fn operator_config(&self) -> Result<OperatorConfig> {")
+            .expect("operator_config not found")
+            .1
+            .split_once("\n    // --- Fleet status view")
+            .expect("could not delimit operator_config")
+            .0;
+        assert!(body.contains("response.effective_tiers.clone()"));
+        assert!(
+            !body.contains("run_tool(\"config:tiers-get\""),
+            "startup must not initialize the generic tool palette just to populate the model picker"
+        );
+    }
 
     #[tokio::test]
     async fn su_launch_stream_waits_for_the_final_binding_after_progress() {

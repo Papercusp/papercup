@@ -32,6 +32,7 @@ import {
   type AgentConfig,
 } from '../../../agent-config';
 import { DEFAULT_MODEL_TIERS, MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
+import { classifyLoopModelSpec } from '../../../agent-loop/model-selection';
 import { resolveRoleLaunch } from '../../../fleet/role-launch';
 import { launchableModes } from '../../../modes/registry';
 import { detectBinaries } from '../../../agent-bin-detect';
@@ -63,6 +64,16 @@ export default [
         // (queen-steering D-006) gets the baseline without a client-side
         // operator-core constant import. Additive; existing consumers ignore it.
         defaultTiers: DEFAULT_MODEL_TIERS,
+        // The workspace-effective tier menu for startup-sensitive clients:
+        // stored rows replace the committed baseline wholesale. Keep the
+        // merge and Agent Chat capability classification on the server, but
+        // return them on this already-required config read so a cold PUI does
+        // not have to initialize the full agent-tool registry merely to open
+        // its model picker.
+        effectiveTiers: (cfg.tiers?.length ? cfg.tiers : DEFAULT_MODEL_TIERS).map((tier) => ({
+          ...tier,
+          loopCapability: classifyLoopModelSpec(tier.spec),
+        })),
         // PUI/PSU option-source parity: clients render the launch vocabularies
         // from the same two registries the launcher validates. Never duplicate
         // these arrays in a Rust/GUI client — adding an effort or launchable

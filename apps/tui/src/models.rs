@@ -2265,7 +2265,7 @@ pub struct AgentConfigInner {
     pub surface_models: std::collections::BTreeMap<String, String>,
 }
 
-/// `GET /api/agent-config` → `{ config: {...}, effectiveBackend, binaries, envOverrides }`.
+/// `GET /api/agent-config` → `{ config: {...}, effectiveTiers, effectiveBackend, … }`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfigResponse {
@@ -2273,6 +2273,10 @@ pub struct AgentConfigResponse {
     pub config: AgentConfigInner,
     #[serde(default)]
     pub effective_backend: String,
+    /// Workspace override when present, otherwise the committed tier baseline,
+    /// already classified by the server for Agent Chat execution.
+    #[serde(default)]
+    pub effective_tiers: Vec<crate::session_config::ModelTier>,
     /// The exact effort vocabulary the PSU launcher validates, projected by
     /// the operator from `MODEL_EFFORT_LEVELS`.
     #[serde(default)]
@@ -2299,13 +2303,9 @@ pub struct CredStatus {
 pub struct OperatorConfig {
     pub agent: Option<AgentConfigResponse>,
     pub providers: Vec<(String, bool)>,
-    /// The EFFECTIVE model-tier menu, exactly as the server computed it
-    /// (`config:tiers-get` → "stored, else the committed defaults").
-    ///
-    /// Deliberately NOT assembled here from `defaultTiers` + `config.tiers`:
-    /// that merge is a RULE the server owns, and reimplementing it in the pui
-    /// would be a second copy of it (D-022 §1, applied to itself). Empty means
-    /// the read has not landed or failed — never a hardcoded fallback.
+    /// The EFFECTIVE model-tier menu from `/api/agent-config.effectiveTiers`.
+    /// Empty means the read has not landed or failed — never a hardcoded
+    /// client fallback.
     pub tiers: Vec<crate::session_config::ModelTier>,
 }
 
@@ -4245,12 +4245,25 @@ mod tests {
         let j = r#"{"config":{"backend":"claude-code","cmd":"claude -p --model haiku",
             "models":{"worker":"opus","merge-resolver":"opus:xhigh"},"backends":{},
             "surfaceModels":{"operator":"sonnet"}},"binaries":{"claude":"/x/claude"},
-            "effectiveBackend":"claude-code","effortLevels":["low","high"],
+            "effectiveBackend":"claude-code","effectiveTiers":[
+              {"name":"quick","spec":"haiku","when":"small work",
+               "loopCapability":{"executable":true,"provider":"gateway-anthropic"}}
+            ],"effortLevels":["low","high"],
             "launchableModes":[{"id":"auto","title":"AUTO","oneLiner":"Act without asks."}],
             "envOverrides":{"AGENT_BACKEND":"claude-code"}}"#;
         let r: AgentConfigResponse = serde_json::from_str(j).unwrap();
         assert_eq!(r.config.backend, "claude-code");
         assert_eq!(r.effective_backend, "claude-code");
+        assert_eq!(r.effective_tiers.len(), 1);
+        assert_eq!(r.effective_tiers[0].name, "quick");
+        assert_eq!(r.effective_tiers[0].spec, "haiku");
+        assert_eq!(
+            r.effective_tiers[0]
+                .loop_capability
+                .as_ref()
+                .and_then(|capability| capability.provider.as_deref()),
+            Some("gateway-anthropic")
+        );
         assert_eq!(r.config.cmd, "claude -p --model haiku");
         assert_eq!(
             r.config.models.get("worker").map(String::as_str),
