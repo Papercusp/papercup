@@ -638,6 +638,27 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
   });
 });
 
+// ── learning.soakReport must stay DEMAND-DRIVEN (EI-22753375938788500) ───────
+//
+// This producer fans a full soak report out across every pot. Keeping it in the
+// shared 2-minute sweep paid that cost every time its 10-minute ttl expired even
+// when nobody opened the Learnings view. The registry already has the exact
+// semantics this producer needs: serve the last-known-good snapshot immediately,
+// then refresh in the background only after a real read observes it stale.
+describe('derived-reads producers: learning.soakReport demand-driven refresh (EI-22753375938788500)', () => {
+  it('stays out of the default sweep and refreshes only after an actual read', async () => {
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.soakReport');
+
+    expect(producer, 'learning.soakReport producer must be registered').toBeDefined();
+    expect(producer!.excludeFromDefaultSweep).toBe(true);
+    expect(producer!.refreshOnRead).toBe(true);
+  });
+});
+
 // ── syncReads.audit must stay OUT of the shared sweep (EI-19457924854150358) ───
 //
 // registry.test.ts already proves the `excludeFromDefaultSweep` MECHANISM works,
@@ -677,10 +698,13 @@ describe('derived-reads producers: syncReads.audit (EI-19457924854150358)', () =
 
     // And the exclusion must remain the rare exception, not the norm.
     const excluded = all.filter((p) => p.excludeFromDefaultSweep);
-    expect(excluded.map((p) => p.key)).toEqual(['plans.lint', 'syncReads.audit']);
+    expect(excluded.map((p) => p.key)).toEqual(['plans.lint', 'learning.soakReport', 'syncReads.audit']);
 
-    // Only plans.lint is demand-driven. syncReads.audit remains dedicated-routine
-    // owned, so an ordinary read can never launch its minutes-scale audit.
-    expect(all.filter((p) => p.refreshOnRead).map((p) => p.key)).toEqual(['plans.lint']);
+    // plans.lint and learning.soakReport are demand-driven. syncReads.audit remains
+    // dedicated-routine owned, so an ordinary read can never launch its minutes-scale audit.
+    expect(all.filter((p) => p.refreshOnRead).map((p) => p.key)).toEqual([
+      'plans.lint',
+      'learning.soakReport',
+    ]);
   });
 });

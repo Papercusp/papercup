@@ -209,12 +209,19 @@ registerDerivedRead({
 // detection in pot/soak-report.ts).
 //
 // The rolling window is 12–24h, so the report barely moves minute to minute;
-// 10 minutes is comfortably fresh for a readiness panel.
+// 10 minutes is comfortably fresh for a readiness panel. EI-22753375938788500:
+// this compute also runs the placement-frontier queries once per pot, which made
+// it the largest continuous PG consumer when it stayed in the shared sweep even
+// with zero Learnings readers. Use the registry's existing demand-driven mode:
+// a read serves the last-known-good snapshot immediately and refreshes behind it
+// only when that snapshot is stale. Zero reads therefore means zero recomputes.
 registerDerivedRead({
   key: 'learning.soakReport',
   ttlMs: 10 * 60_000,
   producerVersion: 1,
   scope: 'workspace',
+  excludeFromDefaultSweep: true,
+  refreshOnRead: true,
   compute: async ({ workspaceId }) => {
     const { listPots } = await import('../agent-tools/pot/_resolve');
     const { readPotSoakReport } = await import('../pot/soak-report');
