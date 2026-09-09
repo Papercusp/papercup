@@ -732,6 +732,7 @@ export async function withPlanLock<T>(
           workspaceId, harnessSlug, rubricSlug: slug, rubricRevision: newVersion,
           templateData: templateData!.data,
           actorId: authenticatedActorId ?? 'system:plan-template-write',
+          previousTemplateData: cur?.template_data,
         });
       }
       if (writesInputSchema) {

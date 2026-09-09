@@ -1008,6 +1008,7 @@ export async function seedAcceptanceBarsInTransaction(
     rubricSlug,
     rubricRevision,
     templateData: built.templateData,
+    previousTemplateData: existing?.template_data,
     actorId: input.actorId,
   });
 

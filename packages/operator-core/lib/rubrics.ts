@@ -3580,6 +3580,7 @@ async function amendAcceptanceBarRubric(
         rubricSlug: input.rubricId,
         rubricRevision: nextRubricRevision,
         templateData: guard.data,
+        previousTemplateData: rubricRow.template_data,
         actorId,
       });
       injectAmendmentFault(input, 'after-projection');

@@ -1484,6 +1484,81 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter!.revision}:${before.sourceBar!.barKey}`);
   });
 
+  it.each(['layers', 'model', 'falsifier', 'plane'] as const)(
+    'preserves reviewed scenarios and causal pairing only for test-layer changes (%s)', async (change) => {
+    const seeded = await seedBarContract(`atomic-layer-preservation-${change}`, { authorMethods: true });
+    const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+    const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
+    const draft = (await listSpecClauses(scope))[0]!;
+    const authored = {
+      behavior: 'The selected task remains complete after restarting the application.',
+      behaviorClass: 'lifecycle' as const,
+      requiredEvidence: ['tree', 'Restart the application and read the selected task.'],
+      requiredTestLayers: ['e2e', 'integration'],
+      mutationRequired: true,
+      falsifier: {
+        observation: 'The completed task reopens after restart.',
+        probeMethod: 'Restart after completing one task; compare the broken and repaired cases.',
+        causalPairing: 'one-to-one' as const,
+        requiredScenarios: ['restart.broken', 'restart.repaired'],
+      },
+      lifecycleStatus: 'accepted' as const,
+    };
+    await setSpecClause({ ...draft, ...scope, ...authored, expectedRevision: draft.revision, actorId: 'atomic-author' });
+    const before = (await listSpecClauses(scope))[0]!;
+    const rubricBefore = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Require browser and integration proof without replacing the reviewed behavior.',
+      criteria: rubricBefore.criteria.map((criterion) => criterion.barKey === before.sourceBar!.barKey
+        ? {
+            ...criterion, requiredTestLayers: ['browser', 'integration'], method: `${criterion.method}\nInspect browser proof.`,
+            ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
+            ...(change === 'falsifier' ? { driftMarkers: 'The changed outcome is absent.' } : {}),
+            ...(change === 'plane' ? { evidencePlane: 'live' as const } : {}),
+          }
+        : criterion),
+    };
+    const rubricAfter = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+    const after = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
+
+    expect(rubricAfter.barSetHash).not.toBe(rubricBefore.barSetHash);
+    if (change === 'layers') {
+      expect(after).toMatchObject({ ...authored, requiredEvidence: before.requiredEvidence,
+        requiredTestLayers: ['browser', 'e2e', 'integration'] });
+    } else {
+      const criterion = rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!;
+      expect(after.behavior).toBe(criterion.model);
+      expect(after.falsifier).toEqual({ observation: criterion.driftMarkers });
+      expect(after.requiredTestLayers).toEqual(['browser', 'integration']);
+      expect(after.behaviorClass).not.toBe('lifecycle');
+      if (change === 'plane') expect(after.requiredEvidence).toContain('live');
+    }
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.sourceBar).toMatchObject({
+      rubricRevision: rubricAfter.revision, barSetHash: rubricAfter.barSetHash,
+      barHash: rubricAfter.criteria.find((criterion) => criterion.barKey === before.sourceBar!.barKey)!.barHash,
+    });
+    expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter.revision}:${before.sourceBar!.barKey}`);
+    expect((await listSpecClauses({ ...scope, includeHistory: true })).find((clause) =>
+      clause.specId === before.specId && clause.revision === before.revision))
+      .toEqual({ ...before, currentRevision: after.revision });
+    if (change === 'layers') {
+      const replacement = { ...amendment,
+        reason: 'Replace the canonical layers while retaining the atomic e2e requirement.',
+        criteria: rubricAfter.criteria.map((criterion) => criterion.barKey === before.sourceBar!.barKey
+          ? { ...criterion, requiredTestLayers: ['component'] } : criterion),
+      };
+      await rubrics.amendRubric({ ...replacement, approvalRef: await postApproval(replacement) });
+      const replaced = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
+      expect(replaced.requiredTestLayers).toEqual(['component', 'e2e']);
+      expect(replaced.behavior).toBe(before.behavior);
+      expect(replaced.falsifier).toEqual(before.falsifier);
+      expect(replaced.behaviorClass).toBe(before.behaviorClass);
+    }
+  });
+
   it('previews a missing class bind without vetting an incomplete started BAR contract', async () => {
     const seeded = await seedBarContract('class-bind-preview-subject');
     const before = await rubrics.getRubric(seeded.rubricSlug);
@@ -1608,8 +1683,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
       reason: 'Refresh terminal work-item coverage after a BAR meaning change.',
       criterion: {
         key: before.criteria[0]!.key,
-        field: 'driftMarkers',
-        mode: 'replace',
+        field: 'driftMarkers' as const,
+        mode: 'replace' as const,
         text: 'The terminal coverage edge still points at a superseded BAR revision.',
       },
     };
