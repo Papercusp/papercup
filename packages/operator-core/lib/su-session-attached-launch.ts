@@ -21,6 +21,17 @@ const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () =
   engines: new Map<string, ClaudeSuEngine | SuRpcEngine>(),
 }));
 
+/** The real-provider OS-restart fixture opts into one native approval without
+ * changing the ordinary attached-session permission posture. Both sentinels
+ * are required so an ambient PUI_REAL_APPROVAL value cannot affect a live
+ * workspace or any non-fixture operator process. */
+function acceptanceToolApproval(workspaceId: string): { toolApproval?: 'prompt' } {
+  return process.env.PUI_REAL_APPROVAL === '1'
+    && process.env.PUI_OPERATOR_FIXTURE_WORKSPACE === workspaceId
+    ? { toolApproval: 'prompt' }
+    : {};
+}
+
 export interface AttachedSuLaunchInput {
   agent: string;
   agent_chat_id: string;
@@ -73,7 +84,8 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         const resume = await prepareStructuredSuResume(previous);
         let active: ClaudeSuEngine | SuRpcEngine | undefined;
         try {
-          const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady, onExit: resume.onExit };
+          const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
+            onExit: resume.onExit, ...acceptanceToolApproval(workspaceId) };
           active = previous.backend === 'claude'
             ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
               { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
@@ -152,6 +164,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         agentChatId: input.agent_chat_id, model: selectedModel, accountRoute: input.account,
         carry: input.carry ?? 'warm', modes: input.mode ? [input.mode] : [],
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
+        ...acceptanceToolApproval(workspaceId),
       };
       engine = result.agent === 'claude'
         ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },

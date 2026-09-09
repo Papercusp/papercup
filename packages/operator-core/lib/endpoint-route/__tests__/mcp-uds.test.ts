@@ -11,7 +11,7 @@ import {
   AGENT_MCP_AUTH_META, startAgentMcpServer, type AgentMcpHost, type AgentMcpListener,
 } from '../routes/transport/_mcp-uds';
 import type { BuiltSpawnContext } from '../routes/transport/_mcp-host';
-import { getMcpAdmissionSnapshot } from '../routes/transport/mcp-admission';
+import { acquireMcpBodyAdmission, getMcpAdmissionSnapshot } from '../routes/transport/mcp-admission';
 
 const live: AgentMcpListener[] = [];
 const clients: Client[] = [];
@@ -115,6 +115,7 @@ describe('private MCP listener lifecycle and connection authority', () => {
       expect(dirname(dirname(f.listener.endpoint.socketPath))).toBe(root);
       expect(f.listener.endpoint.socketPath).not.toBe(stale);
       expect(await readFile(stale, 'utf8')).toBe('stale but not ours');
+      await f.listener.close();
     } finally { await rm(root, { recursive: true }); }
   });
 
@@ -217,4 +218,26 @@ describe('private MCP listener lifecycle and connection authority', () => {
     expect(f.dispatched.mock.calls).toEqual([['call']]);
     expect(getMcpAdmissionSnapshot().inFlight).toBe(0);
   }, 5_000);
+
+  it('uses the shared admission bulkhead without dispatching or silently replaying shed calls', async () => {
+    const f = await fixture();
+    const { client, wire } = connection(f.listener);
+    await client.connect(wire);
+    const held: Array<{ release(): void }> = [];
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo' } });
+    try {
+      for (let i = 0; i < 1000; i++) {
+        const result = acquireMcpBodyAdmission(body, credentials(f.listener).url, 'ok', true);
+        if (result.response) break;
+        if (result.lease) held.push(result.lease);
+      }
+      expect(held.length).toBeGreaterThan(0);
+      await expect(client.callTool({ name: 'echo', arguments: { text: 'not-replayed' } }))
+        .rejects.toThrow('saturated');
+      expect(f.dispatched).not.toHaveBeenCalled();
+    } finally { held.forEach(lease => lease.release()); }
+    const result = await client.callTool({ name: 'echo', arguments: { text: 'explicit-new-call' } });
+    expect(result.content).toEqual([{ type: 'text', text: 'explicit-new-call' }]);
+    expect(f.dispatched.mock.calls).toEqual([['call']]);
+  });
 });

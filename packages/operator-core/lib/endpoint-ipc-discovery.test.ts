@@ -20,6 +20,7 @@ import {
   endpointIpcDiscoveryPath,
   endpointIpcDiscoveryPathForPort,
   readAgentMcpDiscoveryForPort,
+  agentMcpOperatorId,
 } from './endpoint-ipc-discovery';
 
 beforeEach(async () => {
@@ -35,7 +36,7 @@ describe('agent MCP selected-operator discovery', () => {
     await chmod(socketPath, 0o600);
     try {
       const agentMcp = { version: 1 as const, transport: 'uds' as const, socketPath,
-        operatorId: 'a'.repeat(64), generation: randomUUID() };
+        operatorId: agentMcpOperatorId(3170), generation: randomUUID() };
       await writeEndpointIpcDiscovery('/tmp/ui-one.sock', { port: 3170, agentMcp });
       await writeEndpointIpcDiscovery('/tmp/ui-two.sock', { port: 3070 });
       expect((await readAgentMcpDiscoveryForPort(3170))?.agentMcp).toEqual(agentMcp);
@@ -52,6 +53,8 @@ describe('agent MCP selected-operator discovery', () => {
       await writeFile(path, JSON.stringify({ ...raw, pid: 2_000_000_000 }));
       expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
       await writeFile(path, JSON.stringify({ ...raw, port: 3070 }));
+      expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
+      await writeFile(path, JSON.stringify({ ...raw, agentMcp: { ...agentMcp, operatorId: 'f'.repeat(64) } }));
       expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
       await writeFile(path, JSON.stringify(raw));
       expect((await readAgentMcpDiscoveryForPort(3170))?.agentMcp).toEqual(agentMcp);

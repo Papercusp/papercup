@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
@@ -28,7 +28,11 @@ const request = () => new Request('http://localhost/api/adv/sessions/launch-su',
 const boot = { status: 'ok', sessionId: 18, nativeSessionId: 'native-id', agent: 'claude', workspaceId: 'workspace', harnessSlug: 'project', planSlug: null,
   envelopeEnv: { PAPERCUSP_SID: 'su-engine', CLAUDE_CONFIG_DIR: '/configured/claude' } };
 const close = vi.fn(async () => undefined);
+const priorApproval = process.env.PUI_REAL_APPROVAL;
+const priorFixtureWorkspace = process.env.PUI_OPERATOR_FIXTURE_WORKSPACE;
 beforeEach(() => {
+  delete process.env.PUI_REAL_APPROVAL;
+  delete process.env.PUI_OPERATOR_FIXTURE_WORKSPACE;
   vi.resetAllMocks();
   mocks.chat.mockResolvedValue({ ok: true, data: { archived_at: null, su_runtime_class: 'su-session' } });
   mocks.read.mockResolvedValue(null);
@@ -40,6 +44,12 @@ beforeEach(() => {
       descriptor: () => ({ lifecycle: 'starting' }), snapshot: () => ({ terminal: false }),
     } } });
   mocks.rpc.mockImplementation(() => ({ ...mocks.engine(), nativeSession: () => null }));
+});
+afterEach(() => {
+  if (priorApproval === undefined) delete process.env.PUI_REAL_APPROVAL;
+  else process.env.PUI_REAL_APPROVAL = priorApproval;
+  if (priorFixtureWorkspace === undefined) delete process.env.PUI_OPERATOR_FIXTURE_WORKSPACE;
+  else process.env.PUI_OPERATOR_FIXTURE_WORKSPACE = priorFixtureWorkspace;
 });
 
 describe('attached launch authority', () => {
@@ -59,6 +69,17 @@ describe('attached launch authority', () => {
     expect(mocks.bind.mock.invocationCallOrder[0]).toBeLessThan(mocks.engine.mock.invocationCallOrder[0]);
     ready();
     await vi.waitFor(() => expect(mocks.pid).toHaveBeenCalledWith(18, 4321, 'pui-structured-claude'));
+  });
+
+  it('enables prompt approval only for the matching real-provider fixture workspace', async () => {
+    process.env.PUI_REAL_APPROVAL = '1';
+    process.env.PUI_OPERATOR_FIXTURE_WORKSPACE = 'workspace';
+    await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'approval-fixture' });
+    expect(mocks.engine.mock.calls[0][3]).toMatchObject({ toolApproval: 'prompt' });
+
+    process.env.PUI_OPERATOR_FIXTURE_WORKSPACE = 'other-workspace';
+    await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'ordinary-session' });
+    expect(mocks.engine.mock.calls[1][3]).not.toHaveProperty('toolApproval');
   });
 
   it('coalesces simultaneous retries before any engine is started', async () => {

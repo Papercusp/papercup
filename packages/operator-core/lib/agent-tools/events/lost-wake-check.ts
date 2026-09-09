@@ -20,14 +20,14 @@ const EVENTS_SCOPE_NOTE =
 export default defineTool({
   name: 'events:lost-wake-check',
   description:
-    `Read harness_shared.event_awaits and report awaitable event keys whose live real-fire rate is degenerate: a settled-enough key with almost no fired_reason=\'event\' outcomes (mostly \'timeout\'). Each finding is CONVICTED (an independent witness confirms the condition occurred while the wake did not — a proven lost-wake bug, EI-10800\'s class) or a SUSPECT (no witness, or unconfirmed — a review item, not a proven bug). The reader for the await log tool_invocations cannot provide: an await settling by timeout is not a tool call. ${EVENTS_SCOPE_NOTE}`,
+    `Read event_awaits for keys with enough settled awaits but few real event fires. CONVICTED means an independent witness confirms the condition occurred without a wake; SUSPECT means the witness is absent or unconfirmed. Timeout settlements are not tool calls and cannot be diagnosed from tool_invocations. ${EVENTS_SCOPE_NOTE}`,
   guidance: {
     when:
-      'Auditing whether an events:await wake path actually fires on live traffic — especially before trusting an emit call site, since a lost wake fails silently in the safe-looking direction (the awaiter just waits). Also the direct check for the "0% real-fire rate" class.',
+      'Audit whether events:await fires on live traffic, including suspected zero-fire paths and silent missing emits.',
     notWhen:
-      `A key has too few settled awaits (below minSettled) to mean anything. A high timeout rate on a key that legitimately rarely fires (e.g. a failure-path event) is also not by itself a bug — which is why unwitnessed suspects are never reported as convicted. ${EVENTS_SCOPE_NOTE}`,
+      'Below minSettled, the sample is insufficient. Frequent timeouts on a legitimately rare event do not prove a bug; unwitnessed findings remain suspects.',
     chaining:
-      'events:lost-wake-check → a CONVICTED finding names its witness evidence: read the emit call site for that key (often a fire-and-forget dynamic import racing process teardown, EI-10800\'s shape) and make the emit AWAITED. A SUSPECT with no witness: add one to LOST_WAKE_WITNESSES in events/await/lost-wake-detect.ts, or investigate by hand first.',
+      'Read a convicted finding\'s witness and emit call site; fix any teardown race by awaiting the emit. For a suspect, investigate or add a witness to LOST_WAKE_WITNESSES in events/await/lost-wake-detect.ts.',
     seeAlso: ['gates:degenerate-check', 'events:status', 'events:catalog'],
   },
   capability: 'coord:read',
