@@ -5,6 +5,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_
 import { setMode } from '../../../modes/store';
 import * as obligationReader from '../../../agent-obligation-reader';
 import * as goalSettings from '../../../goal-launch-settings';
+import * as ownerReportHistory from '../../../system-health/goal-owner-report-watchdog';
 import { formatAgentObligationLine } from '../../../agent-obligations';
 import {
   buildTurnStartOrientationBlock,
@@ -210,5 +211,47 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     for (const [warning] of warnings.mock.calls) {
       expect(String(warning)).toMatch(/^\[bounded-timeout\] (?:agent-obligations:|orient:goalPortfolio)/);
     }
+  }, 90_000);
+
+  it('keeps unreadable report history unknown and executes its emitted recovery in the same scope', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failure = `P007 controlled report-history read failure ${RUN}`;
+    // This is the production three-rail history reader, shared by the handler
+    // and obligation provider. Fail both reads, not whichever happens to race first.
+    const history = vi.spyOn(ownerReportHistory, 'readGoalOwnerReportObligation')
+      .mockRejectedValue(new Error(failure));
+    const failed = await readOrientation();
+    const report = failed.obligations.evaluations.find((entry) => entry.ruleId === 'goal-owner-report');
+    expect(report?.status).toBe('unknown');
+    expect(report?.scope).toMatchObject({ workspaceId: WS, ownerId: OWNER, goalId: GOAL });
+    expect(report?.measurementFailure?.detail).toContain(failure);
+    expect(report?.measurementFailure?.retry).toContain('readGoalOwnerReportObligation');
+    expect(report?.action).toMatchObject({ kind: 'inspect', targetRef: 'readGoalOwnerReportObligation' });
+    expect(failed.obligations.projection.text).toContain('UNKNOWN');
+
+    history.mockRestore();
+    // Resolve the emitted target, then actually execute it against the same
+    // isolated PostgreSQL scope. A string-presence assertion alone is not recovery.
+    const recoveryReaders = {
+      readGoalOwnerReportObligation: ownerReportHistory.readGoalOwnerReportObligation,
+    };
+    const recovery = recoveryReaders[report!.action!.targetRef as keyof typeof recoveryReaders];
+    expect(recovery).toBeTypeOf('function');
+    const recoveredHistory = await recovery(fx.admin, {
+      workspaceId: report!.scope.workspaceId,
+      ownerId: report!.scope.ownerId!,
+      goalId: report!.scope.goalId!,
+    });
+    expect(recoveredHistory?.obligation).toBe('not-due');
+    expect(recoveredHistory?.lastReportAt).toBeNull();
+
+    // The goal is genuinely within its initial reporting grace period. Its
+    // measured no-demand must differ from the failed-history UNKNOWN above.
+    const recovered = await readOrientation();
+    const recoveredReport = recovered.obligations.evaluations.find((entry) => entry.ruleId === 'goal-owner-report');
+    expect(recoveredReport?.scope).toEqual(report?.scope);
+    expect(recoveredReport?.status).toBe('satisfied');
+    expect(recoveredReport?.measurementFailure).toBeUndefined();
+    expect(recoveredReport?.reason).not.toContain(failure);
   }, 90_000);
 });
