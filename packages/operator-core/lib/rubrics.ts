@@ -2149,7 +2149,11 @@ async function assertAcceptanceSubjectPlanAvailable(
   throw new Error(
     `invalid_args: proposeRubric: subjectPlan '${input.subjectPlan}' already has an active acceptance rubric ` +
       `${conflicts.map((rubric) => `'${rubric.rubricId}'`).join(', ')}. ` +
-      'Retire the existing contract before proposing a replacement; one active acceptance rubric per subject plan is enforced.',
+      `Use rubrics:get for ${conflicts.map((rubric) => `'${rubric.rubricId}'`).join(', ')}, then send the complete ` +
+      'document back to rubrics:propose with the same rubricRef; that updates the revision in place and invalidates ' +
+      'evidence pinned to the prior revision. A distinct rubricRef cannot replace the live contract: one active ' +
+      'acceptance rubric per subject plan is enforced, and acceptance rubrics retire only with their subject plan ' +
+      '(rubrics:retire is not a replacement path).',
   );
 }
 

@@ -947,22 +947,29 @@ Preserve this plan body.
       by: 'su-first',
     });
 
-    await expect(
-      rubrics.proposeRubric({
-        rubricId: 'acceptance-unique-second',
-        kind: 'acceptance',
-        subjectPlan,
-        characteristic: 'acceptance-uniqueness',
-        title: 'Acceptance uniqueness second',
-        criteria: [{
-          key: 'outcome',
-          title: 'Outcome',
-          driftMarkers: 'the outcome regresses',
-          check: { kind: 'instrument', instrumentKey: 'none' },
-        }],
-        by: 'su-second',
-      }),
-    ).rejects.toThrow(/already has an active acceptance rubric.*acceptance-unique-first/i);
+    const refusal = await rubrics.proposeRubric({
+      rubricId: 'acceptance-unique-second',
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'acceptance-uniqueness',
+      title: 'Acceptance uniqueness second',
+      criteria: [{
+        key: 'outcome',
+        title: 'Outcome',
+        driftMarkers: 'the outcome regresses',
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      }],
+      by: 'su-second',
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toMatch(/already has an active acceptance rubric.*acceptance-unique-first/i);
+    expect((refusal as Error).message).toMatch(
+      /rubrics:get.*acceptance-unique-first.*rubrics:propose.*same rubricRef.*revision in place/i,
+    );
+    expect((refusal as Error).message).not.toContain('Retire the existing contract before proposing a replacement');
 
     const rows = await db.adminSql<{ count: string }[]>`
       SELECT count(*)::text AS count
