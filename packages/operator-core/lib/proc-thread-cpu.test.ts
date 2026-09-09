@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseProcStat,
+  parseProcDirectoryFd,
   classifyThreadCpu,
   isConfirmedHostIoWait,
   isLikelySyncSubprocessBlock,
@@ -31,6 +32,32 @@ describe('parseProcStat', () => {
     expect(parseProcStat('no parens here')).toBeNull();
     expect(parseProcStat('4242 (node) S 1 2 3')).toBeNull(); // too few fields
     expect(parseProcStat('4242 (node) S 1 4242 4242 0 -1 4194560 1 0 0 0 xx yy 0 0 20 0')).toBeNull();
+  });
+});
+
+describe('parseProcDirectoryFd', () => {
+  it('extracts getdents64 arg0 from the measured iterate_dir shape', () => {
+    expect(
+      parseProcDirectoryFd(
+        '217 0x19 0x7f10a4001000 0x8000 0x0 0x0 0x0 0x7ffd01 0x7f10ff',
+        'iterate_dir',
+      ),
+    ).toBe(25);
+  });
+
+  it('accepts the decimal argument rendering used by some kernels', () => {
+    expect(parseProcDirectoryFd('217 7 4096 32768 0 0 0 0 0', 'iterate_dir')).toBe(7);
+  });
+
+  it.each([
+    ['', 'iterate_dir'],
+    ['running', 'iterate_dir'],
+    ['217 nope 0x1', 'iterate_dir'],
+    ['217 -1 0x1', 'iterate_dir'],
+    ['217 0x19 0x1', 'ep_poll'],
+    ['217 0x19 0x1', null],
+  ])('returns null instead of inventing a directory fd (%s, %s)', (raw, wchan) => {
+    expect(parseProcDirectoryFd(raw, wchan)).toBeNull();
   });
 });
 

@@ -43,7 +43,7 @@
  */
 
 import { workerData, parentPort } from 'node:worker_threads';
-import { writeSync, readFileSync } from 'node:fs';
+import { writeSync, readFileSync, readlinkSync } from 'node:fs';
 // EXPLICIT `.ts` EXTENSION IS LOAD-BEARING for the same reason as the import
 // below — this is a worker ENTRY, loaded by Node's native type stripping, which
 // has no extensionless lookup. `proc-thread-cpu.ts` is dependency-free and
@@ -55,6 +55,7 @@ import {
   classifyThreadCpu,
   isConfirmedHostIoWait,
   isLikelySyncSubprocessBlock,
+  parseProcDirectoryFd,
   parseProcStat,
   type MainThreadActivity,
 } from './proc-thread-cpu.ts';
@@ -172,6 +173,32 @@ function readMainThreadWchan(): string | null {
 }
 
 /**
+ * Attribute an `iterate_dir` block to the actual directory being enumerated.
+ *
+ * External `strace -p` is commonly denied by Yama/ptrace policy on the hosts
+ * this sentinel protects. The worker is already inside the target process, so
+ * it can instead read the main thread's current syscall, take getdents64 arg0,
+ * and resolve that fd through `/proc/<pid>/fd`. Re-reading wchan after the
+ * lookup prevents a thread that recovered mid-probe from leaving behind a
+ * plausible but stale path in the kill record.
+ */
+function readMainThreadDirectoryWait(wchan: string | null): Record<string, string | number> {
+  try {
+    const raw = readFileSync(`/proc/${pid}/task/${pid}/syscall`, 'utf8');
+    const fd = parseProcDirectoryFd(raw, wchan);
+    if (fd == null) return {};
+    const directory = readlinkSync(`/proc/${pid}/fd/${fd}`);
+    if (readMainThreadWchan() !== wchan) return {};
+    return {
+      mainThreadBlockedDirectoryFd: fd,
+      mainThreadBlockedDirectory: directory.slice(0, 240),
+    };
+  } catch {
+    return {}; // transient syscall/fd race, non-Linux, or unreadable procfs
+  }
+}
+
+/**
  * Name the main thread's live children, for the synchronous-subprocess case.
  *
  * When the loop is suspended inside `execSync`/`spawnSync` there IS a child,
@@ -237,6 +264,7 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
   if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
   if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
   if (wchan) out.mainThreadWchan = wchan;
+  Object.assign(out, readMainThreadDirectoryWait(wchan));
   const activity: MainThreadActivity = {
     state: now?.state ?? null,
     cpuMs: verdict.cpuMs,

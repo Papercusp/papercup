@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -99,6 +99,19 @@ describe('resolveSentinelConfig', () => {
 });
 
 describe('startEventLoopSentinel', () => {
+  it('wires blocked-directory attribution into the real worker kill diagnostic', () => {
+    // EI-22803283447097859: the worker knew the main thread was in
+    // `iterate_dir`, but its last log did not name the directory and ptrace was
+    // denied after the restart. Pin both halves of the detector: syscall arg0
+    // must resolve through the live fd table, and the resulting path must be
+    // included in the fields shared by STALLED and WEDGED emissions.
+    const source = readFileSync(resolve(__dirname, 'event-loop-sentinel.worker.ts'), 'utf8');
+    expect(source).toContain('parseProcDirectoryFd');
+    expect(source).toContain('readlinkSync(`/proc/${pid}/fd/${fd}`)');
+    expect(source).toContain('mainThreadBlockedDirectory');
+    expect(source).toContain('Object.assign(out, readMainThreadDirectoryWait(wchan))');
+  });
+
   it('mode=off spawns nothing and reports inactive', () => {
     const lines: string[] = [];
     const h = startEventLoopSentinel({

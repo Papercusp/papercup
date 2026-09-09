@@ -65,6 +65,28 @@ export function parseProcStat(raw: string): ProcStatSample | null {
 }
 
 /**
+ * Parse the directory file descriptor from a Linux `/proc/<tid>/syscall` line
+ * while that thread is parked in `iterate_dir`.
+ *
+ * `/proc/<tid>/syscall` is `syscall-number arg0 arg1 ...`; `getdents64`'s arg0
+ * is the directory fd. The syscall number is deliberately NOT checked because
+ * it is architecture-specific. The wait channel is the portable discriminator
+ * that tells us this syscall's first argument has directory-fd semantics.
+ *
+ * Linux renders arguments as either decimal or `0x`-prefixed integers, both of
+ * which `Number` accepts. Anything else is UNKNOWN, never fd 0: this diagnostic
+ * runs immediately before a possible SIGKILL, so a plausible-looking wrong
+ * directory is worse than an omitted field.
+ */
+export function parseProcDirectoryFd(raw: string, wchan: string | null): number | null {
+  if (wchan?.trim() !== 'iterate_dir') return null;
+  const fields = raw.trim().split(/\s+/);
+  if (fields.length < 2 || fields[0] === 'running') return null;
+  const fd = Number(fields[1]);
+  return Number.isSafeInteger(fd) && fd >= 0 ? fd : null;
+}
+
+/**
  * What a thread was doing across a sampling window.
  *
  * - `spinning`  — burning CPU. For a blocked event loop this means a synchronous
