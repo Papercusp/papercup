@@ -135,6 +135,53 @@ function git(cwd: string, ...args: string[]) {
   return r.stdout;
 }
 
+describe('setup-release-checkout.sh cleanup — dependency generation ownership', () => {
+  it('preserves the complete generation store while deleting unrelated ignored debris', () => {
+    const release = mkdtempSync(join(tmpdir(), 'setup-generation-clean-'));
+    try {
+      git(release, 'init', '-q');
+      writeFileSync(join(release, '.gitignore'), '.papercusp/\n.vitest-tmp/\n');
+      const store = '.papercusp/dependency-generations';
+      const generation = `v1-${'a'.repeat(64)}`;
+      const retained = [
+        `${store}/.gitignore`,
+        `${store}/.inputs/input-fingerprint`,
+        `${store}/.pins/checkpoint`,
+        `${store}/.leases/reader`,
+        `${store}/${generation}/.papercusp-dependency-generation`,
+        `${store}/${generation}/.tree-manifest`,
+        `${store}/${generation}/tree/node_modules/example/package.json`,
+        `${store}/.build-pending-writer/.papercusp-generation-writer`,
+        `${store}/.build-pending-writer/tree/node_modules/example/package.json`,
+        'node_modules/example/package.json',
+        'apps/operator/dist-host/sql/runtime.sql',
+      ];
+      const debris = ['.vitest-tmp/stale.js', '.papercusp/unrelated-cache/stale.json'];
+      for (const path of [...retained, ...debris]) {
+        mkdirSync(dirname(join(release, path)), { recursive: true });
+        writeFileSync(join(release, path), `payload:${path}`);
+      }
+      // Execute the actual cleanup command against a disposable Git repository.
+      // A node_modules-only exclusion preserves package bytes but destroys the
+      // selectors, publication proofs and leases needed to reuse those bytes.
+      const clean = readFileSync(SCRIPT, 'utf8').split('\n').find(
+        (line) => /^\s*git -C "\$RELEASE_ROOT" clean /.test(line),
+      );
+      expect(clean).toBeDefined();
+      const result = spawnSync('bash', ['-c', clean!], {
+        env: { ...process.env, RELEASE_ROOT: release }, encoding: 'utf8',
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(debris.filter((path) => existsSync(join(release, path)))).toEqual([]);
+      expect(retained.map((path) => [
+        path, existsSync(join(release, path)) ? readFileSync(join(release, path), 'utf8') : null,
+      ])).toEqual(retained.map((path) => [path, `payload:${path}`]));
+    } finally {
+      rmSync(release, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('setup-release-checkout.sh 3b — gitignored runtime asset provisioning', () => {
   let root: string;
   let integration: string;
