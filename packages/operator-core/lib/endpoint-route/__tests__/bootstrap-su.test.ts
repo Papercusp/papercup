@@ -978,9 +978,10 @@ describe('bootstrap-su', () => {
     );
   });
 
-  it('fails closed before session/home creation when a headless Codex bootstrap has no model authority', async () => {
+  it('fails closed before session/home creation when an unattended Codex bootstrap has no model authority', async () => {
     for (const body of [
       { agent: 'codex', headless: true },
+      { agent: 'codex', launch_argv: ['psu', '--no-picker', '--agent=codex'] },
       { agent: 'codex', launch_argv: ['psu', '--no-picker', '--agent=codex', '--headless'] },
     ]) {
       vi.clearAllMocks();
@@ -991,6 +992,20 @@ describe('bootstrap-su', () => {
       expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
       expect(recordAdvSessionMock).not.toHaveBeenCalled();
     }
+  });
+
+  it('honors explicit configured-default authority for a no-picker Codex bootstrap', async () => {
+    const res = await callPost({
+      agent: 'codex',
+      model_source: 'configured-default',
+      launch_argv: ['psu', '--no-picker', '--agent=codex', '--model-source=configured-default'],
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh' }),
+    );
   });
 
   it('codex folds launch_context into AGENTS.md prompt text before writing CODEX_HOME', async () => {

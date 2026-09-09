@@ -1702,9 +1702,13 @@ export const bootstrapSu = defineTool({
     if (body.headless != null && typeof body.headless !== 'boolean') {
       return jsonRes({ status: 'error', error: 'headless must be a boolean' }, 400);
     }
-    const headless =
-      body.headless === true ||
-      (Array.isArray(body.launch_argv) && body.launch_argv.some((arg) => arg === '--headless'));
+    const normalizedLaunchArgv = normalizeLaunchArgv(body.launch_argv);
+    const headless = body.headless === true || normalizedLaunchArgv?.includes('--headless') === true;
+    // `--no-picker` is unattended even when it still owns a visible terminal:
+    // nobody made the interactive backend selection that authorizes the
+    // configured platform default (D-002). Keep this separate from `headless`,
+    // which controls the actual window/process posture below.
+    const unattended = headless || normalizedLaunchArgv?.includes('--no-picker') === true;
     // weak-model-tool-tier: the launch model drives the tool-tier gate in buildLaunchSpec.
     const requestedModel = body.model?.trim() || null;
     let model = requestedModel;
@@ -1718,7 +1722,7 @@ export const bootstrapSu = defineTool({
           // fails closed when both model and provenance are absent.
           source:
             body.model_source ??
-            (requestedModel ? 'explicit' : headless ? 'explicit' : 'configured-default'),
+            (requestedModel ? 'explicit' : unattended ? 'explicit' : 'configured-default'),
         });
         model = selection.model;
         modelSource = selection.source;
@@ -2098,7 +2102,7 @@ export const bootstrapSu = defineTool({
     // (normalizeLaunchArgv); a caller that omits it falls back to a server-side
     // reconstruction from the resolved fields. Before this the column was always NULL.
     const launchArgv =
-      normalizeLaunchArgv(body.launch_argv) ??
+      normalizedLaunchArgv ??
       reconstructPsuLaunchArgv({
         agent,
         model,
