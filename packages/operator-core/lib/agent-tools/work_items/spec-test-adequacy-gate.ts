@@ -242,6 +242,8 @@ export async function specTestAdequacyCompletionGate(
   input: {
     workItem: WorkItemForSpecGate;
     attestation?: SpecAdequacyCompletionAttestation;
+    /** Actual changed AND deleted paths from the completion, not prose in its title. */
+    changedPaths?: readonly string[];
   },
   deps: {
     listClauses?: typeof listSpecClauses;
@@ -304,6 +306,33 @@ export async function specTestAdequacyCompletionGate(
   // so cross-plan diagnostics remain available, then bypass the proof gate before an
   // absent attestation can make the non-code item structurally uncloseable.
   if (isNonCodeWorkItemKind(input.workItem.kind)) {
+    // EI-22802366925712878: pickup's generic `task` default is not an
+    // authority-grade non-code classification. These are positive contradictions,
+    // not a title/verb heuristic: executable source changes or an explicit proof
+    // submission against test-requiring clauses. Refuse and require an intentional
+    // re-kind; silently relabelling only the evaluator input would hide the bad
+    // execution record and leave every other kind-sensitive gate exempt.
+    const sourceChanges = (input.changedPaths ?? []).filter((path) =>
+      /\.(?:[cm]?[jt]sx?|rs|py|go|sh|bash|zsh|sql|css|s[ac]ss|less|html?|vue|svelte|c|cc|cpp|cxx|h|hpp|java|kt|kts|swift|rb|php|ex|exs|erl|hs|lua|pl|ps1|bat|cmd)$/i
+        .test(path.trim()),
+    );
+    const submitsExecutableProof = input.attestation && clauses.some((clause) =>
+      requiredProofFloor(clause, input.attestation!.classRef) !== 'none',
+    );
+    if (sourceChanges.length > 0 || submitsExecutableProof) {
+      return withReport({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        checked: [],
+        reason:
+          `task-kind completion for '${input.workItem.id}' claims executable changes or proof` +
+          `${sourceChanges.length ? ` (${sourceChanges.slice(0, 5).join(', ')})` : ''}; ` +
+          'task is the non-code kind. Use work_items:update to set the appropriate code kind ' +
+          '(change, bug, or feature), then retry with current spec evidence and independently ' +
+          'settled grading audits. No proof exemption can be inferred from the task label.',
+      });
+    }
     return withReport({ ok: true, applicable: false, checked: [] });
   }
 
