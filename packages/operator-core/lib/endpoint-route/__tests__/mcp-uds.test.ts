@@ -1,0 +1,184 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { lstat, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { once } from 'node:events';
+import { createConnection } from 'node:net';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
+import {
+  AGENT_MCP_AUTH_META, startAgentMcpServer, type AgentMcpHost, type AgentMcpListener,
+} from '../routes/transport/_mcp-uds';
+import type { BuiltSpawnContext } from '../routes/transport/_mcp-host';
+
+const live: AgentMcpListener[] = [];
+const clients: Client[] = [];
+afterEach(async () => {
+  await Promise.allSettled(clients.splice(0).map(c => c.close()));
+  await Promise.allSettled(live.splice(0).map(s => s.close()));
+});
+
+function context(): BuiltSpawnContext {
+  return {
+    workspaceId: 'test-workspace', harnessSlug: 'test-harness', role: 'operator',
+    uiClientId: 'test-session', runId: 'r', spawnId: 's', parentSpawnId: null,
+    featureId: null, chunkId: null, detectorSessionKey: null, isSuperuser: true,
+  };
+}
+
+async function fixture(authTimeoutMs?: number) {
+  let ctx = context();
+  let revoked = false;
+  const dispatched = vi.fn();
+  const verify = vi.fn<AgentMcpHost['verify']>(async (extra) => {
+    const info = (extra as { requestInfo: { headers: Record<string, string> } }).requestInfo;
+    return revoked || info.headers.authorization !== 'Bearer fixture-token'
+      ? { kind: 'failed', reason: 'fixture-denied' }
+      : { kind: 'ok', ctx: { ...ctx, runId: crypto.randomUUID(), spawnId: crypto.randomUUID() } };
+  });
+  const host: AgentMcpHost = {
+    verify, options: { capabilities: { tools: {} } },
+    register(server) {
+      server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+        dispatched('list');
+        return { tools: [{ name: 'echo', inputSchema: { type: 'object' } }] };
+      });
+      server.server.setRequestHandler(CallToolRequestSchema, async request => {
+        dispatched('call');
+        return { content: [{ type: 'text' as const, text: String(request.params.arguments?.text) }] };
+      });
+    },
+  };
+  const listener = await startAgentMcpServer({ port: 3170, host, authTimeoutMs });
+  live.push(listener);
+  return {
+    listener, verify, dispatched, revoke: () => { revoked = true; },
+    scopeChange: () => { ctx = { ...ctx, workspaceId: 'other' }; },
+    unverified: () => { ctx = { ...ctx, isSuperuser: false }; },
+  };
+}
+
+function credentials(listener: AgentMcpListener) {
+  return {
+    version: 1, operatorId: listener.endpoint.operatorId, generation: listener.endpoint.generation,
+    url: 'http://127.0.0.1:3170/api/mcp?superuser=1&workspace=test-workspace',
+    headers: { authorization: 'Bearer fixture-token' },
+  };
+}
+
+function connection(listener: AgentMcpListener, value: unknown = credentials(listener)) {
+  const wire = new UdsMcpTransport({ path: listener.endpoint.socketPath });
+  const send = wire.send.bind(wire);
+  wire.send = message => send('method' in message && message.method === 'initialize'
+    ? { ...message, params: { ...message.params, _meta: { [AGENT_MCP_AUTH_META]: value } } }
+    : message);
+  const client = new Client({ name: 'uds-contract', version: '1' });
+  clients.push(client);
+  return { client, wire, send };
+}
+
+describe('private MCP listener lifecycle and connection authority', () => {
+  it('uses distinct generation directories; closes only its own socket', async () => {
+    const a = await fixture();
+    const b = await fixture();
+    expect(a.listener.endpoint.operatorId).toBe(b.listener.endpoint.operatorId);
+    expect(a.listener.endpoint.generation).not.toBe(b.listener.endpoint.generation);
+    const path = a.listener.endpoint.socketPath;
+    expect((await lstat(dirname(path))).mode & 0o777).toBe(0o700);
+    expect((await lstat(path)).mode & 0o777).toBe(0o600);
+    await a.listener.close();
+    await expect(lstat(path)).rejects.toThrow();
+    expect((await lstat(b.listener.endpoint.socketPath)).isSocket()).toBe(true);
+    await expect(lstat(dirname(path))).rejects.toThrow();
+  });
+
+  it('preserves unexpected files instead of recursively deleting the private directory', async () => {
+    const f = await fixture();
+    const dir = dirname(f.listener.endpoint.socketPath);
+    const peer = join(dir, 'preserve-me');
+    await writeFile(peer, 'peer content');
+    await f.listener.close();
+    expect(await readFile(peer, 'utf8')).toBe('peer content');
+    await rm(dir, { recursive: true });
+  });
+
+  it('never adopts a stale or malicious socket filename from a parent directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'uds-parent-'));
+    try {
+      const stale = join(root, 'agent.sock');
+      await writeFile(stale, 'stale but not ours');
+      const f = await fixture();
+      expect(f.listener.endpoint.socketPath).not.toBe(stale);
+      expect(await readFile(stale, 'utf8')).toBe('stale but not ours');
+    } finally { await rm(root, { recursive: true }); }
+  });
+
+  it('authenticates initialize and each request, preserving full-duplex calls', async () => {
+    const f = await fixture();
+    const { client, wire } = connection(f.listener);
+    await client.connect(wire);
+    expect((await client.listTools()).tools.map(t => t.name)).toEqual(['echo']);
+    const results = await Promise.all(['a', 'b'].map(text => client.callTool({ name: 'echo', arguments: { text } })));
+    expect(results.map(x => x.content)).toEqual([
+      [{ type: 'text', text: 'a' }], [{ type: 'text', text: 'b' }],
+    ]);
+    expect(f.verify).toHaveBeenCalledTimes(4);
+    expect(f.dispatched.mock.calls).toEqual([['list'], ['call'], ['call']]);
+  });
+
+  it.each(['missing', 'wrong-token', 'wrong-generation', 'wrong-operator', 'wrong-port',
+    'missing-workspace', 'injected-host', 'injected-ui-principal'])('rejects %s before any catalog or tool', async defect => {
+    const f = await fixture();
+    const value = credentials(f.listener);
+    if (defect === 'wrong-token') value.headers.authorization = 'Bearer wrong';
+    if (defect === 'wrong-generation') value.generation = crypto.randomUUID();
+    if (defect === 'wrong-operator') value.operatorId = 'f'.repeat(64);
+    if (defect === 'wrong-port') value.url = value.url.replace('3170', '3070');
+    if (defect === 'missing-workspace') value.url = value.url.split('&')[0];
+    if (defect === 'injected-host') Object.assign(value.headers, { host: 'localhost' });
+    if (defect === 'injected-ui-principal') Object.assign(value.headers, { 'x-papercusp-trust': 'trusted' });
+    const { client, wire } = connection(f.listener, defect === 'missing' ? null : value);
+    await expect(client.connect(wire)).rejects.toThrow('uds_auth_failed');
+    expect(f.dispatched).not.toHaveBeenCalled();
+  });
+
+  it.each(['revoked', 'scope-changed'])('rejects %s on an already authenticated connection', async defect => {
+    const f = await fixture();
+    const { client, wire } = connection(f.listener);
+    await client.connect(wire);
+    await client.listTools();
+    defect === 'revoked' ? f.revoke() : f.scopeChange();
+    await expect(client.callTool({ name: 'echo', arguments: {} })).rejects.toThrow('uds_auth_failed');
+    expect(f.dispatched.mock.calls).toEqual([['list']]);
+  });
+
+  it('rejects legacy unsigned contexts even if the HTTP soft-warning path returns ok', async () => {
+    const f = await fixture();
+    f.unverified();
+    const { client, wire } = connection(f.listener);
+    await expect(client.connect(wire)).rejects.toThrow('uds_auth_failed');
+    expect(f.dispatched).not.toHaveBeenCalled();
+  });
+
+  it('rejects metadata rebind attempts after initialization', async () => {
+    const f = await fixture();
+    const { client, wire } = connection(f.listener);
+    await client.connect(wire);
+    await expect(client.callTool({
+      name: 'echo', arguments: {},
+      _meta: { [AGENT_MCP_AUTH_META]: credentials(f.listener) },
+    })).rejects.toThrow('uds_auth_failed');
+    expect(f.dispatched).not.toHaveBeenCalled();
+  });
+
+  it('bounds silent unauthenticated connections', async () => {
+    const f = await fixture(30);
+    const socket = createConnection(f.listener.endpoint.socketPath);
+    const ended = once(socket, 'close');
+    await once(socket, 'connect');
+    await ended;
+    expect(f.verify).not.toHaveBeenCalled();
+    expect(f.dispatched).not.toHaveBeenCalled();
+  });
+});

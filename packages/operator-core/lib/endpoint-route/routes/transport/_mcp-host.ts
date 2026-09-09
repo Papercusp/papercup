@@ -1257,6 +1257,19 @@ export type TrySpawnContextResult =
   | { kind: 'ok'; ctx: BuiltSpawnContext }
   | { kind: 'failed'; reason: string };
 
+// In-process, per-request authority carrier for authenticated connection
+// transports. Never read a client-supplied `_meta` field as a verified context.
+const verifiedConnectionRequests = new WeakMap<object, BuiltSpawnContext>();
+
+export function pinVerifiedMcpRequest(
+  requestInfo: object,
+  ctx: BuiltSpawnContext,
+): object {
+  const pinned = Object.freeze({ ...requestInfo });
+  verifiedConnectionRequests.set(pinned, ctx);
+  return pinned;
+}
+
 /**
  * Build the per-call spawn context from URL params + headers.
  *
@@ -1278,6 +1291,9 @@ export async function tryBuildSpawnContext(
   extra: unknown,
   options: { allowStalePlanRecovery?: boolean } = {},
 ): Promise<TrySpawnContextResult> {
+  const info = (extra as { requestInfo?: object } | undefined)?.requestInfo;
+  const verified = info && verifiedConnectionRequests.get(info);
+  if (verified) return { kind: 'ok', ctx: verified };
   const url = urlFromExtra(extra);
   if (!url) return { kind: 'none' };
   const requestOrigin = buildMcpRequestOrigin(extra);

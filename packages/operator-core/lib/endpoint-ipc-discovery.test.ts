@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile, chmod } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,10 +19,48 @@ import {
   readEndpointIpcDiscovery,
   endpointIpcDiscoveryPath,
   endpointIpcDiscoveryPathForPort,
+  readAgentMcpDiscoveryForPort,
 } from './endpoint-ipc-discovery';
 
 beforeEach(async () => {
   h.home = await mkdtemp(join(tmpdir(), 'ipc-disc-'));
+});
+
+describe('agent MCP selected-operator discovery', () => {
+  it('preserves UI compatibility; validates modes, port, PID and stale socket', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'discovery-agent-'));
+    const socketPath = join(directory, 'agent.sock');
+    const server = createServer();
+    await new Promise<void>(resolve => server.listen(socketPath, resolve));
+    await chmod(socketPath, 0o600);
+    try {
+      const agentMcp = { version: 1 as const, transport: 'uds' as const, socketPath,
+        operatorId: 'a'.repeat(64), generation: randomUUID() };
+      await writeEndpointIpcDiscovery('/tmp/ui-one.sock', { port: 3170, agentMcp });
+      await writeEndpointIpcDiscovery('/tmp/ui-two.sock', { port: 3070 });
+      expect((await readAgentMcpDiscoveryForPort(3170))?.agentMcp).toEqual(agentMcp);
+      expect(await readAgentMcpDiscoveryForPort(3070)).toBeNull();
+      expect((await readEndpointIpcDiscovery())?.socketPath).toBe('/tmp/ui-two.sock');
+      await chmod(socketPath, 0o666);
+      expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
+      await chmod(socketPath, 0o600);
+      await chmod(directory, 0o755);
+      expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
+      await chmod(directory, 0o700);
+      const path = endpointIpcDiscoveryPathForPort(3170);
+      const raw = JSON.parse(await readFile(path, 'utf8'));
+      await writeFile(path, JSON.stringify({ ...raw, pid: 2_000_000_000 }));
+      expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
+      await writeFile(path, JSON.stringify({ ...raw, port: 3070 }));
+      expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
+      await writeFile(path, JSON.stringify(raw));
+      expect((await readAgentMcpDiscoveryForPort(3170))?.agentMcp).toEqual(agentMcp);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(directory, { recursive: true });
+    }
+    expect(await readAgentMcpDiscoveryForPort(3170)).toBeNull();
+  });
 });
 
 afterEach(async () => {

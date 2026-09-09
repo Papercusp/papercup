@@ -11,7 +11,7 @@ describe('server-vintage Papercusp wiring', () => {
   it('advertises the staging operator as the current-source recovery route', () => {
     const vintage = readServerVintage();
     expect(vintage?.freshCodeEndpoint).toBe(
-      'the Papercusp staging operator at :3170 (with ptool, pass --url=http://127.0.0.1:3170 explicitly)',
+      'the Papercusp staging operator at :3170 (with ptool, pass --port=3170 explicitly)',
     );
   });
 });
