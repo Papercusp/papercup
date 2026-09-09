@@ -1040,10 +1040,18 @@ distinct from the one above.** Some sibling "checkouts" under `~/papercupai-work
 `sidestage`) are symlinks into `~/.papercusp/hives/`, not real directories, and `find` does not
 descend a symlinked directory without `-L`. Measured: a bare workspace-wide `find -name '<file>'`
 returned hits for the real checkouts and silently omitted `sidestage`'s copy of the same file —
-output that looked complete. For any cross-checkout search, add `-L`, or prefer `git ls-files` /
-`grep -rl` (both follow the symlink correctly here); and — the same rule as the `| head`
-truncation trap above — never act on a `find` EMPTY (or seemingly-complete) result without a
-positive control.
+output that looked complete. For any cross-checkout search prefer `git ls-files` / `grep -rl`
+(both follow the symlink correctly here); and — the same rule as the `| head` truncation trap
+above — never act on a `find` EMPTY (or seemingly-complete) result without a positive control.
+
+⛔ **But NEVER an UNBOUNDED `find -L` over a broad root** (`~`, `~/.papercusp`, `~/.papercusp/hives`,
+`~/papercupai-workspace`). Those roots reach ~50 checkouts whose `node_modules/@papercusp/*` entries
+symlink back into workspace packages, and bfs expands that symlink DAG without bound — it never
+finishes and never errors. Measured 2026-09-08: one `find -L ~/.papercusp -name …` from an agent
+Bash tool ran 32 h, reached 70 GB RSS + 1.86 TB swap (of a 2 TB swapfile) and put the whole host at
+memory PSI-full 65% — the owner's desktop became unusable (WI-10000836). The bash gate now DENIES
+`-L`/`-follow` from those roots unless the walk is bounded. If you must follow symlinks, bound it:
+`find -L <root> -maxdepth 6 -name node_modules -prune -o -name '<file>' -print`.
 
 
 ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this one
