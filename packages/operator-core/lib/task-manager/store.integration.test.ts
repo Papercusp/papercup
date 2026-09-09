@@ -283,6 +283,26 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
     await expect(
       store.appendTaskReleaseReceipt('releasetask01', 1, receipt('intent')),
     ).resolves.toMatchObject({ ok: false, reason: 'journal_missing' });
+
+    const cyclicIdentity: Record<string, unknown> = {};
+    cyclicIdentity.self = cyclicIdentity;
+    const cyclicDetail = {
+      release: {
+        schemaVersion: 1,
+        operationId,
+        cursor: 1,
+        currentStage: 'publish.multipart.initiate',
+        currentState: 'intent',
+        spentOperationIds: ['multipart-init-01'],
+        receipts: [{
+          sequence: 0,
+          ...receipt('intent'),
+          inputIdentity: cyclicIdentity,
+        }],
+      },
+    };
+    expect(() => store.taskReleaseJournalFromDetail(cyclicDetail)).not.toThrow();
+    expect(store.taskReleaseJournalFromDetail(cyclicDetail)).toBeNull();
   });
 
   it('finds only a fresh, evidenced, same-workspace terminal receipt and bounds the candidate scan', async () => {
@@ -294,7 +314,7 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
         schemaVersion: 1,
         operationId: op,
         source: { sha: 'b'.repeat(40), gitlinks: { desktop: 'c'.repeat(40) } },
-        artifactIdentity: { version: '0.0.19', channel: 'nightly' },
+        artifactIdentity: { kind: 'papercusp-desktop-release', version: '0.0.19', channel: 'nightly' },
         cursor: 0,
         currentStage: null,
         currentState: null,
@@ -354,6 +374,32 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
     await expect(store.findPriorCommittedTaskReleaseReceipt({ ...lookup, credentialGeneration: 'generation-8' })).resolves.toBeNull();
     await expect(store.findPriorCommittedTaskReleaseReceipt({ ...lookup, requiredEvidenceRefs: ['missing-proof'] })).resolves.toBeNull();
     await expect(store.findPriorCommittedTaskReleaseReceipt({ ...lookup, now: new Date(expiresAt) })).resolves.toBeNull();
+
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = jsonb_set(detail, '{release,artifactIdentity,kind}', '"other-release"'::jsonb)
+       WHERE task_id = 'prior-release'
+    `;
+    await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toBeNull();
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = jsonb_set(detail, '{release,artifactIdentity,kind}', '"papercusp-desktop-release"'::jsonb)
+       WHERE task_id = 'prior-release'
+    `;
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = detail #- '{release,artifactIdentity,kind}'
+       WHERE task_id = 'current-release'
+    `;
+    await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toBeNull();
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = jsonb_set(detail, '{release,artifactIdentity,kind}', '"papercusp-desktop-release"'::jsonb)
+       WHERE task_id = 'current-release'
+    `;
+    await db.sql`UPDATE harness_shared.task_ledger SET class = 'other' WHERE task_id = 'current-release'`;
+    await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toBeNull();
+    await db.sql`UPDATE harness_shared.task_ledger SET class = 'deploy' WHERE task_id = 'current-release'`;
 
     await db.sql`UPDATE harness_shared.task_ledger SET workspace_id = 'other-workspace' WHERE task_id = 'prior-release'`;
     await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toBeNull();

@@ -849,10 +849,20 @@ function boundedReceiptString(value: unknown, field: string, max: number): strin
   return value;
 }
 
+function serializeReceiptInputIdentity(value: unknown): string | null {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === 'string' ? serialized : null;
+  } catch {
+    return null;
+  }
+}
+
 function releaseReceiptFromUnknown(value: unknown): TaskReleaseReceipt | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
   const reuseSource = raw.reuseSource;
+  const inputIdentityJson = serializeReceiptInputIdentity(raw.inputIdentity);
   if (
     !Number.isSafeInteger(raw.sequence) ||
     (raw.sequence as number) < 0 ||
@@ -861,7 +871,8 @@ function releaseReceiptFromUnknown(value: unknown): TaskReleaseReceipt | null {
     typeof raw.stage !== 'string' ||
     !['intent', 'unknown', 'committed', 'refused'].includes(String(raw.state)) ||
     typeof raw.inputHash !== 'string' ||
-    (raw.inputIdentity !== undefined && JSON.stringify(raw.inputIdentity).length > 16_000) ||
+    (raw.inputIdentity !== undefined &&
+      (inputIdentityJson === null || Buffer.byteLength(inputIdentityJson, 'utf8') > 16_000)) ||
     typeof raw.recordedAt !== 'string' ||
     !Array.isArray(raw.evidenceRefs) ||
     !raw.evidenceRefs.every((entry) => typeof entry === 'string') ||
@@ -951,13 +962,11 @@ function normalizeReleaseReceipt(
     throw new Error('task-manager: release receipt reuseSource.sequence must be a non-negative safe integer');
   }
   let inputIdentity: unknown | null = input.inputIdentity ?? null;
-  let inputIdentityJson: string;
-  try {
-    inputIdentityJson = JSON.stringify(inputIdentity);
-  } catch {
+  const inputIdentityJson = serializeReceiptInputIdentity(inputIdentity);
+  if (inputIdentityJson === null) {
     throw new Error('task-manager: release receipt inputIdentity must be JSON-serializable');
   }
-  if (inputIdentityJson.length > 16_000) {
+  if (Buffer.byteLength(inputIdentityJson, 'utf8') > 16_000) {
     throw new Error('task-manager: release receipt inputIdentity must be <= 16000 JSON bytes');
   }
   inputIdentity = JSON.parse(inputIdentityJson) as unknown;
@@ -1041,8 +1050,9 @@ export async function findPriorCommittedTaskReleaseReceipt(
        AND candidate.task_id <> current_task.task_id
        AND candidate.class = 'deploy'
        AND candidate.launched_by = current_task.launched_by
+       AND NULLIF(current_task.detail #>> '{release,artifactIdentity,kind}', '') IS NOT NULL
        AND candidate.detail #>> '{release,artifactIdentity,kind}'
-             IS NOT DISTINCT FROM current_task.detail #>> '{release,artifactIdentity,kind}'
+             = current_task.detail #>> '{release,artifactIdentity,kind}'
        AND candidate.ended_at IS NOT NULL
        AND candidate.started_at <= current_task.started_at
       CROSS JOIN LATERAL jsonb_array_elements(
@@ -1054,6 +1064,7 @@ export async function findPriorCommittedTaskReleaseReceipt(
       )
         WITH ORDINALITY AS prior(receipt, ordinality)
      WHERE current_task.task_id = ${currentTaskId}
+       AND current_task.class = 'deploy'
        AND jsonb_typeof(candidate.detail -> 'release') = 'object'
        AND jsonb_typeof(candidate.detail #> '{release,receipts}') = 'array'
        AND candidate.detail #>> '{release,operationId}' <> ${currentOperationId}

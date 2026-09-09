@@ -274,6 +274,38 @@ describe('release task stage transitions', () => {
     });
   });
 
+  it('refuses an operation-local committed receipt at its audit-expiry boundary', async () => {
+    let now = new Date('2026-09-09T12:00:00.000Z');
+    const store = ledger();
+    const expiringContext: ReleaseTaskStageContext = {
+      ...context(store),
+      reuseMaxAgeMs: 60_000,
+      reuseExpiresAt: '2026-09-09T12:01:00.000Z',
+      now: () => now,
+    };
+    const begun = await beginReleaseTaskStage(expiringContext, stage);
+    expect(begun.action).toBe('run');
+    await expect(settleReleaseTaskStage(expiringContext, {
+      ...stage,
+      requestIdentity: begun.requestIdentity!,
+      state: 'committed',
+      evidenceRefs: ['artifact-set:hash-signature-verified'],
+    })).resolves.toMatchObject({ action: 'reuse', freshness: 'fresh' });
+
+    now = new Date('2026-09-09T12:01:00.000Z');
+    await expect(inspectReleaseTaskStage(expiringContext, stage)).resolves.toMatchObject({
+      action: 'refused',
+      state: 'committed',
+      freshness: 'expired',
+    });
+    await expect(beginReleaseTaskStage(expiringContext, stage)).resolves.toMatchObject({
+      action: 'refused',
+      state: 'committed',
+      freshness: 'expired',
+    });
+    expect(store.journal.receipts).toHaveLength(2);
+  });
+
   it('records confirmed absence before minting a new one-use attempt', async () => {
     const store = ledger();
     const first = await beginReleaseTaskStage(context(store), stage);
