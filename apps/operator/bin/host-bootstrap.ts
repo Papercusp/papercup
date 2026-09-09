@@ -1042,6 +1042,9 @@ export function runBootstrap(): void {
         // One selected-port descriptor owner; cluster workers must not race it.
         if (cluster.isPrimary) {
           try {
+            // Same readiness boundary as HTTP; UI IPC may advertise early for
+            // boot progress, but agent writes must not outrun migrations.
+            await waitForBootMigrationGate();
             const { startDesktopAgentMcp } = await import(
               '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-bootstrap'
             );

@@ -136,8 +136,14 @@ export function authenticatedAgentTransport(
       try {
         await wire.send(message, options);
         if ('result' in message && message.id === initializeId) initializeResponded = true;
+      } catch (error) {
+        // SDK logs a failed response send but cannot deliver that failure over
+        // the refused frame. Close so the caller gets a bounded unknown outcome,
+        // never silence until its unrelated multi-minute request timeout.
+        await close();
+        throw error;
       } finally {
-        if ('id' in message && !('method' in message)) release(message.id);
+        if ('id' in message && message.id !== undefined && !('method' in message)) release(message.id);
       }
     },
     close,
@@ -191,7 +197,7 @@ export function authenticatedAgentTransport(
             if (first) await close();
             return;
           }
-          if (admission.lease && 'id' in message) leases.set(message.id, admission.lease);
+          if (admission.lease && 'id' in message && message.id !== undefined) leases.set(message.id, admission.lease);
           const recovery = 'method' in message && message.method === 'tools/call' &&
             typeof message.params?.name === 'string' && allowStalePlanRecoveryForMcpCall(
               message.params.name,
@@ -241,10 +247,13 @@ export function authenticatedAgentTransport(
           ? host.pin(freshInfo, verifiedCtx) as NonNullable<MessageExtraInfo['requestInfo']>
           : freshInfo;
         adapter.onmessage?.(clean, { requestInfo });
-      } catch {
+      } catch (error) {
         if ('id' in message && 'method' in message) {
+          const reason = error instanceof Error && /^uds_[a-z_]+$/.test(error.message)
+            ? error.message : 'uds_auth_failed';
           await wire.send({ jsonrpc: '2.0', id: message.id, error: {
             code: -32001, message: 'uds_auth_failed: reconnect with current credentials and selected endpoint',
+            data: { reason, retryable: false },
           } }).catch(() => {});
         }
         await close();
