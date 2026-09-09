@@ -13,7 +13,7 @@ import { appendGoalHistory } from '@papercusp/agent-mcp';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { PgThreadStore } from '@papercusp/coordination/capabilities';
 import { workItemCheckpointScope, setWorkItemCheckpoint } from '../../work-item-checkpoint';
-import { readGoalHistoryContext, readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
+import { getClaimTimePriorAttemptBrief, readGoalHistoryContext, readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
 import { postLearnedAtLevel } from '../../effort-thread';
 import { buildGoalKickoffBrief } from '../goals/start';
 import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
@@ -205,6 +205,36 @@ function dataOf<T>(value: unknown): T {
 }
 
 describe('bounded plan history production consumers', () => {
+  it('captures a work-item correction at its own level and recovers the exact note from the claim brief', async () => {
+    const note = [
+      'Root cause: item history was read at the wrong level.',
+      'False premise: a plan summary included every item thread.',
+      'Outcome: the item claimant recovered the stored correction.',
+      'Residue: validate the remaining callers.',
+    ].join('\n');
+    const captured = await postLearnedAtLevel({
+      workItemId: CHILD, harness: HARNESS, level: 'work_item', text: note,
+      workspaceId: fx.workspaceId, authorId: 'su-item-capture-integration',
+    });
+    expect(captured).toMatchObject({
+      posted: true, level: 'work_item', requestedLevel: 'work_item', fellBack: false,
+    });
+    expect(captured.post).toBeTruthy();
+    capturedThreadIds.add(captured.post!.thread_id);
+    const rawRef = `${CHILD}#comment:${captured.post!.id}`;
+    const brief = await getClaimTimePriorAttemptBrief({ workItemId: CHILD, harness: HARNESS });
+    expect(brief?.authority).toContainEqual(expect.objectContaining({
+      rawRef, authority: 'retraction',
+      falsePremises: ['a plan summary included every item thread.'],
+    }));
+    expect(brief?.protectedRefs.residue).toContain(rawRef);
+    const raw = await resolvePriorAttemptRefs({
+      target: { kind: 'work_item', ref: CHILD, harness: HARNESS }, harness: HARNESS, rawRefs: [rawRef],
+    });
+    expect(raw?.unresolved).toEqual([]);
+    expect(raw?.records[0]?.text).toBe(note);
+  });
+
   it.each(['plan', 'goal'] as const)('captures %s lessons and distinguishes a failed stored read from missing history', async (level) => {
     const ref = level === 'plan' ? PLAN : GOAL;
     const note = [

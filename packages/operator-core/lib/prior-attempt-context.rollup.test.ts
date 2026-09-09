@@ -168,6 +168,34 @@ afterEach(() => {
 });
 
 describe('plan history production projection', () => {
+  it.each(['plan', 'goal'] as const)('enforces the existing %s consumer budget and returns unknown with recovery at its deadline', async (kind) => {
+    vi.useFakeTimers();
+    reads.tree.mockImplementation(() => new Promise(() => {}));
+    const deps = dependencies();
+    const reader = vi.fn((opts: Parameters<typeof getContainmentRollupBrief>[0]) =>
+      getContainmentRollupBrief(opts, deps as never));
+    const pending = kind === 'plan'
+      ? readPlanHistoryContext(target.ref, target.harness, reader)
+      : readGoalHistoryContext('goal-history', reader);
+    expect(reader).toHaveBeenCalledWith(expect.objectContaining({
+      budget: { maxChars: 6_000, maxRecords: 16, maxTextChars: 400 },
+      maxDescendants: 24,
+      timeoutMs: 2_500,
+    }));
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(2_499);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({
+      status: 'unknown', brief: null,
+      recovery: kind === 'plan'
+        ? { tool: 'plans:get', args: { slug: target.ref, harness: target.harness, heading: 'History' } }
+        : { tool: 'goals:get', args: { id: 'goal-history', detail: 'full' } },
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each(['plan', 'goal', 'child-plan'] as const)('keeps failed %s learned-history reads unknown and recovers through the same reader', async (kind) => {
     const goalTarget = { kind: 'goal' as const, ref: 'goal-history' };
     if (kind !== 'plan') {
