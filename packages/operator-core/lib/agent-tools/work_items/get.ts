@@ -84,6 +84,14 @@ const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
  */
 export const WORK_ITEMS_GET_BUDGET_MS = 30_000;
 
+/**
+ * EI-22757246516528054: work_items:get reads each requested id independently,
+ * but runBulk is serial unless a worker bound is supplied. Keep multi-id reads
+ * responsive without turning a caller-controlled batch into an unbounded pool
+ * fan-out. Four matches the bounded worker pool used by work_items:create.
+ */
+export const WORK_ITEMS_GET_MAX_CONCURRENCY = 4;
+
 const WORK_ITEMS_GET_TIMEOUT = Symbol("work_items:get:timeout");
 const WORK_ITEMS_GET_CANCELLED = Symbol("work_items:get:cancelled");
 
@@ -687,10 +695,6 @@ export default defineTool({
     const sourceReadOptions = checksOnly
       ? { includeBody: false, payloadProjection: 'none' as const }
       : args.resume ? undefined : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
-    const baseOnlyProjection = sourceSelection !== null && !checksOnly && !readDetail &&
-      !needsCheckpoint && !needsPlanItemBlocked && !needsClaimCollision && !needsPlanItemTextDrift &&
-      !needsHolder && !(boundedThread && needsThreadWindow) && !needsCompletionFreshness &&
-      !needsDeploymentPosition && !needsLifecycle && !needsPriorAttempts && !needsPriorAttemptResolution;
     const stageSamples: Array<{ baseReadMs: number | null; enrichmentMs: number | null }> = [];
     // P-030: resolved ONCE for the whole bulk read. The reader is an argument to
     // the holder lens, never a cache-key dimension — the per-id `cachedRead`
@@ -1200,7 +1204,10 @@ export default defineTool({
         }
         return bounded.value;
       },
-      { keyOf: (id) => ({ id }), ...(baseOnlyProjection ? { maxConcurrency: Math.max(1, ids.length) } : {}) },
+      {
+        keyOf: (id) => ({ id }),
+        maxConcurrency: Math.max(1, Math.min(ids.length, WORK_ITEMS_GET_MAX_CONCURRENCY)),
+      },
     );
     const maxMeasured = (values: Array<number | null>): number | null => {
       const measured = values.filter((value): value is number => value !== null);
