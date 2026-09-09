@@ -14,6 +14,7 @@ export {
   DEFAULT_COORD_WORKSPACE,
   type PgCoordLogOptions,
 } from './pg-log';
+export { isPgContentionError, withPgContentionRetry, type PgContentionRetryOptions } from './pg-retry';
 // NOTE: the conformance harness imports `vitest`, so it is deliberately NOT
 // re-exported here (this barrel is imported by production code). Test code
 // imports it from the dedicated `@papercusp/coordination/event-log/conformance`
