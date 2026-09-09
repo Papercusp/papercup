@@ -1,5 +1,5 @@
 diff --git a/node_modules/verdict-cli/bin/browse.mjs b/node_modules/verdict-cli/bin/browse.mjs
-index a3392d2..035b660 100755
+index a3392d2..c83809b 100755
 --- a/node_modules/verdict-cli/bin/browse.mjs
 +++ b/node_modules/verdict-cli/bin/browse.mjs
 @@ -20,7 +20,9 @@ const SERVER_SCRIPT = resolve(__dirname, '..', 'src', 'server.mjs');
@@ -82,10 +82,29 @@ index a3392d2..035b660 100755
  }
  
  function output(text) {
-@@ -81,6 +113,41 @@ function outputError(msg) {
+@@ -81,6 +113,60 @@ function outputError(msg) {
    else { console.error(`Error: ${msg}`); process.exit(1); }
  }
  
++// Validate the command before starting the persistent daemon. The server's
++// command table lives in src/server.mjs, which cannot be imported here because
++// importing it launches Chromium and binds the daemon port. Keep this pinned
++// list alongside that table so a typo or unsupported command fails without
++// leaving a resident browser behind.
++const KNOWN_COMMANDS = new Set([
++  'goto', 'goto-auth', 'back', 'forward', 'reload', 'url', 'title',
++  'snapshot', 'click', 'fill', 'select', 'hover', 'type', 'press', 'scroll', 'wait',
++  'text', 'css', 'inspect', 'js', 'console', 'network', 'perf',
++  'screenshot', 'viewport', 'responsive', 'style',
++  'auth-save', 'auth-load', 'auth-list', 'auth-delete', 'handoff', 'resume',
++  'cookies', 'cookie-set', 'cookie-import',
++  'tabs', 'newtab', 'tab', 'closetab',
++  'frame', 'frame-exit', 'diff', 'chain', 'status', 'stop',
++]);
++if (command && command !== 'sessions' && !KNOWN_COMMANDS.has(command)) {
++  outputError(`Unknown command: ${command}. Use: verdict (with no command) for usage.`);
++}
++
 +// EI-22200064677663549: the papercusp operator UI (:3055/:3070/:3170) is the
 +// Tauri DESKTOP app's internal content source and never resolves in a plain
 +// browser (no Tauri IPC bridge, so the SPA never reaches a settled state) —
@@ -124,7 +143,7 @@ index a3392d2..035b660 100755
  if (!command) {
    console.log(`Verdict — Token-efficient browser verification for AI coding agents
  
-@@ -176,7 +243,11 @@ if (command === 'sessions') {
+@@ -176,7 +262,11 @@ if (command === 'sessions') {
          body: JSON.stringify({ command: 'stop', args: [] })
        });
        output(`Session "${target}" stopped.`);
@@ -137,7 +156,7 @@ index a3392d2..035b660 100755
      process.exit(0);
    } else {
      outputError(`Unknown sessions subcommand: ${sub}. Use: sessions list, sessions stop <name>`);
-@@ -193,9 +264,21 @@ if (!state || !isAlive(state.pid)) {
+@@ -193,9 +283,21 @@ if (!state || !isAlive(state.pid)) {
  try {
    output(await send(state, command, args));
  } catch (e) {
@@ -163,7 +182,7 @@ index a3392d2..035b660 100755
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..dc829a5 100644
+index 249847c..d98b574 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
 @@ -54,6 +54,23 @@ function profilePath(name) {
@@ -331,7 +350,7 @@ index 249847c..dc829a5 100644
  
    // Advanced
    async diff(args) {
-@@ -497,21 +563,33 @@ const commands = {
+@@ -497,24 +563,40 @@ const commands = {
    async chain(args) {
      let cmds; try { cmds = JSON.parse(args.join(' ')); } catch { return 'Error: invalid JSON. Use: [["goto","url"],["snapshot","-i"]]'; }
      const results = [];
@@ -371,4 +390,24 @@ index 249847c..dc829a5 100644
 +observePage(page);
  
  // HTTP server
- const port = parseInt(process.env.VERDICT_PORT) || (10000 + Math.floor(Math.random() * 50000));
+-const port = parseInt(process.env.VERDICT_PORT) || (10000 + Math.floor(Math.random() * 50000));
++// Let the OS choose an unused ephemeral port unless the caller explicitly
++// pins one. Randomly selecting from a shared range still races every other
++// concurrent verdict client and can make an otherwise healthy daemon fail
++// startup with EADDRINUSE.
++const port = parseInt(process.env.VERDICT_PORT) || 0;
+ const token = crypto.randomUUID();
+ const server = createServer(async (req, res) => {
+   resetIdle();
+@@ -532,7 +614,9 @@ const server = createServer(async (req, res) => {
+   }
+ });
+ server.listen(port, '127.0.0.1', () => {
+-  writeFileSync(STATE_FILE, JSON.stringify({ port, token, pid: process.pid, started: new Date().toISOString() }), { mode: 0o600 });
+-  console.log(`Verdict server on port ${port} (PID ${process.pid})`);
++  const address = server.address();
++  const boundPort = address && typeof address !== 'string' ? address.port : port;
++  writeFileSync(STATE_FILE, JSON.stringify({ port: boundPort, token, pid: process.pid, started: new Date().toISOString() }), { mode: 0o600 });
++  console.log(`Verdict server on port ${boundPort} (PID ${process.pid})`);
+   resetIdle();
+ });

@@ -1264,6 +1264,15 @@ export const PTOOL_EVENTS_AWAIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // the observed proxy path without changing the ordinary deadline for unrelated tools.
 export const PTOOL_PLANS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
+// EI-22774777434821469: plans:audit resolves every submitted citation and
+// then persists one completion/activation audit. A valid multi-item audit
+// can outlive ptool's ordinary 30s client deadline while the MCP transport
+// is still within its ~55s server-side deadline, turning a committed write
+// into an ambiguous outcome-unknown response. Keep direct and
+// tools:invoke-wrapped audits beyond the transport cap so the typed result
+// (or the server's bounded timeout) wins the race.
+export const PTOOL_PLANS_AUDIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
 // `plans:new` writes the plan under a slug lock and opts into idempotent
 // completion because the write may finish after the MCP transport's ~55s
 // boundary. The ordinary 30s ptool deadline can abandon that committed write
@@ -1458,6 +1467,16 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Keep the direct and tools:invoke-wrapped call outside the MCP transport
   // cap so the server's typed result wins the race.
   ['scheduler:get_next', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22774777434821469: completion/activation audits resolve all submitted
+  // citations before persisting; preserve the typed result beyond ptool's
+  // ordinary 30s client cutoff on both transport routes.
+  ['plans:audit', PTOOL_PLANS_AUDIT_TIMEOUT_MS],
+  // EI-22722799928417577: by-id claims perform admission, claim, and several
+  // claim-time advisory reads. The ordinary 30s client deadline can expire
+  // before the idempotent claim's MCP result settles, reporting outcome-unknown
+  // even though the server-side write may have landed. Keep both direct and
+  // tools:invoke-wrapped claims beyond the transport cap.
+  ['work_items:claim', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `release:trace` composes candidate, gate, deploy, and await reads. Under
   // operator pressure that read-only bundle can outlive the ordinary 30s
   // client budget even though it is still progressing; keep the typed trace

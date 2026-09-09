@@ -35,6 +35,7 @@ import {
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
+  PTOOL_PLANS_AUDIT_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
@@ -321,6 +322,14 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    // EI-22774777434821469: completion/activation audits resolve all submitted
+    // citations before persisting. Cover direct and deferred calls so a valid
+    // multi-item audit cannot be cut off at ptool's ordinary 30s deadline.
+    expect(timeoutForTool('plans:audit')).toBe(PTOOL_PLANS_AUDIT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:audit',
+      args: { slug: 'plan-a', phase: 'completion' },
+    })).toBe(PTOOL_PLANS_AUDIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:new')).toBe(PTOOL_PLANS_NEW_TIMEOUT_MS);
     // EI-22701666730811258: dev:pg_query's SQL timeout does not cover proxy
     // admission/queue dwell. Keep both transport routes above the MCP floor so
@@ -461,6 +470,15 @@ describe('ptool call deadlines', () => {
     // server watchdog; ptool must leave enough time for its typed timeout
     // result to cross the MCP transport instead of racing it at 30s.
     expect(timeoutForTool('scheduler:get_next')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-22722799928417577: by-id claims are idempotent writes whose claim-time
+    // advisory reads can cross the flat 30s client deadline. Cover direct and
+    // deferred calls so a slow claim returns its typed result before ptool
+    // reports outcome-unknown.
+    expect(timeoutForTool('work_items:claim')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:claim',
+      args: { id: 'EI-22722799928417577' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:get',
       args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
