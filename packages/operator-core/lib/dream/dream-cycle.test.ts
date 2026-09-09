@@ -2,7 +2,7 @@ import { rm } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import { CAPABILITY_PRIOR_KINDS } from './capability-review';
-import { dreamRunId, estimateDreamCall, runDreamCycle, type DreamCycleDeps, type DreamCycleInput } from './dream-cycle';
+import { dreamCallOwnerId, dreamRunId, estimateDreamCall, runDreamCycle, type DreamCycleDeps, type DreamCycleInput } from './dream-cycle';
 import { DreamAdmissionError } from './dream-governor';
 import { dreamCapabilityRun, dreamCallTotals, newDreamCapabilityRun } from './dream-run-provenance';
 import type { DreamRun } from './dream-run-store';
@@ -414,6 +414,38 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(h.llm).toHaveBeenCalledTimes(4);
     expect(h.d.loadPackets).toHaveBeenCalledTimes(1);
     expect(h.d.sink).toHaveBeenCalledTimes(1);
+  });
+
+  it('attributes every paid phase to a bounded scope/run identity without losing replay safety', async () => {
+    const h = harness();
+    h.input.cycleId = 'long-cycle-'.repeat(30);
+    await runDreamCycle(h.input, h.d);
+    const owners = h.llm.mock.calls.map(([call]) => call.ownerId);
+    expect(owners).toHaveLength(4);
+    for (const [index, phase] of ['generation', 'control-a', 'control-b', 'review'].entries()) {
+      expect(owners[index]).toMatch(new RegExp(`^system:dream:[a-f0-9]{64}:${phase}$`));
+      expect(owners[index]!.length).toBeLessThanOrEqual(120);
+    }
+    expect(new Set(owners).size).toBe(4);
+    expect(new Set(owners.map((owner) => owner!.split(':')[2])).size).toBe(1);
+    await runDreamCycle(h.input, h.d);
+    expect(h.llm).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not merge gateway attribution across workspaces, pots, or long run ids', async () => {
+    const owners: string[] = [];
+    for (const [workspaceId, potSlug, suffix] of [
+      ['ws-a', 'pot-a', 'one'],
+      ['ws-b', 'pot-a', 'one'],
+      ['ws-a', 'pot-b', 'one'],
+      ['ws-a', 'pot-a', 'two'],
+      ['ws-a', 'pot-a', 'one'],
+    ]) {
+      owners.push(dreamCallOwnerId({ workspaceId: workspaceId!, potSlug: potSlug! }, 'shared-prefix-'.repeat(30) + suffix, 'review'));
+    }
+    expect(owners.every(Boolean)).toBe(true);
+    expect(new Set(owners.slice(0, 4)).size).toBe(4);
+    expect(owners[4]).toBe(owners[0]);
   });
 
   it('runs the real skeptical reviewer with governed phase identities', async () => {

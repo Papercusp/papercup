@@ -1,4 +1,5 @@
 /** Capability orchestration over the existing Dream run, governor and Blender seams. */
+import { createHash } from 'node:crypto';
 import { costFromTokens } from '@papercusp/model-pricing';
 import type { ScoutLlmCall } from '../scout/types';
 import {
@@ -122,6 +123,16 @@ export function dreamRunId(cycleId: string, index: number): string {
   if (!cycleId.trim()) throw new RangeError('cycleId must be a non-empty string');
   if (!Number.isInteger(index) || index < 0) throw new RangeError('dream index must be a non-negative integer');
   return cycleId + ':dream:' + (index + 1);
+}
+/** Reconstructible from the persisted run/call ledger; bounded below the gateway's
+ * owner limit even for long workflow IDs, without conflating scopes or phases. */
+export function dreamCallOwnerId(
+  scope: Pick<DreamCycleInput, 'workspaceId' | 'potSlug'>,
+  runId: string,
+  phase: 'generation' | 'control-a' | 'control-b' | 'review',
+): string {
+  const key = createHash('sha256').update(JSON.stringify([scope.workspaceId, scope.potSlug, runId])).digest('hex');
+  return `system:dream:${key}:${phase}`;
 }
 const record = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 /** List-price admission estimate, not a promise about the final provider bill. */
@@ -362,7 +373,15 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
             kind,
             call.model,
             (deps.estimateCall ?? estimateDreamCall)(call),
-            () => abortable(() => deps.llmCall({ ...call, retryDeadlineMs: deadlineMs }), call.signal ?? signal),
+            () =>
+              abortable(
+                () => deps.llmCall({
+                  ...call,
+                  ownerId: dreamCallOwnerId(input, runId, kind),
+                  retryDeadlineMs: deadlineMs,
+                }),
+                call.signal ?? signal,
+              ),
             (r) => ({
               model: call.model,
               costUsd: r.costUsd,

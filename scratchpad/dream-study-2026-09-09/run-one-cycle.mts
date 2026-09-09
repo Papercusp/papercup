@@ -14,6 +14,9 @@ import { CAPABILITY_DREAM_PROMPT_VERSION } from '../../packages/operator-core/li
 import { studySampling } from './sampling.mts';
 import { STUDY_BLOCKS, validateStudyBlocks, requireStudyRoom, readStudyTotals } from './accounting.mts';
 import { DEFAULT_DREAM_REVIEW_CONFIG } from '../../packages/operator-core/lib/dream/dream-config.ts';
+import { getDreamRun } from '../../packages/operator-core/lib/dream/dream-run-store.ts';
+import { dreamCapabilityRun } from '../../packages/operator-core/lib/dream/dream-run-provenance.ts';
+import { captureStudyTiming } from './timing.mts';
 
 // This standalone driver does not inherit the operator service's environment.
 // A fresh in-process model can miss the review deadline after generation is paid.
@@ -110,6 +113,7 @@ if (!process.argv.includes('--run')) {
 }
 let routineAudit: string | undefined;
 let masterAttempted = false;
+const timingRuns: Array<{ runId: string; phases: string[] }> = [];
 try {
   const routine = await tool('routines:set', {
     name: 'dream-cycle-manual', installSlug: 'papercusp',
@@ -132,6 +136,10 @@ try {
     pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
   });
   await log({ phase: 'cycle-result', arm, protocolPin: frozen.pin, result });
+  for (const run of result.runs) {
+    const saved = await getDreamRun(sql, { workspaceId, runId: run.runId });
+    timingRuns.push({ runId: run.runId, phases: saved ? (dreamCapabilityRun(saved)?.calls ?? []).map(call => call.phase) : [] });
+  }
 } finally {
   const cleanupErrors: unknown[] = [];
   if (masterAttempted) {
@@ -146,4 +154,10 @@ try {
   await sql.end();
   if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Study restoration needs immediate attention');
 }
+// Restoration takes priority over diagnostics. Persist the bounded gateway ring
+// immediately afterward so an unrelated later request cannot erase this trial's evidence.
+await captureStudyTiming({ workspaceId, potSlug: 'papercusp' }, timingRuns, {
+  report: (ownerId) => tool('gateway:owner_report', { agent: ownerId }),
+  log,
+});
 process.exit(0);

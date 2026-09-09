@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   flag: vi.fn(),
   idle: vi.fn(),
   notify: vi.fn(),
+  llm: vi.fn(),
 }));
 vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { workflowID: 'workflow-stable' } }));
 vi.mock('@papercusp/db-org', async (original) => ({ ...(await original<object>()), getOrgPg: () => ({ sql: h.sql }) }));
@@ -29,7 +30,7 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: h.flag }));
 vi.mock('../owner-steering', () => ({ idleActivityAllowed: h.idle }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: h.notify }));
 vi.mock('../scout/cadence-signals', () => ({ readHiveIdleRatio: vi.fn() }));
-vi.mock('../llm-testing/llm-client', () => ({ llmCall: vi.fn() }));
+vi.mock('../llm-testing/llm-client', () => ({ llmCall: h.llm }));
 vi.mock('../harness-registry', async (original) => ({
   ...(await original<object>()),
   loadHarnessRegistry: h.registry,
@@ -68,6 +69,23 @@ function captured() {
   const [input, deps] = h.run.mock.calls[0]! as [DreamCycleInput, DreamCycleDeps];
   return { input, deps };
 }
+
+it('preserves the cycle call identity through the real production transport wrapper', async () => {
+  await productionDreamCycle(ctx, { mode: 'manual' });
+  const call = {
+    model: 'test',
+    messages: [],
+    ownerId: 'system:dream:run:review',
+    retryDeadlineMs: 123456,
+    signal: new AbortController().signal,
+  };
+  await captured().deps.llmCall(call);
+  expect(h.llm).toHaveBeenCalledExactlyOnceWith({
+    ...call,
+    priority: 'scout',
+    harnessSlug: ctx.installSlug,
+  });
+});
 
 describe('production capability Dream adapter', () => {
   it('records a refused cycle with no attempts and pushes the control snapshot', async () => {
