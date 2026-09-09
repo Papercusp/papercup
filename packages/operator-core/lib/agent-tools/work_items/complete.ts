@@ -50,6 +50,7 @@ import { objectSelector } from '../coordination/audience';
 // Imported from the LEAF module, not from '../../work-items': this file's unit tests
 // mock that module wholesale, which would make the guard `undefined` exactly here.
 import { harnessScopeMismatch } from '../../work-items-harness-scope';
+import { potHomeSlugForHarness } from '../../hive-federation';
 // Same LEAF-module rule as the line above (EI-21919769900781478): imported from the
 // standalone module, not from '../../work-items', which this file's unit tests mock
 // wholesale — the guard would be `undefined` exactly here.
@@ -2562,7 +2563,25 @@ async function completeOne(
   // as the assignee warning above): a cross-harness complete is not always wrong, and the
   // failure here was the ABSENCE of any signal, not the absence of a block. Naming both
   // harnesses plus the row's title and age is what makes a wrong-id grab self-evident.
-  const harnessMismatch = harnessScopeMismatch(existing, it.harness);
+  let harnessMismatch = harnessScopeMismatch(existing, it.harness);
+  if (harnessMismatch) {
+    // `work_items:create` resolves member harnesses to their Pot home before the
+    // row is stored. Use the same resolver here before warning about the raw
+    // caller slug, otherwise a caller that passed `oddsmith` to both sibling
+    // verbs is falsely told that its own create result belongs to a different
+    // harness (`oddsmith-hive`). Fail open: an unavailable registry/PG read must
+    // keep the existing safety warning rather than silently suppressing it.
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    try {
+      const canonicalRequestedHarness = await potHomeSlugForHarness(
+        workspaceId,
+        harnessMismatch.requested.trim(),
+      );
+      if (canonicalRequestedHarness === harnessMismatch.resolved) harnessMismatch = null;
+    } catch {
+      // Preserve the warning when canonicalization cannot be established.
+    }
+  }
   const harnessMismatchWarning = harnessMismatch
     ? `completing '${it.id}' under harness '${harnessMismatch.requested}', but the row that ` +
       `resolved belongs to harness '${harnessMismatch.resolved}' — titled "${existing.title}"` +

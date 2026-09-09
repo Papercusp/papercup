@@ -24,9 +24,19 @@ const dbMocks = vi.hoisted(() => ({
 const contentionMocks = vi.hoisted(() => ({
   acquireWithContentionRetry: vi.fn(),
 }));
+const hiveMocks = vi.hoisted(() => ({
+  potHomeSlugForHarness: vi.fn(),
+}));
 vi.mock('../locks/contention-retry', () => ({
   acquireWithContentionRetry: (...args: unknown[]) => contentionMocks.acquireWithContentionRetry(...args),
 }));
+vi.mock('../../hive-federation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../hive-federation')>();
+  return {
+    ...actual,
+    potHomeSlugForHarness: (...args: unknown[]) => hiveMocks.potHomeSlugForHarness(...args),
+  };
+});
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
@@ -243,6 +253,8 @@ beforeEach(() => {
   dbMocks.planItemStatusRows.mockResolvedValue([{ status: 'done' }]);
   contentionMocks.acquireWithContentionRetry.mockReset();
   contentionMocks.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => run());
+  hiveMocks.potHomeSlugForHarness.mockReset();
+  hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   getWorkItem.mockReset();
   setWorkItemStateWithAliasInfo.mockReset();
   setWorkItemClaimHold.mockReset();
@@ -2621,6 +2633,37 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: null });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
       expect(r.assigneeMismatchWarning).toBeUndefined();
+    });
+  });
+
+  describe('harnessMismatchWarning — canonical member-to-home resolution', () => {
+    const memberRow = {
+      id: 'WI-harness-scope',
+      kind: 'bug',
+      family: 'issue',
+      state: 'open',
+      harness: 'oddsmith-hive',
+      title: 'member-scoped item',
+    };
+
+    it('does not warn when the requested member harness resolves to the row home', async () => {
+      hiveMocks.potHomeSlugForHarness.mockResolvedValue('oddsmith-hive');
+      getWorkItem.mockResolvedValue(memberRow);
+
+      const r = await one({ id: memberRow.id, harness: 'oddsmith', completion: { summary: 'noting it' } });
+
+      expect(r.harnessMismatchWarning).toBeUndefined();
+      expect(hiveMocks.potHomeSlugForHarness).toHaveBeenCalledWith('default', 'oddsmith');
+    });
+
+    it('keeps warning when the requested harness resolves to a different home', async () => {
+      hiveMocks.potHomeSlugForHarness.mockResolvedValue('another-hive');
+      getWorkItem.mockResolvedValue(memberRow);
+
+      const r = await one({ id: memberRow.id, harness: 'oddsmith', completion: { summary: 'noting it' } });
+
+      expect(r.harnessMismatchWarning).toMatch(/under harness 'oddsmith'/);
+      expect(r.harnessMismatchWarning).toMatch(/belongs to harness 'oddsmith-hive'/);
     });
   });
 
