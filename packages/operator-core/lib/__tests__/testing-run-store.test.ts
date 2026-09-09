@@ -137,7 +137,7 @@ describe('listRuns', () => {
 });
 
 describe('durable detached snapshots', () => {
-  type Sql = Parameters<typeof persistRunSnapshot>[1];
+  type Sql = NonNullable<Parameters<typeof persistRunSnapshot>[1]>;
 
   it('reads a snapshot from the shared ledger when the local worker has no run', async () => {
     const remote = {
