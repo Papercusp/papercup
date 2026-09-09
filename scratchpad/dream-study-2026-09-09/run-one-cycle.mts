@@ -17,6 +17,7 @@ import { DEFAULT_DREAM_REVIEW_CONFIG } from '../../packages/operator-core/lib/dr
 import { getDreamRun } from '../../packages/operator-core/lib/dream/dream-run-store.ts';
 import { dreamCapabilityRun } from '../../packages/operator-core/lib/dream/dream-run-provenance.ts';
 import { captureStudyTiming } from './timing.mts';
+import { enableStudyMaster, prepareStudyRoutine, restoreStudyControls, studyRestorationPorts, studyRoutinePorts } from './controls.mts';
 
 // This standalone driver does not inherit the operator service's environment.
 // A fresh in-process model can miss the review deadline after generation is paid.
@@ -44,7 +45,7 @@ const log = async (entry: unknown) => {
 };
 async function tool(name: string, args: object) {
   const raw = await new Promise<string>((done, fail) => {
-    const child = spawn('ptool', [name, '--url=http://127.0.0.1:3170', '--workspace=' + workspaceId, '--harness=papercusp', '--json', '-'], {
+    const child = spawn('ptool', [name, '--workspace=' + workspaceId, '--harness=papercusp', '--json', '-'], {
       cwd: root, stdio: ['pipe', 'pipe', 'pipe'], timeout: 90_000,
     });
     let stdout = '', stderr = '';
@@ -65,6 +66,9 @@ async function tool(name: string, args: object) {
 }
 installFlagOverrideStore();
 const { sql } = getOrgPg();
+const ownerId = process.env.PAPERCUSP_SID;
+if (!ownerId) throw new Error('Study cleanup requires the attributed PAPERCUSP_SID');
+const restoration = studyRestorationPorts(sql, workspaceId, 'papercusp', ownerId);
 const master = await sql<Array<{ enabled: boolean }>>`
   SELECT enabled FROM harness_shared.learning_pot_scope
   WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'`;
@@ -111,24 +115,19 @@ if (!process.argv.includes('--run')) {
   await sql.end();
   process.exit(0);
 }
-let routineAudit: string | undefined;
+let routine: Awaited<ReturnType<typeof prepareStudyRoutine>> | undefined;
 let masterAttempted = false;
 const timingRuns: Array<{ runId: string; phases: string[] }> = [];
 try {
-  const routine = await tool('routines:set', {
-    name: 'dream-cycle-manual', installSlug: 'papercusp',
-    cron: '0 0 0 1 1 *', active: true,
-    payloadTemplate: {
+  routine = await prepareStudyRoutine(studyRoutinePorts(sql, workspaceId, 'papercusp', ownerId), {
       mode: 'manual', pilot,
       cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
       sampler,
       pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
-    },
-  });
-  routineAudit = routine.revertHandle?.args?.auditId ?? routine.auditId;
-  if (!routineAudit) throw new Error('No durable routine revert handle; inspect mutation outcome before any spend');
+  }, log);
+  await log({ tool: 'routines:set', result: await routine.apply() });
   masterAttempted = true;
-  await tool('learning:set-pot-scope', { pots: ['papercusp'], enabled: true });
+  await log({ tool: 'learning:set-pot-scope', result: await enableStudyMaster(sql, workspaceId, 'papercusp', ownerId) });
   const result = await productionDreamCycle({ workspaceId, installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null }, {
     mode: 'manual', pilot,
     cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
@@ -141,18 +140,8 @@ try {
     timingRuns.push({ runId: run.runId, phases: saved ? (dreamCapabilityRun(saved)?.calls ?? []).map(call => call.phase) : [] });
   }
 } finally {
-  const cleanupErrors: unknown[] = [];
-  if (masterAttempted) {
-    try { await tool('learning:set-pot-scope', { pots: ['papercusp'], enabled: false }); }
-    catch (error) { cleanupErrors.push(error); }
-  }
-  if (routineAudit) {
-    try { await tool('routines:revert', { auditId: routineAudit }); }
-    catch (error) { cleanupErrors.push(error); }
-  }
-  await log({ phase: 'restoration', success: cleanupErrors.length === 0, errors: cleanupErrors.map(String) });
-  await sql.end();
-  if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Study restoration needs immediate attention');
+  try { await restoreStudyControls({ masterAttempted, restoreRoutine: routine?.restore }, restoration, log); }
+  finally { await sql.end(); }
 }
 // Restoration takes priority over diagnostics. Persist the bounded gateway ring
 // immediately afterward so an unrelated later request cannot erase this trial's evidence.
