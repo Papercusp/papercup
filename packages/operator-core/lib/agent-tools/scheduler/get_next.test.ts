@@ -229,6 +229,11 @@ function handlerPayload(out: { data?: unknown; content?: Array<{ text?: string }
 }
 
 beforeEach(() => {
+  // clearAllMocks() resets call history but deliberately preserves queued
+  // mockResolvedValueOnce entries. Reinstall the defaults explicitly so a
+  // one-shot branch test cannot leak into the next describe block.
+  diagnoseFleetScopeLeaderLivenessM.mockReset();
+  diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
   reconcileFleetScopeClaimsM.mockImplementation(async () => ({
     scope: scopeState.scope,
     quarantinedIds: scopeState.quarantinedIds,
@@ -239,7 +244,6 @@ beforeEach(() => {
   }));
   diagnoseFleetScopeIssueFloorMissM.mockResolvedValue(null);
   diagnoseFleetScopePlanTerminalityM.mockResolvedValue(null);
-  diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
   getFlagM.mockResolvedValue(true);
   liveLockedPathsM.mockImplementation(async () => []);
   getPresenceM.mockResolvedValue(null);
