@@ -3742,12 +3742,13 @@ export async function trackGateStall(
           await sql.unsafe(
             `UPDATE harness_shared.routines
                 SET metadata = jsonb_set(
+                    jsonb_set(
                       jsonb_set(
                         jsonb_set(
                           jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
                           '{gate_health,failingTestsMeasured}', 'true'::jsonb, true),
                         '{gate_health,repairTickLegs}', $3::jsonb, true),
-                          '{gate_health,failingTests}',
+                      '{gate_health,failingTests}',
                       (SELECT COALESCE(jsonb_agg(e.value), '[]'::jsonb)
                          FROM jsonb_array_elements_text(COALESCE(metadata->'gate_health'->'failingTests', '[]'::jsonb)) AS e
                          WHERE NOT (e.value = ANY($4::text[]))) || $5::jsonb,
