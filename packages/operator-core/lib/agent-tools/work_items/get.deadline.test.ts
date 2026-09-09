@@ -25,7 +25,7 @@ vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointFreshness: (...args: unknown[]) => getWorkItemCheckpointFreshness(...args),
 }));
 
-import get, { WORK_ITEMS_GET_BUDGET_MS } from './get';
+import get, { WORK_ITEMS_GET_BUDGET_MS, WORK_ITEMS_GET_MAX_CONCURRENCY } from './get';
 
 type Out = { data: { results: Array<Record<string, unknown>> } };
 const ctx = { uiClientId: 'su-deadline-test', workspaceId: 'default' };
@@ -75,10 +75,15 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     expect(out.data.results[0]).toMatchObject({ availability: 'absent' });
   });
 
-  it('runs a projected 10-item summary as one concurrent wave and skips historical enrichments', async () => {
+  it('runs a projected 10-item summary in a bounded concurrent pool and skips historical enrichments', async () => {
     const ids = Array.from({ length: 10 }, (_, index) => `WI-${index + 1}`);
+    let active = 0;
+    let peak = 0;
     getWorkItem.mockImplementation(async (id: string) => {
+      active += 1;
+      peak = Math.max(peak, active);
       await new Promise((resolve) => setTimeout(resolve, 1_000));
+      active -= 1;
       return { id, kind: 'feature', family: 'feature', harness: 'papercusp', state: 'open', title: id };
     });
     const metadata = vi.fn();
@@ -94,10 +99,11 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       } as never,
     ) as Promise<Out & { data: { read: Record<string, unknown> } }>;
 
-    await vi.advanceTimersByTimeAsync(1_001);
+    await vi.advanceTimersByTimeAsync(3_001);
     const out = await pending;
 
     expect(getWorkItem).toHaveBeenCalledTimes(10);
+    expect(peak).toBe(WORK_ITEMS_GET_MAX_CONCURRENCY);
     expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
     expect(out.data.results).toHaveLength(10);
     expect(out.data.results.every((row) => row.availability === 'available')).toBe(true);
@@ -111,8 +117,47 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       baseReadMaxMs: 1_000,
       enrichmentMaxMs: 0,
     });
-    expect(Number(out.data.read.elapsedMs)).toBeLessThan(2_000);
+    expect(Number(out.data.read.elapsedMs)).toBeLessThan(4_000);
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ workItemsGet: out.data.read }));
+  });
+
+  it('runs detail=true with threadLimit in the bounded pool instead of serializing the batch', async () => {
+    const ids = ['WI-detail-1', 'WI-detail-2', 'WI-detail-3', 'WI-detail-4'];
+    let active = 0;
+    let peak = 0;
+    getWorkItem.mockImplementation(async (id: string) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      active -= 1;
+      return { id, kind: 'bug', family: 'issue', harness: 'papercusp', state: 'open', title: id };
+    });
+    getWorkItemThreadWindow.mockResolvedValue({ total: 1, posts: [], topics: [] });
+
+    const pending = get.handler(
+      { ids, detail: true, threadLimit: 5 } as never,
+      {
+        ...ctx,
+        sourceProjection: {
+          pick: ['results[].id', 'results[].workItem.state', 'results[].threadWindow', 'counts', 'read'],
+        },
+      } as never,
+    ) as Promise<Out>;
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    const out = await pending;
+
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    expect(getWorkItem).toHaveBeenCalledTimes(ids.length);
+    expect(getWorkItemThreadWindow).toHaveBeenCalledTimes(ids.length);
+    expect(peak).toBe(Math.min(ids.length, WORK_ITEMS_GET_MAX_CONCURRENCY));
+    expect(out.data.results).toHaveLength(ids.length);
+    expect(out.data.results.every((row) => row.availability === 'available')).toBe(true);
+    expect(
+      out.data.results.every(
+        (row) => (row.threadWindow as { total?: number } | undefined)?.total === 1,
+      ),
+    ).toBe(true);
   });
 
   it('keeps detail:true with threadLimit:0 on the lean completion-evidence source path', async () => {
