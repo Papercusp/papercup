@@ -123,6 +123,38 @@ describe('clearClaimSpec (EI-12830 — drop a per-bee override so it falls back 
     });
   });
 
+  it('guards an automatic clear by the exact specId@revision that was inspected', async () => {
+    const { sql, calls } = makeSqlStub([[{ bee_id: 'su-m' }]]);
+    const res = await clearClaimSpec(
+      {
+        cupId: 'su-m',
+        workspaceId: 'ws1',
+        expectedHead: { specId: 'plans-start-finished-plan', revision: 7 },
+      },
+      sql,
+    );
+
+    expect(res.cleared).toBe(true);
+    expect(calls[0]).toContain("spec->>'specId'");
+    expect(calls[0]).toContain('plans-start-finished-plan');
+    expect(calls[0]).toContain('7');
+  });
+
+  it('reports cleared:false when the inspected head lost a concurrent re-steer race', async () => {
+    const { sql, calls } = makeSqlStub([[]]);
+    const res = await clearClaimSpec(
+      {
+        cupId: 'su-m',
+        workspaceId: 'ws1',
+        expectedHead: { specId: 'plans-start-finished-plan', revision: 7 },
+      },
+      sql,
+    );
+
+    expect(res).toEqual({ ok: true, errors: [], cleared: false });
+    expect(calls[0]).toContain('plans-start-finished-plan');
+  });
+
   it('REGRESSION: a stale per-bee override shadows the fleet; after clearing it the bee inherits the fleet spec again', async () => {
     // Before the clear: the per-bee spec ALWAYS wins — membership is not even consulted.
     const before = makeSqlStub([[{ spec: laneSpec('stale-per-bee') }]]);

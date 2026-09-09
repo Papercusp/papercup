@@ -22,6 +22,7 @@ import {
   getNextForBee,
   resolveClaimSpecWorkspace,
   getClaimSpecRecord,
+  clearClaimSpec,
   readClaimConcurrency,
   fleetSpecBeeKey,
 } from '../../scheduler/claim-spec-store';
@@ -498,6 +499,43 @@ export function planScopeMissingRefusal(planSlug: string, cupId: string, harness
       args: recoveryArgs,
     },
   };
+}
+
+/**
+ * Recover the one plan slug from the exact per-owner claim-spec shape `plans:start`
+ * authors. This is intentionally NOT a generic "contains a plan predicate" walk:
+ * automatically deleting a user-authored union such as `any:[plan,id]` when the
+ * plan retires would discard the still-live id lane and silently widen the caller to
+ * DEFAULT_CLAIM_SPEC. Only the two shapes buildExactPlanClaimSpec emits qualify.
+ */
+export function plansStartExactPlanBinding(spec: unknown): string | null {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return null;
+  const record = spec as { specId?: unknown; view?: { filter?: unknown } };
+  if (typeof record.specId !== 'string' || !record.specId.startsWith('plans-start-')) return null;
+  const planSlug = record.specId.slice('plans-start-'.length);
+  if (!planSlug) return null;
+  const isPlanLeaf = (node: unknown): boolean => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return false;
+    const leaf = node as { field?: unknown; op?: unknown; value?: unknown };
+    return leaf.field === 'plan' && leaf.op === '=' && leaf.value === planSlug;
+  };
+  const isKindLeaf = (node: unknown): boolean => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return false;
+    const leaf = node as { field?: unknown; op?: unknown; value?: unknown };
+    return (
+      leaf.field === 'kind' &&
+      leaf.op === 'in' &&
+      Array.isArray(leaf.value) &&
+      leaf.value.length > 0 &&
+      leaf.value.every((value) => typeof value === 'string')
+    );
+  };
+  const filter = record.view?.filter;
+  if (isPlanLeaf(filter)) return planSlug;
+  if (!filter || typeof filter !== 'object' || Array.isArray(filter)) return null;
+  const all = (filter as { all?: unknown }).all;
+  if (!Array.isArray(all) || all.length !== 2) return null;
+  return all.some(isPlanLeaf) && all.some(isKindLeaf) ? planSlug : null;
 }
 
 /**
@@ -1671,6 +1709,9 @@ export default defineTool({
       };
     }
     let res = await arbitrateSchedulerClaim(claim.value);
+    let retiredSoloPlanSpec:
+      | { planSlug: string; specId: string; revision: number; cleared: boolean }
+      | undefined;
     // WI-6409: a caller at its CONCURRENCY CAP never had the lane evaluated — getNextForBee
     // short-circuits before the claim query (EI-12095) — so this miss says NOTHING about pool
     // admissibility. Answer it here, for EVERY caller, before the divergence machinery runs.
@@ -1711,6 +1752,63 @@ export default defineTool({
             },
           ],
         };
+      }
+
+      // EI-22773843177950284: plans:start binds a SOLO starter to one exact plan,
+      // but nothing retired that per-owner row after the plan shipped. Every later
+      // claimable wake re-ran the same terminal filter, missed, and re-parked forever.
+      // Repair on MISS only (zero cost on successful pulls), and only for the exact
+      // plans:start-authored shape above. Fleet specs remain leader-owned and keep
+      // their existing explicit retired-plan diagnosis/re-steer semantics.
+      const boundPlan =
+        specOn && !reconciliation.scope && capRec?.source === 'cup'
+          ? plansStartExactPlanBinding(capRec.spec)
+          : null;
+      if (boundPlan && capRec?.revision !== null && capRec?.revision !== undefined) {
+        const terminality = await import('../plans/source')
+          .then((m) =>
+            m.planTerminalityInWorkspace(
+              resolveClaimSpecWorkspace(ident.workspaceId) ?? DEFAULT_COORD_WORKSPACE,
+              boundPlan,
+            ),
+          )
+          .catch(() => null);
+        if (terminality?.status === 'shipped' || terminality?.status === 'superseded') {
+          const cleared = await clearClaimSpec({
+            cupId: ident.ownerId,
+            workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+            expectedHead: { specId: capRec.spec.specId, revision: capRec.revision },
+          }).catch(() => null);
+          if (cleared) {
+            retiredSoloPlanSpec = {
+              planSlug: boundPlan,
+              specId: capRec.spec.specId,
+              revision: capRec.revision,
+              cleared: cleared.cleared,
+            };
+            // `cleared:false` means the compare-and-delete lost to a concurrent
+            // re-steer (or another cleaner). Re-resolve either way: the stale head
+            // we inspected is no longer authoritative, and the new/default spec may
+            // have work immediately available.
+            const retryBudgetMs = remainingBudgetMs();
+            const retry = await withBoundedTimeout(
+              getNextForBee({
+                cupId: ident.ownerId,
+                onPlanLaneBlocked,
+                useDedicatedClaimPool: true,
+                workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+                harness: args.harness,
+                heldPaths: args.heldPaths,
+                contendedPaths,
+                states: args.states,
+                rigAvailable: args.rigAvailable,
+                checkIdleDrainOnMiss: true,
+              }),
+              { fallback: null, timeoutMs: retryBudgetMs, label: 'scheduler:get_next:retiredSoloPlanRetry' },
+            );
+            if (!retry.degraded && retry.value) res = await arbitrateSchedulerClaim(retry.value);
+          }
+        }
       }
     }
     // WI-5947: RE-CONFIRM before letting a divergence verdict be pronounced.
@@ -2418,7 +2516,7 @@ export default defineTool({
     // otherwise certify `spec_matches_nothing`; preserving null keeps the old diagnosis intact.
     const planTerminalityForMiss = !res && reconciliation.scope && !invalidHarnessKnownSlugs ? planTerminality : null;
     const leaderLivenessForMiss = !res && reconciliation.scope && !invalidHarnessKnownSlugs ? leaderLiveness : null;
-    const payload = res
+    const basePayload = res
       ? assembleSchedulerClaimResult({
           workItem: res.workItem,
           claimedUnder: res.claimedUnder,
@@ -2511,6 +2609,9 @@ export default defineTool({
               // moment happens, instead of leaving the caller to a 60s re-poll.
               advice: IDLE_PULL_MISS_ADVICE,
             };
+    const payload = retiredSoloPlanSpec
+      ? { ...basePayload, retiredSoloPlanSpec }
+      : basePayload;
     // P-003: `tool_invocations` has no inline result JSON. Stamp the one fact a
     // later launch verifier needs — claimed vs diagnosed no-claim — onto the
     // invocation's existing metadata writer. This is intentionally the only

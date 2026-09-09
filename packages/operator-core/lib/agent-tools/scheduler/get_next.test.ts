@@ -22,7 +22,7 @@ const scopeState = vi.hoisted(() => ({
 const getNextM = vi.hoisted(() => vi.fn());
 type TestClaimSpecRecord = {
   source: 'default' | 'cup';
-  spec: { specId: string; revision: number };
+  spec: { specId: string; revision: number; view?: { filter?: unknown } };
   revision: number | null;
   updatedBy: string | null;
   updatedAt: string | null;
@@ -69,6 +69,9 @@ const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
 const releaseWorkItemM = vi.hoisted(() => vi.fn(async () => undefined));
 const readClaimConcurrencyM = vi.hoisted(() =>
   vi.fn(async () => ({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] as string[] })),
+);
+const clearClaimSpecM = vi.hoisted(() =>
+  vi.fn(async () => ({ ok: true, errors: [] as string[], cleared: true })),
 );
 
 vi.mock('../coordination/identity', () => ({
@@ -143,6 +146,7 @@ vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
     ...actual,
     getNextForBee: getNextM,
     getClaimSpecRecord: getClaimSpecRecordM,
+    clearClaimSpec: clearClaimSpecM,
     readClaimConcurrency: readClaimConcurrencyM,
   };
 });
@@ -207,6 +211,7 @@ import getNextTool, {
   GET_NEXT_ISSUE_DIAG_BUDGET_MS,
   GET_NEXT_TIMEOUT_RECONCILIATION_BUDGET_MS,
   GET_NEXT_TOTAL_BUDGET_MS,
+  plansStartExactPlanBinding,
 } from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
@@ -243,6 +248,47 @@ beforeEach(() => {
   workItemClaimLeaseEnabledM.mockReturnValue(false);
   leaseClaimedWorkItemM.mockResolvedValue(true);
   releaseWorkItemM.mockResolvedValue(undefined);
+  clearClaimSpecM.mockResolvedValue({ ok: true, errors: [], cleared: true });
+});
+
+describe('plansStartExactPlanBinding — automatic cleanup stays narrower than arbitrary plan filters', () => {
+  it('recognizes both exact shapes plans:start authors', () => {
+    expect(
+      plansStartExactPlanBinding({
+        specId: 'plans-start-finished-plan',
+        view: { filter: { field: 'plan', op: '=', value: 'finished-plan' } },
+      }),
+    ).toBe('finished-plan');
+    expect(
+      plansStartExactPlanBinding({
+        specId: 'plans-start-finished-plan',
+        view: {
+          filter: {
+            all: [
+              { field: 'plan', op: '=', value: 'finished-plan' },
+              { field: 'kind', op: 'in', value: ['bug', 'change'] },
+            ],
+          },
+        },
+      }),
+    ).toBe('finished-plan');
+  });
+
+  it('rejects a user-authored union that still has a live non-plan branch', () => {
+    expect(
+      plansStartExactPlanBinding({
+        specId: 'plans-start-finished-plan',
+        view: {
+          filter: {
+            any: [
+              { field: 'plan', op: '=', value: 'finished-plan' },
+              { field: 'id', op: 'in', value: ['EI-still-live'] },
+            ],
+          },
+        },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('scheduler:get_next ambient transaction reservation', () => {
@@ -643,6 +689,92 @@ describe('scheduler:get_next declared-plan boundary (EI-21238986333755666)', () 
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
 
     expect(getNextM).toHaveBeenCalledOnce();
+  });
+
+  it('retires a shipped plans:start solo binding with CAS and immediately retries under the current/default spec', async () => {
+    getPresenceM.mockResolvedValue(null);
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup',
+      spec: {
+        specId: 'plans-start-finished-plan',
+        revision: 7,
+        view: { filter: { field: 'plan', op: '=', value: 'finished-plan' } },
+      },
+      revision: 7,
+      updatedBy: 'su-member',
+      updatedAt: new Date().toISOString(),
+    });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'shipped', hasOpenItems: false });
+    getNextM
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        workItem: { id: 'EI-next', title: 'Next default-lane item' },
+        claimedUnder: { specId: 'default-fixed-ordering', revision: 0 },
+      });
+
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      data?: unknown;
+      content?: Array<{ text?: string }>;
+    };
+    const body = handlerPayload(out);
+
+    expect(getNextM).toHaveBeenCalledTimes(2);
+    expect(clearClaimSpecM).toHaveBeenCalledWith({
+      cupId: 'su-member',
+      workspaceId: 'ws-1',
+      expectedHead: { specId: 'plans-start-finished-plan', revision: 7 },
+    });
+    expect(body).toMatchObject({
+      workItem: { id: 'EI-next' },
+      retiredSoloPlanSpec: {
+        planSlug: 'finished-plan',
+        specId: 'plans-start-finished-plan',
+        revision: 7,
+        cleared: true,
+      },
+    });
+  });
+
+  it('does not retire an active plan binding or an arbitrary composite plan filter', async () => {
+    getPresenceM.mockResolvedValue(null);
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup',
+      spec: {
+        specId: 'plans-start-live-plan',
+        revision: 2,
+        view: { filter: { field: 'plan', op: '=', value: 'live-plan' } },
+      },
+      revision: 2,
+      updatedBy: 'su-member',
+      updatedAt: new Date().toISOString(),
+    });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'active', hasOpenItems: false });
+    getNextM.mockResolvedValue(null);
+
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    expect(clearClaimSpecM).not.toHaveBeenCalled();
+
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup',
+      spec: {
+        specId: 'plans-start-finished-plan',
+        revision: 3,
+        view: {
+          filter: {
+            any: [
+              { field: 'plan', op: '=', value: 'finished-plan' },
+              { field: 'id', op: 'in', value: ['EI-live'] },
+            ],
+          },
+        },
+      },
+      revision: 3,
+      updatedBy: 'su-member',
+      updatedAt: new Date().toISOString(),
+    });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'shipped', hasOpenItems: false });
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    expect(clearClaimSpecM).not.toHaveBeenCalled();
   });
 });
 
