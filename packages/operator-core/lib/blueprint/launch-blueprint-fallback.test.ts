@@ -50,8 +50,29 @@ import {
   setLaunchBlueprintResolver,
   resetLaunchBlueprintTriggerMap,
 } from './launch-blueprint';
+import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
+
+// These tests cover fallback bookkeeping, not the retired Mug/Cup tier. Use
+// explicit revived fixtures for those roles; the real default resolver is tested
+// separately below so retirement coverage cannot be mistaken for fallback coverage.
+beforeEach(() => {
+  setLaunchBlueprintResolver((id) => {
+    const blueprint = loadBuiltinBlueprint(id).blueprint;
+    if (id === 'coding' || id === 'cup') return { ...blueprint, retired: null };
+    return blueprint;
+  });
+});
+
+it('rejects retired coding/cup launch blueprints before fallback bookkeeping can run', async () => {
+  setLaunchBlueprintResolver(null);
+
+  await expect(fireLaunchBlueprint('coding', opts)).rejects.toThrow(/blueprint "coding" is RETIRED/i);
+  await expect(fireLaunchBlueprint('cup', opts)).rejects.toThrow(/blueprint "cup" is RETIRED/i);
+  expect(recordSpawn).not.toHaveBeenCalled();
+  expect(loopbackFetch).not.toHaveBeenCalled();
+});
 
 function enableRealManagedTimersForTest(): void {
   resetScheduledRegistry();

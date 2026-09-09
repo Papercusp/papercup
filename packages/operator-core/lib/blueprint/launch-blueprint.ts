@@ -30,6 +30,7 @@ import {
   loadBuiltinBlueprint,
   loadBlueprintFromFile,
   assertNotNestedHive,
+  assertBlueprintLaunchEligible,
   type Blueprint,
   type ResolveExtendsPath,
 } from '@papercusp/orchestrator/blueprint';
@@ -204,6 +205,12 @@ export async function resolveLaunchTarget(
   opts: { installSlug: string; workspaceId: string },
 ): Promise<LaunchTarget> {
   const bp = await _resolver(blueprintId);
+  // Launch eligibility belongs at this shared target-building choke point. Every
+  // invoke URL (direct, event-driven, and durable-spawn) is built here, while
+  // resolveLaunchBlueprint remains a read-only resolver for catalog/program
+  // inspection. This prevents a retired blueprint from reaching a role-admission
+  // 403 and leaves the retirement reason attached to the caller-visible error.
+  assertBlueprintLaunchEligible(bp);
   const role = bp.spine.decider;
   const workspaceId = await resolveConcreteLaunchWorkspace(opts.installSlug, opts.workspaceId);
   return { blueprintId, role, url: invokeUrl(opts.installSlug, role, workspaceId, bp.kind) };
@@ -229,6 +236,9 @@ export async function resolveLaunchBlueprint(blueprintId: string): Promise<Bluep
  */
 export async function resolveLaunchRole(blueprintId: string): Promise<string> {
   const bp = await _resolver(blueprintId);
+  // The auditor lane launches this role through a direct subprocess rather than
+  // resolveLaunchTarget, so it needs the same launch/spend eligibility check.
+  assertBlueprintLaunchEligible(bp);
   return bp.spine.decider;
 }
 

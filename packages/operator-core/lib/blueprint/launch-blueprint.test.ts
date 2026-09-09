@@ -19,7 +19,7 @@ import {
   QUEEN_INVOKE_TIMEOUT_MS,
   type LaunchFireFn,
 } from './launch-blueprint';
-import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
+import { builtinBlueprintPath, loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 
 describe('installedAwareLaunchResolver (D-007 / WI-1146)', () => {
   it('resolves a built-in id identically to the default resolver', async () => {
@@ -144,7 +144,34 @@ afterEach(() => {
 
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
 
+// Most tests in this file exercise launch mechanics (model routing, body shaping,
+// lineage), not the retired Queen/cup blueprints themselves. Make that distinction
+// explicit: these are test-only revived fixtures; the dedicated retirement test
+// below restores the default resolver and proves the real built-ins are blocked.
+function useLiveLaunchFixtures(): void {
+  setLaunchBlueprintResolver((id) => {
+    const resolved = loadBuiltinBlueprint(id).blueprint;
+    if (id === 'coding' || id === 'cup') return { ...resolved, retired: null };
+    return resolved;
+  });
+}
+
 describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', () => {
+  beforeEach(() => {
+    useLiveLaunchFixtures();
+  });
+
+  it('rejects the retired coding/cup launch blueprints before building an invoke target', async () => {
+    setLaunchBlueprintResolver(null);
+
+    await expect(resolveLaunchTarget('coding', opts)).rejects.toThrow(
+      /blueprint "coding" is RETIRED/i,
+    );
+    await expect(resolveLaunchTarget('cup', opts)).rejects.toThrow(
+      /blueprint "cup" is RETIRED/i,
+    );
+  });
+
   it('every built-in launch blueprint resolves to its single decider role', async () => {
     const expected: Record<string, string> = {
       deploy: 'release-manager',
@@ -607,6 +634,7 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
   let savedLegacyKey: string | undefined;
   let savedModel: string | undefined;
   beforeEach(() => {
+    useLiveLaunchFixtures();
     savedKey = process.env[KEY];
     savedLegacyKey = process.env[LEGACY_KEY];
     savedModel = process.env[MODEL];
