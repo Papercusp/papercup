@@ -341,6 +341,72 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
   });
 });
 
+describe('D-002 rule 1: the admission policy the guard APPLIES has not been loosened', () => {
+  // Reading the constants at their definition site does NOT answer this: the literal can
+  // survive while the value assessCargoDiskAdmission() actually enforces moves underneath it
+  // (a shadowed default parameter, a second default, a caller-supplied policy). Measured
+  // 2026-09-09: halving the applied floor to freePctMin 0.05 while leaving every literal
+  // untouched passed all 57 pre-existing tests in this file. So each threshold below is
+  // pinned BEHAVIOURALLY, through a default-path call with no policy argument, by a pair of
+  // cases that straddle it — the refusing side is what goes red when the guard gets quieter.
+
+  it('applies exactly { freePctMin 0.1, freeBytesMin 5 GiB, percentFloorBypass 128 GiB } on the default path', () => {
+    expect(DEFAULT_CARGO_DISK_POLICY).toEqual({
+      freePctMin: 0.1,
+      freeBytesMin: 5 * GIB,
+      percentFloorBypassBytes: 128 * GIB,
+    });
+
+    // The policy carried back out of a default-path call is the one that decided it.
+    const applied = assessCargoDiskAdmission({ totalBytes: 2_000 * GIB, freeBytes: 240 * GIB });
+    expect(applied.policy).toEqual({
+      freePctMin: 0.1,
+      freeBytesMin: 5 * GIB,
+      percentFloorBypassBytes: 128 * GIB,
+    });
+    expect(applied.percentFloorBypassGiB).toBe(128);
+  });
+
+  it('pins the applied 10% free-percentage floor from both sides', () => {
+    // 1 TiB keeps both cases under the 128 GiB absolute-headroom bypass, so the percentage
+    // floor — not the bypass — is what decides them.
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 1_000 * GIB, freeBytes: 99 * GIB }),
+    ).toMatchObject({ allowed: false, status: 'blocked', reasons: ['free-percent'] });
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 1_000 * GIB, freeBytes: 101 * GIB }),
+    ).toMatchObject({ allowed: true, status: 'ok', reasons: [] });
+  });
+
+  it('pins the applied 5 GiB absolute free-bytes floor from both sides', () => {
+    // Both cases sit far above the percentage floor, so free-bytes is the deciding leg.
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 20 * GIB, freeBytes: 4.9 * GIB }),
+    ).toMatchObject({ allowed: false, status: 'blocked', reasons: ['free-bytes'] });
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 20 * GIB, freeBytes: 5.1 * GIB }),
+    ).toMatchObject({ allowed: true, status: 'ok', reasons: [] });
+  });
+
+  it('pins the applied 128 GiB absolute-headroom bypass from both sides', () => {
+    // A 10 TiB filesystem puts both cases far below 10% free, so only the bypass can admit.
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 10_000 * GIB, freeBytes: 127 * GIB }),
+    ).toMatchObject({ allowed: false, status: 'blocked', reasons: ['free-percent'] });
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 10_000 * GIB, freeBytes: 129 * GIB }),
+    ).toMatchObject({ allowed: true, status: 'ok', reasons: [] });
+  });
+
+  it('EI-21047688909295463: the deliberate 2 TiB / 80 GiB host still REFUSES', () => {
+    // The behavioural witness for these constants. A host on which this admits proves the
+    // policy moved even when the literals look untouched.
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 2_000 * GIB, freeBytes: 80 * GIB }),
+    ).toMatchObject({ allowed: false, status: 'blocked', reasons: ['free-percent'] });
+  });
+});
+
 describe('disk admission measures the mount Cargo writes to (WI-212675)', () => {
   const manifest = '/checkouts/papercusp/papercusp-desktop/src-tauri/Cargo.toml';
 
