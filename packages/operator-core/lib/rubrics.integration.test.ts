@@ -1617,6 +1617,70 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(applied?.classRef).toBe('plan-class-feature-ship');
   });
 
+  it('previews the semantic amendment that repairs an audited pending subject-revision pin', async () => {
+    const seeded = await seedBarContract('pending-subject-revision-amendment', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const [subjectBefore] = await db.adminSql<{ content: string; version: number }[]>`
+      SELECT content, version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    const nextContent = subjectBefore!.content.replace(
+      '**R-1 — First outcome.** The first outcome holds.',
+      '**R-1 — First outcome.** The first outcome holds after the audited repair.',
+    );
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content=${nextContent}, content_hash=md5(${nextContent}), version=version+1
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+
+    const { readAcceptanceBarContractSnapshot } = await import('./acceptance-bar-contract-snapshot');
+    const stale = await readAcceptanceBarContractSnapshot(seeded.subject, {}, { harnessSlug: 'papercusp' });
+    expect(stale.completeness.problems.map((problem) => problem.code)).toContain(
+      'bar_snapshot_rubric_revision_mismatch',
+    );
+
+    const criteria = before.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const { bar: _bar, barHash: _barHash, ...canonical } = criterion;
+      return {
+        ...canonical,
+        model: 'First outcome. The first outcome holds after the audited repair.',
+      };
+    });
+    const currentSubjectRevision = Number(subjectBefore!.version) + 1;
+    const preview = await rubrics.previewAcceptanceBarAmendment({
+      rubricId: seeded.rubricSlug,
+      actorId: 'pending-amendment-actor',
+      reason: 'Repair the audited subject revision and its acceptance BAR atomically.',
+      expectedRubricRevision: before.revision,
+      expectedSubjectPlanRevision: currentSubjectRevision,
+      criteria,
+    });
+
+    expect(preview).toMatchObject({
+      changedBars: ['R-1'],
+      approvalRequired: true,
+      revisionMovement: {
+        rubric: { from: before.revision, to: before.revision! + 1 },
+        subject: { from: currentSubjectRevision, to: currentSubjectRevision + 1 },
+      },
+    });
+    expect(preview!.approval.bars).toEqual([
+      expect.objectContaining({ barKey: 'R-1', priorBarHash: before.criteria[0]!.barHash }),
+    ]);
+    // Preview is read-only: the stored mismatch remains pending until an
+    // outside-lineage approval authorizes the real amendment transaction.
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+    const [subjectAfter] = await db.adminSql<{ version: number }[]>`
+      SELECT version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    expect(Number(subjectAfter!.version)).toBe(currentSubjectRevision);
+  });
+
   it('rebinds terminal work items from superseded BAR revisions without rewriting history', async () => {
     const seeded = await seedBarContract('terminal-rebind-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;

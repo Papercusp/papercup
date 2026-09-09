@@ -3028,6 +3028,12 @@ export function buildAcceptanceBarAmendmentCandidate(
   nextCriteria: RubricCriterion[],
   desiredMappingByBar: ReadonlyMap<string, AcceptanceBarAmendmentMapping>,
   itemStatusById: ReadonlyMap<string, string>,
+  nextContract: {
+    rubricRevision: number;
+    subjectPlanRevision: number;
+    barSetHash: string;
+    barContract: Rubric['barContract'] | null;
+  },
 ): AcceptanceBarContractSnapshot {
   const priorByKey = new Map(snapshot.bars.map((bar) => [bar.barKey, bar]));
   const bars: AcceptanceBarTrace[] = nextCriteria
@@ -3121,7 +3127,54 @@ export function buildAcceptanceBarAmendmentCandidate(
         },
       };
     });
-  return { ...snapshot, bars };
+  // A semantic subject edit deliberately leaves the persisted rubric pin stale
+  // until this transaction applies (plans:audit reports
+  // `barSeedPendingAmendment`).  The live snapshot therefore contains
+  // `bar_snapshot_rubric_revision_mismatch`, but that is the PRE-amendment
+  // state, not a defect in the candidate we are about to vet.  Model the exact
+  // revision/hash pins this same transaction writes before running the
+  // pre-vetting lifecycle gate; otherwise rubrics:amend is forbidden from
+  // repairing the one mismatch it exclusively owns.
+  const revisionPinsRepairable =
+    snapshot.plan !== null &&
+    snapshot.rubric !== null &&
+    snapshot.plan.rubricSlug === snapshot.rubric.rubricId &&
+    nextContract.barContract?.subjectPlanRevision === nextContract.subjectPlanRevision;
+  const problems = revisionPinsRepairable
+    ? snapshot.completeness.problems.filter(
+        (problem) => problem.code !== 'bar_snapshot_rubric_revision_mismatch',
+      )
+    : snapshot.completeness.problems;
+  return {
+    ...snapshot,
+    plan: snapshot.plan
+      ? {
+          ...snapshot.plan,
+          revision: nextContract.subjectPlanRevision,
+          barSetHash: nextContract.barSetHash,
+          rubricRevision: nextContract.rubricRevision,
+        }
+      : null,
+    rubric: snapshot.rubric
+      ? {
+          ...snapshot.rubric,
+          revision: nextContract.rubricRevision,
+          barSetHash: nextContract.barSetHash,
+          contract: nextContract.barContract,
+        }
+      : null,
+    sourceRevisions: {
+      ...snapshot.sourceRevisions,
+      subjectPlan: nextContract.subjectPlanRevision,
+      rubricPlan: nextContract.rubricRevision,
+    },
+    completeness: {
+      ...snapshot.completeness,
+      complete: problems.every((problem) => problem.severity !== 'error'),
+      problems,
+    },
+    bars,
+  };
 }
 
 async function amendAcceptanceBarRubric(
@@ -3390,6 +3443,12 @@ async function amendAcceptanceBarRubric(
         nextCriteria,
         desiredMappingByBar,
         itemStatusById,
+        {
+          rubricRevision: nextRubricRevision,
+          subjectPlanRevision: nextSubjectRevision,
+          barSetHash: String(guard.data.barSetHash),
+          barContract: (guard.data.barContract ?? null) as Rubric['barContract'] | null,
+        },
       );
       const nextTemplateData = guard.data as { barContract?: { adoptionEpoch?: number | null } };
       const startedBar =
