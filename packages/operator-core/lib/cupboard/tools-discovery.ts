@@ -525,11 +525,13 @@ function unionConditionText(name: string, values: UnionScalarValue[], negate = f
  * Render explicit required/forbidden relationships in a root union.
  *
  * This deliberately needs a scalar discriminator in every branch and an
- * explicit target classification in every branch (`required`, `not:{}`, or
- * omitted from a closed `additionalProperties:false` object). Missing
- * JSON-schema properties are forbidden only for a closed object: omission may
- * still be allowed by an open object schema. The result is bounded and emits
- * whole relations only, so a verbose or ambiguous union fails open.
+ * explicit target classification in every branch (`required`, optional,
+ * `not:{}`, or omitted from a closed `additionalProperties:false` object).
+ * Missing JSON-schema properties are forbidden only for a closed object:
+ * omission may still be allowed by an open object schema. The result is
+ * bounded and emits whole relations only, so a verbose or ambiguous union
+ * fails open. Optional-vs-forbidden branches still emit the prohibition,
+ * because that is the contract callers otherwise lose in the merged view.
  */
 export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): string {
   if (branches.length < 2) return '';
@@ -567,19 +569,21 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
 
     for (const target of targetNames) {
       if (target === discriminator) continue;
-      const statuses = new Map<string, 'required' | 'forbidden'>();
+      const statuses = new Map<string, 'required' | 'optional' | 'forbidden'>();
       const requiredValues = new Map<string, UnionScalarValue>();
+      const optionalValues = new Map<string, UnionScalarValue>();
       const forbiddenValues = new Map<string, UnionScalarValue>();
       let valid = true;
 
       branchData.forEach((branch, index) => {
         const properties = branch.properties as Record<string, unknown>;
+        const present = Object.prototype.hasOwnProperty.call(properties, target);
         const status = branch.required.has(target)
           ? 'required'
           : explicitlyForbiddenSchema(properties[target]) ||
-              (branch.closed && !Object.prototype.hasOwnProperty.call(properties, target))
+              (branch.closed && !present)
             ? 'forbidden'
-            : null;
+            : 'optional';
         if (!status) {
           valid = false;
           return;
@@ -592,30 +596,44 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
             return;
           }
           statuses.set(key, status);
-          (status === 'required' ? requiredValues : forbiddenValues).set(key, value);
+          (status === 'required' ? requiredValues : status === 'forbidden' ? forbiddenValues : optionalValues).set(key, value);
         }
       });
 
-      if (!valid || requiredValues.size === 0 || forbiddenValues.size === 0 || statuses.size !== allValues.size)
+      if (!valid || statuses.size !== allValues.size || forbiddenValues.size === 0) continue;
+
+      // Preserve the established two-sided form when every branch is either
+      // required or forbidden. It is more informative than a one-sided
+      // prohibition and keeps the existing compact contract stable.
+      if (requiredValues.size > 0 && optionalValues.size === 0) {
+        const requiredList = [...requiredValues.values()];
+        const forbiddenList = [...forbiddenValues.values()];
+        const requiredCondition =
+          requiredList.length === 1 && forbiddenList.length > 0
+            ? unionConditionText(discriminator, requiredList)
+            : forbiddenList.length === 1 && requiredList.length > 0
+              ? unionConditionText(discriminator, forbiddenList, true)
+              : unionConditionText(discriminator, requiredList);
+        const forbiddenCondition =
+          requiredList.length === 1 && forbiddenList.length > 0
+            ? unionConditionText(discriminator, requiredList, true)
+            : forbiddenList.length === 1 && requiredList.length > 0
+              ? unionConditionText(discriminator, forbiddenList)
+              : unionConditionText(discriminator, forbiddenList);
+        if (!requiredCondition || !forbiddenCondition) continue;
+
+        const relation = `when ${requiredCondition} => ${target} required; when ${forbiddenCondition} => ${target} forbidden`;
+        const candidate = relations.length > 0 ? `${relations.join('; ')}; ${relation}` : relation;
+        if (candidate.length > UNION_CONDITIONAL_HINT_MAX_CHARS) continue;
+        relations.push(relation);
+        if (relations.length >= UNION_CONDITIONAL_HINT_MAX_RELATIONS) return relations.join('; ');
         continue;
+      }
 
-      const requiredList = [...requiredValues.values()];
       const forbiddenList = [...forbiddenValues.values()];
-      const requiredCondition =
-        requiredList.length === 1 && forbiddenList.length > 0
-          ? unionConditionText(discriminator, requiredList)
-          : forbiddenList.length === 1 && requiredList.length > 0
-            ? unionConditionText(discriminator, forbiddenList, true)
-            : unionConditionText(discriminator, requiredList);
-      const forbiddenCondition =
-        requiredList.length === 1 && forbiddenList.length > 0
-          ? unionConditionText(discriminator, requiredList, true)
-          : forbiddenList.length === 1 && requiredList.length > 0
-            ? unionConditionText(discriminator, forbiddenList)
-            : unionConditionText(discriminator, forbiddenList);
-      if (!requiredCondition || !forbiddenCondition) continue;
-
-      const relation = `when ${requiredCondition} => ${target} required; when ${forbiddenCondition} => ${target} forbidden`;
+      const forbiddenCondition = unionConditionText(discriminator, forbiddenList);
+      if (!forbiddenCondition) continue;
+      const relation = `when ${forbiddenCondition} => ${target} forbidden`;
       const candidate = relations.length > 0 ? `${relations.join('; ')}; ${relation}` : relation;
       if (candidate.length > UNION_CONDITIONAL_HINT_MAX_CHARS) continue;
       relations.push(relation);

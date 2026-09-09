@@ -26,6 +26,7 @@ import workItemsGet from '../work_items/get';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
+import agentReview from '../improvements/agent-review';
 import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
@@ -296,6 +297,16 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('path?:string');
     expect(entry?.argSchema).toContain('sha?:string');
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
+  });
+
+  it('EI-22449939490325270: tells callers that resubmit forbids harness', () => {
+    expect(agentReview.name).toBe('improvements:agent-review');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'improvements:agent-review');
+    const compact = compactSchemaForResult(schemaByTool.get('improvements:agent-review'));
+
+    expect(entry?.argSchema).toContain('when mode=resubmit => harness forbidden');
+    expect(compact).toContain('when mode=resubmit => harness forbidden');
   });
 
   it('keeps plans:audit auditedSha completion-only guidance in compact discovery output', () => {

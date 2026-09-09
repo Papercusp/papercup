@@ -359,6 +359,27 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(unionConditionalHint(openBranches)).toBe('');
   });
 
+  it('preserves a closed-branch prohibition when sibling branches keep the field optional', () => {
+    const branches = [
+      {
+        additionalProperties: false,
+        required: ['mode'],
+        properties: {
+          mode: { const: 'claim' },
+          harness: { type: 'string' },
+        },
+      },
+      {
+        additionalProperties: false,
+        required: ['mode'],
+        properties: { mode: { const: 'resubmit' } },
+      },
+    ];
+
+    expect(unionConditionalHint(branches)).toBe('when mode=resubmit => harness forbidden');
+    expect(schemaToText({ oneOf: branches })).toContain('when mode=resubmit => harness forbidden');
+  });
+
   describe('EI-13181: numeric/length bounds (same lossy-discovery class as EI-13164 — a min/max is dropped just like an enum was)', () => {
     it('a min+max integer (sessions:digest\'s real z.number().int().min(1).max(100)) renders the inclusive range', () => {
       // zod's toJSONSchema for `z.number().int().min(1).max(100).optional().describe('Default 30.')`
