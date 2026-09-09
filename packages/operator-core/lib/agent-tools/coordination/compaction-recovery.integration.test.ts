@@ -52,14 +52,17 @@ function anchor(harness = HARNESS, generation = 12): ControlAnchor {
   };
 }
 
-function document(automaticRecovery: CarryDoc['automaticRecovery']): CarryDoc {
+function document(
+  automaticRecovery: CarryDoc['automaticRecovery'],
+  heldItems: CarryDoc['brief']['heldItems'] = [],
+): CarryDoc {
   return {
     identity: { ownerId: OWNER, ownerLabel: null, harness: HARNESS, workspaceId: fx.workspaceId, fleet: null, account: null },
     sessionMode: { modes: [], loopActive: true, loopIntervalSec: 60 },
     brief: {
       ownerId: OWNER, workspaceId: fx.workspaceId,
       loop: { harness: HARNESS, active: true, intervalSec: 60, goal: null, carryNote: STALE, carryNoteUpdatedAtMs: 1 },
-      heldItems: [], directives: [], directivesTotalOpen: 0, walls: [], facts: [], awaits: [], fleet: null,
+      heldItems, directives: [], directivesTotalOpen: 0, walls: [], facts: [], awaits: [], fleet: null,
     },
     planItems: [], asks: [], tail: [],
     continuation: { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true },
@@ -119,13 +122,14 @@ describe('canonical authority to serialized successor context', () => {
     });
     expect(revision.status).toBe('revised');
     controlRead.mockResolvedValue(anchor(HARNESS, 13));
+    const movedItem: CarryDoc['brief']['heldItems'][number] = {
+      id: 'WI-reassigned', harness: HARNESS, title: 'WRONG-OWNER-TITLE-POISON',
+      body: 'WRONG-OWNER-BODY-POISON', checkpoint: 'WRONG-OWNER-CHECKPOINT-POISON',
+      holderProof: { ownerId: 'su-new-holder', workspaceId: fx.workspaceId },
+    };
     const current = await buildAutomaticCompactionRecovery(OWNER, fx.workspaceId, {
       sessionHarness: HARNESS,
-      heldItems: [{
-        id: 'WI-reassigned', harness: HARNESS, title: 'No longer ours', body: null,
-        checkpoint: 'WRONG-OWNER-CHECKPOINT-POISON',
-        holderProof: { ownerId: 'su-new-holder', workspaceId: fx.workspaceId },
-      }],
+      heldItems: [movedItem],
     });
     expect(current.marker).toMatchObject({ complete: true, controlGeneration: 13 });
     expect(current.recovery.planAuthority).toMatchObject({
@@ -134,12 +138,16 @@ describe('canonical authority to serialized successor context', () => {
       specs: [{ specId: SPEC, revision: 2, contentHash: revision.status === 'revised' ? revision.contentHash : '' }],
     });
     expect(current.recovery.checkpoints?.[0]).toMatchObject({ checkpoint: null });
-    const text = renderCarryDoc(document(current));
+    const text = renderCarryDoc(document(current, [movedItem]));
     expect(text).toContain(CORRECTION);
     expect(text).toContain('P-001=done');
     expect(text).toContain(`${SPEC}@2#`);
     expect(text).not.toContain('WRONG-SUBJECT-POISON');
+    expect(text).not.toContain(movedItem.title);
+    expect(text).not.toContain(movedItem.body);
     expect(text).not.toContain('WRONG-OWNER-CHECKPOINT-POISON');
+    expect(text).toContain('UNVERIFIED CARRIED WORK');
+    expect(text).toContain("holder proof names owner 'su-new-holder'");
     expect(text).toContain('current plan authority (PRECEDES carried summaries)');
     expect(text.indexOf(CORRECTION)).toBeLessThan(text.indexOf(STALE));
     expect(text).toContain('Do NOT call coord:orient');
@@ -149,6 +157,48 @@ describe('canonical authority to serialized successor context', () => {
     expect(oldText).not.toContain(CORRECTION);
     expect(oldText).not.toContain(`${SPEC}@2#`);
     expect(oldText).not.toContain('P-001=done');
+  });
+
+  it('renders the same held item under verified ownership, then suppresses its payload after supplied reassignment', async () => {
+    controlRead.mockResolvedValue(anchor(HARNESS, 15));
+    const ownedItem: CarryDoc['brief']['heldItems'][number] = {
+      id: 'WI-holder-transition', harness: HARNESS,
+      title: 'HOLDER-TRANSITION-TITLE', body: 'HOLDER-TRANSITION-BODY',
+      checkpoint: 'HOLDER-TRANSITION-CHECKPOINT',
+      holderProof: { ownerId: OWNER, workspaceId: fx.workspaceId },
+    };
+    const ownedRecovery = await buildAutomaticCompactionRecovery(OWNER, fx.workspaceId, {
+      sessionHarness: HARNESS, heldItems: [ownedItem],
+    });
+    const ownedText = renderCarryDoc(document(ownedRecovery, [ownedItem]));
+    expect(ownedRecovery.marker.complete).toBe(true);
+    expect(ownedText).toContain('You HELD these work-items');
+    expect(ownedText).toContain(ownedItem.title);
+    expect(ownedText).toContain(ownedItem.checkpoint);
+    expect(ownedText).not.toContain('UNVERIFIED CARRIED WORK');
+    // The final carry renderer does not deliver item descriptions even when
+    // owned. Assert that contract explicitly rather than pretending the body
+    // is a positive ownership control alongside title/checkpoint.
+    expect(ownedText).not.toContain(ownedItem.body);
+
+    for (const holderProof of [
+      { ownerId: 'su-new-holder', workspaceId: fx.workspaceId },
+      { ownerId: OWNER, workspaceId: `${fx.workspaceId}-other` },
+      null,
+    ]) {
+      const movedItem = { ...ownedItem, holderProof };
+      const movedRecovery = await buildAutomaticCompactionRecovery(OWNER, fx.workspaceId, {
+        sessionHarness: HARNESS, heldItems: [movedItem],
+      });
+      const movedText = renderCarryDoc(document(movedRecovery, [movedItem]));
+      expect(movedText).toContain('UNVERIFIED CARRIED WORK');
+      expect(movedText).toContain(ownedItem.id);
+      expect(movedText).toContain('do NOT edit, claim, or follow its checkpoint');
+      expect(movedText).not.toContain('You HELD these work-items');
+      expect(movedText).not.toContain(ownedItem.title);
+      expect(movedText).not.toContain(ownedItem.body);
+      expect(movedText).not.toContain(ownedItem.checkpoint);
+    }
   });
 
   it('does not fall back to a same-slug plan in another harness when current scope is absent', async () => {
