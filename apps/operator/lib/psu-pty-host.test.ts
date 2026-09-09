@@ -1796,6 +1796,35 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
     expect(r.deferred).toBe(false);
   });
 
+  it('rechecks after queued PTY output drains before accepting the quiet boundary', async () => {
+    // EI-22806311344295685: Node runs an expired timer before the poll/check
+    // phase that can deliver an already-buffered node-pty onData callback. A
+    // single timestamp read at the quiet threshold can therefore be stale and
+    // release a wake into a child that is still emitting. Queue the output
+    // update for that next phase; the gate must not settle until the NEW output
+    // has itself been quiet for the full window.
+    let lastOut = Date.now() - 1_000;
+    const g = makeAgentBusyGate({ lastOutputAt: () => lastOut, quietMs: 30, capMs: 500 });
+    const queuedOutput = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        lastOut = Date.now();
+        resolve();
+      });
+    });
+
+    let settled = false;
+    const result = g.waitAtPrompt().then((value) => {
+      settled = true;
+      return value;
+    });
+
+    await queuedOutput;
+    expect(settled).toBe(false);
+    await sleep(10);
+    expect(settled).toBe(false);
+    expect(await result).toEqual({ deferred: false });
+  });
+
   it('waitAtPrompt DEFERS (drops the live inject) when the agent stays busy past capMs', async () => {
     // The agent is perpetually "emitting" (lastOutputAt tracks the advancing clock,
     // so quietForMs stays ~0 < quietMs) → it never reaches the prompt → cap fires.

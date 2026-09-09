@@ -30,7 +30,6 @@ import {
   probeBgHostTicker,
   readRuntimeVintageForServiceHealth,
 } from './service-health';
-import { listRuntimeVintage } from './runtime-vintage';
 
 const NOW = Date.parse('2026-09-09T17:00:00.000Z');
 
@@ -48,7 +47,8 @@ describe('service-health bounded datastore reads', () => {
 
     expect(result).toMatchObject({ name: 'bg-host-ticker', up: true });
     expect(query).toHaveBeenCalledTimes(1);
-    expect(String(query.mock.calls[0]?.[0])).toContain('MAX(last_fired_at)');
+    const queryCalls = query.mock.calls as unknown as unknown[][];
+    expect(String(queryCalls[0]?.[0])).toContain('MAX(last_fired_at)');
     expect(boundedPgReadTxnMock).toHaveBeenCalledWith(
       expect.any(Function),
       {
@@ -65,7 +65,7 @@ describe('service-health bounded datastore reads', () => {
 
     await expect(readRuntimeVintageForServiceHealth()).resolves.toEqual([]);
 
-    expect(listRuntimeVintage).toHaveBeenCalledWith(undefined, tx);
+    expect(listRuntimeVintageMock).toHaveBeenCalledWith(undefined, tx);
     expect(boundedPgReadTxnMock).toHaveBeenCalledWith(
       expect.any(Function),
       {

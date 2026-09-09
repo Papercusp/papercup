@@ -21,6 +21,11 @@ import {
 } from './process-memory-pressure';
 import { operatorApiBase } from './operator-api-base';
 import { emitServiceHealthTransitionEvent } from './service-health-events';
+import {
+  boundedPgReadTxn,
+  PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,
+  PG_READ_TXN_DEFAULT_TIMEOUT_MS,
+} from './pg-read-query';
 
 export interface EndpointSpec {
   name: string;
@@ -1190,6 +1195,23 @@ export async function probeMcpProxyCodeDrift(now: number = Date.now()): Promise<
   );
 }
 
+/**
+ * Keep the runtime-vintage lookup inside the same bounded read-only transaction
+ * used by the other operator diagnostics. The explicit acquisition deadline
+ * matters after a bg-host restart, when a wedged/restarting pool is the failure
+ * being diagnosed and a raw list call could outlive the MCP request itself.
+ */
+export async function readRuntimeVintageForServiceHealth() {
+  const { listRuntimeVintage } = await import('./runtime-vintage');
+  return boundedPgReadTxn(
+    (tx) => listRuntimeVintage(undefined, tx),
+    {
+      timeoutMs: PG_READ_TXN_DEFAULT_TIMEOUT_MS,
+      acquireTimeoutMs: PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,
+    },
+  );
+}
+
 /** Shared probe mechanics for the code-drift family: unit start via the shared systemd
  *  probe, newest hot-path *.ts mtime via GNU `find -printf` in the integration tree. */
 async function probeCodeDrift(
@@ -1256,8 +1278,7 @@ async function probeCodeDrift(
     }
     let loadedIdentity: LoadedCodeIdentity | null = null;
     try {
-      const { listRuntimeVintage } = await import('./runtime-vintage');
-      const rows = await listRuntimeVintage();
+      const rows = await readRuntimeVintageForServiceHealth();
       const processPid = svc.mainPid ?? null;
       if (processPid !== null) {
         const row = rows.find((candidate) => {
@@ -1343,15 +1364,19 @@ async function probeCodeDrift(
 export async function probeBgHostTicker(now: number = Date.now()): Promise<ProbeResult> {
   const start = Date.now();
   try {
-    const { getOrgPg } = await import('@papercusp/db-org');
-    const { sql } = getOrgPg();
     // No install_slug filter — the ticker drives EVERY install's routines, so the
     // fleet-wide newest fire is the ticker heartbeat (and it stays robust while the
     // papercup→papercusp slug rename is in flight).
-    const rows = await sql<{ last: Date | string | null }[]>`
-      SELECT MAX(last_fired_at) AS last
-        FROM harness_shared.routines
-       WHERE active = true AND last_fired_at IS NOT NULL`;
+    const rows = await boundedPgReadTxn(
+      (tx) => tx<{ last: Date | string | null }[]>`
+        SELECT MAX(last_fired_at) AS last
+          FROM harness_shared.routines
+         WHERE active = true AND last_fired_at IS NOT NULL`,
+      {
+        timeoutMs: PG_READ_TXN_DEFAULT_TIMEOUT_MS,
+        acquireTimeoutMs: PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,
+      },
+    );
     return { ...evaluateBgHostTicker(toMs(rows[0]?.last), now), latencyMs: Date.now() - start };
   } catch {
     return { name: PORTLESS_PROBE_NAMES.bgHostTicker, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'ticker liveness unknown (routines read failed)' };
