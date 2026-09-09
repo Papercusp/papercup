@@ -3373,10 +3373,78 @@ def _fa_find_paths(argv):
     return paths, follows
 
 
+# ── unbounded symlink-following walk guard (WI-10000836) ─────────────────────
+# The DUAL of the bare-find trap below. A `find -L` / `-follow` rooted at a
+# broad directory on this box reaches ~50 checkouts whose node_modules/
+# @papercusp/* entries symlink back into workspace packages, and bfs expands
+# that symlink DAG without bound — it never finishes and never errors.
+# Measured 2026-09-08: one `find -L ~/.papercusp -name …` ran 32h, reached
+# 70 GB RSS + 1.86 TB swap (of a 2 TB swapfile), pegged kswapd and put the
+# whole host at memory PSI-full 65% — the owner's desktop became unusable.
+# Nothing else polices an agent-spawned child's memory, so the gate must
+# refuse the shape at the call site. Deterministic and narrow: `-L`/`-follow`
+# AND a broad root AND neither `-maxdepth` nor a `node_modules … -prune`.
+_FA_LWALK_DENY = (
+    'unbounded symlink-following walk guard (WI-10000836): `{cmd}` follows '
+    'symlinks (`-L`/`-follow`) from `{root}` with no `-maxdepth` and no '
+    '`-name node_modules -prune`. On this box that root reaches ~50 checkouts '
+    'whose node_modules/@papercusp/* entries symlink back into workspace '
+    'packages, and bfs expands that DAG without bound — measured 2026-09-08, '
+    'one such `find -L ~/.papercusp` ran 32h, reached 70 GB RSS + 1.86 TB swap '
+    'and thrashed the whole host. Use `git ls-files` / `grep -rl` (both follow '
+    'symlinks correctly here), or bound the walk: `find -L <root> -maxdepth 6 '
+    '-name node_modules -prune -o -name <x> -print`.'
+)
+# Roots (relative to $HOME, plus the two absolute ones) that reach the
+# multi-checkout symlink DAG. A single checkout is NOT in this set — `-L`
+# inside one repo is bounded enough to finish.
+_FA_LWALK_BROAD_ROOTS = ('', '.papercusp', '.papercusp/hives', 'papercupai-workspace')
+_FA_LWALK_UNRESOLVABLE = '$`*?[]{}'   # `~` is NOT here: it is expanded below
+
+
+def _fa_lwalk_broad_root(p, cwd):
+    """Return the resolved root when *p* (or *cwd* for a bare `find -L`) is broad."""
+    if p is None:
+        full = cwd
+    else:
+        if any(c in p for c in _FA_LWALK_UNRESOLVABLE) or len(p) > 400:
+            return None
+        p = os.path.expanduser(p)
+        if not os.path.isabs(p):
+            if cwd is None:
+                return None
+            p = os.path.join(cwd, p)
+        full = os.path.realpath(p)
+    if not full:
+        return None
+    if full in ('/', '/home'):
+        return full
+    home = os.path.realpath(os.path.expanduser('~'))
+    for rel in _FA_LWALK_BROAD_ROOTS:
+        if full == os.path.realpath(os.path.join(home, rel)):
+            return full
+    return None
+
+
+def _fa_unbounded_symlink_walk(argv, paths, cwd):
+    """Deny a symlink-following find/bfs over a broad root with no bound."""
+    if '-maxdepth' in argv:
+        return
+    if '-prune' in argv and any('node_modules' in a for a in argv):
+        return
+    for p in (paths or [None]):
+        root = _fa_lwalk_broad_root(p, cwd)
+        if root is not None:
+            deny(_FA_LWALK_DENY.format(cmd=' '.join(argv)[:160], root=root[:200]))
+
+
 def _fa_symlink_traversal(argv, cwd):
     """Deny a `find` that cannot descend the directory it appears to search."""
     paths, follows = _fa_find_paths(argv)
     if follows:
+        # Following symlinks is the remedy for the bare-find trap below, but
+        # an UNBOUNDED follow from a broad root is its own (worse) trap.
+        _fa_unbounded_symlink_walk(argv, paths, cwd)
         return
     for _k, _t in enumerate(argv):
         # `-maxdepth 0` asks for the operand ITSELF and nothing below it, so
