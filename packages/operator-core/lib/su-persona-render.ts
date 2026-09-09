@@ -270,6 +270,16 @@ export interface SuLaunchSpecRecord {
   principalId?: string;
   /** The immutable P-038 artifact itself — provenance/explain reads this, not a second registry. */
   specificationArtifact?: ResolvedAgentSpecification;
+  /** Bounded prior receipts for explain/diff + rollback; still the same launch-spec store. */
+  identityHistory?: SuLaunchArtifactHistoryEntry[];
+}
+
+export interface SuLaunchArtifactHistoryEntry {
+  stack: string[];
+  specificationRevision: string;
+  stateRevision: string;
+  specificationArtifact: ResolvedAgentSpecification;
+  recordedAt: string;
 }
 
 /** Narrow an `adv_sessions.launch_spec` jsonb blob to a usable record, or null. */
@@ -292,6 +302,30 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     str((r.specificationArtifact as Record<string, unknown>).specificationRevision) === specificationRevision
       ? (r.specificationArtifact as ResolvedAgentSpecification)
       : null;
+  const identityHistory = Array.isArray(r.identityHistory)
+    ? r.identityHistory.flatMap((value) => {
+        if (!value || typeof value !== 'object') return [];
+        const entry = value as Record<string, unknown>;
+        const revision = str(entry.specificationRevision);
+        const stateRevision = str(entry.stateRevision);
+        const recordedAt = str(entry.recordedAt);
+        const priorArtifact = entry.specificationArtifact;
+        if (
+          !revision || !stateRevision || !recordedAt ||
+          !priorArtifact || typeof priorArtifact !== 'object' ||
+          str((priorArtifact as Record<string, unknown>).specificationRevision) !== revision
+        ) return [];
+        return [{
+          stack: Array.isArray(entry.stack)
+            ? entry.stack.filter((item): item is string => typeof item === 'string' && item.length > 0).slice(0, 40)
+            : [],
+          specificationRevision: revision,
+          stateRevision,
+          specificationArtifact: priorArtifact as ResolvedAgentSpecification,
+          recordedAt,
+        } satisfies SuLaunchArtifactHistoryEntry];
+      }).slice(0, 12)
+    : [];
   return {
     v: 1,
     agent: r.agent,
@@ -321,6 +355,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     ...(str(r.stateRevision) ? { stateRevision: str(r.stateRevision)! } : {}),
     ...(str(r.principalId) ? { principalId: str(r.principalId)! } : {}),
     ...(artifact ? { specificationArtifact: artifact } : {}),
+    ...(identityHistory.length > 0 ? { identityHistory } : {}),
   };
 }
 

@@ -930,43 +930,55 @@ export async function requestSessionIdentityActivation(input: {
 }): Promise<ControlAnchor> {
   const sql = input.sql ?? getOrgPg().sql;
   return await sql.begin(async (tx) => {
-    const transaction = tx as unknown as Sql;
-    const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql: transaction });
-    const activation = state.activation
-      ? input.restart
-        ? restartActivation(state.activation, input.revision)
-        : requestActivation(state.activation, input.revision)
-      : desiredActivation(
-          input.attribution ?? {
-            actorId: input.ownerId,
-            principalId: input.ownerId,
-            sessionId: input.ownerId,
-          },
-          input.revision,
-        );
-    const persisted = await persistControlAnchor({
-      ownerId: input.ownerId,
-      workspaceId: input.workspaceId,
-      state: { ...state, activation },
-      transition: {
-        origin: 'system',
-        actorId: input.ownerId,
-        source: 'session:activation',
-        ownerDirected: false,
-      },
-    }, transaction);
-    const recorded = await recordCurrentSessionIdentityActivation({
-      ownerId: input.ownerId,
-      workspaceId: input.workspaceId,
-      generation: persisted.generation,
-      phase: 'desired',
-      source: input.source,
-      revision: input.revision,
-      sql: transaction,
-    });
-    if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
-    return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
+    return requestSessionIdentityActivationInTransaction({ ...input, sql: tx as unknown as Sql });
   });
+}
+
+/** Transactional core for launch-receipt + activation mutations. */
+export async function requestSessionIdentityActivationInTransaction(input: {
+  ownerId: string;
+  workspaceId: string;
+  revision: SessionActivation['desired'];
+  attribution?: ActivationAttribution;
+  source: Exclude<SessionIdentityActivationSource, 'control'>;
+  restart?: boolean;
+  sql: Sql;
+}): Promise<ControlAnchor> {
+  const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql: input.sql });
+  const activation = state.activation
+    ? input.restart
+      ? restartActivation(state.activation, input.revision)
+      : requestActivation(state.activation, input.revision)
+    : desiredActivation(
+        input.attribution ?? {
+          actorId: input.ownerId,
+          principalId: input.ownerId,
+          sessionId: input.ownerId,
+        },
+        input.revision,
+      );
+  const persisted = await persistControlAnchor({
+    ownerId: input.ownerId,
+    workspaceId: input.workspaceId,
+    state: { ...state, activation },
+    transition: {
+      origin: 'system',
+      actorId: input.ownerId,
+      source: 'session:activation',
+      ownerDirected: false,
+    },
+  }, input.sql);
+  const recorded = await recordCurrentSessionIdentityActivation({
+    ownerId: input.ownerId,
+    workspaceId: input.workspaceId,
+    generation: persisted.generation,
+    phase: 'desired',
+    source: input.source,
+    revision: input.revision,
+    sql: input.sql,
+  });
+  if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
+  return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
 }
 
 /** Refresh after a canonical mutation. The projection is safety context, but
