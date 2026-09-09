@@ -110,6 +110,36 @@ export type RosterRow = UnifiedPresenceRecord &
       /** WI-4400: stale-ish takeover read — verify with coord:send wake:'required'
        * before assuming the owner is dead or alive. null = liveness unknown. */
       confirmLiveness: boolean | null;
+      /**
+       * EI-22805550006169069: a scheduled self-wake is armed for this owner — an
+       * ACTIVE, non-stalled engine loop with a known future fire, or a turn in
+       * flight right now. The SAME signal `coord:send`'s wake result already
+       * reports as `recipient_dormant_scheduled`, mirrored here deliberately so
+       * the two surfaces read with the same word (`classifyDormantSchedule` is
+       * the one shared derivation — inbox-wake.ts).
+       *
+       * Why it exists: every other field on this row was individually ACCURATE
+       * for an agent that was merely DORMANT BETWEEN LOOP FIRES — `sessionState`
+       * 'ended', `wakeable` false, `claims` 0, `lastActiveSecAgo` null — because
+       * its session really had ended and it really held no claim. The row was not
+       * wrong, it was INCOMPLETE, and a reader cannot repair incompleteness by
+       * reading more carefully: it is byte-identical to a genuinely dead agent,
+       * which is what invites a wrongful reclaim/relaunch. This field is the one
+       * datum that separates "gone" from "back at nextFireAt".
+       *
+       * `false` = MEASURED, nothing will self-wake this owner. `null` = NOT
+       * MEASURED (a federated row, or the best-effort loop read degraded) — never
+       * collapse it to `false`, exactly as `selfWake`/`loopArmed` must not be.
+       */
+      dormantScheduled: boolean | null;
+      /**
+       * ISO timestamp of that scheduled fire — when a message actually gets seen,
+       * with NO respawn needed. `null` while the loop is PARKED (a turn is in
+       * flight right now, so the fire is imminent rather than at a known future
+       * time) and null when `dormantScheduled` is not true; read the pair
+       * together, never this field alone.
+       */
+      nextFireAt: string | null;
       /** P-007 (fleet-deltas-leader-primitives-2026-07-10): the coarse per-member
        *  context-pressure bucket (ok|high|critical), derived from the SAME watchdog-
        *  cached (context_tokens, compaction_limit) the ambient gauge bands on — a
@@ -236,6 +266,12 @@ export const PRESENCE_LIVENESS_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  // EI-22805550006169069: the forward-looking half of the same liveness question
+  // sessionState/wakeable answer backward-looking, derived every read from the
+  // loop's own schedule — continuous (nextFireAt advances on every fire), so it
+  // belongs in LIVENESS and must never ride the byte-stable [coord+N] delta.
+  'dormantScheduled',
+  'nextFireAt',
   // P-007: derived every read from the watchdog-cached tokens/limit — continuous,
   // same lane as sessionState/wakeable, never a [coord+N] delta.
   'contextPressure',
@@ -308,6 +344,8 @@ export const PRESENCE_FULL_ROW_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  'dormantScheduled',
+  'nextFireAt',
   'contextPressure',
   'contextPressureAgeSec',
   'onDesktop',

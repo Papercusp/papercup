@@ -37,6 +37,13 @@ import {
   type WakeabilitySignals,
 } from './presence-wakeability';
 import { deriveVerdict } from './liveness-oracle';
+// EI-22805550006169069: the SAME derivation the wake path uses to tell "dormant
+// between loop fires" from "dead" (`recipient_dormant_scheduled`). Imported, never
+// re-derived: re-implementing the rule here is how the two surfaces would drift
+// back apart, and its `stalled` guard is what stops a loop parked-and-wedged for
+// hours from being reported as a promise that it will fire again.
+import { deriveDormantSchedule } from './presence-selfwake';
+import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { deriveContextPressure, deriveContextPressureAgeSec } from './context-pressure';
 import { writeWatermark } from './watermarks';
@@ -549,6 +556,16 @@ export async function assemblePresenceSnapshot(
   // (it does NOT ride the base PresenceRecord like hive_slug). Fetched for the WHOLE
   // local roster (active + stale) so a parked fleet member still shows its fleet.
   let fleet = new Map<string, FleetMembership>();
+  // EI-22805550006169069: the forward-looking self-wake schedule. Fetched for the
+  // WHOLE local roster (active + stale) on purpose — the row this exists to repair
+  // is a STALE one (heartbeat gone, session ended) that is nevertheless coming back
+  // at a known time, which is precisely the row an active-only join would miss.
+  let loops = new Map<string, LoopStatus>();
+  // Whether that read actually happened. An empty `loops` is ambiguous on its own —
+  // "no owner has a loop" and "the query failed" are the same map — and collapsing
+  // the second into `dormantScheduled:false` would assert the exact false-negative
+  // ("nothing will wake this agent") that this field exists to prevent.
+  let loopsRead = false;
   await Promise.all([
     // each best-effort + independent — presence must list even if any join fails.
     fetchPresenceTier1(localActiveIds)
@@ -597,6 +614,17 @@ export async function assemblePresenceSnapshot(
     fetchPresenceFleet(localAllIds)
       .then((m) => {
         fleet = m;
+      })
+      .catch(() => {}),
+    // EI-22805550006169069: engine-loop schedules, batched for the whole local
+    // roster like every join here. Best-effort + independent by the same contract:
+    // a failed read leaves `loops` empty, which surfaces as `dormantScheduled:null`
+    // (NOT MEASURED) on every row — never as `false`, which would assert that
+    // nothing will wake an agent when we simply failed to look.
+    getLoopStatuses(localAllIds)
+      .then((m) => {
+        loops = m;
+        loopsRead = true;
       })
       .catch(() => {}),
   ]);
@@ -679,6 +707,27 @@ export async function assemblePresenceSnapshot(
   const withViewerAttached = (r: RosterRow): RosterRow =>
     isFederated(r) ? r : { ...r, viewerAttached: viewerAttachedOwners.has(r.ownerId) };
 
+  /** EI-22805550006169069: attach the FORWARD-LOOKING half of liveness — is a
+   *  self-wake already scheduled for this owner?
+   *
+   *  `sessionState`/`wakeable` answer only backward-looking questions ("is a turn
+   *  running", "is an inbox-wake await armed"), and for an agent DORMANT BETWEEN
+   *  LOOP FIRES every one of them is accurately negative while the agent is not
+   *  gone at all. Without this field such a row is byte-identical to a dead one,
+   *  so the only way a reader could tell them apart was to send a wake and read
+   *  `recipient_dormant_scheduled` — i.e. the disconfirming datum existed, just
+   *  not on the surface people actually read before reclaiming work.
+   *
+   *  A federated row's loop lives on its home box (like onDesktop/viewerAttached),
+   *  and a degraded read is NOT MEASURED — both stay `null`, never `false`. */
+  const withDormantSchedule = (r: RosterRow): RosterRow => ({
+    ...r,
+    ...deriveDormantSchedule(
+      { federated: isFederated(r), measured: loopsRead, loop: loops.get(r.ownerId) ?? null },
+      nowMs,
+    ),
+  });
+
   /** P-007: attach the coarse context-pressure bucket, derived live from the row's
    *  own (contextTokens, compactionLimit, contextEstimatedAt) — no extra query,
    *  these already ride PresenceRecord (watchdog-cached). The estimate's own age
@@ -716,10 +765,17 @@ export async function assemblePresenceSnapshot(
     .map(withWakeability)
     .map(withOnDesktop)
     .map(withViewerAttached)
+    .map(withDormantSchedule)
     .map(withContextPressure)
     .map(withFleet);
+  // EI-22805550006169069: the STALE chain gets withDormantSchedule too, and that is
+  // the leg that actually matters — a dormant-between-fires agent is stale BY
+  // CONSTRUCTION (no heartbeat between fires), so omitting it here would leave the
+  // originating bug unfixed on the exact population it was reported against.
   const staleEnriched = stale.map((r) =>
-    withFleet(withContextPressure(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))))),
+    withFleet(
+      withContextPressure(withDormantSchedule(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))))),
+    ),
   );
 
   // The FULL enriched roster (fresh-heartbeat + stale), each carrying its derived

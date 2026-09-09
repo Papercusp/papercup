@@ -1820,7 +1820,7 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
 
     await queuedOutput;
     expect(settled).toBe(false);
-    await sleep(10);
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(settled).toBe(false);
     expect(await result).toEqual({ deferred: false });
   });

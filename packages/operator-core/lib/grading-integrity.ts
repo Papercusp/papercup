@@ -28,6 +28,8 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
 import { routeSourceGradingAudit } from './grading-audit-routing';
+import { getTask } from './task-manager/store';
+import { isTerminalState } from './task-manager/types';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -82,10 +84,12 @@ export interface PendingGradingAuditDispatchReceipt {
   terminalRecovery?: {
     retiredTaskIds: string[];
     attempts: number;
-    codes: AcceptanceGraderTerminalFailureCode[];
+    codes: GradingAuditRecoveryCode[];
     fallback: typeof GRADING_AUDIT_FALLBACK;
   };
 }
+
+type GradingAuditRecoveryCode = AcceptanceGraderTerminalFailureCode | 'task_receipt_not_live';
 
 export interface PendingGradingAuditDispatchResult {
   requestedTargetIds: string[];
@@ -112,6 +116,7 @@ export interface DispatchPendingGradingAuditsDeps {
   route?: typeof routeSourceGradingAudit;
   reserve?: typeof reservePendingGradingAudit;
   release?: typeof releasePendingGradingAudit;
+  getTask?: typeof getTask;
   readLogTail?: (path: string) => string | Promise<string>;
   killTask?: typeof killTask;
   sleep?: (ms: number) => Promise<void>;
@@ -433,7 +438,7 @@ export async function dispatchPendingGradingAudits(
     const idempotencyKey = `grading-audit:${issueId}`;
     const harness = input.harness?.trim();
     const retiredTaskIds: string[] = [];
-    const terminalCodes: AcceptanceGraderTerminalFailureCode[] = [];
+    const terminalCodes: GradingAuditRecoveryCode[] = [];
     let currentIdempotencyKey = idempotencyKey;
     let terminalFallbacks = 0;
     let attempts = 0;
@@ -501,6 +506,7 @@ export async function dispatchPendingGradingAudits(
       }
       routingFallback = routed.reason;
       const terminateTask = deps.killTask ?? killTask;
+      const readTask = deps.getTask ?? getTask;
       const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
       let launchBackend: 'claude' | 'codex' = 'claude';
       let receipt: PendingGradingAuditDispatchReceipt | null = null;
@@ -542,7 +548,7 @@ export async function dispatchPendingGradingAudits(
         const launchedTask = launchData?.tasks?.[0];
         const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
         const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
-        const terminalFailure = logPath
+        let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = logPath
           ? await detectAcceptanceGraderTerminalFailure(logPath, {
               readLogTail,
               ...(deps.sleep ? { sleep: deps.sleep } : {}),
@@ -554,6 +560,22 @@ export async function dispatchPendingGradingAudits(
               detectStartupStall: false,
             })
           : null;
+
+        // A stable launch receipt can outlive the task it represented. Log
+        // classifiers cover known quota/auth exits, but an operator reaper or
+        // host recycle can end the task without writing any such terminal text.
+        // Treat a DEDUPED receipt whose durable task is already gone as a
+        // recoverable terminal mission; otherwise the card keeps a reservation
+        // while every later sweep "succeeds" by deduping to the same dead task.
+        if (!terminalFailure && result.data?.deduped && taskId) {
+          const task = await readTask(taskId);
+          if (!task || isTerminalState(task.state)) {
+            terminalFailure = {
+              code: 'task_receipt_not_live',
+              evidence: task ? `task ledger state is ${task.state}` : 'task ledger row is absent',
+            };
+          }
+        }
 
         if (terminalFailure) {
           if (!taskId) {
@@ -612,7 +634,13 @@ export async function dispatchPendingGradingAudits(
           terminalFallbacks += 1;
           launchBackend = GRADING_AUDIT_FALLBACK.agent;
           const retryIdentity = createHash('sha256')
-            .update(`${currentIdempotencyKey}\0${taskId}\0${terminalFailure.code}\0${launchBackend}`)
+            // The reservation timestamp is the bounded retry generation. A
+            // later 15-minute reservation epoch must not dedupe its one allowed
+            // recovery to the previous epoch's already-terminal fallback task.
+            .update(
+              `${reservation.reservation?.reservedAt ?? 'reservation-unknown'}\0` +
+                `${currentIdempotencyKey}\0${taskId}\0${terminalFailure.code}\0${launchBackend}`,
+            )
             .digest('hex')
             .slice(0, 16);
           currentIdempotencyKey = `${idempotencyKey}:recovery:${retryIdentity}`;

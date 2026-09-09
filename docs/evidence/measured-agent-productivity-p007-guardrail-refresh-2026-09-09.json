@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-007 current guardrail refresh after PTY queued-output race fix",
+  "framework": "operational",
+  "command": [
+    "npm run test:file -- apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+    "testing:run core-unit 12-file P-007 guardrail group",
+    "testing:run app-unit 3-file P-007 guardrail group",
+    "testing:run core-integration 2-file P-007 guardrail group",
+    "testing:run exact PTY mid-turn regression repetition"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-09T18:14:35.360Z",
+  "finishedAt": "2026-09-09T18:41:25.935Z",
+  "summary": "The current P-007 guardrail battery passed 2,059 tests with zero failures or skips after fixing the PTY queued-output quiet-gate race; the exact real-PTY regression also passed six consecutive focused runs.",
+  "assertions": [
+    {
+      "id": "core-unit",
+      "passed": true,
+      "evidence": "testing:run group 24b02602-5d82-4f31-bd75-03589d85a4c7 passed all 826 tests in 12 files at tested HEAD 91c6209ddef5e0fec0ce84a82e9f6030535403c5."
+    },
+    {
+      "id": "app-unit",
+      "passed": true,
+      "evidence": "testing:run group 02b63be4-dffe-4db6-b61b-31c3eee09cf8 passed all 1,212 tests in 3 files at tested HEAD 91c6209ddef5e0fec0ce84a82e9f6030535403c5."
+    },
+    {
+      "id": "core-integration",
+      "passed": true,
+      "evidence": "testing:run group b503a1cd-29ac-40d1-92be-22f5537cd679 passed all 4 tests in 2 files at tested HEAD 91c6209ddef5e0fec0ce84a82e9f6030535403c5."
+    },
+    {
+      "id": "app-integration",
+      "passed": true,
+      "evidence": "Durable capability:bash task 0mtuf3vvs1widfzg57r and test_runs row 17763897 passed all 17 apps/operator/lib/psu-pty-host-turn.integration.test.ts tests in 75,352 ms at tested HEAD 91c6209ddef5e0fec0ce84a82e9f6030535403c5; terminal JOB END and TEST_FILE_RESULT status=passed markers were present."
+    },
+    {
+      "id": "queued-output-regression",
+      "passed": true,
+      "evidence": "The deterministic makeAgentBusyGate queued-I/O unit first failed before the fix, then the 12-test busy-gate group and full 349-test host unit file passed. The exact real-PTY mid-turn case passed run groups 860803d1-cb6b-4ca5-91e4-71584c206d1f, 069438b2-79fa-4d54-af97-30cc7b8009b4, 1103b295-4c08-4b88-9b8a-691a1f64cf2e, cdbe14e4-3a01-48a0-8035-f3a4a211e0e9, b9044f1d-05aa-4628-b5bf-4cd3cced7072, and e304ae48-c005-45ba-bd01-ad6b4c723616."
+    },
+    {
+      "id": "current-byte-measurement",
+      "passed": true,
+      "evidence": "The exact 19-source/18-test P-007 measurement is source sha256-file-set-v1:593f74f2fb6bcc4b2d9d9e8fbe80e67d37930298863bd18e46eea17ef077a219 and test sha256-file-set-v1:d3f3bb5a0690d3635424df7629c7c9b42c8234ca69f6f4eb59fb66bbdb2cbdf6."
+    },
+    {
+      "id": "rollout-disposition-preserved",
+      "passed": true,
+      "evidence": "This guardrail refresh changes no cohort evidence or rollout conclusion: D-010 remains fixed at terminal distribution [0,7,0], unmatched baseline, five of seven latency values unknown, and HOLD/no broader rollout."
+    }
+  ],
+  "testedHead": "91c6209ddef5e0fec0ce84a82e9f6030535403c5",
+  "sourceFingerprint": "sha256-file-set-v1:593f74f2fb6bcc4b2d9d9e8fbe80e67d37930298863bd18e46eea17ef077a219",
+  "testFingerprint": "sha256-file-set-v1:d3f3bb5a0690d3635424df7629c7c9b42c8234ca69f6f4eb59fb66bbdb2cbdf6",
+  "workItem": "WI-10000336",
+  "incident": "EI-22806311344295685"
+}

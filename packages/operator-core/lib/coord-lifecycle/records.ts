@@ -476,9 +476,25 @@ export const ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES = ['done', 'resolved', 'passed']
 export const ROOT_CAUSE_DISTINGUISHING_TEST_EXAMPLE = 'if H1 then A; if H2 then B';
 export const ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT =
   `at least two different conditional observables, e.g. "${ROOT_CAUSE_DISTINGUISHING_TEST_EXAMPLE}" (equivalent conditional prose accepted)`;
+/**
+ * Version of the causal-evidence contract enforced for NEW successful defect
+ * closes. The additional fields remain optional in the storage schema so
+ * historical v1 completion records continue to parse; the completion handler
+ * applies the v2 requirement only at a new successful-close boundary and
+ * stamps the version on records that pass.
+ */
+export const ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION = 2 as const;
+export const ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS = [
+  'testProcedure',
+  'predictedObservations.hypothesis',
+  'predictedObservations.alternativeHypothesis',
+  'actualObservation',
+  'evidenceRefs',
+] as const;
 
 export const RootCauseVerificationSchema = z
   .object({
+    contractVersion: z.literal(ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION).optional(),
     hypothesis: z.string().trim().min(1).describe('The claimed originating cause.'),
     alternativeHypothesis: z.string().trim().min(1).describe('A rival explanation that predicts a different result.'),
     distinguishingTest: z
@@ -487,8 +503,41 @@ export const RootCauseVerificationSchema = z
       .min(1)
       .describe(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT),
     testResult: z.string().trim().min(1).describe('The actual pre-fix observable.'),
+    testProcedure: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Exact procedure used to distinguish the two hypotheses; required on new successful defect closes.'),
+    predictedObservations: z
+      .object({
+        hypothesis: z.string().trim().min(1),
+        alternativeHypothesis: z.string().trim().min(1),
+      })
+      .strict()
+      .optional()
+      .describe('The observation predicted under each hypothesis; required on new successful defect closes.'),
+    actualObservation: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('What the distinguishing procedure actually observed; required on new successful defect closes.'),
+    evidenceRefs: z
+      .array(z.string().trim().min(1).max(2_000))
+      .min(1)
+      .max(50)
+      .optional()
+      .describe('Durable references supporting the procedure and actual observation; required on new successful defect closes.'),
   })
   .strict()
+  .meta({
+    'x-papercusp-call-constraint':
+      `successful bug/capability-gap close (state=${ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.join('|')}) => required; ` +
+      `contractVersion=${ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION}; required fields: hypothesis, alternativeHypothesis, ` +
+      `distinguishingTest, testResult, ${ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS.join(', ')}; ` +
+      `hypothesis!=alternativeHypothesis; distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
+  })
   .superRefine((record, ctx) => {
     if (normalizedRootCauseClaim(record.hypothesis) === normalizedRootCauseClaim(record.alternativeHypothesis)) {
       ctx.addIssue({
@@ -507,6 +556,22 @@ export const RootCauseVerificationSchema = z
     }
   });
 export type RootCauseVerification = z.infer<typeof RootCauseVerificationSchema>;
+
+/** Return every missing v2 field in one pass; never rejects historical reads. */
+export function missingRootCauseVerificationV2Fields(
+  record: RootCauseVerification | null | undefined,
+): string[] {
+  if (!record) return [...ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS];
+  return [
+    ...(!record.testProcedure?.trim() ? ['testProcedure'] : []),
+    ...(!record.predictedObservations?.hypothesis?.trim() ? ['predictedObservations.hypothesis'] : []),
+    ...(!record.predictedObservations?.alternativeHypothesis?.trim()
+      ? ['predictedObservations.alternativeHypothesis']
+      : []),
+    ...(!record.actualObservation?.trim() ? ['actualObservation'] : []),
+    ...(!record.evidenceRefs?.length ? ['evidenceRefs'] : []),
+  ];
+}
 
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
@@ -892,6 +957,8 @@ export const CompletionRecordSchema = z.object({
   rootCauseVerification: RootCauseVerificationSchema.optional().meta({
     'x-papercusp-call-constraint':
       `successful bug/capability-gap close (state=${ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.join('|')}) => required; ` +
+      `contractVersion=${ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION}; required fields: hypothesis, alternativeHypothesis, ` +
+      `distinguishingTest, testResult, ${ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS.join(', ')}; ` +
       `hypothesis!=alternativeHypothesis; distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
   }),
   /** Top-level alias for the structured verification coverage record (WI-37960). */

@@ -60,6 +60,17 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       // WI-4400: before taking over a draining/suspect row, send
       // coord:send { wake:'required' } and inspect woken/recipient_absent.
       confirmLiveness: r.confirmLiveness ?? null,
+      // EI-22805550006169069: kept in `base` — i.e. at EVERY tier, like
+      // confirmLiveness/fleetControlState — because it is precisely a
+      // routing-decision signal a caller needs BEFORE spending a reclaim or a
+      // relaunch on a candidate, and hiding it behind payloadTier:"full" would
+      // leave the default read carrying the same ambiguity it exists to remove:
+      // an agent merely dormant between loop fires renders identically to a dead
+      // one on every other field of this row. `true` + a `nextFireAt` means
+      // "back at that time, no relaunch needed"; `true` + null means a turn is in
+      // flight right now; `null` means NOT MEASURED, never "nothing will wake it".
+      dormantScheduled: r.dormantScheduled ?? null,
+      nextFireAt: r.nextFireAt ?? null,
       // P-007: coarse context-pressure bucket (ok|high|critical|null) — cheap
       // enough (one short string) to keep at every tier, like state/wakeable.
       contextPressure: r.contextPressure ?? null,

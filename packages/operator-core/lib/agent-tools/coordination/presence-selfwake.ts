@@ -51,7 +51,8 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
+import { COORD_INBOX_WAKE_PREFIX, classifyDormantSchedule } from './inbox-wake';
+import type { LoopStatus } from '../../harness/routines/loop';
 
 /**
  * What will wake this agent unprompted, strongest source first.
@@ -86,6 +87,53 @@ export function deriveSelfWake(input: {
   if (input.loopArmed) return 'loop';
   if (input.standingEventAwait) return 'event';
   return 'none';
+}
+
+/** The scheduled-fire pair a presence row carries (EI-22805550006169069). */
+export interface DormantScheduleSignal {
+  /** A self-wake is already scheduled. `null` = NOT MEASURED (a federated row, or
+   *  the loop read degraded) — never collapse it to `false`, which would assert
+   *  that nothing will ever wake this agent. */
+  dormantScheduled: boolean | null;
+  /** ISO time of that fire; null while a turn is in flight (parked) or when
+   *  `dormantScheduled` is not true. Read the pair together. */
+  nextFireAt: string | null;
+}
+
+/**
+ * PURE: the QUANTITATIVE half of this module's axis.
+ *
+ * `deriveSelfWake` above answers "does `now` ever end?" — a yes/no. This answers
+ * "WHEN?", and the difference is what makes a presence row safe to act on. An
+ * agent DORMANT BETWEEN LOOP FIRES has, accurately, no live turn, no armed inbox
+ * await, no claims and no recent activity: it renders byte-identical to a dead
+ * one, so a coordinator reading that row reclaims its work or relaunches it. The
+ * disconfirming datum already existed on the wake path (`coord:send` returns
+ * `recipient_dormant_scheduled` with a concrete `nextFireAt`) — it was simply
+ * absent from the surface people read BEFORE deciding.
+ *
+ * Delegates the actual rule to `classifyDormantSchedule` rather than restating
+ * it, so this surface cannot drift from the wake path it exists to agree with —
+ * `stalled` guard included: an ACTIVE loop parked-and-wedged for hours is not a
+ * promise that anything will fire, and reporting it as scheduled would swap a
+ * missing-information bug for a false-confidence one.
+ */
+export function deriveDormantSchedule(
+  input: {
+    /** A federated peer's loop lives on its home box — not measurable here. */
+    federated?: boolean;
+    /** Did the batched loop read actually succeed? An empty map is otherwise
+     *  ambiguous: "no owner has a loop" and "the query failed" look identical. */
+    measured: boolean;
+    loop?: Pick<LoopStatus, 'active' | 'nextFireAt' | 'parked' | 'stalled'> | null;
+  },
+  nowMs: number = Date.now(),
+): DormantScheduleSignal {
+  if (input.federated || !input.measured) return { dormantScheduled: null, nextFireAt: null };
+  const schedule = classifyDormantSchedule(input.loop ?? null, nowMs);
+  return schedule
+    ? { dormantScheduled: true, nextFireAt: schedule.nextFireAt }
+    : { dormantScheduled: false, nextFireAt: null };
 }
 
 /**

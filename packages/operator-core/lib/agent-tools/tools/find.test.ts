@@ -32,7 +32,9 @@ import { scorecardEmitArgs } from '../scorecards/emit';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
 import {
   ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT,
+  ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
   ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES,
+  ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS,
   RootCauseVerificationSchema,
 } from '../../coord-lifecycle/records';
 
@@ -553,10 +555,15 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     // A successful bug close is rejected without this conditional nested record.
     // Keep both the field and its four required evidence keys visible even when
     // the surrounding completion schema exceeds the nested-field budget.
-    expect(compact).toContain('rootCauseVerification?:object{hypothesis:string');
-    expect(compact).toContain('alternativeHypothesis:string');
-    expect(compact).toContain('distinguishingTest:string');
-    expect(compact).toContain('testResult:string');
+    expect(compact).toContain('rootCauseVerification?:object');
+    expect(compact).toContain('required fields: hypothesis');
+    expect(compact).toContain('alternativeHypothesis');
+    expect(compact).toContain('distinguishingTest');
+    expect(compact).toContain('testResult');
+    for (const field of ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS) {
+      expect(compact).toContain(field.split('.')[0]);
+    }
+    expect(compact).toContain('validateOnly?');
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
@@ -575,10 +582,18 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
 
     const evidence = {
+      contractVersion: ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
       hypothesis: 'the cache returns stale data',
       alternativeHypothesis: 'the writer persisted incorrect data',
       distinguishingTest: 'if H1 then fresh reads succeed; if H2 then fresh reads fail',
       testResult: 'fresh reads succeeded before the fix',
+      testProcedure: 'Compare a fresh read with the persisted writer value.',
+      predictedObservations: {
+        hypothesis: 'the fresh read succeeds',
+        alternativeHypothesis: 'the fresh read fails',
+      },
+      actualObservation: 'the fresh read succeeded',
+      evidenceRefs: ['test:find.test.ts#completion-contract'],
     };
     expect(RootCauseVerificationSchema.safeParse(evidence).success).toBe(true);
     // The example teaches a reliable form, not a new literal-only parser.
