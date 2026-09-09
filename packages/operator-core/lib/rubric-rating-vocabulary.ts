@@ -197,8 +197,17 @@ function parseDirectiveTarget(input: string, directive: string): ParsedDirective
     return null;
   }
 
-  const token = UNQUOTED_RATING_RE.exec(rest)?.[0];
+  const matched = UNQUOTED_RATING_RE.exec(rest)?.[0];
+  // A trailing full stop is sentence punctuation, not part of the rating. The
+  // continuation class admits `.` so a dotted label stays matchable, which means
+  // a directive that ENDS a sentence ("the correct rating is undetermined.")
+  // otherwise captures the stop too and reports `undetermined.` — a rating the
+  // author never wrote and no scale can contain. Strip it before matching, but
+  // keep the boundary test on the full match: the stop is what proves the
+  // directive ended there.
+  const token = matched?.replace(/\.+$/, '');
   if (
+    !matched ||
     !token ||
     NON_RATING_DIRECTIVE_WORDS.has(token.toLowerCase()) ||
     NON_RATING_TARGET_WORDS.has(token.toLowerCase())
@@ -206,14 +215,14 @@ function parseDirectiveTarget(input: string, directive: string): ParsedDirective
     return null;
   }
 
-  const afterToken = rest.slice(token.length).trimStart();
+  const afterToken = rest.slice(matched.length).trimStart();
   const explicitBoundary =
     afterToken.length === 0 || /^[,;:.!?)]/.test(afterToken) || EXPLICIT_FOLLOWING_WORD_RE.test(afterToken);
   if (!explicitBoundary) return null;
 
   return {
     rating: token,
-    end: input.indexOf(rest) + token.length,
+    end: input.indexOf(rest) + matched.length,
   };
 }
 

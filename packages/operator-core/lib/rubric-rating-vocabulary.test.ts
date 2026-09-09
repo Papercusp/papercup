@@ -261,6 +261,30 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
       expect(validation.violations[0]?.rating).toBe('healthy');
     });
 
+    // A directive that ends a sentence must not capture the full stop — that
+    // reported `undetermined.`, a rating no author wrote and no scale contains.
+    it('does not swallow sentence punctuation into the rating', () => {
+      const method = 'If it did not, the correct rating is undetermined.';
+      expect(extractRubricRatingInstructions('c6', 'method', method).map((i) => i.rating)).toEqual([
+        'undetermined',
+      ]);
+      const validation = validateRubricRatingVocabulary(
+        [criterion({ key: 'c6', method, ratingScale: emDashScale })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+      );
+      expect(validation.violations).toEqual([]);
+    });
+
+    // CALIBRATION: stripping the stop must not make an off-scale rating pass.
+    it('still refuses an off-scale rating that ends a sentence', () => {
+      const validation = validateRubricRatingVocabulary(
+        [criterion({ key: 'c6', method: 'Otherwise the correct rating is healthy.', ratingScale: emDashScale })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+      );
+      expect(validation.ok).toBe(false);
+      expect(validation.violations[0]?.rating).toBe('healthy');
+    });
+
     // An ambiguous leading label cannot resolve to one rating at emit time
     // either, so it stays a violation rather than silently picking the first.
     it('still refuses an ambiguous leading label', () => {
