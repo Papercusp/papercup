@@ -371,7 +371,12 @@ elif [ -e "$RELEASE_ROOT/.git" ]; then
   # its already-open bundle, but a first locks:* call then failed ENOENT while
   # lazily scanning dist-host/sql. Preserve the whole coherent runtime tree;
   # bundle-host.sh replaces its bundle/assets during ExecStartPre.
-  git -C "$RELEASE_ROOT" clean -fdqx -e node_modules -e /apps/operator/dist-host/ || true
+  # The staging checkout can also be the checkpoint's dependency donor. Its
+  # generation store owns publication proofs, input selectors, pins and active
+  # writer leases alongside node_modules. Keeping only node_modules destroys
+  # those proofs on every staging refresh and forces a full generation rebuild.
+  # Retention in dependency-generation.sh owns this store's cleanup.
+  git -C "$RELEASE_ROOT" clean -fdqx -e node_modules -e /apps/operator/dist-host/ -e /.papercusp/dependency-generations/ || true
 else
   log "creating release worktree at $RELEASE_ROOT"
   git -C "$INTEGRATION_ROOT" worktree add --detach "$RELEASE_ROOT" "$TARGET_SHA"
