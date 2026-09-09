@@ -281,12 +281,24 @@ afterAll(() => rmSync(cpTree, { recursive: true, force: true }));
 afterAll(() => rmSync(standaloneTree, { recursive: true, force: true }));
 
 const typecheckTree = mkdtempSync(join(tmpdir(), "green-cp-typecheck-tree-"));
+mkdirSync(join(typecheckTree, "scripts"), { recursive: true });
 writeFileSync(
   join(typecheckTree, "package.json"),
   JSON.stringify({
     name: "cp-typecheck-fixture",
-    scripts: { "lint:tsc": "node scripts/lint-tsc.mjs" },
+    scripts: {
+      "lint:tsc": "node scripts/lint-tsc.mjs",
+      "lint:tsc:operator-vite": "node scripts/lint-tsc-operator-vite.mjs",
+    },
   }),
+);
+writeFileSync(
+  join(typecheckTree, "scripts", "lint-tsc.mjs"),
+  "export const TSC_COMMAND = 'npx tsc -p packages/operator-core/tsconfig.json --noEmit';\n",
+);
+writeFileSync(
+  join(typecheckTree, "scripts", "lint-tsc-operator-vite.mjs"),
+  "export const TSC_COMMAND = 'npx tsc -p apps/operator-vite/tsconfig.json --noEmit';\n",
 );
 afterAll(() => rmSync(typecheckTree, { recursive: true, force: true }));
 
@@ -845,6 +857,59 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
     expect(responseArg).toContain("green-checkpoint-typecheck-files-");
   });
 
+  it("routes mixed-owner changes to each discovered gate once, leaving non-typecheck paths out", async () => {
+    const calls: Array<{
+      cmd: string;
+      args: string[];
+      opts?: Parameters<CheckpointExec>[2];
+    }> = [];
+    const responseFiles: string[][] = [];
+    const exec: CheckpointExec = async (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      const responseArg = args.find((arg) => arg.startsWith("--files-from="));
+      expect(responseArg).toBeDefined();
+      responseFiles.push(
+        JSON.parse(
+          readFileSync(responseArg!.slice("--files-from=".length), "utf8"),
+        ) as string[],
+      );
+      return {
+        code: 0,
+        stdout:
+          responseFiles.length === 1
+            ? "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean\n"
+            : "LINT_TSC_RESULT label=operator-vite scope=files exit=0 status=clean\n",
+        stderr: "",
+      };
+    };
+    const deps = realCheckpointDeps(preflightCfg, exec, "mixed-preflight-run");
+
+    const result = await deps.runChangedFileTypecheckPreflight?.([
+      "packages/operator-core/lib/a.ts",
+      "apps/operator-vite/src/components/adv/LearningTab.tsx",
+      "packages/operator-core/lib/a.ts",
+      "docs/note.md",
+    ]);
+
+    expect(result).toMatchObject({
+      status: "passed",
+      failingSignatures: [],
+      checkedFiles: [
+        "packages/operator-core/lib/a.ts",
+        "apps/operator-vite/src/components/adv/LearningTab.tsx",
+      ],
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
+      ["run", "lint:tsc"],
+      ["run", "lint:tsc:operator-vite"],
+    ]);
+    expect(responseFiles).toEqual([
+      ["packages/operator-core/lib/a.ts"],
+      ["apps/operator-vite/src/components/adv/LearningTab.tsx"],
+    ]);
+  });
+
   it("keeps a large changed-file set out of argv while preserving the exact response-file set", async () => {
     const files = Array.from(
       { length: 50_000 },
@@ -908,7 +973,8 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
 
     expect(result).toEqual({
       status: "skipped",
-      summary: "candidate provides no lint:tsc script",
+      summary:
+        "no changed file has a resolvable owning lint:tsc gate — full gate retained",
     });
     expect(calls).toEqual([]);
   });
