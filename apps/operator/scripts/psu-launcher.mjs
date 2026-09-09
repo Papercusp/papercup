@@ -4731,7 +4731,9 @@ export function buildResumeEnv(
  *
  * Also re-heals `agent.db` → global OAuth store (linkOmpAgentDb): pre-fix
  * sessions have an empty real-file agent.db, so a resume without this would
- * keep dropping xai-oauth / other logins even after a fresh-launch fix. */
+ * keep dropping xai-oauth / other logins even after a fresh-launch fix.
+ * @returns {NodeJS.ProcessEnv}
+ */
 export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
   if (session?.agent !== "omp" || session?.id == null) return {};
   const rel = ompSessionConfigRelativeDir(session.id, home);

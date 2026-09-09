@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -199,6 +199,11 @@ describe('installed clients using the built production adapter', () => {
       PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: h.home,
       PI_CONFIG_DIR: rel!, PI_CODING_AGENT_DIR: join(h.home, rel!, 'agent'),
     };
+    const installed = await execute(omp!, ['--version'], {
+      env: freshEnv, cwd: h.home, timeout: 60_000,
+    });
+    const version = installed.stdout.trim();
+    expect(version).toMatch(/18\.0\.3/);
     const freshArgs = nativeOmpExtensionArgs('omp');
     const provider = join(h.home, 'offline-provider.mjs');
     // An offline deterministic provider drives OMP's actual agent loop. It
@@ -224,57 +229,67 @@ export default function(pi) {
  });
 }
 `, { mode: 0o600 });
-    const run = async (args: string[], env: NodeJS.ProcessEnv): Promise<string> => {
-    const child = spawn(omp!, [
-      '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-rules',
-      ...args,
-      '--extension', provider, '--model', 'p005-offline/proof',
-    ], {
-      cwd: h.home, stdio: 'pipe',
-      env,
-    });
-    const closed = once(child, 'close');
-    const frames: Array<Record<string, any>> = [];
-    let output = '', errors = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      output += chunk;
-      let newline: number;
-      while ((newline = output.indexOf('\n')) >= 0) {
-        const line = output.slice(0, newline);
-        output = output.slice(newline + 1);
-        if (line.trim()) frames.push(JSON.parse(line));
-      }
-    });
-    child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-4_000); });
-    const wait = async (predicate: () => boolean) => {
-      const end = Date.now() + 15_000;
-      while (!predicate()) {
-        if (Date.now() > end || child.exitCode !== null || child.signalCode !== null)
-          throw new Error(`Native OMP did not complete: ${errors}; ${JSON.stringify(frames.slice(-3))}`);
-        await new Promise(resolve => setTimeout(resolve, 20));
+    const run = async (args: string[], env: NodeJS.ProcessEnv, provision = false): Promise<string> => {
+      const child = spawn(omp!, [
+        '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-rules',
+        ...args,
+        '--extension', provider, '--model', 'p005-offline/proof',
+      ], { cwd: h.home, stdio: 'pipe', env });
+      const closed = once(child, 'close');
+      const frames: Array<Record<string, any>> = [];
+      let output = '', errors = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        output += chunk;
+        let newline: number;
+        while ((newline = output.indexOf('\n')) >= 0) {
+          const line = output.slice(0, newline);
+          output = output.slice(newline + 1);
+          if (line.trim()) frames.push(JSON.parse(line));
+        }
+      });
+      child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-4_000); });
+      // One journey deadline, not a fresh allowance for every frame.
+      const end = Date.now() + (provision ? 60_000 : 15_000);
+      const wait = async (predicate: () => boolean) => {
+        while (!predicate()) {
+          if (Date.now() > end || child.exitCode !== null || child.signalCode !== null)
+            throw new Error(`Native OMP did not complete: ${errors}; ${JSON.stringify(frames.slice(-3))}`);
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      };
+      try {
+        await wait(() => frames.some(x => x.type === 'ready'));
+        child.stdin.write(JSON.stringify({ id: 'native-state', type: 'get_state' }) + '\n');
+        await wait(() => frames.some(x => x.id === 'native-state'));
+        const state = frames.find(x => x.id === 'native-state');
+        expect(state?.success).toBe(true);
+        expect(state?.data?.sessionId).toEqual(expect.any(String));
+        if (provision) return state!.data.sessionId;
+        child.stdin.write(JSON.stringify({ id: 'native-call', type: 'prompt', message: 'Invoke the MCP fixture.' }) + '\n');
+        await wait(() => frames.some(x => x.type === 'agent_end'));
+        const calls = frames.filter(x => x.type === 'tool_execution_end');
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({ toolName: 'mcp__papercusp_echo', isError: false });
+        expect(calls[0].result.content).toEqual([{ type: 'text', text: 'compact-result' }]);
+        return state!.data.sessionId;
+      } finally {
+        child.stdin.end();
+        const timer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+        try { await closed; } finally { clearTimeout(timer); }
       }
     };
-    try {
-      await wait(() => frames.some(x => x.type === 'ready'));
-      child.stdin.write(JSON.stringify({ id: 'native-state', type: 'get_state' }) + '\n');
-      await wait(() => frames.some(x => x.id === 'native-state'));
-      const state = frames.find(x => x.id === 'native-state');
-      expect(state?.success).toBe(true);
-      expect(state?.data?.sessionId).toEqual(expect.any(String));
-      child.stdin.write(JSON.stringify({ id: 'native-call', type: 'prompt', message: 'Invoke the MCP fixture.' }) + '\n');
-      await wait(() => frames.some(x => x.type === 'agent_end'));
-      const calls = frames.filter(x => x.type === 'tool_execution_end');
-      expect(calls).toHaveLength(1);
-      expect(calls[0]).toMatchObject({ toolName: 'mcp__papercusp_echo', isError: false });
-      expect(calls[0].result.content).toEqual([{ type: 'text', text: 'compact-result' }]);
-      return state!.data.sessionId;
-    } finally {
-      child.stdin.end();
-      const timer = setTimeout(() => child.kill('SIGKILL'), 2_000);
-      try { await closed; } finally { clearTimeout(timer); }
-    }
-    };
+    // A new HOME is a new OMP installation: the compiled binary unpacks its
+    // large native addon before emitting ANY RPC frame. --version does not
+    // perform that installation. Provision with an empty, ephemeral RPC boot
+    // and assert its files exist before the unchanged 15s transport journeys.
+    // Cold installation performance belongs to P008, not this client proof.
+    await run(['--no-session'], freshEnv, true);
+    const natives = join(h.home, '.omp', 'natives', '18.0.3');
+    const addons = (await readdir(natives)).filter(name => name.endsWith('.node'));
+    expect(addons.length).toBeGreaterThan(0);
+    for (const addon of addons) expect((await stat(join(natives, addon))).size).toBeGreaterThan(0);
+    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([]);
     const sessionId = await run(freshArgs, freshEnv);
     expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([['call', { row: 'omp-row' }]]);
     // Fresh process and no ambient opt-in: restore from the launcher-written
@@ -294,5 +309,5 @@ export default function(pi) {
         'x-papercusp-profile': 'fixture-profile',
       } } });
     }
-  }, 45_000);
+  }, 105_000);
 });

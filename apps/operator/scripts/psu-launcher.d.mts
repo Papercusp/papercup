@@ -1323,10 +1323,12 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
  *
  * Also re-heals `agent.db` → global OAuth store (linkOmpAgentDb): pre-fix
  * sessions have an empty real-file agent.db, so a resume without this would
- * keep dropping xai-oauth / other logins even after a fresh-launch fix. */
+ * keep dropping xai-oauth / other logins even after a fresh-launch fix.
+ * @returns {NodeJS.ProcessEnv}
+ */
 export function ompTrackedResumeEnv(session: any, { home }?: {
     home?: string | undefined;
-}): {};
+}): NodeJS.ProcessEnv;
 export function ompDirectModelForRoute(model: any): any;
 /** Apply a selected OMP route to the exact per-session registry used by resume.
  * Auto/pin replace models.yml with the generated gateway provider; default
