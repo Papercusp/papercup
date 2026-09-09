@@ -236,6 +236,21 @@ function stubDeps(
   return { deps, calls };
 }
 
+/** P-003: the one repair-signature kind that legitimately enters the full canonical gate.
+ * Orchestration tests below use it when their subject starts at `runGreen`; a workspace-less
+ * test-file fixture would now (correctly) hold as unavailable before reaching that subject. */
+function postSuiteSignature(measuredHead: string) {
+  return [
+    {
+      kind: "post-suite-leg" as const,
+      id: "@papercusp/operator-vite",
+      recipe: "npm --workspace @papercusp/operator-vite run build",
+      admittedRound: 1,
+      measuredHead,
+    },
+  ];
+}
+
 describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
   it("refuses before setupTree or runGreen when /tmp cannot absorb the suite", async () => {
     const ready = await commit("a", "1", "ready");
@@ -934,8 +949,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: null,
-      failingTests: ["lib/broken.test.ts"],
-      signature: [],
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(frozen),
       convergenceRounds: [],
     };
   }
@@ -1025,7 +1040,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // measured — a round at `frozen`, never one at the admitted head, so the admitted head
     // still reads as awaiting verification — instead of being discarded with the run.
     expect(cell.queue?.convergenceRounds?.map((r) => r.head)).toEqual([frozen]);
-    expect(cell.queue?.failingTests).toEqual(["lib/broken.test.ts"]);
+    expect(cell.queue?.failingTests).toEqual([
+      "lib/broken.test.ts",
+      "@papercusp/operator-vite",
+    ]);
     expect(
       cell.queue?.signature?.every((entry) => entry.measuredHead === frozen),
     ).toBe(true);
@@ -1183,8 +1201,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "no-op-fixer",
-      failingTests: ["lib/broken.test.ts"],
-      signature: [],
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(converged),
       convergenceRounds: [
         { round: 1, head: frozen, failingCount: 1, atMs: now - 1_000 },
       ],
@@ -1608,7 +1626,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(renewals).toBe(renewalsAfterSettlement);
   });
 
-  it("P-005: a repair head whose signature the runners cannot narrow is judged by the FULL gate at the repair head — never re-queued for staging alignment, never at tip", async () => {
+  it("P-003/P-005: a post-suite-leg repair red is judged by the FULL gate at the repair head — never re-queued for staging alignment, never at tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
@@ -1637,10 +1655,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
-      // A bare file path with no workspace beside it: the file rescue cannot locate it, so
-      // nothing is selectively re-runnable and the full gate at the repair head decides.
-      failingTests: ["lib/broken.test.ts"],
-      signature: [],
+      // P-003 reserves the full-gate route for a typed post-suite leg. A widened related
+      // selector is handled by bounded affected workspace tasks instead (focused suite).
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(repaired),
     };
     let verificationExecution: Parameters<CheckpointDeps["runGreen"]>[2];
     const { deps, calls } = stubDeps(true);
@@ -2173,8 +2191,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
-      failingTests: ["lib/broken.test.ts"],
-      signature: [],
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(repaired),
     };
     const { deps, calls } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
@@ -2244,8 +2262,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
-      failingTests: ["lib/broken.test.ts"],
-      signature: [],
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(impostor),
     };
     const { deps } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
@@ -2301,8 +2319,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
-      failingTests: ["lib/first.test.ts"],
-      signature: [],
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(repaired),
     };
     const dispatchedHeads: string[] = [];
     const { deps, calls } = stubDeps(false, ["lib/still-broken.test.ts"]);
@@ -2328,7 +2346,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         repairHead: repaired,
         attempts: 2,
         fixerSpawnId: "fixer-2",
-        failingTests: ["lib/still-broken.test.ts"],
+        // The red test sweep deferred post-suite, so the prior post-suite blocker remains
+        // unmeasured and must survive beside the fresh test failure.
+        failingTests: ["lib/still-broken.test.ts", "@papercusp/operator-vite"],
       },
     });
     expect(queue).toMatchObject(result.repairQueue!);
@@ -13677,10 +13697,10 @@ describe("WI-42350: a sha that already reached a RED verdict is not re-judged", 
       openedAtMs: now - 2_000,
       updatedAtMs: now - 1_000,
       fixerSpawnId: null,
-      failingTests: ["lint:tsc"],
-      // Gate-level red with no file paths: nothing is selectively re-runnable, so the full
-      // gate at the repair head is what decides — the exact shape that livelocked.
-      signature: [],
+      failingTests: ["@papercusp/operator-vite"],
+      // P-003: only a typed post-suite leg takes this orchestration fixture through runGreen;
+      // lint/workspace/seed signatures now use their bounded repair-round runners.
+      signature: postSuiteSignature(input.repairHead),
       convergenceRounds: input.judgedHeads.map((head, i) => ({
         round: i + 1,
         head,
