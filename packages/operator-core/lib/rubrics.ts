@@ -1265,6 +1265,7 @@ type AcceptanceBarHashInput = Pick<
   | 'requiredScope'
   | 'evidencePlane'
   | 'requiredTestLayers'
+  | 'check'
   | 'role'
   | 'mandatory'
   | 'passRatings'
@@ -1284,6 +1285,20 @@ function normalizedBarSet(values: readonly string[] | undefined, lowerCase = fal
         .map((value) => (lowerCase ? value.toLowerCase() : value)),
     ),
   ].sort((a, b) => a.localeCompare(b));
+}
+
+/** Canonicalize the structured check without changing array semantics. Check objects
+ * are persisted as JSON and their key insertion order must not alter the BAR hash. */
+function canonicalAcceptanceBarCheck(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalAcceptanceBarCheck);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonicalAcceptanceBarCheck(nested)]),
+    );
+  }
+  return value;
 }
 
 /**
@@ -1322,6 +1337,7 @@ export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): str
     ...(criterion.requiredTestLayers
       ? [['requiredTestLayers', normalizedBarSet(criterion.requiredTestLayers, true)]]
       : []),
+    ...(criterion.check !== undefined ? [['check', canonicalAcceptanceBarCheck(criterion.check)]] : []),
     ['role', criterion.role ?? null],
     ['mandatory', criterion.mandatory ?? false],
     ['passRatings', normalizedBarSet(criterion.passRatings, true)],
