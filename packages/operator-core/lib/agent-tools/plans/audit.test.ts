@@ -60,7 +60,10 @@ vi.mock('./source', () => ({
   getPlanRow: vi.fn(),
   VALID_PLAN_SLUG: /^(?:[A-Za-z0-9._-]+|[A-Za-z0-9._-]+@run-\d+)$/,
 }));
-vi.mock('./spec-clauses-store', () => ({ setSpecClause: vi.fn() }));
+vi.mock('./spec-clauses-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./spec-clauses-store')>()),
+  setSpecClause: vi.fn(),
+}));
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: vi.fn(),
 }));
