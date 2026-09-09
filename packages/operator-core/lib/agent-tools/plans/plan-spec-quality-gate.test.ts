@@ -123,7 +123,114 @@ function matchingCardWithInstrumentSnapshots(clauses: SpecClauseRevision[]): Sco
   };
 }
 
+function withIdentityEvidence(card: ScorecardRow, evidence: string): ScorecardRow {
+  const ratings = {
+    ...card.ratings,
+    'stable-revision-identity': { rating: 'pass', evidence },
+  };
+  return {
+    ...card,
+    ratings,
+    evidenceFingerprint: scorecardEvidenceFingerprint({
+      rubricRef: SPEC_QUALITY_RUBRIC_REF,
+      ratings,
+      instrumentSnapshots: card.instrumentSnapshots,
+    }),
+  };
+}
+
 describe('evaluatePlanSpecQualityGate', () => {
+  it.each(['current', 'active/accepted current'])(
+    'preserves an audited all-active card with the exact equivalent "%s" identity wording',
+    async (wording) => {
+      const clauses = [clause()];
+      const card = matchingCardWithInstrumentSnapshots(clauses);
+      const originalEvidence = card.ratings['stable-revision-identity'].evidence;
+      const prefix = originalEvidence.slice(0, originalEvidence.lastIndexOf(' 1 ') + 1);
+      const historicalCard = withIdentityEvidence(
+        card,
+        `${prefix}1 ${wording} clause(s) have unique identities, content hashes, and acceptance provenance.`,
+      );
+      historicalCard.gradingAudit = {
+        state: 'passed', metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-20T00:03:00.000Z',
+        auditIssueId: 'EI-original-audit', auditor: 'independent-reviewer',
+        auditedAt: '2026-08-20T00:04:00.000Z',
+      };
+      const result = await evaluatePlanSpecQualityGate(
+        { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+        gateDeps({ listClauses: async () => clauses, listCards: async () => [historicalCard] }),
+      );
+      expect(result).toMatchObject({ satisfied: true, scorecardId: card.issueId });
+      // All-active evidence was already truthful: preserve the original producer bytes.
+      expect(originalEvidence).toMatch(/ 1 current clause\(s\) have unique identities, content hashes, and acceptance provenance\.$/);
+    },
+  );
+
+  it.each(['draft', 'exempt'] as const)(
+    'does not accept old misleading all-provenance wording for a mixed %s set',
+    async (lifecycleStatus) => {
+      const clauses = [
+        clause(),
+        clause({
+          specId: 'SPEC-001-02', sourceValId: 'VAL-001-02', lifecycleStatus,
+          acceptedBy: null, acceptedAt: null, acceptanceRef: null,
+          ...(lifecycleStatus === 'exempt' ? {
+            behaviorClass: 'non-automated' as const,
+            exemption: { justification: 'Editorial-only work.', provenance: 'D-002' },
+          } : {}),
+        }),
+      ];
+      const card = matchingCard(clauses);
+      const evidence = card.ratings['stable-revision-identity'].evidence;
+      const prefix = evidence.slice(0, evidence.lastIndexOf(' 1 active/accepted') + 1);
+      const misleadingCard = withIdentityEvidence(
+        card,
+        `${prefix}2 current clause(s) have unique identities, content hashes, and acceptance provenance.`,
+      );
+      const result = await evaluatePlanSpecQualityGate(
+        { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+        gateDeps({ listClauses: async () => clauses, listCards: async () => [misleadingCard] }),
+      );
+      expect(result.satisfied).toBe(false);
+    },
+  );
+
+  it.each(['other-evidence', 'snapshot', 'rating-with-stale-fingerprint', 'pending-audit', 'failed-audit'])(
+    'does not turn wording compatibility into an evidence/audit bypass: %s',
+    async (change) => {
+      const clauses = [clause()];
+      const card = matchingCardWithInstrumentSnapshots(clauses);
+      const evidence = card.ratings['stable-revision-identity'].evidence;
+      const prefix = evidence.slice(0, evidence.lastIndexOf(' 1 ') + 1);
+      const interimCard = withIdentityEvidence(
+        card,
+        `${prefix}1 active/accepted current clause(s) have unique identities, content hashes, and acceptance provenance.`,
+      );
+      if (change === 'other-evidence') {
+        interimCard.ratings['item-contract-coverage'] = { rating: 'pass', evidence: 'Unsupported assertion.' };
+        interimCard.evidenceFingerprint = scorecardEvidenceFingerprint({
+          rubricRef: interimCard.rubricRef, ratings: interimCard.ratings,
+          instrumentSnapshots: interimCard.instrumentSnapshots,
+        });
+      } else if (change === 'snapshot') {
+        interimCard.instrumentSnapshots!['spec-quality.proof'].value = { checked: 999 };
+      } else if (change === 'rating-with-stale-fingerprint') {
+        interimCard.ratings['stable-revision-identity'] = { rating: 'pass', evidence: 'Altered after grading.' };
+      } else {
+        interimCard.gradingAudit = {
+          state: change === 'pending-audit' ? 'pending' : 'failed',
+          metaRubricRef: 'grading-integrity', stampedAt: '2026-08-20T00:03:00.000Z',
+        };
+      }
+      const result = await evaluatePlanSpecQualityGate(
+        { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+        gateDeps({ listClauses: async () => clauses, listCards: async () => [interimCard] }),
+      );
+      expect(result.satisfied).toBe(false);
+    },
+  );
+
   it('keeps legacy/no-clause plans report-only', async () => {
     const result = await evaluatePlanSpecQualityGate(
       { harnessSlug: 'papercusp', planSlug: 'legacy-plan', planItemIds: ['P-001'] },

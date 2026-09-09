@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10000757",
+  "spec": "design-acceptance-journey-enforcement-2026-09-08#AUTO-BAR-R-1-P-001@5",
+  "method": "scripts/mutation-probe.sh copy-out, original-module-id Vite load hook; original and relocated current baseline pass before source mutation. Canonical subject remained unchanged throughout each probe. No shared-tree mutation.",
+  "reporterPolicy": "PAPERCUSP_MUTATION_PROBE=1 intentionally excludes baseline and mutant Vitest runs from health test_runs. Per-scenario committed operational-test-evidence JSON records actual successful shell wrapper verdicts through testing:record-run. It does not relabel old mutation IDs or classify the broken implementation as passing.",
+  "sourceSha256": {
+    "packages/operator-core/lib/design-compare/ratification.ts": "e585c91b4fa9738e788004f8971436790d8f036493b02bd73e19251997d2222a",
+    "packages/operator-core/lib/design-compare/reference-store.ts": "b12563bb9857a0434e91f70417125a0ec9e299be75635a67029836ebfc85f18b",
+    "packages/operator-core/lib/design-compare/verbs.ts": "0441e7deeab12ac9c791100f5b86c03573cfb8d5379675f90a83ec28a503e545",
+    "packages/operator-core/lib/design-compare/feature-gate.ts": "645ef9a1508259ce21585260281daf1b0db2477fb0624317534f4477bd75266b",
+    "packages/operator-core/lib/design-compare/host-install.ts": "bf38e583857ede7575c749364242aed21e3c06d16fdf8b9276e6636deb1812d8",
+    "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts": "62a8fe69df33287a7061540a5c9650749c307304abf407ad157e1f62040e9d0d",
+    "packages/operator-core/lib/agent-tools/work_items/complete.ts": "c8358504ed0d795f9c01391eabf50e18fb0035647cec051c4ade88ebe75b6230",
+    "libs/papercusp/plugins/design-phase/papercusp.json": "5522e3ea1ae47ab3d973f088f278f183dd2bf366875a724b50af85897d7264d6",
+    "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.test.ts": "6eeaeab016fb4fa4ef64ff2384850c9d31c371cdb22c687fa9c7dd76dc61c6b2",
+    "packages/operator-core/lib/design-compare/host-install.test.ts": "a4a04ddb7baace75de24c78e7a1b84af38c6e404bc2bae198424459de0c60103"
+  },
+  "measurementRecipe": {
+    "kind": "repo-files",
+    "testPaths": [
+      "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.test.ts",
+      "packages/operator-core/lib/design-compare/host-install.test.ts"
+    ],
+    "sourcePaths": [
+      "packages/operator-core/lib/design-compare/ratification.ts",
+      "packages/operator-core/lib/design-compare/reference-store.ts",
+      "packages/operator-core/lib/design-compare/verbs.ts",
+      "packages/operator-core/lib/design-compare/feature-gate.ts",
+      "packages/operator-core/lib/design-compare/host-install.ts",
+      "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts",
+      "packages/operator-core/lib/agent-tools/work_items/complete.ts",
+      "libs/papercusp/plugins/design-phase/papercusp.json"
+    ],
+    "schemaVersion": 1
+  },
+  "positiveSuite": {
+    "runGroupId": "desktop-p1-source-refresh-20260909-0540",
+    "completionTestRunId": 17734372,
+    "hostTestRunId": 17734371,
+    "fileVerdicts": [
+      "pass",
+      "pass"
+    ]
+  },
+  "instrument": {
+    "config": "docs/evidence/desktop-binding-mutations-current-2026-09-09/probe-config.mts.txt",
+    "configSha256": "4c1ab081ac3e5aadcde3324191f0ddc00f4503e36d43332ec446d131b7527dff",
+    "scriptSha256": "8a001bec539852d44dadb3c9532c9615cf11d5cce177f552055f7598e1b50ab2",
+    "executedConfigSha256": "07b105f586a8290967c578971333ceb4033f909a6727efb6e98a6bc94da7a87c",
+    "configRepresentation": "Path-normalized archival template; executedConfigSha256 pins original measured config bytes."
+  },
+  "cases": [
+    {
+      "scenario": "desktop.binding.missing",
+      "result": "caught",
+      "baselineExit": 0,
+      "copyBaselineExit": 0,
+      "mutantExit": 1,
+      "selectedTests": 1,
+      "otherTestsFiltered": 49,
+      "log": "docs/evidence/desktop-binding-source-refresh-2026-09-09/missing.log",
+      "logSha256": "192e7cd7003cb39db88a4e485900e18a557d3ec4f25b21ecae10a4bf4c08eb03",
+      "testRunId": null,
+      "assertion": "expected true to be false // Object.is equality",
+      "operationalEvidenceFile": "docs/evidence/desktop-binding-source-refresh-2026-09-09/missing.json"
+    },
+    {
+      "scenario": "desktop.binding.replaced",
+      "result": "caught",
+      "baselineExit": 0,
+      "copyBaselineExit": 0,
+      "mutantExit": 1,
+      "selectedTests": 1,
+      "otherTestsFiltered": 49,
+      "log": "docs/evidence/desktop-binding-source-refresh-2026-09-09/replaced.log",
+      "logSha256": "ca9cb3171906abb6a35f6b4575ed336db27a2d4218b63753af15a575fdc34c4b",
+      "testRunId": null,
+      "assertion": "expected true to be false // Object.is equality",
+      "operationalEvidenceFile": "docs/evidence/desktop-binding-source-refresh-2026-09-09/replaced.json"
+    },
+    {
+      "scenario": "desktop.binding.repaired",
+      "result": "caught",
+      "baselineExit": 0,
+      "copyBaselineExit": 0,
+      "mutantExit": 1,
+      "selectedTests": 1,
+      "otherTestsFiltered": 49,
+      "log": "docs/evidence/desktop-binding-source-refresh-2026-09-09/repaired.log",
+      "logSha256": "79fda055794564ada115c6325eef9cc359a79078768c1c9e28f1de812ef1be83",
+      "testRunId": null,
+      "assertion": "refusing terminal completion for 'WI-design-1': design 'ratified-surface-plan': approval-binding-missing for 'ref-checkout-desktop'. Bind the implementing item to the exact approved revision and image hash; changing the image requires reviewed re-approval.",
+      "operationalEvidenceFile": "docs/evidence/desktop-binding-source-refresh-2026-09-09/repaired.json"
+    },
+    {
+      "scenario": "desktop.binding.malformed",
+      "result": "caught",
+      "baselineExit": 0,
+      "copyBaselineExit": 0,
+      "mutantExit": 1,
+      "selectedTests": 1,
+      "otherTestsFiltered": 49,
+      "log": "docs/evidence/desktop-binding-source-refresh-2026-09-09/malformed.log",
+      "logSha256": "010cdef203afb6f5646660c14fbf9bfe0c44923e784384f05cf973d0362b5e23",
+      "testRunId": null,
+      "assertion": "expected true to be false // Object.is equality",
+      "operationalEvidenceFile": "docs/evidence/desktop-binding-source-refresh-2026-09-09/malformed.json"
+    }
+  ],
+  "pathNormalization": {
+    "representation": "portable archival template, not the literal executed path spelling",
+    "substitutions": {
+      "@repo-root@": "absolute checkout root used by the completed probe",
+      "@probe-config@": "absolute local path of the executed probe config"
+    },
+    "replay": "Replace both tokens with the intended absolute paths before use; preserve shell quoting for the chosen paths. The config snapshot is a text template; materialize it as a .mts file before running Vitest.",
+    "verification": "Reversing only the two path substitutions reconstructs the original command and config bytes. Exit codes, timestamps, assertions, source hashes and full measured logs are unchanged."
+  },
+  "reasonForRevalidation": "Freshness refusal after complete.ts changed from saved measured source; focused new-source validation only."
+}

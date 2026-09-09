@@ -114,6 +114,39 @@ function acceptedRating(value: unknown): boolean {
 }
 
 /**
+ * EI-22759986393772535: the draft-provenance correction briefly also reworded
+ * ALL-ACTIVE evidence, without changing its assertion. Preserve that exact
+ * published variant, not arbitrary prose or verdict drift. Mixed sets never
+ * have this all-provenance suffix, so their old misleading evidence still fails.
+ * Keep the general scorecard/audit fingerprint untouched.
+ */
+function matchesSpecQualityEvidence(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
+  const fingerprint = (ratings: ScorecardRow['ratings']) => scorecardEvidenceFingerprint({
+    rubricRef: SPEC_QUALITY_RUBRIC_REF,
+    ratings,
+    instrumentSnapshots: card.instrumentSnapshots,
+  });
+  // A stored fingerprint must first attest to the actual stored ratings, not
+  // merely to what the current evaluator would have emitted.
+  if (card.evidenceFingerprint !== fingerprint(card.ratings)) return false;
+  if (card.evidenceFingerprint === fingerprint(evaluation.ratings)) return true;
+
+  const identity = evaluation.ratings['stable-revision-identity'];
+  const allActiveSuffix =
+    ` ${evaluation.clauseCount} current clause(s) have unique identities, content hashes, and acceptance provenance.`;
+  if (identity.rating !== 'pass' || !identity.evidence.endsWith(allActiveSuffix)) return false;
+  const interimRatings = {
+    ...evaluation.ratings,
+    'stable-revision-identity': {
+      ...identity,
+      evidence: identity.evidence.slice(0, -allActiveSuffix.length)
+        + allActiveSuffix.replace(' current clause(s)', ' active/accepted current clause(s)'),
+    },
+  };
+  return card.evidenceFingerprint === fingerprint(interimRatings);
+}
+
+/**
  * Every scorecard test EXCEPT the P-013 grade-the-grader audit stamp — deliberately
  * split from {@link scorecardMatches} so a card that fails ONLY on a pending/failed
  * audit can still be recognised and reported precisely, instead of collapsing into
@@ -121,11 +154,6 @@ function acceptedRating(value: unknown): boolean {
  * (EI-22068670622018218: the two look identical to a caller once merged).
  */
 function scorecardStructurallyExact(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
-  const expectedFingerprint = scorecardEvidenceFingerprint({
-    rubricRef: SPEC_QUALITY_RUBRIC_REF,
-    ratings: evaluation.ratings,
-    instrumentSnapshots: card.instrumentSnapshots,
-  });
   return (
     card.rubricRef === SPEC_QUALITY_RUBRIC_REF &&
     card.subject?.kind === 'plan' &&
@@ -137,7 +165,7 @@ function scorecardStructurallyExact(card: ScorecardRow, evaluation: PlanSpecQual
     !card.retracted &&
     !card.supersededBy &&
     card.provisional === undefined &&
-    card.evidenceFingerprint === expectedFingerprint &&
+    matchesSpecQualityEvidence(card, evaluation) &&
     Object.values(card.ratings).every(acceptedRating)
   );
 }

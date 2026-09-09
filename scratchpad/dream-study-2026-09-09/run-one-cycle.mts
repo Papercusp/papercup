@@ -12,7 +12,7 @@ import { buildCapabilityPacket } from '../../packages/operator-core/lib/dream/ca
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from '../../packages/operator-core/lib/dream/capability-sampler.ts';
 import { CAPABILITY_DREAM_PROMPT_VERSION } from '../../packages/operator-core/lib/dream/capability-pass.ts';
 import { studySampling } from './sampling.mts';
-import { STUDY_BLOCKS, validateStudyBlocks, requireStudyRoom, type StudyTotal } from './accounting.mts';
+import { STUDY_BLOCKS, validateStudyBlocks, requireStudyRoom, readStudyTotals } from './accounting.mts';
 import { DEFAULT_DREAM_REVIEW_CONFIG } from '../../packages/operator-core/lib/dream/dream-config.ts';
 
 // This standalone driver does not inherit the operator service's environment.
@@ -66,23 +66,7 @@ const master = await sql<Array<{ enabled: boolean }>>`
   SELECT enabled FROM harness_shared.learning_pot_scope
   WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'`;
 if (master.length !== 1 || master[0]!.enabled !== false) throw new Error('Expected disabled master; inspect current owner state before this temporary restore protocol');
-const studyPins = Object.values(STUDY_BLOCKS).map(block => block.pin);
-const totals = await sql<StudyTotal[]>`
-  SELECT outcome->'capabilityRun'->'evaluation'->>'protocolPin' AS pin,
-         outcome->'capabilityRun'->'evaluation'->>'arm' AS arm,
-         COUNT(*)::int AS attempts,
-         SUM(cost_usd + COALESCE((
-           SELECT SUM(CASE WHEN call->>'status' = 'settled'
-                            AND call->>'model' NOT LIKE 'local:%'
-                            AND (call->'usage'->>'costUsd')::float8 = 0
-                            AND COALESCE((call->'usage'->>'inputTokens')::bigint, 0) + COALESCE((call->'usage'->>'outputTokens')::bigint, 0) > 0
-                           THEN (call->>'reservedUsd')::float8 ELSE 0 END)
-           FROM jsonb_array_elements(outcome->'capabilityRun'->'calls') AS call
-         ), 0))::float8 AS cost
-    FROM harness_shared.dream_runs
-   WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'
-     AND outcome->'capabilityRun'->'evaluation'->>'protocolPin' = ANY(${studyPins}::text[])
-   GROUP BY 1, 2`;
+const totals = await readStudyTotals(sql, workspaceId);
 const cumulative = requireStudyRoom(totals, arm, limits);
 if (arm === 'structured-pair' || arm === 'structured-triple') {
   pilot.matchedPairIndex = totals.find(row => row.pin === frozen.pin && row.arm === arm)?.attempts ?? 0;

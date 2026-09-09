@@ -189,7 +189,10 @@ export function evaluatePlanSpecQuality(input: {
   const draftClauses = currentSet.filter((clause) => clause.lifecycleStatus === 'draft');
   const exemptClauses = currentSet.filter((clause) => clause.lifecycleStatus === 'exempt');
   const provenanceEvidence = [
-    `${provenanceBearingClauses.length} active/accepted current clause(s) have unique identities, content hashes, and acceptance provenance.`,
+    // Evidence participates in the audited card fingerprint. The original wording
+    // is truthful for an all-active/accepted set; do not churn its settled cards
+    // when correcting the distinct draft/exempt populations (EI-22759986393772535).
+    `${provenanceBearingClauses.length} ${provenanceBearingClauses.length === currentSet.length ? 'current' : 'active/accepted current'} clause(s) have unique identities, content hashes, and acceptance provenance.`,
     draftClauses.length
       ? `${draftClauses.length} draft current clause(s) are present and excluded from the acceptance-provenance count.`
       : null,

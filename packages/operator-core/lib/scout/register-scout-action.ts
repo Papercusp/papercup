@@ -251,7 +251,7 @@ async function withArchiveResolveTimeout<T>(promise: Promise<T>, timeoutMs: numb
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, revisionRequests, signal, deadlineMs, onPhase }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, revisionRequests, signal, deadlineMs, onPhase, admitLlmCall }) => {
   onPhase?.('runner-bootstrap');
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
@@ -301,8 +301,11 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // WI-5391 item 3: one Codex retry on an attested mid-cycle capacity denial, recorded in
   // capacityFallbacks as discriminator evidence — see withCodexCapacityFallback above.
   const capacityFallbacks: CapacityFallbackEvent[] = [];
-  const governedCall = (o: Parameters<typeof rawLlmCall>[0]) =>
-    rawLlmCall({ ...o, signal: combineAbortSignals(signal, o.signal), priority: 'scout', harnessSlug });
+  const governedCall = (o: Parameters<typeof rawLlmCall>[0]) => {
+    const resolved = { ...o, signal: combineAbortSignals(signal, o.signal), priority: 'scout', harnessSlug };
+    const invoke = () => rawLlmCall(resolved);
+    return admitLlmCall ? admitLlmCall(resolved, invoke) : invoke();
+  };
   const callWithFallback = withCodexCapacityFallback(governedCall, {
     capacity: providerCapacity,
     backendForModel: backendForLlmCall,

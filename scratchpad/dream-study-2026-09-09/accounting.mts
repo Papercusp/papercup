@@ -1,4 +1,6 @@
 import { dreamEvaluationProtocolHash, DreamEvaluationProtocolSchema, type DreamEvaluationArm } from '../../packages/operator-core/lib/dream/dream-evaluation.ts';
+import type { Sql } from 'postgres';
+import { sumBlenderTicks, type BlenderTick } from './blender-guard.mts';
 
 // These are blocks of ONE finite study. Changing model never resets admission.
 export const STUDY_BLOCKS = {
@@ -6,6 +8,37 @@ export const STUDY_BLOCKS = {
   luna: { file: 'protocol-luna.json', pin: '29a0a6e4914c26e79b13fbb561373596b18aca44966ab733feb72ac660ee7ddf' },
 } as const;
 export interface StudyTotal { pin: string; arm: DreamEvaluationArm; attempts: number; cost: number }
+
+/** Read the existing production ledgers; a model block or entrypoint never resets the study. */
+export async function readStudyTotals(sql: Sql, workspaceId: string): Promise<StudyTotal[]> {
+  const pins = Object.values(STUDY_BLOCKS).map(block => block.pin);
+  const dreams = await sql<StudyTotal[]>`
+    SELECT outcome->'capabilityRun'->'evaluation'->>'protocolPin' AS pin,
+           outcome->'capabilityRun'->'evaluation'->>'arm' AS arm,
+           COUNT(*)::int AS attempts,
+           SUM(cost_usd + COALESCE((
+             SELECT SUM(CASE WHEN call->>'status' = 'settled'
+                              AND call->>'model' NOT LIKE 'local:%'
+                              AND (call->'usage'->>'costUsd')::float8 = 0
+                              AND COALESCE((call->'usage'->>'inputTokens')::bigint, 0) + COALESCE((call->'usage'->>'outputTokens')::bigint, 0) > 0
+                             THEN (call->>'reservedUsd')::float8 ELSE 0 END)
+             FROM jsonb_array_elements(outcome->'capabilityRun'->'calls') AS call
+           ), 0))::float8 AS cost
+      FROM harness_shared.dream_runs
+     WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'
+       AND outcome->'capabilityRun'->'evaluation'->>'protocolPin' = ANY(${pins}::text[])
+     GROUP BY 1, 2`;
+  const blender = await sql<BlenderTick[]>`
+    SELECT detail->'study'->>'cycleId' AS "cycleId", detail->'study'->>'protocolPin' AS pin,
+           (detail->'study'->>'reservedUsd')::float8 AS "reservedUsd",
+           COALESCE((detail->'study'->>'settled')::boolean, false) AS settled,
+           (detail->'study'->>'costUsd')::float8 AS "costUsd"
+      FROM harness_shared.scout_ticks
+     WHERE workspace_id = ${workspaceId}
+       AND detail->'study'->>'protocolPin' = ANY(${pins}::text[])
+       AND detail->'study'->>'arm' = 'blender'`;
+  return [...dreams, ...sumBlenderTicks(blender)];
+}
 
 export function validateStudyBlocks(blocks: Array<{ protocol: unknown; pin: string }>) {
   const expected = Object.values(STUDY_BLOCKS).map(b => b.pin);

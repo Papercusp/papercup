@@ -45,6 +45,10 @@ import { parseScoutConfigBlock, resolveScoutConfig, type ScoutConfig } from './c
 import type { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import type { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 import type { WorkItemAdmissionProducerPressure } from '../work-items-admission-promoter';
+import type { LlmCallOpts, LlmCallResult } from '../llm-testing/llm-client';
+
+/** Additional caller admission around the already model-resolved production transport. */
+export type ScoutLlmAdmission = (opts: Readonly<LlmCallOpts>, invoke: () => Promise<LlmCallResult>) => Promise<LlmCallResult>;
 
 /** Runs ONE budgeted Scout cycle for a harness (wraps cb4b9's runScoutCycle + ports). */
 export type ScoutCycleRunner = (ctx: {
@@ -71,6 +75,8 @@ export type ScoutCycleRunner = (ctx: {
    */
   deadlineMs?: number;
   onPhase?: (phase: ScoutCyclePhase) => void;
+  /** Optional stricter caller budget; cannot replace Scout's production transport or gates. */
+  admitLlmCall?: ScoutLlmAdmission;
 }) => Promise<ScoutCycleLike>;
 
 export interface ScoutCycleActionConfig {
