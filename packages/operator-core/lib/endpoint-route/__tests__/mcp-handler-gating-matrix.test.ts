@@ -1289,6 +1289,7 @@ describe('in-process ctx.dispatchTool forwards an outer payloadTier to tools:inv
     spawnId: 'in-process-payload-tier-spawn',
     parentSpawnId: null,
     uiClientId: null,
+    detectorSessionKey: null,
     isSuperuser: true,
   };
 
