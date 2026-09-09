@@ -1406,6 +1406,8 @@ async function startOperatorProcess(port = 0) {
   const responses: Array<{ path: string; status: number }> = [];
   let ready: { pid: number; instanceId: string; port: number } | undefined;
   let startupError: Error | undefined;
+  let stopped = false;
+  let shutdownFailure: string | undefined;
   let output = '';
   const child = fork(path.join(__dirname, 'operator-process.mts'), [], {
     cwd: REPO_ROOT, execArgv: ['--import', 'tsx'],
@@ -1421,7 +1423,7 @@ async function startOperatorProcess(port = 0) {
   });
   child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
     events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
-    path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string;
+    path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string; error?: string;
     before?: unknown[]; after?: unknown[]; body?: unknown; stage?: string; workers?: unknown }) => {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
     if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
@@ -1433,6 +1435,8 @@ async function startOperatorProcess(port = 0) {
     if (message.type === 'host') events.push(...message.events ?? []);
     if (message.type === 'event' && message.event) events.push(message.event);
     if (message.type === 'diagnostic') diagnostics.push({ level: message.level, args: message.args });
+    if (message.type === 'stopped') stopped = true;
+    if (message.type === 'shutdown-failed') shutdownFailure = message.error ?? 'unknown shutdown failure';
     if (message.type === 'response') responses.push({ path: message.path, status: message.status });
     if (message.type === 'readiness') readiness.push({ path: message.path, method: message.method,
       requestedAt: message.requestedAt, respondedAt: message.respondedAt, status: message.status,
@@ -1446,8 +1450,16 @@ async function startOperatorProcess(port = 0) {
         timer = setTimeout(() => reject(new Error(`Operator fixture did not exit: ${output}`)), 60_000);
       })]);
       console.info('PUI_OPERATOR_PROCESS_EXIT', JSON.stringify({ pid: child.pid, instanceId: ready?.instanceId, ...result }));
-      expect(result, output).toEqual({ code: 0, signal: null });
-    } finally { clearTimeout(timer!); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
+      expect(shutdownFailure, output).toBeUndefined();
+      expect(stopped, output).toBe(true);
+      expect(result, output).toEqual({ code: null, signal: 'SIGKILL' });
+    } finally {
+      clearTimeout(timer!);
+      // SIGTERM is handled by this fixture and can be swallowed by an already
+      // running shutdown. Escalate directly so a failed cleanup cannot survive
+      // the parent-side timeout and wedge the enclosing test-file reaper.
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
   };
   try {
     await vi.waitFor(() => {
