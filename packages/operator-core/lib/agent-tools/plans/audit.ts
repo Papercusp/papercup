@@ -243,11 +243,11 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch, unchanged BAR source is seeded atomically; changed Requirements/map returns barSeedPendingAmendment without changing rubric/projections, which only rubrics:amend may do.",
+    "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch, unchanged BAR source is seeded atomically; changed Requirements/map returns barSeedPendingAmendment without changing rubric/projections, which only rubrics:amend may do; an invalid pinned acceptance rubric returns barSeedPendingRepair while preserving the invalid rubric and recording the audit.",
   guidance: {
     when: "Before ready/active, read the COMPLETE source conversation (not memory/summary); map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions; ensure each `## Requirements` R-N has one Design Bar-to-work map row (optional `tree|deployed|live`); use `activation`. Before shipped, use `completion` against ACTUAL CODE.",
     returns:
-      "Activation returns auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, barSeed?, barSeedPendingAmendment?, and advisory activationReadiness. Pending means the new subject revision was audited while its old BAR pin remains stale until rubrics:amend. Completion returns auditSeq, item counts, coverage, and uncoveredItems; mixed valid entries can record with partial/problems/rejectedItemIds, while batch-wide problems record nothing.",
+      "Activation returns auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, barSeed?, barSeedPendingAmendment?, barSeedPendingRepair?, and advisory activationReadiness. Pending amendment means the new subject revision was audited while its old BAR pin remains stale until rubrics:amend; pending repair means the audit landed but the stored acceptance rubric is invalid and must be repaired before BAR seeding resumes. Completion returns auditSeq, item counts, coverage, and uncoveredItems; mixed valid entries can record with partial/problems/rejectedItemIds, while batch-wide problems record nothing.",
     notWhen: "Not mid-implementation. Grade a rubric with scorecards:emit; record a decision with plans:add-decision; repair unresolved/open activation mappings before auditing.",
     chaining:
       `sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash; re-audit after changes to ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} need no re-audit. Completion: plans:audit → rubric/scorecard → shipped.`,
@@ -279,6 +279,7 @@ export default defineTool({
       // guidance-output-schema-live-guard fails a promised-but-undeclared field.
       barSeed: z.unknown().optional(),
       barSeedPendingAmendment: z.unknown().optional(),
+      barSeedPendingRepair: z.unknown().optional(),
       activationReadiness: z.object({ consult: z.unknown() }).optional(),
       sourceRefsResolved: z.number().int().nonnegative().optional(),
       slug: z.string().optional(),
@@ -567,7 +568,7 @@ export default defineTool({
       // again would create a competing projection family from source-conversation
       // M-NNN rows. Historical plans retain the old non-fatal behavior until P-010
       // gives them an explicit cohort.
-      if (!recorded.barSeed && !recorded.barSeedPendingAmendment) {
+      if (!recorded.barSeed && !recorded.barSeedPendingAmendment && !recorded.barSeedPendingRepair) {
         try {
           derivedSpecClauses = await persistDerivedDraftClauses(
             {
@@ -727,6 +728,9 @@ export default defineTool({
         ...(recorded.barSeed ? { barSeed: recorded.barSeed } : {}),
         ...(recorded.barSeedPendingAmendment
           ? { barSeedPendingAmendment: recorded.barSeedPendingAmendment }
+          : {}),
+        ...(recorded.barSeedPendingRepair
+          ? { barSeedPendingRepair: recorded.barSeedPendingRepair }
           : {}),
         underRead,
         sourceSpan,
