@@ -964,7 +964,8 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
 
   it('REFUSES when the run itself cannot judge (route_error → check_run_failed)', async () => {
     const runner: CriterionCheckRunner = async () =>
-      ({ ok: false, runId: 'r', root, error: 'route_error', routerOutput: 'x' }) as never;
+      ({ ok: false, runId: 'route-run-42', root, error: 'route_error',
+        routerOutput: 'TEST_FILE_ROUTE_ERROR exact router evidence' }) as never;
     const res = await evaluateCriterionTestChecks({
       criteria: CRITERIA,
       ratings: { det: { rating: 'broken' } },
@@ -972,7 +973,15 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
       runner,
     });
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toBe('check_run_failed');
+    if (!res.ok) {
+      expect(res.error).toBe('check_run_failed');
+      if (res.error !== 'check_run_failed') throw new Error(`unexpected refusal ${res.error}`);
+      expect(res.detail).toContain('runId route-run-42');
+      expect(res.runner).toEqual({
+        runId: 'route-run-42', root, error: 'route_error',
+        routerOutput: 'TEST_FILE_ROUTE_ERROR exact router evidence',
+      });
+    }
   });
 
   it('REFUSES an exit-zero file whose entire suite is skipped as unjudged, never passed', async () => {

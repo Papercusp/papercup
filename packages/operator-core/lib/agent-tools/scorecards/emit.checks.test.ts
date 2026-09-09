@@ -360,6 +360,24 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it('surfaces the internal test-run identity and bounded router evidence on an unjudgeable check', async () => {
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
+      ok: false, error: 'check_run_failed', criterionKey: 'det-outcome',
+      detail: 'the batched tests-check run could not be judged (route_error; runId route-run-42)',
+      runner: { runId: 'route-run-42', root: '/tmp/fake-root', error: 'route_error',
+        routerOutput: 'TEST_FILE_ROUTE_ERROR exact router evidence' },
+    });
+    const res = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateChecks });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected an unjudgeable check refusal');
+    expect(res.checkRefusal).toMatchObject({
+      error: 'check_run_failed',
+      runner: { runId: 'route-run-42', error: 'route_error',
+        routerOutput: 'TEST_FILE_ROUTE_ERROR exact router evidence' },
+    });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('a rubric without tests-checks never invokes the evaluator (fuzzy grading unchanged)', async () => {
     getRubric.mockImplementation(async () => ({
       ...CHECKED_RUBRIC,

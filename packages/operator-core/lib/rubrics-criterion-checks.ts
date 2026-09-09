@@ -411,6 +411,17 @@ export type CriterionCheckRun = ScorecardCheckRun;
 /** The probe-specific persisted run record, re-exported for evaluator callers. */
 export type ProbeCheckRun = ScorecardProbeCheckRun;
 
+/** Bounded testing-router evidence carried through an unjudgeable scorecard check. */
+export interface CriterionCheckRunnerFailure {
+  runId: string;
+  root: string;
+  error: NonNullable<TestFilesCoreResult['error']>;
+  hint?: string;
+  routerOutput?: string;
+  detachedRunId?: string;
+  detachedDurable?: boolean;
+}
+
 export type CriterionCheckRefusal =
   | {
       ok: false;
@@ -444,6 +455,7 @@ export type CriterionCheckRefusal =
       error: 'check_run_failed';
       criterionKey: string;
       detail: string;
+      runner?: CriterionCheckRunnerFailure;
     }
   | {
       ok: false;
@@ -1223,14 +1235,30 @@ export async function evaluateCriterionTestChecks(input: {
   const budget = deadline === null ? undefined : Math.max(1000, deadline - Date.now());
   const run = await runner({ files: uniqueFiles, root, ...(budget !== undefined ? { timeoutMs: budget } : {}) });
   if (run.error !== undefined) {
+    const runnerFailure: CriterionCheckRunnerFailure = {
+      runId: run.runId,
+      root: run.root,
+      error: run.error,
+      ...('hint' in run && typeof run.hint === 'string' ? { hint: run.hint } : {}),
+      ...('routerOutput' in run && typeof run.routerOutput === 'string'
+        ? { routerOutput: run.routerOutput.slice(-2000) }
+        : {}),
+      ...('detachedRunId' in run && typeof run.detachedRunId === 'string'
+        ? { detachedRunId: run.detachedRunId }
+        : {}),
+      ...('detachedDurable' in run && typeof run.detachedDurable === 'boolean'
+        ? { detachedDurable: run.detachedDurable }
+        : {}),
+    };
     return {
       ok: false,
       error: 'check_run_failed',
       criterionKey: planned[0]?.key ?? '(none)',
+      runner: runnerFailure,
       detail:
         `the batched tests-check run for ${planned.length} criterion/criteria ` +
         `(${uniqueFiles.length} file(s): ${uniqueFiles.join(', ')}) could not be judged ` +
-        `(${run.error}${'hint' in run && run.hint ? ` — ${run.hint}` : ''}). ` +
+        `(${run.error}${'hint' in run && run.hint ? ` — ${run.hint}` : ''}; runId ${run.runId}). ` +
         `D-006 requires the named files to actually RUN at grading time — an unjudgeable check refuses ` +
         `the emit rather than passing silently. NOTE: this is the whole batch, so it does NOT single out ` +
         `any one criterion's suite as the slow one.`,
