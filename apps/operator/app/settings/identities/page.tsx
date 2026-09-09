@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * Settings → Identities (identities-v1 P-011, D-028/D-030).
@@ -8,23 +8,23 @@
  * go through the existing loopback mutation door and only a host-acknowledged
  * revision is labelled Applied; desired/prepared state never borrows that badge.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { useSyncMutate, useSyncQuery } from '@papercusp/sync';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
-import type { RosterAgent } from '@papercusp/agent-roster';
-import { toast } from 'sonner';
-import { Button } from '@/app/harness/Button';
-import { Select } from '@/app/harness/Select';
-import { advRosterArgs } from '@/lib/adv-roster-args';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
+import { useSyncMutate, useSyncQuery } from "@papercusp/sync";
+import { RichGrid, type ColumnDef } from "@papercusp/grid-core";
+import type { RosterAgent } from "@papercusp/agent-roster";
+import { toast } from "sonner";
+import { Button } from "@/app/harness/Button";
+import { Select } from "@/app/harness/Select";
+import { advRosterArgs } from "@/lib/adv-roster-args";
 
-type Tab = 'library' | 'agent' | 'bindings';
-type Delivery = 'inject-now' | 'relaunch-with-carry';
-type ActivationStatus = 'desired' | 'prepared' | 'applied' | 'failed';
-type MutationAction = 'preview' | 'attach' | 'switch' | 'detach' | 'rollback';
+type Tab = "library" | "agent" | "bindings";
+type Delivery = "inject-now" | "relaunch-with-carry";
+type ActivationStatus = "desired" | "prepared" | "applied" | "failed";
+type MutationAction = "preview" | "attach" | "switch" | "detach" | "rollback";
 
-const TABS = ['library', 'agent', 'bindings'] as const;
-const DELIVERIES = ['inject-now', 'relaunch-with-carry'] as const;
+const TABS = ["library", "agent", "bindings"] as const;
+const DELIVERIES = ["inject-now", "relaunch-with-carry"] as const;
 
 interface IdentitySummary {
   id: string;
@@ -32,7 +32,7 @@ interface IdentitySummary {
   tier: string;
   version?: string | null;
   description?: string | null;
-  slots: Array<{ slot: string; cardinality: 'exclusive' | 'additive' | null }>;
+  slots: Array<{ slot: string; cardinality: "exclusive" | "additive" | null }>;
   sourcePath: string;
 }
 
@@ -95,7 +95,7 @@ interface IdentitySurface {
     failure: string | null;
     recordedAt: string;
   }>;
-  bindings: { available: false; milestone: 'M3'; message: string };
+  bindings: { available: false; milestone: "M3"; message: string };
 }
 
 interface RosterResponse {
@@ -131,10 +131,12 @@ interface MutationResult {
   error?: string;
 }
 
-async function identityMutationRest(args: MutationArgs): Promise<MutationResult> {
-  const response = await fetch('/api/agent-mcp/identity-management', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+async function identityMutationRest(
+  args: MutationArgs,
+): Promise<MutationResult> {
+  const response = await fetch("/api/agent-mcp/identity-management", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(args),
   });
   const text = await response.text();
@@ -151,12 +153,12 @@ async function identityMutationRest(args: MutationArgs): Promise<MutationResult>
 }
 
 function shortRevision(value: string | null | undefined): string {
-  return value ? value.slice(0, 10) : '—';
+  return value ? value.slice(0, 10) : "—";
 }
 
 function printable(value: unknown): string {
-  if (value == null) return '—';
-  if (typeof value === 'string') return value;
+  if (value == null) return "—";
+  if (typeof value === "string") return value;
   try {
     return JSON.stringify(value);
   } catch {
@@ -168,167 +170,272 @@ function identityRef(identity: IdentitySummary, slot: string): string {
   return `${slot}:${identity.id}`;
 }
 
-function slotFor(identity: IdentitySummary | null, requested: string): IdentitySummary['slots'][number] | null {
+function slotFor(
+  identity: IdentitySummary | null,
+  requested: string,
+): IdentitySummary["slots"][number] | null {
   if (!identity) return null;
-  return identity.slots.find((entry) => entry.slot === requested) ?? identity.slots[0] ?? null;
+  return (
+    identity.slots.find((entry) => entry.slot === requested) ??
+    identity.slots[0] ??
+    null
+  );
 }
 
-function statusCopy(activation: Activation | null): { tone: string; title: string; body: string } | null {
+function statusCopy(
+  activation: Activation | null,
+): { tone: string; title: string; body: string } | null {
   if (!activation) return null;
   switch (activation.status) {
-    case 'desired':
+    case "desired":
       return {
-        tone: 'info',
-        title: 'Change requested',
-        body: 'The currently applied identity remains active.',
+        tone: "info",
+        title: "Change requested",
+        body: "The currently applied identity remains active.",
       };
-    case 'prepared':
+    case "prepared":
       return {
-        tone: 'warn',
-        title: 'Validated; waiting for host acknowledgement',
-        body: 'The prior identity remains active until the host accepts this exact revision.',
+        tone: "warn",
+        title: "Validated; waiting for host acknowledgement",
+        body: "The prior identity remains active until the host accepts this exact revision.",
       };
-    case 'applied':
+    case "applied":
       return {
-        tone: 'good',
-        title: 'Identity applied',
-        body: 'This revision was acknowledged by the host.',
+        tone: "good",
+        title: "Identity applied",
+        body: "This revision was acknowledged by the host.",
       };
-    case 'failed':
+    case "failed":
       return {
-        tone: 'bad',
-        title: 'The change failed',
+        tone: "bad",
+        title: "The change failed",
         body: activation.failure
           ? `${activation.failure} The previous valid identity remains active; retry or roll back.`
-          : 'The previous valid identity remains active; retry or roll back.',
+          : "The previous valid identity remains active; retry or roll back.",
       };
   }
 }
 
 const DIFF_COLUMNS: ColumnDef<DiffRow>[] = [
-  { key: 'field', header: 'Field', width: 'minmax(180px, 1.2fr)', toCopyText: (row) => row.field, render: ({ row }) => <code>{row.field}</code> },
-  { key: 'applied', header: 'Applied', width: 'minmax(130px, 1fr)', toCopyText: (row) => printable(row.applied), render: ({ row }) => printable(row.applied) },
-  { key: 'selected', header: 'Selected', width: 'minmax(130px, 1fr)', toCopyText: (row) => printable(row.selected), render: ({ row }) => printable(row.selected) },
-  { key: 'origin', header: 'Origin', width: 'minmax(120px, .8fr)', toCopyText: (row) => row.origin ?? '', render: ({ row }) => row.origin ?? '—' },
+  {
+    key: "field",
+    header: "Field",
+    width: "minmax(180px, 1.2fr)",
+    toCopyText: (row) => row.field,
+    render: ({ row }) => <code>{row.field}</code>,
+  },
+  {
+    key: "applied",
+    header: "Applied",
+    width: "minmax(130px, 1fr)",
+    toCopyText: (row) => printable(row.applied),
+    render: ({ row }) => printable(row.applied),
+  },
+  {
+    key: "selected",
+    header: "Selected",
+    width: "minmax(130px, 1fr)",
+    toCopyText: (row) => printable(row.selected),
+    render: ({ row }) => printable(row.selected),
+  },
+  {
+    key: "origin",
+    header: "Origin",
+    width: "minmax(120px, .8fr)",
+    toCopyText: (row) => row.origin ?? "",
+    render: ({ row }) => row.origin ?? "—",
+  },
 ];
 
 export default function IdentitySettingsPage() {
-  const [tab, setTab] = useQueryState('identityTab', parseAsStringEnum<Tab>([...TABS]).withDefault('library'));
-  const [search, setSearch] = useQueryState('identitySearch', parseAsString.withDefault(''));
-  const [slotFilter, setSlotFilter] = useQueryState('identitySlot', parseAsString.withDefault('all'));
-  const [identityId, setIdentityId] = useQueryState('identityId', parseAsString.withDefault(''));
-  const [agentId, setAgentId] = useQueryState('identityAgent', parseAsString.withDefault(''));
+  const [tab, setTab] = useQueryState(
+    "identityTab",
+    parseAsStringEnum<Tab>([...TABS]).withDefault("library"),
+  );
+  const [search, setSearch] = useQueryState(
+    "identitySearch",
+    parseAsString.withDefault(""),
+  );
+  const [slotFilter, setSlotFilter] = useQueryState(
+    "identitySlot",
+    parseAsString.withDefault("all"),
+  );
+  const [identityId, setIdentityId] = useQueryState(
+    "identityId",
+    parseAsString.withDefault(""),
+  );
+  const [agentId, setAgentId] = useQueryState(
+    "identityAgent",
+    parseAsString.withDefault(""),
+  );
   const [delivery, setDelivery] = useQueryState(
-    'identityDelivery',
-    parseAsStringEnum<Delivery>([...DELIVERIES]).withDefault('relaunch-with-carry'),
+    "identityDelivery",
+    parseAsStringEnum<Delivery>([...DELIVERIES]).withDefault(
+      "relaunch-with-carry",
+    ),
   );
 
   const rosterQuery = useSyncQuery<RosterResponse>({
-    queryName: 'advRoster.list',
+    queryName: "advRoster.list",
     args: advRosterArgs(null),
     pollIntervalMs: 5_000,
   });
   const agents = useMemo(
-    () => (rosterQuery.data?.[0]?.active ?? []).filter((agent) => agent.sessionState !== 'ended'),
+    () =>
+      (rosterQuery.data?.[0]?.active ?? []).filter(
+        (agent) => agent.sessionState !== "ended",
+      ),
     [rosterQuery.data],
   );
-  const effectiveAgentId = agentId || agents[0]?.ownerId || '';
+  const effectiveAgentId = agentId || agents[0]?.ownerId || "";
   const identityQuery = useSyncQuery<IdentitySurface>({
-    queryName: 'identities.surface',
+    queryName: "identities.surface",
     args: effectiveAgentId ? { ownerId: effectiveAgentId } : {},
   });
   const surface = identityQuery.data?.[0] ?? null;
   const identities = surface?.identities ?? [];
-  const selected = identities.find((identity) => identity.id === identityId) ?? identities[0] ?? null;
-  const requestedSlot = slotFilter === 'all' ? '' : slotFilter;
+  const selected =
+    identities.find((identity) => identity.id === identityId) ??
+    identities[0] ??
+    null;
+  const requestedSlot = slotFilter === "all" ? "" : slotFilter;
   const selectedSlot = slotFor(selected, requestedSlot);
-  const currentRef = selected && selectedSlot ? identityRef(selected, selectedSlot.slot) : null;
-  const isApplied = Boolean(currentRef && surface?.session?.appliedStack.includes(currentRef));
+  const currentRef =
+    selected && selectedSlot ? identityRef(selected, selectedSlot.slot) : null;
+  const isApplied = Boolean(
+    currentRef && surface?.session?.appliedStack.includes(currentRef),
+  );
 
   const slots = useMemo(
-    () => [...new Set(identities.flatMap((identity) => identity.slots.map((entry) => entry.slot)))].sort(),
+    () =>
+      [
+        ...new Set(
+          identities.flatMap((identity) =>
+            identity.slots.map((entry) => entry.slot),
+          ),
+        ),
+      ].sort(),
     [identities],
   );
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return identities.filter((identity) => {
-      if (slotFilter !== 'all' && !identity.slots.some((slot) => slot.slot === slotFilter)) return false;
+      if (
+        slotFilter !== "all" &&
+        !identity.slots.some((slot) => slot.slot === slotFilter)
+      )
+        return false;
       if (!needle) return true;
-      return [identity.id, identity.sourceId, identity.description ?? '', identity.tier, ...identity.slots.map((slot) => slot.slot)]
-        .join(' ')
+      return [
+        identity.id,
+        identity.sourceId,
+        identity.description ?? "",
+        identity.tier,
+        ...identity.slots.map((slot) => slot.slot),
+      ]
+        .join(" ")
         .toLowerCase()
         .includes(needle);
     });
   }, [identities, search, slotFilter]);
 
-  const mutate = useSyncMutate<MutationArgs, MutationResult>('identities.apply', identityMutationRest);
+  const mutate = useSyncMutate<MutationArgs, MutationResult>(
+    "identities.apply",
+    identityMutationRest,
+  );
   const [busy, setBusy] = useState<MutationAction | null>(null);
   const [review, setReview] = useState<MutationResult | null>(null);
   const [lastResult, setLastResult] = useState<MutationResult | null>(null);
 
   useEffect(() => {
     if (!selectedSlot?.cardinality) return;
-    const required: Delivery = selectedSlot.slot === 'domain' || selectedSlot.slot === 'client'
-      ? 'relaunch-with-carry'
-      : 'inject-now';
+    const required: Delivery =
+      selectedSlot.slot === "domain" || selectedSlot.slot === "client"
+        ? "relaunch-with-carry"
+        : "inject-now";
     if (delivery !== required) void setDelivery(required);
   }, [delivery, selectedSlot, setDelivery]);
 
-  const run = useCallback(async (args: MutationArgs) => {
-    setBusy(args.action);
-    try {
-      const result = await mutate(args);
-      setLastResult(result);
-      if (args.action === 'preview') setReview(result);
-      else {
-        setReview(null);
-        identityQuery.invalidate?.();
-        toast.success(
-          result.delivery === 'relaunch-with-carry'
-            ? 'Identity change prepared. The agent must cross a clean fresh-context boundary before it becomes applied.'
-            : result.changed
-              ? 'Identity change prepared for the live session.'
-              : 'The identity stack was already in that state.',
+  const run = useCallback(
+    async (args: MutationArgs) => {
+      setBusy(args.action);
+      try {
+        const result = await mutate(args);
+        setLastResult(result);
+        if (args.action === "preview") setReview(result);
+        else {
+          setReview(null);
+          identityQuery.invalidate?.();
+          toast.success(
+            result.delivery === "relaunch-with-carry"
+              ? "Identity change prepared. The agent must cross a clean fresh-context boundary before it becomes applied."
+              : result.changed
+                ? "Identity change prepared for the live session."
+                : "The identity stack was already in that state.",
+          );
+        }
+        return result;
+      } catch (error) {
+        toast.error(
+          `Identity change failed: ${error instanceof Error ? error.message : "unknown error"}`,
         );
+        return null;
+      } finally {
+        setBusy(null);
       }
-      return result;
-    } catch (error) {
-      toast.error(`Identity change failed: ${error instanceof Error ? error.message : 'unknown error'}`);
-      return null;
-    } finally {
-      setBusy(null);
-    }
-  }, [identityQuery, mutate]);
+    },
+    [identityQuery, mutate],
+  );
 
   const reviewSelected = useCallback(() => {
     if (!effectiveAgentId || !selected || !selectedSlot) return;
+    void (async () => {
+      const result = await run({
+        ownerId: effectiveAgentId,
+        action: "preview",
+        identityId: selected.id,
+        slot: selectedSlot.slot,
+      });
+      if (!result) return;
+      if (result.delivery) void setDelivery(result.delivery);
+      void setTab("agent");
+    })();
+  }, [effectiveAgentId, run, selected, selectedSlot, setDelivery, setTab]);
+
+  const applySelected = useCallback(() => {
+    if (!effectiveAgentId || !selected || !selectedSlot) return;
+    const action: MutationAction =
+      selectedSlot.cardinality === "additive" ? "attach" : "switch";
     void run({
       ownerId: effectiveAgentId,
-      action: 'preview',
+      action,
       identityId: selected.id,
       slot: selectedSlot.slot,
     });
   }, [effectiveAgentId, run, selected, selectedSlot]);
 
-  const applySelected = useCallback(() => {
-    if (!effectiveAgentId || !selected || !selectedSlot) return;
-    const action: MutationAction = selectedSlot.cardinality === 'additive' ? 'attach' : 'switch';
-    void run({ ownerId: effectiveAgentId, action, identityId: selected.id, slot: selectedSlot.slot });
-  }, [effectiveAgentId, run, selected, selectedSlot]);
-
   const detachSelected = useCallback(() => {
     if (!effectiveAgentId || !selected || !selectedSlot) return;
-    void run({ ownerId: effectiveAgentId, action: 'detach', identityId: selected.id, slot: selectedSlot.slot });
+    void run({
+      ownerId: effectiveAgentId,
+      action: "detach",
+      identityId: selected.id,
+      slot: selectedSlot.slot,
+    });
   }, [effectiveAgentId, run, selected, selectedSlot]);
 
   const rollback = useCallback(() => {
     if (!effectiveAgentId) return;
-    void run({ ownerId: effectiveAgentId, action: 'rollback' });
+    void run({ ownerId: effectiveAgentId, action: "rollback" });
   }, [effectiveAgentId, run]);
 
-  const banner = statusCopy(surface?.session?.activation ?? lastResult?.activation ?? null);
+  const banner = statusCopy(
+    surface?.session?.activation ?? lastResult?.activation ?? null,
+  );
   const reviewRows = review?.diff ?? [];
-  const agentLabel = agents.find((agent) => agent.ownerId === effectiveAgentId)?.label || effectiveAgentId;
+  const agentLabel =
+    agents.find((agent) => agent.ownerId === effectiveAgentId)?.label ||
+    effectiveAgentId;
 
   return (
     <main className="pc-identities">
@@ -336,7 +443,8 @@ export default function IdentitySettingsPage() {
         <div>
           <h1>Identities</h1>
           <p className="pc-settings-intro">
-            Choose agent behavior, inspect what is actually active, and manage the transition safely.
+            Choose agent behavior, inspect what is actually active, and manage
+            the transition safely.
           </p>
         </div>
         <label className="pc-identities__agent-picker">
@@ -358,30 +466,44 @@ export default function IdentitySettingsPage() {
         </label>
       </header>
 
-      <div className="pc-identities__tabs" role="tablist" aria-label="Identity management sections">
+      <div
+        className="pc-identities__tabs"
+        role="tablist"
+        aria-label="Identity management sections"
+      >
         {TABS.map((value) => (
           <Button
             key={value}
             role="tab"
             aria-selected={tab === value}
-            variant={tab === value ? 'accent' : 'ghost'}
+            variant={tab === value ? "accent" : "ghost"}
             onClick={() => void setTab(value)}
           >
-            {value === 'library' ? 'Library' : value === 'agent' ? 'Current agent' : 'Provider bindings'}
+            {value === "library"
+              ? "Library"
+              : value === "agent"
+                ? "Current agent"
+                : "Provider bindings"}
           </Button>
         ))}
       </div>
 
       {identityQuery.loading && <p role="status">Loading identities…</p>}
       {identityQuery.error && (
-        <div className="pc-identities__banner pc-identities__banner--bad" role="alert">
-          <strong>Identities could not be read.</strong> Nothing was changed.{' '}
+        <div
+          className="pc-identities__banner pc-identities__banner--bad"
+          role="alert"
+        >
+          <strong>Identities could not be read.</strong> Nothing was changed.{" "}
           <Button onClick={() => identityQuery.invalidate?.()}>Retry</Button>
         </div>
       )}
 
-      {!identityQuery.loading && !identityQuery.error && tab === 'library' && (
-        <section className="pc-identities__library" aria-label="Installed identities">
+      {!identityQuery.loading && !identityQuery.error && tab === "library" && (
+        <section
+          className="pc-identities__library"
+          aria-label="Installed identities"
+        >
           <div className="pc-identities__catalog pc-card">
             <h2>Installed identities</h2>
             <label className="pc-identities__search">
@@ -394,29 +516,39 @@ export default function IdentitySettingsPage() {
                 aria-label="Search installed identities"
               />
             </label>
-            <div className="pc-identities__chips" role="group" aria-label="Filter identities by slot">
-              {['all', ...slots].map((slot) => (
+            <div
+              className="pc-identities__chips"
+              role="group"
+              aria-label="Filter identities by slot"
+            >
+              {["all", ...slots].map((slot) => (
                 <button
                   key={slot}
                   type="button"
-                  className={slotFilter === slot ? 'is-active' : ''}
+                  className={slotFilter === slot ? "is-active" : ""}
                   aria-pressed={slotFilter === slot}
                   onClick={() => void setSlotFilter(slot)}
                 >
-                  {slot === 'all' ? 'All slots' : slot}
+                  {slot === "all" ? "All slots" : slot}
                 </button>
               ))}
             </div>
             <div className="pc-identities__identity-list">
               {visible.map((identity) => {
                 const applied = identity.slots.some((slot) =>
-                  surface?.session?.appliedStack.includes(identityRef(identity, slot.slot)),
+                  surface?.session?.appliedStack.includes(
+                    identityRef(identity, slot.slot),
+                  ),
                 );
                 return (
                   <button
                     key={identity.id}
                     type="button"
-                    className={selected?.id === identity.id ? 'pc-identities__identity is-selected' : 'pc-identities__identity'}
+                    className={
+                      selected?.id === identity.id
+                        ? "pc-identities__identity is-selected"
+                        : "pc-identities__identity"
+                    }
                     aria-label={`Inspect identity ${identity.id}`}
                     onClick={() => {
                       void setIdentityId(identity.id);
@@ -425,9 +557,16 @@ export default function IdentitySettingsPage() {
                   >
                     <span>
                       <strong>{identity.id}</strong>
-                      <small>{identity.description || identity.slots.map((slot) => slot.slot).join(' · ')}</small>
+                      <small>
+                        {identity.description ||
+                          identity.slots.map((slot) => slot.slot).join(" · ")}
+                      </small>
                     </span>
-                    {applied && <span className="pc-identities__pill pc-identities__pill--applied">Applied</span>}
+                    {applied && (
+                      <span className="pc-identities__pill pc-identities__pill--applied">
+                        Applied
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -446,22 +585,40 @@ export default function IdentitySettingsPage() {
                 <div className="pc-identities__detail-head">
                   <div>
                     <h2>{selected.id}</h2>
-                    <p>{selected.description || 'Installed identity layer'}</p>
+                    <p>{selected.description || "Installed identity layer"}</p>
                   </div>
-                  {isApplied && <span className="pc-identities__pill pc-identities__pill--applied">Applied</span>}
+                  {isApplied && (
+                    <span className="pc-identities__pill pc-identities__pill--applied">
+                      Applied
+                    </span>
+                  )}
                 </div>
                 <dl className="pc-identities__details">
-                  <div><dt>Tier</dt><dd>{selected.tier}</dd></div>
-                  <div><dt>Version</dt><dd>{selected.version || 'unversioned'}</dd></div>
-                  <div><dt>Source id</dt><dd><code>{selected.sourceId}</code></dd></div>
-                  <div><dt>Source</dt><dd title={selected.sourcePath}>{selected.sourcePath}</dd></div>
+                  <div>
+                    <dt>Tier</dt>
+                    <dd>{selected.tier}</dd>
+                  </div>
+                  <div>
+                    <dt>Version</dt>
+                    <dd>{selected.version || "unversioned"}</dd>
+                  </div>
+                  <div>
+                    <dt>Source id</dt>
+                    <dd>
+                      <code>{selected.sourceId}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Source</dt>
+                    <dd title={selected.sourcePath}>{selected.sourcePath}</dd>
+                  </div>
                 </dl>
 
                 <div className="pc-identities__slot-row">
                   <label>
                     <span>Slot</span>
                     <Select
-                      value={selectedSlot?.slot ?? ''}
+                      value={selectedSlot?.slot ?? ""}
                       onChange={(value) => {
                         void setSlotFilter(value);
                         setReview(null);
@@ -469,22 +626,27 @@ export default function IdentitySettingsPage() {
                       ariaLabel="Identity slot"
                       options={selected.slots.map((slot) => ({
                         value: slot.slot,
-                        label: `${slot.slot} · ${slot.cardinality ?? 'unknown cardinality'}`,
+                        label: `${slot.slot} · ${slot.cardinality ?? "unknown cardinality"}`,
                       }))}
                     />
                   </label>
                   <span className="pc-identities__muted">
-                    {selectedSlot?.cardinality === 'additive'
-                      ? 'Additive — attaches beside existing identities.'
-                      : 'Exclusive — applying this identity replaces the current holder.'}
+                    {selectedSlot?.cardinality === "additive"
+                      ? "Additive — attaches beside existing identities."
+                      : "Exclusive — applying this identity replaces the current holder."}
                   </span>
                 </div>
 
-                <section className="pc-identities__settings" aria-label="Identity settings">
+                <section
+                  className="pc-identities__settings"
+                  aria-label="Identity settings"
+                >
                   <h3>Identity settings</h3>
                   <p>
-                    This installed identity declares no separately editable values on this surface. Its configuration remains
-                    file-canonical and is resolved from the installed blueprint before activation.
+                    This installed identity declares no separately editable
+                    values on this surface. Its configuration remains
+                    file-canonical and is resolved from the installed blueprint
+                    before activation.
                   </p>
                 </section>
 
@@ -492,13 +654,15 @@ export default function IdentitySettingsPage() {
                   <Button
                     variant="primary"
                     onClick={reviewSelected}
-                    disabled={!effectiveAgentId || !selectedSlot || busy !== null}
+                    disabled={
+                      !effectiveAgentId || !selectedSlot || busy !== null
+                    }
                   >
-                    {busy === 'preview' ? 'Preparing review…' : 'Review switch'}
+                    {busy === "preview" ? "Preparing review…" : "Review switch"}
                   </Button>
                   {isApplied && (
                     <Button onClick={detachSelected} disabled={busy !== null}>
-                      {busy === 'detach' ? 'Detaching…' : 'Detach identity'}
+                      {busy === "detach" ? "Detaching…" : "Detach identity"}
                     </Button>
                   )}
                 </div>
@@ -506,47 +670,101 @@ export default function IdentitySettingsPage() {
             ) : (
               <div className="pc-identities__empty">
                 <strong>No identities installed</strong>
-                <span>Install an identity through Cupboard, then return here.</span>
+                <span>
+                  Install an identity through Cupboard, then return here.
+                </span>
               </div>
             )}
           </div>
         </section>
       )}
 
-      {!identityQuery.loading && !identityQuery.error && tab === 'agent' && (
+      {!identityQuery.loading && !identityQuery.error && tab === "agent" && (
         <section className="pc-identities__agent" aria-label="Current agent">
           {!surface?.session ? (
             <div className="pc-card pc-identities__empty">
               <strong>No mutable session selected</strong>
-              <span>Choose a live agent whose launch specification can be managed.</span>
+              <span>
+                Choose a live agent whose launch specification can be managed.
+              </span>
             </div>
           ) : (
             <>
               <div className="pc-card pc-identities__agent-card">
                 <div className="pc-identities__detail-head">
                   <div>
-                    <h2>{agentLabel || 'Current agent'}</h2>
-                    <p><code>{surface.session.ownerId}</code></p>
+                    <h2>{agentLabel || "Current agent"}</h2>
+                    <p>
+                      <code>{surface.session.ownerId}</code>
+                    </p>
                   </div>
-                  {surface.session.activation?.status === 'applied' && (
-                    <span className="pc-identities__pill pc-identities__pill--applied">Applied</span>
+                  {surface.session.activation?.status === "applied" && (
+                    <span className="pc-identities__pill pc-identities__pill--applied">
+                      Applied
+                    </span>
                   )}
                 </div>
                 <dl className="pc-identities__details">
-                  <div><dt>Agent</dt><dd>{surface.session.agent}</dd></div>
-                  <div><dt>Principal</dt><dd><code>{surface.session.principalId}</code></dd></div>
-                  <div><dt>Harness</dt><dd>{surface.session.harnessSlug || 'workspace-wide'}</dd></div>
-                  <div><dt>Applied revision</dt><dd><code>{shortRevision(surface.session.activation?.applied?.specificationRevision)}</code></dd></div>
-                  <div><dt>Desired revision</dt><dd><code>{shortRevision(surface.session.activation?.desired.specificationRevision)}</code></dd></div>
-                  <div><dt>State revision</dt><dd><code>{shortRevision(surface.session.stateRevision)}</code></dd></div>
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>{surface.session.agent}</dd>
+                  </div>
+                  <div>
+                    <dt>Principal</dt>
+                    <dd>
+                      <code>{surface.session.principalId}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Harness</dt>
+                    <dd>{surface.session.harnessSlug || "workspace-wide"}</dd>
+                  </div>
+                  <div>
+                    <dt>Applied revision</dt>
+                    <dd>
+                      <code>
+                        {shortRevision(
+                          surface.session.activation?.applied
+                            ?.specificationRevision,
+                        )}
+                      </code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Desired revision</dt>
+                    <dd>
+                      <code>
+                        {shortRevision(
+                          surface.session.activation?.desired
+                            .specificationRevision,
+                        )}
+                      </code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>State revision</dt>
+                    <dd>
+                      <code>
+                        {shortRevision(surface.session.stateRevision)}
+                      </code>
+                    </dd>
+                  </div>
                 </dl>
               </div>
 
               {banner && (
                 <div
                   className={`pc-identities__banner pc-identities__banner--${banner.tone}`}
-                  role={surface.session.activation?.status === 'failed' ? 'alert' : 'status'}
-                  aria-live={surface.session.activation?.status === 'failed' ? 'assertive' : 'polite'}
+                  role={
+                    surface.session.activation?.status === "failed"
+                      ? "alert"
+                      : "status"
+                  }
+                  aria-live={
+                    surface.session.activation?.status === "failed"
+                      ? "assertive"
+                      : "polite"
+                  }
                 >
                   <strong>{banner.title}.</strong> {banner.body}
                 </div>
@@ -555,12 +773,19 @@ export default function IdentitySettingsPage() {
               <div className="pc-card pc-identities__stack-card">
                 <h2>Applied stack</h2>
                 <p className="pc-identities__muted">
-                  This is the host-acknowledged stack. Desired and prepared revisions remain pending above until acknowledgement.
+                  This is the host-acknowledged stack. Desired and prepared
+                  revisions remain pending above until acknowledgement.
                 </p>
                 <div className="pc-identities__stack">
-                  {surface.session.appliedStack.length > 0
-                    ? surface.session.appliedStack.map((ref) => <code key={ref}>{ref}</code>)
-                    : <span>No host-acknowledged identity stack is recorded.</span>}
+                  {surface.session.appliedStack.length > 0 ? (
+                    surface.session.appliedStack.map((ref) => (
+                      <code key={ref}>{ref}</code>
+                    ))
+                  ) : (
+                    <span>
+                      No host-acknowledged identity stack is recorded.
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -568,33 +793,61 @@ export default function IdentitySettingsPage() {
                 <fieldset className="pc-card pc-identities__review-controls">
                   <legend>Switch review</legend>
                   <p>
-                    Selected <strong>{selected.id}</strong> for the <code>{selectedSlot.slot}</code> slot.
+                    Selected <strong>{selected.id}</strong> for the{" "}
+                    <code>{selectedSlot.slot}</code> slot.
                   </p>
                   <div className="pc-identities__delivery">
                     <label>
-                      <input type="radio" checked={delivery === 'inject-now'} readOnly disabled />
-                      <span><strong>Soft update</strong> — keep this context.</span>
+                      <input
+                        type="radio"
+                        checked={delivery === "inject-now"}
+                        readOnly
+                        disabled
+                      />
+                      <span>
+                        <strong>Soft update</strong> — keep this context.
+                      </span>
                     </label>
                     <label>
-                      <input type="radio" checked={delivery === 'relaunch-with-carry'} readOnly disabled />
-                      <span><strong>Fresh context</strong> — relaunch with carried work.</span>
+                      <input
+                        type="radio"
+                        checked={delivery === "relaunch-with-carry"}
+                        readOnly
+                        disabled
+                      />
+                      <span>
+                        <strong>Fresh context</strong> — relaunch with carried
+                        work.
+                      </span>
                     </label>
                   </div>
                   <p className="pc-identities__muted">
-                    Delivery is derived from the slot policy. Domain and client changes start a fresh context. Work state may
-                    carry; prior identity instructions do not. Private memory keeps its existing scope.
+                    Delivery is derived from the slot policy. Domain and client
+                    changes start a fresh context. Work state may carry; prior
+                    identity instructions do not. Private memory keeps its
+                    existing scope.
                   </p>
                   <div className="pc-identities__actions">
-                    <Button variant="accent" onClick={reviewSelected} disabled={busy !== null}>
-                      {busy === 'preview' ? 'Refreshing review…' : 'Refresh review'}
+                    <Button
+                      variant="accent"
+                      onClick={reviewSelected}
+                      disabled={busy !== null}
+                    >
+                      {busy === "preview"
+                        ? "Refreshing review…"
+                        : "Refresh review"}
                     </Button>
                     <Button
                       variant="primary"
                       onClick={applySelected}
-                      disabled={!review || busy !== null || review.changed === false}
+                      disabled={
+                        !review || busy !== null || review.changed === false
+                      }
                       aria-label="Apply identity"
                     >
-                      {busy === 'switch' || busy === 'attach' ? 'Applying…' : 'Apply identity'}
+                      {busy === "switch" || busy === "attach"
+                        ? "Applying…"
+                        : "Apply identity"}
                     </Button>
                   </div>
                 </fieldset>
@@ -603,7 +856,11 @@ export default function IdentitySettingsPage() {
               <div className="pc-card pc-identities__diff">
                 <h2>Revision diff</h2>
                 {reviewRows.length > 0 ? (
-                  <div style={{ height: Math.min(360, 44 + reviewRows.length * 38) }}>
+                  <div
+                    style={{
+                      height: Math.min(360, 44 + reviewRows.length * 38),
+                    }}
+                  >
                     <RichGrid<DiffRow>
                       columns={DIFF_COLUMNS}
                       rows={reviewRows}
@@ -614,41 +871,53 @@ export default function IdentitySettingsPage() {
                   </div>
                 ) : (
                   <p className="pc-identities__muted">
-                    {review ? 'The selected identity produces no configuration difference.' : 'Review an identity to compare it with the applied artifact.'}
+                    {review
+                      ? "The selected identity produces no configuration difference."
+                      : "Review an identity to compare it with the applied artifact."}
                   </p>
                 )}
               </div>
 
               <details className="pc-card pc-identities__explain">
                 <summary>Explain this agent</summary>
-                <p className="pc-identities__muted">Derived from the compiled artifact and current policy, not a parallel inventory.</p>
+                <p className="pc-identities__muted">
+                  Derived from the compiled artifact and current policy, not a
+                  parallel inventory.
+                </p>
                 <h3>Effective stack</h3>
                 <div className="pc-identities__stack">
-                  {surface.session.effectiveStack.map((ref) => <code key={ref}>{ref}</code>)}
+                  {surface.session.effectiveStack.map((ref) => (
+                    <code key={ref}>{ref}</code>
+                  ))}
                 </div>
                 <h3>Provenance</h3>
                 <ul>
-                  {(surface.session.artifact?.provenance ?? []).slice(0, 40).map((entry) => (
-                    <li key={`${entry.path}:${entry.sourceRef}`}>
-                      <code>{entry.path}</code> ← {entry.sourceRef}
-                    </li>
-                  ))}
-                  {(surface.session.artifact?.provenance ?? []).length === 0 && <li>No provenance rows were recorded.</li>}
+                  {(surface.session.artifact?.provenance ?? [])
+                    .slice(0, 40)
+                    .map((entry) => (
+                      <li key={`${entry.path}:${entry.sourceRef}`}>
+                        <code>{entry.path}</code> ← {entry.sourceRef}
+                      </li>
+                    ))}
+                  {(surface.session.artifact?.provenance ?? []).length ===
+                    0 && <li>No provenance rows were recorded.</li>}
                 </ul>
               </details>
 
               <div className="pc-identities__rollback">
                 <Button
                   onClick={rollback}
-                  disabled={surface.session.history.length === 0 || busy !== null}
+                  disabled={
+                    surface.session.history.length === 0 || busy !== null
+                  }
                   aria-label="Roll back identity"
                 >
-                  {busy === 'rollback' ? 'Rolling back…' : 'Roll back identity'}
+                  {busy === "rollback" ? "Rolling back…" : "Roll back identity"}
                 </Button>
                 <span className="pc-identities__muted">
                   {surface.session.history.length > 0
                     ? `Restores the previous validated receipt (${shortRevision(surface.session.history[0]?.specificationRevision)}).`
-                    : 'No prior validated identity revision is available.'}
+                    : "No prior validated identity revision is available."}
                 </span>
               </div>
             </>
@@ -656,23 +925,43 @@ export default function IdentitySettingsPage() {
         </section>
       )}
 
-      {!identityQuery.loading && !identityQuery.error && tab === 'bindings' && (
-        <section className="pc-card pc-identities__bindings" aria-label="Provider bindings">
+      {!identityQuery.loading && !identityQuery.error && tab === "bindings" && (
+        <section
+          className="pc-card pc-identities__bindings"
+          aria-label="Provider bindings"
+        >
           <h2>Provider bindings</h2>
-          <div className="pc-identities__banner pc-identities__banner--info" role="status" aria-live="polite">
-            <strong>Available in M3.</strong> {surface?.bindings.message ?? 'Existing pot bindings remain unchanged.'}
+          <div
+            className="pc-identities__banner pc-identities__banner--info"
+            role="status"
+            aria-live="polite"
+          >
+            <strong>Available in M3.</strong>{" "}
+            {surface?.bindings.message ??
+              "Existing pot bindings remain unchanged."}
           </div>
           <p>
-            Capability-class provider selection and rebind review are intentionally unavailable in this milestone. This page will
-            reuse conforming provider evidence and existing pot bindings when M3 lands; no placeholder write is exposed now.
+            Capability-class provider selection and rebind review are
+            intentionally unavailable in this milestone. This page will reuse
+            conforming provider evidence and existing pot bindings when M3
+            lands; no placeholder write is exposed now.
           </p>
         </section>
       )}
 
       {surface?.unreadable && surface.unreadable.length > 0 && (
         <details className="pc-identities__unreadable">
-          <summary>{surface.unreadable.length} identity source{surface.unreadable.length === 1 ? '' : 's'} could not be read</summary>
-          <ul>{surface.unreadable.map((row) => <li key={row.id}><code>{row.id}</code>: {row.error}</li>)}</ul>
+          <summary>
+            {surface.unreadable.length} identity source
+            {surface.unreadable.length === 1 ? "" : "s"} could not be read
+          </summary>
+          <ul>
+            {surface.unreadable.map((row) => (
+              <li key={row.id}>
+                <code>{row.id}</code>: {row.error}
+              </li>
+            ))}
+          </ul>
         </details>
       )}
 

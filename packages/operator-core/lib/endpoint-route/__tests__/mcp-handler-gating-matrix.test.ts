@@ -27,8 +27,19 @@
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer, createConnection } from 'node:net';
+import { once } from 'node:events';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
+import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
 import type { Principal, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
@@ -389,6 +400,8 @@ const { __buildMcpToolContext_forTests, resolveMcpTargetAfterPluginHostWarm } =
 const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
+const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES } =
+  await import('../routes/transport/_mcp-host');
 
 /* ─── Synthetic probe tools ──────────────────────────────────────────── */
 
@@ -772,6 +785,97 @@ async function callTool(
   )) as CallResult;
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+
+/** Exercise the SDK lifecycle independently of the HTTP adapter's handler capture. */
+async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T>, connection: 'memory' | 'uds'): Promise<T> {
+  let [clientWire, serverWire]: [Transport, Transport] = InMemoryTransport.createLinkedPair();
+  let cleanupWire = async () => {};
+  if (connection === 'uds') {
+    const root = await mkdtemp(join(tmpdir(), 'host-parity-'));
+    const path = join(root, 'mcp.sock');
+    const listener = createServer({ pauseOnConnect: true });
+    listener.listen(path);
+    await once(listener, 'listening');
+    const accepted = once(listener, 'connection');
+    const clientSocket = createConnection(path);
+    const [serverSocket] = await accepted;
+    clientWire = new UdsMcpTransport({ socket: clientSocket });
+    serverWire = new UdsMcpTransport({ socket: serverSocket });
+    cleanupWire = async () => {
+      clientSocket.destroy();
+      serverSocket.destroy();
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    };
+  }
+  let requestInfo: MessageExtraInfo | undefined;
+  const transport: Transport = {
+    async start() {
+      serverWire.onmessage = (message) => transport.onmessage?.(message, requestInfo);
+      serverWire.onclose = () => transport.onclose?.();
+      serverWire.onerror = (error) => transport.onerror?.(error);
+      await serverWire.start();
+    },
+    send: (message) => serverWire.send(message),
+    close: () => serverWire.close(),
+  };
+  const server = new McpServer({ name: 'shared-host-parity', version: '1' }, mcpHostServerOptions());
+  registerMcpHost(server);
+  const client = new Client({ name: 'shared-host-contract', version: '1' });
+  try {
+    await server.connect(transport);
+    // Bare initialize keeps HTTP probe behavior and avoids unrelated memory reads.
+    await client.connect(clientWire);
+    requestInfo = extra as MessageExtraInfo;
+    return await run(client);
+  } finally {
+    await client.close();
+    await server.close();
+    await cleanupWire();
+  }
+}
+
+describe.each(['memory', 'uds'] as const)('shared MCP host — %s SDK parity with the HTTP assembly', (connection) => {
+  it('negotiates existing capabilities and exposes the same allowed catalog', async () => {
+    const extra = extraFor(signedUrl({ tools: 'gatingtest:scoped,gatingtest:engineer' }));
+    const http = await listTools(extra);
+    await withSdkHost(extra, async (client) => {
+      expect(client.getServerCapabilities()).toEqual(MCP_SERVER_CAPABILITIES);
+      const native = await client.listTools();
+      expect(native).toEqual(http);
+      expect(native.tools.some((tool) => tool.name === 'gatingtest:scoped')).toBe(true);
+      expect(native.tools.some((tool) => tool.name === 'gatingtest:engineer')).toBe(false);
+      expect(await client.listResources()).toEqual(await h.handlers.get('resources/list')!({}, extra));
+      expect(await client.listPrompts()).toEqual(await h.handlers.get('prompts/list')!({}, extra));
+    }, connection);
+  });
+
+  it('preserves policy metadata, dispatcher scope and compact content through the SDK', async () => {
+    const extra = superuserExtra('&workspace=ws-test');
+    const args = { projection: { pipe: [{ op: 'count' }] } };
+    const http = await callTool('gatingtest:scoped', args, extra);
+    await withSdkHost(extra, async (client) => {
+      const native = await client.callTool({ name: 'gatingtest:scoped', arguments: args });
+      expect(native.content).toEqual(http.content);
+      expect(native._meta?.resultProjection).toEqual(http._meta?.resultProjection);
+      expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
+      expect(seen.at(-1)?.ctx.workspaceId).toBe('ws-test');
+      expect(seen.at(-1)?.ctx.transport).toBe('mcp');
+      expect(seen.at(-1)?.args).toEqual({});
+    }, connection);
+  });
+
+  it('rejects invalid credentials before discovery and execution on both assemblies', async () => {
+    const extra = superuserExtra('&workspace=ws-test', { authorization: 'Bearer invalid' });
+    await expect(listTools(extra)).rejects.toThrow('mcp_auth_failed');
+    await withSdkHost(extra, async (client) => {
+      await expect(client.listTools()).rejects.toThrow('mcp_auth_failed');
+      const result = await client.callTool({ name: 'gatingtest:scoped', arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(seen).toHaveLength(0);
+    }, connection);
+  });
+});
 
 describe('public Papercup PI card transport (EI-22679615443261276)', () => {
   const principal: Principal = {
@@ -1391,6 +1495,25 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     );
     expect(res.isError).not.toBe(true);
     expect(invokeProbeSeen).toEqual([{}]);
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+  });
+
+  it('forwards a top-level projection when tools:invoke target args arrive JSON-stringified', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        // ptool deliberately uses this wire shape so shell-heavy nested args
+        // survive the host/MCP boundary exactly once.
+        args: JSON.stringify({ probe: 'encoded' }),
+        projection: { pick: ['lines[0]'] },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(invokeProbeSeen).toEqual([{ probe: 'encoded' }]);
     expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
     expect(res._meta?.resultProjection).toMatchObject({ applied: true });
   });

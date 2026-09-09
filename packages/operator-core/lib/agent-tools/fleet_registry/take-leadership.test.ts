@@ -56,6 +56,17 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 vi.mock('../../events/await/psu-pty-discovery', () => ({
   recolorViaPty: (...a: unknown[]) => h.recolorViaPty(...a),
 }));
+// take-leadership-core gates the transfer on the fleet's claim-spec binding, and reaches
+// the store through a DYNAMIC `await import(...)` — which the seam mocks above cannot
+// intercept, because there is no static import of it anywhere in this file's graph. Left
+// unstubbed it therefore opens a REAL Postgres connection, the no-real-pg rail refuses it,
+// and the refusal is re-thrown as `fleet 'rocket' claim-spec binding could not be verified`
+// — so every recolor assertion below fails for a reason that has nothing to do with
+// recoloring, and this file's stated contract ("without PG", see the header) is broken.
+vi.mock('../../scheduler/claim-spec-store', () => ({
+  fleetSpecBeeKey: (fleetSlug: string) => `fleet:${fleetSlug}`,
+  getClaimSpecRecord: (...a: unknown[]) => h.getClaimSpecRecord(...a),
+}));
 
 import takeLeadershipTool from './take-leadership';
 
@@ -94,6 +105,11 @@ beforeEach(() => {
   h.sendMessage.mockResolvedValue({ msg_id: 'm1' });
   h.resolveFleetScheme.mockReturnValue(FOREST);
   h.recolorViaPty.mockResolvedValue(true);
+  // The ONLY shape take-leadership-core accepts: source 'fleet' PLUS a concrete
+  // harness binding. A non-'fleet' source, or a harnessSlug that is absent / '*' /
+  // 'all', is a deliberate refusal (`fleet_harness_binding_required`) — so this is
+  // the happy-path binding, not a blanket bypass of the check.
+  h.getClaimSpecRecord.mockResolvedValue({ source: 'fleet', harnessSlug: 'papercusp' });
 });
 
 describe('fleet:take-leadership — recolors the caller terminal (WI-1351), not just presence', () => {

@@ -667,37 +667,56 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
     const hasJudgedContext = CARRY_JUDGED_CONTEXT.test(clause);
 
     for (const { source, pattern } of CARRY_SOURCE_PATTERNS) {
-      if (!new RegExp(pattern, 'i').test(clause)) continue;
-
-      const directRelations = [
-        new RegExp(
-          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|verification|verdict|worktree)\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}`,
+      const sourceMatches = Array.from(clause.matchAll(new RegExp(pattern, 'gi')));
+      for (let sourceMatchIndex = 0; sourceMatchIndex < sourceMatches.length; sourceMatchIndex += 1) {
+        const sourceMatch = sourceMatches[sourceMatchIndex]!;
+        const sourceStart = sourceMatch.index ?? 0;
+        const sourceEnd = sourceStart + sourceMatch[0].length;
+        // Evaluate relations against this specific source occurrence. Without
+        // this boundary, a harmless first mention (for example, a canonical
+        // tree path on staging) can be paired with a later negated relation
+        // about a second mention of staging in quoted policy evidence.
+        const nextSourceStart = sourceMatches[sourceMatchIndex + 1]?.index ?? clause.length;
+        const throughSource = clause.slice(0, sourceEnd);
+        const sourceThroughNext = clause.slice(sourceStart, nextSourceStart);
+        const directRelationBefore = new RegExp(
+          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|verification|verdict|worktree)\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}\s*$`,
           'i',
-        ),
-        new RegExp(
-          String.raw`${pattern}.{0,100}\b(?:as|for)\b.{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|verification|verdict|worktree)\b`,
+        ).exec(throughSource);
+        const directRelationAfter = new RegExp(
+          String.raw`^${pattern}.{0,100}\b(?:as|for)\b.{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|verification|verdict|worktree)\b`,
           'i',
-        ),
-      ];
-      const strongAction = new RegExp(String.raw`\b(${CARRY_STRONG_SELECTION_ACTIONS})\b.{0,160}${pattern}`, 'i').exec(
-        clause,
-      );
-      const executionAction = new RegExp(String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b.{0,160}${pattern}`, 'i').exec(
-        clause,
-      );
-      const relation = directRelations.map((candidate) => candidate.exec(clause)).find(Boolean) ?? null;
-      const strongActionName = strongAction?.[1]?.toLowerCase() ?? '';
-      const strongActionIsCandidateSpecific = ['pin', 'cut', 'recut'].includes(strongActionName);
-      const positive =
-        relation ??
-        (strongAction && (hasJudgedContext || strongActionIsCandidateSpecific) ? strongAction : null) ??
-        (executionAction && hasJudgedContext ? executionAction : null);
-      if (!positive || carryDirectiveIsNegated(clause, positive.index, positive.index + positive[0].length)) continue;
+        ).exec(sourceThroughNext);
+        const strongAction = new RegExp(
+          String.raw`\b(${CARRY_STRONG_SELECTION_ACTIONS})\b.{0,160}${pattern}\s*$`,
+          'i',
+        ).exec(throughSource);
+        const executionAction = new RegExp(
+          String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b.{0,160}${pattern}\s*$`,
+          'i',
+        ).exec(throughSource);
+        const relation = directRelationBefore
+          ? { index: directRelationBefore.index, end: sourceEnd }
+          : directRelationAfter
+            ? { index: sourceStart, end: sourceStart + directRelationAfter[0].length }
+            : null;
+        const strongActionName = strongAction?.[1]?.toLowerCase() ?? '';
+        const strongActionIsCandidateSpecific = ['pin', 'cut', 'recut'].includes(strongActionName);
+        const positive =
+          relation ??
+          (strongAction && (hasJudgedContext || strongActionIsCandidateSpecific)
+            ? { index: strongAction.index, end: sourceEnd }
+            : null) ??
+          (executionAction && hasJudgedContext
+            ? { index: executionAction.index, end: sourceEnd }
+            : null);
+        if (!positive || carryDirectiveIsNegated(clause, positive.index, positive.end)) continue;
 
-      return {
-        unsafeSource: source,
-        matchedText: originalClause.replace(/\s+/g, ' ').trim().slice(0, 320),
-      };
+        return {
+          unsafeSource: source,
+          matchedText: originalClause.replace(/\s+/g, ' ').trim().slice(0, 320),
+        };
+      }
     }
   }
   return null;

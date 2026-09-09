@@ -293,13 +293,54 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       ]),
     );
 
+    // Real immutable append ids, not caller timestamps, choose the attempt.
+    // Keep the independent negative control above while replacing an older
+    // unknown execution, and prove the inverse cannot hide a later failure.
+    const bindAttempt = async (n: number, outcome: string) => {
+      const binding = { specId: SPEC, specRevision: 1, testPath: TEST_PATH,
+        sourcePaths: measurement.sourcePaths, testLayer: 'integration' };
+      const pending = { ...bindingInput, evidenceKind: 'test' as const,
+        evidenceRef: `test-run-group:attempt-${n}:0`, testRunId: null,
+        details: { currentMeasurement: measurement,
+          testExecution: { schemaVersion: 1, phase: 'pending', originRunId: `attempt-${n}`, binding },
+          adequacy: { testLayer: 'integration', outcome: 'pending', executed: false, collected: false } } };
+      expect(await bindSpecEvidence(pending)).toMatchObject({ status: 'created' });
+      const settled = { ...pending, testRunId: Number(testRun!.id),
+        details: { ...pending.details, evidencePlane: 'tree',
+          testExecution: { ...pending.details.testExecution, phase: 'settled' },
+          adequacy: { ...bindingInput.details.adequacy, outcome } } };
+      expect(await bindSpecEvidence(settled)).toMatchObject({ status: 'created' });
+      return settled;
+    };
+    const oldAttempt = await bindAttempt(1, 'unknown');
+    await bindAttempt(2, 'pass');
+    const selected = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    expect(selected.bars[0]!.proof.adequacy?.state).toBe('pass');
+    expect(selected.bars[0]!.proof.history).toHaveLength(5);
+    expect(selected.bars[0]!.proof.adequacy?.checks[0]?.evidenceRefs)
+      .toEqual([EVIDENCE_REF, 'test-run-group:attempt-2:0'].sort());
+    expect(selected.bars[0]!.proof.history?.filter(row => row.evidenceRef === oldAttempt.evidenceRef))
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        activeAttempt: false, details: expect.objectContaining({
+          adequacy: expect.objectContaining({ outcome: 'unknown' }),
+        }),
+      })]));
+    await bindAttempt(3, 'failed');
+    // A late corrected annotation of the older attempt cannot become a new run.
+    await bindSpecEvidence({ ...oldAttempt, observedAt: '2099-01-01T00:00:00Z',
+      details: { ...oldAttempt.details, adequacy: { ...oldAttempt.details.adequacy, outcome: 'pass' } } });
+    const failing = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    expect(failing.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('execution-integrity');
+    expect(failing.bars[0]!.proof.adequacy?.checks[0]?.evidenceRefs)
+      .toEqual([EVIDENCE_REF, 'test-run-group:attempt-3:0'].sort());
+
     await writeFile(path.join(h.repoRoot, SOURCE_PATH), 'export const acceptanceSnapshot = false;\n');
     const stale = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
     expect(stale.bars[0]).toMatchObject({
-      proof: { state: 'stale', currentEvidence: 0, staleEvidence: 1 },
+      proof: { state: 'stale', currentEvidence: 0, staleEvidence: 2 },
       grading: { state: 'pass', scorecardId: grading.id },
     });
-    expect(stale.bars[0]!.proof.history).toEqual([
+    expect(stale.bars[0]!.proof.history).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: (created as { id: number }).id,
         evidenceRef: EVIDENCE_REF,
@@ -312,6 +353,6 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
           staleReasons: ['source-stale'],
         }),
       }),
-    ]);
+    ]));
   });
 });

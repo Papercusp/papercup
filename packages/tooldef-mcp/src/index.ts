@@ -29,6 +29,8 @@ import {
   type DispatchProjectedDeps,
 } from '@papercusp/tooldef';
 
+export { UdsMcpTransport, UdsMcpTransportError, type UdsMcpTransportOptions } from './uds-transport';
+
 /* ─── RequestHandlerExtra extractors ─────────────────────────────────── */
 
 /** Bearer token from an MCP request handler's `extra` (strips `Bearer `). */

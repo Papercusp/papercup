@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
-import {
-  diffIdentitySpecifications,
-  resolveIdentityStackMutation,
-} from './identity-management';
+import { diffIdentitySpecifications, resolveIdentityStackMutation } from './identity-management';
 import { listIdentitySources } from './agent-identities/source';
 import type { SuLaunchSpecRecord } from './su-persona-render';
 
@@ -60,12 +57,14 @@ describe('identity management service', () => {
       artifact({ roles: [{ id: 'su', stack: [] }] }),
       artifact({ roles: [{ id: 'su', stack: ['domain:research-steward'] }] }, 'rev-b'),
     );
-    expect(rows).toContainEqual(expect.objectContaining({
-      field: 'configuration.roles[0].stack[0]',
-      applied: null,
-      selected: 'domain:research-steward',
-      origin: null,
-    }));
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        field: 'configuration.roles[0].stack[0]',
+        applied: null,
+        selected: 'domain:research-steward',
+        origin: null,
+      }),
+    );
   });
 
   it('a real alternative domain switch is fresh-context and replaces the exclusive holder', async () => {
@@ -93,18 +92,23 @@ describe('identity management service', () => {
   it('rollback selects the bounded prior launch receipt, not a new store', async () => {
     const result = await resolveIdentityStackMutation(
       {
-        workspaceId: 'papercusp-workspace', ownerId: 'su-test', action: 'rollback',
-        operatorBaseUrl: 'http://127.0.0.1:3070', modeSection: '',
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-test',
+        action: 'rollback',
+        operatorBaseUrl: 'http://127.0.0.1:3070',
+        modeSection: '',
       },
       record({
         stack: ['domain:research-steward'],
-        identityHistory: [{
-          stack: ['domain:papercusp-engineer'],
-          specificationRevision: 'c'.repeat(64),
-          stateRevision: 'old-state',
-          specificationArtifact: artifact({}),
-          recordedAt: '2026-09-09T00:00:00.000Z',
-        }],
+        identityHistory: [
+          {
+            stack: ['domain:papercusp-engineer'],
+            specificationRevision: 'c'.repeat(64),
+            stateRevision: 'old-state',
+            specificationArtifact: artifact({}),
+            recordedAt: '2026-09-09T00:00:00.000Z',
+          },
+        ],
       }),
       repoDir,
     );

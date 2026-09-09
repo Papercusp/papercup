@@ -69,6 +69,12 @@ export interface SpecEvidenceForAdequacy {
   provisionalScorecard?: ProvisionalScorecardProof;
 }
 
+function hasTestAttemptReference(row: SpecEvidenceForAdequacy): boolean {
+  const execution = row.details.testExecution as { schemaVersion?: unknown; originRunId?: unknown } | undefined;
+  return execution?.schemaVersion === 1 && typeof execution.originRunId === 'string'
+    && row.evidenceRef.startsWith(`test-run-group:${execution.originRunId}:`);
+}
+
 /**
  * Bindings are immutable history, but adequacy grades the active VERSION of a
  * logical evidence reference. A corrected re-bind must not remain poisoned by
@@ -124,9 +130,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     const execution = object(row.details.testExecution);
     const binding = object(execution?.binding);
     const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
-    if (execution?.schemaVersion !== 1 || !binding || !measurement.success
-      || typeof execution.originRunId !== 'string'
-      || !row.evidenceRef.startsWith(`test-run-group:${execution.originRunId}:`)
+    if (!execution || !hasTestAttemptReference(row) || !binding || !measurement.success
       || binding.specId !== row.specId || binding.specRevision !== row.specRevision
       || measurement.data.testPaths?.length !== 1
       || binding.testPath !== measurement.data.testPaths[0]
@@ -825,7 +829,7 @@ export function evaluateSpecTestAdequacy(input: {
     ? exactEvidence.filter(row => currentEvidence.includes(row)
       // An active registered attempt whose freshness is unknown/stale cannot disappear
       // merely because another test in this clause is current and passing.
-      || (row.details.testExecution as { schemaVersion?: unknown } | undefined)?.schemaVersion === 1)
+      || hasTestAttemptReference(row))
     : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 

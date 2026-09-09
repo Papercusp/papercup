@@ -228,6 +228,18 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
       expect(activeSpecEvidence([...old, ...fresh])).toEqual([old[1], fresh[1]]);
     }
   });
+
+  it('does not classify stale manual negative-control history as a registered attempt from copied metadata', () => {
+    const rows = attempt(2);
+    const historical = { ...rows[1]!, evidenceKind: 'counterexample' as const,
+      evidenceRef: 'manual-negative-controls:old',
+      currentness: { ...rows[1]!.currentness, overall: 'stale' as const, staleReasons: ['source-stale'] } };
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [...rows, historical, negativeEvidence()], classRef: 'plan-class-feature-ship' });
+    expect(result.verdict).toBe('pass');
+    expect(result.evidenceRefs).not.toContain(historical.evidenceRef);
+    expect(historical.currentness.overall).toBe('stale');
+  });
 });
 
 describe('spec-test-adequacy per-clause evaluator', () => {

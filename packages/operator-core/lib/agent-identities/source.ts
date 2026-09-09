@@ -37,7 +37,11 @@ export function inspectIdentitySource(raw: Record<string, unknown>, opts: Identi
   try {
     const parsed = parseBlueprintSourceDocument(raw);
     if (parsed.kind !== 'identity') {
-      return { ok: false as const, error: 'not-an-identity', message: 'The source document must declare its own slots; inherited slots do not make its root an identity.' };
+      return {
+        ok: false as const,
+        error: 'not-an-identity',
+        message: 'The source document must declare its own slots; inherited slots do not make its root an identity.',
+      };
     }
     const resolver = operatorResolveExtends({ localDirs: localDirs(opts.repoDir) });
     const result = resolveBlueprintSource(raw, {
@@ -46,7 +50,8 @@ export function inspectIdentitySource(raw: Record<string, unknown>, opts: Identi
       // Respect the operator's configured installed root as well as the
       // loader's built-in trust classification (including test/temp homes).
       lint: {
-        requireAttestation: (layer) => layer.trust === 'installed' ||
+        requireAttestation: (layer) =>
+          layer.trust === 'installed' ||
           ('sourcePath' in layer && typeof layer.sourcePath === 'string' && inInstalledTier(layer.sourcePath)),
       },
     });
@@ -58,7 +63,7 @@ export function inspectIdentitySource(raw: Record<string, unknown>, opts: Identi
       const execution = resolveAndValidate(raw, resolver);
       if (execution.validation) {
         for (const issue of execution.validation.errors) {
-          if (!validation.errors.some(e => e.code === issue.code)) validation.errors.push(issue);
+          if (!validation.errors.some((e) => e.code === issue.code)) validation.errors.push(issue);
         }
         validation.warnings.push(...execution.validation.warnings);
       } else if (execution.parseError) {
@@ -77,7 +82,13 @@ export function inspectIdentitySource(raw: Record<string, unknown>, opts: Identi
       runnable,
       errors: validation.errors,
       warnings: validation.warnings,
-      layers: result.layers.map(layer => ({ id: layer.id, sourceKind: layer.sourceKind, sourcePath: layer.sourcePath, contentHash: layer.contentHash, slots: layer.slots })),
+      layers: result.layers.map((layer) => ({
+        id: layer.id,
+        sourceKind: layer.sourceKind,
+        sourcePath: layer.sourcePath,
+        contentHash: layer.contentHash,
+        slots: layer.slots,
+      })),
     };
   } catch (error) {
     return identityFailure(error);
@@ -104,37 +115,47 @@ export async function getIdentitySource(id: string, opts: IdentitySourceOptions 
  */
 export async function listIdentitySources(opts: { repoDir?: string; after?: string; limit?: number } = {}) {
   const sources = availableBlueprintSources({ localDirs: localDirs(opts.repoDir) });
-  const remaining = sources.filter(entry => !opts.after || entry.id.localeCompare(opts.after) > 0);
+  const remaining = sources.filter((entry) => !opts.after || entry.id.localeCompare(opts.after) > 0);
   const page = remaining.slice(0, Math.min(100, Math.max(1, opts.limit ?? 30)));
-  const entries = await Promise.all(page.map(async entry => {
-    try {
-      const parsed = parseBlueprintSourceDocument(parseBlueprintSource(await readFile(entry.file, 'utf8')));
-      if (parsed.kind !== 'identity') return { kind: 'blueprint' as const };
-      const doc = parsed.document;
-      return {
-        kind: 'identity' as const,
-        value: {
-          id: entry.id,
-          sourceId: doc.id,
-          tier: entry.tier,
-          version: doc.version,
-          description: doc.description,
-          // The slot registry is authoritative for cardinality. Identity files
-          // may omit the optional restatement, but the UI still has to choose
-          // attach versus switch without carrying a second slot registry.
-          slots: doc.slots.map(({ slot }) => ({
-            slot,
-            cardinality: slotSpec(slot)?.cardinality ?? null,
-          })),
-          sourcePath: entry.file,
-        },
-      };
-    } catch (error) {
-      return { kind: 'unreadable' as const, value: { id: entry.id, tier: entry.tier, sourcePath: entry.file, error: error instanceof Error ? error.message : String(error) } };
-    }
-  }));
-  const identities = entries.flatMap(entry => entry.kind === 'identity' ? [entry.value] : []);
-  const unreadable = entries.flatMap(entry => entry.kind === 'unreadable' ? [entry.value] : []);
+  const entries = await Promise.all(
+    page.map(async (entry) => {
+      try {
+        const parsed = parseBlueprintSourceDocument(parseBlueprintSource(await readFile(entry.file, 'utf8')));
+        if (parsed.kind !== 'identity') return { kind: 'blueprint' as const };
+        const doc = parsed.document;
+        return {
+          kind: 'identity' as const,
+          value: {
+            id: entry.id,
+            sourceId: doc.id,
+            tier: entry.tier,
+            version: doc.version,
+            description: doc.description,
+            // The slot registry is authoritative for cardinality. Identity files
+            // may omit the optional restatement, but the UI still has to choose
+            // attach versus switch without carrying a second slot registry.
+            slots: doc.slots.map(({ slot }) => ({
+              slot,
+              cardinality: slotSpec(slot)?.cardinality ?? null,
+            })),
+            sourcePath: entry.file,
+          },
+        };
+      } catch (error) {
+        return {
+          kind: 'unreadable' as const,
+          value: {
+            id: entry.id,
+            tier: entry.tier,
+            sourcePath: entry.file,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+    }),
+  );
+  const identities = entries.flatMap((entry) => (entry.kind === 'identity' ? [entry.value] : []));
+  const unreadable = entries.flatMap((entry) => (entry.kind === 'unreadable' ? [entry.value] : []));
   return {
     ok: true,
     identities,
