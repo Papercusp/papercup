@@ -112,6 +112,7 @@ import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
 import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
+import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 
 // Exported for the sibling launcher-facing routes split out of this file (the
 // persona refresh) — one copy of the CORS/principal boilerplate, not two.
@@ -1468,6 +1469,10 @@ export const bootstrapSu = defineTool({
   async handler(req) {
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
+    // gatePrincipal deliberately keeps its historical Response|null contract for
+    // the sibling routes. Resolve once more here because P-009 needs the actual
+    // authenticated principal slug, not the currently worn identity or launcher.
+    const launchPrincipal = await requirePrincipal(req.headers).catch(() => null);
 
     let body: {
       agent?: string;
@@ -2896,8 +2901,34 @@ export const bootstrapSu = defineTool({
         stack: spec.stack,
         specificationRevision: launchArtifact.specificationRevision,
         stateRevision: launchArtifact.stateRevision,
+        principalId: launchPrincipal?.slug?.trim() || sid,
+        specificationArtifact: launchArtifact.specificationArtifact,
       };
-      void recordSuLaunchSpec(sessionId, sid, launchSpecRecord).catch(() => false);
+      const launchSpecRecorded = await recordSuLaunchSpec(sessionId, sid, launchSpecRecord);
+      if (!launchSpecRecorded) {
+        return jsonRes({ status: 'error', error: 'session launch specification receipt was not persisted' }, 500);
+      }
+      try {
+        await requestSessionIdentityActivation({
+          ownerId: sid,
+          workspaceId: workspace,
+          revision: {
+            specificationRevision: launchArtifact.specificationRevision,
+            stateRevision: launchArtifact.stateRevision,
+          },
+          attribution: {
+            actorId: sid,
+            principalId: launchSpecRecord.principalId ?? sid,
+            sessionId: sid,
+          },
+          source: 'launch',
+        });
+      } catch (error) {
+        return jsonRes({
+          status: 'error',
+          error: `session identity activation receipt was not persisted: ${error instanceof Error ? error.message : String(error)}`,
+        }, 500);
+      }
     }
 
     const envelopeEnv: Record<string, string> = {

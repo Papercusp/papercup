@@ -30,7 +30,17 @@ vi.mock('../../rubrics', () => ({
   ratifyRubric: vi.fn(),
   rubricCompleteness: vi.fn(() => ({ criteriaWithoutReplication: [], methodRefMissing: false, complete: true })),
 }));
-vi.mock('../../scorecards', () => ({ listScorecards: vi.fn() }));
+vi.mock('../../scorecards', () => ({
+  listScorecards: vi.fn(),
+  settledGradingAuditIsCurrent: (row: {
+    gradingAudit?: { state?: string };
+    gradingAuditCurrentness?: { state?: string };
+  }) =>
+    !row.gradingAudit ||
+    (row.gradingAudit.state === 'passed' &&
+      row.gradingAuditCurrentness?.state !== 'stale' &&
+      row.gradingAuditCurrentness?.state !== 'unknown'),
+}));
 
 import {
   getRubric,

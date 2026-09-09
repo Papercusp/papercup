@@ -223,6 +223,19 @@ describe('parseSuLaunchSpecRecord', () => {
     expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(good)))).toEqual(good);
   });
 
+  it('retains the authenticated principal and only an artifact matching its declared revision', () => {
+    const revision = 'a'.repeat(64);
+    const artifact = { schemaVersion: 1, specificationRevision: revision } as never;
+    expect(parseSuLaunchSpecRecord({
+      ...good, principalId: 'system:operator', specificationRevision: revision,
+      stateRevision: 'state-1', specificationArtifact: artifact,
+    })).toMatchObject({ principalId: 'system:operator', specificationArtifact: artifact });
+    expect(parseSuLaunchSpecRecord({
+      ...good, specificationRevision: revision,
+      specificationArtifact: { specificationRevision: 'b'.repeat(64) },
+    })).not.toHaveProperty('specificationArtifact');
+  });
+
   it('refuses anything it cannot vouch for rather than half-reading it', () => {
     // Every rejection below fail-softs the caller to the inherited render — the
     // right outcome. Guessing at an unrecognised shape would ship a prompt built

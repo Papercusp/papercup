@@ -125,6 +125,8 @@ export interface BuildScoutCycleDepsOptions {
   goalFeedbackConsult?: GoalFeedbackConsultPort;
   /** Override the stage-artifact continuation read (tests/drills). */
   resolvedGoalConsultReader?: () => Promise<Proposal[]>;
+  /** Evaluation retains generated proposals but suppresses every dispatch side rail and old consultation continuation. */
+  deferDispatch?: boolean;
   /** Called when a deterministic Scout side rail authors a new draft plan that needs Queen review. */
   onScoutDraftCreated?: (draft: { slug: string; title: string }) => Promise<void>;
   /**
@@ -583,7 +585,7 @@ export function buildScoutCycleDeps(
       // proposal flow). Best-effort + idempotent (a stable per-gap slug no-ops on
       // re-run): a failure or missing PG NEVER disturbs the digest or the cycle.
       try {
-        if (digest.rubricGaps.length > 0) {
+        if (!opts.deferDispatch && digest.rubricGaps.length > 0) {
           const { getFlag } = await import('@papercusp/flags/server');
           const { FLAGS } = await import('@papercusp/flags');
           if (await getFlag(FLAGS.SCOUT_RUBRIC_RAIL, 'scout-rubric-rail')) {
@@ -869,6 +871,11 @@ export function buildScoutCycleDeps(
     // (genome's interacting wholes) routes to the InstanceSubject; a component idea stays on
     // the gym (HarnessSubject). plan/improvement/unhinted ideas are untouched.
     route: async (proposals) => {
+      // This port runs once with [] BEFORE ideation, then with fresh proposals.
+      // Exit before consultation reads as well as every proposal/experiment sink.
+      // Returning no routing receipts keeps the ledger honest; cycle.proposals
+      // still retains the generated proposals for separate bounded evaluation.
+      if (opts.deferDispatch) return [];
       // D-003 (blender-loop-repair-2026-08-16 P-002): resolve gym liveness and
       // gate the rail — a disabled autoloop must not receive routed ideas (its
       // frozen archive verdicts poisoned 80.4% of decided outcomes). Fail-open

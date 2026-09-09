@@ -9,6 +9,7 @@ import {
   failActivation,
   prepareActivation,
   requestActivation,
+  restartActivation,
 } from './session-activation';
 
 const rev = (char: string, state: string) => ({ specificationRevision: char.repeat(64), stateRevision: state });
@@ -56,6 +57,21 @@ describe('D-030 session activation state machine', () => {
     expect(activationIdempotencyKey('session', rev('a', '1'))).toContain('session-activation:session:');
   });
 
+  it('restarts an unchanged revision without claiming it is already applied by the new host', () => {
+    const applied = acknowledgeActivation(
+      prepareActivation(desiredActivation(attribution, rev('a', '1')), rev('a', '1')),
+      rev('a', '1'),
+    );
+    const restarted = restartActivation(applied);
+    expect(restarted).toMatchObject({
+      desired: rev('a', '1'),
+      prepared: null,
+      applied: rev('a', '1'),
+      status: 'desired',
+    });
+    expect(restarted.attribution).toEqual(attribution);
+  });
+
   it('makes soft versus fresh-context and private-memory boundaries explicit', () => {
     expect(contextPolicyForDelivery('inject-now')).toEqual({ delivery: 'soft', carry: 'warm', privateMemory: 'preserve' });
     expect(contextPolicyForDelivery('relaunch-with-carry', { carry: 'cold', privateMemory: 'reset' })).toEqual({
@@ -63,4 +79,3 @@ describe('D-030 session activation state machine', () => {
     });
   });
 });
-

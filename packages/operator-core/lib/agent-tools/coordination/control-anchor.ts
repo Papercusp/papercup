@@ -19,7 +19,18 @@ import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 import { stackRefsForSession } from '../../stack-binding-channel';
 import type { SessionActivation } from '@papercusp/orchestrator/blueprint';
-import { normalizeSessionActivation } from '../../session-activation';
+import {
+  desiredActivation,
+  normalizeSessionActivation,
+  requestActivation,
+  restartActivation,
+  type ActivationAttribution,
+} from '../../session-activation';
+import {
+  recordCurrentSessionIdentityActivation,
+  sessionIdentityStateRevision,
+  type SessionIdentityActivationSource,
+} from '../../session-identity-attribution';
 import {
   readGoalHolderAuthority,
   type GoalHolderAuthority,
@@ -115,7 +126,7 @@ export type ControlTransitionOrigin = 'owner' | 'agent' | 'system';
 export interface ControlTransitionProvenance {
   origin: ControlTransitionOrigin;
   actorId: string;
-  source: 'mode:set' | 'loop:arm' | 'loop:end' | 'loop:transfer' | 'fleet:membership' | 'control-anchor:reconcile';
+  source: 'mode:set' | 'loop:arm' | 'loop:end' | 'loop:transfer' | 'fleet:membership' | 'control-anchor:reconcile' | 'session:activation';
   ownerDirected: boolean;
   recordedAt: string;
 }
@@ -607,7 +618,11 @@ export async function markControlTransitionPrepared(
        AND control_state->'activation'->'desired' = ${rev}::jsonb
     RETURNING control_generation
   `;
-  return rows.length > 0;
+  if (rows.length === 0) return false;
+  const recorded = await recordCurrentSessionIdentityActivation({
+    ownerId, workspaceId, generation, phase: 'prepared', source: 'control', revision, sql,
+  });
+  return recorded !== 'missing';
 }
 
 /** Persist a render/delivery failure while retaining the previous applied revision. */
@@ -638,7 +653,12 @@ export async function failControlTransitionActivation(
        AND control_state->'activation'->'desired' = ${rev}::jsonb
     RETURNING control_generation
   `;
-  return rows.length > 0;
+  if (rows.length === 0) return false;
+  const recorded = await recordCurrentSessionIdentityActivation({
+    ownerId, workspaceId, generation, phase: 'failed', source: 'control', revision,
+    failure: failure.trim(), sql,
+  });
+  return recorded !== 'missing';
 }
 
 /**
@@ -696,7 +716,15 @@ export async function acknowledgeControlTransition(
            AND control_delivered_generation < ${generation}
         RETURNING control_delivered_generation
       `;
-  return rows.length > 0;
+  if (rows.length === 0) return false;
+  if (activationRevision) {
+    const recorded = await recordCurrentSessionIdentityActivation({
+      ownerId, workspaceId, generation, phase: 'applied', source: 'control',
+      revision: activationRevision, sql,
+    });
+    return recorded !== 'missing';
+  }
+  return true;
 }
 
 export function renderControlTransitionContext(delivery: ControlTransitionDelivery): string {
@@ -809,6 +837,12 @@ export async function buildControlAnchorState(
       : { kind: 'self' };
   return normalizeControlAnchorState({
     modes: modes.map((m) => m.mode),
+    // P-009: preserve the current desired/prepared/applied truth while the
+    // other canonical control legs are reconciled. The brief is only a carrier;
+    // normalizeSessionActivation remains the validator/owner of this field.
+    activation: normalizeSessionActivation(
+      (brief?.controlState as Record<string, unknown> | null | undefined)?.activation,
+    ),
     // P-012 / P-021: the stack binding is a projection of the route (fleet posture) and of
     // the active modes (one definition identity per mode axis) — no new leg.
     stack: stackRefsForSession({ route, modes: modes.map((m) => m.mode) }),
@@ -844,6 +878,61 @@ export async function buildAndPersistControlAnchor(
   return renderControlAnchor({ ownerId, ...persisted });
 }
 
+/**
+ * Start one acknowledged identity delivery on the existing control anchor.
+ * Launch and carry-restart both use this door; `restart` deliberately creates a
+ * new generation even when its revisions are unchanged.
+ */
+export async function requestSessionIdentityActivation(input: {
+  ownerId: string;
+  workspaceId: string;
+  revision: SessionActivation['desired'];
+  attribution?: ActivationAttribution;
+  source: Exclude<SessionIdentityActivationSource, 'control'>;
+  restart?: boolean;
+  sql?: Sql;
+}): Promise<ControlAnchor> {
+  const sql = input.sql ?? getOrgPg().sql;
+  const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql });
+  const activation = state.activation
+    ? input.restart
+      ? restartActivation(state.activation, input.revision)
+      : requestActivation(state.activation, input.revision)
+    : desiredActivation(
+        input.attribution ?? {
+          actorId: input.ownerId,
+          principalId: input.ownerId,
+          sessionId: input.ownerId,
+        },
+        input.revision,
+      );
+  const persisted = await persistControlAnchor(
+    {
+      ownerId: input.ownerId,
+      workspaceId: input.workspaceId,
+      state: { ...state, activation },
+      transition: {
+        origin: 'system',
+        actorId: input.ownerId,
+        source: 'session:activation',
+        ownerDirected: false,
+      },
+    },
+    sql,
+  );
+  const recorded = await recordCurrentSessionIdentityActivation({
+    ownerId: input.ownerId,
+    workspaceId: input.workspaceId,
+    generation: persisted.generation,
+    phase: 'desired',
+    source: input.source,
+    revision: input.revision,
+    sql,
+  });
+  if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
+  return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
+}
+
 /** Refresh after a canonical mutation. The projection is safety context, but
  * never a reason to roll back the already-committed mode/loop/route write. */
 export async function refreshControlAnchorAfterMutation(input: {
@@ -856,15 +945,41 @@ export async function refreshControlAnchorAfterMutation(input: {
   sql?: Sql;
 }): Promise<ControlAnchor | null> {
   try {
-    return await buildAndPersistControlAnchor(input.ownerId, input.workspaceId, {
-      sql: input.sql,
+    const sql = input.sql ?? getOrgPg().sql;
+    const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql });
+    const identityMoved = input.source === 'mode:set' || input.source === 'fleet:membership';
+    const nextState = identityMoved && state.activation
+      ? {
+          ...state,
+          activation: requestActivation(state.activation, {
+            specificationRevision: state.activation.desired.specificationRevision,
+            stateRevision: sessionIdentityStateRevision(state),
+          }),
+        }
+      : state;
+    const persisted = await persistControlAnchor({
+      ownerId: input.ownerId,
+      workspaceId: input.workspaceId,
+      state: nextState,
       transition: {
         origin: input.origin,
         actorId: input.actorId,
         source: input.source,
         ownerDirected: Boolean(input.ownerDirected),
       },
-    });
+    }, sql);
+    if (identityMoved && persisted.state.activation?.status === 'desired') {
+      await recordCurrentSessionIdentityActivation({
+        ownerId: input.ownerId,
+        workspaceId: input.workspaceId,
+        generation: persisted.generation,
+        phase: 'desired',
+        source: 'control',
+        revision: persisted.state.activation.desired,
+        sql,
+      });
+    }
+    return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
   } catch {
     return null;
   }

@@ -489,6 +489,11 @@ export async function runCapabilityDreamReview(
   }
 
   async function call(phase: 'control-a' | 'control-b' | 'review', user: string): Promise<unknown> {
+    // Publish the same contract that validates the response, including field and
+    // array bounds. Free-text examples alone omitted note.max(600), causing paid
+    // controls to fail solely because the reviewer could not see that limit.
+    const responseSchema = z.toJSONSchema(phase === 'review' ? ReviewSchema : ControlSchema);
+    user = JSON.stringify({ ...JSON.parse(user), responseSchema });
     if (user.length > 120_000) throw new Error('Review evidence exceeds the bounded prompt budget.');
     const response = await callScoutPhaseLlm({
       llmCall: options.callForPhase?.(phase) ?? options.llmCall,

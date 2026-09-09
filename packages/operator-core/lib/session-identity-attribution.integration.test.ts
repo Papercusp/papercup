@@ -1,0 +1,126 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const migration = resolve(here, '../../../libs/papercusp/libs/db/sql/1149-session-identity-activation-spans.sql');
+const WS = 'identity-activation-test';
+const OWNER = 'su-identity-test';
+const SPEC_A = 'a'.repeat(64);
+const SPEC_B = 'b'.repeat(64);
+
+let db: FreshPgDb;
+
+beforeAll(async () => {
+  db = await createFreshPgDb('session-identity-attribution');
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigint PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      session_id text, started_at timestamptz NOT NULL, ended_at timestamptz
+    );
+    CREATE TABLE harness_shared.session_briefs (
+      owner_id text PRIMARY KEY, workspace_id text NOT NULL,
+      native_session_id text, control_generation bigint NOT NULL,
+      control_state jsonb
+    );
+    CREATE TABLE harness_shared.tool_invocations (
+      id bigint PRIMARY KEY, workspace_id text NOT NULL,
+      coord_owner_id text, invoked_at timestamptz NOT NULL
+    );
+    CREATE TABLE harness_shared.agent_usage_samples (
+      id bigint PRIMARY KEY, workspace_id text NOT NULL,
+      session_id text, ts bigint NOT NULL
+    );
+    CREATE TABLE harness_shared.session_archives (
+      adv_session_id bigint, session_id text NOT NULL
+    );
+  `);
+  await applyMigrationForTest(db.sql, migration);
+}, 90_000);
+
+afterAll(async () => db?.cleanup());
+
+const ms = (iso: string) => new Date(iso).getTime();
+
+async function event(input: {
+  id: number; phase: string; at: string; spec: string; state: string;
+  stack: string[]; transition: string; source?: string; failure?: string | null;
+}) {
+  await db.sql`
+    INSERT INTO harness_shared.session_identity_activation_events
+      (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+       transition_id,control_generation,phase,source,specification_revision,state_revision,
+       stack_refs,failure,recorded_at)
+    VALUES (${WS},${OWNER},'actor-stable','principal-stable','session-stable',1,'native-a',
+      ${input.transition},${input.id},${input.phase},${input.source ?? 'control'},${input.spec},
+      ${input.state},${JSON.stringify(input.stack)}::text::jsonb,${input.failure ?? null},${input.at}::timestamptz)`;
+}
+
+describe('P-009 activation span views', () => {
+  it('keeps failed/pending switches on the prior applied span and joins switch, revocation, and restart', async () => {
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (1,${WS},${OWNER},'native-a','2026-09-09T00:00:00Z',NULL)`;
+    await db.sql`INSERT INTO harness_shared.session_archives VALUES (1,'native-old')`;
+
+    await event({ id: 1, phase: 'applied', at: '2026-09-09T00:01:00Z', spec: SPEC_A,
+      state: 'state-a', stack: ['domain:researcher','autonomy:su.mode-auto'], transition: 'a' });
+    await event({ id: 2, phase: 'desired', at: '2026-09-09T00:02:00Z', spec: SPEC_B,
+      state: 'state-b', stack: ['domain:writer'], transition: 'b' });
+    await event({ id: 2, phase: 'failed', at: '2026-09-09T00:03:00Z', spec: SPEC_B,
+      state: 'state-b', stack: ['domain:writer'], transition: 'b', failure: 'render failed' });
+    await event({ id: 3, phase: 'applied', at: '2026-09-09T00:04:00Z', spec: SPEC_B,
+      state: 'state-b', stack: ['domain:writer'], transition: 'b-retry' });
+    await event({ id: 4, phase: 'applied', at: '2026-09-09T00:05:00Z', spec: SPEC_B,
+      state: 'revoked', stack: [], transition: 'revoke' });
+    await event({ id: 5, phase: 'applied', at: '2026-09-09T00:06:00Z', spec: SPEC_B,
+      state: 'revoked', stack: [], transition: 'restart', source: 'restart' });
+
+    await db.sql`INSERT INTO harness_shared.tool_invocations VALUES
+      (11,${WS},${OWNER},'2026-09-09T00:03:30Z'),
+      (12,${WS},${OWNER},'2026-09-09T00:04:30Z'),
+      (13,${WS},${OWNER},'2026-09-09T00:05:30Z')`;
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples VALUES
+      (21,${WS},'native-old',${ms('2026-09-09T00:03:30Z')}),
+      (22,${WS},'native-a',${ms('2026-09-09T00:06:30Z')})`;
+
+    const tools = await db.sql<Array<{ id: string; identity_state_revision: string; identity_stack_refs: string[] }>>`
+      SELECT id::text, identity_state_revision, identity_stack_refs
+        FROM harness_shared.tool_invocations_identity_attribution ORDER BY id`;
+    expect(tools).toEqual([
+      { id: '11', identity_state_revision: 'state-a', identity_stack_refs: ['domain:researcher','autonomy:su.mode-auto'] },
+      { id: '12', identity_state_revision: 'state-b', identity_stack_refs: ['domain:writer'] },
+      { id: '13', identity_state_revision: 'revoked', identity_stack_refs: [] },
+    ]);
+
+    const usage = await db.sql<Array<{ id: string; identity_transition_id: string }>>`
+      SELECT id::text, identity_transition_id
+        FROM harness_shared.agent_usage_samples_identity_attribution ORDER BY id`;
+    expect(usage).toEqual([
+      { id: '21', identity_transition_id: 'a' },
+      { id: '22', identity_transition_id: 'restart' },
+    ]);
+
+    const layers = await db.sql<Array<{ layer_ref: string; active_until: Date }>>`
+      SELECT layer_ref, active_until FROM harness_shared.session_identity_layer_spans
+       WHERE transition_id='a' ORDER BY layer_ref`;
+    expect(layers.map((row) => row.layer_ref)).toEqual(['autonomy:su.mode-auto','domain:researcher']);
+    expect(new Date(layers[0]!.active_until).toISOString()).toBe('2026-09-09T00:04:00.000Z');
+  });
+
+  it('records the exact current generation idempotently through the store', async () => {
+    const revision = { specificationRevision: SPEC_A, stateRevision: 'store-state' };
+    const activation = {
+      schemaVersion: 1, attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },
+      desired: revision, prepared: revision, applied: null, status: 'prepared',
+    };
+    await db.sql`INSERT INTO harness_shared.session_briefs
+      (owner_id,workspace_id,native_session_id,control_generation,control_state)
+      VALUES (${OWNER},${WS},'native-a',99,${JSON.stringify({ activation, stack: ['domain:researcher'] })}::text::jsonb)`;
+    const input = { workspaceId: WS, ownerId: OWNER, generation: 99, phase: 'prepared' as const,
+      source: 'control' as const, revision, sql: db.sql };
+    await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('inserted');
+    await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('replayed');
+  });
+});

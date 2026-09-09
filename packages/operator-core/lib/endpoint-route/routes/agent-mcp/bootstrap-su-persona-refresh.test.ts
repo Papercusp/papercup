@@ -23,6 +23,9 @@ import { join } from 'node:path';
 vi.setConfig({ testTimeout: 15_000 });
 
 const readLaunchSpecMock = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+const requestSessionIdentityActivationMock = vi.hoisted(() =>
+  vi.fn(async (_input: unknown) => ({ generation: 1 })),
+);
 const buildLaunchSpecMock = vi.hoisted(() =>
   vi.fn(async () => ({
     kind: 'su',
@@ -70,6 +73,9 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
 vi.mock('../../../role-launch-spec', () => ({
   buildLaunchSpec: buildLaunchSpecMock,
   compileLaunchSpecificationArtifact: compileLaunchSpecificationArtifactMock,
+}));
+vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
+  requestSessionIdentityActivation: (input: unknown) => requestSessionIdentityActivationMock(input),
 }));
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
@@ -142,6 +148,9 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
     expect(j.stateRevision).toHaveLength(24);
     // Rendered from CURRENT sources, which is the entire point.
     expect(buildLaunchSpecMock).toHaveBeenCalledTimes(1);
+    expect(requestSessionIdentityActivationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: OWNER, source: 'restart', restart: true }),
+    );
   });
 
   it('replays the launch overlays — an AUTO session gets its AUTO directive back', async () => {

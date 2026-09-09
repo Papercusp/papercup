@@ -139,6 +139,9 @@ vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('.
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
   recordSuLaunchSpec: vi.fn(async () => true),
 }));
+vi.mock('../../agent-tools/coordination/control-anchor', () => ({
+  requestSessionIdentityActivation: vi.fn(async () => ({ generation: 1 })),
+}));
 vi.mock('../../session-port/store', () => ({
   assertSessionPortStorageReady: vi.fn(async () => undefined),
   getSessionPort: (...a: unknown[]) => getSessionPortMock(...(a as [any, any])),

@@ -85,6 +85,8 @@ export interface SessionBriefRecord {
   goalId: string | null;
   nativeSessionId: string | null;
   lifecycle: SessionBriefLifecycle | null;
+  /** Raw compact control projection. Consumers validate only the fields they own. */
+  controlState?: unknown | null;
   firstSeenAt: string;
   updatedAt: string;
 }
@@ -181,6 +183,7 @@ function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
     goalId: (r.goal_id as string | null) ?? null,
     nativeSessionId: (r.native_session_id as string | null) ?? null,
     lifecycle,
+    controlState: r.control_state ?? null,
     firstSeenAt: String(r.first_seen_at ?? ''),
     updatedAt: String(r.updated_at ?? ''),
   };

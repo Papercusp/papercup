@@ -45,7 +45,7 @@ import { parseScoutConfigBlock, resolveScoutConfig, type ScoutConfig } from './c
 import type { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import type { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 import type { WorkItemAdmissionProducerPressure } from '../work-items-admission-promoter';
-import type { LlmCallOpts, LlmCallResult } from '../llm-testing/llm-client';
+import type { LlmCallOpts, LlmCallResult } from '@papercusp/testing-shell/llm';
 
 /** Additional caller admission around the already model-resolved production transport. */
 export type ScoutLlmAdmission = (opts: Readonly<LlmCallOpts>, invoke: () => Promise<LlmCallResult>) => Promise<LlmCallResult>;
@@ -77,6 +77,8 @@ export type ScoutCycleRunner = (ctx: {
   onPhase?: (phase: ScoutCyclePhase) => void;
   /** Optional stricter caller budget; cannot replace Scout's production transport or gates. */
   admitLlmCall?: ScoutLlmAdmission;
+  /** Retain fresh proposals for evaluation without dispatching them or resuming older consultations. */
+  deferDispatch?: boolean;
 }) => Promise<ScoutCycleLike>;
 
 export interface ScoutCycleActionConfig {

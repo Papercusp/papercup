@@ -32,7 +32,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
-import { readSuLaunchSpecByOwner } from '../../../adv-sessions';
+import { readSuLaunchSpecByOwner, recordSuLaunchSpec } from '../../../adv-sessions';
 import { blockingInstructionConflicts, buildInstructionPrecedenceTrace } from '../../../instruction-lint';
 import { buildLaunchSpec, compileLaunchSpecificationArtifact } from '../../../role-launch-spec';
 import { isSuAgent } from '../../../su-agents';
@@ -45,6 +45,7 @@ import {
   suPersonaRefreshPathFor,
 } from '../../../su-persona-render';
 import { CORS_HEADERS, composeModePromptSection, gatePrincipal, jsonRes } from './bootstrap-su';
+import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 
 const personaRefresh = defineTool({
   method: 'POST',
@@ -173,6 +174,36 @@ const personaRefresh = defineTool({
       writeFileSync(tmp, promptText, { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, promptFile);
+
+      // P-009: a carry-respawn is a new host-delivery attempt even when the
+      // content hashes happen to be unchanged. Persist the current immutable
+      // artifact on the existing launch receipt, then open a desired activation;
+      // the successor's turn-start channel records prepared/applied acknowledgement.
+      const updatedRecord = {
+        ...record,
+        stack: artifact.stack,
+        specificationRevision: artifact.specificationRevision,
+        stateRevision: artifact.stateRevision,
+        specificationArtifact: artifact.specificationArtifact,
+      };
+      if (!(await recordSuLaunchSpec(null, coordOwnerId, updatedRecord))) {
+        throw new Error('refreshed launch specification receipt was not persisted');
+      }
+      await requestSessionIdentityActivation({
+        ownerId: coordOwnerId,
+        workspaceId: record.workspaceId,
+        revision: {
+          specificationRevision: artifact.specificationRevision,
+          stateRevision: artifact.stateRevision,
+        },
+        attribution: {
+          actorId: coordOwnerId,
+          principalId: record.principalId ?? coordOwnerId,
+          sessionId: coordOwnerId,
+        },
+        source: 'restart',
+        restart: true,
+      });
 
       return jsonRes({
         ok: true,

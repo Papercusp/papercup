@@ -129,6 +129,27 @@ function build(over: Partial<Parameters<typeof buildScoutCycleDeps>[0]> = {}) {
 }
 
 describe('buildScoutCycleDeps — assembly', () => {
+  it('defers both old consultations and all fresh dispatch rails during evaluation', async () => {
+    getFlag.mockResolvedValue(true);
+    const resolvedGoalConsultReader = vi.fn(async () => [fixtureProposal({ routeHint: 'goal' })]);
+    const goalDispatch = vi.fn();
+    const goalAmendmentDispatch = vi.fn();
+    const goalFeedbackConsult = vi.fn();
+    const capturePort = vi.fn();
+    const experimentDispatch = vi.fn();
+    const { deps, planDrafts } = build({
+      deferDispatch: true, resolvedGoalConsultReader, goalDispatch,
+      goalAmendmentDispatch, goalFeedbackConsult, capturePort, experimentDispatch,
+    });
+    expect(await deps.route([])).toEqual([]);
+    expect(await deps.route(['goal', 'plan', 'gym', 'improvement', 'instance'].map(
+      routeHint => fixtureProposal({ routeHint: routeHint as 'goal' }),
+    ))).toEqual([]);
+    for (const port of [resolvedGoalConsultReader, goalDispatch, goalAmendmentDispatch, goalFeedbackConsult, capturePort, experimentDispatch])
+      expect(port).not.toHaveBeenCalled();
+    expect(planDrafts).toEqual([]);
+  });
+
   it('returns deps with every port + passthrough llmCall / limits / cycleId', () => {
     const onPhase = () => {};
     const deadlineMs = 1_700_001_200_000;
@@ -156,7 +177,7 @@ describe('buildScoutCycleDeps — assembly', () => {
     await expect(deps.readNoveltyCorpus()).resolves.toEqual(NOVELTY);
   });
 
-  it('readCorpus notifies when the rubric rail authors a new draft for Queen review', async () => {
+  it.each([false, true])('readCorpus only authors rubric drafts when dispatch is enabled (deferred=%s)', async (deferDispatch) => {
     getFlag.mockResolvedValue(true);
     const onScoutDraftCreated = vi.fn(async () => {});
     const base = {
@@ -166,6 +187,7 @@ describe('buildScoutCycleDeps — assembly', () => {
       state: 'open' as const,
     };
     const { deps } = build({
+      deferDispatch,
       onScoutDraftCreated,
       stateOfHiveReaders: fakeStateOfHiveReaders({
         friction: async () => [
@@ -179,6 +201,11 @@ describe('buildScoutCycleDeps — assembly', () => {
 
     await deps.readCorpus();
 
+    if (deferDispatch) {
+      expect(createScoutPlanDraft).not.toHaveBeenCalled();
+      expect(onScoutDraftCreated).not.toHaveBeenCalled();
+      return;
+    }
     expect(createScoutPlanDraft).toHaveBeenCalledTimes(1);
     expect(onScoutDraftCreated).toHaveBeenCalledWith({
       slug: 'scout-rubric-hive-coordination-scorecard-lacks-a-shared-rubric-2026-06-26',

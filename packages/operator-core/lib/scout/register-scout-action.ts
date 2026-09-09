@@ -251,7 +251,9 @@ async function withArchiveResolveTimeout<T>(promise: Promise<T>, timeoutMs: numb
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, revisionRequests, signal, deadlineMs, onPhase, admitLlmCall }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, revisionRequests, signal, deadlineMs, onPhase, admitLlmCall, deferDispatch }) => {
+  if (deferDispatch && revisionRequests?.length)
+    throw new Error('Deferred-dispatch evaluation cannot mutate existing drafts through revision requests');
   onPhase?.('runner-bootstrap');
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
@@ -420,6 +422,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   const deps = buildScoutCycleDeps({
     harnessSlug,
     llmCall,
+    deferDispatch,
     // Draft plans are pinned to the DEFAULT workspace, NOT the routine's ctx
     // workspace: the whole plan surface (plans:* dispatch, Create tab, plan
     // projections) lives under 'default', so a draft written under the

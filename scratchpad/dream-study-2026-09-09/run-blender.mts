@@ -67,9 +67,9 @@ try {
   const payload = { scout: scoutConfig, budget: { maxCostUsd: limits.cycleUsd, maxIdeators: 1, maxCriticsPerIdea: 2 } };
   const delta = await scoutConfigDelta({ workspaceId, installSlug });
   const effectiveScoutConfig = resolveScoutConfig({ ...scoutConfig, ...delta?.scout, models: scoutConfig.models });
-  const config = { protocolPin: frozen.pin, installSlug, payload, potDelta: delta, modelPolicy: 'D019 invocation-local model pin supersedes stored models; all other pot deltas and production gates retained', effectiveScoutConfig, attemptUnit: 'one ordinary governed Scout cycle; report candidate counts separately' };
+  const config = { protocolPin: frozen.pin, installSlug, payload, potDelta: delta, modelPolicy: 'D019 invocation-local model pin supersedes stored models; all other pot deltas and production gates retained', effectiveScoutConfig, attemptUnit: 'one ordinary governed Scout cycle; report candidate counts separately', dispatchPolicy: 'deferred-for-solo-evaluation' };
   const configHash = hash(config);
-  const configPath = resolve(here, 'blender-config-luna.json');
+  const configPath = resolve(here, 'blender-config-luna-deferred.json');
   if (process.argv.includes('--freeze')) {
     // Exclusive create: a later invocation cannot overwrite the registered block.
     await writeFile(configPath, JSON.stringify({ config, configHash }, null, 2) + '\n', { flag: 'wx' });
@@ -127,10 +127,10 @@ try {
         // Reuse the production ledger. This gated reservation does not reset last-ran cadence.
         await recordScoutTick({ workspaceId, installSlug, potSlug: 'papercusp', status: 'gated', gate: 'study-reserved', detail: { study } });
         guard = createBlenderAdmission(limits.cycleUsd, [model.generator, model.reviewer], calls => log({ phase: 'blender-calls', cycleId: ctx.cycleId, calls }));
-        const cycle = await productionScoutRunner({ ...ctx, admitLlmCall: guard.admit });
+        const cycle = await productionScoutRunner({ ...ctx, admitLlmCall: guard.admit, deferDispatch: true });
         guard.assertSettled();
         if (Math.abs((cycle.costUsd ?? NaN) - guard.accounted()) > 1e-9 || !Number.isFinite(cycle.costUsd)) throw new Error('Blender cycle/call accounting differs');
-        await log({ phase: 'blender-cycle-artifacts', cycleId: ctx.cycleId, configHash, cycle });
+        await log({ phase: 'blender-cycle-artifacts', cycleId: ctx.cycleId, configHash, dispatchPolicy: 'deferred-for-solo-evaluation', cycle });
         return cycle;
       },
     });

@@ -311,6 +311,31 @@ async function fixture() {
 }
 
 describe('independent capability source and skeptical review', () => {
+  it('publishes the enforced response schema to both controls and final adjudication', async () => {
+    const f = await fixture();
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result.verdict).toBe('accept');
+    expect(f.calls).toHaveLength(3);
+    for (const input of f.calls) {
+      const prompt = JSON.parse(input.messages[0]!.content as string);
+      expect(prompt.responseSchema.additionalProperties).toBe(false);
+      expect(prompt.responseSchema.properties.note.maxLength).toBe(600);
+      expect(prompt.responseSchema.required).toContain('note');
+    }
+    const final = JSON.parse(f.calls[2]!.messages[0]!.content as string);
+    expect(final.responseSchema.properties.comparisons.maxItems).toBe(8);
+  });
+
+  it('preserves invalid paid control results without clipping or retrying overlong notes', async () => {
+    const f = await fixture();
+    f.controlA.note = 'x'.repeat(601);
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result.reason).toBe('review-unavailable');
+    expect(result.verdict).toBe('unverified');
+    expect(f.calls).toHaveLength(2);
+    expect(result.usage.costUsd).toBe(0.02);
+  });
+
   it('checks actual files, retrieves all facets, preserves scopes and uses three isolated different-model contexts', async () => {
     const f = await fixture();
     const result = await runCapabilityDreamReview(f.options, f.deps);

@@ -121,6 +121,24 @@ export function requestActivation(current: SessionActivation, revision: Activati
   });
 }
 
+/**
+ * Begin a fresh host-delivery attempt, even when the immutable/state revisions
+ * are unchanged (for example a carry-respawn).  The prior applied revision stays
+ * truthful until the successor host acknowledges this delivery.
+ */
+export function restartActivation(
+  current: SessionActivation,
+  revision: ActivationRevision = current.desired,
+): SessionActivation {
+  return snapshot({
+    attribution: current.attribution,
+    desired: assertRevision(revision),
+    prepared: null,
+    applied: current.applied,
+    status: 'desired',
+  });
+}
+
 /** Mark a desired revision prepared only after validation/render succeeds. */
 export function prepareActivation(current: SessionActivation, revision: ActivationRevision): SessionActivation {
   const prepared = assertRevision(revision);

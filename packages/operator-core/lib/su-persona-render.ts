@@ -33,6 +33,7 @@ import {
   type InstructionRuntimeContext,
 } from './instruction-lint';
 import { launchContextDir } from './su-launch-context';
+import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 
 /** The plan context a launch bakes into its brief, resolved fresh per render. */
 export interface SuPlanContext {
@@ -258,6 +259,10 @@ export interface SuLaunchSpecRecord {
   stack?: string[];
   specificationRevision?: string;
   stateRevision?: string;
+  /** Authenticated principal at launch; stable across changes in worn identity. */
+  principalId?: string;
+  /** The immutable P-038 artifact itself — provenance/explain reads this, not a second registry. */
+  specificationArtifact?: ResolvedAgentSpecification;
 }
 
 /** Narrow an `adv_sessions.launch_spec` jsonb blob to a usable record, or null. */
@@ -273,6 +278,12 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
   const modelSource =
     r.modelSource === 'explicit' || r.modelSource === 'inherited' || r.modelSource === 'configured-default'
       ? r.modelSource
+      : null;
+  const specificationRevision = str(r.specificationRevision);
+  const artifact =
+    r.specificationArtifact && typeof r.specificationArtifact === 'object' &&
+    str((r.specificationArtifact as Record<string, unknown>).specificationRevision) === specificationRevision
+      ? (r.specificationArtifact as ResolvedAgentSpecification)
       : null;
   return {
     v: 1,
@@ -299,8 +310,10 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     stack: Array.isArray(r.stack)
       ? r.stack.filter((value): value is string => typeof value === 'string' && value.length > 0).slice(0, 40)
       : [],
-    ...(str(r.specificationRevision) ? { specificationRevision: str(r.specificationRevision)! } : {}),
+    ...(specificationRevision ? { specificationRevision } : {}),
     ...(str(r.stateRevision) ? { stateRevision: str(r.stateRevision)! } : {}),
+    ...(str(r.principalId) ? { principalId: str(r.principalId)! } : {}),
+    ...(artifact ? { specificationArtifact: artifact } : {}),
   };
 }
 
