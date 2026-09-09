@@ -64,6 +64,7 @@ import toolFind, {
   compactOutputSchemaForResult,
   compactSchemaForResult,
   DISCOVERY_RESULT_MAX_BYTES,
+  ensureIndex,
   filterCorpusForConfirmedHiveScope,
   warmToolFindIndex,
 } from './find';
@@ -177,6 +178,24 @@ describe('buildEmbeddingIndex (boot-time index builder)', () => {
     );
     expect(idx.has('x')).toBe(false);
     expect(idx.has('y')).toBe(true);
+  });
+
+  it('rebuilds the module index when the registry revision changes at the same size', async () => {
+    const embedder = vi.fn(async (text: string) => [text === 'old contract' ? 1 : 2]);
+    const oldText = new Map([['same-tool', 'old contract']]);
+    const newText = new Map([['same-tool', 'new contract']]);
+
+    await ensureIndex(oldText, embedder, 'registry-r1');
+    expect(embedder).toHaveBeenCalledTimes(1);
+
+    // The map cardinality is unchanged, but its executable registry revision
+    // changed. Reusing the old vector would make semantic discovery stale.
+    await ensureIndex(newText, embedder, 'registry-r2');
+    expect(embedder).toHaveBeenCalledTimes(2);
+
+    // Repeated calls for the same revision remain single-build/idempotent.
+    await ensureIndex(newText, embedder, 'registry-r2');
+    expect(embedder).toHaveBeenCalledTimes(2);
   });
 });
 

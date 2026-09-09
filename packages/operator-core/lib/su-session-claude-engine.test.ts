@@ -41,7 +41,7 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; holdResult?: boolean; streamOnly?: boolean; streamParent?: string } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; statusAck?: boolean; statusUuid?: string; holdResult?: boolean; streamOnly?: boolean; streamParent?: string } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
@@ -53,6 +53,10 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
     void (async () => {
       for await (const message of prompt) {
         prompts.push(message);
+        if (config.statusAck) output.write({
+          type: 'system', subtype: 'status', status: 'requesting', session_id: nativeId,
+          uuid: config.statusUuid ?? message.uuid,
+        });
         if (!config.noAck) {
           // A real CLI's turn metadata arrives only after a querying input.
           // No transcript-only startup traffic is fabricated by this peer.
@@ -296,6 +300,27 @@ describe('structured Claude SU engine', () => {
 
   it('does not acknowledge owner input from a nested agent stream', async () => {
     const p = peer({ streamOnly: true, streamParent: 'other-agent-call' });
+    const engine = open(p, { deliveryTimeoutMs: 20 });
+    await engine.ready;
+    expect(await engine.adapter.host.startCommand(command(engine)).terminal).toMatchObject({
+      status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false },
+    });
+  });
+
+  it('acknowledges an exact-input SDK requesting status before replay or assistant output', async () => {
+    const p = peer({ noAck: true, statusAck: true });
+    const engine = open(p, { deliveryTimeoutMs: 20 });
+    await engine.ready;
+    expect(await engine.adapter.host.startCommand(command(engine)).terminal).toMatchObject({
+      status: 'completed',
+    });
+    expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', role: 'system', content: 'requesting', turnId: 'owner-turn-1',
+    }));
+  });
+
+  it('does not acknowledge an SDK requesting status for another input UUID', async () => {
+    const p = peer({ noAck: true, statusAck: true, statusUuid: 'another-input' });
     const engine = open(p, { deliveryTimeoutMs: 20 });
     await engine.ready;
     expect(await engine.adapter.host.startCommand(command(engine)).terminal).toMatchObject({

@@ -15,7 +15,7 @@
  * leg is live for the FIRST agent call rather than each cold worker warming
  * lazily on first use (where rate-governed 551-tool warming may never finish
  * before a call lands, leaving agents perpetually on lexical-only). It rebuilds
- * only on catalog size drift, and the handler self-heals (re-invokes the build)
+ * on executable registry-revision drift, and the handler self-heals (re-invokes the build)
  * if the boot warm hasn't completed. Every embedding path degrades to
  * lexical-only on any failure (no embedder, admission shed, fetch error) and the
  * result's `semantic` field reports which leg ran — so the tool is always
@@ -712,7 +712,7 @@ export function buildCorpus(): ToolFindCorpus {
     } as unknown as ToolDiscoveryEntry);
     embedText.set(name, [name, tool.description, when, argSchema].filter(Boolean).join('\n'));
   }
-  const value = { corpus, embedText, returnsByTool, returnSourcesByTool, schemaByTool };
+  const value = { revision, corpus, embedText, returnsByTool, returnSourcesByTool, schemaByTool };
   corpusCache = { revision, value };
   return value;
 }
@@ -723,6 +723,8 @@ type DiscoveryScopeContext = {
 };
 
 type ToolFindCorpus = {
+  /** Registry revision that produced every corpus row and embedding text. */
+  revision: string;
   corpus: ToolDiscoveryEntry[];
   embedText: Map<string, string>;
   /** name → the derived output schema projection, or authored prose fallback. */
@@ -775,12 +777,13 @@ export async function filterCorpusForConfirmedHiveScope(
 // Built ONCE at startup (see warmToolFindIndex below) so the semantic leg is
 // live for the FIRST agent call rather than each cold worker warming lazily on
 // first use — the failure mode where rate-governed 551-tool warming never
-// finishes before a call lands. Rebuilt only when the catalog size drifts (a
-// plugin (un)registered tools), never on a per-row sweep.
+// finishes before a call lands. Rebuilt whenever the executable registry
+// revision changes, even when the catalog keeps the same number of tools (a
+// same-cardinality rename/schema edit must not reuse old vectors).
 let queryEmbedder: Embedder | null | undefined; // undefined = not yet resolved
 let embIndex: Map<string, number[]> | null = null;
-let indexedCount = 0; // corpus size the index was built for (rebuild on drift)
-let building: Promise<void> | null = null; // non-null while an index build is in flight
+let indexedRevision: string | null = null;
+let building: { revision: string; promise: Promise<void> } | null = null;
 
 async function getEmbedder(): Promise<Embedder | null> {
   if (queryEmbedder === undefined) {
@@ -816,29 +819,38 @@ export async function buildEmbeddingIndex(
 }
 
 /**
- * Build (or rebuild on size drift) the module-scoped embedding index. Idempotent
+ * Build (or rebuild on registry-revision drift) the module-scoped embedding index. Idempotent
  * + single-flight: a no-op when fresh or when no embedder is configured (→
  * lexical-only), and concurrent callers share the one in-flight build. Returns
  * the in-flight promise (so a boot/test caller can await it) or null when there
  * is nothing to do.
  */
-function ensureIndex(embedText: ReadonlyMap<string, string>, embedder: Embedder | null): Promise<void> | null {
+export function ensureIndex(
+  embedText: ReadonlyMap<string, string>,
+  embedder: Embedder | null,
+  revision: string,
+): Promise<void> | null {
   if (!embedder) return null; // unconfigured → lexical-only
-  if (embIndex && indexedCount === embedText.size) return null; // fresh
-  if (building) return building; // single-flight
-  const size = embedText.size;
-  building = buildEmbeddingIndex(embedText, embedder)
+  if (embIndex && indexedRevision === revision) return null; // fresh
+  if (building?.revision === revision) return building.promise; // single-flight
+
+  const promise = buildEmbeddingIndex(embedText, embedder)
     .then((idx) => {
-      embIndex = idx;
-      indexedCount = size;
+      // A newer registry revision may have started while this build was in
+      // flight. Do not let the older result become the active index again.
+      if (building?.revision === revision) {
+        embIndex = idx;
+        indexedRevision = revision;
+      }
     })
     .catch(() => {
       /* leave the prior index in place; a later call retries */
     })
     .finally(() => {
-      building = null;
+      if (building?.promise === promise) building = null;
     });
-  return building;
+  building = { revision, promise };
+  return promise;
 }
 
 /**
@@ -851,8 +863,8 @@ function ensureIndex(embedText: ReadonlyMap<string, string>, embedder: Embedder 
  */
 export async function warmToolFindIndex(): Promise<void> {
   const embedder = await getEmbedder();
-  const { embedText } = buildCorpus();
-  const p = ensureIndex(embedText, embedder);
+  const { embedText, revision } = buildCorpus();
+  const p = ensureIndex(embedText, embedder, revision);
   if (p) await p;
 }
 
@@ -956,11 +968,11 @@ export default defineTool({
       // possible. The base projected registry remains searchable if startup
       // failed before a host state could be produced.
     }
+    const { corpus: fullCorpus, embedText, returnsByTool, returnSourcesByTool, schemaByTool, revision } = buildCorpus();
     const registry = {
       source: PROJECTED_TOOL_REGISTRY_SOURCE,
-      revision: projectedToolRegistryRevision(),
+      revision,
     };
-    const { corpus: fullCorpus, embedText, returnsByTool, returnSourcesByTool, schemaByTool } = buildCorpus();
     const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const corpus = await filterCorpusForConfirmedHiveScope(
       fullCorpus,
@@ -973,12 +985,17 @@ export default defineTool({
     const embedder = await getEmbedder();
     // Self-heal: rebuild if boot warm didn't run or the catalog drifted. Non-
     // blocking — this call uses whatever index is ready right now.
-    void ensureIndex(embedText, embedder);
+    void ensureIndex(embedText, embedder, revision);
+
+    // A revision change can leave the prior index available while the new one
+    // warms. Never score the current corpus with those stale vectors; report
+    // `warming` and use the lexical leg until the matching revision is ready.
+    const activeEmbeddings = indexedRevision === revision ? embIndex : null;
 
     const hits = await findTools(corpus, args.query, {
       limit: args.limit ?? 8,
       embedder,
-      embeddings: embIndex,
+      embeddings: activeEmbeddings,
       // WI-20202755675039636: a resolved provider can still stall (notably an
       // OpenAI fetch without a client-side timeout); keep discovery responsive
       // by degrading this query to lexical-only at the interactive budget.
@@ -997,7 +1014,7 @@ export default defineTool({
     //   warming      — embedder configured, index still building (lexical-only this call);
     //   lexical-only — no embedder configured/available → graceful degrade.
     const semantic: 'on' | 'warming' | 'lexical-only' =
-      embIndex != null && embIndex.size > 0 ? 'on' : embedder ? 'warming' : 'lexical-only';
+      activeEmbeddings != null && activeEmbeddings.size > 0 ? 'on' : embedder ? 'warming' : 'lexical-only';
     const projectedHits = hits.map((h) => ({
       tool: h.tool,
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),

@@ -257,6 +257,13 @@ export function startClaudeSuEngine(
             throw new Error('Claude startup identity or project does not match');
           }
           if (event.type === 'user' && event.uuid) pending.get(event.uuid)?.resolve({ ok: true });
+          // The SDK can begin the root API request before it replays the input
+          // or starts an assistant message. Its UUID-bound `requesting` status
+          // is already a positive delivery receipt for that exact owner turn.
+          if (event.type === 'system' && event.subtype === 'status' && event.status === 'requesting'
+            && event.session_id === nativeId && event.uuid === activeInputUuid) {
+            pending.get(event.uuid)?.resolve({ ok: true });
+          }
           // Native input replay can arrive only after a long response. The
           // root model response starting also proves this serialized input
           // reached Claude; it does not mean the turn has finished.
