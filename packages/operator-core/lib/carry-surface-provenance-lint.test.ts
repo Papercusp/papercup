@@ -326,6 +326,29 @@ describe('lintCarrySurfaceProvenance', () => {
       expect(r.matches[0]?.kind).toBe('possible-owner-tag-mention');
     });
 
+    it('EI-22454606387399213: does not flag a copular disclaimer that denies owner authority', () => {
+      expect(
+        lintCarrySurfaceProvenance(
+          'Constraints below are NOT owner directives - sourced and tagged so a successor does not inherit them as one:',
+        ),
+      ).toEqual({ flagged: false, matches: [] });
+      expect(
+        lintCarrySurfaceProvenance('These constraints were never owner mandates; each is [self-imposed].'),
+      ).toEqual({ flagged: false, matches: [] });
+    });
+
+    it('EI-22454606387399213: keeps asserted directive references and mixed gate imperatives loud', () => {
+      expect(
+        lintCarrySurfaceProvenance('Do not ignore owner directive #9.').matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+      expect(
+        lintCarrySurfaceProvenance('Owner directive #9 says not to deploy.').matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+      expect(
+        lintCarrySurfaceProvenance('This is not an owner directive; do NOT deploy until reviewed.').matches[0]?.kind,
+      ).toBe('bare-gate-imperative');
+    });
+
     it('never flags a backtick-quoted mention of the phrase', () => {
       expect(
         lintCarrySurfaceProvenance('the doc uses the phrase `owner directive` loosely').flagged,

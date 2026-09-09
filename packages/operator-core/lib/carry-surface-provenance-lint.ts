@@ -327,6 +327,25 @@ function isPassiveOwnerAttribution(line: string): boolean {
 const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
 
 /**
+ * EI-22454606387399213: a provenance preamble can explicitly DENY owner
+ * authority — "these constraints are NOT owner directives" — without carrying
+ * one of the per-constraint downgrade tags that {@link isProvenanceWithdrawal}
+ * requires. Treat only the copular denial as a disclaimer. A looser
+ * "not ... owner directive" exemption would also hide real references such as
+ * "do not ignore owner directive #9".
+ *
+ * This predicate only suppresses the noun-phrase attribution leg below. The
+ * line still reaches the bare-gate-imperative detector, so a mixed line such as
+ * "this is not an owner directive; do not deploy" remains actionable.
+ */
+const NEGATED_OWNER_DIRECTIVE_DISCLAIMER_RE =
+  /\b(?:is|are|was|were)\s+(?:explicitly\s+)?(?:not|never)\s+(?:an?\s+)?owner\s+(?:directive|mandate)s?\b/i;
+
+function isNegatedOwnerDirectiveDisclaimer(line: string): boolean {
+  return NEGATED_OWNER_DIRECTIVE_DISCLAIMER_RE.test(line);
+}
+
+/**
  * A loop goal can refer to an already-recorded owner order as an object to execute,
  * rather than attributing the goal's own prose to the owner. Keep this exemption
  * deliberately structural: it requires an execution/honoring verb and a numeric
@@ -723,7 +742,7 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });
       continue;
     }
-    if (OWNER_DIRECTIVE_NOUN_RE.test(line)) {
+    if (OWNER_DIRECTIVE_NOUN_RE.test(line) && !isNegatedOwnerDirectiveDisclaimer(line)) {
       // EI-21580390681737108: `Execute owner directive order 10` names a recorded
       // directive as the object of an execution command. It is not an owner-attributed
       // assertion, so do not reject a loop goal that uses this durable reference.
