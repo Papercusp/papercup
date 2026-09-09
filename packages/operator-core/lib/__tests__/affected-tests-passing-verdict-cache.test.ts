@@ -402,11 +402,24 @@ describe('gate wiring safety contract', () => {
     expect(AFFECTED_TESTS_SRC).not.toContain('taskVerdictCacheUpdates');
   });
 
+  // Anchor on the suite LAUNCH, not on an `await` spelling. P-004
+  // (green-gate-zero-wait-convergence-2026-09-08) deliberately turned the suite into a
+  // promise so a repair-verification run can start the independent legs while the suite is
+  // still in flight; pinning `const r = await exec(cmd, args` made that intentional
+  // refactor read as a contract violation, and the resulting `expected -1 to be greater
+  // than -1` hid the real cause — the same trap the sibling test above documents.
+  //
+  // The durable safety property is NOT source order, so assert it directly: on the serial
+  // path the legs stay gated on the suite being considered passing (WI-6053 — legs that
+  // silently "passed" because a red suite skipped them).
   it('leaves downstream assurance after the suite', () => {
-    const suite = GREEN_CHECKPOINT_SRC.indexOf('const r = await exec(cmd, args');
+    const suite = GREEN_CHECKPOINT_SRC.indexOf('const suitePromise = exec(cmd, args');
     const postSuite = GREEN_CHECKPOINT_SRC.indexOf('runPostSuiteLegs(', suite);
     expect(suite).toBeGreaterThan(-1);
     expect(postSuite).toBeGreaterThan(suite);
+    expect(GREEN_CHECKPOINT_SRC).toMatch(
+      /suiteCompleted\s*\?\s*await runPostSuiteLegs\(/,
+    );
   });
 });
 
