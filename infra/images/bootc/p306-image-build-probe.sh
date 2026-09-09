@@ -403,12 +403,21 @@ if podman build \
     fail "committed release hardlink normalization failed: files=$release_file_count bad=$release_bad_count"
   fi
   if podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
-       "runuser -u papercusp -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null \
+       "install -d -o papercusp -g papercusp -m 0750 /var/lib/papercusp \
+        && stat -c '%U:%G:%a' /var/lib/papercusp | grep -Fx 'papercusp:papercusp:750' >/dev/null \
+        && runuser -u papercusp -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null \
         && runuser -u papercusp-agent -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null \
         && ! runuser -u papercusp-workspace -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null 2>&1 \
+        && runuser -u papercusp -- test -r /var/lib/papercusp \
+        && runuser -u papercusp -- test -w /var/lib/papercusp \
+        && runuser -u papercusp -- test -x /var/lib/papercusp \
         && ! runuser -u papercusp-agent -- test -r /var/lib/papercusp \
-        && ! runuser -u papercusp-workspace -- test -r /var/lib/papercusp"; then
-    pass "committed runtime readable by service+agent, hidden from SSH; state hidden from agent+SSH"
+        && ! runuser -u papercusp-agent -- test -w /var/lib/papercusp \
+        && ! runuser -u papercusp-agent -- test -x /var/lib/papercusp \
+        && ! runuser -u papercusp-workspace -- test -r /var/lib/papercusp \
+        && ! runuser -u papercusp-workspace -- test -w /var/lib/papercusp \
+        && ! runuser -u papercusp-workspace -- test -x /var/lib/papercusp"; then
+    pass "committed runtime readable by service+agent, hidden from SSH; exact state fixture accessible only to service"
   else
     fail "committed immutable runtime/state access boundary is inverted"
   fi
