@@ -364,6 +364,13 @@ export default defineTool({
   capability: 'capability:terminal',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
+  // EI-22780156976598155: a fresh headless launch can legitimately spend
+  // 6s in boot checks, 30s awaiting its detached kickoff proof, and 25s in
+  // fresh-launch verification. The default 60s dispatcher budget races the
+  // ~55s MCP transport and returns an unknown outcome while the launch is
+  // still progressing. Keep this handler budget above that bounded path; the
+  // transport derives a matching deadline from the declaration.
+  timeoutSec: 90,
   args: (() => {
     const base = z.object({
       brief: z

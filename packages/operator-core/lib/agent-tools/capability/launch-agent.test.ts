@@ -346,6 +346,11 @@ describe('launch-tool routing guidance', () => {
       'processes:list / processes:kill (returned tasks[].taskId handles; not tasks:get)',
     );
   });
+
+  it('declares enough server budget for bounded headless launch verification (EI-22780156976598155)', () => {
+    expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBe(90);
+    expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
+  });
 });
 
 describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {

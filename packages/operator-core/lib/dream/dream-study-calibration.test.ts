@@ -30,6 +30,23 @@ async function runs() {
 }
 
 describe('frozen study calibration evidence preparation', () => {
+  it('does not leak metadata through production-shaped truncated narrative priors or their locators', async () => {
+    const rows = await runs();
+    rows[0]!.review!.priorMatches = [
+      { ref: 'dream:private-run-2', kind: 'rejected-attempt', text: '{"status":"rejected","outcome":{"usage":{"model":"secret-model"},"protocolPin":"private-pin"', contentHash: 'original-hash' },
+      { ref: 'idea:private-run-3', kind: 'idea', text: '{"humanGrade":"reject","routedRef":"private-run-4"}', contentHash: 'idea-hash' },
+      { ref: 'plan:private-run-5', kind: 'plan', text: 'Review result private-verdict', contentHash: 'plan-hash' },
+      { ref: 'code:private-run-6', kind: 'implementation', text: 'function current() {}', contentHash: 'code-hash', sourceHash: 'source-hash' },
+    ];
+    const { blind, key } = buildCalibrationBundle([rows[0]!]);
+    const wire = JSON.stringify(blind);
+    for (const forbidden of ['secret-model', 'private-run-', 'private-verdict', 'private-pin', 'rejected-attempt', 'humanGrade'])
+      expect(wire).not.toContain(forbidden);
+    expect(blind.cases[0]!.priors.slice(0, 3).every(p => p.text === null && p.kind === 'prior-context')).toBe(true);
+    expect(blind.cases[0]!.priors[3]).toMatchObject({ ref: 'prior:4', kind: 'implementation', text: 'function current() {}' });
+    expect(key.selected[0]!.priorRefMapping[0]).toMatchObject({ blindRef: 'prior:1', originalRef: 'dream:private-run-2' });
+    expect(key.selected[0]!.originalReview).toEqual(rows[0]!.review);
+  });
   it('is deterministic across row order, covers strata, and keeps identity/verdicts out of the blind envelope', async () => {
     const rows = await runs();
     const first = buildCalibrationBundle(rows);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   NON_TEST_GATE_SCRIPTS,
+  parseRepairHeadRadius,
   partitionRepairSignatureEntries,
   repairSignatureFromVerdict,
   verifyRepairHead,
@@ -100,7 +101,7 @@ function recordingDeps(opts: {
   return { deps, refs, fileRuns, gateRuns, radiusCalls };
 }
 
-describe("P-006 partitionRepairSignatureEntries — the kind picks the runner, never the id's shape", () => {
+describe("P-003/P-006 partitionRepairSignatureEntries — the kind picks a bounded runner", () => {
   it("routes test-file → files, re-runnable workspace-task/lint-leg/seed → gates, and the rest → full run", () => {
     const out = partitionRepairSignatureEntries([
       entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE }),
@@ -117,8 +118,15 @@ describe("P-006 partitionRepairSignatureEntries — the kind picks the runner, n
       entry({ kind: "workspace-task", id: "@papercusp/sync", workspace: "@papercusp/sync" }),
     ]);
     expect(out.files).toEqual([{ workspace: CORE, file: "lib/a.test.ts" }]);
-    expect(out.gateIds).toEqual([`${WEB} :: lint:styles`, "lint:tsc", `${WEB} :: seed:demo:check`]);
-    expect(out.fullRun).toEqual(["seed:demo", "@papercusp/operator-vite", "@papercusp/sync"]);
+    expect(out.gateIds).toEqual([
+      `${WEB} :: lint:styles`,
+      "lint:tsc",
+      `${WEB} :: seed:demo:check`,
+      "seed:demo",
+      "@papercusp/sync :: test",
+    ]);
+    expect(out.fullRun).toEqual(["@papercusp/operator-vite"]);
+    expect(out.unavailable).toEqual([]);
   });
 
   it("pairs a workspace-less test-file (a derived pre-schema-4 row) with the ONE bare workspace beside it", () => {
@@ -129,6 +137,7 @@ describe("P-006 partitionRepairSignatureEntries — the kind picks the runner, n
     expect(out.files).toEqual([{ workspace: WEB, file: "lib/a.test.ts" }]);
     expect(out.gateIds).toEqual([]);
     expect(out.fullRun).toEqual([]);
+    expect(out.unavailable).toEqual([]);
   });
 
   it("an unpairable workspace-less test-file (two candidate workspaces) forces the full run, never a guess", () => {
@@ -138,8 +147,9 @@ describe("P-006 partitionRepairSignatureEntries — the kind picks the runner, n
       entry({ kind: "workspace-task", id: CORE, workspace: CORE }),
     ]);
     expect(out.files).toEqual([]);
-    expect(out.gateIds).toEqual([]);
-    expect(out.fullRun).toEqual(["lib/a.test.ts", WEB, CORE]);
+    expect(out.gateIds).toEqual([`${WEB} :: test`, `${CORE} :: test`]);
+    expect(out.fullRun).toEqual([]);
+    expect(out.unavailable).toEqual(["lib/a.test.ts"]);
   });
 });
 
@@ -228,15 +238,15 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
     expect(refs).toEqual([]);
   });
 
-  it("a seed entry no runner can re-run is full-run-required too — it is not quietly dropped as green", async () => {
+  it("a typed root seed entry runs its named bounded script — it does not spend the full gate", async () => {
     const queue = queueWith([entry({ kind: "seed", id: "seed:demo" })]);
-    const { deps, refs } = recordingDeps();
+    const { deps, refs, gateRuns } = recordingDeps();
 
     const verdict = await verifyRepairHead(deps, queue);
 
-    expect(verdict.kind).toBe("full-run-required");
-    expect(verdict.summary).toContain("seed:demo");
-    expect(refs).toEqual([]);
+    expect(verdict.kind).toBe("green");
+    expect(gateRuns).toEqual([["seed:demo"]]);
+    expect(refs).toEqual([HEAD]);
   });
 
   it("a row handed in without a typed signature is classified from its flat list, the way the parser types a persisted one", async () => {
@@ -279,14 +289,15 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       blobs: { "lib/x.ts": "e".repeat(40) },
     };
 
-    it("without a radius resolver the admitted paths force the full gate at the repair head", async () => {
+    it("without a radius resolver the queue holds unavailable — it never spends the full gate", async () => {
       const queue = queueWith([entry({ kind: "lint-leg", id: "lint:tsc" })], { admissions: [admission] });
       const { deps, refs } = recordingDeps({ withRadius: false });
 
       const verdict = await verifyRepairHead(deps, queue);
 
-      expect(verdict.kind).toBe("full-run-required");
+      expect(verdict.kind).toBe("unavailable");
       expect(verdict.summary).toContain("1 admitted path(s)");
+      expect(verdict.summary).toContain("without spending the full gate");
       expect(refs).toEqual([]);
     });
 
@@ -311,16 +322,67 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       expect(refs).toHaveLength(3);
     });
 
-    it("a radius the selector cannot narrow is full-run-required rather than a partial measurement", async () => {
+    it("a malformed/unavailable radius holds rather than falling through to the full gate", async () => {
       const queue = queueWith([entry({ kind: "lint-leg", id: "lint:tsc" })], { admissions: [admission] });
       const { deps, fileRuns, gateRuns } = recordingDeps({ withRadius: true, radius: null });
 
       const verdict = await verifyRepairHead(deps, queue);
 
-      expect(verdict.kind).toBe("full-run-required");
-      expect(verdict.summary).toContain("could not be proved selectively");
+      expect(verdict.kind).toBe("unavailable");
+      expect(verdict.summary).toContain("could not be resolved");
       expect(fileRuns).toEqual([]);
       expect(gateRuns).toEqual([]);
+    });
+
+    it("P-003: an over-threshold selector widening runs only the named affected workspace lanes plus signature kinds", async () => {
+      const radius = parseRepairHeadRadius([
+        "RELATED_SELECTION ws=@papercusp/operator-core selected=40 total=40 mode=full reason=over-threshold widenThreshold=0.95",
+        "AFFECTED_WS_CMD\t@papercusp/operator-core\tnpm run --silent --workspace packages/operator-core test:lane-pure",
+        "AFFECTED_WS_CMD\t@papercusp/operator-core\tnpm run --silent --workspace packages/operator-core test:lane-stateful",
+        "RELATED_AFFECTED_FILES status=full reason=no-complete-exact-file-radius",
+      ].join("\n"));
+      expect(radius).toEqual({
+        files: [],
+        gateIds: [
+          "@papercusp/operator-core :: test:lane-pure",
+          "@papercusp/operator-core :: test:lane-stateful",
+        ],
+        summary: "0 exact related file(s), 2 widened affected test task(s), 0 guard/task leg(s)",
+      });
+
+      const queue = queueWith(
+        [entry({ kind: "lint-leg", id: "lint:tsc" })],
+        { admissions: [admission] },
+      );
+      const { deps, refs, fileRuns, gateRuns } = recordingDeps({
+        withRadius: true,
+        radius,
+      });
+
+      const verdict = await verifyRepairHead(deps, queue);
+
+      expect(verdict.kind).toBe("green");
+      expect(fileRuns).toEqual([]);
+      expect(gateRuns).toEqual([[
+        "lint:tsc",
+        "@papercusp/operator-core :: test:lane-pure",
+        "@papercusp/operator-core :: test:lane-stateful",
+      ]]);
+      expect(refs.every((ref) => ref === HEAD)).toBe(true);
+      expect(refs).toHaveLength(2);
+    });
+
+    it("keeps an exact related selection on the file runner even with the threshold suffix", () => {
+      expect(parseRepairHeadRadius([
+        "RELATED_SELECTION ws=@papercusp/operator-core selected=1 total=40 mode=related reason=ok widenThreshold=0.95",
+        "AFFECTED_WS_CMD\t@papercusp/operator-core\tnpm run --silent --workspace packages/operator-core test",
+        "RELATED_AFFECTED_FILES status=selected workspaces=1 files=1",
+        "RELATED_AFFECTED_FILE\t@papercusp/operator-core\tlib/x.test.ts",
+      ].join("\n"))).toEqual({
+        files: [{ workspace: "@papercusp/operator-core", file: "lib/x.test.ts" }],
+        gateIds: [],
+        summary: "1 exact related file(s), 0 widened affected test task(s), 0 guard/task leg(s)",
+      });
     });
   });
 });

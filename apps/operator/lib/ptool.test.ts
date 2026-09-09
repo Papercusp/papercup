@@ -824,8 +824,8 @@ describe('ptool timeoutForTool — capability:launch-agent resumes outlive the d
       headless: true,
     });
     expect(timeout).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
-    // tooldef default (60s) + MCP settlement buffer (5s), with delivery margin.
-    expect(timeout).toBeGreaterThan(65_000);
+    // launch-agent's 90s handler + MCP settlement buffer (5s), with delivery margin.
+    expect(timeout).toBeGreaterThan(95_000);
     expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 

@@ -27,8 +27,8 @@ try {
   const { blind, key } = buildCalibrationBundle(rows.map(mapDreamRun));
   // Immutable evidence: re-running may verify, never silently replace a frozen batch.
   for (const [file, value] of [
-    ["calibration-blind.json", blind],
-    ["calibration-key.json", key],
+    ["calibration-blind-v2.json", blind],
+    ["calibration-key-v2.json", key],
   ] as const) {
     const bytes = JSON.stringify(value, null, 2) + "\n";
     const target = resolve(here, file);
