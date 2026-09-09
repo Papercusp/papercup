@@ -157,7 +157,10 @@ try {
 // Restoration takes priority over diagnostics. Persist the bounded gateway ring
 // immediately afterward so an unrelated later request cannot erase this trial's evidence.
 await captureStudyTiming({ workspaceId, potSlug: 'papercusp' }, timingRuns, {
-  report: (ownerId) => tool('gateway:owner_report', { agent: ownerId }),
+  report: (ownerId) => tool('gateway:owner_report', {
+    agent: ownerId,
+    projection: { pick: ['ok', 'stageTelemetry.ownerId', 'stageTelemetry.recent'] },
+  }),
   log,
 });
 process.exit(0);
