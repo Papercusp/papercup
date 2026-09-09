@@ -1786,6 +1786,41 @@ describe('work_items:complete (keyed-array)', () => {
     };
     const behaviorChangePath = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
 
+    it.each([
+      { label: 'changed source without attestation', completion: { filesChanged: [behaviorChangePath] } },
+      { label: 'deleted source without attestation', completion: { filesDeleted: [behaviorChangePath] } },
+      { label: 'explicit attestation without paths', completion: {}, specAdequacy },
+    ])('does not bypass the gate for a task claiming $label', async ({ completion, specAdequacy: proof }) => {
+      const linkedTask = { ...linkedIssue, kind: 'task' };
+      getWorkItem.mockResolvedValue(linkedTask);
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'task-kind executable completion requires a code work-item kind',
+        checked: [],
+      });
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'done',
+        completion: { summary: 'implemented', ...completion },
+        ...(proof ? { specAdequacy: proof } : {}),
+      });
+
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
+        workItem: linkedTask,
+        attestation: proof,
+        changedPaths: [
+          ...('filesChanged' in completion ? completion.filesChanged ?? [] : []),
+          ...('filesDeleted' in completion ? completion.filesDeleted ?? [] : []),
+        ],
+      });
+      expect(r).toMatchObject({ ok: false, specAdequacy: { applicable: true, retryable: true } });
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
     it('publishes a strict single and per-item bulk attestation shape', () => {
       expect(
         (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({

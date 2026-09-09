@@ -640,6 +640,66 @@ describe('specTestAdequacyCompletionGate', () => {
     expect(deps.listEvidence).not.toHaveBeenCalled();
     expect(deps.listCards).not.toHaveBeenCalled();
   });
+
+  it.each(['src/client.ts', 'src/client.rs', 'scripts/run.sh', 'sql/123-fix.sql', 'src/style.css'])(
+    'refuses task-kind executable changes to %s even when the attestation is omitted',
+    async (path) => {
+      const deps = passingDeps();
+      const input = { workItem: { ...WORK_ITEM, kind: 'task' }, changedPaths: [path] };
+
+      const result = await specTestAdequacyCompletionGate(input, deps);
+
+      expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+      expect(!result.ok && result.reason).toContain('work_items:update');
+      expect(deps.listEvidence).not.toHaveBeenCalled();
+      expect(deps.listCards).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not let task kind suppress an explicitly submitted executable-proof attestation', async () => {
+    const deps = passingDeps();
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'task' },
+      attestation: ATTESTATION,
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('work_items:update');
+  });
+
+  it('requires both a code kind AND settled audits, never treating re-kind as proof', async () => {
+    const deps = passingDeps();
+    const pendingCard = matchingCard({
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-20T00:02:00.000Z',
+      },
+    });
+    deps.listCards.mockResolvedValue([pendingCard]);
+    const input = { workItem: { ...WORK_ITEM, kind: 'task' }, attestation: ATTESTATION };
+
+    const wrongKind = await specTestAdequacyCompletionGate(input, deps);
+    expect(wrongKind).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(deps.listCards).not.toHaveBeenCalled();
+
+    const rightKind = await specTestAdequacyCompletionGate({
+      ...input, workItem: { ...WORK_ITEM, kind: 'change' },
+    }, deps);
+    expect(rightKind).toMatchObject({
+      ok: false, applicable: true, pendingGradingAuditTargetIds: ['EI-scorecard'],
+    });
+  });
+
+  it('preserves the exemption for genuine documentation changes without an executable attestation', async () => {
+    const deps = passingDeps();
+    const input = { workItem: { ...WORK_ITEM, kind: 'task' }, changedPaths: ['docs/design.md', 'report.csv'] };
+
+    expect(await specTestAdequacyCompletionGate(input, deps))
+      .toEqual({ ok: true, applicable: false, checked: [] });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
 });
 
 /**
