@@ -294,6 +294,32 @@ const realGit: GitRunner = (cwd, args) =>
     });
   });
 
+/** Parse `git ls-tree -z` without losing whitespace or delimiter characters in paths. */
+export function parseGitLsTreeObjectIds(output: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const record of output.split('\0')) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    if (tab < 0) continue;
+    const header = record.slice(0, tab).split(/\s+/);
+    const objectId = header[2];
+    if (!objectId) continue;
+    out.set(record.slice(tab + 1), objectId);
+  }
+  return out;
+}
+
+async function blobIdsAtRef(
+  git: GitRunner,
+  root: string,
+  ref: string,
+  paths: readonly string[],
+): Promise<Map<string, string> | null> {
+  if (paths.length === 0) return new Map();
+  const raw = await git(root, ['ls-tree', '-z', ref, '--', ...paths]);
+  return raw === null ? null : parseGitLsTreeObjectIds(raw);
+}
+
 export interface ReadGateCandidateFailuresOpts {
   candidateSha: string | null;
   repairHeadSha: string | null;
@@ -617,6 +643,10 @@ async function compareOne(
   repairHeadSha: string,
   subs: readonly string[],
   moves: ElsewhereMoves,
+  batchedBlobs?: {
+    candidate: Map<string, string> | null;
+    repairHead: Map<string, string> | null;
+  },
 ): Promise<Pick<GateCandidateFailingFile, 'fixInRepairHead' | 'comparison' | 'candidateBlob' | 'repairHeadBlob' | 'reading'>> {
   // EI-22131981911313887: `repairHead` starts EQUAL to the candidate and stays there until a
   // fixer commits (see frozen-candidate-repair-queue.ts — "starts equal to `candidate` and stays
@@ -669,16 +699,28 @@ async function compareOne(
     };
   }
 
+  // EI-22737582656157929: the live bg-host profile caught this loop spending 62.1% of real
+  // sampled CPU in native spawn. The caller preloads every ordinary path with two `ls-tree`
+  // calls (one per ref); retain the old per-path rev-parse only as a fail-soft fallback when a
+  // whole batch read itself failed. A successful batch that omits a path means that path is
+  // absent at the ref, exactly like the old null result — do not spawn again for an omission.
   const [a, b] = await Promise.all([
-    git(root, ['rev-parse', '--verify', '--quiet', `${candidateSha}:${path}`]),
-    git(root, ['rev-parse', '--verify', '--quiet', `${repairHeadSha}:${path}`]),
+    batchedBlobs && batchedBlobs.candidate !== null
+      ? Promise.resolve(batchedBlobs.candidate.get(path) ?? null)
+      : git(root, ['rev-parse', '--verify', '--quiet', `${candidateSha}:${path}`]),
+    batchedBlobs && batchedBlobs.repairHead !== null
+      ? Promise.resolve(batchedBlobs.repairHead.get(path) ?? null)
+      : git(root, ['rev-parse', '--verify', '--quiet', `${repairHeadSha}:${path}`]),
   ]);
   // Either blob unresolvable ⇒ UNKNOWN. An absent path and an unresolvable ref look
   // identical here, and neither is evidence about whether a fix landed.
   const fixInRepairHead = a === null || b === null ? null : a !== b;
   return {
     fixInRepairHead,
-    comparison: `git rev-parse ${candidateSha.slice(0, 12)}:${path} vs ${repairHeadSha.slice(0, 12)}:${path}`,
+    comparison:
+      batchedBlobs && batchedBlobs.candidate !== null && batchedBlobs.repairHead !== null
+        ? `batched git ls-tree ${candidateSha.slice(0, 12)} vs ${repairHeadSha.slice(0, 12)} for ${path}`
+        : `git object ids ${candidateSha.slice(0, 12)}:${path} vs ${repairHeadSha.slice(0, 12)}:${path} (per-ref fallback used where a batch read failed)`,
     candidateBlob: a,
     repairHeadBlob: b,
     reading:
@@ -792,6 +834,22 @@ export async function readGateCandidateFailures(
     ? await movesBetween(git, opts.root, candidateSha, repairHeadSha)
     : { kind: 'unknown' };
 
+  // One `ls-tree` per ref replaces the former two-child-processes-per-file fan-out. Submodule
+  // rows stay on their deliberately different gitlink comparison path below.
+  const blobPaths = repairHeadSha
+    ? rows
+        .slice(0, MAX_BLOB_COMPARES)
+        .map((row) => row.file_path)
+        .filter((path) => !submoduleFor(path, subs))
+    : [];
+  const batchedBlobs =
+    repairHeadSha && candidateSha !== repairHeadSha && blobPaths.length > 0
+      ? await Promise.all([
+          blobIdsAtRef(git, opts.root, candidateSha, blobPaths),
+          blobIdsAtRef(git, opts.root, repairHeadSha, blobPaths),
+        ]).then(([candidate, repairHead]) => ({ candidate, repairHead }))
+      : undefined;
+
   const files: GateCandidateFailingFile[] = [];
   for (const [i, r] of rows.entries()) {
     const base = {
@@ -823,7 +881,7 @@ export async function readGateCandidateFailures(
     }
     files.push({
       ...base,
-      ...(await compareOne(git, opts.root, r.file_path, candidateSha, repairHeadSha, subs, moves)),
+      ...(await compareOne(git, opts.root, r.file_path, candidateSha, repairHeadSha, subs, moves, batchedBlobs)),
     });
   }
 

@@ -6,7 +6,12 @@
  * with the misreading named rather than with a bare assertion diff.
  */
 import { describe, it, expect } from 'vitest';
-import { assessCandidateFailures, outstandingLegIds, readGateCandidateFailures } from './gate-candidate-failures';
+import {
+  assessCandidateFailures,
+  outstandingLegIds,
+  parseGitLsTreeObjectIds,
+  readGateCandidateFailures,
+} from './gate-candidate-failures';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
 
 const CANDIDATE = 'adbf27530285830455f8d8df32a45752cfaff332';
@@ -35,11 +40,44 @@ function fakeSql(opts: { filesJudged: number; failing: Row[] }) {
 function fakeGit(table: Record<string, string | null>) {
   return async (_cwd: string, args: string[]) => {
     const key = args.join(' ');
-    return key in table ? table[key] : null;
+    if (key in table) return table[key];
+    // Keep the existing per-path fixtures useful after production batches those same object-id
+    // reads. An explicitly-null fixture is a successfully-read missing path; no fixture at all
+    // keeps the whole synthetic batch unreadable so the fail-soft fallback remains exercised.
+    if (args[0] === 'ls-tree' && args[1] === '-z') {
+      const ref = args[2];
+      const paths = args.slice(args.indexOf('--') + 1);
+      let matched = false;
+      const records: string[] = [];
+      for (const path of paths) {
+        const legacyKey = revParse(ref, path);
+        if (!(legacyKey in table)) continue;
+        matched = true;
+        const objectId = table[legacyKey];
+        if (objectId !== null) records.push(`100644 blob ${objectId}\t${path}\0`);
+      }
+      if (matched) return records.join('');
+    }
+    return null;
   };
 }
 
 const revParse = (sha: string, p: string) => `rev-parse --verify --quiet ${sha}:${p}`;
+
+describe('parseGitLsTreeObjectIds', () => {
+  it('parses NUL-delimited object ids without trimming paths', () => {
+    expect(
+      parseGitLsTreeObjectIds(
+        ['100644 blob aaa111\tplain.test.ts', '100644 blob bbb222\tpath with spaces.test.ts', ''].join('\0'),
+      ),
+    ).toEqual(
+      new Map([
+        ['plain.test.ts', 'aaa111'],
+        ['path with spaces.test.ts', 'bbb222'],
+      ]),
+    );
+  });
+});
 
 describe('readGateCandidateFailures', () => {
   it('reports a DIFFERENT blob at repairHead as "already fixed", not as an open failure', async () => {
@@ -113,6 +151,42 @@ describe('readGateCandidateFailures', () => {
     expect(res.alreadyFixedCount).toBe(2);
     expect(res.stillBrokenCount).toBe(1);
     expect(res.assessment).toBe('repairs-outstanding');
+  });
+
+  it('EI-22737582656157929: batches ordinary blob comparisons into one ls-tree call per ref', async () => {
+    const failing = Array.from({ length: 40 }, (_, i) => ({
+      file_path: `tests/failing-${i}.test.ts`,
+      status: 'fail',
+      attempts: 1,
+    }));
+    const calls: string[][] = [];
+    const git = async (_cwd: string, args: string[]): Promise<string | null> => {
+      calls.push(args);
+      if (args[0] === 'rev-parse' && args[1] === CANDIDATE + '^{tree}') return 'tree-a';
+      if (args[0] === 'rev-parse' && args[1] === REPAIR_HEAD + '^{tree}') return 'tree-b';
+      if (args[0] === 'diff' && args[1] === '--name-only') return 'src/fix-carrier.ts\n';
+      if (args[0] === 'ls-tree') {
+        const ref = args[2];
+        const suffix = ref === CANDIDATE ? 'a' : 'b';
+        return args
+          .slice(args.indexOf('--') + 1)
+          .map((path, i) => `100644 blob object-${i}-${suffix}\t${path}\0`)
+          .join('');
+      }
+      return null;
+    };
+
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 40, failing }),
+      git,
+    });
+
+    expect(res.alreadyFixedCount).toBe(40);
+    expect(calls.filter((args) => args[0] === 'ls-tree')).toHaveLength(2);
+    expect(calls.filter((args) => args[0] === 'rev-parse' && args.includes('--verify'))).toHaveLength(0);
   });
 
   it('compares a SUBMODULE-backed path by gitlink, never by blob', async () => {
