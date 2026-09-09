@@ -33,6 +33,7 @@ import { setLaunchBlueprintResolver, installedAwareLaunchResolver } from '@paper
 import {
   backgroundWorkersEnabled,
   dbosLaunchesHere,
+  requestOnlyHost,
   utilityHostEnabled,
 } from '@papercusp/operator-core/lib/background-workers';
 import { startClaudeCredentialSync } from '@papercusp/operator-core/lib/claude-credential-sync';
@@ -321,6 +322,17 @@ const CPU_WORKER_BREAKER_IDENTITY = {
 export function runBootstrap(): void {
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
+
+  // Request-only hosts serve the HTTP/tool plane but do not own the host-wide
+  // warmers, voice transports, or credential refreshers. Keep this predicate
+  // separate from backgroundWorkersEnabled(): requestOnlyHost() is a pure
+  // topology check with no VITEST short-circuit, so it remains correct for
+  // explicit secondary hosts and for source-level boot guards.
+  const requestOnly = requestOnlyHost();
+  const utilityHost = utilityHostEnabled();
+  if (requestOnly) {
+    console.log('[host] request-only startup profile — deferring host-wide warmers and voice transports until an explicit request');
+  }
 
   // [WI-37700] Give the cpu-task worker's crash-breaker a voice. The breaker latches
   // PERMANENTLY on repeated failure and the sync fallback is byte-identical, so a trip
@@ -1062,54 +1074,44 @@ export function runBootstrap(): void {
     })();
   }
 
-  // Prewarm the OMP-SU bootstrap (file copies + `omp config set` shell-
-  // outs). Runs once per process, fire-and-forget. Without this the
-  // first /adv launch pays 5+ seconds of bootstrap synchronously on
-  // the response path; with it, the work happens during startup and
-  // the first user click is fast like every subsequent click.
-  import('@papercusp/operator-core/lib/ensure-omp-su')
-    .then(({ ensureOmpSuInstalled }) =>
-      ensureOmpSuInstalled().catch((e) =>
-        console.warn('[ensure-omp-su] prewarm failed (non-fatal):', e),
-      ),
-    )
-    .catch((e) => console.warn('[ensure-omp-su] import failed (non-fatal):', e));
+  if (!requestOnly) {
+    // Prewarm the OMP-SU bootstrap (file copies + `omp config set` shell-
+    // outs). Request-only hosts defer this until an explicit /adv request so
+    // a short acceptance host does not pay the full agent bootstrap graph.
+    import('@papercusp/operator-core/lib/ensure-omp-su')
+      .then(({ ensureOmpSuInstalled }) =>
+        ensureOmpSuInstalled().catch((e) =>
+          console.warn('[ensure-omp-su] prewarm failed (non-fatal):', e),
+        ),
+      )
+      .catch((e) => console.warn('[ensure-omp-su] import failed (non-fatal):', e));
 
-  // Plugin apiRoutes — populate the in-memory registry from disk. The
-  // `/plugins/*` defineTool catch-all (routes/plugins/catchall.ts)
-  // consults this registry per request via `dispatchPluginApiRoute`,
-  // so hot-reload + post-boot symlinks work without the
-  // Hono-route-snapshot footgun.
-  //
-  // KNOWN LIMITATION: Next.js's runtime cannot dynamic-import `.ts` plugin
-  // files (works under tsx but not Next's bundler). Plugins must ship a
-  // pre-compiled `.js` entry point to be reachable in-process.
-  mountPluginApiRoutes()
-    .then((r) => {
-      console.log(`[plugin-mount] mounted=${r.mounted} skipped=${r.skipped} errors=${r.errors.length}`);
-      for (const e of r.errors) {
-        console.warn(`[plugin-mount] error: ${e}`);
-      }
-    })
-    .catch((e) => {
-      console.warn('[plugin-mount] unexpected rejection:', e);
-    });
+    // Plugin apiRoutes — populate the in-memory registry from disk. Request-only
+    // hosts intentionally leave this lazy: `/plugins/*` dispatch calls
+    // dispatchPluginApiRoute(), which builds the same registry on first use.
+    // Keeping the request path lazy preserves plugin functionality without
+    // loading every installed plugin during a short secondary-host journey.
+    mountPluginApiRoutes()
+      .then((r) => {
+        console.log(`[plugin-mount] mounted=${r.mounted} skipped=${r.skipped} errors=${r.errors.length}`);
+        for (const e of r.errors) {
+          console.warn(`[plugin-mount] error: ${e}`);
+        }
+      })
+      .catch((e) => {
+        console.warn('[plugin-mount] unexpected rejection:', e);
+      });
 
-  // Eagerly warm the plugin host so plugin-contributed tools (repomix.pack,
-  // gitnexus.*, design-phase.*) are in the projected-tool registry from boot.
-  // Registration is otherwise lazy — it runs inside getPluginHost() on the
-  // first plugin-dependent request — and this host restarts on every deploy,
-  // so the fleet's first post-deploy plugin tool call landed in the
-  // empty-registry window and failed `unknown_tool` (that window is how
-  // gitnexus got misdiagnosed as down — plugin-system-hive-port-2026-06-11
-  // P-012). Fire-and-forget: discovery errors stay visible via
-  // plugins:runtime_status, and a failure here must not block boot.
-  import('@papercusp/operator-core/lib/plugin-host-runtime')
-    .then(({ getPluginHost }) => getPluginHost())
-    .then((s) => {
-      console.log(`[plugin-host] warmed at boot: loaded=${s.loaded.length} errors=${s.loadErrors.length}`);
-    })
-    .catch((e) => console.warn('[plugin-host] boot warm failed (non-fatal):', e));
+    // Eagerly warm the plugin host so plugin-contributed tools (repomix.pack,
+    // gitnexus.*, design-phase.*) are in the projected-tool registry from boot.
+    // Request-only hosts use the normal first-request lazy path instead.
+    import('@papercusp/operator-core/lib/plugin-host-runtime')
+      .then(({ getPluginHost }) => getPluginHost())
+      .then((s) => {
+        console.log(`[plugin-host] warmed at boot: loaded=${s.loaded.length} errors=${s.loadErrors.length}`);
+      })
+      .catch((e) => console.warn('[plugin-host] boot warm failed (non-fatal):', e));
+  }
 
   // The legacy in-process AutoLoop ticker is RETIRED (autoloop-pot-operator-
   // rebuild P-010 / D-009) — scheduled decider fires ride the durable routines
@@ -1117,13 +1119,12 @@ export function runBootstrap(): void {
   // EI-368: the whole voice cluster is skipped on a headless utility host (the
   // gym-operator) — no human ever talks to it, the legs port-scan, and they
   // pull in the holepunch native stack (part of the Napi-abort suspect set).
-  const utilityHost = utilityHostEnabled();
   if (utilityHost) {
     console.log('[host] PAPERCUSP_UTILITY_HOST=1 — headless utility host: skipping voice cluster, hyperbee substrate, and embedder warm-up (EI-368)');
-  } else {
+  } else if (!requestOnly) {
     startMobileVoiceWs();
   }
-  startPushCredentialRefresher();
+  if (!requestOnly) startPushCredentialRefresher();
   // data-sync-push-completion P-005/D-012: the DEBOUNCED append-heavy change-detector. ONE
   // host poll per append-heavy log table → a synthesized `<table>.changed` invalidation when
   // max(id) advances, so userActions.* / auditLog.* / toastLog.* consumers push-update WITHOUT
@@ -1148,7 +1149,7 @@ export function runBootstrap(): void {
       console.error('[append-heavy-invalidator] failed to start:', err);
     }
   })();
-  if (!utilityHost) {
+  if (!requestOnly && !utilityHost) {
     // P2P voice channels: the local binary audio socket (holepunch-voice-channels
     // P-006/D-010). Cheap to start; the voice swarm itself is lazy (first join).
     void (async () => {

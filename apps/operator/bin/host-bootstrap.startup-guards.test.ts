@@ -173,7 +173,7 @@ describe('background admission recovery loads the live kernel resolver before ro
       [coreSource('endpoint-route/register.ts'), /^import \{ ALL_ROUTES \} from '\.\/routes';$/m],
       [coreSource('endpoint-route/routes/index.ts'), /^import transport from '\.\/transport\/index';$/m],
       [coreSource('endpoint-route/routes/transport/index.ts'), /^import \{ mcpHandler \} from '\.\/_mcp-handler';$/m],
-      [coreSource('endpoint-route/routes/transport/_mcp-handler.ts'), /^import '\.\.\/\.\.\/\.\.\/agent-tools\/index';$/m],
+      [coreSource('endpoint-route/routes/transport/_mcp-host.ts'), /^import '\.\.\/\.\.\/\.\.\/agent-tools\/index';$/m],
       [coreSource('agent-tools/index.ts'), /^import '\.\.\/events';$/m],
     ];
     for (const [source, edge] of eagerEdges) expect(source).toMatch(edge);
@@ -230,6 +230,32 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     expect(failure).toBeGreaterThan(start);
     expect(exit).toBeGreaterThan(failure);
     expect(honoHostSrc.slice(wait, exit)).toMatch(/\}\)\.catch\(\(e\)\s*=>\s*\{/);
+  });
+});
+
+describe('request-only hosts defer non-request startup warmers', () => {
+  it('keeps plugin dispatch available while avoiding eager OMP/plugin/voice startup', () => {
+    const profile = bootSrc.indexOf('const requestOnly = requestOnlyHost();');
+    const pluginMount = bootSrc.indexOf('mountPluginApiRoutes()', profile);
+    const pluginWarm = bootSrc.indexOf("import('@papercusp/operator-core/lib/plugin-host-runtime')", profile);
+    const mobileVoice = bootSrc.indexOf('startMobileVoiceWs();', profile);
+    const push = bootSrc.indexOf('startPushCredentialRefresher();', profile);
+
+    expect(profile).toBeGreaterThan(-1);
+    expect(bootSrc.slice(profile, pluginMount)).toContain('if (!requestOnly)');
+    expect(bootSrc.slice(profile, pluginWarm)).toContain('if (!requestOnly)');
+    expect(bootSrc.slice(profile, mobileVoice)).toContain('!requestOnly');
+    expect(bootSrc.slice(profile, push)).toContain('!requestOnly');
+    expect(bootSrc).toContain('dispatchPluginApiRoute()');
+  });
+
+  it('defers transcript-search warming on request-only Hono hosts', () => {
+    const profile = honoHostSrc.indexOf('const requestOnly = requestOnlyHost();');
+    const warm = honoHostSrc.indexOf('scheduleTranscriptSearchWarmup();', profile);
+
+    expect(profile).toBeGreaterThan(-1);
+    expect(warm).toBeGreaterThan(profile);
+    expect(honoHostSrc.slice(profile, warm)).toContain('if (!requestOnly)');
   });
 });
 

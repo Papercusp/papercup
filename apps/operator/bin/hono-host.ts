@@ -31,6 +31,7 @@ import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-inte
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
+import { requestOnlyHost } from '@papercusp/operator-core/lib/background-workers';
 import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
 import {
   startEventLoopLagMonitor,
@@ -244,6 +245,7 @@ function startRequestServers(): void {
   // dispatch). Without it selfUrl() falls back to the :3055 dev default — post-
   // Vite-migration :3055 is the frontend SPA, not this API host.
   process.env.PORT = String(port);
+  const requestOnly = requestOnlyHost();
 
   // WI-1547: eagerly start the `sync_invalidate` LISTEN in THIS process. The
   // cache-ECA invalidation (change stream → cache.bumpTags) rides the SSE
@@ -346,7 +348,10 @@ function startRequestServers(): void {
     // on 2026-07-13). Per request worker (each has its own module graph + pool);
     // fire-and-forget after a short boot-settle delay; opt-out via
     // PAPERCUSP_DISABLE_SEARCH_WARMUP=1.
-    scheduleTranscriptSearchWarmup();
+    // Search/embedder warming is intentionally deferred on request-only hosts:
+    // the route remains available and warms on first use, while a short
+    // secondary acceptance journey avoids loading the full search/corpus graph.
+    if (!requestOnly) scheduleTranscriptSearchWarmup();
   };
 
   // P3-2 cluster-worker listen (INCIDENT 2026-06-18 fix): a cluster WORKER must bind
