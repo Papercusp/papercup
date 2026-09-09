@@ -203,6 +203,8 @@ export interface ResumeTarget {
    * null and {@link resumeId} carries the tracked adv_sessions row id instead.
    */
   sessionId: string | null;
+  /** OMP's native thread/session handle; OMP rows do not use sessionId. */
+  ompThreadId: string | null;
   /**
    * The selector accepted by `psu --resume`: the native session id when known,
    * otherwise the tracked adv_sessions row id for a Codex session.
@@ -414,6 +416,7 @@ export async function resolveResumeTarget(ref: {
     // Exact native UUID pins are never replaced by the logical owner's older
     // adv_sessions.session_id. session_turns supplies owner METADATA only.
     sessionId: nativeSessionId,
+    ompThreadId: row.ompThreadId,
     resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
     agent: row.agent,
