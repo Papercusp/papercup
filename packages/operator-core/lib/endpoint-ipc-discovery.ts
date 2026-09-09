@@ -20,7 +20,7 @@
  */
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile, readFile, readdir, rm, rename, lstat } from 'node:fs/promises';
 
 const REL_DIR = '.papercusp';
@@ -65,6 +65,11 @@ export interface AgentMcpEndpoint {
   socketPath: string;
   operatorId: string;
   generation: string;
+}
+
+/** Logical operator identity; generations change at restart, this does not. */
+export function agentMcpOperatorId(port: number): string {
+  return createHash('sha256').update(`${homedir()}\0${port}`).digest('hex');
 }
 
 function validAgentEndpoint(value: unknown): value is AgentMcpEndpoint {
@@ -227,6 +232,7 @@ export async function readAgentMcpDiscoveryForPort(port: number): Promise<Endpoi
     if (!fileStat.isFile() || fileStat.uid !== process.getuid?.() || (fileStat.mode & 0o077)) return null;
     const descriptor = await readEndpointIpcDiscoveryFrom(file);
     if (!descriptor?.agentMcp || descriptor.port !== port ||
+        descriptor.agentMcp.operatorId !== agentMcpOperatorId(port) ||
         !Number.isSafeInteger(descriptor.pid) || descriptor.pid < 1 || !pidAlive(descriptor.pid)) return null;
     const socket = await lstat(descriptor.agentMcp.socketPath);
     const dir = await lstat(dirname(descriptor.agentMcp.socketPath));

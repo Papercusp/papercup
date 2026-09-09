@@ -1,8 +1,8 @@
 /** Agent MCP listener. This is NOT the trusted webview endpoint-IPC channel. */
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { mkdtemp, chmod, lstat, rmdir } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -10,7 +10,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage, MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
 import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
 import type { BuiltSpawnContext, TrySpawnContextResult } from './_mcp-host';
-import type { AgentMcpEndpoint } from '../../../endpoint-ipc-discovery';
+import { agentMcpOperatorId, type AgentMcpEndpoint } from '../../../endpoint-ipc-discovery';
 import { allowStalePlanRecoveryForMcpCall } from '../../../agent-tools/_harness-scope';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { acquireMcpBodyAdmission, ADMISSION_CONTROL_ENABLED, type McpAdmissionLease } from './mcp-admission';
@@ -38,11 +38,6 @@ export interface AgentMcpHost {
 export interface AgentMcpListener {
   endpoint: AgentMcpEndpoint;
   close(): Promise<void>;
-}
-
-/** Stable within this OS home and selected operator port, unlike the generation. */
-export function agentMcpOperatorId(port: number): string {
-  return createHash('sha256').update(`${homedir()}\0${port}`).digest('hex');
 }
 
 function rejected(code: string): Error {
