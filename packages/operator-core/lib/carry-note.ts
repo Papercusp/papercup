@@ -2311,6 +2311,20 @@ export const CARRY_JOURNAL_TOTAL_MAX_CHARS = 6_000;
 export interface CarryJournalEntry {
   at: number;
   note: string;
+  /** Position of the latest authored update in the current, hash-bound note. */
+  latestUpdate?: { noteHash: string; offset: number; length: number };
+}
+
+export function readCarryLatestUpdate(note: string, value: unknown):
+  { status: 'available' | 'unknown'; text: string | null } | undefined {
+  if (value == null) return undefined;
+  const span = value as { noteHash?: unknown; offset?: unknown; length?: unknown };
+  if (span.noteHash !== shortCarryHash(note) || !Number.isSafeInteger(span.offset)
+    || !Number.isSafeInteger(span.length) || (span.offset as number) < 0 || (span.length as number) <= 0
+    || (span.offset as number) + (span.length as number) > note.length) {
+    return { status: 'unknown', text: null };
+  }
+  return { status: 'available', text: note.slice(span.offset as number, (span.offset as number) + (span.length as number)) };
 }
 
 /** Normalize a `journal` jsonb column read from PG. Depending on the pg client's
@@ -2461,6 +2475,8 @@ export async function setCarryNoteWithPrior(
   note: string | null | undefined,
   opts?: {
     journal?: boolean;
+    /** Work-item continuation focus; undefined preserves a prior valid focus on metadata-only writes. */
+    latestUpdate?: string;
     guard?: (priorNote: string | null, priorLength: number) => string | null;
     /**
      * P-007/D-013 declared-dependency freshness stamps for the note being written.
@@ -2566,6 +2582,15 @@ export async function setCarryNoteWithPrior(
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;
+    if (journalEnabled && noteCol !== null && opts && 'latestUpdate' in opts) {
+      const latest = opts.latestUpdate === undefined
+        ? readCarryLatestUpdate(priorNote ?? '', prevJournal.at(-1)?.latestUpdate)?.text
+        : opts.latestUpdate.trim();
+      const offset = latest ? noteCol.indexOf(latest) : -1;
+      journal[journal.length - 1].latestUpdate = {
+        noteHash: shortCarryHash(noteCol), offset, length: offset >= 0 ? latest!.length : 0,
+      };
+    }
     // Unspecified ⇒ carry the prior declaration forward (see the `deps` opt doc).
     const depsCol = depsSpecified ? (opts?.deps ?? null) : priorDeps;
 
