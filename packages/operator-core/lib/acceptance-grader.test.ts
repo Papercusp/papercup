@@ -671,6 +671,29 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it('matches the exact launcher-owned kickoff quota drop only for a controlled caller', () => {
+    const receipt =
+      'psu-pty-host: launch kickoff DROPPED for role-7a40cbec-960b-4db9-9bca-26020817a009 ' +
+      '(submit verification aborted (quota-blocked) within 600000ms over 1 attempt(s))';
+    const raw = `100% left · staging\u001b[22;3H\u001b[?2026l${receipt}\n`;
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowLauncherQuotaDrop: true })).toEqual({
+      code: 'model_quota_exhausted',
+      evidence: receipt,
+    });
+    expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace('launch kickoff', 'turn inject'), {
+        allowLauncherQuotaDrop: true,
+      }),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace('quota-blocked', 'human-input'), {
+        allowLauncherQuotaDrop: true,
+      }),
+    ).toBeNull();
+  });
+
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),

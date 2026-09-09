@@ -691,4 +691,72 @@ describe('dispatchPendingGradingAudits', () => {
       }),
     );
   });
+
+  it('reconciles a launcher kickoff quota drop on a later sweep', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-launcher-quota-drop')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-dropped-kickoff', logPath: '/tmp/dropped-kickoff.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: true,
+          launch: { tasks: [{ taskId: 'task-dropped-kickoff', logPath: '/tmp/dropped-kickoff.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-recovery', logPath: '/tmp/recovery.log' }] },
+        }),
+      );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    let droppedLog = 'healthy startup probe';
+    const readLogTail = vi.fn((path: string) =>
+      path.includes('dropped-kickoff') ? droppedLog : 'healthy fallback boot',
+    );
+
+    const initial = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-launcher-quota-drop'], ctx, harness: 'papercusp' },
+      { ...d, killTask, readLogTail, sleep: async () => undefined, terminalLogMaxRechecks: 0 },
+    );
+    droppedLog =
+      '100% left · staging\u001b[22;3H\u001b[?2026l' +
+      'psu-pty-host: launch kickoff DROPPED for role-7a40cbec-960b-4db9-9bca-26020817a009 ' +
+      '(submit verification aborted (quota-blocked) within 600000ms over 1 attempt(s))';
+
+    const recovered = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      { ...d, killTask, readLogTail, sleep: async () => undefined, terminalLogMaxRechecks: 0 },
+    );
+
+    expect(initial.receipts).toEqual([
+      expect.objectContaining({ issueId: 'EI-launcher-quota-drop', state: 'launched' }),
+    ]);
+    expect(killTask).toHaveBeenCalledWith('task-dropped-kickoff', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(recovered.receipts).toEqual([
+      expect.objectContaining({
+        issueId: 'EI-launcher-quota-drop',
+        state: 'launched',
+        terminalRecovery: expect.objectContaining({
+          retiredTaskIds: ['task-dropped-kickoff'],
+          codes: ['model_quota_exhausted'],
+        }),
+      }),
+    ]);
+    expect(d.launch.mock.calls[2]?.[0]).toEqual(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^grading-audit:EI-launcher-quota-drop:recovery:[a-f0-9]{16}$/),
+        agent: 'codex',
+        account: 'default',
+      }),
+    );
+  });
 });

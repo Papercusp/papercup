@@ -235,6 +235,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     startupStallMaxRechecks = ACCEPTANCE_GRADER_STARTUP_STALL_MAX_RECHECKS,
     allowStandaloneWeeklyLimit = false,
     allowInferenceGatewayError = false,
+    allowLauncherQuotaDrop = false,
     detectStartupStall = true,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
@@ -256,6 +257,13 @@ export async function detectAcceptanceGraderTerminalFailure(
      * general acceptance prompt because frozen evidence can contain error prose.
      */
     allowInferenceGatewayError?: boolean;
+    /**
+     * A fire-and-forget controlled launch may opt into the exact pty-host
+     * terminal receipt emitted when its launch kickoff cannot be submitted
+     * through a quota wall. General acceptance leaves this false because its
+     * frozen evidence may quote launcher diagnostics.
+     */
+    allowLauncherQuotaDrop?: boolean;
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
@@ -270,6 +278,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError,
+      allowLauncherQuotaDrop,
     });
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
@@ -288,6 +297,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError,
+      allowLauncherQuotaDrop,
     });
     if (terminalFailure) return terminalFailure;
     startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
@@ -319,7 +329,12 @@ export function classifyAcceptanceGraderTerminalFailure(
   {
     allowStandaloneWeeklyLimit = false,
     allowInferenceGatewayError = false,
-  }: { allowStandaloneWeeklyLimit?: boolean; allowInferenceGatewayError?: boolean } = {},
+    allowLauncherQuotaDrop = false,
+  }: {
+    allowStandaloneWeeklyLimit?: boolean;
+    allowInferenceGatewayError?: boolean;
+    allowLauncherQuotaDrop?: boolean;
+  } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
   const legacyQuota = normalized.match(
@@ -345,6 +360,24 @@ export function classifyAcceptanceGraderTerminalFailure(
     return {
       code: 'model_quota_exhausted',
       evidence: quota[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+
+  // WI-10000940: psu-pty-host deliberately preserves a general interactive
+  // session when its launch kickoff hits a quota wall so discovery can recycle
+  // it later. A fire-and-forget grading auditor has no such recovery owner: the
+  // host remains kernel-live, the launch dedupes forever, and the audit
+  // reservation never settles. Recognize only the host-owned terminal receipt,
+  // only for controlled callers, and reuse the existing quota fallback path.
+  const launcherQuotaDrop = allowLauncherQuotaDrop
+    ? normalized.match(
+        /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\(submit verification aborted \(quota-blocked\) within \d+ms over \d+ attempt\(s\)\)$/im,
+      )
+    : null;
+  if (launcherQuotaDrop) {
+    return {
+      code: 'model_quota_exhausted',
+      evidence: launcherQuotaDrop[0].replace(/\s+/g, ' ').trim().slice(0, 400),
     };
   }
 
