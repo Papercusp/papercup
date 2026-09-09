@@ -845,9 +845,15 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
 
   async function prepareApprovedDesktop(d: VerbDeps, revision = 1) {
     const input = desktopApprovalInput(revision);
-    Object.assign(d, { materializeReferenceImage: async (image: { locator: string }) => ({
-      path: '/tmp/reference.png', contentSha256: (image.locator.endsWith('-1.png') ? 'a' : 'b').repeat(64),
-    }) });
+    Object.assign(d, {
+      // This synthetic reference exercises the binding/completion obligations
+      // after rollout admission. The real policy reader and its refusal controls
+      // are exercised separately in design-compare/rollout.test.ts.
+      rolloutAdmission: async () => ({ satisfied: true, reason: 'reviewed-fixture-cohort' }),
+      materializeReferenceImage: async (image: { locator: string }) => ({
+        path: '/tmp/reference.png', contentSha256: (image.locator.endsWith('-1.png') ? 'a' : 'b').repeat(64),
+      }),
+    });
     const ratified = await ratifyReferenceVerb(input, CALLER, d);
     expect(ratified.ok, JSON.stringify(ratified)).toBe(true);
     const compared = await compareRenderVerb({
