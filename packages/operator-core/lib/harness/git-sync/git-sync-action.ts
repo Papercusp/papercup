@@ -2922,6 +2922,22 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         scope: { installSlug: slug, workspaceId },
       });
     }
+    // EI-22764118395439975: this fire reached the eligibility gate but never reached
+    // runGitSync, so replace the previous local outcome with an explicit
+    // non-attemptable status. Before this write, a healthy earlier `synced` outcome
+    // survived every lock-refused fire; the stall watchdog then accumulated its
+    // HEAD clock across those skips and broadcast "commits are NOT landing" even
+    // though the checkout was clean and every DBOS workflow settled successfully.
+    // `isCommitNotAttemptableStatus` already treats `skipped` as a clock re-arm —
+    // the producer must actually record it at this terminal boundary.
+    const skippedAt = Date.now();
+    await patchRoutineMetadata(slug, workspaceId, {
+      last_status: 'skipped',
+      local_sync_status: 'skipped',
+      last_skip_reason: reason,
+      last_skipped_at: skippedAt,
+      last_skipped_paths: [],
+    });
     return {
       status: 'skipped',
       reason,

@@ -27,6 +27,7 @@ import { resolveIssueWorkspace } from './issues-engineer';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
+import { routeSourceGradingAudit } from './grading-audit-routing';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -63,7 +64,7 @@ const GRADING_AUDIT_FALLBACK = {
 export type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
 type GradingAuditLaunchHandler = typeof launchAgentTool.handler;
 
-export type PendingGradingAuditDispatchState = 'launched' | 'deduped' | 'skipped' | 'failed';
+export type PendingGradingAuditDispatchState = 'routed' | 'launched' | 'deduped' | 'skipped' | 'failed';
 
 export interface PendingGradingAuditDispatchReceipt {
   issueId: string;
@@ -71,6 +72,8 @@ export interface PendingGradingAuditDispatchReceipt {
   state: PendingGradingAuditDispatchState;
   idempotencyKey?: string;
   launch?: unknown;
+  conversationId?: string;
+  routingFallback?: string;
   reason?: string;
   terminalRecovery?: {
     retiredTaskIds: string[];
@@ -102,6 +105,7 @@ export interface DispatchPendingGradingAuditsDeps {
   listScorecards?: typeof listScorecards;
   getRubric?: typeof getRubric;
   launch?: GradingAuditLaunchHandler;
+  route?: typeof routeSourceGradingAudit;
   reserve?: typeof reservePendingGradingAudit;
   release?: typeof releasePendingGradingAudit;
   readLogTail?: (path: string) => string | Promise<string>;
@@ -289,6 +293,7 @@ function gradingAuditBrief(card: ScorecardRow): string {
   return [
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
+    `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...} }. Include concrete evidence for every criterion in the grading-integrity rubric.`,
     'A successful audit emission settles the target scorecard; do not emit any second audit or other scorecard.',
@@ -403,6 +408,7 @@ export async function dispatchPendingGradingAudits(
     let terminalFallbacks = 0;
     let attempts = 0;
     let reservationHeld = false;
+    let routingFallback: string | undefined;
     const releaseReservation = async () => {
       if (!reservationHeld) return;
       reservationHeld = false;
@@ -413,8 +419,9 @@ export async function dispatchPendingGradingAudits(
         // cannot reach the database after a launcher failure.
       }
     };
-    const recoveryFields = () =>
-      retiredTaskIds.length
+    const recoveryFields = () => ({
+      ...(routingFallback ? { routingFallback } : {}),
+      ...(retiredTaskIds.length
         ? {
             terminalRecovery: {
               retiredTaskIds,
@@ -423,7 +430,8 @@ export async function dispatchPendingGradingAudits(
               fallback: GRADING_AUDIT_FALLBACK,
             },
           }
-        : {};
+        : {}),
+    });
     try {
       const reservation = await reserve(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
@@ -443,6 +451,18 @@ export async function dispatchPendingGradingAudits(
         continue;
       }
       reservationHeld = true;
+      const routed = await (deps.route ?? routeSourceGradingAudit)({
+        card, reservationKey: idempotencyKey, brief: gradingAuditBrief(card), ctx: input.ctx,
+        ...(harness && harness !== '*' ? { harness } : {}),
+      });
+      if (routed.state !== 'fallback') {
+        receipts.push({ issueId, rubricRef: card.rubricRef, idempotencyKey,
+          state: routed.state, conversationId: routed.conversationId,
+          ...(routed.reason ? { reason: routed.reason } : {}),
+        });
+        continue;
+      }
+      routingFallback = routed.reason;
       const terminateTask = deps.killTask ?? killTask;
       const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
       let launchBackend: 'claude' | 'codex' = 'claude';

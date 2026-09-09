@@ -11,9 +11,9 @@
  * hand them to the subprocess; its `releaseConfig()` re-derives everything from that env.
  * No change to release-config.ts is needed — its env seam already supports this.
  *
- * The operator-home (papercusp) slug is special-cased to an EMPTY overlay so its LIVE :3070
- * pipeline keeps its EXACT current behavior (systemd-unit env + releaseConfig defaults) —
- * regression-safe (D-007). The gate is effective ONLY when `releaseGate.enabled` AND the
+ * Operator-home retains its systemd-unit env + releaseConfig defaults, except that routing
+ * from a different tooling checkout binds the subject to its registered canonical repo.
+ * The gate is effective ONLY when `releaseGate.enabled` AND the
  * hive actually has a repo (belt-and-suspenders — a repo-less / non-coding hive can never
  * be gated, D-002).
  */
@@ -256,9 +256,9 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
 }
 
 export interface CheckpointRouting {
-  /** The integration tree root the checkpoint/deploy subprocess runs in. */
+  /** Tooling checkout containing the checkpoint/deploy executable, not necessarily its subject. */
   root: string;
-  /** Env overlay for the subprocess (EMPTY for operator-home / default). */
+  /** Subject env overlay; home routing overrides only a noncanonical integration root. */
   extraEnv: Record<string, string>;
   /** Env keys to DELETE from the inherited env before `extraEnv` is applied (EMPTY for
    *  operator-home / default — its behavior stays byte-identical, D-007). */
@@ -270,8 +270,8 @@ export interface CheckpointRouting {
 /**
  * Decide how a `system:green-checkpoint` / `system:release-trigger` fire should run, given
  * the FIRING routine's installSlug (per-hive-git-and-release-gate P-010). The operator-home
- * slug (or no slug) → the default root + EMPTY overlay = EXACT current behavior
- * (regression-safe, D-007). A gated coding hive → its per-hive root + env overlay. A
+ * slug (or no slug) → caller tooling with the registered home repo as subject. An
+ * unregistered home keeps the standalone default. A gated coding hive → its env overlay. A
  * non-gated slug (gate disabled / no repo) → `skip` (the handler records it and runs no
  * suite — a stray routine for a non-coding hive must never run the home suite).
  */
@@ -279,8 +279,22 @@ export async function resolveCheckpointRouting(
   ctx: { installSlug?: string | null; workspaceId: string },
   defaultRoot: string,
 ): Promise<CheckpointRouting> {
-  if (!ctx.installSlug || ctx.installSlug === operatorHomeHarnessSlug()) {
-    return { root: defaultRoot, extraEnv: {}, clearEnv: [] };
+  const homeSlug = operatorHomeHarnessSlug();
+  if (!ctx.installSlug || ctx.installSlug === homeSlug) {
+    // EI-22765691547893941: the :3170 tooling checkout and :3070/scheduled launcher
+    // used different integration roots for the SAME durable queue. Per-root run locks
+    // then allowed concurrent runs, duplicate prewarming and incompatible snapshot keys.
+    // Reuse the registry's subject identity just as foreign-hive routing does; do not
+    // replace the caller's tooling (which may carry a not-yet-deployed launcher fix).
+    const registry = await loadHarnessRegistry(ctx.workspaceId);
+    const subjectRoot = registry.projects.find((project) => project.slug === homeSlug)?.path;
+    return {
+      root: defaultRoot,
+      extraEnv: subjectRoot && subjectRoot !== defaultRoot
+        ? { PAPERCUSP_INTEGRATION_ROOT: subjectRoot }
+        : {},
+      clearEnv: [],
+    };
   }
   const hive = await resolveHiveReleaseEnv(ctx.installSlug, ctx.workspaceId);
   if (!hive.enabled)

@@ -27,7 +27,7 @@ import {
   revivalBudgetSpent,
 } from './get-feedback-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
-import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy } from './grading-cascade';
+import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
  * the two non-reply advance triggers. */
@@ -176,6 +176,8 @@ export const consultCascadeWakeCopy: CascadeWakeCopyWriter = (ctx) => ({
  * snapshot the advance is already parsing makes that unrepresentable.
  */
 export function cascadeWakeCopyForRouting(routing: unknown): CascadeWakeCopyWriter {
+  const audit = sourceAuditCascadeMetaFromRouting(routing);
+  if (audit) return (ctx) => sourceAuditWakeCopy(audit, ctx.conversationId);
   const grading = gradingCascadeMetaFromRouting(routing);
   return grading ? gradingCascadeWakeCopy(grading) : consultCascadeWakeCopy;
 }
@@ -376,6 +378,7 @@ export async function advanceCascade(
             ownerId: revivable.ownerId,
             conversationId: params.conversationId,
             brief: revivalBrief({
+              routing: params.routing,
               requesterId: params.requesterId ?? 'the consult requester',
               question: params.question,
               conversationId: params.conversationId,

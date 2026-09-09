@@ -46,6 +46,16 @@ const PUBLIC_DOC_PATH = resolve(
   PAPERCUSP_ROOT,
   'apps/operator/public/internal/docs/agent-insights/papercup-chat-one-component-one-contract.md',
 );
+const REPO_CONVENTIONS_DOC_PATH = resolve(
+  PAPERCUSP_ROOT,
+  'apps/operator-docs/src/content/docs/system/repo-conventions.mdx',
+);
+const REPO_CONVENTIONS_PUBLIC_DOC_PATH = resolve(
+  PAPERCUSP_ROOT,
+  'apps/operator/public/internal/docs/system/repo-conventions.md',
+);
+const SHARED_CHAT_VIEW_PATH = resolve(PAPERCUSP_ROOT, 'packages/operator-ui/src/papercup-chat/PapercupChat.tsx');
+const DELETED_CHAT_RENDERER_PATH = resolve(PAPERCUSP_ROOT, 'apps/operator/app/_components/chat/ChatConversation.tsx');
 
 const matrix = parseParityMatrix(readFileSync(MATRIX_PATH, 'utf8'));
 const portalAvailable = existsSync(resolve(PORTAL_ROOT, 'packages', 'ui', 'src'));
@@ -118,6 +128,22 @@ describe('PARITY.md — Papercup chat feature matrix', () => {
       '## D-011 visual contract',
     ]) {
       expect(projectedDocBody(canonical), `canonical insight must document ${required}`).toContain(required);
+    }
+  });
+
+  it('keeps repo-conventions aligned with the deleted renderer and shared PapercupChat view', () => {
+    const canonical = readFileSync(REPO_CONVENTIONS_DOC_PATH, 'utf8');
+    const published = readFileSync(REPO_CONVENTIONS_PUBLIC_DOC_PATH, 'utf8');
+    const deletedRendererClaim = 'The former operator-local `chat/ChatConversation` renderer is deleted.';
+    const sharedRendererClaim =
+      'The shared `PapercupChat` view in `packages/operator-ui/src/papercup-chat/PapercupChat.tsx` is the sole transcript renderer.';
+
+    expect(existsSync(SHARED_CHAT_VIEW_PATH)).toBe(true);
+    expect(existsSync(DELETED_CHAT_RENDERER_PATH)).toBe(false);
+    for (const projection of [canonical, published]) {
+      expect(projection).toContain(deletedRendererClaim);
+      expect(projection).toContain(sharedRendererClaim);
+      expect(projection).not.toContain('Shared chat infra stays live (`OperatorConversationProvider`, `chat/ChatConversation`');
     }
   });
 

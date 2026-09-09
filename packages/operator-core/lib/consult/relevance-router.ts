@@ -138,6 +138,8 @@ export interface RoutingSnapshot {
    * selects a menu through the same library as the consult, so "surfaces that
    * route without selecting" is no longer a standing category. */
   selection?: SnapshotSelection;
+  /** Consumer copy persists so generic decline/expiry/revival keeps its subject. */
+  cascade?: import('./grading-cascade').SourceAuditCascadeMeta | import('./grading-cascade').GradingCascadeMeta;
 }
 
 /** How a responder entered the selected set (D-002): 'floor' = cleared both

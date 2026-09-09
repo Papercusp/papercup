@@ -404,6 +404,26 @@ describe('resolveCheckpointRouting', () => {
     expect(r.skip).toBeUndefined();
   });
 
+  it('keeps caller tooling but binds every home launcher to the registered canonical subject', async () => {
+    homeSlug = 'papercusp';
+    registryProjects = [{ slug: homeSlug, path: '/canonical/papercusp', self_repo: true }];
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    for (const installSlug of [undefined, homeSlug]) {
+      for (const toolingRoot of ['/operator/release', '/operator/staging']) {
+        const r = await resolveCheckpointRouting({ installSlug, workspaceId: 'default' }, toolingRoot);
+        expect(r.root).toBe(toolingRoot);
+        expect(r.extraEnv.PAPERCUSP_INTEGRATION_ROOT).toBe('/canonical/papercusp');
+        expect(r.clearEnv).toEqual([]);
+        expect(r.skip).toBeUndefined();
+      }
+    }
+    const canonical = await resolveCheckpointRouting(
+      { installSlug: homeSlug, workspaceId: 'default' },
+      '/canonical/papercusp',
+    );
+    expect(canonical.extraEnv).toEqual({});
+  });
+
   it('gated coding hive → TOOLING root (not the hive) + the hive in extraEnv (P-019)', async () => {
     const dir = makeHiveDir('coding', { git: true });
     registryProjects = [{ slug: 'oddsmith-hive', path: dir, self_repo: true }];

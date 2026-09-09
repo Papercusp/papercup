@@ -40,6 +40,37 @@ import type { AcceptanceReviewReservationRef } from '../coord/condition-upsert';
 /** The persisted `routing.cascade.flavor` discriminator. */
 export const GRADING_CASCADE_FLAVOR = 'acceptance-grading';
 
+/** Source-card audits share the cascade, but settle exactly one card. */
+export interface SourceAuditCascadeMeta {
+  flavor: 'grading-integrity';
+  issueId: string;
+  reservationKey: string;
+  brief: string;
+}
+
+export function sourceAuditCascadeMetaFromRouting(routing: unknown): SourceAuditCascadeMeta | null {
+  let snap = routing;
+  if (typeof snap === 'string') {
+    try { snap = JSON.parse(snap); } catch { return null; }
+  }
+  const block = (snap as { cascade?: Partial<SourceAuditCascadeMeta> } | null)?.cascade;
+  return block?.flavor === 'grading-integrity' && typeof block.issueId === 'string' &&
+    typeof block.reservationKey === 'string' && typeof block.brief === 'string'
+    ? block as SourceAuditCascadeMeta : null;
+}
+
+export function sourceAuditWakeCopy(meta: SourceAuditCascadeMeta, conversationId: string): CascadeWakeCopy {
+  return {
+    summary: `Grading-integrity audit: ${meta.issueId}`,
+    body: `${meta.brief}\n\nThe existing relevance router selected you as an independent audit candidate; ` +
+      `selection can be best-available below the floor. Audit the stored evidence on its merits; ` +
+      `selection is not a claim that your transcript proves the result.\n` +
+      `Read the request in conversations:get { id:${JSON.stringify(conversationId)} }. ` +
+      `If unable to audit, use consult:decline { conversation_id:${JSON.stringify(conversationId)}, reason:'...' }; ` +
+      `the existing cascade selects the next candidate. Emit the exact audit card to finish; a consult reply does not settle it.`,
+  };
+}
+
 /**
  * What a grading cascade must carry on its row so ANY trigger can render the
  * next wake. Kept to identity only — everything else (position, via, digest)

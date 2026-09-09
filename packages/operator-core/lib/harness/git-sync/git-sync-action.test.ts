@@ -958,11 +958,21 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     await action(ctx);
 
     expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule']);
-    // the routine did NOTHING this tick: no sync, no outcome writes, no pipeline event
-    // (the only PG write is the WI-1416 fire_started_at breadcrumb, stamped before locks)
+    // The routine did not run Git or append a pipeline event, but it MUST replace any
+    // stale prior `synced` outcome with a non-attemptable status. Otherwise the stall
+    // watchdog carries the old HEAD-age clock through this skipped fire and emits a
+    // false "commits are NOT landing" alarm (EI-22764118395439975).
     expect(runGitSyncMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).not.toHaveBeenCalled();
-    expect(routinePatches()).toEqual([]);
+    expect(routinePatches()).toEqual([
+      expect.objectContaining({
+        last_status: 'skipped',
+        local_sync_status: 'skipped',
+        last_skip_reason: 'held by agent:peer',
+        last_skipped_at: expect.any(Number),
+        last_skipped_paths: [],
+      }),
+    ]);
     expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
     expect(captureHeadShaMock).not.toHaveBeenCalled();
     // …and the refused resource gets an owner-scoped late-grant cleanup before
@@ -1276,7 +1286,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(tryAcquireResourceMock).toHaveBeenCalledTimes(4); // initial + 3 bounded retries
       expect(runGitSyncMock).not.toHaveBeenCalled();
       expect(appendPipelineEventMock).not.toHaveBeenCalled();
-      expect(routinePatches()).toEqual([]);
+      expect(routinePatches()).toEqual([
+        expect.objectContaining({
+          last_status: 'skipped',
+          local_sync_status: 'skipped',
+          last_skip_reason: 'lock_contended',
+          last_skipped_at: expect.any(Number),
+          last_skipped_paths: [],
+        }),
+      ]);
       expect(releasedResources()).toEqual([]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock contended after retries'));
       warn.mockRestore();
@@ -2178,7 +2196,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     expect(runGitSyncMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).not.toHaveBeenCalled();
-    expect(routinePatches()).toEqual([]); // only the WI-1416 breadcrumb is written
+    expect(routinePatches()).toEqual([
+      expect.objectContaining({
+        last_status: 'skipped',
+        local_sync_status: 'skipped',
+        last_skip_reason: 'unknown_resource',
+        last_skipped_at: expect.any(Number),
+        last_skipped_paths: [],
+      }),
+    ]);
     // the deliberate, human-registered surface: warned about, not auto-registered
     expect(registeredResources()).toEqual(['git-sync:papercup']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"my-deploy-lock" is not registered'));

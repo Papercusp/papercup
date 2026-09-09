@@ -129,124 +129,31 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
 
-    // Heavy prod seams — imported per-call, never at registration (see header).
-    const [
-      { getOrgPg },
-      { getFeedbackCore },
-      { routeConsult },
-      { buildQueryEmbedder },
-      { resolveSessionStates },
-      conversations,
-      { notifyAgents },
-      { makeConsultReviver },
-    ] = await Promise.all([
-      import('@papercusp/db-org'),
-      import('../../consult/get-feedback-core'),
-      import('../../consult/relevance-router'),
-      import('../search/embedder'),
-      import('../coordination/liveness-oracle'),
+    const [{ getFeedbackProd }, conversations] = await Promise.all([
+      import('../../consult/get-feedback-prod'),
       import('../coordination/conversations'),
-      import('../coordination/notify-agents'),
-      import('../../consult/revive-responder'),
     ]);
-
-    // The consult_state partition must be the SAME workspace the conversation
-    // row lands under — resolve it with the conversations layer's own resolver.
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
       conversations.conversationsScopeWorkspace(),
     );
-
-    const embed = await buildQueryEmbedder(); // Embedder | null — null = honest degrade
-    const result = await getFeedbackCore(
-      {
-        workspaceId,
-        requesterId: identity.ownerId,
-        question: args.question,
-        tried: args.tried,
-        observed: args.observed,
-        decisionAtStake: args.decision_at_stake,
-        latencyContract: args.latency_contract,
-        ...(args.origin_task_ref !== undefined ? { originTaskRef: args.origin_task_ref } : {}),
-        ...(args.parent_consult_id !== undefined ? { parentConsultId: args.parent_consult_id } : {}),
-        excludeOwners: args.exclude,
-        ...(args.min_agents !== undefined ? { minResponders: args.min_agents } : {}),
-        ...(args.max_agents !== undefined ? { maxResponders: args.max_agents } : {}),
-        ...(args.policy !== undefined ? { policy: args.policy } : {}),
-        ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
-        topics: args.topics,
-        harnessSlug: args.harness,
-      },
-      {
-        getSql: () => getOrgPg().sql,
-        route: (params) =>
-          routeConsult(params, {
-            getSql: () => getOrgPg().sql,
-            embed,
-            getLiveness: async (ownerIds) => {
-              const verdicts = await resolveSessionStates(
-                ownerIds.map((ownerId) => ({ ownerId })),
-                {
-                  hydratePerId: true,
-                  // EI-22352972025329550: the reviver refuses to resume an
-                  // identity whose PTY host is already live. Use that same
-                  // positive witness while routing so a stale `ended` verdict
-                  // cannot empty the minimum and then contradict the reviver.
-                  psuHostPositiveAuthority: true,
-                },
-              );
-              // Preserve the oracle's warmIdle signal alongside sessionState.
-              // The selector treats this as a non-fatal exclusion for stale
-              // parked minimum-fill candidates; dropping it recreates the
-              // hard-blocked rubric-vetting stall.
-              return Object.fromEntries(
-                [...verdicts.values()].map((v) => [
-                  v.ownerId,
-                  {
-                    sessionState: v.sessionState,
-                    ...(typeof v.warmIdle === 'boolean' ? { warmIdle: v.warmIdle } : {}),
-                  },
-                ]),
-              );
-            },
-          }),
-        open: async (input) => {
-          const opened = await conversations.openConversation(identity, {
-            ...input,
-            producer: 'consult:get_feedback',
-          });
-          return {
-            conversation_id: opened.conversation.id,
-            thread_id: opened.thread_id,
-            delivered: opened.delivered,
-          };
-        },
-        reach: async (opts) => {
-          const r = await notifyAgents(identity, {
-            addressees: [opts.responder],
-            objectRef: { kind: 'conversation', ref: opts.conversationId },
-            summary: opts.summary,
-            body: opts.body,
-            ...(args.harness ? { harnessSlug: args.harness } : {}),
-            wake: true,
-          });
-          return {
-            queued: r.queued ?? r.woke,
-            woke: r.woke,
-            pickupConfirmed: r.pickupConfirmed ?? false,
-          };
-        },
-        // WI-39852 revival leg: carry-respawn a DEAD above-floor expert's own
-        // session (headless resume; the brief is its first turn). The reviver
-        // never throws — spawned:false falls back to pre-revival selection.
-        revive: makeConsultReviver({
-          workspaceId,
-          harnessSlug:
-            args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null),
-          launchedBy: identity.ownerId,
-        }),
-      },
-    );
-
+    const result = await getFeedbackProd({
+      workspaceId,
+      requesterId: identity.ownerId,
+      question: args.question,
+      tried: args.tried,
+      observed: args.observed,
+      decisionAtStake: args.decision_at_stake,
+      latencyContract: args.latency_contract,
+      ...(args.origin_task_ref !== undefined ? { originTaskRef: args.origin_task_ref } : {}),
+      ...(args.parent_consult_id !== undefined ? { parentConsultId: args.parent_consult_id } : {}),
+      excludeOwners: args.exclude,
+      ...(args.min_agents !== undefined ? { minResponders: args.min_agents } : {}),
+      ...(args.max_agents !== undefined ? { maxResponders: args.max_agents } : {}),
+      ...(args.policy !== undefined ? { policy: args.policy } : {}),
+      ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
+      topics: args.topics,
+      harnessSlug: args.harness,
+    }, identity, { harnessSlug: ctx.harnessSlug !== '*' ? ctx.harnessSlug : null });
     let interestWatch;
     if (
       'verdict' in result &&

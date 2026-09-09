@@ -36,6 +36,7 @@ import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-ro
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
+import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
 
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
  * question similarity clears this is served from the archive (create +
@@ -158,6 +159,8 @@ export interface GetFeedbackRequest {
    * quietly selecting under the wrong bounds is the failure this replaces.
    */
   policy?: string;
+  /** Internal consumer metadata, persisted before any delivery or revival. */
+  cascade?: SourceAuditCascadeMeta;
 }
 
 /** P-005 creation-side refusals — structural, BEFORE any conversation/row is
@@ -503,11 +506,14 @@ function evidenceLine(c: Pick<RevivalBriefCandidate, 'evidence'>): string {
  * protocol: a revived session missed the conversation ping, so this brief is
  * its only guaranteed delivery. Exported for the binding + tests. */
 export function revivalBrief(opts: {
+  routing?: unknown;
   requesterId: string;
   question: string;
   conversationId: string;
   candidate: RevivalBriefCandidate;
 }): string {
+  const audit = sourceAuditCascadeMetaFromRouting(opts.routing);
+  if (audit) return sourceAuditWakeCopy(audit, opts.conversationId).body;
   const c = opts.candidate;
   return (
     `🧭 You were REVIVED (carry-respawn of your own session) to answer a consult — your archived transcript is the most relevant context in the workspace for this question, and no live peer matched better (WI-39852 revival leg).\n` +
@@ -817,6 +823,13 @@ export async function getFeedbackCore(
     question: req.question,
     ...(excludeOwners.length ? { excludeOwners } : {}),
   });
+  if (req.cascade) {
+    route.snapshot.cascade = req.cascade;
+    // Exclude from the ENTIRE persisted pool, including refill/revival inputs.
+    const excluded = new Set([...excludeOwners, req.requesterId]);
+    route.qualified = route.qualified.filter((c) => !excluded.has(c.ownerId));
+    route.snapshot.candidates = route.snapshot.candidates.filter((c) => !excluded.has(c.ownerId));
+  }
 
   // The real router labels every lexical fallback candidate. Preserve that
   // contract for injected/test route implementations too: a degraded snapshot
@@ -1113,6 +1126,7 @@ export async function getFeedbackCore(
       ownerId: revivalCandidate!.ownerId,
       conversationId: opened.conversation_id,
       brief: revivalBrief({
+        routing: route.snapshot,
         requesterId: req.requesterId,
         question: req.question,
         conversationId: opened.conversation_id,
@@ -1262,14 +1276,15 @@ export async function getFeedbackCore(
   let woke = 0;
   let pickupConfirmed = false;
   if (willWake && finalChosen && !revivalFirstTurnObserved) {
+    const auditCopy = req.cascade ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
     const r = await deps.reach({
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
-      summary: `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
+      summary: auditCopy?.summary ?? `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
       // The branch-specific PREAMBLE varies (why you were picked, and what standard of answer
       // that implies); the verb menu does NOT. Keeping the menu out of the ternary is the point
       // of EI-21761566265989000: three inline copies is how all three came to omit the READ door.
-      body:
+      body: auditCopy?.body ?? (
         (finalChosen.fallback === 'lexical'
           ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
             `Lexical evidence: ${evidenceLine(finalChosen)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
@@ -1287,7 +1302,7 @@ export async function getFeedbackCore(
           ...(finalChosen.fallback !== 'lexical' && finalChosenVia !== 'minimum'
             ? { declineNote: "if it's not your area" }
             : {}),
-        }),
+        })),
     });
     pickupConfirmed = r.pickupConfirmed ?? false;
     queued = r.queued ?? r.woke ?? 0;
@@ -1366,6 +1381,7 @@ export async function getFeedbackCore(
         ownerId: finalChosen.ownerId,
         conversationId: opened.conversation_id,
         brief: revivalBrief({
+          routing: route.snapshot,
           requesterId: req.requesterId,
           question: req.question,
           conversationId: opened.conversation_id,
