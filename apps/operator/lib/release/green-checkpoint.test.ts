@@ -885,7 +885,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
   // admission that lands in that window used to be overwritten by the run-end write-back of
   // the run-start snapshot (measured 2026-09-05 17:41Z). With the CAS transition wired, the
   // verdict is applied to the FRESH row and only for the head the run judged.
-  function p027Queue(frozen: string, ready: string): FrozenCandidateRepairQueue {
+  function p027Queue(
+    frozen: string,
+    ready: string,
+  ): FrozenCandidateRepairQueue {
     const now = Date.now();
     return {
       schemaVersion: 3,
@@ -932,7 +935,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
-    const cell = { queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null };
+    const cell = {
+      queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null,
+    };
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     const logs: string[] = [];
     deps.log = (line) => logs.push(line);
@@ -978,7 +983,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(cell.queue?.admissions).toHaveLength(1);
     expect(cell.queue?.phase).toBe("ready-to-verify");
     expect(
-      writes.some((w) => w.repairHead === frozen || w.phase === "awaiting-fixer"),
+      writes.some(
+        (w) => w.repairHead === frozen || w.phase === "awaiting-fixer",
+      ),
     ).toBe(false);
     // WI-10000741 (D-014 "records its legs"): the suite's red is RECORDED at the head it
     // measured — a round at `frozen`, never one at the admitted head, so the admitted head
@@ -988,10 +995,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(
       cell.queue?.signature?.every((entry) => entry.measuredHead === frozen),
     ).toBe(true);
-    expect(cell.queue && frozenRepairHeadAwaitsVerification(cell.queue)).toBe(true);
+    expect(cell.queue && frozenRepairHeadAwaitsVerification(cell.queue)).toBe(
+      true,
+    );
     expect(transitions).toContain("written");
     expect(transitions).not.toContain("unchanged");
-    const superseded = logs.find((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED"));
+    const superseded = logs.find((l) =>
+      l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED"),
+    );
     expect(superseded).toBeDefined();
     expect(superseded).toContain(`recorded as round 1`);
     expect(superseded).not.toContain("not recorded");
@@ -1001,7 +1012,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
-    const cell = { queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null };
+    const cell = {
+      queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null,
+    };
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     const logs: string[] = [];
     deps.log = (line) => logs.push(line);
@@ -4607,7 +4620,7 @@ describe("runGreenCheckpoint", () => {
     expect(calls).toContain("advance");
   });
 
-  it("WI-38422: a passing changed-file typecheck scopes a mixed-workspace diff to operator-core before the full gate", async () => {
+  it("WI-38422: a passing changed-file typecheck receives the complete mixed-workspace diff before the full gate", async () => {
     const c1 = await commit(
       "packages/operator-core/lib/a.ts",
       "export const a = 1;\n",
@@ -4627,7 +4640,10 @@ describe("runGreenCheckpoint", () => {
     };
     deps.runChangedFileTypecheckPreflight = async (files) => {
       calls.push("runChangedFileTypecheckPreflight");
-      expect(files).toEqual(["packages/operator-core/lib/a.ts"]);
+      expect(files).toEqual([
+        "docs/note.md",
+        "packages/operator-core/lib/a.ts",
+      ]);
       return { status: "passed", summary: "LINT_TSC_RESULT status=clean" };
     };
 
@@ -4735,19 +4751,19 @@ describe("runGreenCheckpoint", () => {
     ).toBe(true);
   });
 
-  it("WI-38422: a diff outside operator-core skips the scoped gate instead of manufacturing an out-of-scope red", async () => {
-    const c1 = await commit(
-      "apps/operator/lib/a.ts",
-      "export const a = 1;\n",
-      "c1",
-    );
+  it("WI-38422: a diff with no owning typecheck gate skips the scoped gate instead of manufacturing an out-of-scope red", async () => {
+    const c1 = await commit("docs/note.md", "note 1\n", "c1");
     await git(repo, ["branch", "ready", c1]);
-    await commit("apps/operator/lib/a.ts", "export const a = 2;\n", "c2");
+    await commit("docs/note.md", "note 2\n", "c2");
     const { deps, calls } = stubDeps(true);
-    deps.changedFilesForRange = async () => ["apps/operator/lib/a.ts"];
+    deps.changedFilesForRange = async () => ["docs/note.md"];
     deps.runChangedFileTypecheckPreflight = async () => {
       calls.push("runChangedFileTypecheckPreflight");
-      return { status: "failed", summary: "out-of-scope" };
+      return {
+        status: "skipped",
+        summary:
+          "no changed file has a resolvable owning lint:tsc gate — full gate retained",
+      };
     };
 
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -4757,7 +4773,7 @@ describe("runGreenCheckpoint", () => {
       green: true,
       reason: "advanced",
     });
-    expect(calls).not.toContain("runChangedFileTypecheckPreflight");
+    expect(calls).toContain("runChangedFileTypecheckPreflight");
     expect(calls).toContain("runGreen");
   });
 
@@ -13554,7 +13570,12 @@ describe("WI-42350: a sha that already reached a RED verdict is not re-judged", 
   it("EI-22430783328866306: a frozen repair head the QUEUE has not judged is judged even when the marker names it", async () => {
     const { ready, candidate: frozen } = await readyAndCandidate();
     const head = await commit("c", "3", "fix admitted onto the frozen lineage");
-    const queue = frozenQueueAt({ ready, frozen, repairHead: head, judgedHeads: [frozen] });
+    const queue = frozenQueueAt({
+      ready,
+      frozen,
+      repairHead: head,
+      judgedHeads: [frozen],
+    });
     const logs: string[] = [];
     const { deps, calls } = stubDeps(true);
     deps.log = (line: string) => {
@@ -13568,13 +13589,20 @@ describe("WI-42350: a sha that already reached a RED verdict is not re-judged", 
 
     expect(result.reason).not.toBe("unchanged-since-verdict");
     expect(calls).toContain("runGreen");
-    expect(logs.some((line) => line.includes("EI-22430783328866306"))).toBe(true);
+    expect(logs.some((line) => line.includes("EI-22430783328866306"))).toBe(
+      true,
+    );
   });
 
   it("EI-22430783328866306: the skip still holds for a frozen repair head the queue DID record a verdict for", async () => {
     const { ready, candidate: frozen } = await readyAndCandidate();
     const head = await commit("c", "3", "fix admitted onto the frozen lineage");
-    const queue = frozenQueueAt({ ready, frozen, repairHead: head, judgedHeads: [frozen, head] });
+    const queue = frozenQueueAt({
+      ready,
+      frozen,
+      repairHead: head,
+      judgedHeads: [frozen, head],
+    });
     const { deps, calls } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
     deps.lastJudgedRed = async () => head;

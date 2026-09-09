@@ -183,6 +183,11 @@ import {
   VITEST_TEST_FILE_SOURCE,
   parseFailingFilesLine,
 } from "../../../../scripts/lib/vitest-summary.mjs";
+import {
+  collectAutoTypecheckRoutes,
+  discoverSiblingTypecheckGates,
+  gateCoveringFile,
+} from "../../../../scripts/lib/tsc-baseline-gate.mjs";
 // Keep rescue command resolution aligned with the affected-test runner. These packages are
 // deliberately outside the root npm workspaces (the lockfile carries them as standalone links),
 // so `npm --workspace <name>` cannot address them from the superproject root.
@@ -775,7 +780,10 @@ export interface CheckpointDeps {
    * Optional / best-effort, exactly like its siblings: an un-stamped run publishes nothing and a
    * reader treats the absence as "unknown", never as "still deciding".
    */
-  stampInFlightVerdictWritten?(stamp: { candidate: string; pid: number }): Promise<void>;
+  stampInFlightVerdictWritten?(stamp: {
+    candidate: string;
+    pid: number;
+  }): Promise<void>;
   /**
    * Detect a PREDECESSOR run that died without ever reaching a verdict, and report it loudly.
    *
@@ -986,15 +994,17 @@ export interface CheckpointDeps {
     ref: string,
     paths: string[],
   ): Promise<RepairHeadRadius | null>;
-  /** WI-38422: run the candidate-scoped operator-core typecheck BEFORE the expensive
-   *  affected-test sweep. The caller passes the exact committed diff from the last
-   *  green pin to the candidate; the real dep invokes the existing `lint:tsc --files`
-   *  attribution surface in the isolated checkpoint tree. `skipped` means the subject
-   *  hive has no such script, not green. Optional so older/test deps keep their current
-   *  behaviour; runGreen's unscoped post-suite typecheck remains the final assurance. */
+  /** WI-38422: run candidate-scoped owning typechecks BEFORE the expensive affected-test
+   *  sweep. The caller passes the exact committed diff from the last green pin to the
+   *  candidate; the real dep routes every changed file through a discovered owning
+   *  `lint:tsc:* --files` gate in the isolated checkpoint tree. `skipped` means no changed
+   *  file had a resolvable owning gate, not green. Optional so older/test deps keep their
+   *  current behaviour; runGreen's unscoped post-suite typechecks remain the final assurance. */
   runChangedFileTypecheckPreflight?(files: string[]): Promise<{
     status: "passed" | "failed" | "skipped";
     summary: string;
+    /** The subset actually checked by one or more owning gates. */
+    checkedFiles?: string[];
     failingSignatures?: string[];
     /** Full compiler diagnostics, before the human summary is bounded/truncated. */
     diagnostics?: CheckpointTypecheckDiagnostic[];
@@ -1177,7 +1187,9 @@ export interface CheckpointDeps {
    * gate applies the reducer to its snapshot and calls `writeFrozenRepairQueue` (pre-D-014).
    */
   transitionFrozenRepairQueue?(
-    transition: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
+    transition: (
+      fresh: FrozenCandidateRepairQueue,
+    ) => FrozenCandidateRepairQueue,
   ): Promise<FrozenRepairQueueTransitionResult>;
   /**
    * P-027 (D-014): reconcile the row with `refs/papercusp/frozen/<candidate>` at run start —
@@ -1492,7 +1504,8 @@ export function checkpointVerdictFromResult(
   const { repairTickLegs, ...verdict } = result;
   if (!repairTickLegs) return verdict;
 
-  const measuredLegs: NonNullable<CheckpointVerdict["repairTickLegs"]>["legs"] = [];
+  const measuredLegs: NonNullable<CheckpointVerdict["repairTickLegs"]>["legs"] =
+    [];
   for (const leg of repairTickLegs.legs) {
     if (leg.status === "skipped") continue;
     measuredLegs.push({
@@ -5279,7 +5292,9 @@ function verdictTransitionAtHead(
   measuredHead: string,
   reducer: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   onSuperseded: (fresh: FrozenCandidateRepairQueue) => void,
-  onSupersededRecord?: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
+  onSupersededRecord?: (
+    fresh: FrozenCandidateRepairQueue,
+  ) => FrozenCandidateRepairQueue,
 ): (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue {
   return (fresh) => {
     if (fresh.repairHead !== measuredHead) {
@@ -5293,7 +5308,10 @@ function verdictTransitionAtHead(
 /** The round number a superseded red was just recorded as: the NEWEST convergence round at
  * `head`. `"?"` when none exists — the transition did not persist (the row was retired
  * mid-run, see `commitFrozenRepairQueueTransition`) or the caller's row carries no rounds. */
-function recordedRoundAt(queue: FrozenCandidateRepairQueue, head: string): string {
+function recordedRoundAt(
+  queue: FrozenCandidateRepairQueue,
+  head: string,
+): string {
   const rounds = queue.convergenceRounds ?? [];
   for (let i = rounds.length - 1; i >= 0; i -= 1) {
     const round = rounds[i];
@@ -8505,7 +8523,9 @@ async function tryLongestGreenPrefix(
       (prefixTip
         ? `; prefix tip ${prefixTip.slice(0, 8)}`
         : `; the first commit already implicates the failure`) +
-      (scanStopped ? "" : " (no prefix implicated the failure — see the vacuous-prefix guard)"),
+      (scanStopped
+        ? ""
+        : " (no prefix implicated the failure — see the vacuous-prefix guard)"),
   );
 
   // EI-20840168390311296 — THE VACUOUS MAXIMAL PREFIX. Same hazard the `includes('/')`
@@ -9630,7 +9650,10 @@ async function runGreenCheckpointInner(
     // append: both red exits reach it, `judgedRedStamped` makes it idempotent across overlapping
     // paths, `diagnosticOnly` keeps an investigation from claiming a verdict, and the infra-fault
     // arm cannot reach it — a run that was never actually judged must not report a decision time.
-    await deps.stampInFlightVerdictWritten?.({ candidate: sha, pid: process.pid });
+    await deps.stampInFlightVerdictWritten?.({
+      candidate: sha,
+      pid: process.pid,
+    });
   };
   // EI-21149610271281506: frozen-repair dispatch can resolve a terminal RED before the
   // ordinary red-path emitter below. Keep that short-circuit terminal path equivalent to
@@ -9916,7 +9939,11 @@ async function runGreenCheckpointInner(
               spawnId: deadSpawnId,
               nowMs: Date.now(),
               ...(deathClass?.infrastructure
-                ? { unproductiveInfrastructureDeath: { reason: deathClass.reason } }
+                ? {
+                    unproductiveInfrastructureDeath: {
+                      reason: deathClass.reason,
+                    },
+                  }
                 : {}),
             }),
           "dead-fixer",
@@ -10956,7 +10983,7 @@ async function runGreenCheckpointInner(
     }
   }
   const earlyTypecheckStartedAtMs = Date.now();
-  // WI-38422: reject a candidate-scoped operator-core type regression BEFORE paying for
+  // WI-38422: reject a candidate-scoped type regression BEFORE paying for
   // the full affected-test sweep. This deliberately reuses BOTH existing seams:
   // `changedFilesForRange` is the exact committed last-green..candidate diff (including
   // expanded submodule paths), and the real runner below is `lint:tsc -- --files=...`,
@@ -10964,8 +10991,8 @@ async function runGreenCheckpointInner(
   // candidate's own files.
   //
   // Applicability is fail-soft but never optimistic. With no prior green pin, no exact
-  // changed-file answer, no operator-core path, an unrepresentable comma-containing path,
-  // or an execution error, we log the reason and retain the unchanged full suite + unscoped
+  // changed-file answer, no owning gate, an unrepresentable comma-containing path, or an
+  // execution error, we log the reason and retain the unchanged full suite + unscoped
   // post-suite typecheck. Only a completed non-zero scoped verdict rejects early. A passing
   // preflight ALSO retains that post-suite check: the early run buys latency, not assurance.
   let earlyPreflightFailure: Awaited<
@@ -10994,34 +11021,24 @@ async function runGreenCheckpointInner(
                 .filter(Boolean),
             ),
           ].sort();
-          const operatorCoreFiles = files.filter((file) =>
-            file.startsWith("packages/operator-core/"),
-          );
-          const commaPath = operatorCoreFiles.find((file) =>
-            file.includes(","),
-          );
-          if (operatorCoreFiles.length === 0) {
+          if (files.length === 0) {
             deps.log(
               `early changed-file typecheck preflight: skipped after ${elapsed()} ` +
-                `(${files.length} changed file(s), none under packages/operator-core/) — full gate retained`,
-            );
-          } else if (commaPath) {
-            // `lint:tsc --files` is comma-delimited and has no escaping syntax. Guessing here
-            // would silently judge a different set, so defer to the unscoped final gate.
-            deps.log(
-              `early changed-file typecheck preflight: skipped after ${elapsed()} ` +
-                `(path cannot be represented by --files: ${commaPath}) — full gate retained`,
+                "(the committed diff contained no changed files) — full gate retained",
             );
           } else {
             const preflight =
-              await deps.runChangedFileTypecheckPreflight(operatorCoreFiles);
+              await deps.runChangedFileTypecheckPreflight(files);
+            const checkedFiles = preflight.checkedFiles?.length
+              ? [...new Set(preflight.checkedFiles)]
+              : files;
             if (preflight.status === "failed") {
               const failingSignatures = preflight.failingSignatures?.length
                 ? [...new Set(preflight.failingSignatures)]
                 : ["lint:tsc"];
               const typecheckPreflight: CheckpointTypecheckPreflight = {
                 status: "failed",
-                checkedFiles: [...operatorCoreFiles],
+                checkedFiles,
                 failingFiles: [
                   ...new Set(preflight.failingFilePaths ?? []),
                 ].sort(),
@@ -11031,7 +11048,7 @@ async function runGreenCheckpointInner(
                 ),
               };
               deps.log(
-                `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${operatorCoreFiles.length} operator-core file(s) ` +
+                `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${checkedFiles.length} file(s) ` +
                   `(${files.length} total changed file(s)) — ` +
                   `rejecting before the affected-test sweep; the full post-suite checks remain required for every later passing candidate`,
               );
@@ -11064,7 +11081,7 @@ async function runGreenCheckpointInner(
             } else {
               deps.log(
                 `early changed-file typecheck preflight: ${preflight.status.toUpperCase()} in ${elapsed()} across ` +
-                  `${operatorCoreFiles.length} operator-core file(s) (${files.length} total changed file(s)) — ` +
+                  `${checkedFiles.length} file(s) (${files.length} total changed file(s)) — ` +
                   `continuing to the full affected-test sweep and post-suite checks`,
               );
             }
@@ -11090,7 +11107,10 @@ async function runGreenCheckpointInner(
     const selectionToSuiteMs = Date.now() - candidateSelectedAtMs;
     // P-005: attribute the stretch to its stamped phases. Rendered on BOTH branches, so a
     // healthy run leaves a baseline in every log and a slow one names its dominant phase.
-    const stretch = summarizeSetupStretch(setupStretch.stamps, selectionToSuiteMs);
+    const stretch = summarizeSetupStretch(
+      setupStretch.stamps,
+      selectionToSuiteMs,
+    );
     let committedNote = "";
     try {
       const committedAtSec = await commitUnixTime(
@@ -16782,82 +16802,149 @@ export function realCheckpointDeps(
           },
         }
       : {}),
-    // WI-38422: the cheap candidate-scoped rejection pass. This intentionally shells
-    // the SAME lint:tsc script the post-suite leg runs, with the SAME release-gate env
-    // isolation and the SAME 16 GiB sequential-leg heap. The only difference is scope:
-    // `--files` attributes the verdict to the committed last-green..candidate diff.
-    // A pass is provisional; runGreen still runs the unscoped post-suite leg later.
+    // WI-38422: the cheap candidate-scoped rejection pass. Discover the SAME owning
+    // lint:tsc* gates the normal typecheck CLIs use, then run each one with the SAME
+    // release-gate env isolation and sequential-leg heap. The only difference is scope:
+    // `--files-from` attributes each verdict to the committed last-green..candidate diff.
+    // A pass is provisional; runGreen still runs the unscoped post-suite legs later.
     async runChangedFileTypecheckPreflight(files) {
-      const scriptCheck = checkNpmScript(cfg.checkpointRoot, "lint:tsc");
-      if (scriptCheck === "absent") {
+      let discovered: Awaited<ReturnType<typeof discoverSiblingTypecheckGates>>;
+      try {
+        discovered = await discoverSiblingTypecheckGates(cfg.checkpointRoot);
+      } catch (error) {
         return {
           status: "skipped",
-          summary: "candidate provides no lint:tsc script",
+          summary: `owning typecheck-gate discovery failed (${error instanceof Error ? error.message : error}) — full gate retained`,
         };
       }
-      if (scriptCheck === "unreadable") {
+      if (!discovered.rosterReadable) {
         return {
-          status: "failed",
-          summary:
-            `package.json in ${cfg.checkpointRoot} is unreadable while checking for lint:tsc; ` +
-            "the isolated candidate tree cannot be judged",
-          failingSignatures: ["package.json-unreadable"],
+          status: "skipped",
+          summary: `candidate package.json could not be read while discovering owning typecheck gates — full gate retained`,
         };
       }
-      const env = buildGreenCheckpointEnv(
-        null,
-        process.env,
-        runId,
-        cfg.greenCheckpointCapacityMode,
-      );
-      env.NODE_OPTIONS = sanitizeForkNodeOptions(
-        env.NODE_OPTIONS,
-        GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
-      );
-      // A candidate can carry enough changed paths to exceed Linux's exec argv limit. Keep the
-      // exact file set in a short-lived response file instead of interpolating it into argv; the
-      // lint gate reads it as `--files-from` and preserves the same explicit attribution.
-      const responseFile = path.join(
-        os.tmpdir(),
-        `green-checkpoint-typecheck-files-${randomUUID()}.json`,
-      );
-      try {
-        writeFileSync(responseFile, JSON.stringify(files), { mode: 0o600 });
-        const result = await exec(
-          "npm",
-          ["run", "lint:tsc", "--", `--files-from=${responseFile}`],
-          {
-            cwd: cfg.checkpointRoot,
-            env,
-            allowNonZero: true,
-            heavy: true,
-          },
+
+      // `gateCoveringFile` is the resolver's precise ownership predicate. Filter here before
+      // building the route plan so docs/assets and other non-typecheck paths remain a fail-soft
+      // fallback to the ordinary full gate, while every discovered source owner is checked.
+      const ownedFiles = [
+        ...new Set(
+          files
+            .map((file) => file.replaceAll("\\", "/"))
+            .filter((file) =>
+              Boolean(gateCoveringFile(discovered.gates, file)),
+            ),
+        ),
+      ];
+      if (ownedFiles.length === 0) {
+        return {
+          status: "skipped",
+          summary:
+            "no changed file has a resolvable owning lint:tsc gate — full gate retained",
+        };
+      }
+
+      const routes = collectAutoTypecheckRoutes({
+        files: ownedFiles,
+        // Only discovered sibling lint:tsc* gates are accepted for this early pass. A generic
+        // workspace `typecheck` command does not promise exact-file attribution, whereas the
+        // shared resolver's sibling route does.
+        suggestions: new Map(ownedFiles.map((file) => [file, null])),
+        siblingGates: discovered.gates,
+      });
+      if (routes.unknown.length > 0 || routes.routes.length === 0) {
+        return {
+          status: "skipped",
+          summary:
+            "owning typecheck-gate routing was incomplete — full gate retained",
+        };
+      }
+
+      const checkedFiles = [
+        ...new Set(routes.routes.flatMap((route) => route.files)),
+      ];
+      const summaries: string[] = [];
+      const failingSignatures: string[] = [];
+      const diagnostics: CheckpointTypecheckDiagnostic[] = [];
+      const failingFilePaths: string[] = [];
+
+      for (const route of routes.routes) {
+        if (!route.npmScript) continue;
+        const env = buildGreenCheckpointEnv(
+          null,
+          process.env,
+          runId,
+          cfg.greenCheckpointCapacityMode,
         );
-        const output = result.stdout + result.stderr;
-        const summary =
-          summarizeSuiteOutput(output).trim() ||
-          `npm run lint:tsc exited ${result.code}`;
-        const evidence = parseEarlyTypecheckEvidence(
-          output,
-          files,
-          cfg.checkpointRoot,
+        env.NODE_OPTIONS = sanitizeForkNodeOptions(
+          env.NODE_OPTIONS,
+          GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
         );
-        return result.code === 0
-          ? { status: "passed", summary, failingSignatures: [] }
-          : {
-              status: "failed",
-              summary,
-              failingSignatures: ["lint:tsc"],
-              diagnostics: evidence.diagnostics,
-              failingFilePaths: evidence.failingFiles,
-            };
-      } finally {
+        // A candidate can carry enough changed paths to exceed Linux's exec argv limit. Keep the
+        // exact file set in a short-lived response file instead of interpolating it into argv; the
+        // lint gate reads it as `--files-from` and preserves the same explicit attribution.
+        const responseFile = path.join(
+          os.tmpdir(),
+          `green-checkpoint-typecheck-files-${randomUUID()}.json`,
+        );
         try {
-          unlinkSync(responseFile);
-        } catch {
-          /* response-file cleanup is best-effort; it never changes the gate verdict */
+          writeFileSync(responseFile, JSON.stringify(route.files), {
+            mode: 0o600,
+          });
+          const result = await exec(
+            "npm",
+            ["run", route.npmScript, "--", `--files-from=${responseFile}`],
+            {
+              cwd: cfg.checkpointRoot,
+              env,
+              allowNonZero: true,
+              heavy: true,
+            },
+          );
+          const output = result.stdout + result.stderr;
+          const summary =
+            summarizeSuiteOutput(output).trim() ||
+            `npm run ${route.npmScript} exited ${result.code}`;
+          summaries.push(`${route.npmScript}: ${summary}`);
+          if (result.code !== 0) {
+            failingSignatures.push(route.npmScript);
+            const evidence = parseEarlyTypecheckEvidence(
+              output,
+              route.files,
+              cfg.checkpointRoot,
+            );
+            diagnostics.push(...evidence.diagnostics);
+            failingFilePaths.push(...evidence.failingFiles);
+          }
+        } catch (error) {
+          failingSignatures.push(route.npmScript);
+          summaries.push(
+            `${route.npmScript}: execution errored (${error instanceof Error ? error.message : error})`,
+          );
+        } finally {
+          try {
+            unlinkSync(responseFile);
+          } catch {
+            /* response-file cleanup is best-effort; it never changes the gate verdict */
+          }
         }
       }
+
+      return failingSignatures.length > 0
+        ? {
+            status: "failed",
+            checkedFiles,
+            summary: summaries.join("\n"),
+            failingSignatures: [...new Set(failingSignatures)],
+            diagnostics,
+            failingFilePaths: [...new Set(failingFilePaths)],
+          }
+        : {
+            status: "passed",
+            checkedFiles,
+            summary: summaries.join("\n"),
+            failingSignatures: [],
+          };
     },
     // EI-10800: the single AWAITED emit seam every gate-verdict now flows through. Was a
     // fire-and-forget `void import(...).then(emit)` inlined at each call site — the green
@@ -17131,7 +17218,8 @@ export function realCheckpointDeps(
         setupOutputRemainders[stream] = lines.pop() ?? "";
         for (const line of lines) {
           if (line.trim()) {
-            if (stream === "stdout" && firstSetupStdoutAtMs === null) firstSetupStdoutAtMs = Date.now();
+            if (stream === "stdout" && firstSetupStdoutAtMs === null)
+              firstSetupStdoutAtMs = Date.now();
             log(`setup-release ${stream}: ${line}`);
           }
         }
@@ -17164,7 +17252,13 @@ export function realCheckpointDeps(
       if (!options?.preparedSource) {
         const prepareStartedAtMs = Date.now();
         await prepareExactSource(ref);
-        log(formatSetupSubPhaseLine("setup-tree", "prepare-exact-source", Date.now() - prepareStartedAtMs));
+        log(
+          formatSetupSubPhaseLine(
+            "setup-tree",
+            "prepare-exact-source",
+            Date.now() - prepareStartedAtMs,
+          ),
+        );
       }
       const generationSelectStartedAtMs = Date.now();
       const selectedDependencyGeneration =
@@ -17176,7 +17270,9 @@ export function realCheckpointDeps(
           "setup-tree",
           "dependency-generation-select",
           Date.now() - generationSelectStartedAtMs,
-          prewarmedDependencyGeneration?.candidate === ref ? "pre-lock generation reused" : undefined,
+          prewarmedDependencyGeneration?.candidate === ref
+            ? "pre-lock generation reused"
+            : undefined,
         ),
       );
       if (prewarmedDependencyGeneration?.candidate === ref) {
@@ -18065,7 +18161,8 @@ export function realCheckpointDeps(
               tail: (r.stderr || r.stdout).slice(-300),
             };
           },
-          scriptAvailability: (script) => checkNpmScript(cfg.checkpointRoot, script),
+          scriptAvailability: (script) =>
+            checkNpmScript(cfg.checkpointRoot, script),
           log: (line) => console.log(line),
         },
         ref,
