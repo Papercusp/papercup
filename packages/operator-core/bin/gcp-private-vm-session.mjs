@@ -26,6 +26,7 @@
  * and `residualResourceIds` are computed from the teardown's real outcome, so a leaked VM
  * can never be reported as a clean run.
  */
+import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
