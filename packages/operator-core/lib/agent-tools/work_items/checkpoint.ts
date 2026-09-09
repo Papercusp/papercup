@@ -2145,6 +2145,8 @@ export default defineTool({
         let res;
         try {
           res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+            ...(typeof (joinAddendumStored ?? checkpointToStore) === 'string'
+              ? { latestUpdate: (joinAddendumStored ?? checkpointToStore)! } : {}),
             ...(checksTransform ? { transform: checksTransform } : {}),
             guard: composeGuards(
               appendBaseGuard,
@@ -2190,6 +2192,7 @@ export default defineTool({
               { harness, workItemId: it.id, workspaceId },
               checkpointToStore,
               {
+                ...(typeof checkpointToStore === 'string' ? { latestUpdate: checkpointToStore } : {}),
                 ...(checksTransform ? { transform: checksTransform } : {}),
                 guard: composeGuards(bodyPreservationGuard, overflowGuard),
                 ...depsOpt,
