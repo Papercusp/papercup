@@ -26,6 +26,7 @@ import {
   assertCodeRunOrBulkOrSingleTurnFanout,
   assertToolCalledWithin,
   assertToolCalledWithArrayArg,
+  assertToolSequence,
   assertTextForbidsAffirmed,
   assertTextForbidsInTurnAfter,
   assertTextForbidsInTurnAfterUnlessLine,
@@ -80,6 +81,26 @@ function mkRun(turns: TurnResult[]): RunSummary {
 }
 
 const META = { name: 't', claim: 'c' };
+
+describe('assertToolSequence', () => {
+  const isWrite = (tc: { name: string }) => tc.name === 'capability:edit';
+  const isRead = (tc: { name: string }) => tc.name === 'capability:read';
+  const assertion = assertToolSequence(isWrite, isRead, META);
+
+  it('requires verification after the action, including across turns', () => {
+    expect(assertion.eval(mkRun([
+      mkTurn({ toolCalls: [{ name: 'capability:edit', input: {} }] }),
+      mkTurn({ toolCalls: [{ name: 'capability:read', input: {} }] }),
+    ]))).toEqual([]);
+  });
+
+  it('rejects a read that happened only before the action', () => {
+    expect(assertion.eval(mkRun([
+      mkTurn({ toolCalls: [{ name: 'capability:read', input: {} }] }),
+      mkTurn({ toolCalls: [{ name: 'capability:edit', input: {} }] }),
+    ]))).toHaveLength(1);
+  });
+});
 
 describe('assertToolCalledWithin', () => {
   const assertion = assertToolCalledWithin(['docs:author'], 2, META);

@@ -115,7 +115,15 @@ describe('su SUT hermetic tool fallback grounding', () => {
   });
 
   it('makes an unstubbed exec tool LOUD instead of a silent {ok:true} (EI-18767979259669887)', () => {
-    for (const name of ['code:run', 'code:tools', 'capability:bash', 'capability:bash_output', 'capability:bash_kill']) {
+    for (const name of [
+      'code:run',
+      'code:tools',
+      'capability:bash',
+      'capability:bash_output',
+      'capability:bash_kill',
+      'capability:write',
+      'capability:edit',
+    ]) {
       const result = defaultToolResultForModel(name);
       const parsed = JSON.parse(result.content[0]!.text!);
       expect(parsed).toEqual({ ok: false, error: `tool ${name} is not available in this scenario world` });

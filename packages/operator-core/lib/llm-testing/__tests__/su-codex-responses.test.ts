@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 
 import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 import { buildCatalog } from '../targets/su-catalog';
@@ -126,6 +127,89 @@ describe('SuTarget Codex Responses tool loop', () => {
     }]);
     expect(result.assistantText).toBe('Done from Sol.');
     expect(result.finishReason).toBe('done');
+  });
+
+  it('dispatches a tools:invoke nested call into the scenario world and returns the nested evidence', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if ((body.input as unknown[]).length === 1) {
+        return completed([
+          {
+            type: 'function_call',
+            id: 'fc_nested',
+            call_id: 'call_nested',
+            name: 'tools__invoke',
+            arguments: JSON.stringify({
+              name: 'capability:edit',
+              args: {
+                file_path: 'apps/operator-vite/src/components/harness-card/HarnessCard.tsx',
+                old_string: '<header />',
+                new_string: '<header><StatusPill /></header>',
+              },
+            }),
+          },
+        ], 'snapshot');
+      }
+      return completed([
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Nested edit applied; I will verify the file.' }],
+        },
+      ], 'snapshot');
+    });
+    const nestedOutput = JSON.stringify({
+      ok: true,
+      changed: true,
+      file_path: 'apps/operator-vite/src/components/harness-card/HarnessCard.tsx',
+    });
+    const dispatch = vi.fn(async (name: string) =>
+      name.replace(/^mcp__agentmcp__/, '') === 'tools:invoke'
+        ? PASS_THROUGH
+        : { content: [{ text: nestedOutput }] });
+    const target = new SuTarget({
+      catalog: buildCatalog([
+        {
+          name: 'tools:invoke',
+          description: 'Dispatch a discovered tool.',
+          input: {
+            type: 'object',
+            properties: { name: { type: 'string' }, args: { type: 'object' } },
+            required: ['name'],
+          },
+        },
+      ]),
+      loadSystemPrompt: () => 'Use tools:invoke for discovered tools, then verify writes.',
+      codexFetch: fetchImpl as unknown as typeof fetch,
+    });
+    const session = await target.open({
+      runId: 'sol-nested-tool-loop',
+      sutModel: LEARNING_MODEL_SPEC,
+      workspaceMode: 'isolated',
+      transport: 'in-process',
+      dispatchOverride: { override: dispatch } as never,
+    });
+
+    const result = await session.send({
+      trigger: 'user_message',
+      messages: [{ role: 'user', content: 'Apply the approved HarnessCard edit.' }],
+    });
+
+    expect(dispatch).toHaveBeenCalledWith(
+      'capability:edit',
+      expect.objectContaining({
+        file_path: 'apps/operator-vite/src/components/harness-card/HarnessCard.tsx',
+      }),
+    );
+    expect(result.toolCalls).toEqual([
+      expect.objectContaining({
+        name: 'tools:invoke',
+        input: expect.objectContaining({ name: 'capability:edit' }),
+      }),
+    ]);
+    expect(result.toolResults).toEqual([
+      expect.objectContaining({ name: 'tools:invoke', output: nestedOutput, isError: false }),
+    ]);
   });
 
   it('captures tool-result evidence on the Anthropic Messages path', async () => {

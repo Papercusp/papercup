@@ -343,6 +343,8 @@ const EXEC_TOOLS = new Set([
   'capability:bash',
   'capability:bash_output',
   'capability:bash_kill',
+  'capability:write',
+  'capability:edit',
 ]);
 
 export function defaultToolResultForModel(name: string): ToolResult {

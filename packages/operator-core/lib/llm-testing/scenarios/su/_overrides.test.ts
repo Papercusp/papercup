@@ -210,9 +210,12 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(designBatchWrite).toContain('"ok":true');
     expect(designBatchWrite).toContain('File mutation batch applied');
     expect(designBatchWrite).toContain('harness-card/HarnessCard.tsx');
+    expect(designBatchWrite).toContain('"verificationRequired":true');
+    expect(designBatchWrite).toContain('capability:read before claiming completion');
     expect(designBatchWrite).not.toContain('not available in this scenario world');
     expect(designDirectWrite).toContain('"changed":true');
     expect(designDirectWrite).toContain('harness-card/index.tsx');
+    expect(designDirectWrite).toContain('"verificationRequired":true');
     expect(designCardRead).toContain('HarnessCardProps');
     expect(designCardRead).toContain('StatusPill tone');
     expect(designCardRead).toContain('"completeFile":true');
@@ -228,7 +231,7 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(git).toContain('dev:pipeline_position');
     expect(git).toContain('git-sync:run');
     expect(SU_S03_PUSH_NOT_POLL.version).toBe(4);
-    expect(SU_S04_DESIGN_FIRST.version).toBe(5);
+    expect(SU_S04_DESIGN_FIRST.version).toBe(6);
     expect(SU_S06_SHARED_TREE_GIT.version).toBe(2);
   });
 

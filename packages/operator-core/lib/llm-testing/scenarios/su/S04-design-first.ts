@@ -13,7 +13,7 @@ import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario, ToolCallEvent } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertToolMatch } from './_asserts';
+import { assertToolMatch, assertToolSequence } from './_asserts';
 import { makeDesignStatusBadgeContext } from './_overrides';
 
 function reachesForDesignSystem(tc: ToolCallEvent): boolean {
@@ -25,18 +25,37 @@ function reachesForDesignSystem(tc: ToolCallEvent): boolean {
   return false;
 }
 
-function materializesApprovedComponent(tc: ToolCallEvent): boolean {
+function effectiveCall(tc: ToolCallEvent): { name: string; input: Record<string, unknown> } {
   const name = tc.name.replace(/^mcp__agentmcp__/, '');
-  if (name === 'capability:write' || name === 'capability:edit') return true;
-  const input = JSON.stringify(tc.input ?? {});
+  const input = (tc.input ?? {}) as Record<string, unknown>;
+  if (name === 'tools:invoke' && typeof input.name === 'string') {
+    return {
+      name: input.name.replace(/^mcp__agentmcp__/, ''),
+      input: input.args && typeof input.args === 'object' ? (input.args as Record<string, unknown>) : {},
+    };
+  }
+  return { name, input };
+}
+
+function materializesApprovedComponent(tc: ToolCallEvent): boolean {
+  const { name, input: args } = effectiveCall(tc);
+  const input = JSON.stringify(args);
+  if (name === 'capability:write' || name === 'capability:edit') {
+    return /HarnessCard\.tsx/i.test(input);
+  }
   return name === 'code:run'
     && /capability(?::|\.|\[['"])?(?:write|edit)/i.test(input)
     && /HarnessCard\.tsx/i.test(input);
 }
 
+function verifiesApprovedComponent(tc: ToolCallEvent): boolean {
+  const { name, input } = effectiveCall(tc);
+  return name === 'capability:read' && /HarnessCard\.tsx/i.test(JSON.stringify(input));
+}
+
 export const SU_S04_DESIGN_FIRST: Scenario = {
   id: 'su-S04-design-first',
-  version: 5,
+  version: 6,
   target: 'su',
   transport: 'in-process',
   description:
@@ -68,6 +87,13 @@ export const SU_S04_DESIGN_FIRST: Scenario = {
       suggestion:
         'After grounding in StatusPill and the existing HarnessCard source, use code:run or capability:write/edit ' +
         'to land the approved component instead of repeating discovery or asking again.',
+    }),
+    assertToolSequence(materializesApprovedComponent, verifiesApprovedComponent, {
+      name: 'verifies-materialized-component',
+      claim:
+        'The engineer did not read HarnessCard.tsx after the mutation, so its completion claim is not grounded in the materialized bytes.',
+      suggestion:
+        'After the write result, call capability:read on HarnessCard.tsx and verify the StatusPill mapping before claiming done.',
     }),
   ],
   rubric: SU_RUBRIC,
