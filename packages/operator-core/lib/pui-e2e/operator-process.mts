@@ -74,6 +74,26 @@ const server = createAdaptorServer({
       request.method === 'POST' && pathname === '/api/agent-mcp/run-tool'
         ? ((await request.clone().json().catch(() => null)) as { name?: string } | null)
         : null;
+    const configStep = pathname === '/api/agent-config'
+      ? 'agent-config'
+      : pathname === '/api/agent-tools/operator/credentials_status'
+        ? 'credentials-status'
+        : runTool?.name === 'config:tiers-get'
+          ? 'tiers-get'
+          : null;
+    const configStartedAt = Date.now();
+    if (configStep) {
+      send({
+        type: 'diagnostic',
+        level: 'info',
+        args: ['PUI_OPERATOR_CONFIG_REQUEST_START', {
+          step: configStep,
+          method: request.method,
+          pathname,
+          at: new Date(configStartedAt).toISOString(),
+        }],
+      });
+    }
     const tracksReadiness = pathname.includes('/su-session');
     // A streamed launch returns before async bootstrap registers its host, so
     // the launch-response hook below can legitimately see nothing. The PUI's
@@ -87,6 +107,20 @@ const server = createAdaptorServer({
         ? ((await request.clone().json()) as { agent_chat_id: string; harness_slug: string })
         : null;
     const response = await app.fetch(request, env);
+    if (configStep) {
+      send({
+        type: 'diagnostic',
+        level: 'info',
+        args: ['PUI_OPERATOR_CONFIG_REQUEST_END', {
+          step: configStep,
+          method: request.method,
+          pathname,
+          status: response.status,
+          durationMs: Date.now() - configStartedAt,
+          at: new Date().toISOString(),
+        }],
+      });
+    }
     if (runTool?.name === 'config:tiers-get') {
       send({
         type: 'diagnostic',
