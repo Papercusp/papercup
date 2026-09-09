@@ -212,7 +212,7 @@ import {
   renderPlaneClosePreflightWarning,
 } from '../../agent-plane-close-preflight';
 import { SPEC_EVIDENCE_KINDS } from '../plans/spec-evidence-store';
-import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
+import { isNonCodeWorkItemKind, PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 import { dispatchPendingGradingAudits } from '../../grading-integrity';
 import {
@@ -2697,10 +2697,17 @@ async function completeOne(
   // and duplicate closes.
   const successfulFeatureClose =
     existing.family === 'feature' && successfulClose && !duplicateCloseCoverageException;
+  // Convert-at-pickup defaults to `task`; that label alone cannot establish that
+  // a completion is non-code. Let the existing gate compare the actual claim to
+  // the kind, including an explicit attestation with no changed-path declaration.
+  // It preserves genuine non-code deliverables and refuses contradictory typing.
+  const successfulTaskClose =
+    isNonCodeWorkItemKind(existing.kind) && successfulClose && !duplicateCloseCoverageException;
   const shouldEvaluateSpecAdequacyAtCompletion =
     closeIntentRequested &&
-    (completionClaimsRemediation || successfulFeatureClose) &&
-    completionHasChangedOrDeletedPaths;
+    (((completionClaimsRemediation || successfulFeatureClose || successfulTaskClose) &&
+      completionHasChangedOrDeletedPaths) ||
+      (successfulTaskClose && Boolean(it.specAdequacy)));
 
   // ---- CONTRACT-GATE ACCUMULATION (EI-20286699547467039) ---------------------------
   // Every gate from here to the self-review gate below answers the SAME question — "is
@@ -2814,6 +2821,12 @@ async function completeOne(
       const gate = await specTestAdequacyCompletionGate({
         workItem: existing,
         attestation: it.specAdequacy,
+        ...(successfulTaskClose ? {
+          changedPaths: [
+            ...(completionEvidenceForGate?.filesChanged ?? []),
+            ...(completionEvidenceForGate?.filesDeleted ?? []),
+          ],
+        } : {}),
       });
       if (!gate.ok) {
         const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
