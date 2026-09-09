@@ -67,6 +67,10 @@ export interface AcceptanceBarSeedProblem {
   detail: string;
   barKey?: string;
   planItemId?: string;
+  /** A seed refusal that activation can record as a pending repair without
+   * mutating the invalid rubric or its projections. */
+  repairable?: 'invalid_template_data';
+  rubricSlug?: string;
 }
 
 export interface ParsedRequirementBar {
@@ -442,7 +446,12 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     ? null
     : rubricTemplateDataAuthoringSchema.safeParse(input.existingTemplateData);
   if (existingParsed && !existingParsed.success) {
-    return refusal([{ code: 'bar_rubric_conflict', detail: 'the active acceptance rubric has invalid template_data' }]);
+    return refusal([{
+      code: 'bar_rubric_conflict',
+      detail: 'the active acceptance rubric has invalid template_data',
+      repairable: 'invalid_template_data',
+      rubricSlug: input.rubricSlug,
+    }]);
   }
   const existing = existingParsed?.success ? existingParsed.data : null;
   // The contract can already be binding while its subject is still draft:

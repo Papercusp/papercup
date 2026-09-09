@@ -20322,7 +20322,7 @@
           "POST"
         ]
       },
-      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch, unchanged BAR source is seeded atomically; changed Requirements/map returns barSeedPendingAmendment without changing rubric/projections, which only rubrics:amend may do.",
+      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch, unchanged BAR source is seeded atomically; changed Requirements/map returns barSeedPendingAmendment without changing rubric/projections, which only rubrics:amend may do; an invalid pinned acceptance rubric returns barSeedPendingRepair while preserving the invalid rubric and recording the audit.",
       "capabilities": [
         "plans:write"
       ],
