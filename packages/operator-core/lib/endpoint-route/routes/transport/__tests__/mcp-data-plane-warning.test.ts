@@ -13,6 +13,7 @@ function context(overrides: Partial<BuiltSpawnContext> = {}): BuiltSpawnContext 
     parentSpawnId: null,
     uiClientId: 'su-1',
     ...overrides,
+    detectorSessionKey: overrides.detectorSessionKey ?? null,
   };
 }
 

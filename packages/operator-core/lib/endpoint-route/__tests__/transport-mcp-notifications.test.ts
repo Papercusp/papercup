@@ -36,6 +36,7 @@ const fakeSpawn: BuiltSpawnContext = {
   spawnId: 'mcp-test-spawn',
   parentSpawnId: null,
   uiClientId: null,
+  detectorSessionKey: null,
 };
 
 /** A spawn with a stable session identity — required for activateTools. */

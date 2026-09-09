@@ -1300,6 +1300,11 @@ async function tryBuildSpawnContext(
   // it is null for all other callers. A provenance label for plan
   // revisions, never a gate — read anywhere is safe.
   const planRunSessionId = (url.searchParams.get('plan_run') ?? '').trim() || null;
+  // Private detector identity is transported independently from the public
+  // coordination owner. Signed spawns parse it below through parseRequestContext;
+  // privileged transports do not use that parser, so preserve the same optional
+  // query carrier here instead of silently collapsing detector state by owner.
+  const detectorSessionKey = (url.searchParams.get('detector') ?? '').trim() || null;
 
   // ── (1) Superuser ───────────────────────────────────────────────
   if (url.searchParams.get('superuser') === '1') {
@@ -1475,6 +1480,7 @@ async function tryBuildSpawnContext(
           .join('')}`,
         parentSpawnId: null,
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
+        detectorSessionKey,
         // Caller backend + model (fleet-launch-agent-inheritance-2026-07-03): psu stamps them onto
         // the per-session MCP URL (omp: applyOmpMcpUrlParams; claude/codex: env-interpolated URL),
         // with the `x-papercusp-agent`/`-model` headers as a parallel carrier. fleet:launch-on-plan
@@ -1531,6 +1537,7 @@ async function tryBuildSpawnContext(
         spawnId: principal.slug,
         parentSpawnId: null,
         uiClientId: clientParam || null,
+        detectorSessionKey: null,
         planRunSessionId,
         profile: 'engineer',
         requestOrigin,
@@ -1591,6 +1598,7 @@ async function tryBuildSpawnContext(
         // (from the verified token) is. So an explicit `?client=` is
         // safe to honor: it relabels the owner, it cannot escalate.
         uiClientId: headerClient || (clientParam.length > 0 ? clientParam : claims.authSessionId),
+        detectorSessionKey,
         planRunSessionId,
         // Dispatch-layer parity with superuser (operator-tier catalog
         // + synthesized system principal + workspace tx). The clamp
