@@ -288,7 +288,9 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       binding(1, 'sha256:obsolete-recipe'),
       { ...binding(3, 'sha256:other-clause'), specId: 'SPEC-OTHER' },
     ];
-    listEvidence.mockResolvedValue((order === 'newest-first' ? rows : [...rows].reverse()) as never);
+    listEvidence.mockResolvedValue(
+      (order === 'newest-first' ? rows : [...rows].reverse()) as Awaited<ReturnType<typeof listSpecEvidence>>,
+    );
 
     const result = await call({
       harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship',
