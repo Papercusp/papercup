@@ -37,10 +37,13 @@ import {
   DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS,
   DEFAULT_COORD_SEND_QUEUE_WAIT_MS,
   DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS,
+  DEFAULT_MAX_IMPROVEMENTS_CAPTURE_QUEUE,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
   isCoordSendContinuationCall,
   coordSendToolNames,
+  isImprovementsCaptureContinuationCall,
+  improvementsCaptureToolNames,
   isCriticalContinuationCall,
   criticalContinuationToolNames,
   isReservedControlPlaneCall,
@@ -2858,7 +2861,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isMcpProxyWatchdogProbePath(undefined)).toBe(false);
   });
 
-  it("recognizes only complete continuation-boundary batches for the critical socket", () => {
+  it("recognizes dedicated capture batches separately from shared continuation batches", () => {
     const call = (name: string) =>
       Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
     expect(isCriticalContinuationCall(call("coord:send"))).toBe(false);
@@ -2867,7 +2870,16 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(coordSendToolNames(call("coord:send"))).toEqual([
       "coord:send",
     ]);
-    expect(isCriticalContinuationCall(call("improvements:capture"))).toBe(true);
+    expect(isCriticalContinuationCall(call("improvements:capture"))).toBe(false);
+    expect(criticalContinuationToolNames(call("improvements:capture"))).toEqual(
+      [],
+    );
+    expect(isImprovementsCaptureContinuationCall(call("improvements:capture"))).toBe(
+      true,
+    );
+    expect(improvementsCaptureToolNames(call("improvements:capture"))).toEqual([
+      "improvements:capture",
+    ]);
     expect(isCriticalContinuationCall(call("loop:checkpoint"))).toBe(true);
     expect(criticalContinuationToolNames(call("loop:checkpoint"))).toEqual([
       "loop:checkpoint",
@@ -2917,6 +2929,39 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     expect(isCoordSendContinuationCall(deferredCoordSend)).toBe(true);
     expect(coordSendToolNames(deferredCoordSend)).toEqual(["coord:send"]);
+    const deferredCapture = Buffer.from(
+      JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "improvements:capture", args: {} },
+        },
+      }),
+    );
+    expect(isImprovementsCaptureContinuationCall(deferredCapture)).toBe(true);
+    expect(improvementsCaptureToolNames(deferredCapture)).toEqual([
+      "improvements:capture",
+    ]);
+    expect(
+      isImprovementsCaptureContinuationCall(
+        Buffer.from(
+          JSON.stringify([
+            JSON.parse(call("improvements:capture").toString()),
+            JSON.parse(deferredCapture.toString()),
+          ]),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isImprovementsCaptureContinuationCall(
+        Buffer.from(
+          JSON.stringify([
+            JSON.parse(call("improvements:capture").toString()),
+            JSON.parse(call("loop:end").toString()),
+          ]),
+        ),
+      ),
+    ).toBe(false);
     expect(
       isCoordSendContinuationCall(
         Buffer.from(
@@ -4519,7 +4564,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const aged = Array.from({ length: agedWaiterCount }, (_, index) =>
       request(
         port(proxy),
-        body(index + 2, "improvements:capture"),
+        body(index + 2, "loop:end"),
         `/api/mcp?client=aged-${index}`,
       ),
     );
@@ -4986,7 +5031,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const ordinary = Array.from({ length: 15 }, (_, index) =>
       request(
         port(proxy),
-        body(index + 2, "improvements:capture"),
+        body(index + 2, "loop:end"),
         `/api/mcp?client=ordinary-${index + 1}`,
       ),
     );
@@ -5217,7 +5262,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const ordinary = Array.from({ length: 16 }, (_, index) =>
       request(
         port(proxy),
-        body(index + 2, "improvements:capture"),
+        body(index + 2, "loop:end"),
         `/api/mcp?client=ordinary-${index + 1}`,
       ),
     );
@@ -5330,7 +5375,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const ordinary = Array.from({ length: 16 }, (_, index) =>
       request(
         port(proxy),
-        body(index + 2, "improvements:capture"),
+        body(index + 2, "loop:end"),
         `/api/mcp?client=ordinary-${index + 1}`,
       ),
     );
@@ -5639,7 +5684,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["held-completion", "queued-loop-checkpoint"]);
   });
 
-  it("EI-21646782269636565: admits the first improvements:capture beyond a full continuation FIFO", async () => {
+  it("EI-22728723476698098: pure improvements:capture bypasses a held shared continuation lane", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -5662,7 +5707,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           void firstGate.then(() => res.end('{"result":{"held":true}}'));
           return;
         }
-        res.end('{"result":{"queued":true}}');
+        res.end('{"result":{"captured":true}}');
       }),
     );
     await listen(upstream);
@@ -5675,7 +5720,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
-        maxCriticalContinuationQueueWaitMs: 1_000,
+        maxImprovementsCaptureQueue: 1,
         criticalContinuationQueueWaitLogMs: 20,
         log: (line) => logs.push(line),
       }),
@@ -5696,56 +5741,29 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await firstStarted;
 
-    const ordinary = request(
+    const capture = await request(
       port(proxy),
-      body(2, "loop:end"),
-      "/api/mcp?client=queued-ordinary",
-    );
-    await waitFor(() =>
-      logs.some((line) => line.includes("queued critical-continuation request")),
-    );
-
-    let captureSettled = false;
-    const capture = request(
-      port(proxy),
-      body(3, "improvements:capture"),
+      body(2, "improvements:capture"),
       "/api/mcp?client=priority-capture",
-    ).then((result) => {
-      captureSettled = true;
-      return result;
-    });
-    await waitFor(
-      () =>
-        logs.filter((line) =>
-          line.includes("queued critical-continuation request"),
-        ).length >= 2,
     );
-
-    expect(captureSettled).toBe(false);
-    expect(hits).toEqual(["held-completion"]);
-
-    const secondCapture = await request(
-      port(proxy),
-      body(4, "improvements:capture"),
-      "/api/mcp?client=second-capture",
-    );
-    expect(secondCapture.status).toBe(429);
-    expect(JSON.parse(secondCapture.body).error).toBe(
-      "mcp_proxy_critical_continuation_queue_full",
-    );
+    expect(capture.status).toBe(200);
+    expect(hits).toEqual(["held-completion", "priority-capture"]);
+    // The capture must reach the upstream while the shared continuation write is still held.
+    // This is the regression that the old priority waiter could not satisfy.
+    expect(capture.body).toContain("captured");
+    expect(
+      logs.some((line) => line.includes("queued critical-continuation request")),
+    ).toBe(false);
 
     releaseFirst();
     expect((await first).status).toBe(200);
-    expect((await capture).status).toBe(200);
-    expect((await ordinary).status).toBe(200);
     expect(hits).toEqual([
       "held-completion",
       "priority-capture",
-      "queued-ordinary",
     ]);
   });
 
-  it("WI-950869: gives queued improvements:capture a finite default dwell", async () => {
+  it("WI-950869: gives the dedicated improvements:capture queue a finite default dwell", async () => {
     expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
     expect(DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS).toBe(20_000);
     expect(DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS).toBeLessThan(60_000);
@@ -5767,7 +5785,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
             "client",
           ) ?? "";
         hits.push(client);
-        if (client === "held-completion") {
+        if (client === "held-capture") {
           noteFirstStarted();
           void firstGate.then(() => res.end('{"result":{"held":true}}'));
           return;
@@ -5785,6 +5803,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
+        maxImprovementsCaptureQueue: 1,
         criticalContinuationQueueWaitLogMs: 20,
         log: (line) => logs.push(line),
       }),
@@ -5800,8 +5819,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       });
     const first = request(
       port(proxy),
-      body(1, "work_items:complete"),
-      "/api/mcp?client=held-completion",
+      body(1, "improvements:capture"),
+      "/api/mcp?client=held-capture",
     );
     await firstStarted;
 
@@ -5812,19 +5831,18 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await waitFor(() =>
       logs.some((line) =>
-        line.includes("queued critical-continuation request"),
+        line.includes("queued improvements:capture request"),
       ),
     );
 
     const health = JSON.parse(
       (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
     );
-    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+    expect(health.inFlight.criticalContinuationQueue.waiting).toBe(0);
+    expect(health.inFlight.improvementsCaptureQueue).toMatchObject({
       waiting: 1,
       max: 1,
-      maxWaitMs: 0,
-      improvementsCaptureMaxWaitMs:
-        DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS,
+      maxWaitMs: DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS,
       requests: [
         expect.objectContaining({
           tools: ["improvements:capture"],
@@ -5836,10 +5854,10 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     releaseFirst();
     expect((await first).status).toBe(200);
     expect((await capture).status).toBe(200);
-    expect(hits).toEqual(["held-completion", "default-capture"]);
+    expect(hits).toEqual(["held-capture", "default-capture"]);
   });
 
-  it("WI-950869: expires queued improvements:capture at its configured finite dwell", async () => {
+  it("WI-950869: expires the dedicated improvements:capture queue at its configured finite dwell", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -5857,7 +5875,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
             "client",
           ) ?? "";
         hits.push(client);
-        if (client === "held-completion") {
+        if (client === "held-capture") {
           noteFirstStarted();
           void firstGate.then(() => res.end('{"result":{"held":true}}'));
           return;
@@ -5875,6 +5893,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
+        maxImprovementsCaptureQueue: 1,
         improvementsCaptureQueueWaitMs: 25,
         criticalContinuationQueueWaitLogMs: 10,
         log: (line) => logs.push(line),
@@ -5891,8 +5910,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       });
     const first = request(
       port(proxy),
-      body(1, "work_items:complete"),
-      "/api/mcp?client=held-completion",
+      body(1, "improvements:capture"),
+      "/api/mcp?client=held-capture",
     );
     await firstStarted;
 
@@ -5902,22 +5921,22 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=short-capture",
     );
     await waitFor(() =>
-      logs.some((line) => line.includes("queued critical-continuation request")),
+      logs.some((line) => line.includes("queued improvements:capture request")),
     );
 
     const expired = await capture;
     expect(expired.status).toBe(429);
     expect(JSON.parse(expired.body)).toMatchObject({
-      error: "mcp_proxy_critical_continuation_queue_dwell",
+      error: "mcp_proxy_improvements_capture_queue_dwell",
       forwardingResult: "not_forwarded",
     });
-    expect(hits).toEqual(["held-completion"]);
+    expect(hits).toEqual(["held-capture"]);
 
     releaseFirst();
     expect((await first).status).toBe(200);
   });
 
-  it("EI-22090638969690024: names the holder that head-of-line blocked a dwell shed", async () => {
+  it("EI-22090638969690024: names the holder that head-of-line blocks a critical dwell shed", async () => {
     let releaseHolder: () => void = () => {};
     const holderGate = new Promise<void>((resolve) => {
       releaseHolder = resolve;
@@ -5951,7 +5970,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 4,
-        improvementsCaptureQueueWaitMs: 25,
+        maxCriticalContinuationQueueWaitMs: 25,
         criticalContinuationQueueWaitLogMs: 10,
         log: (line) => logs.push(line),
       }),
@@ -5973,18 +5992,18 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await holderStarted;
 
-    // Only `improvements:capture` carries a finite dwell, so it is the one write that can be
-    // shed here — and the shed must attribute itself to the holder, not to queue depth.
-    const capture = request(
+    // `work_items:checkpoint` carries a finite generic dwell, so its shed must attribute itself
+    // to the holder, not to queue depth. Pure `improvements:capture` uses its dedicated lane.
+    const checkpoint = request(
       port(proxy),
-      body(2, "improvements:capture"),
-      "/api/mcp?client=blocked-capture",
+      body(2, "work_items:checkpoint"),
+      "/api/mcp?client=blocked-checkpoint",
     );
     await waitFor(() =>
       logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
-    const expired = await capture;
+    const expired = await checkpoint;
     expect(expired.status).toBe(429);
     const shed = JSON.parse(expired.body) as {
       error: string;
@@ -6022,7 +6041,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
             "client",
           ) ?? "";
         hits.push(client);
-        if (client === "held-completion") {
+        if (client === "held-capture") {
           noteFirstStarted();
           void firstGate.then(() => res.end('{"result":{"held":true}}'));
           return;
@@ -6040,6 +6059,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
+        maxImprovementsCaptureQueue: 1,
         maxCriticalContinuationQueueWaitMs: 25,
         improvementsCaptureQueueWaitMs: 0,
         criticalContinuationQueueWaitLogMs: 10,
@@ -6057,8 +6077,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       });
     const first = request(
       port(proxy),
-      body(1, "work_items:complete"),
-      "/api/mcp?client=held-completion",
+      body(1, "improvements:capture"),
+      "/api/mcp?client=held-capture",
     );
     await firstStarted;
 
@@ -6072,22 +6092,20 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       return result;
     });
     await waitFor(() =>
-      logs.some((line) => line.includes("queued critical-continuation request")),
+      logs.some((line) => line.includes("queued improvements:capture request")),
     );
     await new Promise((resolve) => setTimeout(resolve, 75));
 
     expect(captureSettled).toBe(false);
-    expect(hits).toEqual(["held-completion"]);
+    expect(hits).toEqual(["held-capture"]);
     const health = JSON.parse(
       (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
     );
-    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+    expect(health.inFlight.criticalContinuationQueue.waiting).toBe(0);
+    expect(health.inFlight.improvementsCaptureQueue).toMatchObject({
       waiting: 1,
       max: 1,
-      // The generic lane remains configured at 25ms; the per-tool override is
-      // reflected by improvementsCaptureMaxWaitMs and the queued request below.
-      maxWaitMs: 25,
-      improvementsCaptureMaxWaitMs: 0,
+      maxWaitMs: 0,
       requests: [
         expect.objectContaining({
           tools: ["improvements:capture"],
@@ -6099,7 +6117,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     releaseFirst();
     expect((await first).status).toBe(200);
     expect((await capture).status).toBe(200);
-    expect(hits).toEqual(["held-completion", "zero-capture"]);
+    expect(hits).toEqual(["held-capture", "zero-capture"]);
   });
 
   it("EI-21598376721192513: does not expire queued work_items:complete at a finite continuation dwell boundary", async () => {
