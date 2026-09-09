@@ -4772,11 +4772,11 @@ export type RepairHeadVerification =
       signature: RepairSignatureInput[];
       summary: string;
     }
-  /** The signature (or the admitted paths' radius) cannot be narrowed to the file/gate
-   *  runners, so nothing selective was measured: the FULL gate at the repair head decides. */
+  /** A typed post-suite leg is present, so the FULL gate at the repair head is the only
+   *  runner that can re-measure it. Repair-radius widening never produces this verdict. */
   | { kind: "full-run-required"; summary: string }
-  /** A runner failed to EXECUTE (a tree-setup throw) — absence of evidence, never a verdict:
-   *  the queue holds as it is and the next tick retries. */
+  /** A runner failed to EXECUTE, or a malformed legacy signature cannot be routed safely —
+   *  absence of evidence, never a verdict: the queue holds as it is and the next tick retries. */
   | { kind: "unavailable"; summary: string };
 
 /** P-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-004): the ONLY deps
@@ -5117,10 +5117,16 @@ function failingFileKey(f: FailingFile): string {
  *  signature names — `inferFailingFilesFromEntries`' own rule. Pure + exported for tests. */
 export function partitionRepairSignatureEntries(
   entries: readonly RepairSignatureEntry[],
-): { files: FailingFile[]; gateIds: string[]; fullRun: string[] } {
+): {
+  files: FailingFile[];
+  gateIds: string[];
+  fullRun: string[];
+  unavailable: string[];
+} {
   const files = new Map<string, FailingFile>();
   const gateIds = new Set<string>();
   const fullRun: string[] = [];
+  const unavailable: string[] = [];
   const testWorkspaces = new Set<string>();
   const unpaired: string[] = [];
   for (const entry of entries) {
@@ -5143,7 +5149,10 @@ export function partitionRepairSignatureEntries(
         testWorkspaces.add(f.workspace);
       }
     } else {
-      fullRun.push(...unpaired);
+      // A legacy test path with no unambiguous workspace is malformed routing evidence.
+      // P-003 forbids spending the full gate merely because a repair-round selector/routing
+      // record is incomplete; hold and retry/repair the evidence instead.
+      unavailable.push(...unpaired);
     }
   }
   for (const entry of entries) {
@@ -5157,20 +5166,29 @@ export function partitionRepairSignatureEntries(
         // A `test` task (or the bare workspace marker) is covered by its files' re-run.
         if (script === "test" && testWorkspaces.has(workspace)) break;
         if (isRerunnableGateEntry(entry.id)) gateIds.add(entry.id);
-        else fullRun.push(entry.id);
+        else if (/^@[^/\s]+\/[^/\s]+$/.test(workspace)) {
+          // A bare workspace marker is its whole affected test task. This is a bounded
+          // workspace run, not a reason to fall through to the repo-wide gate.
+          gateIds.add(`${workspace} :: test`);
+        } else unavailable.push(entry.id);
         break;
       }
       case "lint-leg":
       case "seed":
         if (isRerunnableGateEntry(entry.id)) gateIds.add(entry.id);
-        else fullRun.push(entry.id);
+        else unavailable.push(entry.id);
         break;
       case "post-suite-leg":
         fullRun.push(entry.id);
         break;
     }
   }
-  return { files: [...files.values()], gateIds: [...gateIds], fullRun };
+  return {
+    files: [...files.values()],
+    gateIds: [...gateIds],
+    fullRun,
+    unavailable,
+  };
 }
 
 /** P-006: what a verdict contributes to the queue's typed signature — the flat failing set
@@ -5376,19 +5394,29 @@ export async function verifyRepairHead(
     files: failingFiles,
     gateIds,
     fullRun,
+    unavailable,
   } = partitionRepairSignatureEntries(signature);
-  const selective =
-    fullRun.length === 0 &&
-    (failingFiles.length === 0 || Boolean(deps.runTestsAtRef)) &&
-    (gateIds.length === 0 || Boolean(deps.runGateAtRef));
-  if (!selective) {
+  if (fullRun.length > 0) {
     return {
       kind: "full-run-required",
       summary:
-        `failure signature is not fully selectively re-runnable ` +
-        `(${failingFiles.length} file(s), ${gateIds.length} gate(s), ${fullRun.length} full-gate-only entry/entries` +
-        `${fullRun.length > 0 ? `: ${fullRun.slice(0, 5).join(", ")}${fullRun.length > 5 ? ", …" : ""}` : ""}); ` +
+        `failure signature contains ${fullRun.length} post-suite full-gate-only entry/entries` +
+        `: ${fullRun.slice(0, 5).join(", ")}${fullRun.length > 5 ? ", …" : ""}; ` +
         `the full gate at repair head ${at} decides`,
+    };
+  }
+  if (
+    unavailable.length > 0 ||
+    (failingFiles.length > 0 && !deps.runTestsAtRef) ||
+    (gateIds.length > 0 && !deps.runGateAtRef)
+  ) {
+    return {
+      kind: "unavailable",
+      summary:
+        `repair-round signature routing is unavailable at ${at} ` +
+        `(${failingFiles.length} file(s), ${gateIds.length} targeted task(s), ${unavailable.length} unroutable entry/entries` +
+        `${unavailable.length > 0 ? `: ${unavailable.slice(0, 5).join(", ")}${unavailable.length > 5 ? ", …" : ""}` : ""}); ` +
+        `the queue holds without spending the full gate`,
     };
   }
 
@@ -5401,8 +5429,8 @@ export async function verifyRepairHead(
   if (admitted.length > 0) {
     if (!deps.affectedTestsAtRef) {
       return {
-        kind: "full-run-required",
-        summary: `${admitted.length} admitted path(s) have no selective radius resolver; the full gate at repair head ${at} decides`,
+        kind: "unavailable",
+        summary: `${admitted.length} admitted path(s) have no related-radius resolver at repair head ${at}; the queue holds without spending the full gate`,
       };
     }
     const radius = await deps
@@ -5410,8 +5438,8 @@ export async function verifyRepairHead(
       .catch(() => null);
     if (!radius) {
       return {
-        kind: "full-run-required",
-        summary: `the radius of ${admitted.length} admitted path(s) could not be proved selectively at repair head ${at}; the full gate at ${at} decides`,
+        kind: "unavailable",
+        summary: `the related radius of ${admitted.length} admitted path(s) could not be resolved at repair head ${at}; the queue holds without spending the full gate`,
       };
     }
     if (
@@ -5419,8 +5447,8 @@ export async function verifyRepairHead(
       (radius.gateIds.length > 0 && !deps.runGateAtRef)
     ) {
       return {
-        kind: "full-run-required",
-        summary: `the admitted paths' radius (${radius.summary}) has no runner for one of its halves; the full gate at repair head ${at} decides`,
+        kind: "unavailable",
+        summary: `the admitted paths' radius (${radius.summary}) has no targeted runner for one of its halves at repair head ${at}; the queue holds without spending the full gate`,
       };
     }
     for (const f of radius.files) files.set(failingFileKey(f), f);
@@ -5520,30 +5548,35 @@ export async function verifyRepairHead(
 export interface RepairHeadRadius {
   /** Related test files the selector narrowed each affected `test` task to — `runTestsAtRef`. */
   files: FailingFile[];
-  /** `<ws> :: lint:*` / `<ws> :: gen:*:check` legs the same run attached — `runGateAtRef`. */
+  /** Targeted workspace tasks/guards. On selector widening this includes the affected
+   *  workspace's whole test lane(s), still bounded below the repo-wide full gate. */
   gateIds: string[];
   summary: string;
 }
 
-/** Turn the selector's `--changed-paths … --related --print-affected` output into the exact set
- *  of files and legs that re-verify the admitted paths at the repair head. Fail-closed in the
- *  FULL-RUN direction: any task the two runners cannot re-run selectively — a `test` task whose
- *  related selection widened or went unreported, a build/cargo/desktop task, an unmapped leg —
- *  returns null, and the caller runs the full gate at the repair head instead. Pure + exported so
- *  the parse is asserted by tests rather than only by a live gate run. */
+/** Turn the selector's `--changed-paths … --related --print-affected` output into the bounded
+ *  files/tasks that re-verify admitted paths at the repair head. An exact related selection is
+ *  handed to the file runner. When the selector widens, its named AFFECTED workspace test tasks
+ *  are handed to the targeted task runner — never to the repo-wide full gate. `null` therefore
+ *  means malformed/unroutable evidence and the repair queue holds; only a typed post-suite-leg
+ *  signature can request a full gate. Pure + exported so the parse is asserted by tests. */
 export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
   const lines = output.split(/\r?\n/).filter(Boolean);
-  const related = new Map<string, { selected: number; ok: boolean }>();
+  const related = new Map<
+    string,
+    { selected: number; mode: string; reason: string }
+  >();
   for (const line of lines) {
     const m =
-      /^RELATED_SELECTION ws=(\S+) selected=(\d+) total=(\d+) mode=(\S+) reason=(\S+)$/.exec(
+      /^RELATED_SELECTION ws=(\S+) selected=(\d+) total=(\d+) mode=(\S+) reason=(\S+)(?: widenThreshold=\S+)?$/.exec(
         line,
       );
     if (!m) continue;
     if (related.has(m[1]!)) return null;
     related.set(m[1]!, {
       selected: Number(m[2]),
-      ok: m[4] === "related" && m[5] === "ok",
+      mode: m[4]!,
+      reason: m[5]!,
     });
   }
   const safeRelativePath = (file: string) =>
@@ -5557,7 +5590,7 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
   const files: FailingFile[] = [];
   const fileKeys = new Set<string>();
   const gateIds = new Set<string>();
-  let testTasks = 0;
+  const testTaskIds = new Set<string>();
   for (const line of lines) {
     if (line.startsWith("RELATED_AFFECTED_FILE\t")) {
       const fields = line.split("\t");
@@ -5575,13 +5608,11 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
       const fields = line.split("\t");
       if (fields.length !== 3) return null;
       const workspace = fields[1]!;
-      const script = fields[2]!.trim().split(/\s+/).pop() ?? "";
+      const command = fields[2]!.trim().split(/\s+/);
+      const argsAt = command.indexOf("--");
+      const script = command[argsAt > 0 ? argsAt - 1 : command.length - 1] ?? "";
       if (script === "test" || script.startsWith("test:")) {
-        const selection = related.get(workspace);
-        // A test task the selector could not narrow has no file list to re-run: the whole
-        // workspace suite would be the honest measurement, which is the full gate's job.
-        if (!selection || !selection.ok || selection.selected < 1) return null;
-        testTasks += 1;
+        testTaskIds.add(`${workspace} :: ${script}`);
         continue;
       }
       const id = `${workspace} :: ${script}`;
@@ -5597,30 +5628,51 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
       gateIds.add(id);
     }
   }
-  // The selector's own summary must confirm an EXACT file radius whenever a test task was
-  // narrowed — `status=full` means it fell back to whole-workspace runs, which is not selective.
-  if (testTasks > 0) {
+  let widenedTasks = 0;
+  // One selector-owned summary distinguishes an exact file radius from a bounded widening.
+  // In a mixed multi-workspace result the selector emits status=full and no partial file list,
+  // so every named affected test task is widened together; nothing is silently under-tested.
+  if (testTaskIds.size > 0) {
     const summaries = lines.filter((line) =>
       line.startsWith("RELATED_AFFECTED_FILES status="),
     );
-    if (
-      summaries.length !== 1 ||
-      !/^RELATED_AFFECTED_FILES status=selected workspaces=\d+ files=\d+$/.test(
-        summaries[0]!,
-      )
-    ) {
-      return null;
-    }
-    for (const [workspace, selection] of related) {
-      if (selection.ok && !files.some((f) => f.workspace === workspace)) {
-        return null;
+    if (summaries.length !== 1) return null;
+    const summary = summaries[0]!;
+    if (/^RELATED_AFFECTED_FILES status=selected workspaces=\d+ files=\d+$/.test(summary)) {
+      for (const taskId of testTaskIds) {
+        const task = parseFailingTaskId(taskId);
+        const selection = task ? related.get(task.workspace) : undefined;
+        if (
+          !task ||
+          !selection ||
+          selection.mode !== "related" ||
+          selection.reason !== "ok" ||
+          selection.selected < 1 ||
+          !files.some((f) => f.workspace === task.workspace)
+        ) {
+          return null;
+        }
       }
+    } else if (/^RELATED_AFFECTED_FILES status=full reason=\S+$/.test(summary)) {
+      for (const taskId of testTaskIds) gateIds.add(taskId);
+      widenedTasks = testTaskIds.size;
+    } else return null;
+  } else if (lines.some((line) => line.startsWith("RELATED_AFFECTED_FILE\t"))) {
+    // A file list without a named test task has no executable workspace/lane provenance.
+    return null;
+  }
+  for (const entry of files) {
+    if (!testTaskIds.has(`${entry.workspace} :: test`) &&
+        ![...testTaskIds].some((id) => id.startsWith(`${entry.workspace} :: test:`))) {
+      return null;
     }
   }
   return {
     files,
     gateIds: [...gateIds],
-    summary: `${files.length} related file(s) in ${testTasks} test task(s), ${gateIds.size} leg(s)`,
+    summary:
+      `${files.length} exact related file(s), ${widenedTasks} widened affected test task(s), ` +
+      `${gateIds.size - widenedTasks} guard/task leg(s)`,
   };
 }
 
@@ -5645,16 +5697,20 @@ export function isRerunnableGateEntry(entry: string): boolean {
   // than inventing a culprit file. Re-running that exact task at tip is the only complete
   // staleness measurement; it is conservative (a pass is required) and already bounded by
   // the task's own watchdog.
-  return (
-    task !== null &&
-    (task.script === "test" ||
+  if (task !== null) {
+    return (
+      task.script === "test" ||
       task.script.startsWith("test:") ||
       task.script.startsWith("lint:") ||
       (task.script.startsWith("gen:") && task.script.endsWith(":check")) ||
       // P-006: a `seed:*:check` guard the affected-tests selector attaches (one fast,
       // deterministic script in its workspace — the registry header's own bar).
-      (task.script.startsWith("seed:") && task.script.endsWith(":check")))
-  );
+      (task.script.startsWith("seed:") && task.script.endsWith(":check"))
+    );
+  }
+  // A typed root lint/seed entry carries the exact script as its id/recipe. These are
+  // repair-signature kinds, not post-suite legs; run the named script at the repair head.
+  return entry.startsWith("lint:") || entry === "seed" || entry.startsWith("seed:");
 }
 
 /** Resolve rescue-eligible entries to the npm invocations that re-verify them at tip.
@@ -5682,6 +5738,9 @@ export function resolveGateRuns(
     }
     for (const script of NON_TEST_GATE_SCRIPTS[id] ?? []) {
       runs.set(JSON.stringify([null, script]), { script, workspace: null });
+    }
+    if (!(id in NON_TEST_GATE_SCRIPTS) && isRerunnableGateEntry(id)) {
+      runs.set(JSON.stringify([null, id]), { script: id, workspace: null });
     }
   }
   return [...runs.values()];
