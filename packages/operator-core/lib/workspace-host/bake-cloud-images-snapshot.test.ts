@@ -391,7 +391,11 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(defaultStage).toBeGreaterThan(releaseStage);
     expect(CONTAINERFILE_SOURCE).toContain('COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/');
     expect(SOURCE).toContain('--target workspace-host-release');
-    expect(HOST_PREPARE_SOURCE).toContain('setfacl -R -m "u:$AGENT_USER:rX" "$RUNTIME_ROOT/releases"');
+    expect(CONTAINERFILE_SOURCE).toContain('ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read');
+    expect(CONTAINERFILE_SOURCE).toContain('install -d -o root -g "$PAPERCUSP_RUNTIME_READ_GROUP" -m 0750');
+    expect(HOST_PREPARE_SOURCE).toContain('say "runtime-group PASS"');
+    expect(HOST_PREPARE_SOURCE).not.toContain('setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT"');
+    expect(HOST_PREPARE_SOURCE).not.toContain('setfacl -R -m "u:$AGENT_USER:rX" "$RUNTIME_ROOT/releases"');
   });
 
   it('materializes named-context hardlinks before normalizing release metadata', () => {
@@ -404,7 +408,7 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
       `[ -z "$(find "$RELEASE_DIR" -type f -links +1 -print -quit)" ]`,
     );
     const normalizeOwner = CONTAINERFILE_SOURCE.indexOf(
-      'chown -R "root:${PAPERCUSP_SERVICE_GROUP}" "$RELEASE_DIR"',
+      'chown -R "root:${PAPERCUSP_RUNTIME_READ_GROUP}" "$RELEASE_DIR"',
     );
 
     expect(lookup).toBeGreaterThan(-1);
@@ -412,7 +416,10 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(freshCopy).toBeGreaterThan(snapshot);
     expect(noHardlinks).toBeGreaterThan(freshCopy);
     expect(normalizeOwner).toBeGreaterThan(noHardlinks);
-    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('committed release hardlinks are five distinct 0:910/0640 inodes');
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('committed release hardlinks are five distinct 0:912/0640 inodes');
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain(
+      'committed runtime readable by service+agent, hidden from SSH; state hidden from agent+SSH',
+    );
   });
 
   it('recreates Google OS Login user state at boot instead of committing /var residue', () => {
