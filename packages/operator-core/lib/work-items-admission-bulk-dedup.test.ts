@@ -97,10 +97,36 @@ describe('guardBulkRecurrenceIdentity', () => {
         [keyed.id, keyed],
       ]),
     );
-    expect(guarded.dispositions).toEqual([
-      { itemId: historical.id, action: 'merge', canonicalId: keyed.id },
-      { itemId: keyed.id, action: 'promote' },
-    ]);
+    // The reselected replacement carries admission 'admitted' (see the item() fixture),
+    // so it is ALREADY claimable and gets no `promote` disposition: the promotion writer
+    // only updates pending/unreviewed rows, and emitting one here would be a zero-row
+    // conditional write inside the same transaction. Only a pending/unreviewed
+    // replacement is promoted — asserted directly below so that contract stays pinned.
+    expect(guarded.dispositions).toEqual([{ itemId: historical.id, action: 'merge', canonicalId: keyed.id }]);
+    expect(guarded.dispositions).not.toContainEqual({ itemId: keyed.id, action: 'promote' });
+    expect(guarded.adjudications[0]?.canonical).toBe(keyed.id);
+  });
+
+  it('DOES promote the reselected successor when it is still pending — the admitted case above is the only exemption', () => {
+    const historical = { ...item('EI-20630508400046931', 'Gym champion promoted'), createdAtMs: 1, watchdogKey: null };
+    const keyed = {
+      ...item('EI-22377526107135174', 'Gym champion promoted'),
+      admission: 'pending' as const,
+      createdAtMs: 2,
+      watchdogKey: 'gym-champion:h1:validator@beta',
+    };
+    const guarded = guardBulkRecurrenceIdentity(
+      duplicatePlan(historical, keyed),
+      new Map<string, BulkDedupItem>([
+        [historical.id, historical],
+        [keyed.id, keyed],
+      ]),
+    );
+    // A pending replacement is NOT yet claimable, so the promotion writer has a row to
+    // update and the disposition must be emitted. This is the control that keeps the
+    // admitted-case exemption above honest: if promote were dropped unconditionally,
+    // that assertion would still pass while this one fails.
+    expect(guarded.dispositions).toContainEqual({ itemId: keyed.id, action: 'promote' });
     expect(guarded.adjudications[0]?.canonical).toBe(keyed.id);
   });
 
