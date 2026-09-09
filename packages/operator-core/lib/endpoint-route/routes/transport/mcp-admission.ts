@@ -154,9 +154,15 @@ export function resetMcpAdmissionForTests(): void {
  * read; broad history remains shed. `rubrics:get` is admitted only for one rubric (the full
  * criteria body is required by a judge); multi-rubric reads remain shed. A judge's
  * `scorecards:emit` is admitted only for one terminal grading-integrity audit of one scorecard;
- * ordinary scorecard writes remain shed. `work_items:checkpoint` is admitted only for a single
+ * ordinary scorecard writes remain shed. The three read-only judge audit probes
+ * (`plans:evaluate-spec-test-adequacy`, `gates:degenerate-check`, and
+ * `plans:get-spec-evidence`) are admitted only for the judge role and bounded argument shapes;
+ * their ordinary callers remain shed. `work_items:checkpoint` is admitted only for a single
  * item, because a bounded durability write is needed to preserve successor state during the
- * pressure condition; bulk checkpoint batches remain shed.
+ * pressure condition; bulk checkpoint batches remain shed. `scorecards:get` is admitted only
+ * for one bounded issue-id evidence read. `improvements:capture` is admitted only for the
+ * tool-failure shorthand, whose nested metadata is bounded and is the required recovery record
+ * for a shed tool call; ordinary captures remain shed.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -171,11 +177,194 @@ const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
+const SCORECARDS_GET_NAME = normalizeMcpName('scorecards:get');
 const SCORECARDS_EMIT_NAME = normalizeMcpName('scorecards:emit');
 const RUBRICS_GET_NAME = normalizeMcpName('rubrics:get');
+const IMPROVEMENTS_CAPTURE_NAME = normalizeMcpName('improvements:capture');
+const EVALUATE_SPEC_TEST_ADEQUACY_NAME = normalizeMcpName('plans:evaluate-spec-test-adequacy');
+const DEGENERATE_CHECK_NAME = normalizeMcpName('gates:degenerate-check');
+const GET_SPEC_EVIDENCE_NAME = normalizeMcpName('plans:get-spec-evidence');
 const CRITICAL_SCORECARDS_LIST_MAX_ROWS = 25;
+const CRITICAL_SCORECARDS_GET_ISSUE_ID_MAX = 120;
+const CRITICAL_TOOL_FAILURE_MESSAGE_MAX = 4_000;
+const CRITICAL_TOOL_FAILURE_DIRECT_EVIDENCE_MAX = 2_000;
+const CRITICAL_JUDGE_AUDIT_MAX_ROWS = 25;
+const CRITICAL_JUDGE_AUDIT_MAX_ARRAY_ITEMS = 25;
+const CRITICAL_JUDGE_AUDIT_MAX_MIN_DECISIONS = 100_000;
+const CRITICAL_JUDGE_AUDIT_MAX_SINCE_HOURS = 24;
 const CAPABILITY_READ_NAME = normalizeMcpName('capability:read');
 const CRITICAL_CAPABILITY_READ_MAX_BYTES = 4_096;
+
+const PLAN_CLASS_RUBRIC_REFS = new Set([
+  'plan-class-feature-ship',
+  'plan-class-bugfix',
+  'plan-class-migration',
+  'plan-class-investigation',
+]);
+const SPEC_EVIDENCE_KINDS = new Set([
+  'test',
+  'fixture',
+  'coverage-census',
+  'mutation',
+  'counterexample',
+  'check',
+  'manual',
+  'operational',
+]);
+const TOOL_FAILURE_DIRECT_EVIDENCE_KINDS = new Set([
+  'valid-input-reproduction',
+  'server-contract-mismatch',
+  'hard-internal',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isBoundedPositiveInt(value: unknown, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= max;
+}
+
+function isBoundedStringArray(value: unknown, max = CRITICAL_JUDGE_AUDIT_MAX_ARRAY_ITEMS): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 1 &&
+    value.length <= max &&
+    value.every((entry) => typeof entry === 'string' && entry.trim().length > 0)
+  );
+}
+
+function isBoundedEvidenceCurrent(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > CRITICAL_JUDGE_AUDIT_MAX_ARRAY_ITEMS) return false;
+  return value.every((entry) => {
+    if (!isRecord(entry)) return false;
+    if (typeof entry.evidenceKind !== 'string' || !SPEC_EVIDENCE_KINDS.has(entry.evidenceKind)) return false;
+    if (
+      typeof entry.evidenceRef !== 'string' ||
+      entry.evidenceRef.trim().length === 0 ||
+      entry.evidenceRef.length > 2_000
+    ) {
+      return false;
+    }
+    if (
+      typeof entry.sourceFingerprint !== 'string' ||
+      entry.sourceFingerprint.trim().length === 0 ||
+      entry.sourceFingerprint.length > 256
+    ) {
+      return false;
+    }
+    for (const field of ['testFingerprint', 'fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint']) {
+      if (
+        entry[field] !== undefined &&
+        entry[field] !== null &&
+        (typeof entry[field] !== 'string' || (entry[field] as string).length > 256)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function isBoundedJudgeEvaluateArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  if (typeof args.slug !== 'string' || args.slug.trim().length === 0) return false;
+  if (typeof args.classRef !== 'string' || !PLAN_CLASS_RUBRIC_REFS.has(args.classRef)) return false;
+  if (!isBoundedPositiveInt(args.limit, CRITICAL_JUDGE_AUDIT_MAX_ROWS)) return false;
+  if (args.harness !== undefined && (typeof args.harness !== 'string' || args.harness.trim().length === 0))
+    return false;
+  for (const field of ['workItemIds', 'evidenceRefs', 'specIds']) {
+    if (args[field] !== undefined && !isBoundedStringArray(args[field])) return false;
+  }
+  if (
+    args.planItemIds !== undefined &&
+    (!isBoundedStringArray(args.planItemIds) || !args.planItemIds.every((id) => /^P-\d{3,}$/.test(id)))
+  ) {
+    return false;
+  }
+  if (args.current !== undefined) {
+    const current = args.current;
+    if (Array.isArray(current)) {
+      if (!isBoundedEvidenceCurrent(current)) return false;
+    } else if (
+      !isRecord(current) ||
+      typeof current.supplied !== 'boolean' ||
+      !isBoundedEvidenceCurrent(current.fingerprints)
+    ) {
+      return false;
+    }
+  }
+  if (args.specRevision !== undefined && !isBoundedPositiveInt(args.specRevision, Number.MAX_SAFE_INTEGER))
+    return false;
+  if (
+    args.specFingerprint !== undefined &&
+    (typeof args.specFingerprint !== 'string' || args.specFingerprint.trim().length === 0)
+  ) {
+    return false;
+  }
+  if ((args.specRevision === undefined) !== (args.specFingerprint === undefined)) return false;
+  if (args.replaySnapshot !== undefined && typeof args.replaySnapshot !== 'boolean') return false;
+  if (args.includeDraft !== undefined && typeof args.includeDraft !== 'boolean') return false;
+  if (args.evaluatorBuild !== undefined && !isRecord(args.evaluatorBuild)) return false;
+  if (args.now !== undefined && (typeof args.now !== 'string' || args.now.trim().length === 0)) return false;
+  // listSpecClauses is uncapped unless the evaluator narrows it through exact
+  // evidence/spec selectors. Require both an explicit evidence page cap and a
+  // selector so this recovery exception cannot admit the generic evaluator path.
+  return ['workItemIds', 'evidenceRefs', 'specIds'].some((field) => args[field] !== undefined);
+}
+
+function isBoundedJudgeDegenerateCheckArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  for (const field of ['sinceHours', 'minDecisions']) {
+    if (args[field] !== undefined && typeof args[field] !== 'number') return false;
+  }
+  const sinceHours = args.sinceHours;
+  if (
+    sinceHours !== undefined &&
+    (typeof sinceHours !== 'number' ||
+      !Number.isFinite(sinceHours) ||
+      sinceHours <= 0 ||
+      sinceHours > CRITICAL_JUDGE_AUDIT_MAX_SINCE_HOURS)
+  ) {
+    return false;
+  }
+  if (
+    args.minDecisions !== undefined &&
+    !isBoundedPositiveInt(args.minDecisions, CRITICAL_JUDGE_AUDIT_MAX_MIN_DECISIONS)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isBoundedJudgeSpecEvidenceArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  if (typeof args.slug !== 'string' || args.slug.trim().length === 0) return false;
+  if (args.harness !== undefined && (typeof args.harness !== 'string' || args.harness.trim().length === 0))
+    return false;
+  if (!isBoundedPositiveInt(args.limit, CRITICAL_JUDGE_AUDIT_MAX_ROWS)) return false;
+  for (const field of ['workItemIds', 'specIds', 'sourceValIds', 'evidenceRefs']) {
+    if (args[field] !== undefined && !isBoundedStringArray(args[field])) return false;
+  }
+  if (
+    args.evidenceKinds !== undefined &&
+    (!isBoundedStringArray(args.evidenceKinds, 8) || !args.evidenceKinds.every((kind) => SPEC_EVIDENCE_KINDS.has(kind)))
+  ) {
+    return false;
+  }
+  if (
+    args.currentness !== undefined &&
+    (!isBoundedStringArray(args.currentness, 3) ||
+      !args.currentness.every((value) => value === 'current' || value === 'stale' || value === 'unknown'))
+  ) {
+    return false;
+  }
+  if (args.current !== undefined && !isBoundedEvidenceCurrent(args.current)) return false;
+  const hasSelector = ['workItemIds', 'specIds', 'sourceValIds', 'evidenceKinds', 'evidenceRefs', 'currentness'].some(
+    (field) => args[field] !== undefined,
+  );
+  return hasSelector;
+}
 
 function isBoundedScratchCapabilityReadArgs(args: unknown): boolean {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
@@ -280,6 +469,77 @@ export function isBoundedScorecardsListArgs(args: unknown): boolean {
 }
 
 /**
+ * `scorecards:get` is the evidence-first read used by grading-integrity audits.
+ * Its handler accepts exactly one issue id and performs one bounded projection;
+ * keep the critical-pressure exemption tied to that identity rather than the
+ * broader scorecards history reader.
+ */
+function isBoundedScorecardsGetArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  return (
+    typeof args.issueId === 'string' &&
+    args.issueId.trim().length > 0 &&
+    args.issueId.length <= CRITICAL_SCORECARDS_GET_ISSUE_ID_MAX
+  );
+}
+
+function isBoundedToolFailureString(value: unknown, max: number, required = false): value is string {
+  if (value === undefined && !required) return true;
+  return typeof value === 'string' && value.length <= max && (!required || value.trim().length > 0);
+}
+
+/**
+ * Preserve the incident record for an admission shed without opening the full
+ * capture surface under critical pressure. The shorthand derives its title/body
+ * from one strict, field-bounded `toolFailure` object; any authored capture fields
+ * remain on the ordinary pressure-shed path and can be retried after recovery.
+ */
+function isBoundedImprovementsCaptureArgs(args: unknown): boolean {
+  if (!isRecord(args) || Object.keys(args).some((key) => key !== 'toolFailure')) return false;
+  const failure = args.toolFailure;
+  if (!isRecord(failure)) return false;
+  if (!isBoundedToolFailureString(failure.toolName, 160, true)) return false;
+  if (!isBoundedToolFailureString(failure.message, CRITICAL_TOOL_FAILURE_MESSAGE_MAX, true)) return false;
+  for (const [field, max] of [
+    ['errorCode', 160],
+    ['schemaRevision', 160],
+    ['fieldPath', 300],
+    ['runtimeVersion', 160],
+  ] as const) {
+    if (!isBoundedToolFailureString(failure[field], max)) return false;
+  }
+  if (failure.status !== undefined) {
+    const status = failure.status;
+    if (
+      !(
+        (typeof status === 'string' && status.length <= 80) ||
+        (typeof status === 'number' && Number.isFinite(status) && String(status).length <= 80)
+      )
+    ) {
+      return false;
+    }
+  }
+  for (const field of ['reproduced', 'clearServerMismatch', 'hardInternal']) {
+    if (failure[field] !== undefined && typeof failure[field] !== 'boolean') return false;
+  }
+  if (failure.directEvidence !== undefined) {
+    const evidence = failure.directEvidence;
+    if (!isRecord(evidence) || Object.keys(evidence).some((key) => !['kind', 'expected', 'actual'].includes(key))) {
+      return false;
+    }
+    if (
+      typeof evidence.kind !== 'string' ||
+      !TOOL_FAILURE_DIRECT_EVIDENCE_KINDS.has(evidence.kind) ||
+      !isBoundedToolFailureString(evidence.expected, CRITICAL_TOOL_FAILURE_DIRECT_EVIDENCE_MAX, true) ||
+      !isBoundedToolFailureString(evidence.actual, CRITICAL_TOOL_FAILURE_DIRECT_EVIDENCE_MAX, true)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * A judge needs the complete criteria body from one rubric while the operator is
  * under critical pressure. Keep the exemption to a single lookup: rubrics:get
  * also accepts a bulk `rubricRefs` form whose full criteria bodies would turn the
@@ -339,8 +599,19 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
+  if (normalized === SCORECARDS_GET_NAME) return isBoundedScorecardsGetArgs(args);
   if (normalized === SCORECARDS_EMIT_NAME) return isBoundedJudgeGradingAuditEmitArgs(args, requestUrl);
   if (normalized === RUBRICS_GET_NAME) return isBoundedRubricsGetArgs(args);
+  if (normalized === IMPROVEMENTS_CAPTURE_NAME) return isBoundedImprovementsCaptureArgs(args);
+  if (normalized === EVALUATE_SPEC_TEST_ADEQUACY_NAME) {
+    return isJudgeRoleRequest(requestUrl) && isBoundedJudgeEvaluateArgs(args);
+  }
+  if (normalized === DEGENERATE_CHECK_NAME) {
+    return isJudgeRoleRequest(requestUrl) && isBoundedJudgeDegenerateCheckArgs(args);
+  }
+  if (normalized === GET_SPEC_EVIDENCE_NAME) {
+    return isJudgeRoleRequest(requestUrl) && isBoundedJudgeSpecEvidenceArgs(args);
+  }
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
   return normalized !== WORK_ITEMS_GET_NAME || isBoundedWorkItemsGetArgs(args);
 }
