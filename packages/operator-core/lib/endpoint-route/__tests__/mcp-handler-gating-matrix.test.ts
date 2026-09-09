@@ -3575,17 +3575,20 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
 /* ─── su identity precedence (EI-7066 — explicit SID outranks the transport id) ─── */
 
 describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)', () => {
-  it('?client= (the per-launch PAPERCUSP_SID) outranks a per-connection Mcp-Session-Id', async () => {
+  it('?client= and ?detector= preserve separate public and private session identities', async () => {
     // The regression: a claude session that reconnects mid-life (cold-loop recycle,
     // transport drop) presents a fresh Mcp-Session-Id. Identity must STAY the SID.
     const res = await callTool(
       'gatingtest:scoped',
       {},
-      superuserExtra('&client=su-stable-sid', { 'mcp-session-id': 'transport-conn-1' }),
+      superuserExtra('&client=su-stable-sid&detector=private-detector-session', {
+        'mcp-session-id': 'transport-conn-1',
+      }),
     );
     expect(res.isError).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx.uiClientId).toBe('su-stable-sid');
+    expect(seen[0].ctx.failureLoopSessionKey).toBe('private-detector-session');
   });
 
   it('x-papercusp-client header outranks both ?client= and Mcp-Session-Id', async () => {
