@@ -122,6 +122,8 @@ export default defineTool({
     owner: z.string().min(1).max(256).optional(),
     /** Which CLI produced it: 'claude' | 'codex' | 'omp'. Best-effort. */
     agent: z.string().max(32).optional(),
+    /** The reporting child's fine-grained launch role, when the hook can carry it. */
+    role: z.string().trim().min(1).max(80).optional(),
     /** The CLI's native session id (for resume correlation). */
     session_id: z.string().max(256).optional(),
     /** The stable adv_sessions row id, when the launcher can carry it. */
@@ -241,6 +243,12 @@ export default defineTool({
     // psu/Queen-launched agent is wakeable WITHOUT having to call coord:await-inbox
     // (D-001). Idempotent upsert / cancel; never let it break the report.
     const phase = args.kind === 'lifecycle' ? lifecyclePhase(args.summary) : null;
+    // Judge sessions are deliberately admitted only to narrow evidence/reply
+    // tools, so they cannot consume the broad coord inbox that the standing
+    // inbox-wake would deliver. The role is carried by the child hooks from the
+    // trusted role-scoped launch env; exact-match only keeps ordinary roles on
+    // the existing always-arm/self-heal path.
+    const isJudge = args.role?.trim() === 'judge';
     if (phase) {
       try {
         if (phase === 'start') {
@@ -250,7 +258,9 @@ export default defineTool({
           // presence snapshot ONCE. Independent best-effort (its own catch) so an
           // inbox-wake hiccup never skips it, and vice-versa.
           await writeWatermark(owner, { snapshot_rebootstrap_pending: true }).catch(() => {});
-          await armInboxWake({ ownerId: owner, workspaceId: ctx.principal?.workspaceId });
+          if (!isJudge) {
+            await armInboxWake({ ownerId: owner, workspaceId: ctx.principal?.workspaceId });
+          }
           // WI-37420: a COLD loop wake delivered over psu-socket-reset types
           // `/clear` into the LIVE pty (session-reset-continuation.ts) — the CLI
           // child mints a brand-new native session id for that in-place reset
@@ -420,7 +430,7 @@ export default defineTool({
           }
         }
       }
-    } else if (args.kind !== 'lifecycle') {
+    } else if (args.kind !== 'lifecycle' && !isJudge) {
       // SELF-HEAL (launch-wakeability): a genuine non-lifecycle report is a native
       // tool call from a running session. If that session's SessionStart arm was lost
       // (the detached, fail-open lifecycle hook POST can drop at launch — leaving a

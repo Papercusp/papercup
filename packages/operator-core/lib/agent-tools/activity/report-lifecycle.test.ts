@@ -85,6 +85,13 @@ describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
     expect(h.cancel).not.toHaveBeenCalled();
   });
 
+  it('judge SessionStart records activity but does not arm the broad inbox-wake watch', async () => {
+    await run({ owner: 'judge-abc', role: 'judge', kind: 'lifecycle', summary: '▶ session started' });
+    expect(h.arm).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(h.heal).not.toHaveBeenCalled();
+  });
+
   it('SessionEnd (■ session ended) CANCELS the worker inbox-wake watch (D-003)', async () => {
     await run({ owner: 'su-abc', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.cancel).toHaveBeenCalledTimes(1);
@@ -100,6 +107,13 @@ describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
     // SessionStart arm was lost becomes wakeable from its first tool call.
     expect(h.heal).toHaveBeenCalledTimes(1);
     expect(h.heal.mock.calls[0][0]).toMatchObject({ ownerId: 'su-abc' });
+  });
+
+  it('judge tool reports preserve activity but skip inbox-wake self-heal', async () => {
+    await run({ owner: 'judge-abc', role: 'judge', kind: 'tool', tool_name: 'scorecards:evaluate' });
+    expect(h.arm).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(h.heal).not.toHaveBeenCalled();
   });
 
   it('an unrecognized lifecycle summary is a defensive no-op (no arm/cancel, no self-heal)', async () => {
