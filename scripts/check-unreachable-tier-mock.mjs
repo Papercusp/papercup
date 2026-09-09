@@ -233,13 +233,20 @@ export function checkFile({ path, text, predicates, allow = ALLOW, suppressed = 
 
     for (const { name, value } of exported) {
       const prop = new RegExp(`\\b${name}\\s*:\\s*([^,]*(?:\\([^)]*\\)[^,]*)*)`).exec(factory);
-      if (!prop) continue;
-      let declared = constantOf(prop[1]);
+      // SHORTHAND property — `vi.mock('./started', () => ({ mugKettleSystemEnabled }))`.
+      // There is no `name:` to read, so a key-value-only reader sees nothing and the
+      // file reads as clean; the polarity lives entirely on the hoisted binding, which
+      // is where the one-hop resolution below already looks. This is the shape the real
+      // subject (pot/wake-coherence.test.ts) uses, so missing it made the guard blind to
+      // its own headline case (WI-38314 follow-up, measured by mutation 2026-09-09).
+      const expr = prop ? prop[1] : new RegExp(`[{,]\\s*${name}\\s*(?=[,}])`).test(factory) ? name : null;
+      if (expr === null) continue;
+      let declared = constantOf(expr);
       if (declared === null) {
         // One hop: the factory delegates to a module-scope binding (the common
         // `const p = vi.fn(async () => true)` + `p: (...a) => p(...a)` shape).
         for (const [ident, init] of bindings) {
-          if (!new RegExp(`\\b${ident}\\b`).test(prop[1])) continue;
+          if (!new RegExp(`\\b${ident}\\b`).test(expr)) continue;
           declared = constantOf(init);
           if (declared !== null) break;
         }
@@ -294,9 +301,25 @@ const SELF_TESTS = [
     expect: 1,
   },
   {
+    name: 'CONTROL: caught through a SHORTHAND factory property over a hoisted binding',
+    path: 'pkg/lib/x.test.ts',
+    text:
+      `const { tierEnabled } = vi.hoisted(() => ({ tierEnabled: vi.fn().mockResolvedValue(true) }));\n` +
+      `vi.mock('./started', () => ({ tierEnabled }));`,
+    expect: 1,
+  },
+  {
     name: 'CALIBRATION: silent when the default AGREES with production',
     path: 'pkg/lib/x.test.ts',
     text: `vi.mock('./started', () => ({ tierEnabled: async () => false }));`,
+    expect: 0,
+  },
+  {
+    name: 'CALIBRATION: silent on the SHORTHAND shape when the hoisted default agrees',
+    path: 'pkg/lib/x.test.ts',
+    text:
+      `const { tierEnabled } = vi.hoisted(() => ({ tierEnabled: vi.fn().mockResolvedValue(false) }));\n` +
+      `vi.mock('./started', () => ({ tierEnabled }));`,
     expect: 0,
   },
   {

@@ -99,6 +99,19 @@ describe('CONTROLS — the guard fires on a default that contradicts production'
     );
   });
 
+  it('the SHORTHAND factory property over a hoisted binding — the shape the real subject uses', () => {
+    // `({ tierEnabled })` carries no `tierEnabled:` to read, so a key-value-only
+    // reader sees nothing and the file reads as clean. Measured 2026-09-09 by
+    // mutation: flipping pot/wake-coherence.test.ts's file-wide default to the
+    // impossible constant left this guard GREEN — it was blind to its own
+    // headline case until the shorthand hop landed.
+    const text = [
+      `const { tierEnabled } = vi.hoisted(() => ({ tierEnabled: vi.fn().mockResolvedValue(true) }));`,
+      `vi.mock('./started', () => ({ tierEnabled }));`,
+    ].join('\n');
+    expect(violationsIn(text)).toHaveLength(1);
+  });
+
   it('reports which value was mocked and which one production can actually produce', () => {
     const [v] = violationsIn(`vi.mock('./started', () => ({ tierEnabled: async () => true }));`) as Array<{
       declared: string;
@@ -112,6 +125,14 @@ describe('CONTROLS — the guard fires on a default that contradicts production'
 describe('CALIBRATIONS — the shapes it must stay silent on', () => {
   it('a default that AGREES with production', () => {
     expect(violationsIn(`vi.mock('./started', () => ({ tierEnabled: async () => false }));`)).toHaveLength(0);
+  });
+
+  it('the SHORTHAND shape whose hoisted default AGREES — widening must not flag the correct form', () => {
+    const text = [
+      `const { tierEnabled } = vi.hoisted(() => ({ tierEnabled: vi.fn().mockResolvedValue(false) }));`,
+      `vi.mock('./started', () => ({ tierEnabled }));`,
+    ].join('\n');
+    expect(violationsIn(text)).toHaveLength(0);
   });
 
   it('a LOCAL re-open in a beforeEach — the PRESCRIBED fix, so flagging it would flag the cure', () => {
