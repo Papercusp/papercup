@@ -283,16 +283,19 @@ export function auditStateScope(audit: WorkItemAudit): 'terminal' | 'open' {
 }
 
 /**
- * The exact `by` identities the audited `skipCompletionGate` bypasses stamp — kept here,
- * beside the predicate that reads them, so the two can never drift apart (the module's
- * own discipline for `_completionEvidence` applied to this key too). One entry per
- * skipCompletionGate:true call site (grep the repo for that literal to keep this list
- * exhaustive when a new bypass is added):
+ * The exact `terminal_owner` identities that intentionally close without a completion ref
+ * or authority — kept here, beside the predicate that reads them, so the two can never
+ * drift apart (the module's own discipline for `_completionEvidence` applied to this key
+ * too). This includes explicit `skipCompletionGate` call sites and raw-SQL/system
+ * reconciliation writers whose terminal rows are expected to carry no completion evidence:
  *  - 'watchdog-auto-close' (harness/improvements/auto-close.ts)
  *  - 'improvement-hygiene' (harness/improvements/hygiene.ts)
  *  - 'watchdog-orphan-superseded' (harness/improvements/orphaned-dispatch.ts)
  *  - 'hive-bee-exit' (fleet/bee-completion-reconcile.ts)
  *  - 'autonomy-revert' (autonomy/tripwire/revert-executor.ts)
+ *  - 'system:work-item-admission-promoter' (work-items-admission-promoter.ts raw-SQL
+ *    duplicate merge)
+ *  - 'improvement-promotion-reconciler' (harness/improvements/capture-core.ts)
  */
 export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
   'watchdog-auto-close',
@@ -305,6 +308,10 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
   // { skipCompletionGate: true })` closes via this exact `by` identity — see
   // harness/routines/episode-scoped-operational-reconcile-action.ts.
   'episode-scoped-operational-reconcile',
+  // Intentional duplicate terminalization writers that do not pass through the
+  // completion gate and therefore cannot carry completion ref/authority evidence.
+  'system:work-item-admission-promoter',
+  'improvement-promotion-reconciler',
 ];
 
 /**

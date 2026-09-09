@@ -194,7 +194,7 @@ describe('completion-audit predicates (EI-10867)', () => {
       expect(f.params).toEqual([KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES]);
     });
 
-    it('the known-identity list carries every documented skipCompletionGate `by` value (grep-verified against the 5 call sites)', () => {
+    it('the known-identity list carries every documented intentional bypass writer', () => {
       expect(KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES).toEqual(
         expect.arrayContaining([
           'watchdog-auto-close',
@@ -202,6 +202,8 @@ describe('completion-audit predicates (EI-10867)', () => {
           'watchdog-orphan-superseded',
           'hive-bee-exit',
           'autonomy-revert',
+          'system:work-item-admission-promoter',
+          'improvement-promotion-reconciler',
         ]),
       );
     });
