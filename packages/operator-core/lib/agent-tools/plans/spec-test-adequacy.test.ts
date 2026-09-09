@@ -4,6 +4,7 @@ import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import {
   ADEQUACY_CRITERIA,
+  activeSpecEvidence,
   classifySpecEvidenceLineage,
   evaluateSpecTestAdequacy,
   isNonCodeWorkItemKind,
@@ -112,6 +113,122 @@ function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvid
     ...over,
   };
 }
+
+function attempt(n: number, patch: {
+  outcome?: string; sources?: string[]; layer?: string; plane?: string;
+  scenarios?: string[]; pair?: string; filter?: string; phase?: string;
+} = {}): SpecEvidenceForAdequacy[] {
+  const binding = { specId: clause().specId, specRevision: 1, testPath: 'test/reconnect.test.ts',
+    sourcePaths: patch.sources ?? ['src/reconnect.ts'], testLayer: patch.layer ?? 'integration',
+    ...(patch.scenarios ? { scenarioIds: patch.scenarios } : {}),
+    ...(patch.pair ? { causalPairId: patch.pair } : {}) };
+  const base = evidence({ evidenceKind: 'test', evidenceRef: `test-run-group:attempt-${n}:0`,
+    coverageEvidenceRef: null, testRunId: null });
+  const adequacy = { ...(base.details.adequacy as object), testLayer: binding.testLayer,
+    ...(patch.scenarios ? { scenarioIds: patch.scenarios } : {}),
+    ...(patch.pair ? { causalPairIds: [patch.pair] } : {}) };
+  const details = {
+    currentMeasurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: binding.sourcePaths,
+      testPaths: [binding.testPath] },
+    testExecution: { schemaVersion: 1, phase: 'pending', originRunId: `attempt-${n}`, runId: `attempt-${n}`, binding },
+    adequacy: { ...adequacy, outcome: 'pending', collected: false, executed: false },
+  };
+  const pending = { ...base, id: n * 10, createdAt: `2026-09-09T00:${String(n).padStart(2, '0')}:00Z`, details };
+  return [pending, { ...pending, id: n * 10 + 1, testRunId: n, details: {
+    ...details, ...(patch.plane ? { evidencePlane: patch.plane } : {}),
+    testExecution: { ...details.testExecution, phase: patch.phase ?? 'settled',
+      ...(patch.filter ? { testNamePattern: patch.filter } : {}) },
+    adequacy: { ...adequacy, outcome: patch.outcome ?? 'pass', collected: true, executed: true },
+  } }];
+}
+
+describe('active registered test attempts (EI-22773954051523742)', () => {
+  it('retires an older unknown attempt after a wider-source rerun, without changing history', () => {
+    const old = attempt(1, { outcome: 'unknown' });
+    const fresh = attempt(2, { sources: ['src/reconnect.ts', 'src/reporter.ts'] });
+    const rows = [...old, ...fresh];
+    const unchanged = JSON.stringify(rows);
+    expect(latestLogicalEvidence(rows)).toEqual([old[1], fresh[1]]);
+    expect(activeSpecEvidence(rows)).toEqual([fresh[1]]);
+    expect(JSON.stringify(rows)).toBe(unchanged);
+    expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: [...rows, negativeEvidence()],
+      classRef: 'plan-class-feature-ship' }).verdict).toBe('pass');
+  });
+
+  it.each(['failed', 'unknown', 'pending'])('never selects a past pass over a newer %s', outcome => {
+    const old = attempt(1);
+    const fresh = attempt(2, { outcome });
+    if (outcome === 'pending') fresh.pop();
+    const rows = [...old, ...fresh];
+    expect(activeSpecEvidence(rows)).toEqual([fresh.at(-1)]);
+    const result = evaluateSpecTestAdequacy({ clause: clause(), evidence: [...rows, negativeEvidence()],
+      classRef: 'plan-class-feature-ship' });
+    expect(result.wouldBlock).toContain('execution-integrity');
+  });
+
+  it.each(['unknown', 'stale'] as const)('does not hide %s freshness behind another current passing proof', state => {
+    const fresh = attempt(2);
+    fresh[1]!.currentness = { ...fresh[1]!.currentness, overall: state,
+      provenance: 'not-supplied', unknownReasons: state === 'unknown' ? ['server-measurement-unavailable'] : [],
+      staleReasons: state === 'stale' ? ['source-fingerprint-changed'] : [] };
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [...attempt(1), ...fresh, negativeEvidence()],
+      classRef: 'plan-class-feature-ship' });
+    expect(result.evidenceRefs).toContain(fresh[1]!.evidenceRef);
+    expect(result.wouldBlock).toContain('freshness');
+  });
+
+  it.each([
+    { sources: ['src/other.ts'] }, { sources: ['src/one.ts'] },
+    { layer: 'unit' }, { plane: 'live' }, { scenarios: ['scenario-a'] },
+    { pair: 'cause-a' }, { filter: 'one selected test' },
+  ])('keeps distinct obligations or narrower measured scope: %j', patch => {
+    const old = attempt(1, { sources: ['src/reconnect.ts', 'src/one.ts'], outcome: 'failed' });
+    const fresh = attempt(2, patch);
+    expect(activeSpecEvidence([...old, ...fresh])).toEqual([old[1], fresh[1]]);
+    expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: [...old, ...fresh, negativeEvidence()],
+      classRef: 'plan-class-feature-ship' }).wouldBlock).toContain('execution-integrity');
+  });
+
+  it('cannot reverse attempt order by annotating or future-dating old evidence', () => {
+    const old = attempt(1);
+    const fresh = attempt(2, { outcome: 'failed' });
+    const late = { ...old[1]!, id: 99, createdAt: '2099-01-01T00:00:00Z', observedAt: '2099-01-01T00:00:00Z' };
+    expect(activeSpecEvidence([...old, ...fresh, late])).toEqual([fresh[1]]);
+  });
+
+  it('allows matching reviewed planes but does not borrow an older different plane', () => {
+    const old = attempt(1, { plane: 'live' });
+    const fresh = attempt(2, { plane: 'tree' });
+    expect(activeSpecEvidence([...old, ...fresh])).toEqual([old[1], fresh[1]]);
+    const matching = attempt(3, { plane: 'tree' });
+    expect(activeSpecEvidence([...fresh, ...matching])).toEqual([matching[1]]);
+  });
+
+  it('fails closed without original registration and for altered registered obligations', () => {
+    const old = attempt(1, { outcome: 'failed' });
+    const fresh = attempt(2);
+    expect(activeSpecEvidence([old[1]!, ...fresh])).toEqual([old[1], fresh[1]]);
+    const altered = { ...fresh[1]!, details: { ...fresh[1]!.details,
+      adequacy: { ...(fresh[1]!.details.adequacy as object), scenarioIds: ['unregistered'] } } };
+    expect(activeSpecEvidence([...old, fresh[0]!, altered])).toEqual([old[1], altered]);
+  });
+
+  it('keeps changed root, fixture, counterexample and separate work-item proof distinct', () => {
+    const old = attempt(1, { outcome: 'failed' });
+    for (const mutate of [
+      (row: SpecEvidenceForAdequacy) => { row.workItemId = 'WI-102'; },
+      (row: SpecEvidenceForAdequacy) => { row.evidenceKind = 'counterexample'; },
+      (row: SpecEvidenceForAdequacy) => { row.fingerprints = { ...row.fingerprints, fixtureFingerprint: 'different' }; },
+      (row: SpecEvidenceForAdequacy) => { row.details.currentMeasurement = {
+        ...(row.details.currentMeasurement as object), rootHarnessSlug: 'another-root' }; },
+    ]) {
+      const fresh = structuredClone(attempt(2));
+      fresh.forEach(mutate);
+      expect(activeSpecEvidence([...old, ...fresh])).toEqual([old[1], fresh[1]]);
+    }
+  });
+});
 
 describe('spec-test-adequacy per-clause evaluator', () => {
   it('grades the newest server-created version even when an older row has a future observedAt', () => {
