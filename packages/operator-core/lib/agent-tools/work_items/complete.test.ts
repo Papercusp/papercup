@@ -1961,7 +1961,7 @@ describe('work_items:complete (keyed-array)', () => {
       });
       const dispatchResult = {
         requestedTargetIds: pendingTargets,
-        receipts: pendingTargets.map((issueId) => ({ issueId, state: 'launched' as const })),
+        receipts: pendingTargets.map((issueId) => ({ issueId, state: 'routed' as const, conversationId: `audit-${issueId}` })),
       };
       dispatchPendingGradingAudits.mockResolvedValue(dispatchResult);
 

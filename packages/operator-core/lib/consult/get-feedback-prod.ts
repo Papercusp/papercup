@@ -6,7 +6,6 @@ export async function getFeedbackProd(
   request: GetFeedbackRequest,
   identity: AgentIdentity,
   options: {
-    producer?: string;
     harnessSlug?: string | null;
     filterRoute?: (route: Awaited<ReturnType<GetFeedbackDeps['route']>>) => Promise<Awaited<ReturnType<GetFeedbackDeps['route']>>>;
   } = {},
@@ -42,7 +41,7 @@ export async function getFeedbackProd(
     },
     open: async (input) => {
       const opened = await conversations.openConversation(identity, {
-        ...input, producer: options.producer ?? 'consult:get_feedback',
+        ...input, producer: 'consult:get_feedback',
       });
       return { conversation_id: opened.conversation.id, thread_id: opened.thread_id, delivered: opened.delivered };
     },

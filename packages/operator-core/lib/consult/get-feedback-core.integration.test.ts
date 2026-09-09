@@ -16,7 +16,7 @@
  *  - the D-008 §5 liveness gate + the honest no_qualified_responder reasons
  *    (below_floor / no_live_responder / embed_unavailable) all persist.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -35,7 +35,12 @@ import {
   readVettingConsultCritique,
 } from './get-feedback-core';
 import { peersKnowLookup } from './peers-know';
-import { consultReplyCore } from './consult-verbs-core';
+import { consultReplyCore, consultDeclineCore } from './consult-verbs-core';
+import { sweepExpiredConsults } from './consult-expiry-core';
+import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit } from '../grading-audit-routing';
+import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
+import type { ScorecardRow } from '../scorecards';
+import type { Rubric } from '../rubrics';
 
 /** Narrow the P-005 result union for the tests that expect success. */
 function asOk(r: GetFeedbackResult | GetFeedbackError): GetFeedbackResult {
@@ -183,6 +188,129 @@ const baseReq: GetFeedbackRequest = {
   question: 'why does the sync resolver drop SSE events under load?',
   originTaskRef: null, // explicit null: no default lookup, no budget aggregation
 };
+
+describe('source-audit dispatcher through persisted consult routing', () => {
+  it('fails closed when lineage is unavailable and never hands an unfiltered candidate pool to selection', async () => {
+    const source = { createdBy: 'source-author' } as ScorecardRow;
+    const pool = routeOf([cand('source-author'), cand('peer')]);
+    await expect(independentSourceAuditRoute(pool, source, WS, async () => { throw new Error('lineage unavailable'); }))
+      .rejects.toThrow('lineage unavailable');
+    await expect(independentSourceAuditRoute(pool, source, WS, async () => new Map()))
+      .rejects.toThrow('incomplete');
+  });
+
+  it('uses explicit fallback after no candidates and reuses it on retry without opening another consult', async () => {
+    const fixture = makeDeps(routeOf([]));
+    const input = {
+      card: { issueId: 'EI-no-route', createdBy: 'source-author' } as ScorecardRow,
+      reservationKey: 'grading-audit:EI-no-route', brief: 'Audit empty route',
+      ctx: { workspaceId: WS, uiClientId: 'source-requester', isSuperuser: true },
+    };
+    const feedback = vi.fn(async (req: GetFeedbackRequest) => getFeedbackCore(req, fixture.deps));
+    const first = await routeSourceGradingAudit(input, { getSql: () => rootSql, feedback });
+    expect(first).toMatchObject({ state: 'fallback', reason: expect.stringContaining('no_qualified_responder') });
+    const replay = await routeSourceGradingAudit(input, { getSql: () => rootSql, feedback });
+    expect(replay).toMatchObject({ state: 'fallback', reason: expect.stringContaining('reuse reserved launch fallback') });
+    expect(feedback).toHaveBeenCalledOnce();
+    expect(fixture.reached).toHaveLength(0);
+  });
+
+  it('repairs missed settlement cleanup on expiry without waking another auditor', async () => {
+    const fixture = makeDeps(routeOf([cand('settled-a'), cand('settled-b')]));
+    const result = asOk(await getFeedbackCore({ ...baseReq, question: 'settlement recovery', archiveFloor: 2,
+      cascade: { flavor: 'grading-integrity', issueId: 'EI-settled', reservationKey: 'settled', brief: 'Audit exact settled card.' },
+    }, fixture.deps));
+    await rootSql`INSERT INTO harness_shared.work_items (feature_id, payload) VALUES ('EI-settled', '{"observation":{"gradingAudit":{"state":"passed"}}}'::jsonb)`;
+    await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${result.conversation_id}`;
+    const reach = vi.fn(async () => ({ woke: 1 }));
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {}, reach });
+    expect((await stateRow(result.conversation_id)).state).toBe('closed_answered');
+    expect(reach).not.toHaveBeenCalled();
+  });
+
+  it('revival carries the audit brief instead of asking for a transcript answer', async () => {
+    const fixture = makeDeps(routeOf([cand('audit-dead', { liveness: 'ended' })]));
+    const revive = vi.fn(async () => ({ spawned: true, verified: true, detail: 'fixture' }));
+    await getFeedbackCore({ ...baseReq, question: 'audit revival', archiveFloor: 2,
+      cascade: { flavor: 'grading-integrity', issueId: 'EI-revived', reservationKey: 'revived', brief: 'Audit exact revival source.' },
+    }, { ...fixture.deps, revive });
+    expect(revive).toHaveBeenCalledWith(expect.objectContaining({ brief: expect.stringContaining('Audit exact revival source.') }));
+    expect(revive).not.toHaveBeenCalledWith(expect.objectContaining({ brief: expect.stringContaining('Answer FROM your transcript') }));
+  });
+
+  it('excludes author/critic lineage from every pool, reuses the chain, declines then expires with exact audit copy, and settles once', async () => {
+    const source = {
+      issueId: 'EI-source-router', createdBy: 'source-author', rubricRef: 'source-rubric',
+      createdAt: NOW.toISOString(), subject: { kind: 'plan', ref: 'frozen-plan' },
+      evidenceFingerprint: 'frozen-source-bytes', vetting: { critics: ['critic'] },
+      gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
+    } as ScorecardRow;
+    const pool = ['source-author', 'author-child', 'critic', 'critic-child', 'independent-a', 'independent-b', 'independent-c'].map((id) => cand(id));
+    const fixture = makeDeps(routeOf(pool));
+    const launch = vi.fn();
+    const route = (input: Parameters<typeof routeSourceGradingAudit>[0]) => routeSourceGradingAudit(input, {
+      getSql: () => rootSql,
+      resolveParties: async (ids) => new Map(ids.filter((id): id is string => Boolean(id)).map((id) => [id,
+        id === 'author-child' ? 'source-author' : id === 'critic-child' ? 'critic' : id])),
+      feedback: async (req, _identity, options) => getFeedbackCore(req, {
+        ...fixture.deps,
+        route: async (params) => options!.filterRoute!(await fixture.deps.route(params)),
+      }),
+    });
+    const ctx = { workspaceId: WS, uiClientId: 'requester', isSuperuser: true } as DispatchPendingGradingAuditsInput['ctx'];
+    const dispatchDeps = {
+      listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
+      reserve: async () => ({ status: 'claimed' as const }), release: async () => true,
+      listWorkspaceWideLoopStanddownOwners: async () => new Set<string>(), route, launch,
+    };
+    const first = await dispatchPendingGradingAudits({ targetIds: [source.issueId], ctx }, dispatchDeps);
+    const conversationId = first.receipts[0].conversationId!;
+    expect(first.receipts[0].state).toBe('routed');
+    expect(launch).not.toHaveBeenCalled();
+    expect(fixture.reached[0].responder).toBe('independent-a');
+    expect(fixture.reached[0].body).toContain('frozen-source-bytes');
+    expect(fixture.reached[0].body).not.toContain('Answer FROM your transcript');
+    const row = await stateRow(conversationId);
+    const snapshot = row.routing as RoutingSnapshot;
+    expect(snapshot.candidates.map((c) => c.ownerId)).toEqual(['independent-a', 'independent-b', 'independent-c']);
+    expect(snapshot.cascade).toMatchObject({ flavor: 'grading-integrity', issueId: source.issueId });
+    const replay = await dispatchPendingGradingAudits({ targetIds: [source.issueId], ctx }, dispatchDeps);
+    expect(replay.receipts[0]).toMatchObject({ state: 'deduped', conversationId });
+    expect(fixture.opened).toHaveLength(1);
+    await consultDeclineCore({ workspaceId: WS, conversationId, authorId: 'independent-a', reason: 'unavailable' }, {
+      getSql: () => rootSql,
+      post: async (input) => ({ post: { id: 99001, thread_id: 'audit-thread', author_id: 'independent-a', body: input.body, created_ts: NOW.toISOString() }, delivered: 0 }),
+      emitReplyEvent: async () => {}, reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; }, now: () => NOW,
+    });
+    expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-b', body: expect.stringContaining('frozen-source-bytes') });
+    await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${conversationId}`;
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {},
+      reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
+    });
+    expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-c', body: expect.stringContaining("ref:'EI-source-router'") });
+    await closeSourceAuditConsults(WS, source.issueId, rootSql);
+    expect((await stateRow(conversationId)).state).toBe('closed_answered');
+    const deliveries = fixture.reached.length;
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => new Date(NOW.getTime() + 36e5), emitReplyEvent: async () => {},
+      reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
+    });
+    expect(fixture.reached).toHaveLength(deliveries);
+  });
+
+  it('minimum-fill and failed-wake cascade retain the source audit flavor', async () => {
+    const fixture = makeDeps(routeOf([], { all: [cand('audit-min-a'), cand('audit-min-b')] }));
+    fixture.deps.reach = async (input) => { fixture.reached.push(input); return { queued: fixture.reached.length === 1 ? 0 : 1 }; };
+    const result = asOk(await getFeedbackCore({ ...baseReq, question: 'audit minimum and failed wake', archiveFloor: 2, minResponders: 2,
+      cascade: { flavor: 'grading-integrity', issueId: 'EI-minimum', reservationKey: 'minimum', brief: 'Audit frozen minimum evidence.' },
+    }, fixture.deps));
+    expect(result.responder?.ownerId).toBe('audit-min-b');
+    expect(fixture.reached).toHaveLength(2);
+    for (const reached of fixture.reached) {
+      expect(reached.body).toContain('Audit frozen minimum evidence.');
+      expect(reached.body).not.toContain('answer FROM your transcript');
+    }
+  });
+});
 
 async function stateRow(conversationId: string, ws: string = WS) {
   const rows = (await rootSql`

@@ -11,11 +11,11 @@
  * Isolated from the live operator DB (D-018): a separate database the gym owns.
  */
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyGymSchema } from './schema';
+import { applyGymSchema, GYM_SQL_DIR } from './schema';
 // eslint-disable-next-line import/no-relative-packages -- the real boot-path migration runner
 import { applyPendingMigrations } from '../../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -55,6 +55,38 @@ export function resolveMainSqlDir(startDir: string): string {
 
 /** The main schema migration dir (000-baseline.sql + 107+). */
 export const MAIN_SQL_DIR = resolveMainSqlDir(__dirname);
+
+/** Comment stamped on a fully-built gym template before it is offered for cloning. */
+export const GYM_TEMPLATE_READY_MARK = 'pc-gym-template-ready-v1';
+
+/**
+ * Content key for the complete gym schema (main + gym-owned migrations).
+ *
+ * A template is a database-level file clone, so its name must change whenever a
+ * migration changes. Hashing names and raw contents makes stale schema reuse
+ * impossible across source edits, while keeping the key independent of whether
+ * the caller is running from the source tree or a bundled dist directory.
+ */
+const gymTemplateKeys = new Map<string, string>();
+export function gymTemplateKey(mainSqlDir: string = MAIN_SQL_DIR): string {
+  const mainDir = resolve(mainSqlDir);
+  const cached = gymTemplateKeys.get(mainDir);
+  if (cached) return cached;
+
+  const hash = createHash('sha256').update('gym-template-v1\0');
+  const addDirectory = (label: string, dir: string): void => {
+    hash.update(`${label}\0`);
+    for (const filename of readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+      hash.update(filename).update('\0').update(readFileSync(join(dir, filename))).update('\0');
+    }
+  };
+  addDirectory('main', mainDir);
+  addDirectory('gym', GYM_SQL_DIR);
+
+  const key = hash.digest('hex').slice(0, 16);
+  gymTemplateKeys.set(mainDir, key);
+  return key;
+}
 
 /**
  * The Postgres image the gym cycle provisions its dedicated ephemeral DB from.
@@ -138,7 +170,123 @@ export async function createGymDatabase(maint: Sql, dbName: string): Promise<voi
     await maint.unsafe(`CREATE DATABASE "${dbName}"`).simple();
   } catch (err) {
     // 42P04 = duplicate_database — fine (idempotent).
-    if (!/already exists|duplicate_database|42P04/i.test(String(err))) throw err;
+    if (!isDuplicateDatabaseError(err)) throw err;
+  }
+}
+
+function isDuplicateDatabaseError(err: unknown): boolean {
+  return /already exists|duplicate_database|42P04/i.test(String(err));
+}
+
+async function databaseExists(maint: Sql, dbName: string): Promise<boolean> {
+  const rows = (await maint.unsafe(`SELECT 1 FROM pg_database WHERE datname = '${dbName}'`)) as unknown[];
+  return rows.length > 0;
+}
+
+async function terminateDatabaseBackends(maint: Sql, dbName: string): Promise<void> {
+  await maint.unsafe(
+    `SELECT pg_terminate_backend(pid)
+       FROM pg_stat_activity
+      WHERE datname = '${dbName}' AND pid <> pg_backend_pid()`,
+  );
+}
+
+/** Apply the schema into one database. Templates intentionally omit the per-DB signing key. */
+async function applyGymDatabaseContents(
+  databaseUri: string,
+  mainSqlDir: string,
+  opts: { premintKey: boolean },
+): Promise<void> {
+  const boot: Sql = postgres(databaseUri, { max: 1, onnotice: () => {}, prepare: false });
+  try {
+    await boot.unsafe(FRAMEWORK_ROLES_DDL);
+    await boot.unsafe(EXTENSIONS_DDL);
+    await applyPendingMigrations({ client: boot, sqlDir: mainSqlDir });
+    await applyGymSchema(boot);
+    if (opts.premintKey) await premintSpawnSigningKey(boot);
+  } finally {
+    await boot.end({ timeout: 5 });
+  }
+}
+
+/** Build the complete schema once per migration-set key on a PG cluster. */
+async function buildGymTemplate(maintenanceUri: string, mainSqlDir: string, key: string): Promise<string> {
+  const templateName = `tmpl_gym_${key}`;
+  const lockName = `pc-gym-template-${key}`;
+  const maint = postgres(maintenanceUri, { max: 1, onnotice: () => {} });
+  try {
+    await maint.unsafe(`SELECT pg_advisory_lock(hashtext('${lockName}'))`);
+    try {
+      const ready = (await maint.unsafe(
+        `SELECT 1
+           FROM pg_database d
+           JOIN pg_shdescription c
+             ON c.objoid = d.oid
+            AND c.classoid = 'pg_database'::regclass
+          WHERE d.datname = '${templateName}'
+            AND c.description = '${GYM_TEMPLATE_READY_MARK}'`,
+      )) as unknown[];
+      if (ready.length > 0) return templateName;
+
+      // A markless final-name database is a partial from a crashed build. Remove it
+      // before rebuilding; only a ready, atomically-renamed DB is ever cloneable.
+      if (await databaseExists(maint, templateName)) {
+        await terminateDatabaseBackends(maint, templateName).catch(() => {});
+        await maint.unsafe(`DROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`).simple();
+      }
+
+      const buildName = `tmpl_gym_bld_${key}_${randomBytes(4).toString('hex')}`;
+      await createGymDatabase(maint, buildName);
+      const buildUri = new URL(maintenanceUri);
+      buildUri.pathname = `/${buildName}`;
+      try {
+        // Do not put the signing key in the shared template: every target database
+        // receives a fresh key below, preserving the old per-provision isolation.
+        await applyGymDatabaseContents(buildUri.toString(), mainSqlDir, { premintKey: false });
+        await terminateDatabaseBackends(maint, buildName).catch(() => {});
+        await maint.unsafe(`ALTER DATABASE "${buildName}" RENAME TO "${templateName}"`).simple();
+        await maint.unsafe(`COMMENT ON DATABASE "${templateName}" IS '${GYM_TEMPLATE_READY_MARK}'`).simple();
+      } catch (err) {
+        await terminateDatabaseBackends(maint, buildName).catch(() => {});
+        await maint.unsafe(`DROP DATABASE IF EXISTS "${buildName}" WITH (FORCE)`).simple().catch(() => {});
+        throw err;
+      }
+      return templateName;
+    } finally {
+      await maint.unsafe(`SELECT pg_advisory_unlock(hashtext('${lockName}'))`).catch(() => {});
+    }
+  } finally {
+    await maint.end({ timeout: 5 });
+  }
+}
+
+// Per-process de-duplication avoids opening one template builder per concurrent
+// test file; the advisory lock in buildGymTemplate remains the cross-process guard.
+const gymTemplateBuilds = new Map<string, Promise<string>>();
+function getOrBuildGymTemplate(maintenanceUri: string, mainSqlDir: string): Promise<string> {
+  const key = gymTemplateKey(mainSqlDir);
+  const cacheKey = `${maintenanceUri}\0${key}`;
+  let build = gymTemplateBuilds.get(cacheKey);
+  if (!build) {
+    build = buildGymTemplate(maintenanceUri, mainSqlDir, key);
+    gymTemplateBuilds.set(cacheKey, build);
+    // A transient build failure must not pin every later caller to the same error.
+    build.catch(() => {
+      if (gymTemplateBuilds.get(cacheKey) === build) gymTemplateBuilds.delete(cacheKey);
+    });
+  }
+  return build;
+}
+
+async function createDatabaseFromTemplate(maint: Sql, dbName: string, templateName: string): Promise<boolean> {
+  try {
+    await maint.unsafe(`CREATE DATABASE "${dbName}" TEMPLATE "${templateName}"`).simple();
+    return true;
+  } catch (err) {
+    // Another concurrent caller may have created this target after our existence
+    // check. Continue with the normal idempotent provisioning path in that case.
+    if (isDuplicateDatabaseError(err)) return false;
+    throw err;
   }
 }
 
@@ -151,9 +299,21 @@ export async function provisionGymDatabase(opts: ProvisionGymDbOpts): Promise<{ 
   if (!SAFE_DB_NAME.test(opts.dbName)) {
     throw new Error(`unsafe gym db name: ${JSON.stringify(opts.dbName)}`);
   }
+  const mainSqlDir = opts.mainSqlDir ?? MAIN_SQL_DIR;
   const maint = postgres(opts.maintenanceUri, { max: 1, onnotice: () => {} });
+  const targetLockName = `pc-gym-database-${opts.dbName}`;
   try {
-    await createGymDatabase(maint, opts.dbName);
+    // Serialize callers targeting the same DB, including a race between the
+    // existence check and CREATE DATABASE. Different targets still clone in parallel.
+    await maint.unsafe(`SELECT pg_advisory_lock(hashtext('${targetLockName}'))`);
+    try {
+      if (!(await databaseExists(maint, opts.dbName))) {
+        const templateName = await getOrBuildGymTemplate(opts.maintenanceUri, mainSqlDir);
+        await createDatabaseFromTemplate(maint, opts.dbName, templateName);
+      }
+    } finally {
+      await maint.unsafe(`SELECT pg_advisory_unlock(hashtext('${targetLockName}'))`).catch(() => {});
+    }
   } finally {
     await maint.end({ timeout: 5 });
   }
@@ -162,16 +322,10 @@ export async function provisionGymDatabase(opts: ProvisionGymDbOpts): Promise<{ 
   u.pathname = `/${opts.dbName}`;
   const databaseUri = u.toString();
 
-  const boot: Sql = postgres(databaseUri, { max: 1, onnotice: () => {}, prepare: false });
-  try {
-    await boot.unsafe(FRAMEWORK_ROLES_DDL);
-    await boot.unsafe(EXTENSIONS_DDL);
-    await applyPendingMigrations({ client: boot, sqlDir: opts.mainSqlDir ?? MAIN_SQL_DIR });
-    await applyGymSchema(boot);
-    await premintSpawnSigningKey(boot);
-  } finally {
-    await boot.end({ timeout: 5 });
-  }
+  // A cloned target already contains the complete schema; this is a quick tracker
+  // check plus a per-target signing key insert. Existing pre-template DBs retain
+  // the old idempotent repair path through applyPendingMigrations.
+  await applyGymDatabaseContents(databaseUri, mainSqlDir, { premintKey: true });
 
   return { databaseUri };
 }

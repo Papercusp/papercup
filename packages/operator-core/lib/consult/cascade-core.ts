@@ -275,6 +275,25 @@ export async function advanceCascade(
   reach?: (opts: { responder: string; conversationId: string; summary: string; body: string }) => Promise<{ woke: number }>,
   revive?: CascadeRevive,
 ): Promise<AdvanceCascadeResult> {
+  const sourceAudit = sourceAuditCascadeMetaFromRouting(params.routing);
+  if (sourceAudit) {
+    // Repair a missed post-emit cleanup before any decline/expiry/refill wake.
+    // The settled source card is authoritative even when its closer failed.
+    const settled = await sql<{ state: string }[]>`
+      SELECT payload->'observation'->'gradingAudit'->>'state' AS state
+      FROM harness_shared.work_items
+      WHERE workspace_id = ${params.workspaceId} AND feature_id = ${sourceAudit.issueId}`;
+    if (settled[0]?.state === 'passed' || settled[0]?.state === 'failed') {
+      await sql`
+        UPDATE harness_shared.consult_state
+        SET state = 'closed_answered', closed_at = ${params.nowIso}::timestamptz,
+            updated_at = ${params.nowIso}::timestamptz,
+            outcome = jsonb_build_object('source', 'grading-integrity', 'issueId', ${sourceAudit.issueId}::text)
+        WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+          AND state IN ('awaiting_responder', 'active')`;
+      return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
+    }
+  }
   const selected = selectionFromRouting(params.routing);
   const digest = [...digestFromRow(params.digest), params.event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
   const nextIdx = params.cascadeCursor + 1;

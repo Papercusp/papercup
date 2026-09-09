@@ -2759,7 +2759,7 @@ async function completeOne(
           pendingGradingAuditTargetIds?.length && failedGradingAuditTargetIds?.length
             ? 'Retry after binding current proof, emitting terminal scorecards, settling any pending grading audits, and repairing the failed grading-integrity findings before emitting fresh terminal scorecards.'
             : pendingGradingAuditTargetIds?.length
-              ? 'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits.'
+              ? 'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. The existing router selects independent auditors automatically; the returned gradingAuditDispatch receipts identify routed conversations or bounded launch fallback. Declines and expiry advance the existing cascade.'
               : failedGradingAuditTargetIds?.length
                 ? `Retry after repairing the failed grading-integrity findings for scorecard(s) ${failedGradingAuditTargetIds.join(', ')}, then emit fresh terminal scorecards through scorecards:emit.`
                 : 'Retry after binding current proof and emitting terminal scorecards when required.';
