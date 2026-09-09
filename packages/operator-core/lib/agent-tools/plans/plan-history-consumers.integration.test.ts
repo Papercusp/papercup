@@ -15,6 +15,7 @@ import { PgThreadStore } from '@papercusp/coordination/capabilities';
 import { workItemCheckpointScope, setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { getClaimTimePriorAttemptBrief, readGoalHistoryContext, readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
 import { postLearnedAtLevel } from '../../effort-thread';
+import { commentWorkItem, getWorkItem } from '../../work-items';
 import { buildGoalKickoffBrief } from '../goals/start';
 import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
 import { fleetSpecBeeKey, setClaimSpec } from '../../scheduler/claim-spec-store';
@@ -212,11 +213,18 @@ describe('bounded plan history production consumers', () => {
       'Outcome: the item claimant recovered the stored correction.',
       'Residue: validate the remaining callers.',
     ].join('\n');
+    expect(await getWorkItem(CHILD, HARNESS)).not.toBeNull();
+    capturedThreadIds.add(`issue-thread-${CHILD}`);
     const captured = await postLearnedAtLevel({
       workItemId: CHILD, harness: HARNESS, level: 'work_item', text: note,
       workspaceId: fx.workspaceId, authorId: 'su-item-capture-integration',
     });
-    expect(captured).toMatchObject({
+    // If the capture wrapper reports a failure, expose the real store error
+    // rather than obscuring a fixture fault behind posted:false.
+    if (!captured.posted) await commentWorkItem(CHILD, note, 'su-item-capture-integration', {
+      workspaceId: fx.workspaceId, harness: HARNESS,
+    });
+    expect(captured, JSON.stringify(captured)).toMatchObject({
       posted: true, level: 'work_item', requestedLevel: 'work_item', fellBack: false,
     });
     expect(captured.post).toBeTruthy();

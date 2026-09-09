@@ -2740,8 +2740,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     }
     // On very short panes keep the draft/error and transcript space available.
     // Normal panes reserve every measured configuration row.
-    let selection_limit = area.height.saturating_sub(card_h)
-        .saturating_sub(turn_error.len() as u16 + 5).max(1) as usize;
+    let selection_limit = area
+        .height
+        .saturating_sub(card_h)
+        .saturating_sub(turn_error.len() as u16 + 5)
+        .max(1) as usize;
     selection_rows.truncate(selection_limit);
     let composer_h = 3 + selection_rows.len() as u16 + turn_error.len() as u16;
     let constraints = if card_h > 0 {
@@ -3138,7 +3141,8 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Theme::dim(),
         )
     };
-    let mut composer_lines: Vec<Line> = selection_rows.into_iter()
+    let mut composer_lines: Vec<Line> = selection_rows
+        .into_iter()
         .map(|row| Line::from(Span::styled(row, Theme::dim())))
         .collect();
     composer_lines.push(Line::from(Span::styled(ctext, cstyle)));
@@ -4113,22 +4117,22 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // optional when they would cover a status/error; the compact help hint
     // (and the global chat key outside Agent Chat) remains discoverable.
     let text = Line::from(text);
-    if error.is_some() || text.width() + Line::from(right.as_str()).width() + 1 > area.width as usize {
+    if error.is_some()
+        || text.width() + Line::from(right.as_str()).width() + 1 > area.width as usize
+    {
         right = if app.tab == Tab::Operator || error.is_some() {
             "?:help"
         } else {
             "o:Agent Chat · ?:help"
-        }.to_string();
+        }
+        .to_string();
     }
     let w = (Line::from(right.as_str()).width() as u16 + 1).min(area.width);
     let left = Rect {
         width: area.width.saturating_sub(w),
         ..area
     };
-    f.render_widget(
-        Paragraph::new(text).style(Theme::status_text(style)),
-        left,
-    );
+    f.render_widget(Paragraph::new(text).style(Theme::status_text(style)), left);
     let sub = Rect {
         x: area.x + area.width.saturating_sub(w),
         y: area.y,
@@ -6460,6 +6464,7 @@ mod tests {
                     surface_models: surf,
                 },
                 effective_backend: "claude-code".into(),
+                effective_tiers: Vec::new(),
                 effort_levels: Vec::new(),
                 launchable_modes: Vec::new(),
             }),
