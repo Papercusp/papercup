@@ -69,10 +69,7 @@ import {
   fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
-import {
-  fetchContextPressure,
-  resolveContextPressureRecoveryPath,
-} from '../coordination/context-pressure';
+import { fetchContextPressure, resolveContextPressureRecoveryPath } from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import { autoBenchContextCriticalCaller as autoBenchContextCriticalCallerCore } from '../../fleet/context-critical-bench';
@@ -1261,7 +1258,11 @@ export default defineTool({
       const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
       const scope = await gateWorkScope('scheduler:get_next', { harness: args.harness, actor: ident.ownerId });
       if (!scope.allowed) {
-        return { content: [{ type: 'text' as const, text: JSON.stringify(workScopeRefusal(scope, { tool: 'scheduler:get_next' })) }] };
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(workScopeRefusal(scope, { tool: 'scheduler:get_next' })) },
+          ],
+        };
       }
     }
     // P-016: reconcile ALL incompatible pre-existing claims before the next
@@ -1358,7 +1359,11 @@ export default defineTool({
           // bench to the existing park surface, do not open-code an await at this site.
           // The bench is registered on the refusal RETURN path below, where the claim
           // decision is already made and nothing is racing this budget.
-          return { kind: 'context-critical', refusal: contextCriticalRefusalResult(contextGate), bucket: contextBucket };
+          return {
+            kind: 'context-critical',
+            refusal: contextCriticalRefusalResult(contextGate),
+            bucket: contextBucket,
+          };
         }
         // WI-2092233: refuse to SERVE a caller holding active GOAL-steward authority — the GOAL
         // contract is categorical (the holder never implements; every execution unit is a
@@ -1709,9 +1714,7 @@ export default defineTool({
       };
     }
     let res = await arbitrateSchedulerClaim(claim.value);
-    let retiredSoloPlanSpec:
-      | { planSlug: string; specId: string; revision: number; cleared: boolean }
-      | undefined;
+    let retiredSoloPlanSpec: { planSlug: string; specId: string; revision: number; cleared: boolean } | undefined;
     // WI-6409: a caller at its CONCURRENCY CAP never had the lane evaluated — getNextForBee
     // short-circuits before the claim query (EI-12095) — so this miss says NOTHING about pool
     // admissibility. Answer it here, for EVERY caller, before the divergence machinery runs.
@@ -1761,9 +1764,7 @@ export default defineTool({
       // plans:start-authored shape above. Fleet specs remain leader-owned and keep
       // their existing explicit retired-plan diagnosis/re-steer semantics.
       const boundPlan =
-        specOn && !reconciliation.scope && capRec?.source === 'cup'
-          ? plansStartExactPlanBinding(capRec.spec)
-          : null;
+        specOn && !reconciliation.scope && capRec?.source === 'cup' ? plansStartExactPlanBinding(capRec.spec) : null;
       if (boundPlan && capRec?.revision !== null && capRec?.revision !== undefined) {
         const terminality = await import('../plans/source')
           .then((m) =>
@@ -2609,9 +2610,7 @@ export default defineTool({
               // moment happens, instead of leaving the caller to a 60s re-poll.
               advice: IDLE_PULL_MISS_ADVICE,
             };
-    const payload = retiredSoloPlanSpec
-      ? { ...basePayload, retiredSoloPlanSpec }
-      : basePayload;
+    const payload = retiredSoloPlanSpec ? { ...basePayload, retiredSoloPlanSpec } : basePayload;
     // P-003: `tool_invocations` has no inline result JSON. Stamp the one fact a
     // later launch verifier needs — claimed vs diagnosed no-claim — onto the
     // invocation's existing metadata writer. This is intentionally the only

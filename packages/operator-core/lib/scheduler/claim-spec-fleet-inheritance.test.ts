@@ -15,10 +15,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 
-const membershipMock = vi.fn(async (_ws: string, _owner: string) => null as {
-  fleetSlug: string | null;
-  fleetRole: string | null;
-} | null);
+const membershipMock = vi.fn(
+  async (_ws: string, _owner: string) =>
+    null as {
+      fleetSlug: string | null;
+      fleetRole: string | null;
+    } | null,
+);
 vi.mock('../fleet-membership-store', () => ({
   latestFleetMembership: (ws: string, owner: string) => membershipMock(ws, owner),
   appendFleetMembershipEvent: vi.fn(async () => {}),

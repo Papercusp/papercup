@@ -70,9 +70,7 @@ const releaseWorkItemM = vi.hoisted(() => vi.fn(async () => undefined));
 const readClaimConcurrencyM = vi.hoisted(() =>
   vi.fn(async () => ({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] as string[] })),
 );
-const clearClaimSpecM = vi.hoisted(() =>
-  vi.fn(async () => ({ ok: true, errors: [] as string[], cleared: true })),
-);
+const clearClaimSpecM = vi.hoisted(() => vi.fn(async () => ({ ok: true, errors: [] as string[], cleared: true })));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
@@ -705,12 +703,10 @@ describe('scheduler:get_next declared-plan boundary (EI-21238986333755666)', () 
       updatedAt: new Date().toISOString(),
     });
     planTerminalityInWorkspaceM.mockResolvedValue({ status: 'shipped', hasOpenItems: false });
-    getNextM
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        workItem: { id: 'EI-next', title: 'Next default-lane item' },
-        claimedUnder: { specId: 'default-fixed-ordering', revision: 0 },
-      });
+    getNextM.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      workItem: { id: 'EI-next', title: 'Next default-lane item' },
+      claimedUnder: { specId: 'default-fixed-ordering', revision: 0 },
+    });
 
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
       data?: unknown;
