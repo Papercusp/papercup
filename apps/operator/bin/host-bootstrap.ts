@@ -981,7 +981,9 @@ export function runBootstrap(): void {
   const ipcEnabled =
     process.env.PAPERCUSP_IPC_ENABLE === '1' ||
     (process.env.PAPERCUSP_IPC_ENABLE !== '0' && process.env.NODE_ENV !== 'production');
-  if (ipcEnabled) {
+  // One publisher per selected operator port. Workers must not overwrite the
+  // primary's agent endpoint with an otherwise-valid UI-only descriptor.
+  if (ipcEnabled && cluster.isPrimary) {
     void (async () => {
       try {
         const [
@@ -1036,6 +1038,21 @@ export function runBootstrap(): void {
         // discover + connect. Harmless in the packaged build (that path uses
         // the stdout line); one code path beats gating the write.
         await writeEndpointIpcDiscovery(server.socketPath);
+        // Separate authenticated agent protocol, never the trusted UI principal.
+        // One selected-port descriptor owner; cluster workers must not race it.
+        if (cluster.isPrimary) {
+          try {
+            const { startDesktopAgentMcp } = await import(
+              '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-bootstrap'
+            );
+            await startDesktopAgentMcp(
+              server.socketPath, Number(process.env.PAPERCUSP_HONO_PORT) || 3070,
+            );
+          } catch {
+            // No credential or untrusted metadata in startup diagnostics.
+            console.error('[agent-mcp-uds] listener unavailable; existing HTTP route retained');
+          }
+        }
       } catch (err) {
         console.error('[endpoint-ipc] failed to start:', err);
       }

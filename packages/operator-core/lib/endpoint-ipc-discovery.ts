@@ -19,8 +19,9 @@
  * harmless (that path uses the stdout handshake) and keeps one code path.
  */
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile, readFile, readdir, rm, rename, lstat } from 'node:fs/promises';
 
 const REL_DIR = '.papercusp';
 const REL_FILE = 'endpoint-ipc.json';
@@ -54,6 +55,32 @@ export interface EndpointIpcDiscovery {
   startedAt: number;
   /** The hono port this operator serves (EI-190; absent in legacy files). */
   port?: number;
+  /** Optional agent endpoint. Legacy UI readers keep using socketPath above. */
+  agentMcp?: AgentMcpEndpoint;
+}
+
+export interface AgentMcpEndpoint {
+  version: 1;
+  transport: 'uds';
+  socketPath: string;
+  operatorId: string;
+  generation: string;
+}
+
+function validAgentEndpoint(value: unknown): value is AgentMcpEndpoint {
+  const v = value as Partial<AgentMcpEndpoint> | null;
+  return !!v && v.version === 1 && v.transport === 'uds' &&
+    typeof v.socketPath === 'string' && v.socketPath.startsWith('/') &&
+    typeof v.operatorId === 'string' && /^[a-f0-9]{64}$/.test(v.operatorId) &&
+    typeof v.generation === 'string' && /^[a-f0-9-]{36}$/.test(v.generation);
+}
+
+async function writeAtomic(path: string, body: string): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await rename(temporary, path);
+  } finally { await rm(temporary, { force: true }); }
 }
 
 /**
@@ -65,19 +92,24 @@ export interface EndpointIpcDiscovery {
  * since the packaged desktop learns the socket via the stdout handshake, not
  * this file).
  */
-export async function writeEndpointIpcDiscovery(socketPath: string): Promise<void> {
+export async function writeEndpointIpcDiscovery(
+  socketPath: string,
+  options: { agentMcp?: AgentMcpEndpoint; port?: number } = {},
+): Promise<void> {
   const dir = join(homedir(), REL_DIR);
   await mkdir(dir, { recursive: true });
-  const port = Number(process.env.PAPERCUSP_HONO_PORT) || 3070;
+  const port = options.port ?? (Number(process.env.PAPERCUSP_HONO_PORT) || 3070);
+  if (options.agentMcp && !validAgentEndpoint(options.agentMcp)) throw new Error('Invalid MCP endpoint');
   const payload: EndpointIpcDiscovery = {
     socketPath,
     pid: process.pid,
     startedAt: Date.now(),
     port,
+    ...(options.agentMcp ? { agentMcp: options.agentMcp } : {}),
   };
   const body = JSON.stringify(payload, null, 2);
-  await writeFile(endpointIpcDiscoveryPathForPort(port), body, 'utf8');
-  await writeFile(endpointIpcDiscoveryPath(), body, 'utf8');
+  await writeAtomic(endpointIpcDiscoveryPathForPort(port), body);
+  await writeAtomic(endpointIpcDiscoveryPath(), body);
   // EI-18763945004822208 item 2: sweep sibling discovery files whose
   // advertised pid is dead. Not the source of the ENOENT-storm bug (the Rust
   // reader now validates before dialing regardless — see
@@ -173,10 +205,27 @@ async function readEndpointIpcDiscoveryFrom(path: string): Promise<EndpointIpcDi
         pid: Number(j.pid) || 0,
         startedAt: Number(j.startedAt) || 0,
         ...(Number.isFinite(j.port) ? { port: Number(j.port) } : {}),
+        ...(validAgentEndpoint(j.agentMcp) ? { agentMcp: j.agentMcp } : {}),
       };
     }
   } catch {
     /* missing / unreadable / corrupt → null */
   }
   return null;
+}
+
+/** Native clients must select a build/port, never the last-writer singleton. */
+export async function readAgentMcpDiscoveryForPort(port: number): Promise<EndpointIpcDiscovery | null> {
+  try {
+    const file = endpointIpcDiscoveryPathForPort(port);
+    const fileStat = await lstat(file);
+    if (!fileStat.isFile() || fileStat.uid !== process.getuid?.() || (fileStat.mode & 0o077)) return null;
+    const descriptor = await readEndpointIpcDiscoveryFrom(file);
+    if (!descriptor?.agentMcp || descriptor.port !== port || !pidAlive(descriptor.pid)) return null;
+    const socket = await lstat(descriptor.agentMcp.socketPath);
+    const dir = await lstat(dirname(descriptor.agentMcp.socketPath));
+    if (!socket.isSocket() || socket.uid !== fileStat.uid || (socket.mode & 0o777) !== 0o600 ||
+        !dir.isDirectory() || dir.uid !== fileStat.uid || (dir.mode & 0o777) !== 0o700) return null;
+    return descriptor;
+  } catch { return null; }
 }
