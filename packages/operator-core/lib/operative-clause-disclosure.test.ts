@@ -288,3 +288,28 @@ describe('OPERATIVE_MARKERS recognises the emphatic mixed-case negation', () => 
     expect(r.truncation?.operativeClausesKept).toBeGreaterThan(0);
   });
 });
+
+describe('EI-22788167704395660 — late retirement/supersession beats early pause markers', () => {
+  const CHECKPOINT =
+    `${'historical checkpoint context '.repeat(30)}\n` +
+    '## 2026-09-08T23:50Z — PAUSED on owner directive: do NOT fix the 5 staging ratchet reds. ' +
+    '⛔ SYSTEM-WIDE PAUSE IN FORCE.\n' +
+    '## 2026-09-09T12:10Z — RESUMED. The pause block above is RETIRED, do not act on it. ' +
+    '⚠ **SUPERSEDES the PAUSE section above in its entirety.**';
+
+  it('keeps the in-document cancellation when early pause clauses fill the cap', () => {
+    const out = capPreservingOperativeDetailed(CHECKPOINT, 500);
+
+    expect(CHECKPOINT.length).toBeGreaterThan(500);
+    expect(out.text).toContain('⚠ OPERATIVE:');
+    expect(out.text).toContain('RETIRED, do not act on it');
+    expect(out.text).toContain('SUPERSEDES the PAUSE section above in its entirety');
+    expect(out.truncation?.operativeClausesKept).toBe(2);
+  });
+
+  it('recognizes both explicit cancellation spellings without broad lowercase matching', () => {
+    expect(OPERATIVE_MARKERS.test('RETIRED, do not act on it.')).toBe(true);
+    expect(OPERATIVE_MARKERS.test('SUPERSEDES the PAUSE section above.')).toBe(true);
+    expect(OPERATIVE_MARKERS.test('the component was retired last year')).toBe(false);
+  });
+});

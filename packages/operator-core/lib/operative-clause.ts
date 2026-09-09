@@ -48,7 +48,10 @@ export const KNOWLEDGE_IDENTIFIER_MAX_DEFAULT = 8;
  * supersession shapes `carry-surface-provenance-lint.ts` already recognizes
  * (its `OWNER_TAG_RE`) — a clause carrying one of these is, by construction,
  * the thing most likely to revoke an earlier plan sitting earlier in the
- * same body.
+ * same body. `RETIRED` is included as an explicit status marker because
+ * append-style checkpoints commonly pair it with a lowercase "do not" and a
+ * later `SUPERSEDES` clause; the uppercase status is what distinguishes that
+ * cancellation from ordinary prose about a retired component.
  *
  * ⚠ The owner-tag alternative here is `[owner[:\s][^\]]*\]` — space or colon,
  * matched independently of `carry-surface-provenance-lint.ts`'s own detector.
@@ -89,7 +92,7 @@ export const KNOWLEDGE_IDENTIFIER_MAX_DEFAULT = 8;
  * be any case, the NOT may not.
  */
 export const OPERATIVE_MARKERS =
-  /\b(ALWAYS|NEVER|MUST|DO NOT|DON'T|REQUIRED|RULE:|NO MORE)\b|\b(?:[Dd]o|[Dd]oes|[Mm]ust|[Ss]hould)\s+NOT\b|⛔|SUPERSED(?:ING|ED)|\[owner[:\s][^\]]*\]/;
+  /\b(ALWAYS|NEVER|MUST|DO NOT|DON'T|REQUIRED|RULE:|NO MORE|RETIRED)\b|\b(?:[Dd]o|[Dd]oes|[Mm]ust|[Ss]hould)\s+NOT\b|⛔|SUPERSED(?:ING|ED|ES?)|\[owner[:\s][^\]]*\]/;
 
 export interface ExtractOperativeClausesOptions {
   /** Total char budget across all preserved clauses. */
@@ -168,12 +171,15 @@ export function extractOperativeClauses(
 ): string[] {
   const maxChars = opts.maxChars ?? OPERATIVE_CLAUSE_CHARS_DEFAULT;
   const maxClauses = opts.maxClauses ?? OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT;
-  const out: string[] = [];
-  let spent = 0;
-  // Split on sentence ends AND newlines — these bodies are frequently
-  // bulleted/blocked, where a "sentence" never terminates in punctuation at all.
+  if (maxChars <= 0 || maxClauses <= 0) return [];
+
+  // Append-style checkpoints put the newest, most-binding section at the end.
+  // Collect first and select from the tail so an early directive cannot consume
+  // the whole clause-count budget before a later RETIRED/SUPERSEDES cancellation
+  // is considered. The selected clauses are restored to source order below so
+  // the excerpt remains readable and verbatim.
+  const candidates: string[] = [];
   for (const rawSentence of body.split(/(?<=[.!?])\s+|\n+/)) {
-    if (out.length >= maxClauses || spent >= maxChars) break;
     const sentence = rawSentence.trim();
     if (!sentence) continue;
     const m = OPERATIVE_MARKERS.exec(sentence);
@@ -183,6 +189,14 @@ export function extractOperativeClauses(
     const clause = sentence.slice(m.index).trim();
     // Already legible in the excerpt head ⇒ spend nothing on it.
     if (head.includes(clause)) continue;
+    candidates.push(clause);
+  }
+
+  const selected = candidates.slice(Math.max(0, candidates.length - maxClauses));
+  const out: string[] = [];
+  let spent = 0;
+  for (const clause of selected) {
+    if (out.length >= maxClauses || spent >= maxChars) break;
     const room = maxChars - spent;
     const kept = clause.length > room ? `${clause.slice(0, Math.max(0, room - 1))}…` : clause;
     if (!kept || kept === '…') break;
