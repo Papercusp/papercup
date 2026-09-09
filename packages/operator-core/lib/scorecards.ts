@@ -1011,7 +1011,19 @@ async function retractGradingAuditAtomically(
          WHERE workspace_id = ${workspaceId}
            AND feature_id = ${subjectIssueId}
            AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
-           AND payload->'observation'->'gradingAudit'->>'auditIssueId' = ${auditIssueId}
+           AND (
+             payload->'observation'->'gradingAudit'->>'auditIssueId' = ${auditIssueId}
+             OR (
+               payload->'observation'->'gradingAudit'->>'state' = 'pending'
+               AND payload->'observation'->'gradingAudit'->>'metaRubricRef' = ${GRADING_INTEGRITY_RUBRIC_REF}
+               AND payload->'observation'->'gradingAudit'->>'auditIssueId' IS NULL
+               AND payload->'observation'->'gradingAudit'->>'auditor' IS NULL
+               AND payload->'observation'->'gradingAudit'->>'auditedAt' IS NULL
+               AND payload->'observation'->'gradingAudit'->'dispatchReservation' IS NULL
+               AND payload->'observation'->'gradingAudit'->>'rubricRevision' IS NULL
+               AND payload->'observation'->'gradingAudit'->>'criteriaHash' IS NULL
+             )
+           )
         RETURNING feature_id`;
       subjectReset = updated.length > 0;
     }

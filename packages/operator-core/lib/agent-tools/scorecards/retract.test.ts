@@ -188,6 +188,20 @@ describe('retractScorecard', () => {
       ),
     ).toBeNull();
     expect(
+      resetGradingAuditStampForRetraction(
+        {
+          ...legacyReopened,
+          gradingAudit: {
+            ...legacyReopened.gradingAudit,
+            auditIssueId: 'EI-LATER-CORRECTION',
+            state: 'passed',
+          },
+        },
+        'EI-AUDIT',
+        { rubricRevision: 6, criteriaHash: 'hash-v6' },
+      ),
+    ).toBeNull();
+    expect(
       resetGradingAuditStampForRetraction(legacyReopened, 'EI-AUDIT', {
         rubricRevision: 6,
       }),
