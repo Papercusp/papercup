@@ -7389,7 +7389,7 @@
           "POST"
         ]
       },
-      "description": "Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, your named-fleet membership (fleetSlug/fleetRole, from the launch env), and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.",
+      "description": "Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, your current named-fleet membership (fleetSlug/fleetRole, from live presence with launch-env fallback on read failure), and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.",
       "capabilities": [
         "coord:read"
       ],

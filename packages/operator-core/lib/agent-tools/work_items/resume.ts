@@ -1,12 +1,12 @@
 /** Bounded continuation over the existing checkpoint and spec-evidence stores. */
 import { parseCarryNote, shortCarryHash } from '../../carry-note';
-import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from '../../work-item-checkpoint';
+import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness, type WorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, listSpecEvidence } from '../plans/spec-evidence-store';
 
 export const RESUME_PACKET_BUDGET = 5_000;
 const EVIDENCE_READ_LIMIT = 9;
 type ResumeItem = { id: string; harness?: string | null; state?: string | null; assignee?: string | null; payload?: unknown };
-type Checkpoint = { checkpoint: string | null; updatedAtMs: number | null; readFailed?: boolean };
+type Checkpoint = WorkItemCheckpointWithMeta;
 type Evidence = Awaited<ReturnType<typeof listSpecEvidence>>;
 type ResumeDeps = {
   checkpoint: typeof getWorkItemCheckpointWithMeta;
@@ -29,15 +29,19 @@ export function buildWorkItemResume(input: {
   const { item, checkpoint } = input;
   const plan = planOf(item);
   const fields = checkpoint.readFailed || checkpoint.checkpoint === null ? {} : parseCarryNote(checkpoint.checkpoint);
-  const next = fields.next?.trim() || null;
-  const nextFits = next !== null && JSON.stringify(next).length <= 2_000;
+  const latest = checkpoint.latestUpdate;
+  const ambiguous = latest?.status === 'unknown'
+    || (!latest && /^---\s*$/m.test(checkpoint.checkpoint ?? ''));
+  const latestFields = latest?.text ? parseCarryNote(latest.text) : fields;
+  const next = ambiguous ? null : latestFields.next?.trim() || latest?.text?.trim() || null;
   const resume = {
     schemaVersion: 'work-item-resume-v1',
     claim: { id: item.id, assignee: item.assignee ?? null, state: item.state ?? null },
     plan,
     nextAction: {
-      status: checkpoint.readFailed ? 'unknown' : next === null ? 'missing' : nextFits ? 'available' : 'oversized',
-      text: nextFits ? next : null,
+      status: checkpoint.readFailed || ambiguous ? 'unknown' : next === null ? 'missing' : 'available',
+      text: next,
+      ...(latest?.status === 'available' ? { source: latestFields.next ? 'next-action' : 'latest-update' } : {}),
     },
     checkpoint: {
       status: checkpoint.readFailed ? 'unknown' : checkpoint.checkpoint === null ? 'absent' : 'available',
@@ -61,6 +65,10 @@ export function buildWorkItemResume(input: {
   if (JSON.stringify(resume.checkpoint.freshness).length > 400) {
     const freshness = input.freshness as { verdict?: string } | null;
     resume.checkpoint.freshness = { verdict: freshness?.verdict ?? 'unknown', detailsOmitted: true };
+  }
+  if (JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
+    resume.nextAction.status = 'oversized';
+    resume.nextAction.text = null;
   }
   const append = (target: unknown[], row: unknown): boolean => {
     target.push(row);

@@ -62,6 +62,15 @@ describe('test-time evidence continuity', () => {
     expect(testEvidenceOutcome(counterexample, failed).outcome).toBe('fail');
   });
 
+  it.each([
+    [{ passed: 0, collectionFailed: true }, 'error'],
+    [{ passed: 0, skipped: 1 }, 'skip'],
+    [{ passed: 0 }, 'unknown'],
+  ] as const)('preserves an unexecuted counterexample outcome: %j', (counts, outcome) => {
+    const counterexample = { ...binding, counterexample: { test: 'target assertion', messageIncludes: 'expected' } };
+    expect(testEvidenceOutcome(counterexample, result(counts))).toMatchObject({ outcome, executed: false });
+  });
+
   it.each([null, [], [{ id: 98, file_path: 'other.test.ts', status: 'pass', finished_at: 'now' }]])('keeps missing/unreadable/misattributed ledger proof pending', async ledger => {
     const d = deps();
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);

@@ -136,8 +136,8 @@ export function filesModifiedDuringRun({ root, files, runStartMs, dirtyFiles }: 
     dirtyFiles?: Set<string> | null;
 }): string[];
 /**
- * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
- * files the caller changed THIS session, as an alternative to `--mine`'s implicit
+ * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` or `--files a.ts,b.ts` CLI flag
+ * naming exactly the files the caller changed THIS session, as an alternative to `--mine`'s implicit
  * git-status-derived scoping. Large callers may use `--files-from=/path/to/json`, where the
  * response file contains a JSON array of paths; keeping the list out of argv avoids Linux's
  * exec E2BIG limit without changing the scoped-verdict semantics.

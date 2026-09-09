@@ -33,6 +33,12 @@ const instanceId = randomUUID();
 const send = (message: unknown) => {
   if (process.connected) process.send!(message);
 };
+const sendAndFlush = async (message: unknown): Promise<void> => {
+  if (!process.connected) return;
+  await new Promise<void>((resolve, reject) => {
+    process.send!(message, (error) => error ? reject(error) : resolve());
+  });
+};
 for (const level of ['warn', 'error'] as const) {
   const original = console[level].bind(console);
   console[level] = (...args: unknown[]) => {
@@ -166,11 +172,23 @@ async function stop({ endSessions = true }: { endSessions?: boolean } = {}): Pro
     send({ type: 'shutdown-stage', stage: 'embedding-workers-stopped', pid: process.pid, instanceId, workers });
     const dbOrg = require('@papercusp/db-org') as typeof import('@papercusp/db-org');
     await dbOrg._resetForTests();
-    send({ type: 'stopped', pid: process.pid, instanceId });
-    process.exit(0);
+    // Match the production host's post-drain exit contract. Calling
+    // process.exit() runs native environment teardown, where ONNX (or another
+    // loaded addon) can throw below JavaScript and strand the process in
+    // do_exit. Flush the success marker first so the parent can distinguish
+    // this intentional hard exit from a crash, then let the OS reclaim the
+    // already-drained fixture process without running native destructors.
+    await sendAndFlush({ type: 'stopped', pid: process.pid, instanceId });
+    process.kill(process.pid, 'SIGKILL');
   } catch (error) {
     console.error('PUI operator fixture shutdown failed', error);
-    process.exit(1);
+    await sendAndFlush({
+      type: 'shutdown-failed',
+      pid: process.pid,
+      instanceId,
+      error: error instanceof Error ? error.stack ?? error.message : String(error),
+    }).catch(() => {});
+    process.kill(process.pid, 'SIGKILL');
   }
 }
 process.on('message', (message: { type?: string }) => {

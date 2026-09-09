@@ -24,7 +24,7 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
-const { setWorkItemCheckpoint, getWorkItemCheckpoint, getWorkItemCheckpointWithMeta, attestWorkItemCheckpointUnchanged } = await import(
+const { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheckpoint, getWorkItemCheckpointWithMeta, attestWorkItemCheckpointUnchanged } = await import(
   './work-item-checkpoint'
 );
 const { workItemScope, shortCarryHash, CARRY_NOTE_ATTESTATION_MAX_CHAIN } = await import('./carry-note');
@@ -114,6 +114,39 @@ async function rowCount(): Promise<number> {
 }
 
 describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote semantics', () => {
+  it('tracks the latest authored update across append, refresh, metadata changes and stale span data', async () => {
+    const { renderCarryNote, withCarryNoteChecks } = await import('./carry-note');
+    const { readWorkItemResume } = await import('./agent-tools/work_items/resume');
+    const ref = { harness: HARNESS, workItemId: 'WI-resume-latest-update' };
+    const source = { id: ref.workItemId, harness: HARNESS, state: 'open', assignee: 'successor' };
+    const deps = { checkpoint: getWorkItemCheckpointWithMeta,
+      freshness: async () => undefined, evidence: async () => [] };
+    await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Acquire run.ts and implement the wiring.' }));
+    const added = 'Wiring is complete. Review the saved proof.';
+    await setWorkItemCheckpointWithPrior(ref, added, {
+      latestUpdate: added,
+      transform: prior => `${prior}\n\n---\n${added}`,
+    });
+    expect((await readWorkItemResume(source, deps)).nextAction).toMatchObject({
+      status: 'available', text: added, source: 'latest-update',
+    });
+    const refreshed = renderCarryNote({ next: 'Run the independent acceptance check.' });
+    await setWorkItemCheckpointWithPrior(ref, refreshed, {
+      latestUpdate: refreshed,
+      transform: prior => `${refreshed}\n\n---\n${prior}`,
+    });
+    expect((await readWorkItemResume(source, deps)).nextAction.text).toBe('Run the independent acceptance check.');
+    await setWorkItemCheckpointWithPrior(ref, undefined, {
+      transform: prior => withCarryNoteChecks(prior ?? '', [{ id: 'saved', claim: 'Keep the saved proof.', verified: 'run:44' }]),
+    });
+    const updated = await readWorkItemResume(source, deps);
+    expect(updated.nextAction.text).toBe('Run the independent acceptance check.');
+    expect(updated.checks.rows).toHaveLength(1);
+    await db.sql`UPDATE harness_shared.carry_notes SET note = note || '\nChanged outside the checkpoint writer'
+      WHERE workspace_id = 'default' AND scope = ${workItemScope(HARNESS, ref.workItemId)}`;
+    expect((await readWorkItemResume(source, deps)).nextAction).toMatchObject({ status: 'unknown', text: null });
+  });
+
   it('resumes the latest durable next action after a successor boundary without historical paging', async () => {
     const { renderCarryNote } = await import('./carry-note');
     const { readWorkItemResume } = await import('./agent-tools/work_items/resume');

@@ -30,8 +30,19 @@ const ME: AgentIdentity = {
   workspaceId: 'default',
   userId: null,
 };
-// whoami also reads named-fleet membership from `../identity` (P-005); mock the
-// full module surface it consumes — no fleet env in the unit harness ⇒ no fleet.
+const resolvePresenceFleetMock = vi.hoisted(() =>
+  vi.fn(
+    async (
+      _ownerId: string,
+      launch: { fleetSlug: string | null; fleetRole: string | null },
+    ) => launch,
+  ),
+);
+// whoami reads live named-fleet membership through `../presence-fleet` (P-015),
+// with launch membership as its failure fallback. Keep this handler suite DB-free.
+vi.mock('../presence-fleet', () => ({ resolvePresenceFleet: resolvePresenceFleetMock }));
+// Mock the identity module's full surface it consumes — no fleet env in the unit
+// harness ⇒ the launch-membership fallback is no fleet.
 vi.mock('../identity', () => ({
   resolveAgentIdentity: () => ME,
   deriveFleetMembership: () => ({ fleetSlug: null, fleetRole: null }),
@@ -104,6 +115,9 @@ const runWithCtx = (tool: any, args: Record<string, unknown>, ctx: Record<string
 const parse = (res: any) => (res.data ?? JSON.parse(res.content[0].text));
 
 beforeEach(() => {
+  resolvePresenceFleetMock.mockImplementation(
+    async (_ownerId: string, launch: { fleetSlug: string | null; fleetRole: string | null }) => launch,
+  );
   configureCoordLog(new InMemoryCoordLog());
   configureWatermarkStore(new InMemoryWatermarkStore());
 });
@@ -115,6 +129,16 @@ afterEach(() => {
 describe('coord:whoami', () => {
   it('returns the server-resolved coordination identity', async () => {
     expect(parse(await run(whoamiTool))).toMatchObject({ ownerId: 'me', source: 'omp-hook-session' });
+  });
+  it('reports current presence membership after launch-env membership disappears', async () => {
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: 'live-fleet', fleetRole: 'member' });
+
+    expect(parse(await run(whoamiTool))).toMatchObject({
+      ownerId: 'me',
+      fleetSlug: 'live-fleet',
+      fleetRole: 'member',
+    });
+    expect(resolvePresenceFleetMock).toHaveBeenCalledWith('me', { fleetSlug: null, fleetRole: null });
   });
   // EI-1748 graceful-degrade path (resolveAgentIdentity throws → whoami returns
   // {resolved:false,...} instead of a structural error) is verified by inspection;

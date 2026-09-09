@@ -36,6 +36,27 @@ describe('bounded work-item resume', () => {
       .toEqual({ status: 'oversized', text: null });
   });
 
+  it.each(['append', 'refresh'])('uses the stored latest update, independent of %s history order', order => {
+    const previous = renderCarryNote({ next: 'Acquire run.ts; add recheckReason.' });
+    const latest = renderCarryNote({ next: 'The wiring is complete. Review the saved acceptance evidence.' });
+    const text = order === 'append' ? `${previous}\n\n---\n${latest}` : `${latest}\n\n---\n${previous}`;
+    const packet = build({ checkpoint: { checkpoint: text, updatedAtMs: 1,
+      latestUpdate: { status: 'available', text: latest } } as any });
+    expect(packet.nextAction.text).toBe('The wiring is complete. Review the saved acceptance evidence.');
+  });
+
+  it('does not guess which unmarked historical segment is current', () => {
+    const packet = build({ checkpoint: { checkpoint: `${renderCarryNote({ next: 'Old action' })}\n\n---\nNew progress`, updatedAtMs: 1 } });
+    expect(packet.nextAction).toMatchObject({ status: 'unknown', text: null });
+  });
+
+  it('keeps a complete action larger than 2000 characters when the packet budget permits it', () => {
+    const instruction = 'Review each saved assertion carefully. '.repeat(70);
+    const packet = build({ checkpoint: { checkpoint: renderCarryNote({ next: instruction }), updatedAtMs: 1 } });
+    expect(packet.nextAction).toMatchObject({ status: 'available', text: instruction.trim() });
+    expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+  });
+
   it('budgets whole proof and check rows while preserving outcome, currentness and omitted counts', () => {
     const proofs = Array.from({ length: 9 }, (_, id) => ({ id, specId: 'S-1', specRevision: 2,
       evidenceKind: 'test', evidenceRef: 'test-run:' + id, testRunId: id + 1, coverageEvidenceRef: null,

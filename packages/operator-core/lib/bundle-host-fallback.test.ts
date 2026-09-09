@@ -58,7 +58,10 @@ function runBundler(entry: string, extraEnv?: Record<string, string>): { code: n
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 240_000,
-      env: { ...process.env, ...extraEnv },
+      // The strict release path is the default contract. Set it explicitly so
+      // a supervisor-only opt-in inherited from the invoking agent/service
+      // cannot silently change the first two cases into successful stale boots.
+      env: { ...process.env, PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0', ...extraEnv },
     });
     return { code: 0, output };
   } catch (err) {

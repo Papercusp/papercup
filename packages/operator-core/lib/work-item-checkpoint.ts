@@ -28,6 +28,9 @@ import {
   setCarryNoteWithPrior,
   getCarryNote,
   getCarryJournal,
+  readCarryLatestUpdate,
+  splitCarryNoteChecks,
+  splitCarryNoteWalls,
   workItemScope,
   attestCarryNoteUnchanged,
   type CarryJournalEntry,
@@ -167,6 +170,8 @@ export async function setWorkItemCheckpointWithPrior(
   ref: WorkItemCheckpointRef,
   checkpoint: string | null | undefined,
   opts?: {
+    /** Latest authored update before history/check-row preservation transforms. */
+    latestUpdate?: string;
     guard?: (priorNote: string | null, priorLength: number) => string | null;
     /**
      * P-007/D-013 declared dependencies as `kind:ref` tags (see
@@ -276,6 +281,9 @@ export async function setWorkItemCheckpointWithPrior(
     // the existing declaration (see setCarryNoteWithPrior's `deps` tri-state).
     {
       journal: true,
+      latestUpdate: typeof (opts?.latestUpdate ?? checkpoint) === 'string'
+        ? splitCarryNoteWalls(splitCarryNoteChecks(opts?.latestUpdate ?? checkpoint!).body).body.trim()
+        : undefined,
       guard: opts?.guard,
       ...(opts?.transform ? { transform: opts.transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
@@ -400,6 +408,7 @@ export interface WorkItemCheckpointWithMeta {
   /** A failed store read is UNKNOWN, not evidence that no checkpoint was written.
    * Optional for compatibility with injected/older readers. */
   readFailed?: boolean;
+  latestUpdate?: ReturnType<typeof readCarryLatestUpdate>;
 }
 
 /** Read a work-item's checkpoint WITH its write instant. Same scope-canonicalization
@@ -410,13 +419,15 @@ export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef):
   const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ note: string | null; updated_ts: string | number | null }[]>`
-      SELECT note, updated_ts FROM harness_shared.carry_notes
+    const rows = await sql<{ note: string | null; updated_ts: string | number | null; latest_update?: unknown }[]>`
+      SELECT note, updated_ts, journal -> -1 -> 'latestUpdate' AS latest_update FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
     const note = (rows[0]?.note ?? '').trim();
     if (note.length === 0) return { checkpoint: null, updatedAtMs: null };
     const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
-    return { checkpoint: note, updatedAtMs: Number.isFinite(ts) ? ts : null };
+    const latestUpdate = readCarryLatestUpdate(note, rows[0]?.latest_update);
+    return { checkpoint: note, updatedAtMs: Number.isFinite(ts) ? ts : null,
+      ...(latestUpdate ? { latestUpdate } : {}) };
   } catch {
     return { checkpoint: null, updatedAtMs: null, readFailed: true };
   }

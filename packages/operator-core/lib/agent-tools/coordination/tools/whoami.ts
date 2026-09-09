@@ -16,7 +16,7 @@ import { inboxWakeKey } from '../inbox-wake';
 export default defineTool({
   name: 'coord:whoami',
   description:
-    'Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, your named-fleet membership (fleetSlug/fleetRole, from the launch env), and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.',
+    'Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, your current named-fleet membership (fleetSlug/fleetRole, from live presence with launch-env fallback on read failure), and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.',
   guidance: {
     when: 'Debugging identity — "what ownerId am I?" before relying on lock or message behaviour.',
     notWhen: 'Routine work — identity is resolved automatically by every coord:* and locks:* call.',
@@ -55,10 +55,20 @@ export default defineTool({
         ],
       };
     }
-    // Named-fleet membership (P-005): sourced from the launch env (PAPERCUSP_FLEET_SLUG
-    // / PAPERCUSP_FLEET_ROLE) — the fleet this process was launched into. fleetSlug is
-    // null when the agent is in no fleet.
-    const fleet = deriveFleetMembership();
+    // Named-fleet membership (P-005/P-015): current presence is authoritative because
+    // fleet:join / fleet:take-leadership can change membership without rewriting this
+    // process's launch environment. Keep the launch env as a failure-only fallback so
+    // identity introspection remains useful during a transient coordination read outage.
+    const launchFleet = deriveFleetMembership();
+    let fleet = launchFleet;
+    try {
+      // Keep the PG-backed presence join out of this module's static dependency graph;
+      // whoami is an identity read and must remain loadable when the DB layer is absent.
+      const { resolvePresenceFleet } = await import('../presence-fleet');
+      fleet = await resolvePresenceFleet(identity.ownerId, launchFleet);
+    } catch {
+      // Preserve the fail-soft identity response and its launch-time fallback.
+    }
     return {
       content: [
         {
