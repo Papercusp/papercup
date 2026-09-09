@@ -189,6 +189,21 @@ export const GET_NEXT_TOTAL_BUDGET_MS = 45_000;
 export const GET_NEXT_ISSUE_DIAG_BUDGET_MS = 12_000;
 
 /**
+ * EI-22737570207805341: a JavaScript watchdog does not cancel the in-flight claim promise.
+ * Give the caller a short, separate window to inspect the caller's held rows before returning
+ * the timeout. This is deliberately much shorter than the claim budget: it is a best-effort
+ * reconciliation, not a second chance to wait for the abandoned claim.
+ */
+export const GET_NEXT_TIMEOUT_RECONCILIATION_BUDGET_MS = 2_000;
+
+export type ClaimTimeoutReconciliationStatus = 'held' | 'none-observed' | 'unknown';
+
+export interface ClaimTimeoutReconciliation {
+  status: ClaimTimeoutReconciliationStatus;
+  heldIds: string[];
+}
+
+/**
  * EI-21863190622583520: the budget for the OPTIONAL per-floor miss breakdown — applied to the
  * caller (`withBoundedTimeout`) and to PostgreSQL (`statement_timeout`) from this single
  * constant, so the two can never drift into a window where the database keeps computing a
@@ -201,26 +216,44 @@ export const MISS_BREAKDOWN_BUDGET_MS = 1_500;
  * The fast, self-describing miss the tool returns when its DB path exceeds GET_NEXT_BUDGET_MS,
  * instead of hanging until the MCP client's 300s idle-timeout abort (EI-18167154191955470).
  * Distinct `error: 'timeout'` + `retryable: true` so a caller can distinguish it from a genuine
- * "no claimable work" miss and simply retry — a prior incident's immediate retry succeeded in ~2s.
+ * "no claimable work" miss. The response also carries a best-effort held-claim reconciliation;
+ * callers must inspect it before retrying because the abandoned claim may still commit.
  */
-export function getNextTimeoutResult(budgetMs = GET_NEXT_BUDGET_MS): {
+export function getNextTimeoutResult(
+  budgetMs = GET_NEXT_BUDGET_MS,
+  reconciliation: ClaimTimeoutReconciliation = { status: 'unknown', heldIds: [] },
+): {
   ok: false;
   error: 'timeout';
   retryable: true;
   budgetMs: number;
+  possiblyClaimed: true;
+  heldIds: string[];
+  claimReconciliation: ClaimTimeoutReconciliationStatus;
   message: string;
 } {
+  const reconciliationNote =
+    reconciliation.status === 'held'
+      ? `A best-effort held-claim read observed ${reconciliation.heldIds.length} claim(s) for this caller; ` +
+        'the timed-out claim may be among them.'
+      : reconciliation.status === 'none-observed'
+        ? 'A best-effort held-claim read observed no claims for this caller at that instant, but that is not proof the abandoned claim cannot commit later.'
+        : 'The best-effort held-claim read was inconclusive; do not infer that no claim was made.';
   return {
     ok: false,
     error: 'timeout',
     retryable: true,
     budgetMs,
+    possiblyClaimed: true,
+    heldIds: reconciliation.heldIds,
+    claimReconciliation: reconciliation.status,
     message:
       `scheduler:get_next exceeded its ${budgetMs}ms internal budget (likely transient PG pool ` +
       `contention) and returned a fast error instead of hanging until the MCP client's 300s ` +
-      `idle-timeout abort (EI-18167154191955470). This is a RETRYABLE transient — the claim path ` +
-      `is unchanged and a prior incident's immediate retry succeeded in ~2s. Retry now; if it ` +
-      `persists, the account/PG pool may be saturated (see accounts:status / dev:rate_governor_status).`,
+      `idle-timeout abort (EI-18167154191955470). The claim promise may still commit after this ` +
+      `response, so possiblyClaimed is true. ${reconciliationNote} Reconcile the held ids before ` +
+      `retrying; if the timeout persists, the account/PG pool may be saturated (see ` +
+      `accounts:status / dev:rate_governor_status).`,
   };
 }
 
@@ -1605,8 +1638,36 @@ export default defineTool({
     }
     // Budget exceeded: return the fast, retryable timeout miss instead of hanging to the abort.
     if (claim.degraded) {
+      // EI-22737570207805341: withBoundedTimeout is a Promise.race and does not cancel the
+      // abandoned claim. The resolver can therefore commit after this watchdog fires. Read the
+      // caller's held rows before responding, but preserve UNKNOWN when that read fails or also
+      // times out — an empty/failed observation is never proof that no claim exists.
+      const reconciliationBudgetMs = remainingBudgetMs(GET_NEXT_TIMEOUT_RECONCILIATION_BUDGET_MS);
+      const reconciliation = await withBoundedTimeout(
+        readClaimConcurrency({
+          cupId: ident.ownerId,
+          workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+        }),
+        {
+          fallback: null,
+          timeoutMs: reconciliationBudgetMs,
+          label: 'scheduler:get_next:timeoutReconciliation',
+        },
+      );
+      const timeoutReconciliation: ClaimTimeoutReconciliation =
+        reconciliation.degraded || !reconciliation.value
+          ? { status: 'unknown', heldIds: [] }
+          : {
+              status: reconciliation.value.heldIds.length > 0 ? 'held' : 'none-observed',
+              heldIds: reconciliation.value.heldIds,
+            };
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(getNextTimeoutResult(claimBudgetMs)) }],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(getNextTimeoutResult(claimBudgetMs, timeoutReconciliation)),
+          },
+        ],
       };
     }
     let res = await arbitrateSchedulerClaim(claim.value);
