@@ -46,7 +46,8 @@
  * child_process). The orchestrator (`reconcileTick`) takes injected deps so a test can mock
  * `execUser` + `now` + `notify` without shelling out — see the colocated `.test.ts`.
  */
-import { supervisedProcesses, type SupervisionEntry } from '../service-health';
+import { withBoundedTimeout } from '../bounded-timeout';
+import { supervisedProcesses, type ProbeResult, type SupervisionEntry } from '../service-health';
 import {
   BACKOFF_SEQUENCE_SEC,
   GIVE_UP_THRESHOLD,
@@ -399,6 +400,12 @@ export type ReconcileAction =
       firstObservation?: boolean;
     }
   | { kind: 'recovered'; unit: string } // transition down -> healthy, damping reset
+  /**
+   * Systemd reached a terminal healthy/recovered state, but the listener-level probe did not
+   * affirm that the service is actually reachable. Keep the pre-decision flap state and wait for
+   * the next tick; this action must never notify or resolve an incident.
+   */
+  | { kind: 'waiting-health-probe'; unit: string }
   /** A persistent unit is transitioning; no terminal liveness verdict exists yet. */
   | { kind: 'waiting-transition'; unit: string }
   /** EI-20474047462811254: an EPISODIC unit's run is in flight — no verdict this tick, so the
@@ -757,6 +764,13 @@ export interface ReconcilerDeps {
    *  `operator_supervision_pause_state` store; injected by tests so the ramp/threshold logic
    *  runs without PG. */
   pauseStore?: PauseStoreDeps;
+  /**
+   * Probe one named service after systemd classifies it as healthy/recovered. Production wires
+   * this to `probeNamedService`; the reconciler applies its own short timeout so a slow HTTP
+   * listener cannot wedge the 60s supervision tick. A null/result with `up:false` or
+   * `present:false` is non-affirmative and therefore preserves the pre-decision state.
+   */
+  probeService?: (name: string) => Promise<ProbeResult | null>;
 }
 
 /** Strip journald's `Aug 10 12:19:03 host bundle-host.sh[1655791]: ` line prefix, so the
@@ -1015,6 +1029,10 @@ export function supervisionListUnitPatterns(registry: readonly { unit?: string }
 const SYSTEMCTL_SHOW_PROPERTIES =
   'Id,Result,NRestarts,Restart,UnitFileState,LoadState,ActiveState,ExecMainCode,ExecMainStatus';
 
+/** The recovery probe is a confirmation gate, not the primary systemd decision. */
+export const STAGING_API_RECOVERY_PROBE_TIMEOUT_MS = 2_000;
+const STAGING_API_PROBE_NAME = 'staging-api';
+
 /** Match systemd's canonical `Id=foo.service` to the registry's conventional bare service name. */
 function systemctlUnitKey(unit: string): string {
   return unit.replace(/\.service$/, '');
@@ -1221,7 +1239,16 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       }
     }
 
-    const { action, nextState } = decideReconcile({
+    // Keep an immutable copy of the state that existed before the systemd decision. If systemd
+    // says "active" but the listener probe is not affirmative, the service has not recovered
+    // from the supervisor's point of view: restoring this copy prevents healthySince/wasDown and
+    // damping counters from being advanced by a false recovery.
+    const preDecisionState: UnitFlapState = {
+      ...state,
+      restarts: [...state.restarts],
+      nRestartsObs: [...state.nRestartsObs],
+    };
+    let { action, nextState } = decideReconcile({
       entry,
       status,
       // WI-5378: pass `show` through even once `state.gaveUp` — decideReconcile now checks
@@ -1232,6 +1259,33 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       autoRestartFlagOn,
       now,
     });
+
+    // EI-22777309029828628: systemd's terminal ActiveState is necessary but not sufficient for
+    // the staging API. In particular, a service can be `active` while :3170 still refuses HTTP
+    // during activation/restart. Probe only after the systemd decision has classified this unit
+    // as healthy/recovered; down/absent/throw/timeout all collapse to a waiting action so no
+    // recovery notification or EI resolution can be emitted from unverified listener state.
+    if (
+      entry.name === STAGING_API_PROBE_NAME &&
+      (action.kind === 'healthy' || action.kind === 'recovered')
+    ) {
+      let probeHealthy = false;
+      if (deps.probeService) {
+        const probe = await withBoundedTimeout(
+          () => Promise.resolve().then(() => deps.probeService!(STAGING_API_PROBE_NAME)),
+          {
+            fallback: null,
+            timeoutMs: STAGING_API_RECOVERY_PROBE_TIMEOUT_MS,
+            label: 'supervision-reconcile:staging-api-recovery',
+          },
+        );
+        probeHealthy = probe.value?.up === true && probe.value.present !== false;
+      }
+      if (!probeHealthy) {
+        action = { kind: 'waiting-health-probe', unit: entry.name };
+        nextState = preDecisionState;
+      }
+    }
     flapStateByUnit.set(entry.unit, nextState);
     actions.push(action);
 

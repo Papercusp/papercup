@@ -30,6 +30,7 @@ import {
   summarizeSystemctlStatusCause,
   isBuildStepFailure,
   BUILD_STEP_RETRY_LIMIT,
+  STAGING_API_RECOVERY_PROBE_TIMEOUT_MS,
   supervisionSnapshot,
   extractBuildErrorDetail,
   extractRuntimeFailureDetail,
@@ -54,6 +55,14 @@ const REPORT_ONLY_ENTRY: SupervisionEntry = {
   unit: 'papercup-live-federation-gate',
   criticality: 'important',
   autoRestart: false,
+};
+
+const STAGING_API_ENTRY: SupervisionEntry = {
+  name: 'staging-api',
+  layer: 'systemd-user',
+  unit: 'papercusp-staging-api',
+  criticality: 'important',
+  autoRestart: true,
 };
 
 // WI-5378: the actual entry whose auto-heal (WI-5376) fought a deliberate pause.
@@ -1200,6 +1209,104 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
       ...overrides,
     } as ReconcilerDeps & { execUser: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn> };
   }
+
+  it('EI-22777309029828628: systemd active plus a refused staging listener waits without emitting false recovery', async () => {
+    let active = false;
+    let now = 1_000;
+    const probeService = vi.fn(async () => ({
+      name: 'staging-api',
+      up: false,
+      status: null,
+      latencyMs: 2,
+      url: 'http://127.0.0.1:3170/api/desktop/version',
+    }));
+    const resolveGiveUpEi = vi.fn(async () => ['EI-staging']);
+    const deps = makeDeps({
+      registry: () => [STAGING_API_ENTRY],
+      probeService,
+      resolveGiveUpEi,
+      now: () => now,
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') {
+          return active
+            ? 'papercusp-staging-api.service loaded active running Papercusp staging API\n'
+            : 'papercusp-staging-api.service loaded failed failed Papercusp staging API\n';
+        }
+        if (args[0] === 'show') {
+          return 'Id=papercusp-staging-api.service\nResult=success\nNRestarts=0\nActiveState=' +
+            (active ? 'active' : 'failed') +
+            '\nLoadState=loaded\nUnitFileState=enabled\n';
+        }
+        if (args[0] === 'restart') {
+          active = true;
+          return '';
+        }
+        return '';
+      }),
+    });
+
+    // First tick establishes the down episode and performs the systemd restart.
+    await reconcileTick(deps);
+
+    // systemd now reports active, but the listener still refuses HTTP. The pre-decision state
+    // must survive: wasDown stays true, so this is not a recovered transition.
+    now += 2_000;
+    const result = await reconcileTick(deps);
+    expect(result.actions).toEqual([{ kind: 'waiting-health-probe', unit: 'staging-api' }]);
+    expect(probeService).toHaveBeenCalledTimes(1);
+    expect(probeService).toHaveBeenCalledWith('staging-api');
+    expect(deps.notify.mock.calls.some((call) => String(call[0]?.summary ?? '').includes('recovered'))).toBe(false);
+    expect(resolveGiveUpEi).not.toHaveBeenCalled();
+
+    // The probe is bounded even for an injected implementation; this exported value is part of
+    // the contract and keeps the recovery gate from inheriting an unbounded HTTP wait.
+    expect(STAGING_API_RECOVERY_PROBE_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it('EI-22777309029828628: systemd active plus a healthy staging listener permits the real recovery transition', async () => {
+    let active = false;
+    let now = 1_000;
+    const probeService = vi.fn(async () => ({
+      name: 'staging-api',
+      up: true,
+      status: 200,
+      latencyMs: 2,
+      url: 'http://127.0.0.1:3170/api/desktop/version',
+    }));
+    const resolveGiveUpEi = vi.fn(async () => ['EI-staging']);
+    const deps = makeDeps({
+      registry: () => [STAGING_API_ENTRY],
+      probeService,
+      resolveGiveUpEi,
+      now: () => now,
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') {
+          return active
+            ? 'papercusp-staging-api.service loaded active running Papercusp staging API\n'
+            : 'papercusp-staging-api.service loaded failed failed Papercusp staging API\n';
+        }
+        if (args[0] === 'show') {
+          return 'Id=papercusp-staging-api.service\nResult=success\nNRestarts=0\nActiveState=' +
+            (active ? 'active' : 'failed') +
+            '\nLoadState=loaded\nUnitFileState=enabled\n';
+        }
+        if (args[0] === 'restart') {
+          active = true;
+          return '';
+        }
+        return '';
+      }),
+    });
+
+    await reconcileTick(deps);
+    now += 2_000;
+    const result = await reconcileTick(deps);
+
+    expect(result.actions).toEqual([{ kind: 'recovered', unit: 'staging-api' }]);
+    expect(probeService).toHaveBeenCalledTimes(1);
+    expect(deps.notify.mock.calls.some((call) => String(call[0]?.summary ?? '').includes('recovered'))).toBe(true);
+    expect(resolveGiveUpEi).toHaveBeenCalledWith({ unit: 'papercusp-staging-api' });
+  });
 
   it('restarts a failed autoRestart:true unit and notifies; leaves the report-only entry alone', async () => {
     const deps = makeDeps();
