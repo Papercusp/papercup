@@ -167,6 +167,57 @@ describe('work_items:set_blocker', () => {
     );
   });
 
+  it('parks a plan-linked item when the plan lane is already needs-human for an external service action', async () => {
+    const item = {
+      id: 'WI-plan-human',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercusp',
+      payload: { plan_item: { plan_slug: 'owner-plan', item_id: 'P-001' } },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+    setWorkItemStateWithAliasInfo.mockResolvedValue({
+      workItem: { ...item, state: 'needs-human' },
+      aliased: false,
+      requestedState: 'needs-human',
+      appliedState: 'needs-human',
+    });
+
+    const out = await one({
+      id: 'WI-plan-human',
+      kind: 'human',
+      capability: 'external-service-action',
+      ref: 'cloudinary:r2-migration',
+      summary: 'Have the external service operator enable the migration endpoint.',
+      nextVerb: 'work_items:set_blocker { clear: true } after the endpoint is enabled',
+    });
+
+    expect(planItemNeedsHumanContradiction).toHaveBeenCalledWith(item);
+    expect(out).toMatchObject({
+      ok: true,
+      id: 'WI-plan-human',
+      workItem: { state: 'needs-human' },
+      activeBlockers: [
+        expect.objectContaining({
+          kind: 'human',
+          capability: 'external-service-action',
+          ref: 'cloudinary:r2-migration',
+          status: 'active',
+        }),
+      ],
+    });
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-plan-human',
+      'needs-human',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+  });
+
   it('refuses a strict human capability without a question and unblock action', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', payload: {} });
     const out = await one({ id: 'WI-1', kind: 'human', capability: 'credential', ref: 'credential:prod-db' });

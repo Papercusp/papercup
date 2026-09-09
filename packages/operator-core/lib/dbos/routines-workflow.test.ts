@@ -81,6 +81,8 @@ import { fireLoopWake } from '../harness/routines/loop-fire';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
   evaluateRoutineDispatchEpoch,
+  noteRoutineFairnessAttempt,
+  orderDueRoutinesFairly,
   ROUTINE_FIRE_QUEUES,
   ROUTINE_FIRE_TIMEOUT_MS,
   routineFireTimeoutMs,
@@ -233,6 +235,26 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     expect(queue(occupied, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBeLessThan(16);
   });
 
+  it('rotates due candidates after each admission attempt so a later row cannot starve', () => {
+    const cursors = new Map<string, number>();
+    const due = ['a', 'b', 'c', 'd'].map((id) => ({
+      id,
+      targetRole: 'system:ordinary-routine',
+      installSlug: 'papercusp',
+    }));
+
+    expect(orderDueRoutinesFairly(due, cursors).map((row) => row.id)).toEqual(['a', 'b', 'c', 'd']);
+    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
+    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
+
+    // The next epoch starts after the two credits spent by the previous epoch,
+    // even if those claims later lose their CAS race.
+    expect(orderDueRoutinesFairly(due, cursors).map((row) => row.id)).toEqual(['c', 'd', 'a', 'b']);
+    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
+    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
+    expect(orderDueRoutinesFairly(due, cursors).map((row) => row.id)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('reads indexed DBOS occupancy and gates feedback credit before claim/start', () => {
     const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
     const reader =
@@ -244,7 +266,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
 
     const impl = source.split('async function routinesTickImpl(): Promise<void> {')[1] ?? '';
     const epoch = impl.indexOf("name: 'routine-dispatch-feedback-epoch'");
-    const loop = impl.indexOf('for (const r of due) {');
+    const loop = impl.indexOf('for (const r of fairDue) {');
     const budget = impl.indexOf('const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0');
     const claim = impl.indexOf('claimDueRoutine(sql, r)');
     const start = impl.indexOf('DBOS.startWorkflow');

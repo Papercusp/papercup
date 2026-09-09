@@ -88,6 +88,9 @@ describe('release-request-sweep check', () => {
   it('is registered at a 60s cadence and does not shed under load', () => {
     expect(check.intervalMs).toBe(60_000);
     expect(check.shed).toBeFalsy();
+    // A restarted host must reconcile an already-expired durable request immediately,
+    // rather than waiting another full 60s interval before the first sweep.
+    expect(check.fireOnArm).toBe(true);
   });
 
   it('no due rows → no side effects', async () => {

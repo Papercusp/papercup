@@ -557,6 +557,31 @@ describe('runReplyDeadlineSweepOnce', () => {
       expect(wakeRecipients).toHaveBeenCalledTimes(1);
     });
 
+    it('does not auto-resolve when a later sender message targets a disjoint recipient', async () => {
+      h.rows = [row({ to_ids: ['su-holder'] })];
+      h.supersedeRows = [
+        { msg_id: 'm-disjoint', ts_ms: String(NOW - 10 * 60_000), to_ids: ['su-other'] },
+      ];
+
+      // Model the database predicate so this regression fails if the
+      // supersede query stops correlating the later message's concrete `to`
+      // array with the original recipients.
+      h.sqlImpl = (strings) => {
+        const text = strings.join('');
+        if (text.includes('supersede-check')) {
+          const hasRecipientCorrelation =
+            text.includes('jsonb_array_elements_text') && text.includes('t = ANY');
+          return Promise.resolve(hasRecipientCorrelation ? [] : h.supersedeRows);
+        }
+        if (text.includes('coord_thread_posts')) return Promise.resolve([]);
+        return Promise.resolve(h.rows);
+      };
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
+
     it('a supersede-probe failure fails soft to the ordinary checks (never silently swallows a genuinely-overdue deadline)', async () => {
       vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       h.rows = [row()];

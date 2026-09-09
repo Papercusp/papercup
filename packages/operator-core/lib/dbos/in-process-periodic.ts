@@ -893,6 +893,10 @@ const staleClaimSweepCheck: PeriodicCheck = {
 const releaseRequestSweepCheck: PeriodicCheck = {
   name: 'release-request-sweep',
   intervalMs: 60_000,
+  // A host can restart after a request's deadline has already passed. Reconcile once
+  // on arm so the durable deadline is not delayed by another full interval; the
+  // resolver and liveness guard remain the authority for whether a consequence fires.
+  fireOnArm: true,
   // D-004 (P-011): resolves DUE deadlines — deadline-passing is the trigger by
   // construction (the "announced consequence" rail).
   classification: 'timeout-reaper',
