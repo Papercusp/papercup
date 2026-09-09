@@ -26,6 +26,8 @@ export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initial
 export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
   host?: SuSessionHost<'claude'>;
   resume?: boolean;
+  /** Acceptance-only opt-in to the native permission request/card path. */
+  toolApproval?: 'prompt';
   beforeReady?: (pid: number | null) => Promise<void>;
   startupTimeoutMs?: number;
   deliveryTimeoutMs?: number;
@@ -159,8 +161,9 @@ export function startClaudeSuEngine(
     ...(options.resume ? { resume: nativeId } : { sessionId: nativeId }),
     includePartialMessages: true,
     settingSources: ['user', 'project', 'local'],
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
+    ...(options.toolApproval === 'prompt'
+      ? { permissionMode: 'default' as const }
+      : { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }),
     canUseTool(toolName, input, permission) {
       if (closed || !activeOwnerTurnId) return Promise.resolve({ behavior: 'deny', message: 'Claude has no active PUI owner turn for this permission request' });
       return cards.handleClaude(toolName, input, activeOwnerTurnId, permission);

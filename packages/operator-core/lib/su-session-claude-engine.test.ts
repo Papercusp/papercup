@@ -105,6 +105,17 @@ function openCards(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  it.each([
+    { toolApproval: undefined, permissionMode: 'bypassPermissions', dangerouslySkip: true },
+    { toolApproval: 'prompt' as const, permissionMode: 'default', dangerouslySkip: undefined },
+  ])('maps tool approval $toolApproval to the native SDK policy', async ({ toolApproval, permissionMode, dangerouslySkip }) => {
+    const p = peer();
+    const engine = open(p, toolApproval ? { toolApproval } : {});
+    await engine.ready;
+    expect(p.options()?.permissionMode).toBe(permissionMode);
+    expect(p.options()?.allowDangerouslySkipPermissions).toBe(dangerouslySkip);
+  });
+
   it('keeps restored history in startup until the new executor is ready', async () => {
     const transcriptPath = join(dir, 'history-readiness.jsonl');
     writeFileSync(transcriptPath, [

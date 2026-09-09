@@ -27,6 +27,7 @@ import { promisify } from 'node:util';
 import { Session as InspectorSession } from 'node:inspector';
 import { performance } from 'node:perf_hooks';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { parseSseStream } from '@papercusp/sse';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
@@ -74,7 +75,8 @@ vi.mock('../su-session-claude-engine', async (original) => {
       if (scriptedEngine.real) {
         // Observe the production host; never supply a query, attach an adapter,
         // or send an owner turn from the fixture in the live-provider journey.
-        const engine = actual.startClaudeSuEngine(...args);
+        const engine = actual.startClaudeSuEngine(args[0], args[1], args[2],
+          process.env.PUI_REAL_APPROVAL === '1' ? { ...args[3], toolApproval: 'prompt' } : args[3]);
         scriptedEngine.engines.push(engine);
         void (async () => {
           for await (const { event } of engine.adapter.host.subscribe()) {
@@ -146,7 +148,9 @@ const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 vi.mock('../su-session-rpc-engine', async (original) => {
   const actual = await original<typeof import('../su-session-rpc-engine')>();
   return { ...actual, startSuRpcEngine(...args: Parameters<typeof actual.startSuRpcEngine>) {
-    const engine = actual.startSuRpcEngine(...args);
+    const engine = actual.startSuRpcEngine(args[0], args[1],
+      scriptedEngine.real && process.env.PUI_REAL_APPROVAL === '1'
+        ? { ...args[2], toolApproval: 'prompt' } : args[2]);
     scriptedEngine.engines.push(engine);
     void (async () => {
       for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
@@ -157,6 +161,7 @@ vi.mock('../su-session-rpc-engine', async (original) => {
 const HARNESS = 'papercusp';
 const WORKSPACE = 'pui-agent-chat-e2e';
 const OWNER = 'pui-agent-chat-e2e-owner';
+const REAL_PLAN = 'pui-native-acceptance-plan';
 const execFileAsync = promisify(execFile);
 
 // Opt-in diagnosis uses the actual worker (including cold module evaluation),
@@ -458,7 +463,8 @@ async function close(server: ServerType | undefined): Promise<void> {
 
 async function putViewState(tab: string): Promise<void> {
   const { putViewState: put } = await import('../tui-workbench-store');
-  await put(OWNER, { tab, harness: HARNESS, operator_dock_open: false });
+  await put(OWNER, { tab, harness: HARNESS, operator_dock_open: false,
+    ...(scriptedEngine.real && process.env.PUI_REAL_PLAN === '1' ? { plan_filter: [REAL_PLAN] } : {}) });
 }
 
 type PersistedChat = {
@@ -569,25 +575,57 @@ async function openComposer(pane: PuiPane): Promise<void> {
     pane.enter();
     await pane.waitFor(`account ${account}`);
   }
+  if (scriptedEngine.real && process.env.PUI_REAL_MODEL) {
+    const model = process.env.PUI_REAL_MODEL;
+    pane.write('m');
+    await pane.waitFor('Model — Enter select');
+    await pane.waitFor(model);
+    // The fixture installs one exact valid tier after the inherit row.
+    pane.write('j');
+    pane.enter();
+    await pane.waitFor(`model ${model}`);
+  }
+  if (scriptedEngine.real && process.env.PUI_REAL_MODE) {
+    const mode = process.env.PUI_REAL_MODE;
+    if (mode !== 'auto') throw new Error('PUI_REAL_MODE acceptance currently supports only auto');
+    pane.write('u');
+    await pane.waitFor('Launch mode — Enter select');
+    await pane.waitFor('AUTO — act');
+    pane.write('j');
+    pane.enter();
+    await pane.waitFor(`mode ${mode}`);
+  }
   pane.write('i');
 }
 
 async function waitForSavedTurn(content: string): Promise<PersistedChat> {
-  return waitForPersistedChat(db, (candidate) => {
-    if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === content)) return true;
-    if (!scriptedEngine.real) return false;
-    const refusedLaunch = sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su' && Number(entry.status) >= 400);
-    if (refusedLaunch) throw new Error(`Native launch refused: ${String(refusedLaunch.error ?? refusedLaunch.status)}`);
-    // A resumed conversation deliberately retains its stopped predecessor in
-    // the evidence list. Only the current native process can refuse this turn.
-    const active = scriptedEngine.engines.at(-1);
-    if (active?.adapter.host.snapshot().terminal) {
-      const diagnostics = active.adapter.host.recent.map(({ event }) => event)
-        .filter((event) => event.type === 'error' || event.type === 'lifecycle').slice(-5);
-      throw new Error(`Native engine stopped before the owner turn was saved: ${JSON.stringify(diagnostics)}`);
-    }
-    return false;
-  }, scriptedEngine.real ? 120_000 : 15_000);
+  try {
+    return await waitForPersistedChat(db, (candidate) => {
+      if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === content)) return true;
+      if (!scriptedEngine.real) return false;
+      const refusedLaunch = sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su' && Number(entry.status) >= 400);
+      if (refusedLaunch) throw new Error(`Native launch refused: ${String(refusedLaunch.error ?? refusedLaunch.status)}`);
+      // A resumed conversation deliberately retains its stopped predecessor in
+      // the evidence list. Only the current native process can refuse this turn.
+      const active = scriptedEngine.engines.at(-1);
+      if (active?.adapter.host.snapshot().terminal) {
+        const diagnostics = active.adapter.host.recent.map(({ event }) => event)
+          .filter((event) => event.type === 'error' || event.type === 'lifecycle').slice(-5);
+        throw new Error(`Native engine stopped before the owner turn was saved: ${JSON.stringify(diagnostics)}`);
+      }
+      return false;
+    }, scriptedEngine.real ? 120_000 : 15_000);
+  } catch (error) {
+    const active = scriptedEngine.engines.at(-1)?.adapter.host;
+    throw new Error(`Agent Chat turn was not saved: ${JSON.stringify({
+      traffic: sessionTraffic,
+      commandTypes: commandPosts.map((command) => command.type),
+      lifecycle: active?.descriptor().lifecycle,
+      terminal: active?.snapshot().terminal,
+      recent: active?.recent.map(({ event }) => event)
+        .filter((event) => event.type === 'error' || event.type === 'lifecycle').slice(-5),
+    })}`, { cause: error });
+  }
 }
 
 async function waitForCorrelatedReply(prompt: string, reply: string | RegExp): Promise<PersistedChat> {
@@ -734,6 +772,20 @@ beforeAll(async () => {
   // unqualified `agent_chats` through the consolidated PG table.
   const { scaffoldHarnessSchema } = await import('../scaffold-harness-schema');
   await scaffoldHarnessSchema(HARNESS);
+  if (scriptedEngine.real && process.env.PUI_REAL_PLAN === '1') {
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, version)
+      VALUES (${WORKSPACE}, ${HARNESS}, ${REAL_PLAN}, 'PUI native acceptance plan', 'active',
+              '# PUI native acceptance plan', 'pui-native-acceptance-plan-fixture', 1)`;
+  }
+  if (scriptedEngine.real && process.env.PUI_REAL_MODEL) {
+    const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
+    const current = await readAgentConfig();
+    const backend = scriptedEngine.backend === 'claude' ? 'claude-code' : scriptedEngine.backend;
+    await writeAgentConfig({ ...current, tiers: [{ name: 'acceptance', spec: process.env.PUI_REAL_MODEL,
+      backend: backend as 'claude-code' | 'codex' | 'omp', when: `installed ${scriptedEngine.backend} acceptance` }] });
+  }
   await putViewState('Plans');
 
   if (scriptedEngine.real) {
@@ -909,7 +961,14 @@ beforeAll(async () => {
       }
       const host = scriptedEngine.engines.at(-1)?.adapter.host;
       if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
-      let response = await app.fetch(request, env);
+      let response: Response;
+      try {
+        response = await app.fetch(request, env);
+      } catch (error) {
+        console.info('PUI_REQUEST_FAILURE', JSON.stringify({ path: pathname,
+          message: error instanceof Error ? error.message : String(error) }));
+        throw error;
+      }
       if (pathname.endsWith('/card-response')) cardReplies.push({ path: pathname, status: response.status });
       traceTiming('request-end', { ...traceFields, elapsedMs: performance.now() - requestStarted, status: response.status });
       if (pathname === '/api/zero-harness/rest-query' && traceFields.query) {
@@ -933,16 +992,23 @@ beforeAll(async () => {
         response = withoutCommandReceipts(response);
       }
       if (isLaunch || pathname.includes('/su-session')) {
-        const result = isLaunch ? await response.clone().json() : null;
+        const streamedLaunch = isLaunch && response.headers.get('content-type')?.includes('text/event-stream') === true;
+        const result = isLaunch && !streamedLaunch ? await response.clone().json() : null;
         // Keep an allowlisted trace of the production boundary. Never capture
         // authorization headers, endpoint credentials or arbitrary request text.
-        const observation = {
+        const observation: Record<string, unknown> = {
           method: request.method,
           path: pathname,
           status: response.status,
           count: 1,
           ...(isLaunch ? {
+            streamed: streamedLaunch,
             agent: launchInput?.agent,
+            model: launchInput?.model,
+            account: launchInput?.account,
+            mode: launchInput?.mode,
+            carry: launchInput?.carry,
+            planSlug: launchInput?.plan_slug,
             deferSpawn: launchInput?.defer_spawn,
             attachedEngine: launchInput?.attached_engine === true,
             transport: result?.transport,
@@ -958,6 +1024,29 @@ beforeAll(async () => {
           entry.method === observation.method && entry.path === pathname && entry.status === response.status);
         if (existing) existing.count = Number(existing.count) + 1;
         else if (sessionTraffic.length < 30) sessionTraffic.push(observation);
+        if (streamedLaunch) {
+          // Observe the final typed launch result from a CLONE without holding
+          // the response away from the PUI. Awaiting response.json() here turns
+          // text/event-stream into a parse exception and an artificial HTTP 500.
+          const observed = response.clone();
+          void (async () => {
+            for await (const event of parseSseStream(observed.body)) {
+              if (event.event !== 'launch-result') continue;
+              const terminal = JSON.parse(event.data) as { httpStatus?: number; body?: Record<string, unknown> };
+              const body = terminal.body ?? {};
+              Object.assign(observation, {
+                status: terminal.httpStatus ?? observation.status,
+                transport: body.transport,
+                deferred: body.deferred === true,
+                advSessionId: body.advSessionId,
+                nativeSessionPresent: Boolean(body.nativeSession),
+                ...(body.error ? { errorCode: body.code,
+                  error: (typeof body.error === 'string' ? body.error : JSON.stringify(body.error)).slice(0, 500) } : {}),
+              });
+            }
+          })().catch((error: unknown) => console.info('PUI_LAUNCH_STREAM_OBSERVATION_FAILURE',
+            error instanceof Error ? error.message : String(error)));
+        }
       }
       return response;
     },
@@ -1542,13 +1631,52 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const manifest = installedManifest();
     const greetingReply = `PUI-PROCESS-${randomUUID()}`;
     const greeting = `Reply exactly ${greetingReply}. Do not use tools.`;
+    const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
+    const approvalResult = `PUI-APPROVED-${randomUUID()}`;
+    const approvalFixturePath = path.join(home, `approved-${randomUUID()}.txt`);
+    const approvalRequest = `Use your shell-command tool to execute exactly this harmless command against the test's temporary directory: printf '%s\\n' '${approvalResult}' > '${approvalFixturePath}' && cat '${approvalFixturePath}'. For Codex, request sandbox_permissions=require_escalated so the native approval request is exercised. Then reply with the command output exactly.`;
     const first = await startOperatorProcess();
     const pane = new PuiPane(bin, first.port, home);
     const frames: Record<string, string> = {};
     let saved: SuSessionDescriptor | undefined;
     let chatId: string | undefined;
+    let approvalCard: ReturnType<typeof pendingNativeCards>[number] | undefined;
+    let approvalStart: Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> | undefined;
+    let approvalEnd: Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> | undefined;
     try {
       await openComposer(pane);
+      if (approvalEnabled) {
+        pane.write(approvalRequest); pane.enter();
+        await waitForSavedTurn(approvalRequest);
+        await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(1), { timeout: 120_000, interval: 100 });
+        approvalCard = pendingNativeCards()[0];
+        const approvalLabel = scriptedEngine.backend === 'omp' ? 'Confirm' : 'Approve';
+        if (approvalCard.presentation?.kind !== 'radio' || !approvalCard.presentation.options) {
+          throw new Error('Native tool approval did not produce a PUI choice card');
+        }
+        const approvalIndex = approvalCard.presentation.options.findIndex((option) => option.label === approvalLabel);
+        expect(approvalIndex).toBeGreaterThanOrEqual(0);
+        await pane.waitFor(approvalCard.prompt);
+        await pane.waitFor(approvalLabel);
+        frames.approval = pane.screen();
+        pane.write(String(approvalIndex + 1));
+        await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 15_000, interval: 100 });
+        expect(cardReplies[0]).toMatchObject({ status: 200 });
+        await waitForCorrelatedReply(approvalRequest, approvalResult);
+        await pane.waitForReply(approvalResult);
+        expect(readFileSync(approvalFixturePath, 'utf8')).toBe(approvalResult + '\n');
+        approvalStart = scriptedEngine.events.find((event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
+          event.type === 'tool' && event.phase === 'started' && JSON.stringify(event.input).includes(approvalFixturePath));
+        expect(approvalStart, 'the approved native command must be visible as a tool start').toBeDefined();
+        approvalEnd = scriptedEngine.events.find((event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
+          event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId);
+        expect(approvalEnd, 'the approved native command must finish successfully').toMatchObject({ isError: false });
+        expect(scriptedEngine.events).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'card', phase: 'closed', correlationId: approvalCard.correlationId,
+            resolution: 'submitted' }),
+        ]));
+        frames.approved = pane.screen();
+      }
       pane.write(greeting); pane.enter();
       await pane.waitForReply(greetingReply);
       const chat = await waitForSavedTurn(greeting);
@@ -1556,6 +1684,18 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       saved = first.descriptors.get(chatId);
       expect(saved?.identity.backend).toBe(scriptedEngine.backend);
       expect(saved?.identity.nativeSessionId).toBeTruthy();
+      if (process.env.PUI_REAL_MODEL || process.env.PUI_REAL_MODE || process.env.PUI_REAL_PLAN === '1') {
+        expect(saved).toMatchObject({ accountRoute: process.env.PUI_REAL_ACCOUNT ?? 'default', carry: 'warm',
+          modes: process.env.PUI_REAL_MODE ? [process.env.PUI_REAL_MODE] : [] });
+        expect(saved?.model, 'the selected model must be the one that actually answered').toBeTruthy();
+        expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su'))
+          .toEqual([expect.objectContaining({
+            model: process.env.PUI_REAL_MODEL,
+            mode: process.env.PUI_REAL_MODE,
+            planSlug: process.env.PUI_REAL_PLAN === '1' ? REAL_PLAN : undefined,
+            account: process.env.PUI_REAL_ACCOUNT ?? 'default',
+          })]);
+      }
       frames.beforeRestart = pane.screen();
     } catch (error) {
       console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: first.output(), diagnostics: first.diagnostics,
@@ -1610,6 +1750,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       console.info('PUI_OPERATOR_PROCESS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
         first: { pid: first.pid, instanceId: first.instanceId }, second: { pid: second.pid, instanceId: second.instanceId },
         port: second.port, saved, resumed, frames, readiness: second.readiness,
+        approval: approvalCard ? { card: approvalCard, start: approvalStart, end: approvalEnd,
+          fixturePath: approvalFixturePath, result: approvalResult, replies: cardReplies } : null,
         diagnostics: [...first.diagnostics, ...second.diagnostics] }));
     } catch (error) {
       console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: second.output(), diagnostics: second.diagnostics,
