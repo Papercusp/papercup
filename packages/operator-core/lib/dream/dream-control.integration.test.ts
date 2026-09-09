@@ -61,6 +61,19 @@ describe('Dream controls persist atomically in real PostgreSQL', () => {
     expect((await getOwnerSteering(workspaceId, scope.potSlug, db.adminSql)).idleActivities).toBeNull();
   });
 
+  it('starts with persisted raised manual limits and refuses auto at its own lower cap', async () => {
+    await db.adminSql`UPDATE harness_shared.routines
+      SET payload_template = '{"mode":"manual","cycle":{"maxCostUsd":10,"rolling24hCostUsd":200}}'::jsonb
+      WHERE workspace_id = ${workspaceId} AND install_slug = ${scope.potSlug} AND name = 'dream-cycle-manual'`;
+    await recordLearningSpend(db.adminSql, { workspaceId, loopId: `dream:${scope.potSlug}`, potSlug: scope.potSlug, costUsd: 6 });
+    const snapshot = await read(db.adminSql, scope);
+    expect(snapshot).toMatchObject({ limits: { cycleUsd: 10, rollingUsd: 200 }, blocker: null });
+    await setDreamControl(db.adminSql, { ...scope, mode: 'manual', enabled: true, actor: 'test' }, read);
+    await expect(setDreamControl(db.adminSql, { ...scope, mode: 'auto', enabled: true, actor: 'test' }, read)).rejects.toThrow('24 hours');
+    expect((await read(db.adminSql, scope)).manual.active).toBe(true);
+    expect((await read(db.adminSql, scope)).automatic.enabled).toBe(false);
+  });
+
   it('changes the explicit auto setting and its routine together, preserving other owner controls', async () => {
     await setOwnerSteering(workspaceId, scope.potSlug, { idleActivities: { gym: false, scout: false } }, db.adminSql);
     for (const enabled of [true, false]) {

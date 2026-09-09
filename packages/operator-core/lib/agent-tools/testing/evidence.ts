@@ -82,7 +82,7 @@ export function testEvidenceOutcome(binding: Request['bindings'][number], result
   if (!counts) return { outcome: 'unknown', collected: false, executed: false };
   const executed = !counts.collectionFailed && counts.passed + counts.failed > 0;
   let outcome = counts.collectionFailed ? 'error' : counts.skipped > 0 ? 'skip' : counts.failed > 0 ? 'fail' : executed ? 'pass' : 'unknown';
-  if (binding.counterexample) {
+  if (binding.counterexample && executed && counts.skipped === 0) {
     const negative = binding.counterexample;
     const exactFailure = result.failures.some(f => f.file === binding.testPath && f.test === negative.test && f.message.includes(negative.messageIncludes));
     outcome = executed && counts.failed === 1 && counts.skipped === 0 && exactFailure ? 'killed' : 'fail';
@@ -115,7 +115,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     const details = {
       ...row.input.details,
       testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
-        sourceStable, ledgerStatus: run?.status ?? 'unknown', measuredOutcome: outcome.outcome,
+        sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length, measuredOutcome: outcome.outcome,
         ...(result?.error ? { resultError: result.error } : {}),
       },
       adequacy: { ...(row.input.details?.adequacy as object), ...outcome,

@@ -56,8 +56,10 @@ import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-l
 import { admitRecallHits, MEMORY_TEXT_CAP } from '../../../memory/recall-admission';
 import { annotateSupersededMemory } from '../../../memory/temporal-render';
 import { readOwnerPresence } from '../../../power-user-sessions';
-import { listActiveAnnouncements } from '../../../events/await/store';
+import { countActiveAwaitsByPrefixes, listActiveAnnouncements } from '../../../events/await/store';
 import { announcementVisibleTo } from '../../../events/await/announce-key';
+import { resolveAnnouncementOwnership, type AnnouncementOwnership } from '../../events/status';
+import { buildAnnouncedGateWarning } from '../../../turn-start-orientation';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { getModes } from '../../../modes/store';
 import { modeById } from '../../../modes/registry';
@@ -641,6 +643,16 @@ export interface OrientResult {
     scope: string;
     announcedBy: string;
     expires_ts: string | null;
+    /** Stable logical gate identity, when the declarer supplied one. */
+    logical_gate?: string | null;
+    /** Number of live non-announce awaits on this event key, when measured. */
+    live_awaiters?: number;
+    /** Live successors that can declare a replacement for a stale binding. */
+    live_successor_ids?: string[];
+    /** True only when the declarer ended and no live successor owns the binding. */
+    stale_owner?: boolean;
+    /** Actionable warning about a stranded or ambiguous announced gate. */
+    warning?: string;
   }>;
   /** EI-20113865649946366: gates visible to this caller that the fold did not show.
    *  Load-bearing rather than cosmetic — an undisclosed drop here means the agent
@@ -2250,13 +2262,45 @@ export async function composeOrient(
     const ANNOUNCED_GATES_FOLD = 8;
     const visible = visibleAll.slice(0, ANNOUNCED_GATES_FOLD);
     if (visible.length > 0) {
-      result.announcedGates = visible.map((a) => ({
-        event: a.eventKey,
-        note: a.note,
-        scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
-        announcedBy: a.subscriberId,
-        expires_ts: a.expiresTs,
-      }));
+      // Metadata is advisory and independently bounded. A failure omits only
+      // the affected optional fields; it must not erase the gate directory or
+      // manufacture `live_awaiters: 0` / `stale_owner: false`.
+      const [countsResult, ownershipResult] = await Promise.all([
+        withBoundedTimeout(countActiveAwaitsByPrefixes(visible.map((a) => a.eventKey)), {
+          fallback: null as Map<string, number> | null,
+          timeoutMs: 1_000,
+          label: 'orient:announcedGateAwaiters',
+        }),
+        withBoundedTimeout(resolveAnnouncementOwnership(visible, resolveConcreteWorkspaceId(activeWorkspaceId())), {
+          fallback: null as Map<number, AnnouncementOwnership> | null,
+          timeoutMs: 1_000,
+          label: 'orient:announcedGateOwnership',
+        }),
+      ]);
+      const counts = countsResult.value;
+      const ownership = ownershipResult.value;
+      result.announcedGates = visible.map((a) => {
+        const owned = ownership?.get(a.id);
+        const warning = buildAnnouncedGateWarning({
+          event: a.eventKey,
+          logical_gate: a.logicalGateKey ?? null,
+          scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
+          announcedBy: a.subscriberId,
+          stale_owner: owned?.staleOwner,
+        });
+        return {
+          event: a.eventKey,
+          note: a.note,
+          scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
+          announcedBy: a.subscriberId,
+          expires_ts: a.expiresTs,
+          logical_gate: a.logicalGateKey ?? null,
+          ...(counts ? { live_awaiters: counts.get(a.eventKey) ?? 0 } : {}),
+          ...(owned?.liveSuccessorIds.length ? { live_successor_ids: owned.liveSuccessorIds } : {}),
+          ...(owned?.staleOwner ? { stale_owner: true } : {}),
+          ...(warning ? { warning } : {}),
+        };
+      });
       // EI-20113865649946366: this fold is the mechanism by which an agent DISCOVERS
       // which gate to park on, so a gate dropped past the fold is not cosmetic — the
       // agent never learns the key exists and can wait on the wrong thing (or nothing).

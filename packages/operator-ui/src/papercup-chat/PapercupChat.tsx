@@ -47,7 +47,13 @@ import {
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AskChoiceCard, LocalCardHost, PendingCardsBar, ReportBlockCard } from '@papercusp/chat-cards';
+import {
+  AskChoiceCard,
+  LocalCardHost,
+  PendingCardsBar,
+  ReportBlockCard,
+  type ReportBlockRenderContext,
+} from '@papercusp/chat-cards';
 import type { CardResponse, ChatTurn, ChatTurnToolCall, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
 import { remarkWorkRefs } from './remark-work-refs';
 import type { WorkRefKind } from './parse-work-refs';
@@ -523,10 +529,78 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
   );
 });
 
-// chat-cards' own item-text rendering; a host that wants pills inside report
-// lines passes `renderReport` with its `renderItemText`/`onDrillIn` wired.
-function defaultRenderReport(report: ReportBlock): ReactNode {
-  return <ReportBlockCard report={report} />;
+/**
+ * `p` becomes the card's OWN item-text span rather than a `<p>`: the card
+ * renders each line inside its `<li>`, and a block element there breaks the
+ * report layout. Same class the raw-text fallback used, so nothing shifts.
+ */
+const REPORT_ITEM_COMPONENTS: Record<string, unknown> = {
+  p: ({ children }: { children?: ReactNode }) => (
+    <span className="report-block-item-text">{children}</span>
+  ),
+};
+
+/**
+ * One report line's text, under the SAME D-005 trust matrix as a message body:
+ * emphasis / code / lists render at BOTH trust levels, work-ref pills are owner
+ * only (`remarkWorkRefs` is not run on public).
+ *
+ * WHY THIS EXISTS (WI-10000848, owner-reported 2026-09-08). The shared card's
+ * fallback is `<span>{item.text}</span>` — raw text. So every host that had not
+ * hand-written its own `renderReport` showed an agent's `**Done**` as literal
+ * asterisks and every `WI-…` as dead text, while the operator's own adapter
+ * (apps/operator/app/_components/chat/ReportBlockCard.tsx) wired the seam and
+ * looked correct. That asymmetry WAS the bug: report lines are the surface most
+ * likely to carry refs, and the default silently dropped them.
+ *
+ * The default now CARRIES the behaviour — a host opts OUT by passing its own
+ * `renderReport`, instead of having to know to opt in.
+ */
+function ReportItemText({
+  text,
+  hostTrust,
+  harnessSlug,
+  planSlug,
+  onWorkRefActivate,
+}: {
+  text: string;
+  hostTrust: PapercupChatHostTrust;
+  harnessSlug?: string;
+  planSlug?: string | null;
+  onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => void;
+}): ReactNode {
+  const isOwner = hostTrust === 'owner';
+  const components = useMemo<Components>(() => {
+    const map: Record<string, unknown> = { ...REPORT_ITEM_COMPONENTS };
+    if (isOwner) {
+      map.workrefpill = ({ node }: { node?: HastNodeLike }) => {
+        const id = typeof node?.properties?.refId === 'string' ? node.properties.refId : '';
+        const kind: WorkRefKind = node?.properties?.refKind === 'plan-item' ? 'plan-item' : 'work-item';
+        if (!id) return null;
+        return (
+          <HydratedWorkRefPill
+            id={id}
+            kind={kind}
+            harnessSlug={harnessSlug ?? ''}
+            planSlug={planSlug}
+            size="xs"
+            onActivate={onWorkRefActivate ? () => onWorkRefActivate({ id, kind, planSlug }) : undefined}
+          />
+        );
+      };
+    }
+    return map as Components;
+  }, [isOwner, harnessSlug, planSlug, onWorkRefActivate]);
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={isOwner ? OWNER_REMARK_PLUGINS : PUBLIC_REMARK_PLUGINS}
+      components={components}
+      urlTransform={papercupChatUrlTransform}
+    >
+      {withHardBreaks(text)}
+    </ReactMarkdown>
+  );
 }
 
 export function PapercupChat(props: PapercupChatProps) {
@@ -545,7 +619,7 @@ export function PapercupChat(props: PapercupChatProps) {
     renderAvatar,
     composerChrome,
     renderToolCard,
-    renderReport = defaultRenderReport,
+    renderReport: renderReportProp,
     localCards,
     onLocalCardResponse,
     inputValue,
@@ -565,6 +639,30 @@ export function PapercupChat(props: PapercupChatProps) {
   const isOwner = hostTrust === 'owner';
   const capabilityNotice =
     props.capabilityNotice !== undefined ? props.capabilityNotice : isOwner ? null : askCapabilityNoticeText(capabilityContract);
+
+  // Built HERE rather than hoisted: the default needs THIS host's trust level
+  // and workspace binding to decide whether a `WI-…` in a report line becomes a
+  // live pill or stays text (WI-10000848). A host wanting different chrome
+  // still wins by passing its own `renderReport`.
+  const renderReport = useMemo<(report: ReportBlock, turn?: ChatTurn) => ReactNode>(
+    () =>
+      renderReportProp ??
+      ((report: ReportBlock) => (
+        <ReportBlockCard
+          report={report}
+          renderItemText={(context: ReportBlockRenderContext) => (
+            <ReportItemText
+              text={context.item.text}
+              hostTrust={hostTrust}
+              harnessSlug={harnessSlug}
+              planSlug={planSlug}
+              onWorkRefActivate={onWorkRefActivate}
+            />
+          )}
+        />
+      )),
+    [renderReportProp, hostTrust, harnessSlug, planSlug, onWorkRefActivate],
+  );
 
   // Composer draft — controlled when the host owns it, local otherwise.
   const [draft, setDraft] = useState('');

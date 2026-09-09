@@ -12,6 +12,7 @@ import type { Sql } from 'postgres';
 
 import {
   runAgentProductivitySweepOnce,
+  makeReadCandidates,
   makeReadAgentProductivity,
   makeReadHeldClaims,
   type AgentPresenceCandidate,
@@ -33,6 +34,42 @@ import { AGENT_PRODUCTIVITY_GRACE_MS } from '../agent-wedge';
 const NOW = 1_800_000_000_000;
 const PAST_GRACE = NOW - (AGENT_PRODUCTIVITY_GRACE_MS + 60_000);
 const FAKE_SQL = {} as Sql;
+
+describe('makeReadCandidates', () => {
+  it('normalizes timestamp strings returned by the database driver', async () => {
+    const heartbeatAt = '2026-09-09T03:00:00.000Z';
+    const startedAt = '2026-09-09T02:00:00.000Z';
+    const sql = (async () => [
+      {
+        owner_id: 'owner',
+        owner_label: 'su · owner',
+        workspace_id: 'papercusp-workspace',
+        agent_role: 'su',
+        fleet_slug: 'fleet-a',
+        source: 'omp-hook-session',
+        host: null,
+        pid: null,
+        heartbeat_at: heartbeatAt,
+        started_at: startedAt,
+      },
+    ]) as unknown as Sql;
+
+    await expect(makeReadCandidates(sql)(AGENT_PRODUCTIVITY_GRACE_MS)).resolves.toEqual([
+      {
+        ownerId: 'owner',
+        ownerLabel: 'su · owner',
+        workspaceId: 'papercusp-workspace',
+        agentRole: 'su',
+        fleetSlug: 'fleet-a',
+        source: 'omp-hook-session',
+        host: null,
+        pid: null,
+        heartbeatAt,
+        startedAtMs: Date.parse(startedAt),
+      },
+    ]);
+  });
+});
 
 function candidate(over: Partial<AgentPresenceCandidate> & { ownerId: string }): AgentPresenceCandidate {
   return {

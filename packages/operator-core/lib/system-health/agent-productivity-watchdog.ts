@@ -403,8 +403,8 @@ export function makeReadCandidates(sql: Sql): AgentProductivitySweepDeps['readCa
         source: string | null;
         host: string | null;
         pid: number | null;
-        heartbeat_at: Date;
-        started_at: Date;
+        heartbeat_at: Date | string;
+        started_at: Date | string;
       }[]
     >`
       SELECT owner_id, owner_label, workspace_id, agent_role, fleet_slug,
@@ -422,8 +422,12 @@ export function makeReadCandidates(sql: Sql): AgentProductivitySweepDeps['readCa
       source: r.source,
       host: r.host,
       pid: r.pid,
-      heartbeatAt: r.heartbeat_at.toISOString(),
-      startedAtMs: r.started_at.getTime(),
+      heartbeatAt:
+        r.heartbeat_at instanceof Date
+          ? r.heartbeat_at.toISOString()
+          : new Date(r.heartbeat_at).toISOString(),
+      startedAtMs:
+        r.started_at instanceof Date ? r.started_at.getTime() : new Date(r.started_at).getTime(),
     }));
   };
 }

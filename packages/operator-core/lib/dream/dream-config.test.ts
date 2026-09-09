@@ -33,12 +33,30 @@ describe('resolveDreamCycleConfig', () => {
 
   it.each([
     [{ maxDreamsPerCycle: 0 }, 'maxDreamsPerCycle'],
+    [{ maxDreamsPerCycle: 4 }, 'maxDreamsPerCycle'],
     [{ maxCostUsd: -0.01 }, 'maxCostUsd'],
+    [{ maxCostUsd: Number.POSITIVE_INFINITY }, 'maxCostUsd'],
+    [{ maxCostUsd: Number.NaN }, 'maxCostUsd'],
+    [{ rolling24hCostUsd: -1 }, 'rolling24hCostUsd'],
+    [{ rolling24hCostUsd: Number.POSITIVE_INFINITY }, 'rolling24hCostUsd'],
     [{ rolling24hCostUsd: Number.NaN }, 'rolling24hCostUsd'],
     [{ timeoutMs: 1.5 }, 'timeoutMs'],
     [{ autoIdleRatioFloor: 1.1 }, 'autoIdleRatioFloor'],
   ] as const)('rejects invalid cycle config %o', (override, message) => {
     expect(() => resolveDreamCycleConfig(override)).toThrow(message);
+  });
+
+  it('accepts explicitly configured monetary caps above defaults and preserves zero as a stop', () => {
+    expect(resolveDreamCycleConfig({ maxCostUsd: 10, rolling24hCostUsd: 200 })).toMatchObject({
+      maxCostUsd: 10,
+      rolling24hCostUsd: 200,
+      maxDreamsPerCycle: 3,
+    });
+    expect(resolveDreamCycleConfig({ maxCostUsd: 0, rolling24hCostUsd: 0 })).toMatchObject({
+      maxCostUsd: 0,
+      rolling24hCostUsd: 0,
+    });
+    expect(resolveDreamCycleConfig()).toEqual(DEFAULT_DREAM_CYCLE_CONFIG);
   });
 });
 

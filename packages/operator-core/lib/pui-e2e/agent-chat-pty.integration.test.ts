@@ -1563,7 +1563,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         readiness: first.readiness.slice(-10), responses: first.responses.slice(-20), screen: pane.screen() }));
       throw error;
     } finally { await pane.stop(); await first.stop({ endSessions: false }); }
-    expect(first.shutdownStages).toContain('embedding-workers-stopped');
+    expect(first.shutdownStages).toContain('os-hard-exit-ready');
     // A process exit is observed before a NEW OS process binds the SAME port.
     // No in-memory host, registry, mock or JavaScript closure crosses this seam.
     await putViewState('Plans');
@@ -1617,7 +1617,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         frames, readiness: second.readiness, screen: resumedPane.screen() }));
       throw error;
     } finally { await resumedPane.stop(); await second.stop(); }
-    expect(second.shutdownStages).toContain('embedding-workers-stopped');
+    expect(second.shutdownStages).toContain('os-hard-exit-ready');
   }, 600_000);
 
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {

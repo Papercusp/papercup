@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { capabilityHash } from './capability-contracts';
-import { DEFAULT_DREAM_CYCLE_CONFIG } from './dream-config';
+import { DEFAULT_DREAM_CYCLE_CONFIG, type DreamCycleConfig } from './dream-config';
 
 /** Protocol and evidence for the existing Dream/Blender experiment paths. No scheduler or spend switch. */
 export const DREAM_EVALUATION_ARMS = ['blender', 'uniform-pair', 'structured-pair', 'structured-triple'] as const;
@@ -54,15 +54,15 @@ export const DreamEvaluationProtocolSchema = z
       .object({
         attempts: z.literal(200),
         attemptsPerArm: z.literal(50),
-        discoveryUsd: z.literal(20),
-        discoveryUsdPerArm: z.literal(5),
+        discoveryUsd: z.number().finite().min(0),
+        discoveryUsdPerArm: z.number().finite().min(0),
         cycleAttempts: z.literal(3),
-        cycleUsd: z.literal(1),
-        rollingDayUsd: z.literal(5),
+        cycleUsd: z.number().finite().min(0),
+        rollingDayUsd: z.number().finite().min(0),
         experimentMinutes: z.literal(60),
         experimentCount: z.literal(12),
         // Zero means unapproved. This protocol does not silently authorize downstream compute.
-        experimentComputeUsd: z.number().finite().min(0).max(20),
+        experimentComputeUsd: z.number().finite().min(0),
       })
       .strict(),
     analysis: z
@@ -83,9 +83,22 @@ export function freezeDreamEvaluationProtocol(
   input: Pick<
     DreamEvaluationProtocol,
     'sourceSnapshot' | 'benchmarkHash' | 'oracleHash' | 'independentLabelsRef' | 'seed' | 'models'
-  > & { experimentComputeUsd?: number },
+  > &
+    Partial<
+      Pick<
+        DreamEvaluationProtocol['limits'],
+        'discoveryUsd' | 'discoveryUsdPerArm' | 'cycleUsd' | 'rollingDayUsd' | 'experimentComputeUsd'
+      >
+    >,
 ) {
-  const { experimentComputeUsd = 0, ...pins } = input;
+  const {
+    discoveryUsd = 20,
+    discoveryUsdPerArm = 5,
+    cycleUsd = DEFAULT_DREAM_CYCLE_CONFIG.maxCostUsd,
+    rollingDayUsd = DEFAULT_DREAM_CYCLE_CONFIG.rolling24hCostUsd,
+    experimentComputeUsd = 0,
+    ...pins
+  } = input;
   const protocol = DreamEvaluationProtocolSchema.parse({
     ...pins,
     version: 'dream-evaluation-v1',
@@ -95,11 +108,11 @@ export function freezeDreamEvaluationProtocol(
     limits: {
       attempts: 200,
       attemptsPerArm: 50,
-      discoveryUsd: 20,
-      discoveryUsdPerArm: 5,
+      discoveryUsd,
+      discoveryUsdPerArm,
       cycleAttempts: DEFAULT_DREAM_CYCLE_CONFIG.maxDreamsPerCycle,
-      cycleUsd: DEFAULT_DREAM_CYCLE_CONFIG.maxCostUsd,
-      rollingDayUsd: DEFAULT_DREAM_CYCLE_CONFIG.rolling24hCostUsd,
+      cycleUsd,
+      rollingDayUsd,
       experimentMinutes: 60,
       experimentCount: 12,
       experimentComputeUsd,
@@ -144,6 +157,7 @@ export function requireDreamPilotProtocol(
     mode: string;
     samplerMode: string;
     arity: number | 'mixed';
+    cycle: Pick<DreamCycleConfig, 'maxCostUsd' | 'rolling24hCostUsd'>;
   },
 ) {
   const protocol = DreamEvaluationProtocolSchema.parse(input.protocol);
@@ -155,6 +169,11 @@ export function requireDreamPilotProtocol(
   if (protocol.models.generator !== current.generator || protocol.models.reviewer !== current.reviewer)
     throw new Error('Dream pilot model configuration changed');
   if (current.mode !== 'manual') throw new Error('Dream pilot requires manual control');
+  if (
+    current.cycle.maxCostUsd !== protocol.limits.cycleUsd ||
+    current.cycle.rolling24hCostUsd !== protocol.limits.rollingDayUsd
+  )
+    throw new Error('Dream pilot monetary configuration changed');
   const arm = input.arm;
   if (arm === 'blender' || !DREAM_EVALUATION_ARMS.includes(arm))
     throw new Error('The Blender arm must use the ordinary Blender experiment path');

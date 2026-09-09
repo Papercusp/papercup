@@ -38,6 +38,7 @@
  *                                 # On this shared checkout that is yours AND every peer's — prefer
  *                                 # --files below, which is the only trustworthy attribution here.
  *   npm run lint:tsc -- --files=path/a.ts,path/b.ts
+ *   npm run lint:tsc -- --files path/a.ts,path/b.ts
  *                                 # EI-18731016038876755: scope to EXACTLY these files instead of
  *                                 # guessing from `git status` — the safe choice on a shared,
  *                                 # concurrently-edited checkout where `--mine` can attribute a
@@ -200,6 +201,7 @@ const USAGE = `Usage:
   npm run lint:tsc              # any file above its baseline fails, named
   npm run lint:tsc -- --mine    # fail on regressions in files dirty in the tree
   npm run lint:tsc -- --files=path/a.ts,path/b.ts
+  npm run lint:tsc -- --files path/a.ts,path/b.ts
                                # scope to exactly these files
   npm run lint:tsc -- --update  # lower each improved file's baseline (never raises)
   npm run lint:tsc -- --all-errors

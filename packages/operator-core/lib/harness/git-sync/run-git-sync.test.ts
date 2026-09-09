@@ -832,6 +832,37 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
   });
 
+  it('EI-22737671025165479: untracks legacy dependency-generation runtime state without deleting it', async () => {
+    const selector = '.papercusp/dependency-generations/.inputs/legacy-selector';
+    const selectorPath = join(repo, selector);
+    mkdirSync(join(selectorPath, '..'), { recursive: true });
+    writeFileSync(selectorPath, 'schema=1\ncreated=1\n');
+    git(repo, 'add', '-f', selector);
+    git(repo, 'commit', '--no-verify', '-m', 'legacy tracked runtime state');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, '.papercusp/dependency-generations/.gitignore'), '*\n');
+    writeFileSync(selectorPath, 'schema=1\ncreated=2\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(selector);
+    expect(readFileSync(selectorPath, 'utf8')).toBe('schema=1\ncreated=2\n');
+    expect(git(repo, 'check-ignore', '-v', '--no-index', selector)).toContain(
+      '.papercusp/dependency-generations/.gitignore',
+    );
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(logs.join('\n')).toContain(
+      'legacy tracked dependency-generation runtime path(s) from the index',
+    );
+  });
+
   it('WI-40770: a live-held dirty path stays excluded while the unlocked remainder syncs', async () => {
     writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');

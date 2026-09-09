@@ -46,6 +46,7 @@ function runFixture(
   render: 'raw' | 'archive' | 'empty' | 'stale' = 'raw',
   release?: { root?: string; version?: string },
   sourceImage?: { ref: string; exists?: boolean },
+  inhibitFails = false,
 ): {
   status: number;
   output: string;
@@ -54,6 +55,7 @@ function runFixture(
   manifest: unknown;
   buildArgs: string[];
   podmanCalls: string[];
+  inhibitCalls: string[];
 } {
   const dir = mkdtempSync(join(tmpdir(), 'ei-223550-bake-'));
   const source = join(dir, 'bake-cloud-images.sh');
@@ -65,6 +67,8 @@ function runFixture(
   const supplyChainMarker = join(dir, 'supply-chain-ran');
   const buildArgsPath = join(dir, 'build-args');
   const podmanCallsPath = join(dir, 'podman-calls');
+  const inhibitCallsPath = join(dir, 'udisks2-inhibit-calls');
+  const inhibitLock = join(dir, 'udisks2-inhibit.lock');
   const key = join(dir, 'release.key');
   const pubkey = join(dir, 'release.pub');
   const releaseRoot = release?.root ?? join(dir, 'release-root');
@@ -163,6 +167,13 @@ if [ "\${1:-}" = "-n" ]; then shift; fi
 exec "$@"
 `, { mode: 0o755 });
   chmodSync(join(bin, 'sudo'), 0o755);
+  writeFileSync(join(bin, 'udisks2-inhibit'), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$BAKE_TEST_UDISKS_INHIBIT_CALLS"
+if [ "$BAKE_TEST_UDISKS_INHIBIT_FAIL" = "1" ]; then exit 73; fi
+exec "$@"
+`, { mode: 0o755 });
+  chmodSync(join(bin, 'udisks2-inhibit'), 0o755);
   for (const tool of ['syft', 'grype']) {
     writeFileSync(join(bin, tool), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
     chmodSync(join(bin, tool), 0o755);
@@ -204,11 +215,15 @@ set -euo pipefail
         BAKE_TEST_BUILD_MARKER: buildMarker,
         BAKE_TEST_BUILD_ARGS: buildArgsPath,
         BAKE_TEST_PODMAN_CALLS: podmanCallsPath,
+        BAKE_TEST_UDISKS_INHIBIT_CALLS: inhibitCallsPath,
+        BAKE_TEST_UDISKS_INHIBIT_FAIL: inhibitFails ? '1' : '0',
         BAKE_TEST_SOURCE_IMAGE: sourceImage?.ref ?? '',
         BAKE_TEST_SOURCE_EXISTS: sourceImage?.exists === false ? '0' : '1',
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
         BAKE_TEST_RENDER: render,
         RELEASE_STORAGE_DRIVER: 'overlay',
+        UDISKS2_INHIBIT_BIN: join(bin, 'udisks2-inhibit'),
+        PAPERCUSP_UDISKS2_INHIBIT_LOCK: inhibitLock,
         P307_BUILD_HEALTH_DISABLE: '1',
         TMPDIR: dir,
       },
@@ -231,6 +246,9 @@ set -euo pipefail
     podmanCalls: existsSync(podmanCallsPath)
       ? readFileSync(podmanCallsPath, 'utf8').split(/\r?\n/).filter(Boolean)
       : [],
+    inhibitCalls: existsSync(inhibitCallsPath)
+      ? readFileSync(inhibitCallsPath, 'utf8').split(/\r?\n/).filter(Boolean)
+      : [],
   };
 }
 
@@ -248,6 +266,20 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(result.outFiles).toContain('bake-manifest.json');
     expect(result.outFiles).toContain('gcp/image/disk.raw');
     expect(result.files.some((name) => name.startsWith('papercusp-bake-cloud-images.'))).toBe(false);
+    expect(result.inhibitCalls).toHaveLength(1);
+    expect(result.inhibitCalls[0]).toContain('podman run --rm --privileged');
+  });
+
+  it('fails closed when the host UDisks automount inhibitor cannot guard the renderer', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, true);
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('BAKE_UDISKS2_INHIBIT=');
+    expect(result.output).toContain('gcp: FAILED');
+    expect(result.output).not.toContain('BAKE_RESULT=PASS');
+    expect(result.inhibitCalls).toHaveLength(1);
+    expect(result.inhibitCalls[0]).toContain('podman run --rm --privileged');
+    expect(result.podmanCalls.some((call) => call.startsWith('run --rm --privileged'))).toBe(false);
   });
 
   it('falsifiability control: the pre-fix live-source shape is broken by the same rewrite', () => {

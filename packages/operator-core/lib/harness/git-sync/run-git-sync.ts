@@ -3357,6 +3357,55 @@ interface CommitRepoResult {
   error?: string;
 }
 
+const DEPENDENCY_GENERATION_STORE = '.papercusp/dependency-generations';
+
+/**
+ * WI-42354 made dependency-generation stores self-ignoring, but an ignore rule
+ * cannot hide paths that an older git-sync already committed. Those legacy
+ * index entries keep recording selector/pin heartbeat timestamps forever.
+ *
+ * Git-sync owns the index, so repair the residue at the same seam: remove the
+ * reserved host-local store from the index while leaving every runtime byte on
+ * disk. The store's own `*` ignore rule then prevents the catch-all add below
+ * from reintroducing it. This is replay-safe; after the deletion commit,
+ * `ls-files` returns nothing and the helper becomes a no-op.
+ */
+async function untrackLegacyDependencyGenerationStore(
+  runGit: RunGit,
+  repoPath: string,
+  log: (message: string) => void,
+): Promise<{ ok: true; trackedCount: number } | { ok: false; error: string }> {
+  const tracked = await runGit(['ls-files', '-z', '--', DEPENDENCY_GENERATION_STORE], repoPath);
+  if (tracked.code !== 0) {
+    return {
+      ok: false,
+      error: `could not census tracked dependency-generation runtime paths: ${(tracked.stderr || tracked.stdout)
+        .trim()
+        .slice(0, 300)}`,
+    };
+  }
+  const paths = tracked.stdout.split('\0').filter(Boolean);
+  if (paths.length === 0) return { ok: true, trackedCount: 0 };
+
+  const removed = await runGit(
+    ['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', DEPENDENCY_GENERATION_STORE],
+    repoPath,
+  );
+  if (removed.code !== 0) {
+    return {
+      ok: false,
+      error: `could not untrack dependency-generation runtime paths: ${(removed.stderr || removed.stdout)
+        .trim()
+        .slice(0, 300)}`,
+    };
+  }
+  log(
+    `[git-sync] ${repoPath}: removed ${paths.length} legacy tracked dependency-generation runtime path(s) ` +
+      'from the index; cached-only repair preserved the ignored host-local store on disk',
+  );
+  return { ok: true, trackedCount: paths.length };
+}
+
 /**
  * WI-1416: the COMMIT half of one repo's sync — stage (`add -A` with oversized +
  * content-guard excludes) + commit. Replay-safe by construction: on an
@@ -3382,6 +3431,18 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       dirtyPathCount: 0,
       committedCount,
       error: `invalid-index preflight refused the commit: ${indexPreflight.reason}`,
+      oversized,
+      contentErrors,
+      skippedPaths: [],
+    };
+  }
+  const dependencyGenerationRepair = await untrackLegacyDependencyGenerationStore(runGit, repoPath, o.log);
+  if (!dependencyGenerationRepair.ok) {
+    return {
+      committedLocal: false,
+      dirtyPathCount: 0,
+      committedCount,
+      error: dependencyGenerationRepair.error,
       oversized,
       contentErrors,
       skippedPaths: [],

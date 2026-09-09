@@ -163,6 +163,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
         mode: input.mode,
         samplerMode: input.sampler?.mode ?? 'structured',
         arity: input.sampler?.arity ?? 2,
+        cycle: config,
       }
     : null;
   // Validate the protocol pin and policy before any adapter can perform work.
@@ -424,7 +425,9 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           break;
         }
         if (pilot?.arm === 'structured-triple' && !sampling.selection.c)
-          throw new Error('Dream pilot triple arm requires a role-labeled C; pair fallback is not a triple observation');
+          throw new Error(
+            'Dream pilot triple arm requires a role-labeled C; pair fallback is not a triple observation',
+          );
         const dreamed = await (deps.dream ?? runCapabilityDreamPass)({
           selection: sampling.selection,
           llmCall: llmFor('generation'),

@@ -8,6 +8,7 @@ import { capabilityHash } from './capability-contracts';
 import {
   DREAM_EVALUATION_ARMS,
   DREAM_EVALUATION_COSTS,
+  DreamEvaluationProtocolSchema,
   DREAM_UTILITY_CONTRACT,
   dreamEvaluationProtocolHash,
   dreamReviewerConfusion,
@@ -33,6 +34,7 @@ const current = {
   mode: 'manual',
   samplerMode: 'structured',
   arity: 2,
+  cycle: { maxCostUsd: 1, rolling24hCostUsd: 5 },
 };
 const costs = (arm: DreamEvaluationCost['arm']): DreamEvaluationCost => ({
   arm,
@@ -85,6 +87,81 @@ describe('frozen Dream evaluation protocol — P017', () => {
     expect(requireDreamPilotProtocol({ ...bound, arm: 'structured-triple' }, { ...current, arity: 3 })).toEqual(
       protocol,
     );
+  });
+
+  it('pins explicit larger monetary ceilings without changing the study design', () => {
+    const original = frozen();
+    const money = {
+      discoveryUsd: 200,
+      discoveryUsdPerArm: 50,
+      cycleUsd: 10,
+      rollingDayUsd: 200,
+      experimentComputeUsd: 100,
+    };
+    const raised = freezeDreamEvaluationProtocol({ ...original.protocol, ...money });
+    expect(raised.pin).not.toBe(original.pin);
+    expect(raised.protocol.limits).toEqual({ ...original.protocol.limits, ...money });
+    expect(
+      requireDreamPilotProtocol(
+        { ...raised, arm: 'structured-pair' },
+        {
+          ...current,
+          cycle: { maxCostUsd: 10, rolling24hCostUsd: 200 },
+        },
+      ),
+    ).toEqual(raised.protocol);
+    expect(() => requireDreamPilotProtocol({ ...raised, arm: 'structured-pair' }, current)).toThrow('monetary');
+    expect(frozen()).toEqual(original);
+  });
+
+  it.each(['discoveryUsd', 'discoveryUsdPerArm', 'cycleUsd', 'rollingDayUsd', 'experimentComputeUsd'] as const)(
+    'requires finite nonnegative %s and includes it in the pin',
+    (key) => {
+      const { protocol, pin } = frozen();
+      for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY, null]) {
+        expect(() =>
+          DreamEvaluationProtocolSchema.parse({
+            ...protocol,
+            limits: { ...protocol.limits, [key]: invalid },
+          }),
+        ).toThrow();
+        expect(() => freezeDreamEvaluationProtocol({ ...protocol, [key]: invalid })).toThrow();
+      }
+      const zero = freezeDreamEvaluationProtocol({ ...protocol, [key]: 0 });
+      expect(zero.protocol.limits[key]).toBe(0);
+      expect(() =>
+        requireDreamPilotProtocol(
+          {
+            protocol: { ...protocol, limits: { ...protocol.limits, [key]: protocol.limits[key] + 1 } },
+            pin,
+            arm: 'structured-pair',
+          },
+          current,
+        ),
+      ).toThrow('changed');
+    },
+  );
+
+  it.each([
+    { maxCostUsd: 2, rolling24hCostUsd: 5 },
+    { maxCostUsd: 0, rolling24hCostUsd: 5 },
+    { maxCostUsd: 1, rolling24hCostUsd: 10 },
+    { maxCostUsd: 1, rolling24hCostUsd: 0 },
+  ])('rejects a current monetary configuration different from its pin: %o', (cycle) => {
+    expect(() => requireDreamPilotProtocol({ ...frozen(), arm: 'structured-pair' }, { ...current, cycle })).toThrow(
+      'monetary',
+    );
+  });
+
+  it('keeps the nonmonetary study bounds fixed', () => {
+    const { protocol } = frozen();
+    for (const key of ['attempts', 'attemptsPerArm', 'cycleAttempts', 'experimentMinutes', 'experimentCount'] as const)
+      expect(() =>
+        DreamEvaluationProtocolSchema.parse({
+          ...protocol,
+          limits: { ...protocol.limits, [key]: protocol.limits[key] + 1 },
+        }),
+      ).toThrow();
   });
 
   it('reconciles all arms using the same unique-family numerator and cold-start/full-cost denominator', () => {

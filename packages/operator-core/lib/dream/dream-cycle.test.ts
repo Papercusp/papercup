@@ -205,6 +205,52 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(h.llm).not.toHaveBeenCalled();
   });
 
+  it.each([{ maxCostUsd: 10 }, { rolling24hCostUsd: 200 }])(
+    'refuses monetary drift from the frozen pilot before admission or source work: %o',
+    async (cycle) => {
+      const h = harness();
+      await pilot(h);
+      h.input.cycle = { ...h.input.cycle, ...cycle };
+      await expect(runDreamCycle(h.input, h.d)).rejects.toThrow('monetary');
+      expect(h.d.preflight).not.toHaveBeenCalled();
+      expect(h.d.beginRun).not.toHaveBeenCalled();
+      expect(h.d.loadPackets).not.toHaveBeenCalled();
+      expect(h.llm).not.toHaveBeenCalled();
+    },
+  );
+
+  it('admits matching raised pilot ceilings and preserves shared-governor refusals', async () => {
+    const h = harness();
+    const original = await pilot(h);
+    h.input.pilot = {
+      ...freezeDreamEvaluationProtocol({ ...original.protocol, cycleUsd: 10, rollingDayUsd: 200 }),
+      arm: 'structured-pair',
+    };
+    h.input.cycle = { ...h.input.cycle, maxCostUsd: 10, rolling24hCostUsd: 200 };
+    h.d.preflight = vi.fn(async () => ({
+      allow: false as const,
+      loopId: 'dream:papercusp',
+      reason: 'disabled' as const,
+      cycleRemainingUsd: 10,
+      rollingSpentUsd: 0,
+      rollingRemainingUsd: 200,
+      rollingLoopCount: 0,
+    }));
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ fired: false, reason: 'governor-refused' });
+    expect(h.d.preflight).toHaveBeenCalledOnce();
+    expect(h.llm).not.toHaveBeenCalled();
+    h.d.preflight = vi.fn(async () => ({
+      allow: true as const,
+      loopId: 'dream:papercusp',
+      cycleRemainingUsd: 10,
+      rollingSpentUsd: 0,
+      rollingRemainingUsd: 200,
+      rollingLoopCount: 0,
+    }));
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ accepted: 1 });
+    expect(h.llm).toHaveBeenCalled();
+  });
+
   it('rechecks the actual source snapshot before generation, preserving a rejected run', async () => {
     const h = harness();
     const valid = await pilot(h);

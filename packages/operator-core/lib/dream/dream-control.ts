@@ -6,7 +6,7 @@ import { getOwnerSteering, idleActivityEnabled, setOwnerSteering } from '../owne
 import { governorCheck } from '../learning-governor/store';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
 import { POT_DREAM_MANUAL_ROUTINE_NAME, POT_DREAM_AUTO_ROUTINE_NAME, ensurePotDreamLearningLoop } from '../pot/provision-learning-loop';
-import { DEFAULT_DREAM_CYCLE_CONFIG } from './dream-config';
+import { resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
 import { dreamLoopId, DREAM_ROLLING_WINDOW_MS, sumDreamSpendSince } from './dream-governor';
 import type { DreamRunMode } from './dream-run-store';
 
@@ -39,13 +39,14 @@ export interface DreamRoutineControlRow {
   active: boolean;
   next_fire_at: Date | string | null;
   metadata: Record<string, unknown> | null;
+  payload_template?: { cycle?: Partial<DreamCycleConfig> } | null;
 }
 
 type Scope = { workspaceId: string; potSlug: string };
 
 export async function readDreamRoutineControls(sql: Sql, scope: Scope): Promise<DreamRoutineControlRow[]> {
   return sql<DreamRoutineControlRow[]>`
-    SELECT name, active, next_fire_at, metadata FROM harness_shared.routines
+    SELECT name, active, next_fire_at, metadata, payload_template FROM harness_shared.routines
      WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.potSlug}
        AND name IN (${ROUTINE_NAMES.manual}, ${ROUTINE_NAMES.auto})
        AND target_role = 'system:dream-cycle'`;
@@ -108,7 +109,7 @@ export interface DreamControlReadDeps {
 
 /** Materialize only missing, inactive controls for registered sources. Never arm or retune a lane. */
 export async function readDreamControlSnapshot(
-  sql: Sql, scope: Scope, overrides: Partial<DreamControlReadDeps> = {},
+  sql: Sql, scope: Scope & { mode?: DreamRunMode }, overrides: Partial<DreamControlReadDeps> = {},
 ): Promise<DreamControlSnapshot> {
   const deps: DreamControlReadDeps = {
     flags: async () => {
@@ -133,6 +134,8 @@ export async function readDreamControlSnapshot(
   ]);
   const manual = routines.find((row) => row.name === ROUTINE_NAMES.manual);
   const auto = routines.find((row) => row.name === ROUTINE_NAMES.auto);
+  const selected = scope.mode === 'auto' ? auto : manual;
+  const config = resolveDreamCycleConfig(selected?.payload_template?.cycle);
   const summaries = [latest, ...routines.map((row) => dreamCycleSummary(row.metadata?.dreamLastCycle))]
     .filter((row): row is DreamCycleSummary => row !== null)
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
@@ -141,14 +144,15 @@ export async function readDreamControlSnapshot(
     : !source ? 'No registered source repository is available for this pot.'
     : !flags.governor ? 'The learning budget governor is disabled. Enable it before starting Dream.'
     : !budget.allow ? `The learning budget stopped Dream: ${budget.reason ?? 'unavailable'}. Check this pot’s learning switch and lane budget.`
-    : rollingAccountedUsd >= DEFAULT_DREAM_CYCLE_CONFIG.rolling24hCostUsd
+    : config.maxCostUsd === 0 ? 'The configured Dream cycle budget is zero.'
+    : rollingAccountedUsd >= config.rolling24hCostUsd
       ? 'The workspace Dream budget for the last 24 hours is exhausted. Wait for spend to leave that window.' : null;
   return {
     potSlug: scope.potSlug, featureEnabled: flags.feature,
     manual: { available: Boolean(manual), active: manual?.active === true, nextFireAt: iso(manual?.next_fire_at ?? null) },
     automatic: { available: Boolean(auto), enabled: auto?.active === true && automatic },
     blocker, rollingAccountedUsd,
-    limits: { attempts: DEFAULT_DREAM_CYCLE_CONFIG.maxDreamsPerCycle, cycleUsd: DEFAULT_DREAM_CYCLE_CONFIG.maxCostUsd, rollingUsd: DEFAULT_DREAM_CYCLE_CONFIG.rolling24hCostUsd },
+    limits: { attempts: config.maxDreamsPerCycle, cycleUsd: config.maxCostUsd, rollingUsd: config.rolling24hCostUsd },
     lastCycle: summaries[0] ?? null,
   };
 }

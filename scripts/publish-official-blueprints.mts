@@ -25,7 +25,18 @@
  * distribution channel on top, it does not replace the bundled set.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  constants as fsConstants,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +44,7 @@ import { parse as parseYaml } from 'yaml';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BLUEPRINTS = join(REPO, 'libs/papercusp/packages/harness/blueprints');
+const OPERATOR_PROMPTS = join(REPO, 'apps/operator/prompts');
 const CONTENT_REPO = 'Papercusp/blueprints';
 const CONTENT_URL = `https://github.com/${CONTENT_REPO}`;
 const SCRATCH = join(homedir(), '.papercusp', 'scratch', 'official-blueprints-mirror');
@@ -51,6 +63,64 @@ function readManifest(id: string): Record<string, unknown> {
   return parseYaml(readFileSync(join(BLUEPRINTS, id, 'blueprint.yaml'), 'utf8')) as Record<string, unknown>;
 }
 
+function regularFiles(root: string, relativeDir = ''): string[] {
+  const dir = join(root, relativeDir);
+  const files: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const relativePath = join(relativeDir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...regularFiles(root, relativePath));
+    } else if (entry.isFile()) {
+      files.push(relativePath);
+    } else {
+      throw new Error(`operator prompt mirror refuses non-file entry: ${relativePath}`);
+    }
+  }
+  return files.sort();
+}
+
+/**
+ * Project the operator's canonical prompt content into the public base-blueprint
+ * mirror. The full collision preflight runs before the first write so a new
+ * blueprint-local prompt can never be silently replaced by an app prompt.
+ */
+export function projectOperatorPromptsIntoBase(
+  mirrorRoot: string,
+  operatorPromptsDir = OPERATOR_PROMPTS,
+): string[] {
+  if (!existsSync(operatorPromptsDir)) {
+    throw new Error(`operator prompts source missing: ${operatorPromptsDir}`);
+  }
+
+  const basePrompts = join(mirrorRoot, 'base', 'prompts');
+  const files = regularFiles(operatorPromptsDir);
+  const collisions = new Set<string>();
+  for (const relativePath of files) {
+    const parts = relativePath.split(/[\\/]/u);
+    let parent = basePrompts;
+    for (const [index, part] of parts.slice(0, -1).entries()) {
+      parent = join(parent, part);
+      if (existsSync(parent) && !lstatSync(parent).isDirectory()) {
+        collisions.add(parts.slice(0, index + 1).join('/'));
+        break;
+      }
+    }
+    if (existsSync(join(basePrompts, relativePath))) collisions.add(relativePath.replaceAll('\\', '/'));
+  }
+  if (collisions.size > 0) {
+    throw new Error(
+      `operator prompt mirror collision under base/prompts: ${[...collisions].sort().join(', ')}`,
+    );
+  }
+
+  for (const relativePath of files) {
+    const destination = join(basePrompts, relativePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(operatorPromptsDir, relativePath), destination, fsConstants.COPYFILE_EXCL);
+  }
+  return files.map((relativePath) => relativePath.replaceAll('\\', '/'));
+}
+
 async function sync(): Promise<void> {
   rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(dirname(SCRATCH), { recursive: true });
@@ -67,6 +137,7 @@ async function sync(): Promise<void> {
   for (const id of ids) {
     cpSync(join(BLUEPRINTS, id), join(SCRATCH, id), { recursive: true });
   }
+  const promptFiles = projectOperatorPromptsIntoBase(SCRATCH);
 
   const rows = ids
     .map((id) => {
@@ -104,10 +175,13 @@ local → installed → built-in \`extends\` resolution.
 ## Provenance
 
 Source of truth: the \`papercup\` monorepo
-(\`libs/papercusp/packages/harness/blueprints/\`). This repo is a generated
+(\`libs/papercusp/packages/harness/blueprints/\` plus
+\`apps/operator/prompts/\`, projected under \`base/prompts/\`). This repo is a generated
 mirror — synced by \`scripts/publish-official-blueprints.mts sync\`; do not edit
-here. The same blueprints also ship bundled inside Papercusp as the
-bootstrap/offline floor; a Cupboard-installed copy shadows the bundled one.
+here. Prompt projection refuses every destination collision before writing, so
+blueprint-local prompt content cannot be silently overwritten. The same
+blueprints also ship bundled inside Papercusp as the bootstrap/offline floor; a
+Cupboard-installed copy shadows the bundled one.
 `,
   );
 
@@ -119,11 +193,11 @@ bootstrap/offline floor; a Cupboard-installed copy shadows the bundled one.
   }
   git(
     ['-c', 'user.name=papercupai', '-c', 'user.email=papercupai@users.noreply.github.com',
-      'commit', '-m', `sync official blueprints (${ids.length})`],
+      'commit', '-m', `sync official blueprints (${ids.length}) + prompts (${promptFiles.length})`],
     SCRATCH,
   );
   git(['push', 'origin', 'HEAD'], SCRATCH);
-  console.log(`pushed mirror: ${ids.length} blueprints → ${CONTENT_URL}`);
+  console.log(`pushed mirror: ${ids.length} blueprints + ${promptFiles.length} prompt files → ${CONTENT_URL}`);
 }
 
 async function publish(opts: { ids?: string[]; limit?: number }): Promise<void> {
@@ -169,19 +243,25 @@ async function publish(opts: { ids?: string[]; limit?: number }): Promise<void> 
   console.log(`published=${published} remaining=[${[...new Set(remaining)].join(', ')}]`);
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
-const flags = new Map<string, string>();
-for (let i = 0; i < rest.length; i++) {
-  if (rest[i].startsWith('--')) flags.set(rest[i].slice(2), rest[i + 1] ?? '');
+async function main(args = process.argv.slice(2)): Promise<void> {
+  const [cmd, ...rest] = args;
+  const flags = new Map<string, string>();
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i].startsWith('--')) flags.set(rest[i].slice(2), rest[i + 1] ?? '');
+  }
+  if (cmd === 'sync') {
+    await sync();
+  } else if (cmd === 'publish') {
+    await publish({
+      ids: flags.get('ids')?.split(',').map((s) => s.trim()).filter(Boolean),
+      limit: flags.has('limit') ? Number(flags.get('limit')) : undefined,
+    });
+  } else {
+    console.log('usage: npx tsx scripts/publish-official-blueprints.mts <sync|publish> [--ids a,b] [--limit N]');
+    process.exitCode = 2;
+  }
 }
-if (cmd === 'sync') {
-  await sync();
-} else if (cmd === 'publish') {
-  await publish({
-    ids: flags.get('ids')?.split(',').map((s) => s.trim()).filter(Boolean),
-    limit: flags.has('limit') ? Number(flags.get('limit')) : undefined,
-  });
-} else {
-  console.log('usage: npx tsx scripts/publish-official-blueprints.mts <sync|publish> [--ids a,b] [--limit N]');
-  process.exit(2);
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
 }

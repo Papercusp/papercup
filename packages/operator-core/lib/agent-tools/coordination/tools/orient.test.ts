@@ -112,6 +112,10 @@ vi.mock('../watermarks', async (importOriginal) => ({
 // (a) fake-timer tests can't hang on a real PG connect, and (b) full-mode tests
 // don't pay the fold's real timeout budget. Default: no announcements.
 const listActiveAnnouncementsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+const countActiveAwaitsByPrefixesMock = vi.hoisted(() =>
+  vi.fn(async (keys: string[]) => new Map(keys.map((key) => [key, 0]))),
+);
+const resolveAnnouncementOwnershipMock = vi.hoisted(() => vi.fn(async () => new Map()));
 
 // EI-21833804434126804: handler-level aggregate-timeout coverage must drive the
 // real defineTool handler without re-dispatching live tools or opening PG.
@@ -209,6 +213,11 @@ describe('executable continuity output assembly', () => {
 
 vi.mock('../../../events/await/store', () => ({
   listActiveAnnouncements: listActiveAnnouncementsMock,
+  countActiveAwaitsByPrefixes: countActiveAwaitsByPrefixesMock,
+}));
+vi.mock('../../events/status', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/status')>()),
+  resolveAnnouncementOwnership: resolveAnnouncementOwnershipMock,
 }));
 
 // P-009 (H4): the fleet control-state fold reads the fleet registry directly
@@ -243,6 +252,10 @@ beforeEach(() => {
   readWatermarkMock.mockResolvedValue({ cursors: {} });
   writeWatermarkMock.mockClear();
   listActiveAnnouncementsMock.mockResolvedValue([]);
+  countActiveAwaitsByPrefixesMock.mockClear();
+  countActiveAwaitsByPrefixesMock.mockImplementation(async (keys: string[]) => new Map(keys.map((key) => [key, 0])));
+  resolveAnnouncementOwnershipMock.mockClear();
+  resolveAnnouncementOwnershipMock.mockResolvedValue(new Map());
   getFleetMock.mockResolvedValue(null);
   listFleetsLedByMock.mockClear();
   listFleetsLedByMock.mockResolvedValue([]);
@@ -3668,6 +3681,93 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
         { fleetSlug: 'backend', fleetRole: 'leader' },
       );
       expect(monitor.announcedGates?.map((g) => g.event)).toEqual(['fleet:backend:green']);
+    });
+
+    it('projects catalog metadata and warns on stale owners and unqualified global plan-item-like keys', async () => {
+      listActiveAnnouncementsMock.mockResolvedValue([
+        {
+          id: 41,
+          eventKey: 'p006-complete',
+          note: 'a different plan owns this gate',
+          scopeKind: null,
+          scopeRef: null,
+          subscriberId: 'su-ended',
+          expiresTs: null,
+          logicalGateKey: 'P-006',
+        },
+        {
+          id: 42,
+          eventKey: 'fleet:backend:release-ready',
+          note: null,
+          scopeKind: 'fleet',
+          scopeRef: 'backend',
+          subscriberId: 'su-leader',
+          expiresTs: null,
+          logicalGateKey: 'release-ready',
+        },
+      ]);
+      countActiveAwaitsByPrefixesMock.mockResolvedValue(
+        new Map([
+          ['p006-complete', 4],
+          ['fleet:backend:release-ready', 2],
+        ]),
+      );
+      resolveAnnouncementOwnershipMock.mockResolvedValue(
+        new Map([
+          [41, { declaredByLiveness: 'ended', liveSuccessorIds: [], staleOwner: true }],
+          [42, { declaredByLiveness: 'live', liveSuccessorIds: ['su-successor'], staleOwner: false }],
+        ]),
+      );
+      const { call } = fakeCall({ ...CORE, 'coord:whoami': () => ({ fleetSlug: 'backend' }) });
+
+      const r = await composeOrient({ harness: 'h' }, call, 'me');
+
+      expect(r.announcedGates).toEqual([
+        expect.objectContaining({
+          event: 'p006-complete',
+          logical_gate: 'P-006',
+          live_awaiters: 4,
+          stale_owner: true,
+          warning: expect.stringContaining('STALE announced gate'),
+        }),
+        expect.objectContaining({
+          event: 'fleet:backend:release-ready',
+          live_awaiters: 2,
+          live_successor_ids: ['su-successor'],
+        }),
+      ]);
+      expect(r.announcedGates?.[0]?.warning).toContain('AMBIGUOUS GLOBAL');
+      expect(resolveAnnouncementOwnershipMock).toHaveBeenCalledWith(expect.any(Array), 'ws-test');
+    });
+
+    it('omits optional metadata when either advisory read fails, preserving the gate row', async () => {
+      listActiveAnnouncementsMock.mockResolvedValue([
+        {
+          id: 43,
+          eventKey: 'global-release-ready',
+          note: null,
+          scopeKind: null,
+          scopeRef: null,
+          subscriberId: 'su-leader',
+          expiresTs: null,
+          logicalGateKey: null,
+        },
+      ]);
+      countActiveAwaitsByPrefixesMock.mockRejectedValueOnce(new Error('await count unavailable'));
+      resolveAnnouncementOwnershipMock.mockRejectedValueOnce(new Error('liveness unavailable'));
+      const { call } = fakeCall({ ...CORE });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const row = (await composeOrient({ harness: 'h' }, call, 'me')).announcedGates?.[0];
+
+        expect(row).toMatchObject({ event: 'global-release-ready', logical_gate: null });
+        expect(row).not.toHaveProperty('live_awaiters');
+        expect(row).not.toHaveProperty('live_successor_ids');
+        expect(row).not.toHaveProperty('stale_owner');
+        expect(row).not.toHaveProperty('warning');
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

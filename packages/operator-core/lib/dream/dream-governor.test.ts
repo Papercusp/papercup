@@ -45,6 +45,32 @@ describe('dream governor registration', () => {
 });
 
 describe('preflightDreamCycle', () => {
+  it('registers raised cycle caps and enforces the configured rolling ceiling', async () => {
+    const input = { workspaceId: 'ws-1', potSlug: 'papercusp', config: { maxCostUsd: 10, rolling24hCostUsd: 200 } };
+    const d = deps({
+      check: vi.fn(async () => ({ allow: true, remainingUsd: 10 })),
+      sumSince: vi.fn(async () => ({ totalUsd: 199, loopCount: 2 })),
+    });
+    await expect(preflightDreamCycle(sql, input, d)).resolves.toMatchObject({
+      allow: true,
+      cycleRemainingUsd: 10,
+      rollingRemainingUsd: 1,
+    });
+    expect(d.register).toHaveBeenCalledWith(
+      sql,
+      expect.objectContaining({
+        budgetUsd: 10,
+        meta: expect.objectContaining({ rolling24hCostUsd: 200 }),
+      }),
+    );
+    d.sumSince = async () => ({ totalUsd: 200, loopCount: 2 });
+    await expect(preflightDreamCycle(sql, input, d)).resolves.toMatchObject({
+      allow: false,
+      reason: 'rolling-cap-exceeded',
+      rollingRemainingUsd: 0,
+    });
+  });
+
   it('fails closed before registration when the shared governor flag is dark', async () => {
     const d = deps({ enabled: vi.fn(async () => false) });
 

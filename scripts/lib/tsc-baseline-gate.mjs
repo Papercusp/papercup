@@ -547,8 +547,8 @@ export function filesModifiedDuringRun({ root, files, runStartMs, dirtyFiles = n
 }
 
 /**
- * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
- * files the caller changed THIS session, as an alternative to `--mine`'s implicit
+ * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` or `--files a.ts,b.ts` CLI flag
+ * naming exactly the files the caller changed THIS session, as an alternative to `--mine`'s implicit
  * git-status-derived scoping. Large callers may use `--files-from=/path/to/json`, where the
  * response file contains a JSON array of paths; keeping the list out of argv avoids Linux's
  * exec E2BIG limit without changing the scoped-verdict semantics.
@@ -576,21 +576,15 @@ export function filesModifiedDuringRun({ root, files, runStartMs, dirtyFiles = n
  * @returns {Set<string> | null} null when the flag is absent; an EMPTY set means "scoped to zero files".
  */
 export function parseExplicitFiles(argv) {
-  const inlineFlags = argv.filter((a) => a.startsWith('--files='));
-  const responseFlags = argv.filter((a) => a.startsWith('--files-from='));
-  if (inlineFlags.length === 0 && responseFlags.length === 0) return null;
-
-  const list = inlineFlags.flatMap((flag) =>
-    flag
-      .slice('--files='.length)
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  for (const flag of responseFlags) {
-    const responsePath = flag.slice('--files-from='.length).trim();
+  const list = [];
+  let sawExplicitFlag = false;
+  const appendInlineFiles = (raw) => {
+    list.push(...raw.split(',').map((s) => s.trim()).filter(Boolean));
+  };
+  const readResponseFiles = (rawPath, flag) => {
+    const responsePath = rawPath.trim();
     if (!responsePath) {
-      throw new Error('--files-from= requires a JSON response-file path');
+      throw new Error(`${flag} requires a JSON response-file path`);
     }
     let parsed;
     try {
@@ -603,9 +597,43 @@ export function parseExplicitFiles(argv) {
     if (!Array.isArray(parsed) || parsed.some((file) => typeof file !== 'string')) {
       throw new Error(`--files-from response file ${responsePath} must contain a JSON array of strings`);
     }
-    list.push(...parsed.map((file) => file.trim()).filter(Boolean));
+    return parsed.map((file) => file.trim()).filter(Boolean);
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--files' || arg === '--files-from') {
+      sawExplicitFlag = true;
+      const values = [];
+      while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+        values.push(argv[++i]);
+        if (arg === '--files-from') break;
+      }
+      if (values.length === 0) {
+        throw new Error(
+          arg === '--files'
+            ? '--files requires at least one path'
+            : '--files-from requires a JSON response-file path',
+        );
+      }
+      if (arg === '--files') {
+        for (const value of values) appendInlineFiles(value);
+      } else {
+        list.push(...readResponseFiles(values[0], arg));
+      }
+      continue;
+    }
+    if (arg?.startsWith('--files=')) {
+      sawExplicitFlag = true;
+      appendInlineFiles(arg.slice('--files='.length));
+      continue;
+    }
+    if (arg?.startsWith('--files-from=')) {
+      sawExplicitFlag = true;
+      list.push(...readResponseFiles(arg.slice('--files-from='.length), '--files-from='));
+    }
   }
-  return new Set(list);
+  return sawExplicitFlag ? new Set(list) : null;
 }
 
 /**

@@ -49,6 +49,41 @@ describe('Dream Learning control snapshot', () => {
     });
   });
 
+  it('uses persisted routine limits for the requested mode instead of the default dollar ceiling', async () => {
+    const routines = async () => ['manual', 'auto'].map(mode => ({
+      name: `dream-cycle-${mode}`, active: false, next_fire_at: null, metadata: {},
+      payload_template: { mode, cycle: { maxCostUsd: mode === 'manual' ? 10 : 0.5, rolling24hCostUsd: mode === 'manual' ? 200 : 2 } },
+    }));
+    const d = reads({ routines, rolling: async () => 6 });
+    expect(await readDreamControlSnapshot(sql, scope, d)).toMatchObject({
+      limits: { attempts: 3, cycleUsd: 10, rollingUsd: 200 }, blocker: null,
+    });
+    expect(await readDreamControlSnapshot(sql, { ...scope, mode: 'auto' }, d)).toMatchObject({
+      limits: { attempts: 3, cycleUsd: 0.5, rollingUsd: 2 }, blocker: expect.stringContaining('24 hours is exhausted'),
+    });
+    d.rolling = async () => 200;
+    expect((await readDreamControlSnapshot(sql, scope, d)).blocker).toContain('24 hours is exhausted');
+  });
+
+  it.each([NaN, Infinity, -1, null])('fails closed on a malformed persisted monetary limit %s', async (maxCostUsd) => {
+    await expect(readDreamControlSnapshot(sql, scope, reads({
+      routines: async () => [{ name: 'dream-cycle-manual', active: false, next_fire_at: null, metadata: {},
+        payload_template: { mode: 'manual', cycle: { maxCostUsd: maxCostUsd as number } },
+      }],
+    }))).rejects.toThrow('maxCostUsd');
+  });
+
+  it('keeps an explicitly zero cycle budget closed', async () => {
+    const snapshot = await readDreamControlSnapshot(sql, scope, reads({
+      routines: async () => ['manual', 'auto'].map(mode => ({
+        name: `dream-cycle-${mode}`, active: false, next_fire_at: null, metadata: {},
+        payload_template: { mode, cycle: { maxCostUsd: 0 } },
+      })),
+    }));
+    expect(snapshot.limits.cycleUsd).toBe(0);
+    expect(snapshot.blocker).toContain('budget is zero');
+  });
+
   it.each([[true, false, false], [false, true, false], [true, true, true]])(
     'requires BOTH the automatic routine (%s) and explicit toggle (%s)', async (active, toggle, expected) => {
       const snapshot = await readDreamControlSnapshot(sql, scope, reads({

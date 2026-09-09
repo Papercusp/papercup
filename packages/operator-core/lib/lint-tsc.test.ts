@@ -490,6 +490,7 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     expect(lintTscScopeFromArgv([])).toBe('all');
     expect(lintTscScopeFromArgv(['--mine'])).toBe('mine');
     expect(lintTscScopeFromArgv(['--files=packages/operator-core/lib/a.ts'])).toBe('files');
+    expect(lintTscScopeFromArgv(['--files', 'packages/operator-core/lib/a.ts'])).toBe('files');
     // --update MUTATES the baseline rather than judging against it, so it LEADS the label.
     // EI-19444246913245434: it used to REPLACE the scope flag beside it, so a run scoped to a
     // handful of files announced itself as a whole-project `scope=update` — the exact "a --files
@@ -1429,6 +1430,16 @@ describe('parseExplicitFiles (EI-18731016038876755)', () => {
     expect(s).toEqual(new Set(['lib/a.ts', 'lib/b.ts']));
   });
 
+  it('parses a separated --files list instead of silently widening to the whole project', () => {
+    const s = parseExplicitFiles(['--files', 'lib/a.ts,lib/b.ts']);
+    expect(s).toEqual(new Set(['lib/a.ts', 'lib/b.ts']));
+  });
+
+  it('retains every space-separated path supplied after one --files flag', () => {
+    const s = parseExplicitFiles(['--files', 'lib/a.ts', 'lib/b.ts', '--update']);
+    expect(s).toEqual(new Set(['lib/a.ts', 'lib/b.ts']));
+  });
+
   it('tolerates stray whitespace around entries', () => {
     const s = parseExplicitFiles(['--files= lib/a.ts , lib/b.ts ']);
     expect(s).toEqual(new Set(['lib/a.ts', 'lib/b.ts']));
@@ -1454,6 +1465,7 @@ describe('parseExplicitFiles (EI-18731016038876755)', () => {
     writeFileSync(responseFile, JSON.stringify(files));
     try {
       expect(parseExplicitFiles([`--files-from=${responseFile}`])).toEqual(new Set(files));
+      expect(parseExplicitFiles(['--files-from', responseFile])).toEqual(new Set(files));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

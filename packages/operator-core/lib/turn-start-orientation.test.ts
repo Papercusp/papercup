@@ -21,6 +21,7 @@ import {
   renderOrientationLines,
   resolveOrientationState,
   selectOrientationImprovementTriage,
+  buildAnnouncedGateWarning,
   ORIENTATION_BUDGET_CHARS,
   type OrientationState,
 } from './turn-start-orientation';
@@ -493,6 +494,71 @@ describe('turn-start-orientation — what it says', () => {
     expect(out).toContain('announced gates: fleet:atlas:phase-open');
     expect(out).toContain('checkpoint WI-1: Implemented the reader');
     expect(out).toContain('inbox su-peer: Need your decision');
+  });
+
+  describe('announced-gate metadata warnings', () => {
+    it('warns before await selection when a global gate resembles a plan-item key', () => {
+      expect(
+        buildAnnouncedGateWarning({
+          event: 'p006-complete',
+          logical_gate: 'P-006',
+          scope: 'global',
+          announcedBy: 'su-ended',
+        }),
+      ).toContain('AMBIGUOUS GLOBAL');
+    });
+
+    it('warns when the declarer is stale and has no live successor', () => {
+      expect(
+        buildAnnouncedGateWarning({
+          event: 'fleet:backend:release-ready',
+          scope: 'fleet:backend',
+          announcedBy: 'su-ended',
+          stale_owner: true,
+        }),
+      ).toContain('STALE announced gate');
+    });
+
+    it('does not label a scoped plan-item-like gate as globally ambiguous', () => {
+      expect(
+        buildAnnouncedGateWarning({
+          event: 'fleet:backend:p006-complete',
+          scope: 'fleet:backend',
+        }),
+      ).toBeUndefined();
+    });
+
+    it('re-emits when announced-gate metadata changes, including a warning', () => {
+      const plain = fingerprintOrientation(
+        { ...base, announcedGates: [{ event: 'p006-complete', note: null }] },
+        EPOCH,
+      );
+      const warned = fingerprintOrientation(
+        {
+          ...base,
+          announcedGates: [
+            {
+              event: 'p006-complete',
+              note: null,
+              logical_gate: 'P-006',
+              live_awaiters: 0,
+              stale_owner: true,
+              warning: 'STALE announced gate p006-complete',
+            },
+          ],
+        },
+        EPOCH,
+      );
+      expect(orientationUnchanged(plain, warned)).toBe(false);
+      expect(
+        renderOrientationLines({
+          ...base,
+          announcedGates: [
+            { event: 'p006-complete', note: null, warning: 'AMBIGUOUS GLOBAL announced gate p006-complete' },
+          ],
+        }),
+      ).toContain('- ⚠ AMBIGUOUS GLOBAL announced gate p006-complete');
+    });
   });
 
   it('injects the ranked top untriaged improvement with its bounded-window count and lane', () => {

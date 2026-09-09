@@ -156,6 +156,48 @@ PODMAN=(podman)
 if [ "$(id -u)" -ne 0 ]; then PODMAN=(sudo -n podman); fi
 TLS=(); [ "$INSECURE" -eq 1 ] && TLS=(--tls-verify=false)
 
+# EI-22752400853032697 — bootc-image-builder creates host-visible loop
+# partitions while it renders a disk. A desktop UDisks client can automount
+# those partitions behind osbuild's back: the first root filesystem then stays
+# mounted under /media, and the exporter phase fails when it mounts the copied
+# filesystem with the same XFS UUID. Ubuntu/Debian ship this maintained helper
+# specifically for installers; reuse it instead of open-coding a UDisks rule.
+#
+# The helper owns one global /run/udev rule, so serialize all callers around it.
+# Without the lock, the first of two concurrent renders to exit removes the rule
+# while the other is still creating loop partitions. Headless builders without
+# UDisks keep the original direct Podman path.
+UDISKS2_INHIBIT="${UDISKS2_INHIBIT_BIN:-}"
+if [ -z "$UDISKS2_INHIBIT" ]; then
+  for candidate in /usr/libexec/udisks2/udisks2-inhibit /usr/lib/udisks2/udisks2-inhibit; do
+    if [ -x "$candidate" ]; then UDISKS2_INHIBIT="$candidate"; break; fi
+  done
+fi
+UDISKS2_INHIBIT_LOCK="${PAPERCUSP_UDISKS2_INHIBIT_LOCK:-/run/lock/papercusp-bootc-bake-udisks2-inhibit.lock}"
+case "$UDISKS2_INHIBIT_LOCK" in
+  /*) ;;
+  *) die "PAPERCUSP_UDISKS2_INHIBIT_LOCK must be an absolute path";;
+esac
+RENDER_PODMAN=("${PODMAN[@]}")
+if [ -n "$UDISKS2_INHIBIT" ]; then
+  command -v flock >/dev/null 2>&1 || die "'flock' not found; cannot serialize the UDisks inhibitor"
+  if [ "$(id -u)" -eq 0 ]; then
+    RENDER_PODMAN=(flock --wait 21600 "$UDISKS2_INHIBIT_LOCK" "$UDISKS2_INHIBIT" podman)
+  else
+    RENDER_PODMAN=(sudo -n flock --wait 21600 "$UDISKS2_INHIBIT_LOCK" "$UDISKS2_INHIBIT" podman)
+  fi
+  echo "BAKE_UDISKS2_INHIBIT=$UDISKS2_INHIBIT"
+  echo "BAKE_UDISKS2_INHIBIT_LOCK=$UDISKS2_INHIBIT_LOCK"
+elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet udisks2.service 2>/dev/null; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY_RUN: WARNING udisks2 is active but udisks2-inhibit is unavailable — the real render would refuse"
+  else
+    die "udisks2 is active but udisks2-inhibit is unavailable; refusing an automount-racy disk render"
+  fi
+else
+  echo "BAKE_UDISKS2_INHIBIT=not-required"
+fi
+
 # A specialised image must contain the public half of the key that signs it. Merely pointing
 # policy.json at a future path produces a host that fails closed but can never upgrade, and the
 # first real P-307 render proved that this path had never been populated. Resolve and validate it
@@ -400,7 +442,7 @@ bake_one() { # $1 cloud  $2 pinned ref
   fi
   # No `-it`: this runs unattended from the release pipeline and from probes, where there is no
   # TTY and `-t` fails outright.
-  run_monitored "$dest/build.log" "${PODMAN[@]}" run --rm --privileged --pull=newer \
+  run_monitored "$dest/build.log" "${RENDER_PODMAN[@]}" run --rm --privileged --pull=newer \
     --security-opt label=type:unconfined_t \
     -v "$dest":/output -v /var/lib/containers/storage:/var/lib/containers/storage \
     "$BIB_IMG" --type "$type" --local "$ref"

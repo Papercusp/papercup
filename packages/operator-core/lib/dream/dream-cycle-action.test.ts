@@ -48,11 +48,16 @@ describe('parseDreamCycleActionConfig', () => {
   it('rejects an unknown mode instead of silently turning it into automatic spend', () => {
     expect(() => parseDreamCycleActionConfig({ mode: 'background' })).toThrow('unsupported dream-cycle mode');
   });
-  it('rejects legacy sampler knobs and ceilings above the approved spend', () => {
+  it('rejects legacy sampler knobs, invalid money and attempts above the fixed ceiling', () => {
     expect(() => parseDreamCycleActionConfig({ sampler: { randomPartnerRate: 1 } })).toThrow('Unsupported');
-    expect(() => parseDreamCycleActionConfig({ cycle: { maxCostUsd: 2 } })).toThrow('ceiling');
-    expect(() => parseDreamCycleActionConfig({ cycle: { rolling24hCostUsd: 6 } })).toThrow('ceiling');
+    expect(() => parseDreamCycleActionConfig({ cycle: { maxCostUsd: -1 } })).toThrow('finite');
+    expect(() => parseDreamCycleActionConfig({ cycle: { rolling24hCostUsd: Infinity } })).toThrow('finite');
     expect(() => parseDreamCycleActionConfig({ cycle: { maxDreamsPerCycle: 4 } })).toThrow('ceiling');
+  });
+  it('preserves explicitly configured larger monetary limits for the production governor', () => {
+    expect(parseDreamCycleActionConfig({ cycle: { maxCostUsd: 10, rolling24hCostUsd: 200 } })).toMatchObject({
+      mode: 'manual', cycle: { maxCostUsd: 10, rolling24hCostUsd: 200 },
+    });
   });
 });
 
