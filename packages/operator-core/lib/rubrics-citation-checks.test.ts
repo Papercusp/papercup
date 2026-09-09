@@ -68,6 +68,45 @@ const c6 = (over: Partial<AcceptanceRubricCitationCriterion> = {}): AcceptanceRu
 });
 
 describe('validateAcceptanceRubricCitationPaths — EI-21818117666341180', () => {
+  it('resolves a repo-qualified source citation in an admitted independent sibling checkout', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'rubric-citations-sibling-test-'));
+    const subjectRoot = join(workspace, 'papercusp');
+    const siblingRoot = join(workspace, 'portal');
+    const cited = 'packages/contracts/src/index.ts';
+    try {
+      mkdirSync(join(subjectRoot, '.git'), { recursive: true });
+      mkdirSync(join(siblingRoot, '.git'), { recursive: true });
+      mkdirSync(resolve(siblingRoot, cited, '..'), { recursive: true });
+      writeFileSync(join(subjectRoot, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+      writeFileSync(join(siblingRoot, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+      writeFileSync(resolve(siblingRoot, cited), 'export const PORTAL_APP_KINDS = ["home"];\n');
+
+      const result = validateAcceptanceRubricCitationPaths(
+        [
+          {
+            key: 'cross-repo',
+            method: `Inspect symbol: PORTAL_APP_KINDS in portal/${cited}.`,
+          },
+        ],
+        { root: subjectRoot },
+      );
+
+      expect(result.failures).toEqual([]);
+      expect(result).toMatchObject({ ok: true });
+      expect(result.checkedPaths).toBe(1);
+      expect(result.checkedAnchors).toEqual([
+        expect.objectContaining({
+          criterionKey: 'cross-repo',
+          path: `portal/${cited}`,
+          literal: 'PORTAL_APP_KINDS',
+        }),
+      ]);
+      expect(result.failures).toEqual([]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('reproduces the measured false-unknown shape: an existing but misaddressed symbol-level file is refused', () => {
     // FALSIFIABILITY CONTROL: the pre-fix existence-only rule would accept the
     // same fixture, so this red result is caused by content, not path absence.

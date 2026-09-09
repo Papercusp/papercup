@@ -282,6 +282,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     spawnDetached: vi.fn(() => 1234),
     presence: vi.fn(async () => livePresence) as never,
     getSessionLifecycle: vi.fn(async () => null),
+    // EI-22449230917085417: keep ordinary wake tests hermetic; the production
+    // default reads the live SU-lock table at the delivery boundary.
+    readLockGrantOwnership: vi.fn(async () => true),
     getCurrentWorkItem: vi.fn(async () => null) as never,
     alive: vi.fn(() => true),
     isLoopArmed: vi.fn(async () => false),
@@ -376,6 +379,54 @@ describe('executeWake — durable fleet release latch (EI-203843)', () => {
       kind: 'delivered',
       channel: 'inbox',
     });
+  });
+});
+
+describe('executeWake — delivery-time stale lock-grant ownership (EI-22449230917085417)', () => {
+  const grantedWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      payload: { granted: true, lock_id: 'lock-grant-1', ticket_id: 'ticket-1', paths: ['foo.ts'] },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  it('downgrades a grant fired before the owner released the lock, before any wake side effect', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-stale-grant' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const readLockGrantOwnership = vi.fn(async () => false);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      readLockGrantOwnership,
+    });
+
+    const out = await executeWake(grantedWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(readLockGrantOwnership).toHaveBeenCalledWith('su-abc', 'lock-grant-1');
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(opts.summary).toContain('STALE');
+    expect(opts.summary).toContain('RETRACTED');
+    expect(opts.body).toContain('STALE');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('keeps a currently held grant on the normal wake ladder', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-current-grant' }));
+    const write = vi.fn(() => true);
+    const readLockGrantOwnership = vi.fn(async () => true);
+    const d = deps({ findPty: findPty as never, write: write as never, readLockGrantOwnership });
+
+    await expect(executeWake(grantedWork(), d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'pty-inject',
+    });
+    expect(readLockGrantOwnership).toHaveBeenCalledWith('su-abc', 'lock-grant-1');
+    expect(write).toHaveBeenCalled();
   });
 });
 

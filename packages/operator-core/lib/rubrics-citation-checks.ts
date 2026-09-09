@@ -20,6 +20,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { checkoutRootForPath, normalizeTestFilePaths } from './agent-tools/testing/run';
 
 export interface AcceptanceRubricCitationCriterion {
   key: string;
@@ -91,7 +92,7 @@ interface TextAnchor {
  * prose, not a file citation that this guard can validate.
  */
 const SOURCE_FILE_PATH_RE =
-  /\b((?:packages|apps|libs|scripts)\/[A-Za-z0-9._@~+%=-]+(?:\/[A-Za-z0-9._@~+%=-]+)*\.[A-Za-z][A-Za-z0-9]*)(?=[:#]\d+|$|[\s'"`)\]}:,. ;])/g;
+  /\b((?:[A-Za-z0-9._@~+%=-]+\/)?(?:packages|apps|libs|scripts)\/[A-Za-z0-9._@~+%=-]+(?:\/[A-Za-z0-9._@~+%=-]+)*\.[A-Za-z][A-Za-z0-9]*)(?=[:#]\d+|$|[\s'"`)\]}:,. ;])/g;
 
 const QUOTED_TEST_CASE_RE =
   /\b(?:describe|it|test)\s*\(\s*(['"`])([\s\S]*?)\1/g;
@@ -113,11 +114,34 @@ const BACKTICK_SYMBOL_RE =
 
 /** `Read the lineage check in path.ts (symbol-level; …)` → `lineage check`. */
 const SYMBOL_LEVEL_SUBJECT_RE =
-  /\b(?:read|inspect|open|check|confirm|verify)\s+(?:the\s+)?(.+?)\s+in\s+((?:packages|apps|libs|scripts)\/[A-Za-z0-9._@~+%=-]+(?:\/[A-Za-z0-9._@~+%=-]+)*\.[A-Za-z0-9][A-Za-z0-9._+-]*)(?=[:#]\d+)?[^.\n]*\bsymbol[- ]level\b/gi;
+  /\b(?:read|inspect|open|check|confirm|verify)\s+(?:the\s+)?(.+?)\s+in\s+((?:[A-Za-z0-9._@~+%=-]+\/)?(?:packages|apps|libs|scripts)\/[A-Za-z0-9._@~+%=-]+(?:\/[A-Za-z0-9._@~+%=-]+)*\.[A-Za-z0-9][A-Za-z0-9._+-]*)(?=[:#]\d+)?[^.\n]*\bsymbol[- ]level\b/gi;
+
+/**
+ * Resolve the same two portable path forms accepted by structured rubric checks:
+ * a file relative to the subject checkout, or a workspace-relative path whose
+ * first segment names one admitted independent sibling checkout.  The latter is
+ * how a Papercusp-owned plan cites code delivered in a registered app checkout
+ * (for example `portal/packages/contracts/src/index.ts`).
+ *
+ * Reuse the testing router's existing sibling normalizer rather than growing a
+ * third workspace scanner here.  An absolute result is accepted only when the
+ * router can prove the file belongs to a real workspace checkout; arbitrary
+ * absolute paths and release/checkpoint worktrees remain outside the admission
+ * rule.
+ */
+function resolveCitationFile(root: string, path: string): string | null {
+  const normalized = normalizeTestFilePaths([path], root);
+  if (!normalized.ok || normalized.files.length !== 1) return null;
+  const selected = normalized.files[0]!;
+  const absolute = isAbsolute(selected) ? resolve(selected) : resolve(root, selected);
+  const admittedRoot = isAbsolute(selected) ? checkoutRootForPath(absolute) : root;
+  if (!admittedRoot || !isInsideRoot(admittedRoot, absolute)) return null;
+  return absolute;
+}
 
 function defaultStatFile(root: string, path: string): { isFile: boolean } | null {
-  const absolute = resolve(root, path);
-  if (!isInsideRoot(root, absolute)) return null;
+  const absolute = resolveCitationFile(root, path);
+  if (!absolute) return null;
   try {
     return { isFile: statSync(absolute).isFile() };
   } catch {
@@ -126,8 +150,8 @@ function defaultStatFile(root: string, path: string): { isFile: boolean } | null
 }
 
 function defaultReadFile(root: string, path: string): string | null {
-  const absolute = resolve(root, path);
-  if (!isInsideRoot(root, absolute)) return null;
+  const absolute = resolveCitationFile(root, path);
+  if (!absolute) return null;
   try {
     return readFileSync(absolute, 'utf8');
   } catch {

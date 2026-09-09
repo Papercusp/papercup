@@ -546,6 +546,57 @@ const FLEET_CLAIM_RELEASED_PREFIX = 'fleet:claim-released:';
 const FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS = 1_000;
 const WORK_ITEM_CLAIMABLE_KEY = 'work-item:claimable';
 const CLAIMABLE_LOOKUP_TIMEOUT_MS = 1_000;
+/**
+ * EI-22449230917085417: a grant wake can sit in the delivery queue after the
+ * owner has used and released the lock. Re-check the lock at the actual wake
+ * boundary so a late grant cannot re-invoke a session for a lock it no longer
+ * holds.
+ */
+const LOCK_GRANT_PREFIX = 'lock:grant:';
+const LOCK_GRANT_OWNERSHIP_LOOKUP_TIMEOUT_MS = 1_000;
+
+type LockGrantPayload = { lockId: string };
+
+/** Parse only the positive grant shape. Terminal no-grant wakes remain useful
+ * notifications and malformed payloads fail open to the normal wake ladder. */
+function parseLockGrantPayload(payload: unknown): LockGrantPayload | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as { granted?: unknown; lock_id?: unknown };
+  if (record.granted !== true || typeof record.lock_id !== 'string' || record.lock_id.trim().length === 0) {
+    return null;
+  }
+  return { lockId: record.lock_id };
+}
+
+/** Read the live lock table through the existing cross-domain diagnostic queue
+ * read. The owner id is globally unique, while a domain is checkout-specific;
+ * reading all domains avoids declaring a valid grant stale from the wrong tree. */
+async function readCurrentLockGrantOwnership(ownerId: string, lockId: string): Promise<boolean> {
+  const { getTxPool, readQueue } = await import('../../agent-tools/locks/su-lock-store');
+  const queue = await readQueue(getTxPool(), {
+    coordinationDomain: null,
+    owner: ownerId,
+  });
+  return queue.active_locks.some((lock) => lock.lock_id === lockId);
+}
+
+/** Confirmed stale only when the ownership read resolves false. Missing,
+ * malformed, rejected, or timed-out reads preserve the wake (fail-open). */
+async function currentLockGrantIsStale(
+  d: DeliveryWork,
+  readOwnership: (ownerId: string, lockId: string) => Promise<boolean | null>,
+  timeoutMs: number,
+): Promise<{ stale: boolean; lockId: string | null }> {
+  if (!d.eventKey.startsWith(LOCK_GRANT_PREFIX)) return { stale: false, lockId: null };
+  const parsed = parseLockGrantPayload(d.payload);
+  if (!parsed) return { stale: false, lockId: null };
+  const owned = await withWakeTimeout(
+    Promise.resolve().then(() => readOwnership(d.subscriberId, parsed.lockId)),
+    `lock grant ownership revalidation/${parsed.lockId}`,
+    Math.max(1, timeoutMs),
+  );
+  return { stale: owned === false, lockId: parsed.lockId };
+}
 
 type FleetClaimReleasedPayload = {
   id: string;
@@ -2118,6 +2169,12 @@ export interface ExecuteWakeDeps {
   presence?: typeof getPresence;
   /** EI-203843: durable release-latch read, before any wake reanimation. */
   getSessionLifecycle?: (ownerId: string) => Promise<SessionBriefLifecycle | null>;
+  /** EI-22449230917085417: delivery-time ownership read for positive
+   *  `lock:grant:*` wakes. A confirmed false downgrades a delayed grant to the
+   *  coord inbox; null/rejection/timeout preserves the normal wake. */
+  readLockGrantOwnership?: (ownerId: string, lockId: string) => Promise<boolean | null>;
+  /** Upper bound for the delivery-time lock-grant ownership lookup. */
+  lockGrantOwnershipLookupTimeoutMs?: number;
   /** EI-21555327100993502: delivery-time lookup for fleet claim-release wakes.
    *  A re-claimed item is downgraded to inbox so a delayed fleet wake cannot
    *  spend a leader turn on an event that is no longer actionable. */
@@ -2920,6 +2977,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const kill = deps.kill ?? killPty;
   const presence = deps.presence ?? getPresence;
   const getSessionLifecycle = deps.getSessionLifecycle ?? getSessionBriefLifecycle;
+  const readLockGrantOwnership = deps.readLockGrantOwnership ?? readCurrentLockGrantOwnership;
+  const lockGrantOwnershipLookupTimeoutMs =
+    deps.lockGrantOwnershipLookupTimeoutMs ?? LOCK_GRANT_OWNERSHIP_LOOKUP_TIMEOUT_MS;
   const getCurrentWorkItem = deps.getCurrentWorkItem ?? getWorkItem;
   const fleetClaimReleasedLookupTimeoutMs =
     deps.fleetClaimReleasedLookupTimeoutMs ?? FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS;
@@ -3022,6 +3082,29 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `session ${d.subscriberId} is released from fleet ${released.fleet} ` +
           `(marked ${released.at} by ${released.by}) — end now; queued wake suppressed`,
       };
+    }
+
+    // EI-22449230917085417: the lock-grant bridge fires once and queues a
+    // durable delivery, but the owner can finish its edit and release the lock
+    // before the pump reaches that row. Only a positive, successful ownership
+    // read is authoritative here; an unknown read must not swallow a real grant.
+    const lockGrantCheck = await currentLockGrantIsStale(
+      d,
+      readLockGrantOwnership,
+      lockGrantOwnershipLookupTimeoutMs,
+    );
+    if (lockGrantCheck.stale && lockGrantCheck.lockId) {
+      const staleDelivery = {
+        ...d,
+        summary:
+          `⚠ STALE — lock ${lockGrantCheck.lockId} is no longer held by ${d.subscriberId}; ` +
+          `do NOT act on this delayed grant. Original now-RETRACTED assertion: ${d.summary}`,
+      };
+      return degradeToInboxOrDrop(
+        staleDelivery,
+        `lock grant ${lockGrantCheck.lockId} is STALE and RETRACTED at delivery time; ownership is no longer present`,
+        sendCoordMessage,
+      );
     }
 
     // EI-21555327100993502: `fleet:claim-released:<slug>` is a snapshot of an
