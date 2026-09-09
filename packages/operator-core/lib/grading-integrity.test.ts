@@ -488,8 +488,8 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({
         agent: 'codex',
-        account: 'default',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' }],
+        account: 'auto',
+        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(/^grading-audit:EI-weekly-limit:recovery:[a-f0-9]{16}$/),
       }),
     );
@@ -501,7 +501,7 @@ describe('dispatchPendingGradingAudits', () => {
           retiredTaskIds: ['task-quota'],
           attempts: 2,
           codes: ['model_quota_exhausted'],
-          fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' },
+          fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' },
         },
       }),
     ]);
@@ -572,8 +572,8 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({
         agent: 'codex',
-        account: 'default',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' }],
+        account: 'auto',
+        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(/^grading-audit:EI-gateway-500:recovery:[a-f0-9]{16}$/),
       }),
     );
@@ -755,7 +755,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(/^grading-audit:EI-launcher-quota-drop:recovery:[a-f0-9]{16}$/),
         agent: 'codex',
-        account: 'default',
+        account: 'auto',
       }),
     );
   });
