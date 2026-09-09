@@ -4,7 +4,7 @@ import { requireStudyRoom, STUDY_BLOCKS } from '../../../../scratchpad/dream-stu
 
 const model = 'gpt-5.6-luna:medium';
 const opts = { model, messages: [{ role: 'user' as const, content: 'test' }], maxTokens: 1024 };
-const usage = { text: 'ok', costUsd: 0.0001, inputTokens: 10, outputTokens: 10, latencyMs: 1 };
+const usage = { text: 'ok', costUsd: 0.0001, inputTokens: 10, outputTokens: 10, raw: null };
 
 describe('ordinary Blender admission into the finite Dream study', () => {
   it.each([0, -1, NaN, Infinity])('refuses invalid cycle cap %s', cap => {

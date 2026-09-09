@@ -284,6 +284,25 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
       falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
       outcome: 'passed', coverageRungs: { l3: true } } };
   }
+  // Falsifiability is demonstrated by an executed negative control, not by the
+  // positive row's `falsifiable: true` self-attestation. Keep the logical
+  // identity distinct from the recurrence row so the evaluator retains both.
+  input.evidence.rows.push(...input.evidence.rows.map((evidence, index) => ({
+    ...evidence,
+    id: input.evidence.rows.length + index + 1,
+    evidenceKind: 'counterexample' as const,
+    evidenceRef: `counterexample:${index + 1}`,
+    testRunId: input.evidence.rows.length + index + 1,
+    bindingFingerprint: `counterexample-binding-${index + 1}`,
+    details: {
+      evidencePlane: 'tree',
+      adequacy: {
+        testLayer: 'integration', pathReachable: true, oracleIndependent: true,
+        collected: true, skipped: false, executed: true, targeted: true,
+        outcome: 'killed', coverageRungs: { l3: true },
+      },
+    },
+  })));
   return input;
 }
 
@@ -401,7 +420,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]).toMatchObject({
       barKey: 'R-1',
       readiness: { state: 'ready', mapping: 'live', method: 'declared', workContract: 'current' },
-      proof: { state: 'current', currentEvidence: 1 },
+      proof: { state: 'current', currentEvidence: 2 },
       grading: { state: 'pass', scorecardId: 'SC-GRADE', rating: 'healthy' },
     });
   });

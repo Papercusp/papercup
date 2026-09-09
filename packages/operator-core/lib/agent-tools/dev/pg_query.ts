@@ -217,7 +217,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    "Run bounded read-only SQL, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`; pass `positiveControlSql` for absence claims. Regex repetition bounds are ≤255; use `left()` or `substring()`. Rubrics live in `harness_shared.harness_plans`; `harness_shared.rubrics` is retired.",
+    "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
   capability: 'intel:read',
   guidance: {
     when:
@@ -225,9 +225,17 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      "Use `describe` before guessing schema. Rubrics: use `rubrics:list`/`get` or describe `harness_shared.harness_plans`; prefer `work_items:get` for item reads because its `state`/`id` map to table `status`/`feature_id` and completion refs. For absence, supply a known-positive `positiveControlSql`; `count(*)` is not a control. Alias duplicate columns and tighten truncated queries. Avoid unbounded JSON searches of `tool_invocations.args_json` or `metadata_json`; prefer indexed scalars or `activity:tool-log`/`dev:telemetry`. Regex repetition bounds are ≤255; use `left()`/`substring()`.",
+      "Use `describe` before guessing schema. For rubric schema, describe `harness_shared.harness_plans`; use `rubrics:list`, `rubrics:get`, or `rubrics:search` for canonical rubric reads. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. Do not search `tool_invocations.args_json::text` or `metadata_json::text` with LIKE/ILIKE without a SQL LIMIT; `maxRows` does not bound the WHERE scan. Prefer indexed scalar predicates or `activity:tool-log`/`dev:telemetry`; pass `allowUnboundedJsonSearch: true` only for deliberate forensic work. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
     returns:
-      'A DISCRIMINATED UNION on `mode`: query → `{ mode, rowCount, truncated, fields, elapsedMs, rows, advisory?, positiveControl?, absence? }`; describe → `{ mode, relation, kind, columns[], indexes[], constraints[] }`; describe-list → `{ mode, pattern, relationCount, relations[] }`. Errors are `{ error, reason }` without `mode`; `code:run` returns this root directly; bigint/int8 stays exact.',
+      'A DISCRIMINATED UNION on `mode` — switch on it, do not probe for `rows` vs `columns`. ' +
+      `\`mode:"${PG_QUERY_MODE.query}"\` (you passed \`sql\`): ` +
+      '`{ mode, rowCount, truncated, fields, elapsedMs, rows, advisory?, positiveControl?, absence? }`; ' +
+      'zero rows is `absence.status:"unverified"` unless the same-transaction control found a row. ' +
+      `\`mode:"${PG_QUERY_MODE.describe}"\` (you passed a relation name): ` +
+      '`{ mode, relation, kind, columns[], indexes[], constraints[] }`. ' +
+      `\`mode:"${PG_QUERY_MODE.describeList}"\` (you passed a \`*\`/glob): ` +
+      '`{ mode, pattern, relationCount, relations[] }` — names only, NOT column metadata. ' +
+      'Errors are `{ error, reason }` and carry no `mode`. `code:run` returns this root directly. bigint/int8 stays exact.',
     seeAlso: [
       'work_items:claimable',
       'plans:list',
