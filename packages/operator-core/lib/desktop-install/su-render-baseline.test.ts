@@ -23,7 +23,25 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Pin data, not prose: exercise the real map renderer with a synthetic workspace.
+// Falling back to git's checkout root made the same fixture grow 33 bytes in the
+// isolated checkpoint tree, despite no prompt or renderer change.
+vi.mock('./workspace-map', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./workspace-map')>();
+  return {
+    ...actual,
+    renderWorkspaceMapSection: () => actual.renderWorkspaceMapSection({
+      integrationRoot: '/fixture/papercusp',
+      releaseRoot: '/fixture/papercup-release',
+      checkpointRoot: '/fixture/papercusp-checkpoint',
+      integrationBranch: 'staging',
+      releaseRef: 'main',
+    }),
+  };
+});
+
 import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
 import { renderSuPlaybook } from './papercusp-files';
 import {
@@ -98,6 +116,19 @@ async function renderPinned(tier: (typeof TIERS)[number]): Promise<string> {
   const out = await renderSuPlaybook(pinnedInput(tier));
   return out.text;
 }
+
+it('pins the workspace map across canonical and isolated checkout environments', async () => {
+  try {
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '/fixture/canonical');
+    vi.stubEnv('PAPERCUSP_CHECKPOINT_ROOT', '/fixture/canonical-checkpoint');
+    const canonical = await renderPinned('full');
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '/fixture/isolated-longer-checkout');
+    vi.stubEnv('PAPERCUSP_CHECKPOINT_ROOT', '/fixture/isolated-longer-checkout-checkpoint');
+    expect(await renderPinned('full')).toBe(canonical);
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
 
 function dump(name: string, text: string): void {
   if (!DUMP_DIR) return;

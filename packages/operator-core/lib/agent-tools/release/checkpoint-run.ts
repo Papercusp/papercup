@@ -55,8 +55,10 @@ import {
   describeRunnerCodeFreshness,
   readInFlightRetriage,
   readRunnerCodeCommittedAtMs,
+  RUNNER_PROCESS_BOOTED_AT_MS,
 } from '../../release/in-flight-retriage';
 import { readInFlightCandidate } from '../../release/in-flight-candidate';
+import { getServingHostIdentity } from '../../serving-host-identity';
 import { describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { caveatForSite } from '../../field-reliability-registry';
 import {
@@ -122,6 +124,74 @@ function canFollowGateCellFromSeeAlso(ctx: unknown): boolean {
   if (!ctx || typeof ctx !== 'object' || GATE_VERDICT_CELL.visibility.kind !== 'harness') return false;
   const harnessSlug = (ctx as SeeAlsoContext).harnessSlug;
   return typeof harnessSlug === 'string' && harnessSlug.trim() === GATE_VERDICT_CELL.visibility.ref;
+}
+
+type RefusalRunnerCodeFreshness = {
+  verdict: 'stale' | 'fresh' | 'unknown';
+  note: string;
+  behind_by_ms: number | null;
+  runner_booted_at_ms: number | null;
+  runner_code_committed_at_ms: number | null;
+};
+
+type CheckpointRefusalProvenance = {
+  serving_host: string | null;
+  serving_process_id: string | null;
+  serving_build_sha: string | null;
+  runner_code_freshness: RefusalRunnerCodeFreshness | null;
+};
+
+/**
+ * Capture the build/process that answered a manual checkpoint request, plus the
+ * best-effort freshness of the gate runner source. This is diagnostic context:
+ * every read is nullable and a failure must never turn a refusal into a tool
+ * error or invent a plausible build identity.
+ */
+async function readCheckpointRefusalProvenance(root?: string | null): Promise<CheckpointRefusalProvenance> {
+  let servingHost: string | null = null;
+  let servingProcessId: string | null = null;
+  let servingBuildSha: string | null = null;
+  try {
+    const identity = getServingHostIdentity();
+    servingHost = identity.host ?? null;
+    servingProcessId = identity.processId ?? null;
+    servingBuildSha = identity.buildSha ?? null;
+  } catch {
+    // Provenance is additive and best-effort; the refusal itself remains authoritative.
+  }
+
+  let runnerCodeFreshness: RefusalRunnerCodeFreshness | null = null;
+  try {
+    const runner = describeRunnerCodeFreshness(
+      { runnerBootedAtMs: RUNNER_PROCESS_BOOTED_AT_MS },
+      await readRunnerCodeCommittedAtMs(root),
+    );
+    runnerCodeFreshness = {
+      verdict: runner.verdict,
+      note: runner.note,
+      behind_by_ms: runner.behindByMs,
+      runner_booted_at_ms: runner.runnerBootedAtMs,
+      runner_code_committed_at_ms: runner.runnerCodeCommittedAtMs,
+    };
+  } catch {
+    // An unreadable source tree is explicitly represented as unavailable.
+  }
+
+  return {
+    serving_host: servingHost,
+    serving_process_id: servingProcessId,
+    serving_build_sha: servingBuildSha,
+    runner_code_freshness: runnerCodeFreshness,
+  };
+}
+
+function serializeCheckpointRunResponse(
+  payload: Record<string, unknown>,
+  refusalProvenance: CheckpointRefusalProvenance,
+): string {
+  return JSON.stringify(
+    payload.launched === false ? { ...payload, refusal_provenance: refusalProvenance } : payload,
+  );
 }
 
 export default defineTool({
@@ -330,11 +400,25 @@ export default defineTool({
     const installSlug = concreteCheckpointHarness(ctx);
     const workspaceId = concreteCheckpointWorkspace(ctx);
     const routing = await resolveCheckpointRouting({ installSlug, workspaceId }, integrationRoot());
+    const refusalProvenanceRoot = (() => {
+      try {
+        return routing.skip ? integrationRoot() : routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
+      } catch {
+        return null;
+      }
+    })();
+    const refusalProvenance = await readCheckpointRefusalProvenance(refusalProvenanceRoot);
+    // The dispatch metadata seam is overwrite-not-merge. Centralize the additive
+    // provenance field so every existing branch keeps its own decision fields.
+    const recordMetadata = (data: Record<string, unknown>) =>
+      ctx.metadata?.({ refusalProvenance, ...data });
+    const serializeResponse = (payload: Record<string, unknown>) =>
+      serializeCheckpointRunResponse(payload, refusalProvenance);
     if (routing.skip) {
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
+          text: serializeResponse({
             ok: false,
             launched: false,
             reason: 'checkpoint_routing_skip',
@@ -358,7 +442,7 @@ export default defineTool({
     // or any detached process can be touched.
     const serializerAuthority = await readCheckpointSerializerAuthority({ installSlug, workspaceId });
     if (serializerAuthority.status === 'unreadable') {
-      ctx.metadata?.({
+      recordMetadata({
         standDown: 'serializer_authority_unreadable',
         ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       });
@@ -366,7 +450,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason: 'serializer_authority_unreadable',
@@ -388,7 +472,7 @@ export default defineTool({
         callerOwnerId = null;
       }
       if (callerOwnerId !== serializerAuthority.ownerId) {
-        ctx.metadata?.({
+        recordMetadata({
           standDown: 'serializer_authority_held',
           standDownWorkItem: serializerAuthority.itemId,
           standDownTakenBy: serializerAuthority.ownerId,
@@ -398,7 +482,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 reason: 'serializer_authority_held',
@@ -430,7 +514,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 scheduled: false,
@@ -452,7 +536,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 scheduled: false,
@@ -469,7 +553,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 scheduled: false,
@@ -490,7 +574,7 @@ export default defineTool({
         installSlug,
         workspaceId: caller.workspaceId ?? undefined,
       });
-      ctx.metadata?.({
+      recordMetadata({
         serializerTransition: transition.status,
         serializerTransitionWorkItem: ownership.workItem,
         serializerTransitionPrerequisites: args.prerequisiteWorkItems,
@@ -502,7 +586,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: true,
                 launched: false,
                 scheduled: true,
@@ -526,7 +610,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               scheduled: false,
@@ -553,7 +637,7 @@ export default defineTool({
     if (manualRunAdmission.status !== 'clear') {
       const held = manualRunAdmission.status === 'held' ? manualRunAdmission.hold : null;
       const unreadable = manualRunAdmission.status === 'unknown' ? manualRunAdmission.reason : 'unknown';
-      ctx.metadata?.({
+      recordMetadata({
         standDown: held ? 'manual_run_authority_withheld' : 'manual_run_authority_unreadable',
         ...(held?.governingRef ? { standDownGoverningRef: held.governingRef } : {}),
         ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
@@ -562,7 +646,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason: held ? 'manual_run_authority_withheld' : 'manual_run_authority_unreadable',
@@ -737,7 +821,7 @@ export default defineTool({
             expectedAssignee: ownership.takenBy,
           });
           if (!transferred) {
-            ctx.metadata?.({
+            recordMetadata({
               standDown: 'condition_takeover_race',
               standDownWorkItem: ownership.workItem,
               standDownTakenBy: ownership.takenBy,
@@ -748,7 +832,7 @@ export default defineTool({
               content: [
                 {
                   type: 'text',
-                  text: JSON.stringify({
+                  text: serializeResponse({
                     ok: false,
                     launched: false,
                     reason: 'condition_takeover_race',
@@ -782,7 +866,7 @@ export default defineTool({
               replacementAssignee: callerOwnerId,
             },
           );
-          ctx.metadata?.({
+          recordMetadata({
             standDown: 'condition_ownership_transferred',
             standDownWorkItem: ownership.workItem,
             standDownTakenBy: ownership.takenBy,
@@ -794,7 +878,7 @@ export default defineTool({
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
+                text: serializeResponse({
                   ok: true,
                   launched: false,
                   scheduled: false,
@@ -833,7 +917,7 @@ export default defineTool({
         // (dispatch-stack.ts:550, "last write wins"), so a hoisted stamp would be WIPED by the
         // preLaunchExclusion stamp on every path that does not refuse. This branch is terminal, so
         // one stamp inside it is both safe and the only stamp this path will ever emit.
-        ctx.metadata?.({
+        recordMetadata({
           standDown: 'condition_claimed',
           standDownWorkItem: ownership.workItem,
           standDownTakenBy: ownership.takenBy,
@@ -844,7 +928,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 reason: 'condition_claimed',
@@ -871,7 +955,7 @@ export default defineTool({
         };
       }
       if (ownershipLivenessAmbiguous && peerHeld) {
-        ctx.metadata?.({
+        recordMetadata({
           standDown: 'condition_claimed_unconfirmed',
           standDownWorkItem: ownership.workItem,
           standDownTakenBy: ownership.takenBy,
@@ -883,7 +967,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 reason: 'condition_claimed_unconfirmed',
@@ -933,7 +1017,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason: 'qualification_transaction_unreadable',
@@ -971,7 +1055,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason:
@@ -1175,7 +1259,7 @@ export default defineTool({
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
+          text: serializeResponse({
             ok: false,
             launched: false,
             reason: `qualification_eligibility_${eligibilityRecord.status}`,
@@ -1227,7 +1311,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason: `qualification_wait_${qualificationWait.status}`,
@@ -1290,7 +1374,7 @@ export default defineTool({
         );
       }
     }
-    ctx.metadata?.({
+    recordMetadata({
       // Rides THIS stamp rather than its own call, for the overwrite-not-merge reason above.
       // Present only when true, so `metadata_json ? 'ownershipLivenessAmbiguous'` cleanly selects
       // the launches that went ahead against an ambiguous holder.
@@ -1357,7 +1441,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 reason: 'would_exclude_declared_paths',
@@ -1378,7 +1462,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 reason: 'wait_for_eligibility_unavailable',
@@ -1400,7 +1484,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: true,
               launched: false,
               pending: true,
@@ -1429,7 +1513,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason: queueReadFailed ? 'repair_queue_unreadable' : 'repair-in-progress',
@@ -1455,7 +1539,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               logical_attempt_id: logicalAttemptId,
@@ -1499,7 +1583,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason: `qualification_reservation_${qualificationReservation.status}`,
@@ -1538,7 +1622,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               launched: false,
               reason: 'frozen_lineage_identity_changed',
@@ -1592,7 +1676,7 @@ export default defineTool({
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
+              text: serializeResponse({
                 ok: false,
                 launched: false,
                 reason: `qualification_wait_${launchWait.status}`,
@@ -1613,7 +1697,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               probe_failed: true,
               logical_attempt_id: logicalAttemptId,
@@ -1747,7 +1831,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: serializeResponse({
               ok: false,
               already_running: true,
               logical_attempt_id: logicalAttemptId,
@@ -2000,7 +2084,7 @@ export default defineTool({
       content: [
         {
           type: 'text',
-          text: JSON.stringify({
+          text: serializeResponse({
             ok: result.launched,
             logical_attempt_id: logicalAttemptId,
             ...result,

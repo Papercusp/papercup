@@ -4829,12 +4829,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.scout_routed_ideas', 'harness_shared.experiment_runs'],
     argsSchema: z.object({
       potSlug: z.string().trim().min(1).max(120),
+      mode: z.enum(['manual', 'auto']).optional(),
       view: z.enum(['controls', 'metrics', 'history', 'run']).optional(),
       since: z.string().datetime().optional(), until: z.string().datetime().optional(),
       cursor: z.string().max(800).optional(), runId: z.string().trim().min(1).max(500).optional(),
     }).refine(args => args.view !== 'run' || Boolean(args.runId), 'A run id is required for Dream detail'),
     resolve: async (raw: unknown) => {
-      const args = raw as { potSlug: string; view?: 'controls' | 'metrics' | 'history' | 'run'; since?: string; until?: string; cursor?: string; runId?: string };
+      const args = raw as { potSlug: string; mode?: 'manual' | 'auto'; view?: 'controls' | 'metrics' | 'history' | 'run'; since?: string; until?: string; cursor?: string; runId?: string };
       const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
         import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
       ]);
@@ -4861,7 +4862,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         return routeWithWorkspace(async (tx) => [await readDreamMetrics(tx as unknown as import('postgres').Sql,
           { workspaceId, potSlug: args.potSlug, since, until })]);
       }
-      return routeWithWorkspace(async (tx) => [await readDreamControlSnapshot(tx as unknown as import('postgres').Sql, { workspaceId, potSlug: args.potSlug })]);
+      return routeWithWorkspace(async (tx) => [await readDreamControlSnapshot(tx as unknown as import('postgres').Sql, { workspaceId, potSlug: args.potSlug, mode: args.mode })]);
     },
   },
 

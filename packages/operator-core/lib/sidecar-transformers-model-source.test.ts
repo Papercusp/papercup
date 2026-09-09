@@ -22,7 +22,17 @@
  * message are part of what is verified. Fixtures are byte-sized stand-ins for the weights.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,6 +111,54 @@ function makeModel(
   }
   // A config file so the copy has something beside the weights to carry across.
   write(join(root, name, 'config.json'), '{"model_type":"test"}');
+}
+
+function pinnedContract(root: string, modelRoot: string): string {
+  const sha256 = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+  const filesFor = (name: string) => {
+    const base = join(modelRoot, name);
+    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(dir, entry.name);
+      return entry.isDirectory() ? walk(path) : [path];
+    });
+    return walk(base)
+      .filter((path) => !/\.tmp\.|\.partial$|\.part$/u.test(path))
+      .map((path) => ({
+        path: path.slice(base.length + 1).replaceAll('\\', '/'),
+        bytes: statSync(path).size,
+        sha256: sha256(path),
+      }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  };
+  const path = join(root, 'distribution-contract.json');
+  writeFileSync(path, JSON.stringify({
+    server: {
+      optionalPacks: [{
+        name: 'local-models',
+        required: true,
+        cachePolicy: {
+          mode: 'installed-local-only',
+          remoteFetch: 'forbidden-on-vm-release',
+          readyWhen: 'every-declared-file-matches-size-and-sha256',
+          missingOrCorrupt: 'refuse-startup',
+          recovery: 'replace-with-a-signed-runtime-containing-the-declared-pack',
+        },
+        compatibility: {
+          transformersPackage: '4.2.0',
+          executionProvider: 'cpu',
+          runtimeDefaults: ['harrier', 'gemma'],
+        },
+        models: MODELS.map((name, index) => ({
+          mode: index === 0 ? 'harrier' : 'gemma',
+          runtimeId: `onnx-community/${name}`,
+          revision: String(index + 1).repeat(40),
+          nativeDimensions: index === 0 ? 1024 : 768,
+          files: filesFor(name),
+        })),
+      }],
+    },
+  }));
+  return path;
 }
 
 function runHelper(
@@ -266,6 +324,67 @@ describe('transformers model sourcing — the opt-in step a pristine-clone build
       ).toBe('ALREADY-STAGED');
     }
   });
+
+  it('vm-release stages only the exact pinned pack and emits its runtime manifest', () => {
+    const t = fixture();
+    const src = join(t, 'cache', 'onnx-community');
+    const transformersRoot = join(t, 'transformers');
+    const modelsRoot = join(transformersRoot, 'models');
+    for (const m of MODELS) makeModel(src, m, { fragments: true, shards: m === MODELS[0] ? 2 : 1 });
+    mkdirSync(transformersRoot, { recursive: true });
+    writeFileSync(
+      join(transformersRoot, 'package.json'),
+      JSON.stringify({ name: '@huggingface/transformers', version: '4.2.0' }),
+    );
+    const contract = pinnedContract(t, src);
+
+    const r = runHelper(['stage', modelsRoot], {
+      PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release',
+      PAPERCUSP_TRANSFORMERS_DISTRIBUTION_CONTRACT: contract,
+      PAPERCUSP_TRANSFORMERS_MODEL_CACHE: src,
+    });
+
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain('"status": "ready"');
+    const emitted = JSON.parse(
+      readFileSync(join(modelsRoot, 'papercusp-model-assets.json'), 'utf8'),
+    );
+    expect(emitted).toMatchObject({
+      schemaVersion: 1,
+      pack: 'local-models',
+      required: true,
+      cachePolicy: { remoteFetch: 'forbidden-on-vm-release' },
+      compatibility: { transformersPackage: '4.2.0', runtimeDefaults: ['harrier', 'gemma'] },
+    });
+    expect(emitted.models.map((model: { runtimeId: string }) => model.runtimeId).sort()).toEqual(
+      MODELS.map((name) => `onnx-community/${name}`).sort(),
+    );
+  });
+
+  it('vm-release refuses a corrupt pinned source before copying it', () => {
+    const t = fixture();
+    const src = join(t, 'cache', 'onnx-community');
+    const transformersRoot = join(t, 'transformers');
+    const modelsRoot = join(transformersRoot, 'models');
+    for (const m of MODELS) makeModel(src, m);
+    mkdirSync(transformersRoot, { recursive: true });
+    writeFileSync(
+      join(transformersRoot, 'package.json'),
+      JSON.stringify({ name: '@huggingface/transformers', version: '4.2.0' }),
+    );
+    const contract = pinnedContract(t, src);
+    writeFileSync(join(src, MODELS[1], 'onnx/model.onnx_data'), 'tampered-after-pin');
+
+    const r = runHelper(['stage', modelsRoot], {
+      PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release',
+      PAPERCUSP_TRANSFORMERS_DISTRIBUTION_CONTRACT: contract,
+      PAPERCUSP_TRANSFORMERS_MODEL_CACHE: src,
+    });
+
+    expect(r.code).not.toBe(0);
+    expect(r.err).toMatch(/(?:size|sha256) mismatch/);
+    expect(existsSync(join(modelsRoot, 'onnx-community'))).toBe(false);
+  });
 });
 
 describe('the sourcing step is wired into the sidecar build, and its model list cannot drift', () => {
@@ -300,5 +419,15 @@ describe('the sourcing step is wired into the sidecar build, and its model list 
     expect(required, 'could not find the presence-check loop in build-desktop-sidecar.sh').not.toBeNull();
     expect(names).toEqual(required![1]!.trim().split(/\s+/).sort());
     expect(names).toEqual([...MODELS].sort());
+    const contract = JSON.parse(
+      readFileSync(join(ROOT, 'papercusp-desktop', 'src-tauri', 'distribution-contract.json'), 'utf8'),
+    );
+    const pack = contract.server.optionalPacks.find((candidate: { name: string }) => candidate.name === 'local-models');
+    expect(pack.required).toBe(true);
+    expect(pack.cachePolicy).toMatchObject({
+      remoteFetch: 'forbidden-on-vm-release',
+      missingOrCorrupt: 'refuse-startup',
+    });
+    expect(pack.models.map((model: { runtimeId: string }) => model.runtimeId.split('/').at(-1)).sort()).toEqual(names);
   });
 });

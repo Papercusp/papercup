@@ -52,6 +52,11 @@ describe('test-time evidence continuity', () => {
     expect(testEvidenceOutcome(binding, result(counts))).toMatchObject({ outcome, executed });
   });
 
+  it('does not turn explicitly name-filtered exclusions into a skipped proof', () => {
+    const filtered = { ...result({ passed: 2, skipped: 519 }), testNamePattern: 'P-001' };
+    expect(testEvidenceOutcome(binding, filtered)).toMatchObject({ outcome: 'pass', executed: true, skipped: true });
+  });
+
   it('requires the exact declared assertion for a successful counterexample', () => {
     const counterexample = { ...binding, counterexample: { test: 'restores omitted duty', messageIncludes: 'expected delivered' } };
     const failed = result({ passed: 0, failed: 1 });

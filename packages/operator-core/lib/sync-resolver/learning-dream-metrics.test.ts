@@ -35,6 +35,12 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     mocks.metrics.mockRejectedValue(new Error('metrics read failed'));
     await expect(resolveNamedQueryV2('learning.dream', { potSlug: 'pot', view: 'metrics' })).rejects.toThrow(/metrics read failed/);
   });
+  it('reads the automatic routine limits for the dropdown Dreaming toggle', async () => {
+    const args = getRegistryEntryV2('learning.dream')!.argsSchema!.parse({ potSlug: 'pot', mode: 'auto' });
+    await resolveNamedQueryV2('learning.dream', args);
+    expect(mocks.controls).toHaveBeenCalledWith(mocks.tx, { workspaceId: 'metrics-workspace', potSlug: 'pot', mode: 'auto' });
+    expect(() => getRegistryEntryV2('learning.dream')!.argsSchema!.parse({ potSlug: 'pot', mode: 'invalid' })).toThrow();
+  });
   it('validates view/date arguments and invalidates on run, grade and experiment changes', () => {
     const schema = getRegistryEntryV2('learning.dream')!.argsSchema!;
     expect(() => schema.parse({ potSlug: 'pot', view: 'made-up' })).toThrow();

@@ -357,12 +357,12 @@ describe('release:checkpoint-run', () => {
       taken_by: 'su-serializer',
     });
     expect(String(b.note)).toMatch(/force:true, replaceStale:true, and waitForEligibility:true cannot bypass/);
-    expect(metadata).toHaveBeenCalledWith({
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       standDown: 'serializer_authority_held',
       standDownWorkItem: 'WI-40086',
       standDownTakenBy: 'su-serializer',
       fireReason: 'promote unrelated fix',
-    });
+    }));
   });
 
   it('EI-212098: the named serializer can still launch through its own fence', async () => {
@@ -438,6 +438,16 @@ describe('release:checkpoint-run', () => {
       reason: 'serializer_authority_unreadable',
       error: 'pg unavailable',
     });
+    expect(b.refusal_provenance).toEqual(
+      expect.objectContaining({
+        serving_host: expect.any(String),
+        serving_process_id: expect.anything(),
+        serving_build_sha: expect.anything(),
+        runner_code_freshness: expect.objectContaining({
+          verdict: expect.stringMatching(/^(stale|fresh|unknown)$/),
+        }),
+      }),
+    );
   });
 
   it('launches the detached checkpoint and reports it (operator role)', async () => {
@@ -2279,13 +2289,13 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(launchSpy).not.toHaveBeenCalled();
     expect(b).toMatchObject({ ok: false, launched: false, reason: 'condition_claimed' });
     expect(metadata).toHaveBeenCalledTimes(1);
-    expect(metadata).toHaveBeenCalledWith({
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       standDown: 'condition_claimed',
       standDownWorkItem: 'WI-38026',
       standDownTakenBy: 'su-live-holder',
       standDownHolderSessionState: 'live',
       fireReason: 'gate red',
-    });
+    }));
   });
 
   // EI-22733985246154315 — the test that stood here ("a delivered required wake confirms an
@@ -2372,14 +2382,14 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       wake_confirmed: false,
     });
     expect(b).not.toHaveProperty('woken');
-    expect(metadata).toHaveBeenCalledWith({
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       standDown: 'condition_claimed_unconfirmed',
       standDownWorkItem: 'WI-38026',
       standDownTakenBy: 'su-ambiguous-holder',
       standDownHolderSessionState: 'suspect',
       standDownWakeCount: 1,
       fireReason: 'gate red',
-    });
+    }));
   });
 
   it('P-008: a missed required wake transfers ownership and does not launch', async () => {
@@ -2462,13 +2472,13 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       transfer_basis: 'holder-wake-missed',
     });
     expect(metadata).toHaveBeenCalledTimes(1);
-    expect(metadata).toHaveBeenCalledWith({
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       standDown: 'condition_ownership_transferred',
       standDownWorkItem: 'WI-38026',
       standDownTakenBy: 'su-ambiguous-holder',
       standDownTransferBasis: 'holder-wake-missed',
       standDownWakeCount: 0,
-    });
+    }));
   });
 
   it('P-008: an expired critical progress lease transfers despite a live, wakeable holder', async () => {
@@ -2757,7 +2767,20 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       preLaunchTip: 'ffffffffffff',
       preLaunchWaitSec: 120,
       preLaunchBlockedPaths: [{ path: MINE, eligibleInSec: 120 }],
+      refusalProvenance: expect.objectContaining({
+        serving_host: expect.any(String),
+        runner_code_freshness: expect.anything(),
+      }),
     });
+    expect(parse((await tool.handler({ paths: [MINE] }, MAKE_CTX())) as never)).toEqual(
+      expect.objectContaining({
+        launched: false,
+        refusal_provenance: expect.objectContaining({
+          serving_host: expect.any(String),
+          runner_code_freshness: expect.anything(),
+        }),
+      }),
+    );
   });
 
   it('stamps a PASS with its proceedReason, so the refusal rate has a denominator', async () => {

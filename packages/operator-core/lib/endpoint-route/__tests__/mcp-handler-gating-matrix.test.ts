@@ -51,6 +51,8 @@ const h = vi.hoisted(() => {
     fakeSql,
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
+    /** EI-22390450916579377: plugin-host warm seam for late projected-tool registration. */
+    pluginHostWarm: vi.fn(async (): Promise<unknown> => ({})),
     /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
     scopedClampFlag: { value: false },
     /** Hive-tier resolver seam: maps a harness → its hive home slug (null = no hive). */
@@ -366,6 +368,13 @@ vi.mock('../../agent-tools/search/embedder', async (importOriginal) => {
     buildQueryEmbedderResolved: async () => null,
   };
 });
+vi.mock('../../plugin-host-runtime', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    getPluginHost: (): Promise<unknown> => h.pluginHostWarm(),
+  };
+});
 
 // _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
 // schemas; under vite-node's ESM transform there is no module-scope require,
@@ -375,7 +384,8 @@ vi.mock('../../agent-tools/search/embedder', async (importOriginal) => {
 process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/gating-matrix-no-manifest.json';
 delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 
-const { __buildMcpToolContext_forTests } = await import('../routes/transport/_mcp-handler');
+const { __buildMcpToolContext_forTests, resolveMcpTargetAfterPluginHostWarm } =
+  await import('../routes/transport/_mcp-handler');
 const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
@@ -390,12 +400,31 @@ interface SeenCall {
   alsWorkspace: string | undefined;
 }
 const seen: SeenCall[] = [];
+const LATE_PLUGIN_NAME = 'gating-matrix-late-plugin';
+const LATE_PLUGIN_TOOL = 'gating-late.arrives';
+const latePluginSeen: unknown[] = [];
 
 function probeFn(name: string) {
   return async (input: unknown, ctx: UnifiedToolContext) => {
     seen.push({ tool: name, args: input, ctx, alsWorkspace: currentRequestWorkspaceId() });
     return { content: [{ type: 'text' as const, text: `${name}-ok` }] };
   };
+}
+
+function registerLatePluginTool(): void {
+  registerProjectedTool({
+    pluginName: LATE_PLUGIN_NAME,
+    description: 'test-only plugin tool registered while tools:invoke waits for host warm-up',
+    inputSchema: { type: 'object', additionalProperties: false },
+    capabilities: [],
+    requirePrincipal: false,
+    agentRoles: ['operator'],
+    expose: { mcp: { name: LATE_PLUGIN_TOOL } },
+    fn: async (input) => {
+      latePluginSeen.push(input);
+      return { content: [{ type: 'text' as const, text: 'late-plugin-ok' }] };
+    },
+  });
 }
 
 registerProjectedTool({
@@ -661,6 +690,7 @@ defineTool({
 
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
+  unregisterProjectedToolsForPlugin(LATE_PLUGIN_NAME);
 });
 
 /* ─── Drivers ────────────────────────────────────────────────────────── */
@@ -869,6 +899,7 @@ beforeEach(() => {
   h.withWorkspaceCalls.length = 0;
   h.workspaceAcquireError = null;
   h.rubricGet.mockResolvedValue(null);
+  h.pluginHostWarm.mockResolvedValue({});
   h.commitFailure = null;
   h.txEvents.length = 0;
   h.replayStores.length = 0;
@@ -881,6 +912,8 @@ beforeEach(() => {
   h.goalLocalPlacement.calls.length = 0;
   invokeProbeSeen.length = 0;
   txlessRoleProbeSeen.length = 0;
+  latePluginSeen.length = 0;
+  unregisterProjectedToolsForPlugin(LATE_PLUGIN_NAME);
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test
 
@@ -1270,6 +1303,60 @@ describe('in-process ctx.dispatchTool forwards an outer payloadTier to tools:inv
     expect(res.isError).not.toBe(true);
     expect(JSON.stringify(res)).toContain(FULL_SOURCE_CHECKPOINT);
     expect(JSON.stringify(res)).not.toContain('SHAPED_CHECKPOINT_MARKER');
+  });
+});
+
+/* ─── plugin-host-aware tools:invoke miss recovery (EI-22390450916579377) ── */
+
+describe('tools:invoke re-resolves plugin-shaped misses after a bounded host warm', () => {
+  it('dispatches a plugin tool that registers while the cached host promise settles', async () => {
+    h.pluginHostWarm.mockImplementationOnce(async () => {
+      registerLatePluginTool();
+      return {};
+    });
+
+    const res = await callTool(
+      'tools:invoke',
+      { name: LATE_PLUGIN_TOOL, args: {} },
+      superuserExtra('&workspace=ws-test&harness=papercup'),
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('late-plugin-ok');
+    expect(latePluginSeen).toEqual([{}]);
+    expect(h.pluginHostWarm).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warm the plugin host for a core ns:verb miss', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:still-missing', args: {} },
+      superuserExtra('&workspace=ws-test&harness=papercup'),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('unknown_tool');
+    expect(h.pluginHostWarm).not.toHaveBeenCalled();
+  });
+
+  it('returns after the short budget when plugin discovery stays pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const resolve = vi.fn(() => undefined);
+      const warm = vi.fn(() => new Promise<never>(() => {}));
+      const pending = resolveMcpTargetAfterPluginHostWarm('gating-late.never', {
+        resolve,
+        warm,
+        budgetMs: 25,
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(pending).resolves.toBeUndefined();
+      expect(warm).toHaveBeenCalledTimes(1);
+      expect(resolve).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

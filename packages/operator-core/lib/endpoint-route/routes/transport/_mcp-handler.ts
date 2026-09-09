@@ -94,7 +94,11 @@ import {
 } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
-import { unknownToolReferral } from '../../../agent-tools/tools/unknown-tool-referral';
+import {
+  isPluginNamespacedToolName,
+  unknownToolReferral,
+} from '../../../agent-tools/tools/unknown-tool-referral';
+import { getPluginHost } from '../../../plugin-host-runtime';
 import {
   maybeBatchNudge,
   maybeOrientDedupNudge,
@@ -2140,6 +2144,51 @@ export function forwardToolsInvokePayloadTier<T>(toolName: string, dispatchArgs:
   };
 }
 
+/**
+ * EI-22390450916579377: plugin tools register incrementally while the cached
+ * plugin-host promise warms after an operator restart. A plugin-shaped
+ * tools:invoke target can therefore miss even though a sibling verb from the
+ * same plugin is already callable. Give that one transient family a short
+ * chance to finish registering, then resolve exactly once more.
+ *
+ * The bound is deliberately far below the plugin host's 60s sweep budget: a
+ * slow/hung plugin must still fail quickly with the existing diagnostic. Core
+ * `ns:verb` misses never enter this path, and already-registered tools retain
+ * the synchronous fast lookup in dispatchTool.
+ */
+export const PLUGIN_TOOL_RERESOLVE_BUDGET_MS = 5_000;
+export async function resolveMcpTargetAfterPluginHostWarm(
+  toolName: string,
+  deps: {
+    resolve?: typeof resolveMcpName;
+    warm?: () => Promise<unknown>;
+    budgetMs?: number;
+  } = {},
+): Promise<ReturnType<typeof resolveMcpName>> {
+  const resolve = deps.resolve ?? resolveMcpName;
+  const initial = resolve(toolName);
+  if (initial?.expose?.mcp || !isPluginNamespacedToolName(toolName)) return initial;
+
+  const requestedBudget = deps.budgetMs ?? PLUGIN_TOOL_RERESOLVE_BUDGET_MS;
+  const budgetMs = Number.isFinite(requestedBudget) && requestedBudget > 0
+    ? requestedBudget
+    : PLUGIN_TOOL_RERESOLVE_BUDGET_MS;
+  const warm = deps.warm ?? getPluginHost;
+  try {
+    await raceDeadline<unknown | undefined>(
+      budgetMs,
+      () => Promise.resolve().then(warm),
+      () => undefined,
+    );
+  } catch {
+    // The host records discovery failures in plugins:runtime_status. A failed
+    // warm must preserve the ordinary unknown_tool response, not turn a miss
+    // into a transport-level exception. Re-resolve because earlier tools in a
+    // failed incremental sweep may still have registered successfully.
+  }
+  return resolve(toolName);
+}
+
 async function buildMcpToolContext(
   spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
@@ -2271,7 +2320,9 @@ async function buildMcpToolContext(
     // is still the fast path; the normalized fallback (unambiguous only) saves a
     // wasted unknown-tool round-trip. Dispatch downstream under the CANONICAL
     // registered name so telemetry/quota attribution keys off the real tool.
-    const target = resolveMcpName(toolName);
+    const target = isPluginNamespacedToolName(toolName)
+      ? await resolveMcpTargetAfterPluginHostWarm(toolName)
+      : resolveMcpName(toolName);
     if (!target?.expose?.mcp) {
       // EI-9011 (generalized): moment-of-failure referral — closest catalog matches +
       // the tools:find/tools:invoke routing hint, so a typo'd or client-format name

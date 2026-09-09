@@ -571,6 +571,8 @@ fixer is dead AND the fixes are absent from the frozen candidate (verify per pat
 `git rev-parse <candidate>:<path>` vs `git rev-parse staging:<path>` — equal blobs mean the fix
 is NOT in it). Having retired one, let the next run re-freeze; do not start re-cutting.
 
+If a refusal is surprising, treat its policy fields as build-scoped evidence: compare `refusal_provenance` with the health/build SHA on staging `:3170` and green `:3070` using [the two-port A/B procedure](/internal/docs/agent-insights/connection-closed-6432-is-an-idle-tx-kill-not-pgbouncer) before attributing it to current queue policy. A deployed refusal can be stale while staging accepts the same request.
+
 ✅ **"Is the freeze ON, and if not WHY" is a READ — do not grep run logs for it.** The structured
 form is `gate_health.freezeAndConverge` (`{ enabled, state, reason, candidate }`); `release:deploy
 status` renders the same record as one prose line. `state` is one of **`off` · `none` · `held` ·

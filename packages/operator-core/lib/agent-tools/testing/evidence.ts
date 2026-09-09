@@ -81,7 +81,21 @@ export function testEvidenceOutcome(binding: Request['bindings'][number], result
   const counts = result.byFile[binding.testPath];
   if (!counts) return { outcome: 'unknown', collected: false, executed: false };
   const executed = !counts.collectionFailed && counts.passed + counts.failed > 0;
-  let outcome = counts.collectionFailed ? 'error' : counts.skipped > 0 ? 'skip' : counts.failed > 0 ? 'fail' : executed ? 'pass' : 'unknown';
+  // Vitest reports every non-matching assertion as `skipped` when an explicit
+  // --testNamePattern is active. Those exclusions are not skipped evidence for
+  // the selected proof. Preserve the old partial-skip behavior for unfiltered
+  // runs, and still let any executed failure win over the selector.
+  const nameFilterActive = typeof result.testNamePattern === 'string' && result.testNamePattern.trim().length > 0;
+  let outcome = counts.collectionFailed
+    ? 'error'
+    : counts.failed > 0
+      ? 'fail'
+      : executed
+        ? 'pass'
+        : counts.skipped > 0
+          ? 'skip'
+          : 'unknown';
+  if (!nameFilterActive && counts.skipped > 0 && counts.failed === 0) outcome = 'skip';
   if (binding.counterexample && executed && counts.skipped === 0) {
     const negative = binding.counterexample;
     const exactFailure = result.failures.some(f => f.file === binding.testPath && f.test === negative.test && f.message.includes(negative.messageIncludes));
@@ -114,8 +128,9 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     const phase = !run ? 'pending' : !sourceStable ? 'source-changed' : !result || result.error ? 'review-required' : 'settled';
     const details = {
       ...row.input.details,
-      testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
-        sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length, measuredOutcome: outcome.outcome,
+        testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
+          ...(result?.testNamePattern ? { testNamePattern: result.testNamePattern } : {}),
+          sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length, measuredOutcome: outcome.outcome,
         ...(result?.error ? { resultError: result.error } : {}),
       },
       adequacy: { ...(row.input.details?.adequacy as object), ...outcome,

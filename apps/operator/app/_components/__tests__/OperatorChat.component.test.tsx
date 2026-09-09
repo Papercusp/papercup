@@ -24,6 +24,43 @@ vi.mock('../chat/PendingCardsBar', () => ({ PendingCardsBar: () => null }));
 vi.mock('@/lib/chat-cards', () => ({ renderCard: () => null }));
 vi.mock('../OperatorLogoMark', () => ({ OperatorLogoMark: () => null }));
 
+// The frozen release still uses ChatConversation; staging uses PapercupChat.
+// Pin only the controlled composer contract this draft test owns, so migration
+// order and a sibling suite's renderer mock cannot decide whether it collects.
+vi.mock('../chat/ChatConversation', () => ({
+  ChatConversation: (props: {
+    inputValue: string;
+    onInputChange: (value: string) => void;
+    onSubmit: () => void;
+  }) => (
+    <>
+      <input data-testid="composer" value={props.inputValue}
+        onChange={(event) => props.onInputChange(event.currentTarget.value)} />
+      <button data-testid="send" onClick={props.onSubmit}>Send</button>
+    </>
+  ),
+}));
+vi.mock('@papercusp/operator-ui/papercup-chat', () => ({
+  EMPTY_TURN: { text: '', toolCalls: [], cards: [], done: false },
+  PAPERCUP_CHAT_CSS: '',
+  PapercupChat: (props: {
+    inputValue: string;
+    onInputChange: (value: string) => void;
+    chat: { send: (text: string) => unknown };
+  }) => (
+    <>
+      <input data-testid="composer" value={props.inputValue}
+        onChange={(event) => props.onInputChange(event.currentTarget.value)} />
+      <button data-testid="send" onClick={() => {
+        const text = props.inputValue.trim();
+        if (!text) return;
+        props.onInputChange('');
+        void props.chat.send(text);
+      }}>Send</button>
+    </>
+  ),
+}));
+
 import { OperatorChat } from '../OperatorChat';
 import { seedOperatorChatDraft, consumePendingChatSeed, readChatDraft } from '../inbox/chat-seed';
 

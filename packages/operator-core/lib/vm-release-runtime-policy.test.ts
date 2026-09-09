@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,6 +17,48 @@ function fixture(overrides: Record<string, unknown> = {}) {
   writeFileSync(join(root, 'serve.mjs'), 'serve-bytes');
   writeFileSync(join(root, 'bin/node'), 'node-bytes');
   const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const transformersRoot = join(root, 'node_modules/@huggingface/transformers');
+  const modelsRoot = join(transformersRoot, 'models/onnx-community');
+  mkdirSync(modelsRoot, { recursive: true });
+  writeFileSync(
+    join(transformersRoot, 'package.json'),
+    JSON.stringify({ name: '@huggingface/transformers', version: '4.2.0' }),
+  );
+  const models = [
+    { mode: 'harrier', runtimeId: 'onnx-community/harrier-oss-v1-0.6b-ONNX', nativeDimensions: 1024 },
+    { mode: 'gemma', runtimeId: 'onnx-community/embeddinggemma-300m-ONNX', nativeDimensions: 768 },
+  ].map((model, index) => {
+    const bytes = `model-${index}`;
+    const name = model.runtimeId.split('/')[1]!;
+    mkdirSync(join(modelsRoot, name, 'onnx'), { recursive: true });
+    writeFileSync(join(modelsRoot, name, 'onnx/model.onnx'), bytes);
+    return {
+      ...model,
+      revision: String(index + 1).repeat(40),
+      files: [{ path: 'onnx/model.onnx', bytes: Buffer.byteLength(bytes), sha256: hash(bytes) }],
+    };
+  });
+  writeFileSync(
+    join(transformersRoot, 'models/papercusp-model-assets.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      pack: 'local-models',
+      required: true,
+      cachePolicy: {
+        mode: 'installed-local-only',
+        remoteFetch: 'forbidden-on-vm-release',
+        readyWhen: 'every-declared-file-matches-size-and-sha256',
+        missingOrCorrupt: 'refuse-startup',
+        recovery: 'replace-with-a-signed-runtime-containing-the-declared-pack',
+      },
+      compatibility: {
+        transformersPackage: '4.2.0',
+        executionProvider: 'cpu',
+        runtimeDefaults: ['harrier', 'gemma'],
+      },
+      models,
+    }),
+  );
   const manifest = {
     version: '1.2.3',
     buildSha: 'abc123',
@@ -50,14 +92,61 @@ describe('vm-release runtime policy', () => {
   });
 
   it('accepts an exact loopback package manifest and all declared hashes', () => {
+    const env: NodeJS.ProcessEnv = { ...vmEnv };
     expect(() =>
       assertVmReleaseRuntimePolicy({
-        env: vmEnv,
+        env,
         sidecarDir: fixture(),
         hostname: '127.0.0.1',
         port: 45821,
       }),
     ).not.toThrow();
+    expect(env.PAPERCUSP_TRANSFORMERS_LOCAL_ONLY).toBe('1');
+  });
+
+  it('refuses a missing or corrupt required model pack before readiness and names recovery', () => {
+    const missing = fixture();
+    unlinkSync(join(missing, 'node_modules/@huggingface/transformers/models/papercusp-model-assets.json'));
+    expect(() =>
+      assertVmReleaseRuntimePolicy({ env: { ...vmEnv }, sidecarDir: missing, hostname: '127.0.0.1', port: 45821 }),
+    ).toThrow(/signed release containing the pinned local-models pack/);
+
+    const corrupt = fixture();
+    writeFileSync(
+      join(
+        corrupt,
+        'node_modules/@huggingface/transformers/models/onnx-community/harrier-oss-v1-0.6b-ONNX/onnx/model.onnx',
+      ),
+      'tampered',
+    );
+    expect(() =>
+      assertVmReleaseRuntimePolicy({ env: { ...vmEnv }, sidecarDir: corrupt, hostname: '127.0.0.1', port: 45821 }),
+    ).toThrow(/model asset (?:size|sha256) mismatch.*replace-with-a-signed-runtime/s);
+  });
+
+  it('refuses model/runtime compatibility drift and never enables local-only on a failed pack', () => {
+    const root = fixture();
+    const packagePath = join(root, 'node_modules/@huggingface/transformers/package.json');
+    writeFileSync(packagePath, JSON.stringify({ name: '@huggingface/transformers', version: '9.9.9' }));
+    const env: NodeJS.ProcessEnv = { ...vmEnv };
+    expect(() =>
+      assertVmReleaseRuntimePolicy({ env, sidecarDir: root, hostname: '127.0.0.1', port: 45821 }),
+    ).toThrow(/compatibility requires @huggingface\/transformers@4\.2\.0/);
+    expect(env.PAPERCUSP_TRANSFORMERS_LOCAL_ONLY).toBeUndefined();
+  });
+
+  it('refuses undeclared bytes beside a pinned model', () => {
+    const root = fixture();
+    writeFileSync(
+      join(
+        root,
+        'node_modules/@huggingface/transformers/models/onnx-community/embeddinggemma-300m-ONNX/unpinned.json',
+      ),
+      '{}',
+    );
+    expect(() =>
+      assertVmReleaseRuntimePolicy({ env: { ...vmEnv }, sidecarDir: root, hostname: '127.0.0.1', port: 45821 }),
+    ).toThrow(/model file inventory mismatch.*unpinned\.json/);
   });
 
   it.each([

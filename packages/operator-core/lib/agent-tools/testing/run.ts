@@ -994,6 +994,8 @@ export function classifyTestProcessOutcome(outcome: TestProcessOutcome): Governe
  *  typed refusal naming why nothing could be judged. Discriminate on `error`. */
 export type TestFilesCoreResult =
   | ({ ok: boolean; runId: string; root: string; error?: undefined } & DistilledTestRun & {
+        /** Explicit selector used for an evidence-bearing run, when present. */
+        testNamePattern?: string;
         /** Every checkout executed for a partitioned mixed-root request. */
         roots?: string[];
         /** The router produced a complete verdict after this tool's foreground budget elapsed. */
@@ -2422,6 +2424,14 @@ export default defineTool({
             runGroupId: result.runId,
           })
         : null;
+    // Evidence needs to distinguish tests intentionally excluded by an explicit
+    // name selector from tests that were actually skipped by the suite. Keep the
+    // marker internal to the evidence path so the public run payload remains the
+    // stable distilled result shape.
+    const evidenceResult =
+      result.error === undefined && args.testNamePattern !== undefined
+        ? { ...result, testNamePattern: args.testNamePattern }
+        : result;
     const surfacedResult = {
       ...result,
       ...(testRunIds === null ? {} : { testRunIds }),
@@ -2433,7 +2443,7 @@ export default defineTool({
               runId,
               result.error === 'timeout' && result.detachedRunId ? result.detachedRunId : runId,
               evidenceScope!,
-              result,
+              evidenceResult,
             ).catch((error) => ({
               status: 'incomplete',
               acceptance: 'requires-review',
