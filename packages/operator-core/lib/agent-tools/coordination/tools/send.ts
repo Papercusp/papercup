@@ -937,10 +937,12 @@ async function sendOne(
     msg.wake === true ? 'required' : msg.wake === false || msg.wake == null ? null : msg.wake;
 
   // wake-on-reply (coord-wake-on-reply): when a peer REPLIES to this message
-  // (their coord:send sets related_msg_id to this msg_id) the ORIGINAL sender
-  // should be re-invoked — the dual of deliver-and-wake. Default ON for a
-  // DIRECTED send (concrete recipients) that actually expects ack/answer/action,
-  // OFF for expects:'none' and broadcasts ('*'/'human'); explicit
+  // (their coord:send sets related_msg_id to this msg_id and addresses the
+  // original sender), that sender should be re-invoked — the dual of
+  // deliver-and-wake. A threaded message sent to a different owner is not a
+  // reply-wake for the original sender. Default ON for a DIRECTED send
+  // (concrete recipients) that actually expects ack/answer/action, OFF for
+  // expects:'none' and broadcasts ('*'/'human'); explicit
   // `wakeOnReply:false` always wins, `true` forces on. EI-21542997259558722:
   // defaulting an expects:none cancellation ACK on created a fresh reply-wake
   // chain, resurrecting a reviewer after it had explicitly stood down. Flag-gated:
@@ -1665,7 +1667,23 @@ async function sendOne(
         originalFrom !== identity.ownerId &&
         !isSelectorOrWildcard(originalFrom)
       ) {
-        if (expectedLifecycleAck) {
+        // EI-22793047903392160: `related_msg_id` proves the thread edge, but it
+        // does not change this send's explicit audience. A caller can carry a
+        // prior message id while addressing a different owner (for example, a
+        // status update in the same work thread); waking the prior sender in
+        // that shape is a misrouted inbox-wake. The reply-wake target must be
+        // one of this message's resolved recipients. Report the suppression so
+        // the sender can see why no second wake was emitted.
+        if (!env.to.includes(originalFrom)) {
+          replyWake = {
+            target: originalFrom,
+            queued: 0,
+            woken: 0,
+            pickupConfirmed: false,
+            suppressed: true,
+            suppressionReason: 'original_sender_not_recipient',
+          };
+        } else if (expectedLifecycleAck) {
           // A wind-down cue deliberately asks members to leave a durable ack.
           // Preserve that ack row/thread, but do not re-invoke the leader whose
           // loop was just ended. The marker is validated and narrowly scoped;

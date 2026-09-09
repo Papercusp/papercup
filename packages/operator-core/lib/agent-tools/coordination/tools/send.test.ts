@@ -1014,19 +1014,24 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 1, pickupConfirmed: false, wakeOutcome: 'queued' });
   });
 
-  it('EI-14760: a wake:true reply whose original sender is a THIRD party still fires the reply-wake (two distinct fans)', async () => {
-    // reply directed to `peer`, but the ORIGINAL message came from a third party `asker`
-    // who is NOT in `to` — the reply-wake to `asker` is genuinely needed and must still
-    // fire alongside the directed wake to `peer` (the fold must not over-apply).
+  it('EI-22793047903392160: a reply addressed to a DIFFERENT owner does not fire the threaded sender\'s wake', async () => {
+    // The reply is threaded to an opted-in message from `asker`, but its explicit
+    // recipient is `peer`. `related_msg_id` preserves the thread; it must not
+    // silently add `asker` to this message's wake audience.
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true }));
-    wakeM.mockResolvedValue({ targets: ['x'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
-    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig', wake: 'required' });
-    expect(wakeM).toHaveBeenCalledTimes(2);
-    const fannedSets = wakeM.mock.calls.map((c) => c[0]);
-    expect(fannedSets).toContainEqual(['asker']); // reply-wake
-    expect(fannedSets).toContainEqual(['peer']); // directed deliver-and-wake
-    expect(b.results[0].replyWake).toMatchObject({ target: 'asker' });
-    expect(b.results[0].replyWake?.foldedIntoDirectedWake).toBeUndefined();
+    wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+    const b = await body({ to: ['peer'], summary: 'status update', related_msg_id: 'orig', wake: 'required' });
+    expect(wakeM).toHaveBeenCalledTimes(1);
+    expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
+    expect(b.results[0].replyWake).toEqual({
+      target: 'asker',
+      queued: 0,
+      woken: 0,
+      pickupConfirmed: false,
+      suppressed: true,
+      suppressionReason: 'original_sender_not_recipient',
+    });
+    expect(b.results[0].wake).toMatchObject({ targets: ['peer'], queued: 1, wakeOutcome: 'queued' });
   });
 
   it('EI-18663224517726594: a directed wake:true send carries the new message\'s OWN msg_id in the wake payload — a woken recipient can thread its reply without a separate coord:inbox round-trip', async () => {
@@ -1040,7 +1045,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   it('EI-18663224517726594: the reply-wake fan (waking the ORIGINAL sender when a third party replies) also carries the reply\'s own msg_id', async () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true }));
     wakeM.mockResolvedValueOnce({ targets: ['asker'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
-    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
+    const b = await body({ to: ['asker'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).toHaveBeenCalledTimes(1);
     const opts = wakeM.mock.calls[0][1] as { payload?: unknown };
     expect(opts.payload).toEqual({ msg_id: b.results[0].msg_id });

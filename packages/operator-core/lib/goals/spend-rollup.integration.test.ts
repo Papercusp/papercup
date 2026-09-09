@@ -620,6 +620,36 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     expect(rows[0]?.status).toBe('killed');
   });
 
+  it.each([
+    { name: 'manually supplied', measuredBy: null },
+    {
+      name: 'previously measured but no longer measurable',
+      measuredBy: { source: 'resolver:spend_usd', atMs: GOAL_MS, value: 999 },
+    },
+    {
+      name: 'changed after its measurement',
+      measuredBy: { source: 'resolver:spend_usd', atMs: GOAL_MS, value: 1 },
+    },
+  ])('does not auto-kill from $name spend current without authoritative samples', async ({ measuredBy }) => {
+    await seedGoal({ budgetCents: 100_000 });
+    await ownedSession('su-diagnostic', 'S-diagnostic-only');
+    await subjectOwner('su-diagnostic');
+    await sample({ session: 'S-diagnostic-only', usd: 999 });
+    await setTripwires([
+      { metric: 'spend_usd', label: 'diagnostic estimate', threshold: 100, current: 999, measuredBy },
+    ]);
+    expect(await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL })).toMatchObject({
+      potCents: 0, sessionCents: 99_900, pot: { measured: false },
+    });
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ ok: true, written: 1, tripwiresAdvanced: 0, errors: [] });
+    const rows = await rootSql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    expect(rows[0]?.status).toBe('active');
+    expect((await goalMetadata())?.autoKilled).toBeUndefined();
+  });
+
   it('does not auto-kill from an executor-owned domain tripwire the platform did not measure', async () => {
     await seedGoal({ budgetCents: 100_000 });
     await setTripwires([
