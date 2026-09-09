@@ -59,6 +59,8 @@ const h = vi.hoisted(() => {
     begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
   });
   return {
+    realSpawnSigning: null as null | typeof import('../../spawn-signing'),
+    signingRows: null as null | Array<{ value_b64: string; rotated_at: string }>,
     fakeTx,
     fakeSql,
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
@@ -146,7 +148,7 @@ const h = vi.hoisted(() => {
     }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
-      async (_u: unknown): Promise<{ ok: boolean; reason?: string; keySha256?: string }> => ({ ok: true }),
+      async (_u: unknown, _options?: { includeKeyDigest?: boolean }): Promise<{ ok: boolean; reason?: string; keySha256?: string }> => ({ ok: true }),
     ),
     logVerificationFailure: vi.fn(async (_rec: unknown): Promise<void> => {}),
     verifyAccessToken: vi.fn(
@@ -205,7 +207,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    getOrgPg: () => ({ sql: h.fakeSql }),
+    getOrgPg: () => ({
+      sql: h.fakeSql,
+      db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => {
+        if (!h.signingRows) throw new Error('Signing DB fixture must be explicitly installed');
+        return h.signingRows;
+      } }) }) }) },
+    }),
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
       if (h.workspaceAcquireError) {
@@ -276,6 +284,7 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
 });
 vi.mock('../../spawn-signing', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
+  h.realSpawnSigning = actual as typeof import('../../spawn-signing');
   return {
     ...actual,
     verifySpawnParams: h.verifySpawnParams,
@@ -929,6 +938,60 @@ describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SD
     }, connection);
     if (connection === 'listener') await expect(run).rejects.toThrow('uds_auth_failed');
     else await run;
+  });
+});
+
+function assertAgentAttribution(actual: Record<string, unknown>): void {
+  expect(actual).toMatchObject({
+    workspaceId: 'ws-test', harnessSlug: 'papercup', uiClientId: 'su-uds-original',
+    role: 'scoper', runId: 'run-1', spawnId: 'spawn-1', transport: 'mcp',
+  });
+  expect(actual.isSuperuser).not.toBe(true);
+}
+
+describe('authenticated listener — real signed envelope verification', () => {
+  async function signedFixture() {
+    // Only the key store is fake. Canonicalization, HMAC, expiry, timing-safe
+    // verification and the host→SDK→dispatcher path are production functions.
+    h.signingRows = [{ value_b64: Buffer.alloc(32, 9).toString('base64'), rotated_at: '2026-01-01' }];
+    const actual = h.realSpawnSigning!;
+    actual._resetSpawnSigningKeyCache();
+    h.verifySpawnParams.mockImplementation((input, options) => actual.verifySpawnParams(input as URL, options));
+    const url = new URL(signedUrl({ client: 'su-uds-original', tools: 'gatingtest:scoped' }));
+    await actual.signSpawnParams(url.searchParams);
+    return { url, clear: () => { h.signingRows = null; actual._resetSpawnSigningKeyCache(); } };
+  }
+
+  it.each(['workspace', 'role', 'exp'])('rejects tampered signed %s before catalog/dispatch', async field => {
+    const fixture = await signedFixture();
+    try {
+      // Positive control proves this exact signer/fixture/path can authenticate.
+      await withSdkHost(extraFor(fixture.url.href), client => client.listTools(), 'listener');
+      _resetVerifiedSpawns(); // A new tampered client is not a rotation incident.
+      fixture.url.searchParams.set(field, field === 'exp' ? '1' : 'forged');
+      await expect(withSdkHost(extraFor(fixture.url.href), client => client.listTools(), 'listener'))
+        .rejects.toThrow('uds_auth_failed');
+      expect(seen).toHaveLength(0);
+      expect(h.logVerificationFailure).toHaveBeenCalled();
+    } finally { fixture.clear(); }
+  });
+
+  it('records the original agent identity, not the trusted UI operator principal', async () => {
+    const fixture = await signedFixture();
+    try {
+      await withSdkHost(extraFor(fixture.url.href), async client => {
+        const result = await client.callTool({ name: 'gatingtest:scoped', arguments: {} });
+        expect(result.isError).not.toBe(true);
+      }, 'listener');
+      expect(seen).toHaveLength(1);
+      assertAgentAttribution(seen[0].ctx as unknown as Record<string, unknown>);
+      const invocation = h.invocations.find(row => row.toolName === 'gatingtest:scoped');
+      expect(invocation).toBeDefined();
+      assertAgentAttribution(invocation!.ctx as unknown as Record<string, unknown>);
+      expect(() => assertAgentAttribution({
+        ...invocation!.ctx, uiClientId: 'trusted-webview', role: 'operator', isSuperuser: true,
+      })).toThrow();
+    } finally { fixture.clear(); }
   });
 });
 
