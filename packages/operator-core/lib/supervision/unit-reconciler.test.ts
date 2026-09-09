@@ -7,6 +7,7 @@ import type { SupervisionGiveUpEpisode } from './give-up-ei';
 import {
   parseSystemctlListUnits,
   parseSystemctlShowProperties,
+  parseSystemctlShowRecords,
   signalTermination,
   isUnitDown,
   isEpisodicRunInFlight,
@@ -105,6 +106,26 @@ describe('parseSystemctlShowProperties', () => {
     expect(parseSystemctlShowProperties('ExecStart={ path=/bin/x ; argv[]=x }')).toEqual({
       ExecStart: '{ path=/bin/x ; argv[]=x }',
     });
+  });
+});
+
+describe('parseSystemctlShowRecords', () => {
+  it('keys blank-line-separated multi-unit output by Id', () => {
+    const records = parseSystemctlShowRecords(
+      [
+        'Id=alpha.service\nResult=success\nNRestarts=2',
+        'Id=beta.timer\nResult=start-limit-hit\nNRestarts=5',
+        '',
+      ].join('\n\n'),
+    );
+    expect([...records.entries()]).toEqual([
+      ['alpha.service', { Id: 'alpha.service', Result: 'success', NRestarts: '2' }],
+      ['beta.timer', { Id: 'beta.timer', Result: 'start-limit-hit', NRestarts: '5' }],
+    ]);
+  });
+
+  it('ignores an unkeyed partial record instead of assigning it by position', () => {
+    expect(parseSystemctlShowRecords('Result=success\nNRestarts=2\n')).toEqual(new Map());
   });
 });
 
@@ -1158,7 +1179,13 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
   function makeDeps(overrides: Partial<ReconcilerDeps> = {}): ReconcilerDeps & { execUser: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn> } {
     const execUser = vi.fn(async (args: string[]) => {
       if (args[0] === 'list-units') return LIST_UNITS_FIXTURE;
-      if (args[0] === 'show') return 'Result=success\nNRestarts=0\n';
+      if (args[0] === 'show') {
+        const propertyIndex = args.indexOf('-p');
+        return args
+          .slice(1, propertyIndex)
+          .map((unit) => `Id=${unit.includes('.') ? unit : `${unit}.service`}\nResult=success\nNRestarts=0`)
+          .join('\n\n');
+      }
       if (args[0] === 'restart') return '';
       return '';
     });
@@ -1187,6 +1214,63 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     // the fixture) but must NEVER be restarted.
     expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart' && c[0][1] === 'papercup-live-federation-gate')).toBe(false);
     expect(deps.notify).toHaveBeenCalled();
+  });
+
+  it('EI-22737582656157929: reads every eligible unit with one Id-keyed systemctl show call', async () => {
+    const deps = makeDeps();
+    await reconcileTick(deps);
+
+    const showCalls = deps.execUser.mock.calls.map((call) => call[0] as string[]).filter((args) => args[0] === 'show');
+    expect(showCalls).toHaveLength(1);
+    expect(showCalls[0].slice(1, showCalls[0].indexOf('-p'))).toEqual([
+      'papercup-mcp-proxy',
+      'papercup-live-federation-gate',
+    ]);
+    expect(showCalls[0][showCalls[0].indexOf('-p') + 1]).toContain('Id');
+  });
+
+  it('falls back only for a unit omitted from a successful multi-unit show response', async () => {
+    const execUser = vi.fn(async (args: string[]) => {
+      if (args[0] === 'list-units') return LIST_UNITS_FIXTURE;
+      if (args[0] === 'show' && args.includes('papercup-mcp-proxy') && args.includes('papercup-live-federation-gate')) {
+        return 'Id=papercup-mcp-proxy.service\nResult=success\nNRestarts=0\n';
+      }
+      if (args[0] === 'show') {
+        return 'Id=papercup-live-federation-gate.service\nResult=success\nNRestarts=0\nUnitFileState=disabled\nLoadState=loaded\n';
+      }
+      if (args[0] === 'restart') return '';
+      return '';
+    });
+    const deps = makeDeps({ execUser });
+    await reconcileTick(deps);
+
+    const showCalls = execUser.mock.calls.map((call) => call[0] as string[]).filter((args) => args[0] === 'show');
+    expect(showCalls).toHaveLength(2);
+    expect(showCalls[1].slice(1, showCalls[1].indexOf('-p'))).toEqual(['papercup-live-federation-gate']);
+  });
+
+  it('falls back per unit when the multi-unit show call fails', async () => {
+    const execUser = vi.fn(async (args: string[]) => {
+      if (args[0] === 'list-units') return LIST_UNITS_FIXTURE;
+      if (args[0] === 'show' && args.includes('papercup-mcp-proxy') && args.includes('papercup-live-federation-gate')) {
+        throw new Error('one unit vanished during the batch');
+      }
+      if (args[0] === 'show') {
+        const unit = args[1];
+        return `Id=${unit}.service\nResult=success\nNRestarts=0\nLoadState=loaded\n`;
+      }
+      if (args[0] === 'restart') return '';
+      return '';
+    });
+    const deps = makeDeps({ execUser });
+    await reconcileTick(deps);
+
+    const showCalls = execUser.mock.calls.map((call) => call[0] as string[]).filter((args) => args[0] === 'show');
+    expect(showCalls).toHaveLength(3);
+    expect(showCalls.slice(1).map((args) => args[1])).toEqual([
+      'papercup-mcp-proxy',
+      'papercup-live-federation-gate',
+    ]);
   });
 
   // EI-20083989508593730 — the SEAM. `flapStateByUnit` is in-memory, so a bg-host restart drops

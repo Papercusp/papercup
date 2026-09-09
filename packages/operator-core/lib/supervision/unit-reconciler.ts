@@ -91,6 +91,17 @@ export interface SystemctlUnitStatus {
   description: string;
 }
 
+export interface SystemctlShowStatus {
+  result?: string;
+  restart?: string;
+  nRestarts?: number;
+  unitFileState?: string;
+  loadState?: string;
+  activeState?: string;
+  execMainCode?: string;
+  execMainStatus?: number;
+}
+
 /**
  * Parse `systemctl --user list-units '<glob>' --all --no-legend` output. Each line:
  * `[● ]<unit> <load> <active> <sub> <description...>` — the first four fields never contain
@@ -119,6 +130,21 @@ export function parseSystemctlShowProperties(output: string): Record<string, str
     const i = line.indexOf('=');
     if (i < 0) continue;
     out[line.slice(0, i)] = line.slice(i + 1);
+  }
+  return out;
+}
+
+/**
+ * Parse `systemctl --user show <unit...> -p Id,...` output. systemd separates each unit's
+ * properties with a blank line; `Id` is the stable key that keeps the result independent of
+ * registry order and of `.service` suffix elision at the call site.
+ */
+export function parseSystemctlShowRecords(output: string): Map<string, Record<string, string>> {
+  const out = new Map<string, Record<string, string>>();
+  for (const rawRecord of output.split(/\r?\n[\t ]*\r?\n/)) {
+    const props = parseSystemctlShowProperties(rawRecord);
+    const id = props.Id?.trim();
+    if (id) out.set(id, props);
   }
   return out;
 }
@@ -467,18 +493,7 @@ export interface DecideInput {
   status: SystemctlUnitStatus | undefined;
   /** `systemctl --user show <unit> -p Result,NRestarts,ExecMainCode,ExecMainStatus` — only
    *  fetched/needed when we're actually about to consider restarting (the caller may omit it). */
-  show:
-    | {
-        result?: string;
-        unitFileState?: string;
-        loadState?: string;
-        /** EI-22375866670391854: the authoritative per-unit run state. Outranks absence from
-         *  `list-units`, which is only an inference about residency. */
-        activeState?: string;
-        execMainCode?: string;
-        execMainStatus?: number;
-      }
-    | undefined;
+  show: SystemctlShowStatus | undefined;
   state: UnitFlapState;
   autoRestartFlagOn: boolean;
   now: number;
@@ -997,6 +1012,75 @@ export function supervisionListUnitPatterns(registry: readonly { unit?: string }
   return [...patterns].sort();
 }
 
+const SYSTEMCTL_SHOW_PROPERTIES =
+  'Id,Result,NRestarts,Restart,UnitFileState,LoadState,ActiveState,ExecMainCode,ExecMainStatus';
+
+/** Match systemd's canonical `Id=foo.service` to the registry's conventional bare service name. */
+function systemctlUnitKey(unit: string): string {
+  return unit.replace(/\.service$/, '');
+}
+
+function showStatusFromProperties(props: Record<string, string>): SystemctlShowStatus {
+  const nRestarts = props.NRestarts != null ? Number(props.NRestarts) : undefined;
+  const execMainStatus = props.ExecMainStatus != null ? Number(props.ExecMainStatus) : undefined;
+  return {
+    result: props.Result,
+    restart: props.Restart,
+    nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined,
+    unitFileState: props.UnitFileState,
+    loadState: props.LoadState,
+    activeState: props.ActiveState,
+    execMainCode: props.ExecMainCode,
+    execMainStatus: Number.isFinite(execMainStatus) ? execMainStatus : undefined,
+  };
+}
+
+/**
+ * Read every needed unit in one healthy-path spawn. A failed multi-unit call falls back to the
+ * old per-unit probes; a successful response that omits one unit falls back only for that unit.
+ */
+async function readSystemctlShows(
+  deps: ReconcilerDeps,
+  units: readonly string[],
+): Promise<Map<string, SystemctlShowStatus>> {
+  const out = new Map<string, SystemctlShowStatus>();
+  if (units.length === 0) return out;
+
+  let batchFailed = false;
+  try {
+    const raw = await deps.execUser(['show', ...units, '-p', SYSTEMCTL_SHOW_PROPERTIES]);
+    const records = parseSystemctlShowRecords(raw);
+    const requestedKeys = new Set(units.map(systemctlUnitKey));
+    for (const [id, props] of records) {
+      const key = systemctlUnitKey(id);
+      if (requestedKeys.has(key)) out.set(key, showStatusFromProperties(props));
+    }
+
+    // A one-unit batch is already the legacy per-unit probe. Keep accepting older injected
+    // implementations that do not echo the newly requested Id property.
+    if (units.length === 1 && out.size === 0) {
+      const props = parseSystemctlShowProperties(raw);
+      if (Object.keys(props).length > 0) out.set(systemctlUnitKey(units[0]), showStatusFromProperties(props));
+    }
+  } catch {
+    batchFailed = true;
+  }
+
+  // A one-unit call cannot be decomposed further. For a real batch failure, retry each unit;
+  // after a partial successful batch, retry only the omitted records.
+  if (units.length === 1) return out;
+  const fallbackUnits = batchFailed ? units : units.filter((unit) => !out.has(systemctlUnitKey(unit)));
+  for (const unit of fallbackUnits) {
+    try {
+      const raw = await deps.execUser(['show', unit, '-p', SYSTEMCTL_SHOW_PROPERTIES]);
+      out.set(systemctlUnitKey(unit), showStatusFromProperties(parseSystemctlShowProperties(raw)));
+    } catch {
+      // Best-effort, matching the legacy per-unit behavior: this unit stays unreadable this tick.
+    }
+  }
+  return out;
+}
+
 /**
  * One reconciler tick. Lists live systemd-user units ONCE, decides + (best-effort) acts for
  * every `layer:'systemd-user'` supervised entry. Never throws — a `systemctl --user list-units`
@@ -1039,8 +1123,24 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
   // accepts either form on the command line and auto-appends the default `.service` type), but
   // `systemctl --user list-units` always reports it WITH the suffix. Normalize by stripping it
   // here so the lookup below matches regardless of which form the registry / systemctl use.
-  const byUnit = new Map(statuses.map((s) => [s.unit.replace(/\.service$/, ''), s]));
+  const byUnit = new Map(statuses.map((s) => [systemctlUnitKey(s.unit), s]));
   const autoRestartFlagOn = await deps.autoRestartFlagOn();
+
+  // EI-22737582656157929: native child_process spawn dominated the bg-host's saturated-loop CPU
+  // profiles. Determine the exact legacy probe set first, then read it with one multi-unit show
+  // call instead of one spawn per supervised entry.
+  const probeUnits = [
+    ...new Map(
+      registry.flatMap((entry) => {
+        if (!entry.unit) return [];
+        const status = byUnit.get(systemctlUnitKey(entry.unit));
+        return entry.autoRestart || !status || isUnitDown(status, { episodic: entry.episodic })
+          ? [[systemctlUnitKey(entry.unit), entry.unit] as const]
+          : [];
+      }),
+    ).values(),
+  ];
+  const showsByUnit = await readSystemctlShows(deps, probeUnits);
 
   const actions: ReconcileAction[] = [];
   /** EI-20003974512096022: units observed administratively paused THIS tick, resolved against
@@ -1053,7 +1153,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
   const observedThisTick: string[] = [];
   for (const entry of registry) {
     if (!entry.unit) continue; // systemd-user layer entries always carry `unit`; defensive skip.
-    const status = byUnit.get(entry.unit);
+    const status = byUnit.get(systemctlUnitKey(entry.unit));
     const state = flapStateByUnit.get(entry.unit) ?? initialFlapState(entry.unit);
 
     // Fetch `systemctl show` for every autoRestart:true entry — needed for BOTH the
@@ -1061,18 +1161,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // healthy or not — a unit can be UP the whole time yet have drifted Restart= policy). A
     // report-only entry (autoRestart:false) or a flag-off tick skips the call entirely (neither
     // check applies to it).
-    let show:
-      | {
-          result?: string;
-          restart?: string;
-          nRestarts?: number;
-          unitFileState?: string;
-          loadState?: string;
-          activeState?: string;
-          execMainCode?: string;
-          execMainStatus?: number;
-        }
-      | undefined;
+    const show = showsByUnit.get(systemctlUnitKey(entry.unit));
     // WI-35537: ALSO probe when the unit is absent from `list-units` (`!status`), regardless of
     // `autoRestart`. A disabled-and-unloaded unit never appears in the list, so without this the
     // down-path can only ever report "removed/never installed?" for it — `systemctl show` is the
@@ -1083,38 +1172,10 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // skipped `show` entirely. Without this the exit status is never read on the very tick that
     // is about to announce a failure, so the signal-vs-failure distinction below could never
     // fire in production no matter how correct it is.
-    if (entry.autoRestart || !status || isUnitDown(status, { episodic: entry.episodic })) {
-      try {
-        const raw = await deps.execUser([
-          'show',
-          entry.unit,
-          '-p',
-          // EI-21339603192900833: ExecMainCode/ExecMainStatus are what separate a run that
-          // FAILED from one that was STOPPED. Without them the reconciler cannot tell the
-          // difference and defaults to the accusing reading.
-          // EI-22375866670391854: ActiveState is the AUTHORITATIVE per-unit answer to "is it
-          // running?". Absence from `list-units` is an inference about residency; this is a
-          // measurement. Without it the down-path had no way to contradict its own inference.
-          'Result,NRestarts,Restart,UnitFileState,LoadState,ActiveState,ExecMainCode,ExecMainStatus',
-        ]);
-        const props = parseSystemctlShowProperties(raw);
-        const nRestarts = props.NRestarts != null ? Number(props.NRestarts) : undefined;
-        const execMainStatus = props.ExecMainStatus != null ? Number(props.ExecMainStatus) : undefined;
-        show = {
-          result: props.Result,
-          restart: props.Restart,
-          nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined,
-          unitFileState: props.UnitFileState,
-          loadState: props.LoadState,
-          activeState: props.ActiveState,
-          execMainCode: props.ExecMainCode,
-          execMainStatus: Number.isFinite(execMainStatus) ? execMainStatus : undefined,
-        };
-      } catch {
-        /* best-effort — decideReconcile treats a missing `show` as "no start-limit-hit signal";
-         *  the drift check below just skips this tick when `show` is unavailable. */
-      }
-    }
+    // EI-21339603192900833: ExecMainCode/ExecMainStatus are what separate a run that FAILED
+    // from one that was STOPPED. EI-22375866670391854: ActiveState is the authoritative answer
+    // when list-units omits a loaded unit. `readSystemctlShows` requests both for the same legacy
+    // probe set and leaves `show` undefined on a per-unit read failure.
 
     // P-003(b): config-drift guard, independent of up/down state.
     const drift = checkRestartPolicyDrift(entry, show?.restart, show?.loadState, state.restartDriftWarned);
