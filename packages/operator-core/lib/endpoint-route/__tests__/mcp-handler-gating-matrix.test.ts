@@ -964,6 +964,7 @@ describe('authenticated listener — real signed envelope verification', () => {
 
   it.each(['workspace', 'role', 'exp'])('rejects tampered signed %s before catalog/dispatch', async field => {
     const fixture = await signedFixture();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       // Positive control proves this exact signer/fixture/path can authenticate.
       await withSdkHost(extraFor(fixture.url.href), client => client.listTools(), 'listener');
@@ -973,7 +974,11 @@ describe('authenticated listener — real signed envelope verification', () => {
         .rejects.toThrow('uds_auth_failed');
       expect(seen).toHaveLength(0);
       expect(h.logVerificationFailure).toHaveBeenCalled();
-    } finally { fixture.clear(); }
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(
+        field === 'exp' ? 'expired' : 'invalid_signature',
+      ));
+      expect(warning.mock.calls.flat().join(' ')).not.toContain(fixture.url.searchParams.get('sig')!);
+    } finally { warning.mockRestore(); fixture.clear(); }
   });
 
   it('records the original agent identity, not the trusted UI operator principal', async () => {
