@@ -127,6 +127,13 @@ vi.mock('./superuser-token', async (importOriginal) => {
   return { ...actual, readSuperuserToken: () => 'TESTBEARER' };
 });
 vi.mock('./device-harnesses', () => ({ listHarnessesFor: vi.fn(async () => []) }));
+// bootstrap-su fails CLOSED on the identity-activation receipt (returns 500 when it
+// cannot persist). The real module opens the org-admin pool, which the unit-test PG
+// guard refuses — so without this seam double the route 500s and every id assertion
+// here reads `undefined`. Same double the sibling endpoint-route/__tests__/bootstrap-su.test.ts uses.
+vi.mock('./agent-tools/coordination/control-anchor', () => ({
+  requestSessionIdentityActivation: vi.fn(async () => ({ generation: 1 })),
+}));
 // default-deploy-account-2026-08-08 P-004: resolveAccountPin now reads the owner's default
 // account for an unspecified `account`. Unmocked that reaches Postgres, and this route FAILS
 // CLOSED on an unreadable default — so the POST would return an error envelope (no codexHome,

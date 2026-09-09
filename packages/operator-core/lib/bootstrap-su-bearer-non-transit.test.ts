@@ -120,6 +120,13 @@ vi.mock('./role-launch-spec', async (importOriginal) => ({
 vi.mock('./role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
 }));
+// bootstrap-su fails CLOSED on the identity-activation receipt (returns 500 when it
+// cannot persist). The real module opens the org-admin pool, which the unit-test PG
+// guard refuses — so without this seam double every case here 500s before its own
+// assertion. Same double the sibling endpoint-route/__tests__/bootstrap-su.test.ts uses.
+vi.mock('./agent-tools/coordination/control-anchor', () => ({
+  requestSessionIdentityActivation: vi.fn(async () => ({ generation: 1 })),
+}));
 vi.mock('./saved-prompts-materialize', () => ({
   materializeWorkspacePrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
   materializeHarnessPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),

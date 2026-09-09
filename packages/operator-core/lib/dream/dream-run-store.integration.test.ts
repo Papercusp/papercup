@@ -439,6 +439,45 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     },
   );
 
+  it('retains invalid-review diagnostics through freeze and terminal readback without accepting them', async () => {
+    const f = await createDreamCapabilityFixture(WS, POT);
+    try {
+      const key = { workspaceId: WS, runId: 'capability-invalid-review-diagnostics' };
+      await beginDreamRun(db.adminSql, {
+        ...key, cycleId: 'diagnostic-cycle', potSlug: POT, mode: 'manual', capability: f.header,
+      });
+      await recordDreamRunSelection(db.adminSql, { ...key, capability: f.sampling });
+      for (const call of f.provenance.calls) {
+        await beginDreamRunCall(db.adminSql, {
+          ...key,
+          call: { callId: call.callId, phase: call.phase, model: call.model, reservedUsd: call.reservedUsd },
+        });
+        await settleDreamRunCall(db.adminSql, { ...key, callId: call.callId, usage: call.usage });
+      }
+      const failures = {
+        review: {
+          stage: 'grounding', message: 'Skeptical review cites missing or unsupported evidence.',
+          response: { preview: '{"verdict":"accept"}', chars: 20, sha256: 'a'.repeat(64), truncated: false },
+          invalidEvidence: {
+            total: 1, entries: [{ path: 'feasibility.evidence[0]', ref: 'B:missing', quote: 'unsupported', reason: 'missing-ref' }],
+          },
+        },
+      };
+      const review = { ...f.review, verdict: 'unverified', reason: 'review-unavailable', judgment: null, failures };
+      const outcome = { verdict: 'insight', insight: f.insight };
+      await recordDreamRunReview(db.adminSql, { ...key, outcome, review });
+      expect((await getDreamRun(db.adminSql, key))!.review).toEqual(review);
+      await expect(finalizeDreamRun(db.adminSql, { ...key, status: 'accepted' })).rejects.toThrow();
+      await finalizeDreamRun(db.adminSql, { ...key, status: 'rejected', outcome, review });
+      const saved = await getDreamRun(db.adminSql, key);
+      expect(saved).toMatchObject({ status: 'rejected', review: { verdict: 'unverified', judgment: null, failures } });
+      await expect(recordDreamRunReview(db.adminSql, { ...key, outcome, review: { ...review, failures: {} } }))
+        .rejects.toThrow('already frozen');
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
   it('freezes the reviewed candidate before the sink and refuses accepted finalization without routing', async () => {
     const f = await createDreamCapabilityFixture(WS, POT);
     try {

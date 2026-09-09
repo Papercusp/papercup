@@ -34,7 +34,7 @@
  * (B-LOOP-1) — it never edits claim.ts / reconcile-plan-runs.ts / routines-
  * workflow.ts (the B-LOOP-2/3 lane), so it composes without collision.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
@@ -1944,14 +1944,13 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
  */
 export async function getLoopStatuses(
   ownerIds: readonly string[],
-  opts: { sql?: Sql } = {},
+  opts: { sql?: Sql | TransactionSql } = {},
 ): Promise<Map<string, LoopStatus>> {
   const out = new Map<string, LoopStatus>();
   const owners = [...new Set(ownerIds.filter(Boolean))];
   if (owners.length === 0) return out;
   const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await boundedPgReadTxn<any[]>(
-    (tx) => tx`
+  const read = (client: Sql | TransactionSql) => client<any[]>`
     SELECT DISTINCT ON (r.target_owner_id)
            r.install_slug,
            r.name,
@@ -2155,9 +2154,16 @@ export async function getLoopStatuses(
      WHERE r.target_owner_id = ANY(${owners}::text[])
        AND r.reschedule_interval_sec IS NOT NULL
      ORDER BY r.target_owner_id, r.active DESC, r.updated_at DESC
-    `,
-    { client: opts.sql },
-  );
+    `;
+  // requestSessionIdentityActivation opens the atomic outer transaction and
+  // then reads the current loop while building the control anchor. Postgres.js
+  // TransactionSql intentionally exposes savepoint, not begin; asking the
+  // bounded read wrapper to open another transaction throws before this query.
+  // Reuse an injected transaction directly. A top-level client still takes the
+  // bounded READ ONLY path with its acquisition and statement deadlines.
+  const rows = typeof (sql as Sql).begin === 'function'
+    ? await boundedPgReadTxn<any[]>((tx) => read(tx), { client: sql as Sql })
+    : await read(sql);
   for (const r of rows) {
     const ownerId = String(r.target_owner_id);
     out.set(ownerId, loopStatusFromRow(r, ownerId));
@@ -2165,7 +2171,10 @@ export async function getLoopStatuses(
   return out;
 }
 
-export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): Promise<LoopStatus | null> {
+export async function getLoopStatus(
+  ownerId: string,
+  opts: { sql?: Sql | TransactionSql } = {},
+): Promise<LoopStatus | null> {
   return (await getLoopStatuses([ownerId], opts)).get(ownerId) ?? null;
 }
 

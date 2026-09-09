@@ -1322,6 +1322,15 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     expect(s.fireCount).toBeGreaterThan(s.maxFires!);
   });
 
+  it('reuses an injected TransactionSql instead of opening a nested transaction', async () => {
+    const transaction = rowSql() as TransactionalFakeSql & { begin?: TransactionalFakeSql['begin'] };
+    delete transaction.begin;
+
+    const out = await getLoopStatuses(['su-x'], { sql: transaction as unknown as Sql });
+
+    expect(out.get('su-x')?.firesSinceArm).toBe(15);
+  });
+
   it('CALIBRATION: with no baseline stamped (a loop armed before fire_count_at_arm existed) it degrades to the lifetime count, never to a negative', async () => {
     const out = await getLoopStatuses(['su-x'], { sql: rowSql({ fire_count: 7, fire_count_at_arm: 0 }) as any });
     expect(out.get('su-x')!.firesSinceArm).toBe(7);

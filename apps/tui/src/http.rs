@@ -39,6 +39,19 @@ impl fmt::Display for HttpStatusError {
 
 impl std::error::Error for HttpStatusError {}
 
+fn http_status_error(method: &str, path: &str, status: u16, bytes: &[u8]) -> anyhow::Error {
+    let body: String = String::from_utf8_lossy(bytes)
+        .chars()
+        .take(65_536)
+        .collect();
+    anyhow::Error::new(HttpStatusError {
+        method: method.to_string(),
+        path: path.to_string(),
+        status,
+        body,
+    })
+}
+
 // ─── R2: fail-loud rendezvous classification ────────────────────────────────
 //
 // An explicitly-selected operator that does not answer must produce an error
@@ -440,28 +453,33 @@ impl HttpClient {
         let status = resp.status();
         let bytes = resp.bytes().await.context("read body")?;
         if !(status.is_success() || status.is_redirection()) {
-            let txt: String = String::from_utf8_lossy(&bytes)
-                .chars()
-                .take(65_536)
-                .collect();
-            return Err(anyhow::Error::new(HttpStatusError {
-                method: method.to_string(),
-                path: path.to_string(),
-                status: status.as_u16(),
-                body: txt,
-            }));
+            return Err(http_status_error(method, path, status.as_u16(), &bytes));
         }
         Ok(bytes.to_vec())
+    }
+
+    async fn checked_sse_response(
+        method: &str,
+        path: &str,
+        resp: reqwest::Response,
+    ) -> Result<mpsc::UnboundedReceiver<SseFrame>> {
+        let status = resp.status();
+        if !status.is_success() {
+            // A launch/converse refusal is often the only actionable clue the
+            // operator can give the PUI. Preserve that body through the same
+            // typed status seam as ordinary HTTP instead of reducing it to a
+            // bare status code before the Agent Chat footer renders it.
+            let bytes = resp.bytes().await.context("read SSE error body")?;
+            return Err(http_status_error(method, path, status.as_u16(), &bytes));
+        }
+        Ok(stream_response(resp))
     }
 
     /// Subscribe to an SSE route (GET); yields parsed `SseFrame`s until the
     /// stream ends.
     pub async fn subscribe_sse(&self, path: &str) -> Result<mpsc::UnboundedReceiver<SseFrame>> {
         let resp = self.send("GET", path, None).await?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("sse {path} -> {}", resp.status().as_u16()));
-        }
-        Ok(stream_response(resp))
+        Self::checked_sse_response("GET", path, resp).await
     }
 
     /// Subscribe to an SSE route via a streaming POST (the operator-converse
@@ -473,10 +491,7 @@ impl HttpClient {
         body: String,
     ) -> Result<mpsc::UnboundedReceiver<SseFrame>> {
         let resp = self.send("POST", path, Some(body)).await?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("sse {path} -> {}", resp.status().as_u16()));
-        }
-        Ok(stream_response(resp))
+        Self::checked_sse_response("POST", path, resp).await
     }
 }
 
@@ -1094,6 +1109,32 @@ mod tests {
         assert_eq!(status.method, "GET");
         assert_eq!(status.path, "/api/missing");
         assert_eq!(status.body, "nope");
+    }
+
+    #[tokio::test]
+    async fn subscribe_sse_post_preserves_non_success_body() {
+        let (addr, request) = spawn_http(
+            "503 Service Unavailable",
+            "Content-Type: application/json\r\n",
+            r#"{"error":"startup connection interrupted"}"#,
+        )
+        .await;
+        let client = HttpClient::new(addr, None);
+        let err = client
+            .subscribe_sse_post("/api/adv/sessions/launch-su?stream=1", "{}".into())
+            .await
+            .unwrap_err();
+        let status = err
+            .downcast_ref::<HttpStatusError>()
+            .expect("SSE non-success responses preserve their typed status and body");
+        assert_eq!(status.status, 503);
+        assert_eq!(status.method, "POST");
+        assert_eq!(status.path, "/api/adv/sessions/launch-su?stream=1");
+        assert_eq!(status.body, r#"{"error":"startup connection interrupted"}"#);
+        assert!(request
+            .await
+            .unwrap()
+            .starts_with("POST /api/adv/sessions/launch-su?stream=1 "));
     }
 
     /// P-001 asks for authenticated HTTP *and SSE* to the selected operator.
