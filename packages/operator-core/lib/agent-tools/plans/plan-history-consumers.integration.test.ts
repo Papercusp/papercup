@@ -11,8 +11,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { appendGoalHistory } from '@papercusp/agent-mcp';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { PgThreadStore } from '@papercusp/coordination/capabilities';
 import { workItemCheckpointScope, setWorkItemCheckpoint } from '../../work-item-checkpoint';
-import { readGoalHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
+import { readGoalHistoryContext, readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
+import { postLearnedAtLevel } from '../../effort-thread';
 import { buildGoalKickoffBrief } from '../goals/start';
 import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
 import { fleetSpecBeeKey, setClaimSpec } from '../../scheduler/claim-spec-store';
@@ -77,6 +79,7 @@ const CTX = {
 let fx: PlanPgFixture;
 let admin: postgres.Sql;
 let previousWorkspaceId: string | undefined;
+const capturedThreadIds = new Set<string>();
 
 beforeAll(async () => {
   previousWorkspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
@@ -151,6 +154,16 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
+  for (const threadId of capturedThreadIds) {
+    await admin`
+      DELETE FROM harness_shared.coord_thread_posts
+       WHERE workspace_id = ${fx.workspaceId} AND thread_id = ${threadId}
+    `;
+    await admin`
+      DELETE FROM harness_shared.coord_threads
+       WHERE workspace_id = ${fx.workspaceId} AND thread_id = ${threadId}
+    `;
+  }
   await admin`
     DELETE FROM harness_shared.carry_notes
      WHERE workspace_id = ${fx.workspaceId}
@@ -192,6 +205,57 @@ function dataOf<T>(value: unknown): T {
 }
 
 describe('bounded plan history production consumers', () => {
+  it.each(['plan', 'goal'] as const)('captures %s lessons and distinguishes a failed stored read from missing history', async (level) => {
+    const ref = level === 'plan' ? PLAN : GOAL;
+    const note = [
+      `Root cause: ${level} thread failures were swallowed.`,
+      `False premise: empty history proved no ${level} lesson existed.`,
+      'Outcome: the actual saved note was recovered.',
+      `Residue: retain the ${level} scoped drill-down.`,
+    ].join('\n');
+    const capture = await postLearnedAtLevel({
+      workItemId: CHILD, harness: HARNESS, level, text: note,
+      workspaceId: fx.workspaceId, authorId: 'su-capture-fidelity-integration',
+    });
+    expect(capture).toMatchObject({ posted: true, level, requestedLevel: level, fellBack: false });
+    expect(capture.advisory?.missing).toEqual([]);
+    expect(capture.post).toBeTruthy();
+    capturedThreadIds.add(capture.post!.thread_id);
+    const rawRef = `${level}:${ref}#comment:${capture.post!.id}`;
+    const read = () => level === 'plan' ? readPlanHistoryContext(PLAN, HARNESS) : readGoalHistoryContext(GOAL);
+    const original = PgThreadStore.prototype.getThreadByParent;
+    const failure = vi.spyOn(PgThreadStore.prototype, 'getThreadByParent').mockImplementation(function (this: PgThreadStore, parent) {
+      if (parent.kind === level && parent.ref === (level === 'plan' ? `${HARNESS}:${PLAN}` : GOAL)) {
+        return Promise.reject(new Error('P010 stored effort thread unavailable'));
+      }
+      return original.call(this, parent);
+    });
+    let failed: Awaited<ReturnType<typeof read>>;
+    try {
+      failed = await read();
+      expect(failed.status).toBe('unknown');
+      expect(failed.brief?.degradedSources).toContain(`${level}-thread`);
+      expect(JSON.stringify(failed)).not.toContain(rawRef);
+    } finally {
+      failure.mockRestore();
+    }
+    const recovered = await read();
+    expect(recovered.status).toBe('available');
+    expect(recovered.recovery).toEqual(failed!.recovery);
+    expect(recovered.brief?.degradedSources).toEqual([]);
+    expect(recovered.brief?.authority).toContainEqual(expect.objectContaining({
+      rawRef, authority: 'retraction',
+      falsePremises: [expect.stringContaining(`no ${level} lesson existed`)],
+    }));
+    expect(recovered.brief?.protectedRefs.residue).toContain(rawRef);
+    const raw = await resolvePriorAttemptRefs({
+      target: level === 'plan' ? { kind: level, ref, harness: HARNESS } : { kind: level, ref },
+      harness: HARNESS, rawRefs: [rawRef],
+    });
+    expect(raw?.unresolved).toEqual([]);
+    expect(raw?.records[0]?.text).toBe(note);
+  }, 60_000);
+
   it('delivers one stored child lesson through plans:get, launch context and the full leader builder', async () => {
     const planRead = dataOf<{ results: Array<Record<string, unknown>> }>(
       await plansGetTool.handler({ slug: PLAN, harness: HARNESS, mode: 'full' } as never, CTX),
