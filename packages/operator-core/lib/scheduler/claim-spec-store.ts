@@ -172,8 +172,7 @@ export function evaluateClaimConcurrency(args: {
 }): ClaimConcurrencyVerdict {
   const maxConcurrentClaims = args.maxConcurrentClaims ?? DEFAULT_MAX_CONCURRENT_CLAIMS;
   const heldIds = typeof args.activeClaims === 'number' ? [] : args.activeClaims.map((c) => c.id);
-  const activeClaims =
-    typeof args.activeClaims === 'number' ? args.activeClaims : args.activeClaims.length;
+  const activeClaims = typeof args.activeClaims === 'number' ? args.activeClaims : args.activeClaims.length;
   return {
     blocked: activeClaims >= maxConcurrentClaims,
     activeClaims,
@@ -191,10 +190,7 @@ export async function readClaimConcurrency(
   args: { cupId: string; workspaceId?: string; maxConcurrentClaims?: number | null },
   sqlOverride?: OrgSql,
 ): Promise<ClaimConcurrencyVerdict> {
-  const activeClaims = await getActiveClaimsForBee(
-    { cupId: args.cupId, workspaceId: args.workspaceId },
-    sqlOverride,
-  );
+  const activeClaims = await getActiveClaimsForBee({ cupId: args.cupId, workspaceId: args.workspaceId }, sqlOverride);
   return evaluateClaimConcurrency({
     activeClaims,
     maxConcurrentClaims: args.maxConcurrentClaims,
@@ -234,9 +230,7 @@ export async function readClaimConcurrencyBatch(
   if (cupIds.length === 0) return out;
 
   const sql = sqlOverride ?? getOrgPg().sql;
-  const workspaces = [
-    ...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE]),
-  ];
+  const workspaces = [...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE])];
   // Same predicate as getActiveClaimsForBee — a PARKED/held row retains taken_by and so
   // counts here, which is exactly the row the presence layer's `load` can omit. Kept
   // identical to getActiveClaimsForBee's WHERE clause on purpose (EI-21902965465306743) —
@@ -442,17 +436,19 @@ export async function clearClaimSpec(
   // Keep these as two complete statements. The org SQL tag executes a tagged
   // template; invoking it to build an interpolated "fragment" would issue a
   // separate query before this DELETE rather than compose one atomic guard.
-  const rows = (expectedHead
-    ? await sql`
+  const rows = (
+    expectedHead
+      ? await sql`
         DELETE FROM harness_shared.cup_claim_specs
          WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}
            AND spec->>'specId' = ${expectedHead.specId}
            AND revision = ${expectedHead.revision}
         RETURNING bee_id`
-    : await sql`
+      : await sql`
         DELETE FROM harness_shared.cup_claim_specs
          WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}
-        RETURNING bee_id`) as { bee_id: string }[];
+        RETURNING bee_id`
+  ) as { bee_id: string }[];
   return { ok: true, errors: [], cleared: rows.length > 0 };
 }
 
@@ -503,16 +499,14 @@ export async function getClaimSpec(
  * swallowed here so a claim_audit hiccup (PG blip, schema drift) can never fail or
  * delay a real claim.
  */
-async function auditClaimAttempt(
-  args: {
-    workspaceId?: string;
-    harnessSlug: string;
-    featureId: string;
-    claimerId: string;
-    outcome: 'won' | 'lost';
-    detail: Record<string, unknown>;
-  },
-): Promise<void> {
+async function auditClaimAttempt(args: {
+  workspaceId?: string;
+  harnessSlug: string;
+  featureId: string;
+  claimerId: string;
+  outcome: 'won' | 'lost';
+  detail: Record<string, unknown>;
+}): Promise<void> {
   try {
     await recordClaimAttempt({
       workspaceId: args.workspaceId ?? DEFAULT_COORD_WORKSPACE,
@@ -608,10 +602,7 @@ export async function getNextForBee(args: {
   // owner-deferred work (e.g. a paused/de-scoped category) a curated spec would exclude.
   // scheduler:get_next surfaces this as an advisory `warning` so a self-pulling agent with
   // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
-  const resolvedRecord = await getClaimSpecRecord(
-    { cupId: args.cupId, workspaceId: args.workspaceId },
-    claimSql,
-  );
+  const resolvedRecord = await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId }, claimSql);
   // WI-4770: membership changes are not an authorization to widen into the
   // default backlog. A fleet/leader transition can briefly have no valid
   // inherited sentinel while the leader rebinds the intended lane. Keep that
@@ -656,11 +647,14 @@ export async function getNextForBee(args: {
   // get_next.ts's miss diagnosis, and nowhere else — the two other surfaces that report
   // on claims (fleet:leader-brief, work_items:claim) never applied it. All four now share
   // evaluateClaimConcurrency so they cannot answer differently.
-  const concurrency = await readClaimConcurrency({
-    cupId: args.cupId,
-    workspaceId: args.workspaceId,
-    maxConcurrentClaims: record.spec.limits?.maxConcurrentClaims,
-  }, claimSql);
+  const concurrency = await readClaimConcurrency(
+    {
+      cupId: args.cupId,
+      workspaceId: args.workspaceId,
+      maxConcurrentClaims: record.spec.limits?.maxConcurrentClaims,
+    },
+    claimSql,
+  );
   if (concurrency.blocked) return null;
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
@@ -690,26 +684,30 @@ export async function getNextForBee(args: {
   // authoritative backstop for surfacing why nothing was eligible.
   const MAX_PLAN_LANE_ATTEMPTS = 5;
   for (let attempt = 0; attempt < MAX_PLAN_LANE_ATTEMPTS; attempt += 1) {
-    const result = await getNextWorkItem(record.spec, {
-      assignee: args.cupId,
-      heldPaths: args.heldPaths,
-      contendedPaths: args.contendedPaths,
-    }, {
-      harness: args.harness,
-      ...(claimSql ? { client: claimSql } : {}),
-      // WI-5261: thread the caller's already-resolved workspace through explicitly —
-      // getNextWorkItem's tiers otherwise re-derive it via activeWorkspaceId(), which
-      // depends on the AsyncLocalStorage request-scope still being intact this deep into
-      // the call chain (a dropped scope silently falls to 'default' and the claim query
-      // matches nothing, deterministically). args.workspaceId is already resolved above
-      // via resolveClaimSpecWorkspace by every caller (scheduler:get_next's tool handler).
-      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
-      ...(args.swarmId ? { swarmId: args.swarmId } : {}),
-      ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
-      ...(args.states ? { states: args.states } : {}),
-      ...(args.rigAvailable ? { rigAvailable: true } : {}),
-      ...('fleetSlug' in record && record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
-    });
+    const result = await getNextWorkItem(
+      record.spec,
+      {
+        assignee: args.cupId,
+        heldPaths: args.heldPaths,
+        contendedPaths: args.contendedPaths,
+      },
+      {
+        harness: args.harness,
+        ...(claimSql ? { client: claimSql } : {}),
+        // WI-5261: thread the caller's already-resolved workspace through explicitly —
+        // getNextWorkItem's tiers otherwise re-derive it via activeWorkspaceId(), which
+        // depends on the AsyncLocalStorage request-scope still being intact this deep into
+        // the call chain (a dropped scope silently falls to 'default' and the claim query
+        // matches nothing, deterministically). args.workspaceId is already resolved above
+        // via resolveClaimSpecWorkspace by every caller (scheduler:get_next's tool handler).
+        ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+        ...(args.swarmId ? { swarmId: args.swarmId } : {}),
+        ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
+        ...(args.states ? { states: args.states } : {}),
+        ...(args.rigAvailable ? { rigAvailable: true } : {}),
+        ...('fleetSlug' in record && record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
+      },
+    );
     if (!result) {
       // P-006: this IS "the claim-spec view is empty" — when the caller opted in,
       // check whether its fleet is ALSO fully idle and, if so, push
@@ -736,7 +734,11 @@ export async function getNextForBee(args: {
       // claimed and quarantine-released here every ~3-4min by different fleet members
       // whose spec excludes p2p work, broadcasting to all 7 live awaiters each time.
       // `claim:released:<id>` (the targeted, id-scoped key) still always fires.
-      await releaseWorkItem(result.workItem.id, { harness: args.harness, expectedAssignee: args.cupId, announceClaimable: false });
+      await releaseWorkItem(result.workItem.id, {
+        harness: args.harness,
+        expectedAssignee: args.cupId,
+        announceClaimable: false,
+      });
       continue;
     }
     const blocked = await planItemLaneBlockReason(result.workItem);
@@ -828,9 +830,10 @@ export async function getNextForBee(args: {
 }
 
 function workItemConflictsWithPaths(item: WorkItem, contendedPaths: string[]): boolean {
-  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
-    ? item.payload as Record<string, unknown>
-    : {};
+  const payload =
+    item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+      ? (item.payload as Record<string, unknown>)
+      : {};
   const itemPaths = Array.isArray(payload.paths)
     ? payload.paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
     : [];
@@ -916,9 +919,7 @@ export async function getClaimSpecRecord(
   // Preserve that target identity in the returned record: treating the sentinel
   // as an ordinary cup makes the read report source:'cup' and drops fleetSlug,
   // which is indistinguishable from a per-member override to callers.
-  const directFleetSlug = args.cupId.startsWith('fleet:')
-    ? args.cupId.slice('fleet:'.length) || undefined
-    : undefined;
+  const directFleetSlug = args.cupId.startsWith('fleet:') ? args.cupId.slice('fleet:'.length) || undefined : undefined;
   const rows = (await sql`
     SELECT spec, revision, updated_by, updated_at, harness_slug
       FROM harness_shared.cup_claim_specs
@@ -933,9 +934,12 @@ export async function getClaimSpecRecord(
     const row = rows[0]!;
     const v = validateClaimSpec(row.spec);
     if (!v.ok || !v.spec) {
-      throw Object.assign(new Error(
-        `Invalid stored claim spec for ${args.cupId}; repair this target with scheduler:set_claim_spec before retrying: ${v.errors.join('; ')}`,
-      ), { code: 'invalid_claim_spec' });
+      throw Object.assign(
+        new Error(
+          `Invalid stored claim spec for ${args.cupId}; repair this target with scheduler:set_claim_spec before retrying: ${v.errors.join('; ')}`,
+        ),
+        { code: 'invalid_claim_spec' },
+      );
     }
     return {
       source: directFleetSlug ? 'fleet' : 'cup',
@@ -979,9 +983,12 @@ export async function getClaimSpecRecord(
         const frow = frows[0]!;
         const fv = validateClaimSpec(frow.spec);
         if (!fv.ok || !fv.spec) {
-          throw Object.assign(new Error(
-            `Invalid stored claim spec for ${fleetSpecBeeKey(membership.fleetSlug)}; repair this fleet with scheduler:set_claim_spec before retrying: ${fv.errors.join('; ')}`,
-          ), { code: 'invalid_claim_spec' });
+          throw Object.assign(
+            new Error(
+              `Invalid stored claim spec for ${fleetSpecBeeKey(membership.fleetSlug)}; repair this fleet with scheduler:set_claim_spec before retrying: ${fv.errors.join('; ')}`,
+            ),
+            { code: 'invalid_claim_spec' },
+          );
         }
         return {
           source: 'fleet',
@@ -1050,9 +1057,7 @@ export async function resolveFleetClaimSpec(
   // surfaces (`fleet:<slug>`), while the fleet-slug namespace itself is the
   // suffix. Normalize only this lookup; specId and revN keep their exact input
   // semantics below.
-  const requestedFleetSlug = args.spec.startsWith('fleet:')
-    ? args.spec.slice('fleet:'.length)
-    : args.spec;
+  const requestedFleetSlug = args.spec.startsWith('fleet:') ? args.spec.slice('fleet:'.length) : args.spec;
 
   type Row = {
     bee_id: string;
@@ -1158,7 +1163,7 @@ export async function listFleetClaimSpecCandidates(
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const limit = args.limit ?? 20;
-  const rows = (
+  const rows =
     Number.isSafeInteger(args.revision) && (args.revision as number) >= 0
       ? ((await sql`
     SELECT bee_id, spec->>'specId' AS spec_id, revision
@@ -1169,8 +1174,7 @@ export async function listFleetClaimSpecCandidates(
     SELECT bee_id, spec->>'specId' AS spec_id, revision
       FROM harness_shared.cup_claim_specs
      WHERE workspace_id = ${ws} AND bee_id LIKE 'fleet:%'
-     ORDER BY updated_at DESC LIMIT ${limit}`) as Array<{ bee_id: string; spec_id: string | null; revision: number }>)
-  );
+     ORDER BY updated_at DESC LIMIT ${limit}`) as Array<{ bee_id: string; spec_id: string | null; revision: number }>);
   return rows.map((r) => ({
     fleetSlug: r.bee_id.slice('fleet:'.length),
     specId: r.spec_id,
