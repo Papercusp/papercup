@@ -118,7 +118,9 @@ function settlementSql(options: { updateHits: boolean[] }) {
   const payload = { [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: manifest } };
   const sql = vi.fn(async (strings: TemplateStringsArray) => {
     const query = strings.join('?');
-    if (query.includes('SELECT feature_id, payload')) return [{ feature_id: 'WI-42476', payload }];
+    if (query.includes('SELECT feature_id, harness_slug, payload')) {
+      return [{ feature_id: 'WI-42476', harness_slug: 'papercusp', payload }];
+    }
     if (query.includes('UPDATE harness_shared.work_items')) {
       return options.updateHits[updateIndex++] ? [{ feature_id: 'WI-42476' }] : [];
     }
@@ -140,7 +142,11 @@ function settlementEmitMock() {
 }
 
 describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh', () => {
-  const scope = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
+  const scope = {
+    installSlug: 'papercusp',
+    workspaceId: 'papercusp-workspace',
+    repositoryRoot: manifest.repositoryRoot,
+  };
   const matchingLookup = () => new Map([
     ['a.ts', resolved('d'.repeat(40))],
     ['nested/b.ts', resolved('e'.repeat(40))],
@@ -194,7 +200,11 @@ describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh'
 });
 
 describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
-  const scope = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
+  const scope = {
+    installSlug: 'papercusp',
+    workspaceId: 'papercusp-workspace',
+    repositoryRoot: manifest.repositoryRoot,
+  };
   const matchingLookup = () => new Map([
     ['a.ts', resolved('d'.repeat(40))],
     ['nested/b.ts', resolved('e'.repeat(40))],
@@ -263,6 +273,42 @@ describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
     expect(result).toMatchObject({ inspected: 1, upgraded: [] });
     expect(emit).not.toHaveBeenCalled();
   });
+
+  it('selects by emitted checkout root and settles a row owned by another harness', async () => {
+    const portalRoot = '/workspace/apps/portal';
+    const crossHarnessManifest = { ...manifest, repositoryRoot: portalRoot };
+    const payload = {
+      [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: crossHarnessManifest },
+    };
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?');
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        expect(query).not.toContain('AND harness_slug =');
+        expect(values).toContain(portalRoot);
+        return [{ feature_id: 'WI-CROSS-HIVE', harness_slug: 'papercusp', payload }];
+      }
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        expect(values).toContain('papercusp');
+        expect(values).toContain(portalRoot);
+        return [{ feature_id: 'WI-CROSS-HIVE' }];
+      }
+      throw new Error(`unexpected SQL: ${query}`);
+    }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
+    (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+    const emit = settlementEmitMock();
+
+    const result = await reconcileProposedCompletionsAtCommit(SHA, {
+      installSlug: 'portal',
+      workspaceId: 'papercusp-workspace',
+      repositoryRoot: portalRoot,
+    }, { sql, lookup: matchingLookup, emit });
+
+    expect(result).toMatchObject({ inspected: 1, upgraded: ['WI-CROSS-HIVE'], residual: 0 });
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      key: 'work-item:settled:WI-CROSS-HIVE',
+      payload: expect.objectContaining({ harness: 'papercusp', commitSha: SHA }),
+    }));
+  });
 });
 
 describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', () => {
@@ -301,8 +347,10 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
     };
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join('?');
-      if (query.includes('SELECT feature_id, payload')) {
-        return authority === 'proposed' ? [{ feature_id: 'WI-FIXTURE', payload }] : [];
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        return authority === 'proposed'
+          ? [{ feature_id: 'WI-FIXTURE', harness_slug: 'papercusp', payload }]
+          : [];
       }
       if (query.includes('UPDATE harness_shared.work_items')) {
         const evidence = payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as {
@@ -321,7 +369,11 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
     (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
     const emit = settlementEmitMock();
-    const scope = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
+    const scope = {
+      installSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      repositoryRoot: root,
+    };
 
     const partial = await reconcileProposedCompletionsAtCommit(partialSha, scope, { sql, emit });
     expect(partial).toMatchObject({ upgraded: [], residual: 1 });

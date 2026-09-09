@@ -92,7 +92,7 @@ export function residualPathsForCommit(
   });
 }
 
-type CandidateRow = { feature_id: string; payload: unknown };
+type CandidateRow = { feature_id: string; harness_slug: string; payload: unknown };
 
 /**
  * WI-1053550: the treeStamp this reconciler's authority upgrade needs to SURVIVE
@@ -156,19 +156,21 @@ export interface CompletionSettlementReconcilerDeps {
 /** Reconcile a bounded batch of proposed code completions against the exact emitted commit. */
 export async function reconcileProposedCompletionsAtCommit(
   commitSha: string,
-  scope: { installSlug: string; workspaceId: string },
+  scope: { installSlug: string; workspaceId: string; repositoryRoot: string },
   deps: CompletionSettlementReconcilerDeps = {},
 ): Promise<{ inspected: number; upgraded: string[]; residual: number; unreadable: string[] }> {
-  if (!SHA_RE.test(commitSha)) return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+  if (!SHA_RE.test(commitSha) || !scope.repositoryRoot.trim()) {
+    return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+  }
   const sql = deps.sql ?? getOrgPg().sql;
   const lookup = deps.lookup ?? completionHeadBlobMap;
   const emit = deps.emit ?? emitAwaitedEvent;
   const rows = await sql<CandidateRow[]>`
-    SELECT feature_id, payload
+    SELECT feature_id, harness_slug, payload
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId}
-       AND harness_slug = ${scope.installSlug}
        AND authority = 'proposed'
+       AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
        AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest']}::text[] IS NOT NULL
      ORDER BY updated_ts ASC, feature_id ASC
      LIMIT ${MAX_CANDIDATES}`;
@@ -225,10 +227,11 @@ export async function reconcileProposedCompletionsAtCommit(
              updated_ts = ${Date.now()}
        WHERE feature_id = ${row.feature_id}
          AND workspace_id = ${scope.workspaceId}
-         AND harness_slug = ${scope.installSlug}
+         AND harness_slug = ${row.harness_slug}
          AND authority = 'proposed'
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'generation']}::text[] = ${String(parsed.data.generation)}
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'evidenceHash']}::text[] = ${parsed.data.evidenceHash}
+         AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
        RETURNING feature_id`;
     if (residualPaths.length === 0 && result[0]) {
       const id = result[0].feature_id;
@@ -240,7 +243,7 @@ export async function reconcileProposedCompletionsAtCommit(
         summary: `${id} settlement committed at ${commitSha.slice(0, 12)}`,
         payload: {
           id,
-          harness: scope.installSlug,
+          harness: row.harness_slug,
           commitSha,
           generation: parsed.data.generation,
           evidenceHash: parsed.data.evidenceHash,

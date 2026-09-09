@@ -32,7 +32,7 @@
  *     completion for a terminal git-sync fire (EI-21049559233457671).
  */
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -3365,11 +3365,24 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
     // fire-and-forget, never gates the tick, benign to replay past the record step.
     if (outcome.status === 'synced') {
-      await reconcileProposedCompletionsAtCommit(outcome.headSha, { installSlug: slug, workspaceId }).catch((error) => {
-        console.warn(
-          `[git-sync] ${slug}: completion settlement reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
+      // EI-22795123930445264: a completion belongs to the checkout that owns its
+      // exact blob identities, which may differ from the bookkeeping harness that
+      // accepted the close. Resolve the emitted checkout through symlinks before
+      // selecting manifests so a Portal commit can settle Papercusp-owned rows.
+      const repositoryRoot = repoPath
+        ? await realpath(repoPath).catch(() => resolve(repoPath))
+        : null;
+      if (repositoryRoot) {
+        await reconcileProposedCompletionsAtCommit(outcome.headSha, {
+          installSlug: slug,
+          workspaceId,
+          repositoryRoot,
+        }).catch((error) => {
+          console.warn(
+            `[git-sync] ${slug}: completion settlement reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      }
       emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
     }
 

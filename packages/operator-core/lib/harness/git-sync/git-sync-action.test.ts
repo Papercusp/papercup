@@ -38,7 +38,7 @@
  * action module is side-effect imported so the system-action registry is
  * populated as in production (same pattern as routines/release-actions.test.ts).
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -226,6 +226,25 @@ vi.mock('./run-git-sync', () => ({
   gitTimeoutMsFor: () => 30_000,
   DEFAULT_MAX_BLOB_BYTES: 95 * 1024 * 1024,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES: 250 * 1024 * 1024,
+}));
+
+type CompletionSettlementScope = {
+  installSlug: string;
+  workspaceId: string;
+  repositoryRoot: string;
+};
+const reconcileProposedCompletionsAtCommitMock = vi.fn(async (
+  _commitSha: string,
+  _scope: CompletionSettlementScope,
+) => ({
+  inspected: 0,
+  upgraded: [],
+  residual: 0,
+  unreadable: [],
+}));
+vi.mock('./completion-settlement-reconciler', () => ({
+  reconcileProposedCompletionsAtCommit: (commitSha: string, scope: CompletionSettlementScope) =>
+    reconcileProposedCompletionsAtCommitMock(commitSha, scope),
 }));
 
 const runDependencyGenerationPrebuildMock = vi.fn(async (_request: Record<string, unknown>) => 'ready');
@@ -621,6 +640,13 @@ beforeEach(() => {
   liveLockHoldingsStrictMock.mockReset();
   liveLockHoldingsStrictMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
+  reconcileProposedCompletionsAtCommitMock.mockReset();
+  reconcileProposedCompletionsAtCommitMock.mockResolvedValue({
+    inspected: 0,
+    upgraded: [],
+    residual: 0,
+    unreadable: [],
+  });
   runDependencyGenerationPrebuildMock.mockReset();
   runDependencyGenerationPrebuildMock.mockResolvedValue('ready');
   endedSessionOwnersMock.mockReset();
@@ -720,6 +746,24 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     const result = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId);
 
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
+  });
+
+  it('settles against the canonical emitted checkout root, not the install slug', async () => {
+    const alias = join(tmpRoot, 'repo-alias');
+    symlinkSync(repoDir, alias);
+    registryProjects = [{ slug: 'papercup', path: alias }];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledWith(
+      syncedOutcome.headSha,
+      {
+        installSlug: 'papercup',
+        workspaceId: 'ws-42',
+        repositoryRoot: realpathSync(repoDir),
+      },
+    );
   });
 
   it('scopes every registry read and runs the exact path pinned by a manual fire when an ambient sibling exists', async () => {
