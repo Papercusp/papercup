@@ -1863,7 +1863,18 @@ export function makeAgentBusyGate({
       while (true) {
         const quietFor = this.quietForMs();
         if (quietFor > maxQuietForMs) maxQuietForMs = quietFor;
-        if (quietFor >= quietMs) return { deferred: false };
+        if (quietFor >= quietMs) {
+          // EI-22806311344295685: an expired timer can run before libuv's poll
+          // phase drains an already-buffered node-pty onData callback. Yield to
+          // the check phase once, then re-read the output timestamp; otherwise
+          // the stale pre-poll value can release an inject into a child that is
+          // still emitting. setImmediate is deliberate here: unlike another
+          // timer, it runs after the current iteration's poll callbacks.
+          await new Promise((resolve) => setImmediate(resolve));
+          const confirmedQuietFor = this.quietForMs();
+          if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
+          if (confirmedQuietFor >= quietMs) return { deferred: false };
+        }
         if (now() >= deadline) return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs };
         const need = quietMs - quietFor;
         const wait = Math.min(need, Math.max(0, deadline - now()));
