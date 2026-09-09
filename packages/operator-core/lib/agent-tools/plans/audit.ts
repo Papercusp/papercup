@@ -243,11 +243,11 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a plan audit: `completion` (default) re-resolves each item's code/test citations and preserves provenance; `activation` maps canonical `session_turn` refs to P-NNN/D-NNN/sections, resolves them, records the current revision, and returns an advisory activation-readiness consult preview. Post-epoch activation also transactionally seeds acceptance BARs from the plan's `## Requirements`/`### Bar-to-work map`; parse, map, or projection failures roll back. No parallel review tool.",
+    "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch, unchanged BAR source is seeded atomically; changed Requirements/map returns barSeedPendingAmendment without changing rubric/projections, which only rubrics:amend may do.",
   guidance: {
     when: "Before ready/active, read the COMPLETE source conversation (not memory/summary); map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions; ensure each `## Requirements` R-N has one Design Bar-to-work map row (optional `tree|deployed|live`); use `activation`. Before shipped, use `completion` against ACTUAL CODE.",
     returns:
-      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved, barSeed?, activationReadiness:{consult} }. activationReadiness is side-effect-free and advisory; it mirrors plans:start selection without opening a consult. barSeed names the active rubric revision, barSetHash, BAR count, and projection-edge count; a named bar_* refusal means audit/rubric/projection writes all rolled back. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }; when item-scoped validation problems occur in a mixed batch, valid entries are recorded and the result adds partial:true, problems, and rejectedItemIds so the caller can retry only those items. Batch-wide problems remain no-record.",
+      "Activation returns auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, barSeed?, barSeedPendingAmendment?, and advisory activationReadiness. Pending means the new subject revision was audited while its old BAR pin remains stale until rubrics:amend. Completion returns auditSeq, item counts, coverage, and uncoveredItems; mixed valid entries can record with partial/problems/rejectedItemIds, while batch-wide problems record nothing.",
     notWhen: "Not mid-implementation. Grade a rubric with scorecards:emit; record a decision with plans:add-decision; repair unresolved/open activation mappings before auditing.",
     chaining:
       `sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash; re-audit after changes to ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} need no re-audit. Completion: plans:audit → rubric/scorecard → shipped.`,
@@ -278,6 +278,7 @@ export default defineTool({
       // that promise is backed by the registered schema rather than by prose —
       // guidance-output-schema-live-guard fails a promised-but-undeclared field.
       barSeed: z.unknown().optional(),
+      barSeedPendingAmendment: z.unknown().optional(),
       activationReadiness: z.object({ consult: z.unknown() }).optional(),
       sourceRefsResolved: z.number().int().nonnegative().optional(),
       slug: z.string().optional(),
@@ -566,7 +567,7 @@ export default defineTool({
       // again would create a competing projection family from source-conversation
       // M-NNN rows. Historical plans retain the old non-fatal behavior until P-010
       // gives them an explicit cohort.
-      if (!recorded.barSeed) {
+      if (!recorded.barSeed && !recorded.barSeedPendingAmendment) {
         try {
           derivedSpecClauses = await persistDerivedDraftClauses(
             {
@@ -724,6 +725,9 @@ export default defineTool({
         derivedSpecClauses,
         activationReadiness,
         ...(recorded.barSeed ? { barSeed: recorded.barSeed } : {}),
+        ...(recorded.barSeedPendingAmendment
+          ? { barSeedPendingAmendment: recorded.barSeedPendingAmendment }
+          : {}),
         underRead,
         sourceSpan,
       } };
