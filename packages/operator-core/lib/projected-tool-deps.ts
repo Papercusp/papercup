@@ -1359,12 +1359,22 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
     // drains a third-failure signal.
     try {
       const ownerId = resolveAgentIdentity(event.ctx).ownerId;
-      observeFailureLoop({
-        ownerId,
-        toolName: event.toolName,
-        args: event.args,
-        result: event.result,
+      const callOrigin = classifyCallOrigin({
+        requestOrigin: event.ctx.requestOrigin,
+        spawnId: event.ctx.spawnId,
       });
+      // Hook-owned dispatches are framework automation, not model retries. The
+      // declaration is required here: inferred hook classifications remain
+      // visible to the detector until their caller proves the provenance.
+      if (!(callOrigin.origin === 'hook' && callOrigin.source === 'declared')) {
+        observeFailureLoop({
+          ownerId,
+          detectorSessionKey: event.ctx.failureLoopSessionKey,
+          toolName: event.toolName,
+          args: event.args,
+          result: event.result,
+        });
+      }
     } catch {
       // Identity gaps and detector faults must never break the triggering tool.
     }

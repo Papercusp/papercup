@@ -370,6 +370,48 @@ describe('PROJECTED_DEPS.postInvoke — decision-ledger emit + never breaks its 
     });
   });
 
+  it('uses the private detector session key for pending delivery without changing public ownerId', () => {
+    const failed = event();
+    failed.ctx = ctx({
+      principal: {
+        slug: 'harness:papercusp',
+        workspaceId: 'default',
+        capabilities: new Set<string>(),
+      },
+      failureLoopSessionKey: 'auditor-session-a',
+    }) as PostInvokeEvent['ctx'];
+    failed.toolName = 'dev:pg_query';
+    failed.result = { ok: false, error: { code: 'missing_capability', message: 'raw detail' } } as PostInvokeEvent['result'];
+
+    for (let i = 0; i < 3; i++) PROJECTED_DEPS.postInvoke!(failed);
+
+    expect(takePendingFailureLoopHint('auditor-session-a')).toMatchObject({
+      ownerId: 'harness:papercusp',
+      toolName: 'dev:pg_query',
+      errorClass: 'dispatch:missing_capability',
+    });
+    expect(takePendingFailureLoopHint('harness:papercusp')).toBeNull();
+  });
+
+  it('does not attribute repeated failures from a declared hook dispatch', () => {
+    const failed = event();
+    failed.ctx = ctx({
+      principal: {
+        slug: 'system:judge',
+        workspaceId: 'default',
+        capabilities: new Set<string>(),
+      },
+      failureLoopSessionKey: 'judge-session',
+      requestOrigin: { transport: 'mcp', query: { origin: 'hook' } },
+    }) as PostInvokeEvent['ctx'];
+    failed.toolName = 'activity:report';
+    failed.result = { ok: false, error: { code: 'invalid_input', message: 'raw detail' } } as PostInvokeEvent['result'];
+
+    for (let i = 0; i < 3; i++) PROJECTED_DEPS.postInvoke!(failed);
+
+    expect(takePendingFailureLoopHint('judge-session')).toBeNull();
+  });
+
   it('routes equivalent successful test results through the same production post-invoke delivery seam', () => {
     const repeated = event();
     repeated.toolName = 'testing:run';
