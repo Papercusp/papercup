@@ -390,7 +390,18 @@ export interface ContinuationGateInputs {
   /** Current active-loop values used to make the warm-to-cold retune executable. */
   activeLoopIntervalSec?: number | null;
   activeLoopGoal?: string | null;
+  /** Why an ACTIVE loop was deliberately excluded from the re-wake guarantee.
+   *  Null/absent means either no active loop exists or the caller could not
+   *  classify it. This keeps "armed but exhausted/starved" distinct from
+   *  "no armed loop" in the agent-facing remedy. */
+  activeLoopRewakeBlockedReason?: ActiveLoopRewakeBlockedReason | null;
 }
+
+export type ActiveLoopRewakeBlockedReason =
+  | 'max-fires-exhausted'
+  | 'max-duration-unverifiable'
+  | 'max-duration-exhausted'
+  | 'fire-starved';
 
 export interface ContinuationVerdict {
   /** The mechanical recommendation: run the next unit in-turn (true) or settle (false). */
@@ -406,6 +417,8 @@ export interface ContinuationVerdict {
   activeInboxWakeAwait: boolean | null;
   /** Whether the next wake sheds the current transcript (null ⇒ unknown). */
   nextWakeFresh: boolean | null;
+  /** Why a present active loop does not itself guarantee another wake. */
+  activeLoopRewakeBlockedReason: ActiveLoopRewakeBlockedReason | null;
   /** The self-compaction availability input echoed back (null ⇒ unknown/not supplied). */
   selfCompactionAvailable: boolean | null;
   /** Whether the fail-closed no-PTY fleet wind-down loop:end override was authorized. */
@@ -451,6 +464,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
   const activeInboxWakeAwait = inputs.activeInboxWakeAwait ?? null;
   const nextWakeFresh = inputs.nextWakeFresh ?? null;
+  const activeLoopRewakeBlockedReason = inputs.activeLoopRewakeBlockedReason ?? null;
   const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
   const fleetWindDownLoopEndAuthorized = inputs.fleetWindDownLoopEndAuthorized ?? null;
   const coldRetune = coldLoopRetuneCommand(inputs.activeLoopIntervalSec, inputs.activeLoopGoal);
@@ -503,16 +517,39 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     ) &&
     rewakeGuaranteed === false
   ) {
-    const reWakeGap =
-      activeInboxWakeAwait === true
+    const activeLoopDiagnosis =
+      activeLoopRewakeBlockedReason === 'max-fires-exhausted'
+        ? 'its arm-relative maxFires bound is exhausted'
+        : activeLoopRewakeBlockedReason === 'max-duration-unverifiable'
+          ? 'its maxDurationSec guarantee cannot be evaluated from the stored arm/schedule evidence'
+          : activeLoopRewakeBlockedReason === 'max-duration-exhausted'
+            ? 'its next attempted fire would exceed maxDurationSec'
+            : activeLoopRewakeBlockedReason === 'fire-starved'
+              ? 'it is fire-starved (zero fires despite at least two expected opportunities and an overdue nextFireAt)'
+              : null;
+    const reWakeGap = activeLoopDiagnosis
+      ? `an armed loop EXISTS but is intentionally excluded from the guarantee because ${activeLoopDiagnosis}; ` +
+        (activeInboxWakeAwait === true
+          ? 'no qualifying deliberate await; active standing coord:inbox-wake await present (liveness keepalive only); no owner present'
+          : 'no registered await; no owner present')
+      : activeInboxWakeAwait === true
         ? 'no armed loop, no qualifying deliberate await, active standing coord:inbox-wake await present (liveness keepalive only), no owner present'
         : 'no armed loop, no registered await, no owner present';
     const opening =
       `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
       `⚠ NO guaranteed re-wake (autonomous mode; ${reWakeGap}): ` +
       `ending the turn now would SILENTLY HALT the session. Do NOT just end it — `;
-    const remedy =
-      selfCompactionAvailable === false
+    const remedy = activeLoopDiagnosis
+      ? `DO NOT read this as "no armed loop" or blindly arm a second one. Read loop:status and repair the EXISTING loop state; ` +
+        (activeLoopRewakeBlockedReason === 'fire-starved'
+          ? 'restore its routine/wake path and re-check delivery before settling. '
+          : 'if continuation is still intended, deliberately re-arm that same owner loop with the intended cadence, goal, and dead-man bounds. ') +
+        (selfCompactionAvailable === true
+          ? 'Self-compaction can carry this turn forward once, but it does not repair the loop.'
+          : selfCompactionAvailable === false
+            ? 'Self-compaction is unavailable to this session and would not repair the loop anyway.'
+            : 'Self-compaction may carry this turn forward once when a live psu-pty host exists, but it does not repair the loop.')
+      : selfCompactionAvailable === false
         ? `ARM A WAKE: loop:arm { intervalSec, goal } (or events:await for a real condition). ` +
           `Self-compaction is NOT available to this session — it has no live psu-pty host able to carry-respawn, ` +
           `so session:request-compaction would refuse; do not spend your last turn on it.`
@@ -561,6 +598,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     rewakeGuaranteed,
     activeInboxWakeAwait,
     nextWakeFresh,
+    activeLoopRewakeBlockedReason,
     selfCompactionAvailable,
     fleetWindDownLoopEndAuthorized,
     reasons,
@@ -583,6 +621,7 @@ export function continuationGateFromReads(args: {
   fleetWindDownLoopEndAuthorized?: boolean | null;
   activeLoopIntervalSec?: number | null;
   activeLoopGoal?: string | null;
+  activeLoopRewakeBlockedReason?: ActiveLoopRewakeBlockedReason | null;
 }): ContinuationVerdict {
   return evaluateContinuationGate({
     contextPct: contextUsagePct(args.contextTokens, args.compactionLimit),
@@ -595,5 +634,6 @@ export function continuationGateFromReads(args: {
     fleetWindDownLoopEndAuthorized: args.fleetWindDownLoopEndAuthorized,
     activeLoopIntervalSec: args.activeLoopIntervalSec,
     activeLoopGoal: args.activeLoopGoal,
+    activeLoopRewakeBlockedReason: args.activeLoopRewakeBlockedReason,
   });
 }

@@ -72,6 +72,7 @@ import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark, pickUnreadCursor } from '../coordination/watermarks';
 import {
+  type ActiveLoopRewakeBlockedReason,
   continuationGateFromReads,
   countPendingInterrupts,
   readFleetWindDownLoopEndAuthorization,
@@ -195,40 +196,52 @@ function priorChecksOverCapCount(priorNote: string | null | undefined): number {
  * for the full incident (loop armed 19:43Z, 0 fires by 19:47Z against 4 expected, because a
  * peer's seed re-cut had quiesced bg-host for the whole window).
  */
-export function loopGuaranteesNextWake(
-  loop:
-    | Pick<
-        LoopStatus,
-        | 'active'
-        | 'armedAt'
-        | 'firesSinceArm'
-        | 'intervalSec'
-        | 'maxDurationSec'
-        | 'maxFires'
-        | 'nextFireAt'
-        | 'parked'
-        | 'expectedFiresSinceArm'
-      >
-    | null
-    | undefined,
+type LoopNextWakeInput =
+  | Pick<
+      LoopStatus,
+      | 'active'
+      | 'armedAt'
+      | 'firesSinceArm'
+      | 'intervalSec'
+      | 'maxDurationSec'
+      | 'maxFires'
+      | 'nextFireAt'
+      | 'parked'
+      | 'expectedFiresSinceArm'
+    >
+  | null
+  | undefined;
+
+export type LoopNextWakeVerdict =
+  | { guaranteed: true; reason: null }
+  | { guaranteed: false; reason: 'no-active-loop' | ActiveLoopRewakeBlockedReason };
+
+/** Classify the same guard as loopGuaranteesNextWake, retaining WHY an active
+ *  row is not a usable continuation guarantee for checkpoint guidance. */
+export function classifyLoopNextWake(
+  loop: LoopNextWakeInput,
   nowMs: number = Date.now(),
-): boolean {
-  if (!loop?.active) return false;
+): LoopNextWakeVerdict {
+  if (!loop?.active) return { guaranteed: false, reason: 'no-active-loop' };
 
   if (loop.maxFires != null && loop.maxFires > 0 && loop.firesSinceArm >= loop.maxFires) {
-    return false;
+    return { guaranteed: false, reason: 'max-fires-exhausted' };
   }
 
   if (loop.maxDurationSec != null && loop.maxDurationSec > 0) {
     const armedAtMs = loop.armedAt == null ? Number.NaN : Date.parse(loop.armedAt);
-    if (!Number.isFinite(armedAtMs)) return false;
+    if (!Number.isFinite(armedAtMs)) return { guaranteed: false, reason: 'max-duration-unverifiable' };
 
     const scheduledAtMs = loop.nextFireAt == null ? Number.NaN : Date.parse(loop.nextFireAt);
-    if (!Number.isFinite(scheduledAtMs) && loop.intervalSec == null) return false;
+    if (!Number.isFinite(scheduledAtMs) && loop.intervalSec == null) {
+      return { guaranteed: false, reason: 'max-duration-unverifiable' };
+    }
     const nextAttemptAtMs = Number.isFinite(scheduledAtMs)
       ? Math.max(nowMs, scheduledAtMs)
       : nowMs + Math.max(0, loop.intervalSec!) * 1_000;
-    if (nextAttemptAtMs - armedAtMs > loop.maxDurationSec * 1_000) return false;
+    if (nextAttemptAtMs - armedAtMs > loop.maxDurationSec * 1_000) {
+      return { guaranteed: false, reason: 'max-duration-exhausted' };
+    }
   }
 
   // EI-22089924844237484: armed, un-parked, zero fires despite >=2 expected
@@ -238,10 +251,16 @@ export function loopGuaranteesNextWake(
   // doc comment above.
   if (!loop.parked && loop.firesSinceArm === 0 && loop.expectedFiresSinceArm != null && loop.expectedFiresSinceArm >= 2) {
     const scheduledAtMs = loop.nextFireAt == null ? Number.NaN : Date.parse(loop.nextFireAt);
-    if (Number.isFinite(scheduledAtMs) && scheduledAtMs < nowMs) return false;
+    if (Number.isFinite(scheduledAtMs) && scheduledAtMs < nowMs) {
+      return { guaranteed: false, reason: 'fire-starved' };
+    }
   }
 
-  return true;
+  return { guaranteed: true, reason: null };
+}
+
+export function loopGuaranteesNextWake(loop: LoopNextWakeInput, nowMs: number = Date.now()): boolean {
+  return classifyLoopNextWake(loop, nowMs).guaranteed;
 }
 
 /** P-013 — the optional stable row identity, shared by the walls and checks schemas
@@ -1903,6 +1922,7 @@ export default defineTool({
         let nextWakeFresh: boolean | null = null;
         let activeLoopIntervalSec: number | null = null;
         let activeLoopGoal: string | null = null;
+        let activeLoopRewakeBlockedReason: ActiveLoopRewakeBlockedReason | null = null;
         try {
           const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] = await Promise.all(
             [import('../../turn-end-tracking'), import('../../events/await/store'), import('../../modes/store')],
@@ -1915,17 +1935,19 @@ export default defineTool({
           activeLoopIntervalSec = loop?.active ? loop.intervalSec : null;
           activeLoopGoal = loop?.active ? loop.goal : null;
           const currentTurn = await resolveCurrentTurnStamp(ownerId).catch(() => null);
-          const loopRewakeGuaranteed = loopGuaranteesNextWake(loop);
+          const loopWake = classifyLoopNextWake(loop);
+          activeLoopRewakeBlockedReason =
+            loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
           activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
           rewakeGuaranteed = isRewakeGuaranteed({
             autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
             machineTurn: currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface',
-            loopActive: loopRewakeGuaranteed,
+            loopActive: loopWake.guaranteed,
             activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
           });
           // A loop can guarantee another turn without guaranteeing a fresh
           // context. Only cold carry sheds the transcript on settle.
-          nextWakeFresh = loopRewakeGuaranteed ? loop?.carry === 'cold' : null;
+          nextWakeFresh = loopWake.guaranteed ? loop?.carry === 'cold' : null;
         } catch {
           rewakeGuaranteed = null;
           nextWakeFresh = null;
@@ -1971,6 +1993,7 @@ export default defineTool({
           // rediscover its cadence and goal through a second status read.
           activeLoopIntervalSec,
           activeLoopGoal,
+          activeLoopRewakeBlockedReason,
         });
       },
       {

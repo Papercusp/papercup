@@ -152,6 +152,25 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toContain('no registered await');
   });
 
+  it('diagnoses an armed-but-fire-starved loop instead of claiming no loop exists', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 80,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeLoopRewakeBlockedReason: 'fire-starved',
+      activeLoopIntervalSec: 180,
+      activeLoopGoal: 'finish WI-1',
+      selfCompactionAvailable: false,
+    });
+
+    expect(v.activeLoopRewakeBlockedReason).toBe('fire-starved');
+    expect(v.guidance).toContain('an armed loop EXISTS');
+    expect(v.guidance).toContain('fire-starved');
+    expect(v.guidance).toContain('repair the EXISTING loop state');
+    expect(v.guidance).not.toContain('no armed loop,');
+    expect(v.guidance).not.toContain('ARM A WAKE:');
+  });
+
   it('a CLOSED gate WITH a guarantee keeps the base settle guidance', () => {
     const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: true });
     expect(v.shouldContinue).toBe(false);

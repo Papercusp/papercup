@@ -204,7 +204,7 @@ vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
 
 const checkpointModule = await import('./checkpoint');
 const tool = checkpointModule.default;
-const { loopGuaranteesNextWake } = checkpointModule;
+const { classifyLoopNextWake, loopGuaranteesNextWake } = checkpointModule;
 // REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
 // through the same renderer the store persists, rather than a drift-prone literal.
 const {
@@ -266,11 +266,23 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
   it('accepts an active unbounded loop and rejects an inactive one', () => {
     expect(loopGuaranteesNextWake(loop(), Date.parse('2026-08-25T04:30:00.000Z'))).toBe(true);
     expect(loopGuaranteesNextWake(loop({ active: false }), Date.parse('2026-08-25T04:30:00.000Z'))).toBe(false);
+    expect(classifyLoopNextWake(loop(), Date.parse('2026-08-25T04:30:00.000Z'))).toEqual({
+      guaranteed: true,
+      reason: null,
+    });
+    expect(classifyLoopNextWake(loop({ active: false }), Date.parse('2026-08-25T04:30:00.000Z'))).toEqual({
+      guaranteed: false,
+      reason: 'no-active-loop',
+    });
   });
 
   it('mirrors the arm-relative max-fires boundary that withholds the next delivery', () => {
     expect(loopGuaranteesNextWake(loop({ firesSinceArm: 11, maxFires: 12 }))).toBe(true);
     expect(loopGuaranteesNextWake(loop({ firesSinceArm: 12, maxFires: 12 }))).toBe(false);
+    expect(classifyLoopNextWake(loop({ firesSinceArm: 12, maxFires: 12 }))).toEqual({
+      guaranteed: false,
+      reason: 'max-fires-exhausted',
+    });
   });
 
   it('rejects a parked loop when its earliest post-settle fire falls beyond max-duration', () => {
@@ -307,6 +319,16 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
         now,
       ),
     ).toBe(false);
+    expect(
+      classifyLoopNextWake(
+        loop({
+          parked: false,
+          expectedFiresSinceArm: 4,
+          nextFireAt: '2026-08-25T04:05:00.000Z',
+        }),
+        now,
+      ),
+    ).toEqual({ guaranteed: false, reason: 'fire-starved' });
   });
 
   it('does not spuriously reject a freshly-armed loop that has not yet reached 2 expected opportunities', () => {
@@ -1556,8 +1578,12 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b.continuation).toMatchObject({
       rewakeGuaranteed: false,
       nextWakeFresh: null,
+      activeLoopRewakeBlockedReason: 'max-fires-exhausted',
     });
     expect(b.continuation.guidance).toContain('NO guaranteed re-wake');
+    expect(b.continuation.guidance).toContain('an armed loop EXISTS');
+    expect(b.continuation.guidance).toContain('maxFires bound is exhausted');
+    expect(b.continuation.guidance).not.toContain('no armed loop,');
   });
 
   it('runtime wiring: reports the standing inbox wake separately from a qualifying deliberate await', async () => {
