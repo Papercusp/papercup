@@ -1988,6 +1988,63 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(pinned!.acceptance_bar_set_hash).toBe(after!.barSetHash);
   });
 
+  it('projects every newly mapped plan item when an existing BAR expands', async () => {
+    const seeded = await seedBarContract('criteria-set-expansion-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const [subject] = await db.adminSql<{ content: string; version: number }[]>`
+      SELECT content, version FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    const nextContent = subject!.content
+      .replace(
+        '**R-1 — First outcome.** The first outcome holds.',
+        '**R-1 — First outcome.** The first outcome holds after expansion.',
+      )
+      .replace('| R-1 | P-001 | tree |', '| R-1 | P-001, P-002 | tree |');
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content=${nextContent}, content_hash=md5(${nextContent}), version=version+1
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}',
+               to_jsonb(${Number(subject!.version) + 1}::int))
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.rubricSlug}`;
+
+    const criteria = before.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const { bar: _bar, barHash: _barHash, ...canonical } = criterion;
+      return { ...canonical, model: 'The first outcome holds after expansion.' };
+    });
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Expand R-1 across both implementing plan items.',
+      expectedRubricRevision: before.revision,
+      expectedSubjectPlanRevision: Number(subject!.version) + 1,
+      criteria,
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ changedBars: ['R-1'], projectionCount: 3 });
+
+    const after = await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
+    const projections = await db.adminSql<Array<{ source_bar_key: string; plan_item_id: string }>>`
+      SELECT r.source_bar_key, r.plan_item_id
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
+       WHERE c.workspace_id=${seeded.workspaceId} AND c.harness_slug='papercusp'
+         AND c.plan_slug=${seeded.subject} AND r.revision=c.current_revision
+       ORDER BY r.source_bar_key,r.plan_item_id`;
+    expect(after!.revision).toBe(before.revision! + 1);
+    expect(projections).toEqual([
+      { source_bar_key: 'R-1', plan_item_id: 'P-001' },
+      { source_bar_key: 'R-1', plan_item_id: 'P-002' },
+      { source_bar_key: 'R-2', plan_item_id: 'P-002' },
+    ]);
+  });
+
   async function postApproval(input: Parameters<typeof rubrics.amendRubric>[0], author = 'outside-reviewer') {
     const preview = await rubrics.previewAcceptanceBarAmendment(input);
     expect(preview).not.toBeNull();

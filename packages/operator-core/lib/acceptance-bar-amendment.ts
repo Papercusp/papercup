@@ -292,71 +292,71 @@ export async function synchronizeAcceptanceBarRevision(
        AND c.plan_slug = ${subjectPlan} AND r.source_bar_key IS NOT NULL
      ORDER BY c.spec_id LIMIT 1001`;
   if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
-  const { acceptanceBarBehaviorClass } = await import('./acceptance-bar-seed');
+  const { acceptanceBarBehaviorClass, parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
   const { computeAcceptanceBarHash } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const revisions = new Map<string, number>();
-  const missing = data.criteria.filter(
-    (criterion) =>
-      criterion.role !== 'disclosure' &&
-      !clauses.some((clause) => clause.source_bar_key === (criterion.barKey ?? criterion.key)),
-  );
-  if (missing.length > 0) {
-    // A post-start BAR addition is declared first in the subject plan's
-    // Requirements + Design map. Reuse that exact deterministic source instead
-    // of asking the amendment caller to duplicate a second mapping payload.
-    const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
-    const requirements = parseRequirementBars(subject.content);
-    if (!requirements.ok) {
-      throw new Error(
-        `acceptance_bar_revision_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
-      );
-    }
-    const mappings = parseBarMappings(subject.content, new Set(requirements.bars.map((bar) => bar.barKey)));
-    if (!mappings.ok) {
-      throw new Error(
-        `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
-      );
-    }
-    const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
-    for (const criterion of missing) {
-      const barKey = criterion.barKey ?? criterion.key;
-      const mapping = mappingByKey.get(barKey);
-      if (!mapping || !criterion.barHash || !criterion.evidencePlane || !data.barSetHash) {
+  // The subject plan is the canonical discharge map. Diff every desired
+  // (BAR, plan-item) edge, not merely whether a BAR has any clause: an existing
+  // BAR may expand from one implementing item to several during an as-built
+  // amendment. Treating that BAR as already present made preview report the
+  // expanded mapping while apply silently left the new edges unprojected.
+  const requirements = parseRequirementBars(subject.content);
+  if (!requirements.ok) {
+    throw new Error(
+      `acceptance_bar_revision_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
+    );
+  }
+  const mappings = parseBarMappings(subject.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+  if (!mappings.ok) {
+    throw new Error(
+      `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
+    );
+  }
+  const missingMappings = mappings.mappings.flatMap((mapping) => {
+    const criterion = byKey.get(mapping.barKey);
+    if (!criterion || criterion.role === 'disclosure') return [];
+    return mapping.planItemIds
+      .filter((planItemId) => !clauses.some(
+        (clause) => clause.source_bar_key === mapping.barKey && clause.plan_item_id === planItemId,
+      ))
+      .map((planItemId) => ({ criterion, barKey: mapping.barKey, planItemId }));
+  });
+  if (missingMappings.length > 0) {
+    for (const { criterion, barKey, planItemId } of missingMappings) {
+      if (!criterion.barHash || !criterion.evidencePlane || !data.barSetHash) {
         throw new Error(`acceptance_bar_revision_mapping_missing:${barKey}`);
       }
-      for (const planItemId of mapping.planItemIds) {
-        const specId = `AUTO-BAR-${barKey}-${planItemId}`;
-        const result = await setSpecClause(
-          {
-            planSlug: subjectPlan,
-            specId,
-            expectedRevision: 0,
-            planItemId,
-            behavior: criterion.model!,
-            behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
-            requiredEvidence: [criterion.evidencePlane],
-            ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
-            lifecycleStatus: 'draft',
-            falsifier: { observation: criterion.driftMarkers! },
-            acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${barKey}`,
-            sourceBar: {
-              barKey,
-              barHash: criterion.barHash,
-              barSetHash: data.barSetHash,
-              rubricSlug: args.rubricSlug,
-              rubricRevision: args.rubricRevision,
-              evidencePlane: criterion.evidencePlane,
-            },
-            actorId: args.actorId,
+      const specId = `AUTO-BAR-${barKey}-${planItemId}`;
+      const result = await setSpecClause(
+        {
+          planSlug: subjectPlan,
+          specId,
+          expectedRevision: 0,
+          planItemId,
+          behavior: criterion.model!,
+          behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
+          requiredEvidence: [criterion.evidencePlane],
+          ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
+          lifecycleStatus: 'draft',
+          falsifier: { observation: criterion.driftMarkers! },
+          acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${barKey}`,
+          sourceBar: {
+            barKey,
+            barHash: criterion.barHash,
+            barSetHash: data.barSetHash,
+            rubricSlug: args.rubricSlug,
+            rubricRevision: args.rubricRevision,
+            evidencePlane: criterion.evidencePlane,
           },
-          { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug },
-        );
-        if (result.status === 'created' || result.status === 'revised' || result.status === 'unchanged') {
-          revisions.set(specId, result.revision);
-        } else {
-          throw new Error(`acceptance_bar_revision_projection_conflict:${specId}:${result.status}`);
-        }
+          actorId: args.actorId,
+        },
+        { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug },
+      );
+      if (result.status === 'created' || result.status === 'revised' || result.status === 'unchanged') {
+        revisions.set(specId, result.revision);
+      } else {
+        throw new Error(`acceptance_bar_revision_projection_conflict:${specId}:${result.status}`);
       }
     }
     clauses = await sql<typeof clauses>`
@@ -373,8 +373,11 @@ export async function synchronizeAcceptanceBarRevision(
        ORDER BY c.spec_id LIMIT 1001`;
     if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
   }
-  if (data.criteria.some((criterion) => criterion.role !== 'disclosure' &&
-    !clauses.some((clause) => clause.source_bar_key === (criterion.barKey ?? criterion.key)))) {
+  if (mappings.mappings.some((mapping) => {
+    const criterion = byKey.get(mapping.barKey);
+    return criterion?.role !== 'disclosure' && mapping.planItemIds.some((planItemId) =>
+      !clauses.some((clause) => clause.source_bar_key === mapping.barKey && clause.plan_item_id === planItemId));
+  })) {
     throw new Error('acceptance_bar_revision_mapping_missing');
   }
   for (const clause of clauses) {
