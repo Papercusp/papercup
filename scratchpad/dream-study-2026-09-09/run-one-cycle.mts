@@ -7,6 +7,11 @@ import { installFlagOverrideStore } from '../../packages/operator-core/lib/flag-
 import { productionDreamCycle } from '../../packages/operator-core/lib/dream/dream-cycle-action.ts';
 import { dreamEvaluationProtocolHash, DreamPilotPinSchema } from '../../packages/operator-core/lib/dream/dream-evaluation.ts';
 import { rerankCapabilityPriors } from '../../packages/operator-core/lib/dream/capability-review.ts';
+import { getPilotCapabilityManifest } from '../../packages/operator-core/lib/dream/capability-catalog.ts';
+import { buildCapabilityPacket } from '../../packages/operator-core/lib/dream/capability-packets.ts';
+import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from '../../packages/operator-core/lib/dream/capability-sampler.ts';
+import { CAPABILITY_DREAM_PROMPT_VERSION } from '../../packages/operator-core/lib/dream/capability-pass.ts';
+import { studySampling } from './sampling.mts';
 
 // This standalone driver does not inherit the operator service's environment.
 // A fresh in-process model can miss the review deadline after generation is paid.
@@ -81,6 +86,21 @@ if (!ranked.outcome.attempted || ranked.outcome.scored !== readiness.review.prio
   await sql.end();
   throw new Error('D017 reranker is not ready; no settings changed and no provider called');
 }
+const manifest = getPilotCapabilityManifest();
+const packetScope = { workspaceId, potSlug: 'papercusp', repositoryId: 'papercusp' };
+const packets = [];
+for (const unit of manifest.units) {
+  const built = await buildCapabilityPacket({ rootPath: root, scope: packetScope, unit, manifestRevision: manifest.revision });
+  if (built.status !== 'ready') throw new Error('Study packet unavailable: ' + unit.id);
+  packets.push(built.packet);
+}
+const snapshot = await buildCapabilitySamplingSnapshot({ rootPath: root, scope: packetScope, manifest, packets });
+if (snapshot.fingerprint !== frozen.protocol.sourceSnapshot) throw new Error('Frozen study source snapshot changed');
+const { sampler, annotationHash } = studySampling(snapshot, arm);
+const sample = sampleCapabilityCombination(snapshot, { ...sampler, seed: frozen.protocol.seed + ':readiness', now: Date.now(), promptVersion: CAPABILITY_DREAM_PROMPT_VERSION });
+if (sample.status !== 'selected' || (arm === 'structured-triple' && !sample.selection.c))
+  throw new Error('Study sampler cannot supply its declared arm; no settings changed and no provider called');
+await log({ phase: 'sampling-readiness', arm, annotationHash, sampler, sourceSnapshot: snapshot.fingerprint });
 await log({ phase: 'prepared', arm, protocolPin: frozen.pin, masterEnabled: false, priorStudyArms: totals });
 if (!process.argv.includes('--run')) {
   await log({ phase: 'dry-run', message: 'No settings changed and no provider called. Pass --run for one governed attempt.' });
@@ -96,7 +116,7 @@ try {
     payloadTemplate: {
       mode: 'manual', pilot,
       cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
-      sampler: { mode: arm === 'uniform-pair' ? 'random-control' : 'structured', arity: arm === 'structured-triple' ? 3 : 2 },
+      sampler,
       pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
     },
   });
@@ -107,7 +127,7 @@ try {
   const result = await productionDreamCycle({ workspaceId, installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null }, {
     mode: 'manual', pilot,
     cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
-    sampler: { mode: arm === 'uniform-pair' ? 'random-control' : 'structured', arity: arm === 'structured-triple' ? 3 : 2 },
+    sampler,
     pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
   });
   await log({ phase: 'cycle-result', arm, protocolPin: frozen.pin, result });

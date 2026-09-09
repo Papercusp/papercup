@@ -1471,6 +1471,11 @@ async function main(): Promise<void> {
   // lock and boots embedded Postgres + migrations. A conventional `--help`
   // probe must reach none of them.
   const argv = process.argv.slice(2);
+  if (argv[0] === "--content-bootstrap") {
+    const { runContentBootstrap } = await import("./papercusp-content-bootstrap");
+    process.exitCode = await runContentBootstrap(argv.slice(1));
+    return;
+  }
   if (isServeHelpRequest(argv)) {
     process.stdout.write(SERVE_HELP_TEXT);
     return;

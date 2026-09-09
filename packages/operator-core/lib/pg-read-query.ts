@@ -838,6 +838,13 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       'for one item’s dependency view',
   })),
   {
+    relation: 'plan_item_claims',
+    missing: 'agent_id',
+    message:
+      'plan-item claim ownership is stored in `owner` (with `owner_name`/`owner_label` for display), not `agent_id`; ' +
+      'scope the claim read by `workspace_id` and `harness_slug`, and use `owner` for the claimant identity',
+  },
+  {
     relation: 'routines',
     missing: 'harness_slug',
     actual: 'install_slug',

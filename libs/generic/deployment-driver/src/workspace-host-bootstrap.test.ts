@@ -1010,20 +1010,27 @@ describe('buildWorkspaceHostBootstrap', () => {
     );
   });
 
-  it('pins every content root to the release rather than the working directory', () => {
+  it('pins Cupboard content to persistent state while static UI/docs remain release-scoped', () => {
     const unit = buildWorkspaceHostBootstrap(input());
 
+    expect(unit).toContain('Environment=PAPERCUSP_HOME=$STATE_ROOT/.papercusp');
     for (const [envVar, dir] of [
-      ['PAPERCUSP_PROMPTS_DIR', 'prompts'],
-      ['PAPERCUSP_SPA_DIST', 'spa'],
-      ['PAPERCUSP_DOCS_ROOT', 'internal-docs'],
+      ['PAPERCUSP_PROMPTS_DIR', 'blueprints/base/prompts'],
       ['PAPERCUSP_TEMPLATES_DIR', 'templates'],
       ['PAPERCUSP_RUBRICS_DIR', 'rubrics'],
     ] as const) {
-      expect(unit).toContain(`Environment=${envVar}=$RUNTIME_ROOT/current/${dir}`);
-      // The whole bug: a value that resolves against the state root (or nothing at all).
-      expect(unit).not.toContain(`Environment=${envVar}=$STATE_ROOT`);
+      expect(unit).toContain(`Environment=${envVar}=$STATE_ROOT/.papercusp/${dir}`);
+      expect(unit).not.toContain(`Environment=${envVar}=$RUNTIME_ROOT/current`);
     }
+    for (const [envVar, dir] of [
+      ['PAPERCUSP_SPA_DIST', 'spa'],
+      ['PAPERCUSP_DOCS_ROOT', 'internal-docs'],
+    ] as const) {
+      expect(unit).toContain(`Environment=${envVar}=$RUNTIME_ROOT/current/${dir}`);
+    }
+    expect(unit).toContain(
+      'runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" "$RELEASE_DIR/$INSTALL_ENTRYPOINT"',
+    );
   });
 
   it('defines replay-safe install, upgrade, rollback, and failure restoration', () => {

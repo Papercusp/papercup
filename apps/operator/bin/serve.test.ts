@@ -178,6 +178,7 @@ describe("side-effect-free help (EI-21546899007927487)", () => {
 
   it("returns before every packaged sidecar, lock, database, migration, and bootstrap path", () => {
     const main = serveSrc.indexOf("async function main(): Promise<void>");
+    const contentBootstrap = serveSrc.indexOf('if (argv[0] === "--content-bootstrap")', main);
     const help = serveSrc.indexOf("if (isServeHelpRequest(argv))", main);
     const parentWatch = serveSrc.indexOf("startSidecarParentDeathWatch();", main);
     const substrate = serveSrc.indexOf("runSubstrateSidecarServer();", main);
@@ -186,8 +187,10 @@ describe("side-effect-free help (EI-21546899007927487)", () => {
     const bootstrap = serveSrc.indexOf("runBootstrap();", main);
 
     expect(main).toBeGreaterThan(-1);
+    expect(contentBootstrap).toBeGreaterThan(main);
     expect(help).toBeGreaterThan(main);
     for (const bootSideEffect of [parentWatch, substrate, lock, postgres, bootstrap]) {
+      expect(bootSideEffect).toBeGreaterThan(contentBootstrap);
       expect(bootSideEffect).toBeGreaterThan(help);
     }
   });

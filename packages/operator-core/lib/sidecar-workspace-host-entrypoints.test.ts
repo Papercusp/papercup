@@ -39,6 +39,7 @@ const VM_RELEASE_CONFIG = join(
   'papercusp-desktop/src-tauri/tauri.vm-release.conf.json',
 );
 const PUI_MANIFEST_WRITER = join(REPO_ROOT, 'apps/tui/scripts/write-install-manifest.py');
+const CONTENT_BOOTSTRAP = 'papercusp-content-bootstrap';
 const scratchRoots: string[] = [];
 
 /**
@@ -80,9 +81,17 @@ function makeFixture(): string {
   }
   writeFileSync(
     join(root, 'serve.mjs'),
-    `import { writeFileSync } from 'node:fs';\n` +
+    `import { mkdirSync, writeFileSync } from 'node:fs';\n` +
       `const argv = process.argv.slice(2);\n` +
-      `if (argv.some((arg) => arg === '--help' || arg === '-h')) {\n` +
+      `if (argv[0] === '--content-bootstrap') {\n` +
+      `  if (argv.some((arg) => arg === '--help' || arg === '-h')) {\n` +
+      `    process.stdout.write('Usage: papercusp-content-bootstrap --state-root <absolute-directory>\\n');\n` +
+      `  } else {\n` +
+      `    const stateRoot = argv[argv.indexOf('--state-root') + 1];\n` +
+      `    for (const dir of ['blueprints/base/prompts', 'templates', 'rubrics']) mkdirSync(stateRoot + '/.papercusp/' + dir, { recursive: true });\n` +
+      `    writeFileSync(stateRoot + '/content-bootstrap-invoked.json', JSON.stringify({ argv }));\n` +
+      `  }\n` +
+      `} else if (argv.some((arg) => arg === '--help' || arg === '-h')) {\n` +
       `  process.stdout.write('Usage: papercusp serve [--ensure] [--ui]\\n');\n` +
       `} else {\n` +
       `  writeFileSync(process.env.PC_ENTRYPOINT_OUTPUT, JSON.stringify({ argv, env: process.env }));\n` +
@@ -179,6 +188,7 @@ describe('workspace-host sidecar entrypoint producer', () => {
     for (const name of ENTRYPOINTS) {
       expect(run('test', ['-x', join(root, 'bin', name)]).status, name).toBe(0);
     }
+    expect(run('test', ['-x', join(root, 'bin', CONTENT_BOOTSTRAP)]).status).toBe(0);
     expect(readlinkSync(join(root, 'bin/node'))).toBe(nodeTarget);
     expect(readFileSync(join(root, 'bin/papercusp-remote-initializer'), 'utf8')).toBe(initializer);
     // The overlay emits WRAPPERS; the two controller-spawned programs are esbuild bundles the
@@ -232,6 +242,7 @@ describe('workspace-host sidecar entrypoint producer', () => {
     expect(verifier).toContain('pui-companion.wasm');
     expect(verifier).toContain('pui-install.json');
     expect(verifier).toContain('write-install-manifest.py');
+    expect(verifier).toContain(CONTENT_BOOTSTRAP);
   });
 });
 
@@ -251,6 +262,9 @@ describe('workspace-host entrypoint behavior', () => {
         '--action', 'install', '--release-root', root, '--state-root', state,
       ]).status,
     ).toBe(0);
+    expect(
+      JSON.parse(readFileSync(join(state, 'content-bootstrap-invoked.json'), 'utf8')),
+    ).toEqual({ argv: ['--content-bootstrap', '--state-root', state] });
     expect(
       run(join(root, 'bin/papercusp-install'), [
         '--action', 'unknown', '--release-root', root, '--state-root', state,
@@ -279,6 +293,9 @@ describe('workspace-host entrypoint behavior', () => {
     const output = join(root, 'server-output.json');
     const pgRoot = join(root, 'pgdata');
     mkdirSync(pgRoot);
+    expect(
+      run(join(root, 'bin', CONTENT_BOOTSTRAP), ['--state-root', root]).status,
+    ).toBe(0);
     const env = {
       ...process.env,
       PC_ENTRYPOINT_OUTPUT: output,
@@ -302,6 +319,12 @@ describe('workspace-host entrypoint behavior', () => {
     expect(observed.env.PAPERCUSP_BUILD_SHA).toBe('a'.repeat(40));
     expect(observed.env.PAPERCUSP_DISTRIBUTION_PROFILE).toBe('vm-release');
     expect(observed.env.PAPERCUSP_PROVISION_ENV_OPERATORS).toBe('0');
+    expect(observed.env.PAPERCUSP_HOME).toBe(join(root, '.papercusp'));
+    expect(observed.env.PAPERCUSP_PROMPTS_DIR).toBe(
+      join(root, '.papercusp', 'blueprints', 'base', 'prompts'),
+    );
+    expect(observed.env.PAPERCUSP_TEMPLATES_DIR).toBe(join(root, '.papercusp', 'templates'));
+    expect(observed.env.PAPERCUSP_RUBRICS_DIR).toBe(join(root, '.papercusp', 'rubrics'));
 
     rmSync(output);
     const help = run(join(root, 'bin/papercusp-server'), ['--help'], env);

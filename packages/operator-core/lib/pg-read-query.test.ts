@@ -2072,6 +2072,20 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     ).toBeNull();
   });
 
+  it('redirects the plan-item claim agent_id guess to the canonical owner column', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT agent_id FROM harness_shared.plan_item_claims WHERE workspace_id = 'ws' AND harness_slug = 'h'",
+      'column "agent_id" does not exist',
+    );
+    expect(out).toContain('plan-item claim ownership');
+    expect(out).toContain('owner');
+    expect(out).toContain('owner_name');
+    expect(out).toContain('owner_label');
+    expect(out).toContain('workspace_id');
+    expect(out).toContain('harness_slug');
+    expect(out).toContain('harness_shared.plan_item_claims');
+  });
+
   it('names install_slug for the routines table when harness_slug is guessed', () => {
     const out = buildSchemaColumnRedirect(
       "SELECT harness_slug FROM harness_shared.routines WHERE workspace_id = 'ws'",
