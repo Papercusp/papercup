@@ -322,8 +322,15 @@ export function evaluateAcceptanceBarLifecycle(
     }
   }
 
+  // The snapshot's repair is computed for the complete contract, while this
+  // evaluator adds and defers codes according to the lifecycle door. Reuse the
+  // richer snapshot action only when its code still blocks this phase; an
+  // earlier-door repair (for example proof depth before pre-grading vetting)
+  // would otherwise send the caller toward an irrelevant mutation.
   const nextRepair =
-    snapshot.readiness.nextRepair ??
+    (snapshot.readiness.nextRepair && codes.includes(snapshot.readiness.nextRepair.code)
+      ? snapshot.readiness.nextRepair
+      : null) ??
     (() => {
       const first = codes[0];
       return first

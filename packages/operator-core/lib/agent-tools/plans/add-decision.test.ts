@@ -211,6 +211,7 @@ describe('plans:add-decision — measure before you rule', () => {
     ['blockquote marker', '> Measured: 22 cited paths, 7 drifted'],
     ['list marker plus emphasis', '- **Measured:** 22 cited paths, 7 drifted'],
     ['indented emphasis', '   **Measured:** 22 cited paths, 7 drifted'],
+    ['backtick code-span', '`Measured:` 22 cited paths, 7 drifted'],
   ])('accepts a Measured line decorated with %s', (_label, measured) => {
     expect(decisionMeasurementAdvisory(`relay-provenance.ts:212 owns this field.\n${measured}`)).toBeNull();
   });
@@ -230,6 +231,9 @@ describe('plans:add-decision — measure before you rule', () => {
     // evidence follows: a bare promise must keep failing.
     expect(decisionMeasurementAdvisory(
       'relay-provenance.ts:212 owns this field.\n**Measured:**',
+    )).toMatchObject({ code: 'tree_fact_measurement_missing' });
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field.\n`Measured:`',
     )).toMatchObject({ code: 'tree_fact_measurement_missing' });
   });
 

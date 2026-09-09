@@ -290,6 +290,29 @@ describe('resolveFireCompliance', () => {
     expect(update.values).not.toContain(false);
   });
 
+  it('closes an abandoned fire when pooled Postgres returns fired_at as a string', async () => {
+    // The production org pool uses prepare:false, so timestamptz values arrive
+    // in PostgreSQL wire format instead of as Date objects. A direct string <
+    // Date comparison coerces the string to NaN and silently skips abandonment.
+    const sql = harness(
+      [
+        {
+          id: '1',
+          session_id: 'su-a',
+          tool_name: 'capability:read',
+          fired_at: '2026-08-02 10:59:59.000000+00',
+        },
+      ],
+      [],
+    );
+    const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
+
+    expect(out).toEqual({ examined: 1, measured: 0, noFollowUp: 1 });
+    expect(sql.calls.find((c) => c.text.startsWith('UPDATE'))?.text).toContain(
+      'resolved_at = now()',
+    );
+  });
+
   it('closes a fire with no session id instead of re-scanning it forever', async () => {
     const sql = harness(
       [{ id: '1', session_id: null, tool_name: 'capability:read', fired_at: abandoned }],

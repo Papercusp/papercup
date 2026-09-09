@@ -70,6 +70,10 @@ async function main() {
   await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
+    // The gate calls this CLI directly, bypassing the app's pretypecheck hook.
+    // A cold judging checkout has no Vite server to create FileRoutesByPath.
+    // Reuse the runner's fail-closed preflight and the app's existing generator.
+    preTscCommand: 'node apps/operator-vite/scripts/generate-route-tree.mjs',
     baselineFile,
     label: 'operator-vite',
     argv: process.argv.slice(2),

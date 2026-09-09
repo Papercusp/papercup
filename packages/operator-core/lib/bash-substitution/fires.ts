@@ -102,6 +102,19 @@ export const COMPLIANCE_SETTLE_MS = 60_000;
 export const COMPLIANCE_ABANDON_MS = 60 * 60_000;
 
 /**
+ * Coerce a timestamptz returned by the pooled postgres client to epoch ms.
+ *
+ * The canonical org pool uses `prepare: false`, so PostgreSQL timestamp columns
+ * arrive as wire-format strings there; the direct testcontainer client returns
+ * `Date` objects. Comparing the string directly with a `Date` makes JavaScript
+ * coerce the string to `NaN`, so the abandonment branch silently never runs.
+ */
+function timestampMs(value: Date | string): number | null {
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
  * Record that these registry rows claimed an atom, and bump their hot counters.
  *
  * BEST EFFORT BY CONTRACT. The caller is `locks:check_command`, whose whole
@@ -238,7 +251,12 @@ export async function resolveFireCompliance(opts: {
   const abandonedBefore = new Date(now.getTime() - COMPLIANCE_ABANDON_MS);
   const limit = opts.limit ?? 500;
 
-  let pending: Array<{ id: string; session_id: string | null; tool_name: string; fired_at: Date }>;
+  let pending: Array<{
+    id: string;
+    session_id: string | null;
+    tool_name: string;
+    fired_at: Date | string;
+  }>;
   try {
     pending = (await sql`
       SELECT id, session_id, tool_name, fired_at
@@ -291,7 +309,8 @@ export async function resolveFireCompliance(opts: {
     // No subsequent call yet. Before the abandonment window that is simply "too
     // early to tell" and the fire is left alone; after it, the session is gone
     // and the honest record is resolved-with-no-verdict.
-    if (fire.fired_at < abandonedBefore) {
+    const firedAtMs = timestampMs(fire.fired_at);
+    if (firedAtMs !== null && firedAtMs < abandonedBefore.getTime()) {
       await sql`
         UPDATE harness_shared.bash_tool_substitution_fires
            SET resolved_at = now()

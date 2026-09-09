@@ -64,7 +64,7 @@ export interface DecisionProvenance {
 // merely because the measured result was negative. Keep the tolerant markdown
 // forms pinned by add-decision.test.ts.
 const DECISION_MEASURED_LINE_RE =
-  /^[ \t]*(?:(?:[-*+>]|\d+[.)])[ \t]*)?(?:\*\*|__|\*|_)?[ \t]*Measured\b(?:[ \t]*[(\[][^\n]{0,200}[)\]]|[^:\n]{0,80})?[ \t]*:(?:\*\*|__|\*|_)?\s+\S.+$/im;
+  /^[ \t]*(?:(?:[-*+>]|\d+[.)])[ \t]*)?(?:\*\*|__|\*|_|`)?[ \t]*Measured\b(?:[ \t]*[(\[][^\n]{0,200}[)\]]|[^:\n]{0,80})?[ \t]*:(?:\*\*|__|\*|_|`)?\s+\S.+$/im;
 
 export function hasConcreteDecisionMeasurement(text: string): boolean {
   return DECISION_MEASURED_LINE_RE.test(text);

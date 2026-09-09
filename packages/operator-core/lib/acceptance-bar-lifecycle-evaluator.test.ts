@@ -368,6 +368,39 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     expect(ready.satisfied).toBe(true);
   });
 
+  it('does not carry a complete-snapshot repair into a phase where that code is deferred', () => {
+    const verdict = evaluateAcceptanceBarLifecycle(
+      snapshot({
+        bars: [
+          bar({
+            method: 'Run the tests.',
+            check: { kind: 'tests', files: ['x.test.ts'] },
+            readiness: {
+              state: 'blocked',
+              codes: ['bar_snapshot_proof_depth_missing'],
+              mapping: 'live',
+              method: 'declared',
+              workContract: 'current',
+            },
+          }),
+        ],
+        readiness: {
+          state: 'blocked',
+          codes: ['bar_snapshot_proof_depth_missing'],
+          nextRepair: {
+            code: 'bar_snapshot_proof_depth_missing',
+            barKey: 'R-1',
+            action: 'Amend requiredTestLayers.',
+          },
+        },
+      }),
+      'pre-grading',
+    );
+
+    expect(verdict.codes).toEqual(['bar_snapshot_vetting_missing']);
+    expect(verdict.nextRepair).toMatchObject({ code: 'bar_snapshot_vetting_missing', barKey: null });
+  });
+
   it('requires current proof, pass grading, vetting, and accepted author verdict at ship', () => {
     const blocked = evaluateAcceptanceBarLifecycle(
       snapshot({
