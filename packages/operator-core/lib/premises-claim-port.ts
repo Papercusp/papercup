@@ -330,89 +330,61 @@ function isNonSurfaceAbsenceSubject(subject: string): boolean {
 }
 
 /**
- * Deictic subjects. "…and IT does not exist" is a genuine, load-bearing absence
- * premise in the corpus (WI-7187 prescribes building the very guard it says is
- * absent), so dropping it would be a false negative on a real case. But its
- * subject is a pronoun, and a `recheck` that told a claimant to search the repo
- * for the literal string "it" would be worse than useless — it would look like a
- * named search term while naming nothing.
+ * A repository search is the right falsifier only when the matched span contains
+ * a concrete artifact: a symbol, path, tool name, work-item id, error code, or
+ * similar durable identifier. It is the wrong probe for prose about a transient
+ * VCS/runtime condition such as "broken intermediate to bank" — searching for
+ * that sentence can only return noise (or a guaranteed zero), and therefore
+ * cannot establish anything about the world.
  *
- * So the premise still fires, and the re-check asks the reader to NAME the
- * referent first. D-001 (c) requires naming the real answer where one is
- * knowable; where it genuinely is not, say so rather than fabricate one.
+ * Keep the extraction separate from absence classification. The detector should
+ * still flag a state-shaped absence; this helper only decides whether a useful
+ * search command can be synthesized. If no artifact can be extracted, the caller
+ * gets honest observation guidance instead of a fabricated grep target.
  */
-const DEICTIC = new Set(['it', 'this', 'that', 'they', 'these', 'those', 'one', 'there', 'he', 'she']);
+const SEARCHABLE_ARTIFACT_PATTERNS: ReadonlyArray<RegExp> = [
+  /\b(?:WI|EI|F|P)-\d+\b/gi,
+  /(?:^|[\s`"'(])((?:\/[\w./-]+|(?:[\w.-]+\/)+[\w./-]+|[\w.-]+\.(?:ts|tsx|js|mjs|cjs|json|sql|md|yaml|yml)(?::\d+)?))/gi,
+  /(?<![A-Za-z0-9_$])([A-Za-z_$][\w$]*(?:(?:\.|::|->|:)[A-Za-z_$][\w$.-]*)+)(?![A-Za-z0-9_$])/g,
+  /--[\w-]+/g,
+  /\b[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b/g,
+  /\b(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b/gi,
+  /\b(?:ERR_[A-Z0-9_]+|E[A-Z]{2,}[A-Z0-9_]*|SQLSTATE)\b/g,
+];
 
-/**
- * A repository search is the right falsifier for a named symbol, path, or durable
- * identifier. It is the wrong probe for a sentence about time, scheduling, or live
- * state: searching the repo for that prose can only return noise (or a guaranteed
- * zero), and therefore cannot establish anything about the world.
- */
+function extractSearchableArtifact(subject: string, claim: string): string | null {
+  const normalized = `${subject} ${claim}`.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+  // Inline code is an explicit author-selected artifact even when the absence
+  // matcher shortened its subject at a dot (`harness_shared.work_items`).
+  // Prefer the first compact code span so a column name such as `severity` is
+  // not displaced by the longer natural-language subject around it.
+  for (const match of normalized.matchAll(/`([^`\n]{1,120})`/g)) {
+    const artifact = (match[1] ?? '').trim();
+    if (artifact.length >= 3 && !/\s/.test(artifact)) return artifact;
+  }
+  for (const pattern of SEARCHABLE_ARTIFACT_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (const match of normalized.matchAll(pattern)) {
+      const artifact = (match[1] ?? match[0] ?? '')
+        .replace(/^[`"'(]+|[`"'),.;:]+$/g, '')
+        .trim();
+      if (artifact.length >= 3) return artifact;
+    }
+  }
+  return null;
+}
+
 const OBSERVATION_RECHECK =
   'State what would falsify this claim and how you would observe it; name the runtime, temporal, or external-state probe that can answer it.';
 
-/** Words which can be captured as the subject of `X did not exist` without naming a
- * searchable object. Keep this deliberately small: a single ordinary noun such as
- * `helper` remains useful as a search term, while a stopword such as `what` does not. */
-const ABSENCE_SUBJECT_STOPWORDS = new Set([
-  'a',
-  'an',
-  'the',
-  'this',
-  'that',
-  'it',
-  'what',
-  'which',
-  'who',
-  'where',
-  'when',
-  'why',
-  'how',
-  'there',
-  'anything',
-  'something',
-  'nothing',
-  'one',
-  'any',
-  'all',
-  'no',
-  'none',
-]);
-
-/** A concrete token shape that can be meaningfully searched in the repository. */
-const CODE_SHAPED_SUBJECT_RE =
-  /(?:\b[A-Za-z_$][\w$]*(?:[._:/]|::|->)[\w$./:-]*\b|\b(?:WI|EI|F|P)-\d+\b|--[\w-]+|\/[\w./-]+|\b[\w./-]+\.(?:ts|tsx|js|mjs|cjs|json|sql|md|yaml|yml)\b|\b[a-z]+[A-Z][A-Za-z0-9]+\b)/;
-
-/**
- * Temporal/live-state subjects and long natural-language fragments need an
- * observation recipe rather than a generated repository grep. This classification
- * only changes the recheck guidance; the absence detector still flags the claim.
- */
-function needsObservationRecheck(subject: string): boolean {
-  const normalized = subject.replace(/\s+/g, ' ').trim();
-  if (!normalized) return true;
-  if (CODE_SHAPED_SUBJECT_RE.test(normalized)) return false;
-
-  const words = normalized.match(/[A-Za-z0-9_$]+/g) ?? [];
-  if (words.length === 0) return true;
-  if (words.length === 1 && ABSENCE_SUBJECT_STOPWORDS.has(words[0].toLowerCase())) return true;
-  if (words.length > 5) return true;
-
-  return /\b(?:wake|wakes|wakeup|scheduled?|scheduling|schedule|expiry|expires?|expired|ttl|timer|event(?:s)?|occur(?:red|s)?|process|runtime|state|deadline|window|wall[- ]clock|today|yesterday|tomorrow|last|next|instant|moment|chance|rely|reliable)\b/i.test(
-    normalized,
-  );
-}
-
 /** The concrete probe attached to a derived premise. */
-function recheckFor(subject: string): string {
+function recheckFor(subject: string, claim: string): string {
   const scopeRule =
     'across the WHOLE repo (not the one file that suggested it), then state the scope you searched — ' +
     'an absence found in one module is not an absence.';
-  if (needsObservationRecheck(subject)) return OBSERVATION_RECHECK;
-  return DEICTIC.has(subject.toLowerCase())
-    ? `NAME what this sentence claims is absent (the subject is a pronoun here), then search for it ${scopeRule}`
-    : `Search for "${subject.slice(0, 80)}" ${scopeRule}`;
+  const artifact = extractSearchableArtifact(subject, claim);
+  return artifact ? `Search for "${artifact}" ${scopeRule}` : OBSERVATION_RECHECK;
 }
 
 /**
@@ -632,7 +604,7 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
         // D-001 (c): name the SCOPE requirement, not just "verify this". Scope of
         // inference — a real search over too narrow a scope — is the measured
         // failure mode, so a recheck that omits its scope reproduces the bug.
-        recheck: recheckFor(subjForRecheck),
+        recheck: recheckFor(subjForRecheck, claim),
       });
       if (out.length >= MAX_PREMISES) return out;
     }

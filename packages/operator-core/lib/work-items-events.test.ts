@@ -155,6 +155,32 @@ describe('critical work-item alert reconciliation (EI-20271572335296930)', () =>
     ]);
   });
 
+  it.each(['critical', 'major', 'minor', 'nit', null] as const)(
+    'resolves the creation alert after settlement regardless of current severity (%s)',
+    async (severity) => {
+      const listOpenBySubject = vi.fn(async (subject: string) => {
+        expect(subject).toBe('critical-wi-alert:WI-1');
+        return [{ msg_id: 'announce-1', subjectSignature: subject }];
+      });
+      const resolveBatch = vi.fn(async () => ({ resolved: 1 }));
+
+      await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state: 'done', severity }), {
+        listOpenBySubject,
+        resolveBatch,
+      });
+
+      expect(listOpenBySubject).toHaveBeenCalledTimes(1);
+      expect(resolveBatch).toHaveBeenCalledWith([
+        {
+          msg_id: 'announce-1',
+          choice: 'work-item-settled',
+          resolver: 'system:work-item-settle',
+          note: 'WI-1 settled; its creation alert is no longer an active owner-facing condition',
+        },
+      ]);
+    },
+  );
+
   it('matches the subject signature, never an arbitrary mention of the item id', () => {
     expect(
       selectCriticalWorkItemAlerts(

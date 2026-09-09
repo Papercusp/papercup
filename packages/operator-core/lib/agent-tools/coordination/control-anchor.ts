@@ -753,6 +753,8 @@ export async function buildControlAnchorState(
   opts: {
     sql?: Sql;
     loop?: LoopStatus | null;
+    /** Test/transaction seam; undefined reads the newest persisted launch receipt. */
+    explicitStack?: readonly string[] | null;
     /** WI-7302: DI seam so the wake-source leg unit-tests without PG. */
     fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
   } = {},
@@ -793,6 +795,24 @@ export async function buildControlAnchorState(
   // silently omits a predecessor's stand-down order. The enclosing orient or
   // mutation refresh can retry; it may never manufacture authority from absence.
   const goalAuthorityP = guard(readGoalHolderAuthority(sql, workspaceId, ownerId));
+  const explicitStackP = guard(
+    opts.explicitStack !== undefined
+      ? Promise.resolve([...(opts.explicitStack ?? [])])
+      : sql<Array<{ stack_refs: unknown }>>`
+          SELECT launch_spec->'stack' AS stack_refs
+            FROM harness_shared.adv_sessions
+           WHERE workspace_id = ${workspaceId}
+             AND coord_owner_id = ${ownerId}
+             AND launch_spec->>'v' = '1'
+           ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, started_at DESC, id DESC
+           LIMIT 1
+        `.then((rows) => {
+          const raw = rows[0]?.stack_refs;
+          return Array.isArray(raw)
+            ? raw.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+            : [];
+        }),
+  );
     // ⚠ NO `expires_ts > clock_timestamp()` FILTER HERE — deliberately.
     //
     // `plan_item_claims` is a TTL'd coordination LEASE (default ttl_sec 1200 =
@@ -833,12 +853,13 @@ export async function buildControlAnchorState(
       () => new Map<string, SelfWakeSignals>(),
     ),
   );
-  const [modes, loop, membership, brief, goalAuthority, claims, selfWake] = await Promise.all([
+  const [modes, loop, membership, brief, goalAuthority, explicitStack, claims, selfWake] = await Promise.all([
     modesP,
     loopP,
     membershipP,
     briefP,
     goalAuthorityP,
+    explicitStackP,
     claimsP,
     selfWakeP,
   ]);
@@ -860,7 +881,7 @@ export async function buildControlAnchorState(
     ),
     // P-012 / P-021: the stack binding is a projection of the route (fleet posture) and of
     // the active modes (one definition identity per mode axis) — no new leg.
-    stack: stackRefsForSession({ route, modes: modes.map((m) => m.mode) }),
+    stack: stackRefsForSession({ route, modes: modes.map((m) => m.mode), explicit: explicitStack }),
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
     wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',

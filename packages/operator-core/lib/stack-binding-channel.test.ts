@@ -57,6 +57,16 @@ describe('stackRefsForRoute (P-012)', () => {
       'autonomy:su.mode-auto',
     ]);
     expect(stackRefsForSession({ route: { kind: 'self' }, modes: ['auto', 'ideate'] })).toEqual(['autonomy:su.mode-auto', 'ideation:su.mode-ideate']);
+    expect(stackRefsForSession({
+      route: { kind: 'fleet', fleet: 'alpha', role: 'leader' },
+      modes: ['auto'],
+      explicit: ['domain:researcher', 'practice:citations', 'autonomy:su.mode-auto'],
+    })).toEqual([
+      'domain:researcher',
+      'practice:citations',
+      'autonomy:su.mode-auto',
+      SU_POSTURE_REFS.leader,
+    ]);
   });
 
   it('normalizeControlAnchorState carries `stack` only when non-empty, sorted + deduped', () => {

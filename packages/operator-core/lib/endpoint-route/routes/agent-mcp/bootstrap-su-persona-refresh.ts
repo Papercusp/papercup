@@ -33,15 +33,11 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { readSuLaunchSpecByOwner, recordSuLaunchSpec } from '../../../adv-sessions';
-import { blockingInstructionConflicts, buildInstructionPrecedenceTrace } from '../../../instruction-lint';
-import { buildLaunchSpec, compileLaunchSpecificationArtifact } from '../../../role-launch-spec';
 import { isSuAgent } from '../../../su-agents';
 import { launchContextDir } from '../../../su-launch-context';
 import {
-  applySuPromptOverlays,
-  resolveSuInstructionRuntime,
   parseSuLaunchSpecRecord,
-  resolveSuPlanContext,
+  rebuildSuLaunchArtifact,
   suPersonaRefreshPathFor,
 } from '../../../su-persona-render';
 import { CORS_HEADERS, composeModePromptSection, gatePrincipal, jsonRes } from './bootstrap-su';
@@ -85,84 +81,17 @@ const personaRefresh = defineTool({
         return jsonRes({ ok: false, reason: 'unsupported-agent', agent: record.agent });
       }
 
-      // Resolved fresh, not replayed: a bound plan's `## Now` is exactly the kind of
-      // thing that has MOVED since launch, and re-reading it is the point.
-      const plan = await resolveSuPlanContext({
-        planSlug: record.planSlug,
-        harnessSlug: record.harnessSlug,
-        workspaceId: record.workspaceId,
-      });
-
-      const spec = await buildLaunchSpec({
-        kind: 'su',
-        agent: record.agent,
-        workspaceId: record.workspaceId,
-        operatorBaseUrl: new URL(req.url).origin,
-        harnessSlug: record.harnessSlug,
-        profile: record.profile,
-        contextSize: record.contextSize,
-        personaTier: record.personaTier,
-        model: record.model,
-        planSlug: record.planSlug,
-        stack: record.stack,
-        planTitle: plan.planTitle,
-        planNow: plan.planNow,
-      });
-
-      const instructionRuntime = await resolveSuInstructionRuntime({
+      const rebuilt = await rebuildSuLaunchArtifact({
         ownerId: coordOwnerId,
-        autoMode: record.autoMode,
-        drainMode: record.drainMode,
-        fleet: record.fleet,
-        workspaceId: record.workspaceId,
-        harnessSlug: record.harnessSlug,
-        planSlug: record.planSlug,
-      });
-
-      const overlaid = await applySuPromptOverlays({
-        basePromptText: spec.promptText,
-        agent: record.agent,
-        // codex-only overlay; a claude launch keeps its `--launch-context` brief in
-        // its own `--append-system-prompt-file`, which the respawn argv preserves
-        // untouched. Nothing to re-fold here.
-        launchContextText: '',
-        launchedBy: record.launchedBy,
+        operatorBaseUrl: new URL(req.url).origin,
+        record,
         modeSection: composeModePromptSection({
           autoMode: record.autoMode,
           drainMode: record.drainMode,
           loopArmed: record.loopArmed,
         }),
-        instructionRuntime,
       });
-      let promptText = overlaid.promptText;
-      const instructionLint = overlaid.instructionLint;
-
-      // The launch path REFUSES a boot whose compiled instructions contradict each
-      // other on file-lock mode. Apply the same bar here rather than shipping a
-      // known-contradictory prompt into a live session: the inherited render at
-      // least booted past this check once.
-      const blocking = blockingInstructionConflicts(instructionLint);
-      if (blocking.length > 0) {
-        return jsonRes({ ok: false, reason: 'instruction-conflict', instructionLint });
-      }
-
-      const precedence = buildInstructionPrecedenceTrace(instructionRuntime);
-      const artifact = await compileLaunchSpecificationArtifact({
-        promptText,
-        promptFile: spec.promptFile,
-        cwd: spec.cwd,
-        harnessSlug: record.harnessSlug,
-        role: 'su',
-        stack: spec.stack,
-        stateRevision: precedence.watermark,
-        state: {
-          schemaVersion: 1,
-          principal: { kind: 'su', role: 'su', profile: record.profile },
-          policy: { mcp: 'superuser', contextSize: record.contextSize, personaTier: spec.personaTier ?? null },
-          instructionPrecedence: precedence,
-        },
-      });
-      promptText = artifact.promptText;
+      const { artifact, promptText, spec } = rebuilt;
 
       // Write atomically to a path that is NOT the inherited one. The caller's
       // fallback is the file it already has, so that file must stay intact and

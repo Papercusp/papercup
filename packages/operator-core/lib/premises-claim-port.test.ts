@@ -55,8 +55,9 @@ describe('detectAbsencePremises', () => {
     expect(p.kind).toBe('absence');
     expect(p.source).toBe('work-item');
     expect(p.claim).toContain('no exported read helper');
-    // D-001 (c): the recheck must NAME the thing to search for...
-    expect(p.recheck).toContain('exported read helper');
+    // D-001 (c): the recheck must NAME the concrete artifact to search for...
+    expect(p.recheck).toContain('harness_shared.p2p_work_offers');
+    expect(p.recheck).not.toContain('exported read helper');
     // ...and demand the SCOPE, since scope-of-inference is the measured failure.
     expect(p.recheck).toMatch(/whole repo/i);
     expect(p.recheck).toMatch(/scope/i);
@@ -70,11 +71,21 @@ describe('detectAbsencePremises', () => {
     expect(p.recheck).not.toMatch(/search|grep|whole repo/i);
   });
 
+  it('does not synthesize a grep target from transient VCS prose (EI-22412433263118345)', () => {
+    const [p] = derive(
+      'The pending edit is comment-only, tests-green and tsc-clean, so there is no broken intermediate to bank.',
+    );
+    expect(p.kind).toBe('absence');
+    expect(p.recheck).toMatch(/what would falsify/i);
+    expect(p.recheck).toMatch(/observe/i);
+    expect(p.recheck).not.toMatch(/search|grep|broken intermediate to bank/i);
+  });
+
   it('does not turn a stopword absence subject into a search term', () => {
     const [p] = derive('what did not exist was any wake I could RELY on');
     expect(p.kind).toBe('absence');
     expect(p.recheck).toMatch(/what would falsify/i);
-    expect(p.recheck).not.toContain('Search for "what"');
+    expect(p.recheck).not.toMatch(/search|grep|whole repo/i);
   });
 
   it('uses observation guidance for a long natural-language absence subject', () => {

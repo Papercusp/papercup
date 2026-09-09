@@ -80,9 +80,18 @@ export function stackRefsForModes(modes: readonly string[] | null | undefined): 
   return out;
 }
 
-/** The whole derived binding of a live session: fleet posture (route) + mode axes (agent_modes). */
-export function stackRefsForSession(input: { route: ControlAnchorState['route']; modes: readonly string[] | null | undefined }): string[] {
-  return [...stackRefsForRoute(input.route), ...stackRefsForModes(input.modes)];
+/**
+ * The whole binding of a live session: explicit launch-spec layers plus the
+ * registry-derived fleet posture and mode axes. The launch record is the mutable
+ * authority for user-selected layers; route/mode state remains independently
+ * authoritative and is appended on every reconciliation. Exact repeats collapse.
+ */
+export function stackRefsForSession(input: {
+  route: ControlAnchorState['route'];
+  modes: readonly string[] | null | undefined;
+  explicit?: readonly string[] | null;
+}): string[] {
+  return [...new Set([...(input.explicit ?? []), ...stackRefsForRoute(input.route), ...stackRefsForModes(input.modes)])];
 }
 
 function sameRefs(a: readonly string[], b: readonly string[]): boolean {

@@ -600,6 +600,50 @@ async function readOpenEscalationsProjection(
   return filter ? all.filter((rec) => escalationMatchesFilter(rec, filter)) : all;
 }
 
+/**
+ * Read one exact open-escalation subject without materializing the complete
+ * open set. The critical work-item creation alert is keyed by a stable
+ * conditionKey/subjectSignature, so settle-time cleanup must remain cheap even
+ * when the item was re-rated away from `critical` before it settled.
+ *
+ * The projection is an optimization, not the source of truth: when the fast
+ * path is unavailable (or its feature flag/read fails), retain the existing
+ * full-fold fallback used by the general list operation.
+ */
+export async function listOpenEscalationsBySubjectSignature(subjectSignature: string): Promise<EscalationRecord[]> {
+  const subject = subjectSignature.trim();
+  if (!subject) return [];
+
+  if (coordHasPgFastPath()) {
+    let useProjection = false;
+    try {
+      useProjection = await getFlag(FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION, systemDistinctId());
+    } catch {
+      useProjection = false;
+    }
+    if (useProjection) {
+      try {
+        const sql = coordSql();
+        const ws = coordWorkspaceId();
+        const rows = await sql<{ body: EscalationRecord }[]>`
+          SELECT body
+            FROM harness_shared.coord_open_escalations
+           WHERE workspace_id = ${ws}
+             AND body->>'dedupKind' = 'conditionKey'
+             AND body->>'subjectSignature' = ${subject}
+        `;
+        return rows.map((row) => row.body);
+      } catch {
+        // Fall through to the authoritative event fold below.
+      }
+    }
+  }
+
+  return (await listEscalations({ status: 'open' })).filter(
+    (record) => (record as Record<string, unknown>)[OPEN_ESCALATION_SUBJECT_SIGNATURE_KEY] === subject,
+  );
+}
+
 /** List escalation records. Optionally filter by open/resolved. */
 export async function listEscalations(
   opts: { status?: 'open' | 'resolved' } = {},

@@ -25,6 +25,7 @@
 import { join } from 'node:path';
 import { normalizeSuContextSize } from './su-context-size.mjs';
 import {
+  blockingInstructionConflicts,
   buildInstructionPrecedenceTrace,
   lintInstructionText,
   renderInstructionPrecedenceContext,
@@ -34,6 +35,12 @@ import {
 } from './instruction-lint';
 import { launchContextDir } from './su-launch-context';
 import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import {
+  buildLaunchSpec,
+  compileLaunchSpecificationArtifact,
+  type LaunchArtifactResult,
+  type LaunchSpec,
+} from './role-launch-spec';
 
 /** The plan context a launch bakes into its brief, resolved fresh per render. */
 export interface SuPlanContext {
@@ -314,6 +321,105 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     ...(str(r.stateRevision) ? { stateRevision: str(r.stateRevision)! } : {}),
     ...(str(r.principalId) ? { principalId: str(r.principalId)! } : {}),
     ...(artifact ? { specificationArtifact: artifact } : {}),
+  };
+}
+
+export interface RebuildSuLaunchArtifactInput {
+  ownerId: string;
+  operatorBaseUrl: string;
+  record: SuLaunchSpecRecord;
+  /** Override only the explicit mutable stack. Derived mode/posture layers stay registry-owned. */
+  stack?: readonly string[];
+  /** Kept outside this module so bootstrap-su remains the one owner of mode-directive prose. */
+  modeSection: string;
+}
+
+export interface RebuiltSuLaunchArtifact {
+  spec: LaunchSpec;
+  artifact: LaunchArtifactResult;
+  promptText: string;
+  instructionLint: InstructionLintReport;
+  instructionRuntime: InstructionRuntimeContext;
+}
+
+/**
+ * Rebuild the exact immutable launch artifact from one persisted SU launch record.
+ *
+ * Persona refresh and identity mutation both need this operation. Keeping it here
+ * prevents the two paths from drifting on plan refresh, overlays, mutable-state
+ * revision, or — critically — derived fleet/mode identity layers. `record.stack`
+ * stores only explicit choices; live fleet posture and mode definitions are folded
+ * into the full render from the registry-owned instruction runtime every time.
+ */
+export async function rebuildSuLaunchArtifact(
+  input: RebuildSuLaunchArtifactInput,
+): Promise<RebuiltSuLaunchArtifact> {
+  const { ownerId, operatorBaseUrl, record } = input;
+  const plan = await resolveSuPlanContext({
+    planSlug: record.planSlug,
+    harnessSlug: record.harnessSlug,
+    workspaceId: record.workspaceId,
+  });
+  const instructionRuntime = await resolveSuInstructionRuntime({
+    ownerId,
+    autoMode: record.autoMode,
+    drainMode: record.drainMode,
+    fleet: record.fleet,
+    workspaceId: record.workspaceId,
+    harnessSlug: record.harnessSlug,
+    planSlug: record.planSlug,
+  });
+  const spec = await buildLaunchSpec({
+    kind: 'su',
+    agent: record.agent,
+    workspaceId: record.workspaceId,
+    operatorBaseUrl,
+    harnessSlug: record.harnessSlug,
+    profile: record.profile,
+    contextSize: record.contextSize,
+    personaTier: record.personaTier,
+    model: record.model,
+    planSlug: record.planSlug,
+    stack: input.stack ?? record.stack ?? [],
+    planTitle: plan.planTitle,
+    planNow: plan.planNow,
+    fleetRole: record.fleet?.role ?? null,
+    modes: instructionRuntime.modes,
+  });
+  const overlaid = await applySuPromptOverlays({
+    basePromptText: spec.promptText,
+    agent: record.agent,
+    launchContextText: '',
+    launchedBy: record.launchedBy,
+    modeSection: input.modeSection,
+    instructionRuntime,
+  });
+  const blocking = blockingInstructionConflicts(overlaid.instructionLint);
+  if (blocking.length > 0) {
+    throw new Error(`compiled instructions contain ${blocking.length} blocking conflict(s)`);
+  }
+  const precedence = buildInstructionPrecedenceTrace(instructionRuntime);
+  const artifact = await compileLaunchSpecificationArtifact({
+    promptText: overlaid.promptText,
+    promptFile: spec.promptFile,
+    cwd: spec.cwd,
+    harnessSlug: record.harnessSlug,
+    role: 'su',
+    stack: spec.stack,
+    stateRevision: precedence.watermark,
+    state: {
+      schemaVersion: 1,
+      principal: { kind: 'su', role: 'su', profile: record.profile },
+      policy: { mcp: 'superuser', contextSize: record.contextSize, personaTier: spec.personaTier ?? null },
+      instructionPrecedence: precedence,
+    },
+  });
+  return {
+    spec,
+    artifact,
+    promptText: artifact.promptText,
+    instructionLint: overlaid.instructionLint,
+    instructionRuntime,
   };
 }
 

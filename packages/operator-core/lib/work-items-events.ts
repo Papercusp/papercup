@@ -628,6 +628,7 @@ type OpenCriticalWorkItemAlert = {
 
 type CriticalWorkItemAlertDeps = {
   listOpen?: () => Promise<readonly OpenCriticalWorkItemAlert[]>;
+  listOpenBySubject?: (subjectSignature: string) => Promise<readonly OpenCriticalWorkItemAlert[]>;
   resolveBatch?: (items: readonly BatchResolveItem[]) => Promise<unknown>;
 };
 
@@ -653,11 +654,15 @@ export async function reconcileCriticalWorkItemAlert(
   wi: Pick<WorkItem, 'id' | 'family' | 'state' | 'severity'>,
   deps: CriticalWorkItemAlertDeps = {},
 ): Promise<void> {
-  if (!isSettledWorkItem(wi) || wi.severity !== 'critical') return;
+  if (!isSettledWorkItem(wi)) return;
 
   const adapter = await import('./agent-tools/coordination/escalations');
+  const subject = `${CRITICAL_WORK_ITEM_ALERT_PREFIX}${wi.id}`;
   const listOpen =
-    deps.listOpen ?? (async () => (await adapter.listEscalations({ status: 'open' })) as OpenCriticalWorkItemAlert[]);
+    deps.listOpen ??
+    (deps.listOpenBySubject
+      ? () => deps.listOpenBySubject!(subject)
+      : async () => (await adapter.listOpenEscalationsBySubjectSignature(subject)) as OpenCriticalWorkItemAlert[]);
   const resolveBatch = deps.resolveBatch ?? adapter.resolveEscalationsBatch;
   const matches = selectCriticalWorkItemAlerts(await listOpen(), wi.id);
   if (matches.length === 0) return;
