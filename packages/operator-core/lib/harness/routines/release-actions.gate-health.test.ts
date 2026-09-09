@@ -1081,7 +1081,13 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
       schemaVersion: 3 as const,
       phase: 'awaiting-fixer' as const,
       signature: [
-        { kind: 'test-file' as const, id: 'pkgA/foo.test.ts', recipe: 'npm run test:file -- pkgA/foo.test.ts' },
+        {
+          kind: 'test-file' as const,
+          id: 'pkgA/foo.test.ts',
+          recipe: 'npm run test:file -- pkgA/foo.test.ts',
+          admittedRound: 1,
+          measuredHead: repairHead,
+        },
       ],
       candidate: frozenCandidate,
       base: null,
@@ -1128,7 +1134,13 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
       schemaVersion: 3 as const,
       phase: 'awaiting-fixer' as const,
       signature: [
-        { kind: 'test-file' as const, id: 'pkgA/foo.test.ts', recipe: 'npm run test:file -- pkgA/foo.test.ts' },
+        {
+          kind: 'test-file' as const,
+          id: 'pkgA/foo.test.ts',
+          recipe: 'npm run test:file -- pkgA/foo.test.ts',
+          admittedRound: 1,
+          measuredHead: candidate,
+        },
       ],
       candidate,
       base: null,
