@@ -54,7 +54,7 @@ export default defineTool({
       .min(1)
       .max(120)
       .describe(
-        'The blueprint id to list — its dir is <repoDir>/.papercusp/blueprints/<blueprintId>/, and it becomes the Comb listing_ref.',
+        'The blueprint id to list — resolved from <repoDir>/.papercusp/blueprints/<blueprintId>/ or the official <repoDir>/packages/harness/blueprints/<blueprintId>/ library, and it becomes the Comb listing_ref.',
       ),
     title: hardText(LIMITS.SHORT_TITLE),
     description: hardText(LIMITS.ANNOTATION),
@@ -72,12 +72,22 @@ export default defineTool({
     // 1. The blueprint must already be a file tree in the repo (delta-not-copy:
     //    we list it, never materialize/flatten it). Read its `kind` for the
     //    Cupboard "Hives" tab discriminator (blueprint_kind — hive | harness).
-    const bpYaml = join(args.repoDir, '.papercusp', 'blueprints', args.blueprintId, 'blueprint.yaml');
-    if (!existsSync(bpYaml)) {
+    const authoredRoot = join(args.repoDir, '.papercusp', 'blueprints');
+    const libraryRoot = join(args.repoDir, 'packages', 'harness', 'blueprints');
+    const sourceRoot = [authoredRoot, libraryRoot].find((root) =>
+      existsSync(join(root, args.blueprintId, 'blueprint.yaml')),
+    );
+    const bpYaml = sourceRoot
+      ? join(sourceRoot, args.blueprintId, 'blueprint.yaml')
+      : join(authoredRoot, args.blueprintId, 'blueprint.yaml');
+    if (!sourceRoot) {
       return text({
         ok: false,
         error: 'blueprint_not_in_repo',
-        hint: `Expected ${bpYaml}. Author/materialize the blueprint into the repo's .papercusp/blueprints/<id>/ and push it before publishing.`,
+        hint:
+          `Expected ${join(authoredRoot, args.blueprintId, 'blueprint.yaml')} or ` +
+          `${join(libraryRoot, args.blueprintId, 'blueprint.yaml')}. ` +
+          'Author/materialize the blueprint into one of those canonical repo layouts and push it before publishing.',
       });
     }
     let prepared: Awaited<ReturnType<typeof prepareBlueprintPublicRelease>>;
@@ -85,7 +95,7 @@ export default defineTool({
       prepared = await prepareBlueprintPublicRelease({
         blueprintFile: bpYaml,
         listingRef: args.blueprintId,
-        resolveExtends: operatorResolveExtends({ localDirs: [join(args.repoDir, '.papercusp', 'blueprints')] }),
+        resolveExtends: operatorResolveExtends({ localDirs: [sourceRoot] }),
       });
     } catch (error) {
       return text({

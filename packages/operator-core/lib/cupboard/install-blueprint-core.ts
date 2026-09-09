@@ -175,23 +175,26 @@ function isSafeListingRef(ref: string): boolean {
 }
 
 /**
- * Find the blueprint dir within a freshly-cloned repo. Prefers the
- * `listingRef` subdir (a repo hosting several blueprints — the official
- * library's layout), else the repo root (single-blueprint repo).
+ * Find the blueprint dir within a freshly-cloned repo. A listing ref may point
+ * into any canonical publisher layout: a direct multi-blueprint library,
+ * `.papercusp/blueprints`, or the first-party `packages/harness/blueprints`
+ * library. Fall back to the repo root for a single-blueprint repo.
  */
 function locateBlueprintDir(cloneDir: string, listingRef: string | undefined): string {
   const candidates: string[] = [];
   if (listingRef && isSafeListingRef(listingRef)) {
-    const sub = join(cloneDir, listingRef);
-    assertInside(cloneDir, sub, `listing_ref "${listingRef}"`);
-    candidates.push(sub);
+    for (const relativeRoot of ['', join('.papercusp', 'blueprints'), join('packages', 'harness', 'blueprints')]) {
+      const sub = join(cloneDir, relativeRoot, listingRef);
+      assertInside(cloneDir, sub, `listing_ref "${listingRef}"`);
+      candidates.push(sub);
+    }
   }
   candidates.push(cloneDir);
   for (const dir of candidates) {
     if (existsSync(join(dir, 'blueprint.yaml'))) return dir;
   }
   throw new InstallBlueprintError(
-    'no blueprint.yaml found in the blueprint repo (checked listing_ref subdir + root)',
+    'no blueprint.yaml found in the blueprint repo (checked canonical listing_ref layouts + root)',
     422,
   );
 }

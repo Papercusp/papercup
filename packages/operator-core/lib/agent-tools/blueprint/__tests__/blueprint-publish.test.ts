@@ -14,6 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import publishTool from '../publish';
+import { operatorResolveExtends } from '../../../blueprint/installed-blueprints';
 import { resolveRepoCoordsFromDir } from '../../../cupboard/resolve-repo-coords';
 import { publishListingToCupboard } from '../../../cupboard/publish-listing';
 
@@ -52,6 +53,7 @@ vi.mock('../../../cupboard/blueprint-release', () => {
 
 const mockCoords = vi.mocked(resolveRepoCoordsFromDir);
 const mockPublish = vi.mocked(publishListingToCupboard);
+const mockResolveExtends = vi.mocked(operatorResolveExtends);
 
 function call(tool: unknown, args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (tool as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler(
@@ -73,6 +75,15 @@ function repoWithBlueprint(id: string, yaml: string): string {
   const repo = mkdtempSync(join(tmpdir(), 'bp-pub-'));
   dirs.push(repo);
   const bpDir = join(repo, '.papercusp', 'blueprints', id);
+  mkdirSync(bpDir, { recursive: true });
+  writeFileSync(join(bpDir, 'blueprint.yaml'), yaml);
+  return repo;
+}
+
+function repoWithLibraryBlueprint(id: string, yaml: string): string {
+  const repo = mkdtempSync(join(tmpdir(), 'bp-pub-library-'));
+  dirs.push(repo);
+  const bpDir = join(repo, 'packages', 'harness', 'blueprints', id);
   mkdirSync(bpDir, { recursive: true });
   writeFileSync(join(bpDir, 'blueprint.yaml'), yaml);
   return repo;
@@ -148,6 +159,28 @@ describe('blueprint:publish tool', () => {
     const repo = repoWithBlueprint('my-bp', 'id: my-bp\nextends: coding\n'); // no `kind:`
     await call(publishTool, { blueprintId: 'my-bp', title: 'T', description: 'D', repoDir: repo });
     expect(mockPublish).toHaveBeenCalledWith(expect.objectContaining({ blueprint_kind: 'harness' }));
+  });
+
+  it('publishes an identity from the official packages/harness/blueprints library root', async () => {
+    const repo = repoWithLibraryBlueprint(
+      'papercusp-engineer',
+      'id: papercusp-engineer\nversion: 1.0.0\nslots: [{ slot: domain }]\n',
+    );
+    const res = body(
+      await call(publishTool, {
+        blueprintId: 'papercusp-engineer',
+        title: 'Papercusp engineer',
+        description: 'Engineering domain identity',
+        repoDir: repo,
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, listingId: 'listing-1' });
+    expect(mockResolveExtends).toHaveBeenCalledWith({
+      localDirs: [join(repo, 'packages', 'harness', 'blueprints')],
+    });
+    expect(mockPublish).toHaveBeenCalledWith(
+      expect.objectContaining({ listing_kind: 'blueprint', listing_ref: 'papercusp-engineer' }),
+    );
   });
 
   it('suppresses the PENDING hint when the listing comes back approved', async () => {

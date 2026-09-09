@@ -199,6 +199,20 @@ describe('installBlueprintFromCupboardCore', () => {
     expect(res.id).toBe('neat-bp');
   });
 
+  it.each([
+    ['the authored publisher layout', join('.papercusp', 'blueprints')],
+    ['the first-party library layout', join('packages', 'harness', 'blueprints')],
+  ])('round-trips listing_ref through %s', async (_label, relativeRoot) => {
+    await writeBlueprint(join(fixtureRepo, relativeRoot, 'neat-bp'), RUNNABLE_YAML);
+    const res = await installBlueprintFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/blueprints', listingRef: 'neat-bp' },
+      makeDeps(),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.id).toBe('neat-bp');
+    expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
+  });
+
   it('resolves extends against the bundled built-in floor (D-004)', async () => {
     await writeBlueprint(fixtureRepo, [
       'id: child-of-base',
