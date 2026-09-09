@@ -72,6 +72,7 @@ import { Select } from "@/app/harness/Select";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import {
   usePlanList,
+  mergePlanListResults,
   usePlanItems,
   usePlanAttention,
   usePlanSearch,
@@ -388,11 +389,38 @@ export default function PlansClient() {
     if (registryProjects.length === 0) return [advActiveSlug];
     return resolveHarnessScope(advActiveSlug, registryProjects);
   }, [harnessFilter, advActiveSlug, scopeMode, registryProjects]);
-  const planList = usePlanList({
+  const basePlanList = usePlanList({
     includeArchived: true,
     includeLegacy: true,
+    includeFinished: false,
     ...(harnessSlugsForFetch ? { harness_slugs: harnessSlugsForFetch } : {}),
   });
+  const wantsShippedPlans = pBuckets.includes("shipped");
+  const wantsSupersededPlans = pBuckets.includes("rejected");
+  const shippedPlanList = usePlanList({
+    status: "shipped",
+    includeArchived: true,
+    includeLegacy: true,
+    includeFinished: true,
+    enabled: wantsShippedPlans,
+    ...(harnessSlugsForFetch ? { harness_slugs: harnessSlugsForFetch } : {}),
+  });
+  const supersededPlanList = usePlanList({
+    status: "superseded",
+    includeArchived: true,
+    includeLegacy: true,
+    includeFinished: true,
+    enabled: wantsSupersededPlans,
+    ...(harnessSlugsForFetch ? { harness_slugs: harnessSlugsForFetch } : {}),
+  });
+  const planList = useMemo(
+    () => mergePlanListResults([
+      basePlanList,
+      ...(wantsShippedPlans ? [shippedPlanList] : []),
+      ...(wantsSupersededPlans ? [supersededPlanList] : []),
+    ]),
+    [basePlanList, shippedPlanList, supersededPlanList, wantsShippedPlans, wantsSupersededPlans],
+  );
   const harnessOptions = useMemo<string[]>(() => {
     const set = new Set<string>();
     for (const p of planList.data?.plans ?? []) {

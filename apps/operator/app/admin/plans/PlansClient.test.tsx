@@ -312,7 +312,7 @@ describe("PlansClient (Plans admin shell)", () => {
     }));
     renderClient("?scope=all");
 
-    const call = planListCalls[planListCalls.length - 1];
+    const call = planListCalls.find((candidate) => candidate.includeFinished === false)!;
     expect(call).toMatchObject({ includeArchived: true, includeLegacy: true });
     expect(call).not.toHaveProperty("harness_slugs");
     expect(screen.getByRole("button", { name: /Plans/ })).toBeTruthy();
@@ -323,9 +323,18 @@ describe("PlansClient (Plans admin shell)", () => {
     registryRows = [{ slug: "h1", parent_slug: null }];
     renderClient("?scope=self&slug=h1");
 
-    expect(planListCalls[planListCalls.length - 1]).toMatchObject({
+    expect(planListCalls.find((candidate) => candidate.includeFinished === false)).toMatchObject({
       harness_slugs: ["h1"],
     });
+  });
+
+  it("loads terminal plans only when their bucket is selected", () => {
+    renderClient("?pBuckets=shipped");
+    expect(planListCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ includeFinished: false }),
+      expect.objectContaining({ status: "shipped", includeFinished: true, enabled: true }),
+      expect.objectContaining({ status: "superseded", includeFinished: true, enabled: false }),
+    ]));
   });
 
   it("clicking the Queue button switches to the queue view", async () => {

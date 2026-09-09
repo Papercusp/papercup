@@ -108,6 +108,12 @@ const argsSchema = z.object({
     ),
   includeArchived: z.boolean().optional().describe('Include plans under docs/plans/archive/. Default false.'),
   includeLegacy: z.boolean().optional().describe('Include plans without valid frontmatter. Default true.'),
+  includeFinished: z
+    .boolean()
+    .optional()
+    .describe(
+      'Include terminal shipped/superseded plans. Default true for API compatibility; large interactive directories pass false and fetch a selected terminal status lazily.',
+    ),
   includeInstances: z
     .boolean()
     .optional()
@@ -477,6 +483,7 @@ export default defineTool({
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
+    const includeFinished = args.includeFinished !== false;
     const includeInstances = args.includeInstances === true;
     // P-005 aggregate path: `aggregateOnly` is only meaningful with a dimension.
     const groupBy = args.groupBy;
@@ -499,7 +506,7 @@ export default defineTool({
     // well-formed, plausible, WRONG "complete" answer. Skip the limit pushdown
     // whenever a JS-side post-filter could still drop rows; `limited` below
     // (computed AFTER the JS filters run) re-applies the cap correctly.
-    const hasJsPostFilter = Boolean(args.status || args.lifecycleDisposition) || !includeLegacy;
+    const hasJsPostFilter = Boolean(args.status || args.lifecycleDisposition) || !includeLegacy || !includeFinished;
     // Server-side recency/order/limit (pushed into the SQL, not post-filtered).
     // With `groupBy`, `limit` is NOT pushed down: the aggregate must see every
     // matched row, so the cap applies to the returned rows only (below).
@@ -546,6 +553,7 @@ export default defineTool({
       lifecycleDisposition: args.lifecycleDisposition ?? null,
       includeArchived,
       includeLegacy,
+      includeFinished,
       includeInstances,
       template: args.template ?? null,
       templateSlug: args.templateSlug ?? null,
@@ -755,6 +763,7 @@ export default defineTool({
             }
 
             if (args.status && status !== args.status) continue;
+            if (!includeFinished && (status === 'shipped' || status === 'superseded')) continue;
             if (args.lifecycleDisposition && lifecycle?.disposition !== args.lifecycleDisposition) continue;
 
             const dedupKey = `${harnessSlug}:${slug}`;

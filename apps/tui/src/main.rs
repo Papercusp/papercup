@@ -5088,11 +5088,7 @@ async fn stream_su_session_events(
     if let (Some(snapshot), Some(pending)) = (startup_snapshot.as_ref(), initial_turn.as_ref()) {
         let identity_matches =
             su_turn_target_matches(&binding, &snapshot.descriptor.identity, &harness, &chat_id);
-        if identity_matches
-            && snapshot.executor_attached
-            && snapshot.stream_ready
-            && !snapshot.terminal
-        {
+        if startup_snapshot_can_send_initial_turn(&binding, snapshot, &harness, &chat_id) {
             let pending = initial_turn.take().expect("checked pending first turn");
             send_su_turn_with_client(&client, &harness, &chat_id, &binding, pending, &tx).await;
         } else if snapshot.terminal || !identity_matches {
@@ -5245,6 +5241,18 @@ fn su_turn_target_matches(
         && binding.owner_id.as_deref() == Some(identity.owner_id.as_str())
         && binding.workspace_id.as_deref() == Some(identity.workspace_id.as_str())
         && native_id.is_none_or(|expected| expected == identity.native_session_id)
+}
+
+fn startup_snapshot_can_send_initial_turn(
+    binding: &crate::su_session::SuSessionBinding,
+    snapshot: &crate::su_session::SuSessionSnapshot,
+    harness: &str,
+    chat_id: &str,
+) -> bool {
+    snapshot.executor_attached
+        && snapshot.stream_ready
+        && !snapshot.terminal
+        && su_turn_target_matches(binding, &snapshot.descriptor.identity, harness, chat_id)
 }
 
 async fn send_su_turn_with_client(
@@ -6841,7 +6849,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_turn_rejects_a_different_native_runtime_on_the_same_saved_session() {
+    fn initial_turn_snapshot_requires_a_ready_matching_native_runtime() {
         let mut binding: crate::su_session::SuSessionBinding =
             serde_json::from_value(serde_json::json!({
                 "operation":"created", "backend":"claude", "advSessionId":7,
@@ -6857,9 +6865,41 @@ mod tests {
         assert!(su_turn_target_matches(
             &binding, &identity, "papercup", "chat-1"
         ));
+        let mut snapshot: crate::su_session::SuSessionSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "ok": true,
+                "descriptor": {
+                    "identity": identity,
+                    "lifecycle": "ready",
+                    "runtimeGeneration": 0,
+                    "role": "su",
+                    "carry": "warm",
+                    "modes": [],
+                    "capabilities": {"commands": {}, "features": {}},
+                    "backendExtension": {"backend": "claude", "configDir": null, "configDirSource": null}
+                },
+                "floorSequence": 1,
+                "lastSequence": 2,
+                "terminal": false,
+                "executorAttached": true,
+                "streamReady": true
+            }))
+            .unwrap();
+        assert!(startup_snapshot_can_send_initial_turn(
+            &binding, &snapshot, "papercup", "chat-1"
+        ));
+        snapshot.stream_ready = false;
+        assert!(!startup_snapshot_can_send_initial_turn(
+            &binding, &snapshot, "papercup", "chat-1"
+        ));
+        snapshot.stream_ready = true;
         identity.native_session_id = "replaced-native".into();
+        snapshot.descriptor.identity.native_session_id = identity.native_session_id.clone();
         assert!(!su_turn_target_matches(
             &binding, &identity, "papercup", "chat-1"
+        ));
+        assert!(!startup_snapshot_can_send_initial_turn(
+            &binding, &snapshot, "papercup", "chat-1"
         ));
         binding.native_session = None; // A resumed history binds from its canonical snapshot.
         assert!(su_turn_target_matches(

@@ -720,6 +720,7 @@ export function fetchPlanList(
     status?: PlanStatus;
     includeArchived?: boolean;
     includeLegacy?: boolean;
+    includeFinished?: boolean;
     /** P-029: fan out across multiple harnesses. */
     harness_slugs?: readonly string[];
   },
@@ -1397,6 +1398,9 @@ export function usePlanList(params?: {
   status?: PlanStatus;
   includeArchived?: boolean;
   includeLegacy?: boolean;
+  /** Terminal rows are excluded by default from the shared interactive feed;
+   * full-browse surfaces request the selected terminal status separately. */
+  includeFinished?: boolean;
   /** P-029: fan out across multiple harnesses. Pass undefined to use
    *  the ctx-resolved single harness. */
   harness_slugs?: readonly string[];
@@ -1414,6 +1418,7 @@ export function usePlanList(params?: {
   const args = useMemo<Record<string, unknown>>(
     () => ({
       ...(params?.status ? { status: params.status } : {}),
+      includeFinished: params?.includeFinished === true,
       // The superset on the archived/legacy axis — narrowed client-side below.
       includeArchived: true,
       includeLegacy: true,
@@ -1422,7 +1427,7 @@ export function usePlanList(params?: {
         : {}),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [params?.status, harnessSlugsKey],
+    [params?.status, params?.includeFinished, harnessSlugsKey],
   );
   const r = useSyncResource<PlanListRow, "plans">(
     "plans.list",
@@ -1439,6 +1444,25 @@ export function usePlanList(params?: {
     [r.data?.plans, includeArchived, includeLegacy],
   );
   return { ...r, data: { plans } };
+}
+
+/** Merge independently cached plan-list slices without losing refresh/error state.
+ * Terminal bucket reads use this to stay outside the small shared base cache. */
+export function mergePlanListResults(
+  results: readonly AsyncResult<{ plans: PlanListRow[] }>[],
+): AsyncResult<{ plans: PlanListRow[] }> {
+  const rows = new Map<string, PlanListRow>();
+  for (const result of results) {
+    for (const plan of result.data?.plans ?? []) {
+      rows.set(`${plan.harness ?? ''}:${plan.slug}`, plan);
+    }
+  }
+  return {
+    data: results.some((result) => result.data !== null) ? { plans: [...rows.values()] } : null,
+    loading: results.some((result) => result.loading),
+    error: results.find((result) => result.error)?.error ?? null,
+    refresh: () => results.forEach((result) => result.refresh()),
+  };
 }
 
 const EMPTY_ARGS: Record<string, unknown> = {};

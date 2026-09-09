@@ -160,6 +160,20 @@ describe("plans:list — status + limit combined (EI-19932192274787948)", () => 
     expect(calls[calls.length - 1][0].limit).toBe(3);
   });
 
+  it("includeFinished:false removes only shipped/superseded rows and preserves API default compatibility", async () => {
+    const defaultResult = await run({});
+    expect(defaultResult.plans).toHaveLength(12);
+    const activeResult = await run({ includeFinished: false });
+    expect(activeResult.plans.map((p) => p.slug).sort()).toEqual([
+      "active-0",
+      "active-1",
+      "active-2",
+      "active-3",
+    ]);
+    const calls = M.listPlanIndexRows.mock.calls as Array<[{ limit?: number }]>;
+    for (const [opts] of calls) expect(opts.limit).toBeUndefined();
+  });
+
   // Same defect class the bug report calls out generically: any OTHER
   // JS-side post-filter combined with limit is exposed to the identical bug.
   // includeLegacy:false is the other JS-side post-filter list.ts applies.

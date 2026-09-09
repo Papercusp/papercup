@@ -22,6 +22,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import type { BoundLexicon } from '@papercusp/lexicon';
 import {
   usePlanList,
+  mergePlanListResults,
   usePlanItems,
   usePlanAttention,
   flattenAttentionItems,
@@ -252,11 +253,44 @@ export interface PlanListMaps {
 /** Lifted from PlansClient: the scoped plan list + the derived lookup maps
  *  the panels need (harness-by-plan, bucket-by-slug, title maps). */
 export function usePlanListMaps(scope: CreateScope): PlanListMaps {
-  const planList = usePlanList({
+  const [pBuckets] = useQueryState(
+    'pBuckets',
+    parseAsArrayOf(
+      parseAsStringEnum<PlanBucket>(PLAN_BUCKETS.map((bucket) => bucket.id)),
+    ).withDefault([]),
+  );
+  const basePlanList = usePlanList({
     includeArchived: true,
     includeLegacy: true,
+    includeFinished: false,
     ...(scope.harnessSlugsForFetch ? { harness_slugs: scope.harnessSlugsForFetch } : {}),
   });
+  const wantsShippedPlans = pBuckets.includes('shipped');
+  const wantsSupersededPlans = pBuckets.includes('rejected');
+  const shippedPlanList = usePlanList({
+    status: 'shipped',
+    includeArchived: true,
+    includeLegacy: true,
+    includeFinished: true,
+    enabled: wantsShippedPlans,
+    ...(scope.harnessSlugsForFetch ? { harness_slugs: scope.harnessSlugsForFetch } : {}),
+  });
+  const supersededPlanList = usePlanList({
+    status: 'superseded',
+    includeArchived: true,
+    includeLegacy: true,
+    includeFinished: true,
+    enabled: wantsSupersededPlans,
+    ...(scope.harnessSlugsForFetch ? { harness_slugs: scope.harnessSlugsForFetch } : {}),
+  });
+  const planList = useMemo(
+    () => mergePlanListResults([
+      basePlanList,
+      ...(wantsShippedPlans ? [shippedPlanList] : []),
+      ...(wantsSupersededPlans ? [supersededPlanList] : []),
+    ]),
+    [basePlanList, shippedPlanList, supersededPlanList, wantsShippedPlans, wantsSupersededPlans],
+  );
   const plans = useMemo(() => planList.data?.plans ?? [], [planList.data]);
 
   const harnessOptions = useMemo<string[]>(() => {

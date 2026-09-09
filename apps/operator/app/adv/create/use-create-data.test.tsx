@@ -268,15 +268,27 @@ const SCOPE = (over: Partial<CreateScope> = {}): CreateScope => ({
 describe('usePlanListMaps', () => {
   it('omits harness_slugs for workspace-wide scope and preserves an explicit targeted scope', () => {
     const workspaceWide = renderHook(() => usePlanListMaps(SCOPE()), wrap(''));
-    expect(planListCalls.at(-1)).toMatchObject({ includeArchived: true, includeLegacy: true });
-    expect(planListCalls.at(-1)).not.toHaveProperty('harness_slugs');
+    const base = planListCalls.find((candidate) => candidate.includeFinished === false)!;
+    expect(base).toMatchObject({ includeArchived: true, includeLegacy: true });
+    expect(base).not.toHaveProperty('harness_slugs');
     workspaceWide.unmount();
 
     renderHook(
       () => usePlanListMaps(SCOPE({ harnessSlugsForFetch: ['active', 'child'] })),
       wrap(''),
     );
-    expect(planListCalls.at(-1)).toMatchObject({ harness_slugs: ['active', 'child'] });
+    expect(planListCalls.find(
+      (candidate) => candidate.includeFinished === false && 'harness_slugs' in candidate,
+    )).toMatchObject({ harness_slugs: ['active', 'child'] });
+  });
+
+  it('loads the selected terminal bucket outside the shared base feed', () => {
+    renderHook(() => usePlanListMaps(SCOPE()), wrap('?pBuckets=rejected'));
+    expect(planListCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ includeFinished: false }),
+      expect.objectContaining({ status: 'shipped', includeFinished: true, enabled: false }),
+      expect.objectContaining({ status: 'superseded', includeFinished: true, enabled: true }),
+    ]));
   });
 
   it('derives sorted unique harnessOptions and the bucket/title maps via the real bucketOf', () => {
