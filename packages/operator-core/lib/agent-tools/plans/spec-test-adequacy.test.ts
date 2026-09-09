@@ -400,12 +400,13 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           },
         }),
       ],
+      harness: 'papercusp',
       classRef: 'plan-class-feature-ship',
     });
     const correctLayerEvidence = result.ratings['correct-layer'].evidence;
 
     expect(correctLayerEvidence).toContain(
-      'Probe plans:get-spec-evidence with args={"slug":"reconnect-plan","specIds":["SPEC-003-01"]}.',
+      'Probe plans:get-spec-evidence with args={"harness":"papercusp","slug":"reconnect-plan","specIds":["SPEC-003-01"]}.',
     );
     expect(correctLayerEvidence).not.toMatch(/\b(planSlug|specId|specRevision|specFingerprint)=/);
   });
