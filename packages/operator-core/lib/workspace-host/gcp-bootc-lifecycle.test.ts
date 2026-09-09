@@ -46,6 +46,13 @@ const RUNNER_SOURCE = join(
   'bin',
   'papercusp-gcp-bootc-lifecycle.mjs',
 );
+const PRIVATE_VM_SESSION_SOURCE = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'bin',
+  'gcp-private-vm-session.mjs',
+);
 
 describe('P-305 lifecycle input contract', () => {
   it('requires an exact digest-pinned reference in the image policy namespace', () => {
@@ -114,6 +121,14 @@ describe('private IAP argv', () => {
     expect(() => buildIapReverseTunnelArgs({ ...session, remotePort: 5096, localHost: '0.0.0.0' })).toThrow(
       /loopback/,
     );
+  });
+
+  it('binds the child-process spawn used by the reverse-tunnel runtime path', () => {
+    const source = readFileSync(PRIVATE_VM_SESSION_SOURCE, 'utf8');
+    const spawnImport = "import { spawn } from 'node:child_process';";
+    const tunnelSpawn = "const child = spawn('gcloud', args";
+    expect(source.match(/import \{ spawn \} from 'node:child_process';/g)).toHaveLength(1);
+    expect(source.indexOf(spawnImport)).toBeLessThan(source.indexOf(tunnelSpawn));
   });
 });
 
