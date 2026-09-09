@@ -10,7 +10,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage, MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
 import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
 import type { BuiltSpawnContext, TrySpawnContextResult } from './_mcp-host';
-import { agentMcpOperatorId, type AgentMcpEndpoint } from '../../../endpoint-ipc-discovery';
+import { AGENT_MCP_AUTH_META, agentMcpOperatorId, type AgentMcpEndpoint } from '../../../endpoint-ipc-discovery';
 import { allowStalePlanRecoveryForMcpCall } from '../../../agent-tools/_harness-scope';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { acquireMcpBodyAdmission, ADMISSION_CONTROL_ENABLED, type McpAdmissionLease } from './mcp-admission';
@@ -20,7 +20,7 @@ import { acquireMcpBodyAdmission, ADMISSION_CONTROL_ENABLED, type McpAdmissionLe
  * It carries existing HTTP credential/context syntax, NOT a new credential.
  * Removed before SDK dispatch; neither discovery nor errors contain its contents.
  */
-export const AGENT_MCP_AUTH_META = 'com.papercusp/connection';
+export { AGENT_MCP_AUTH_META };
 const HEADER_NAMES = new Set([
   'authorization', 'x-papercusp-client', 'x-papercusp-workspace',
   'x-papercusp-harness', 'x-papercusp-profile', 'x-papercusp-agent',

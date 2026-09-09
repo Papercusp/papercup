@@ -25,6 +25,8 @@ import { mkdir, writeFile, readFile, readdir, rm, rename, lstat } from 'node:fs/
 
 const REL_DIR = '.papercusp';
 const REL_FILE = 'endpoint-ipc.json';
+/** Private initialize metadata; supplied by the client, never by the model. */
+export const AGENT_MCP_AUTH_META = 'com.papercusp/connection';
 
 /** Absolute path to the discovery file under the (real) user home. */
 export function endpointIpcDiscoveryPath(): string {
@@ -68,8 +70,8 @@ export interface AgentMcpEndpoint {
 }
 
 /** Logical operator identity; generations change at restart, this does not. */
-export function agentMcpOperatorId(port: number): string {
-  return createHash('sha256').update(`${homedir()}\0${port}`).digest('hex');
+export function agentMcpOperatorId(port: number, home = homedir()): string {
+  return createHash('sha256').update(`${home}\0${port}`).digest('hex');
 }
 
 function validAgentEndpoint(value: unknown): value is AgentMcpEndpoint {
@@ -225,14 +227,17 @@ async function readEndpointIpcDiscoveryFrom(path: string): Promise<EndpointIpcDi
 }
 
 /** Native clients must select a build/port, never the last-writer singleton. */
-export async function readAgentMcpDiscoveryForPort(port: number): Promise<EndpointIpcDiscovery | null> {
+export async function readAgentMcpDiscoveryForPort(
+  port: number,
+  home = homedir(),
+): Promise<EndpointIpcDiscovery | null> {
   try {
-    const file = endpointIpcDiscoveryPathForPort(port);
+    const file = join(home, REL_DIR, `endpoint-ipc.${port}.json`);
     const fileStat = await lstat(file);
     if (!fileStat.isFile() || fileStat.uid !== process.getuid?.() || (fileStat.mode & 0o077)) return null;
     const descriptor = await readEndpointIpcDiscoveryFrom(file);
     if (!descriptor?.agentMcp || descriptor.port !== port ||
-        descriptor.agentMcp.operatorId !== agentMcpOperatorId(port) ||
+        descriptor.agentMcp.operatorId !== agentMcpOperatorId(port, home) ||
         !Number.isSafeInteger(descriptor.pid) || descriptor.pid < 1 || !pidAlive(descriptor.pid)) return null;
     const socket = await lstat(descriptor.agentMcp.socketPath);
     const dir = await lstat(dirname(descriptor.agentMcp.socketPath));
