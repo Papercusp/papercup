@@ -10,6 +10,29 @@ import type { Idea, ScoutLlmCall } from './types';
 import { buildCriticPrompt, critiqueIdea, critiqueIdeas, DEFAULT_CRITIC_MISSION, runCritic } from './critics';
 import type { CorpusEntry } from './critique-core';
 import { PROSE_VECTOR_DIMS } from '../search/prose-vector-dims';
+import { callScoutPhaseLlm } from './llm-deadline';
+
+describe('buffered transport deadline diagnostics', () => {
+  it.each([false, true])('does not infer capacity or generation from missing response telemetry (admitted=%s)', async (admitted) => {
+    let signal: AbortSignal | undefined;
+    const call = callScoutPhaseLlm({
+      phase: 'review',
+      input: { model: 'gpt-5.6-sol:xhigh', messages: [{ role: 'user', content: 'review' }] },
+      timeoutMs: 100,
+      cycleDeadlineMs: Date.now() + 5_025,
+      llmCall: async (input) => {
+        signal = input.signal;
+        if (admitted) input.onAdmitted?.();
+        // A buffered HTTP response may be generating without exposing either hook.
+        return new Promise<never>(() => {});
+      },
+    });
+    const error = await call.then(() => '', (e: Error) => e.message);
+    expect(signal?.aborted).toBe(true);
+    expect(error).toContain('queueing versus generation unknown');
+    expect(error).not.toMatch(/never admitted|no capacity|not generation|ms of GENERATION/);
+  });
+});
 
 function idea(over: Partial<Idea> = {}): Idea {
   return {

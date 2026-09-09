@@ -472,7 +472,10 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
       // The VERDICT nevertheless survives: `run.ts` answers a changedPaths call with
       // the plan and RUNS NOTHING, while `npm run test:affected` runs what it selects.
       // Planning is not running, which is why `tests.affected` stays not-a-substitute.
-      ['changedPaths', 'files', 'maxFailures', 'testNamePattern', 'timeoutMs'],
+      // Evidence/harness bind the selected run to its ledger; recheckReason
+      // explains a repeat. recoverEvidence only reads an existing bundle.
+      // None executes a derived selection or exposes reporter/config/root.
+      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'testNamePattern', 'timeoutMs'],
       'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` because no arg makes ' +
         'the tool RUN a list it derived — `changedPaths` returns the plan and executes nothing. An arg that ' +
         'EXECUTED a derived selection would make 206 corpus atoms across 48 sessions suddenly expressible, and ' +

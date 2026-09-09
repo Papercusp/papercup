@@ -190,6 +190,80 @@ const baseReq: GetFeedbackRequest = {
 };
 
 describe('source-audit dispatcher through persisted consult routing', () => {
+  it.each(['direct-launch', 'duplicate-chain', 'excluded-reviewer'] as const)(
+    'counterexample: the persisted dispatch oracle detects %s and accepts the repaired route',
+    async (fault) => {
+      // Restore each defect at the existing dependency seam. Production files
+      // stay untouched; the real dispatcher, adapter, core and PG store execute.
+      async function exercise(broken: boolean) {
+        const issueId = `EI-counterexample-${fault}-${broken}`;
+        const source = {
+          issueId, createdBy: 'excluded-author', rubricRef: 'source-rubric',
+          createdAt: NOW.toISOString(), evidenceFingerprint: 'exact-counterexample-subject',
+          gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
+        } as ScorecardRow;
+        const fixture = makeDeps(routeOf([cand('author-child'), cand('eligible-reviewer')]));
+        const effects: string[] = [];
+        const launch = vi.fn(async () => {
+          effects.push('launch');
+          return { data: { deduped: false, launch: { opened: 1, tasks: [{ taskId: 'fixture-launch' }] } } };
+        });
+        let attempt = 0;
+        const route = async (input: Parameters<typeof routeSourceGradingAudit>[0]) => {
+          if (broken && fault === 'direct-launch') {
+            return { state: 'fallback' as const, reason: 'negative control: legacy direct launch' };
+          }
+          return routeSourceGradingAudit({
+            ...input,
+            ...(broken && fault === 'duplicate-chain' ? { reservationKey: `${input.reservationKey}:${++attempt}` } : {}),
+          }, {
+            getSql: () => rootSql,
+            resolveParties: async (ids) => new Map(ids.filter((id): id is string => Boolean(id))
+              .map((id) => [id, id === 'author-child' ? 'excluded-author' : id])),
+            feedback: async (req, _identity, options) => getFeedbackCore(req, {
+              ...fixture.deps,
+              route: async (params) => {
+                const candidates = await fixture.deps.route(params);
+                const selected = broken && fault === 'excluded-reviewer'
+                  ? candidates : await options!.filterRoute!(candidates);
+                effects.push('selection');
+                return selected;
+              },
+              reach: async (input) => {
+                effects.push('delivery');
+                return fixture.deps.reach(input);
+              },
+            }),
+          });
+        };
+        const dispatchDeps = {
+          listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
+          reserve: async () => ({ status: 'claimed' as const }), release: async () => true,
+          listWorkspaceWideLoopStanddownOwners: async () => new Set<string>(), route, launch,
+        };
+        const request = { targetIds: [issueId], ctx: { workspaceId: WS, uiClientId: 'counterexample-requester', isSuperuser: true } as DispatchPendingGradingAuditsInput['ctx'] };
+        const first = await dispatchPendingGradingAudits(request, dispatchDeps);
+        const replay = await dispatchPendingGradingAudits(request, dispatchDeps);
+        // Counterexamples deliberately leave live chains (including duplicates).
+        // Settle this fixture's exact subject before later workspace-wide sweeps.
+        await closeSourceAuditConsults(WS, issueId, rootSql);
+        return () => {
+          expect(effects).toEqual(['selection', 'delivery']);
+          expect(launch).not.toHaveBeenCalled();
+          expect(first.receipts[0]).toMatchObject({ state: 'routed' });
+          expect(replay.receipts[0]).toMatchObject({ state: 'deduped', conversationId: first.receipts[0].conversationId });
+          expect(fixture.opened).toHaveLength(1);
+          expect(fixture.reached.map((r) => r.responder)).toEqual(['eligible-reviewer']);
+          expect(fixture.reached[0].body).toContain('exact-counterexample-subject');
+        };
+      }
+      const repairedOracle = await exercise(false);
+      expect(repairedOracle).not.toThrow();
+      const brokenOracle = await exercise(true);
+      expect(brokenOracle).toThrow();
+    },
+  );
+
   it('fails closed when lineage is unavailable and never hands an unfiltered candidate pool to selection', async () => {
     const source = { createdBy: 'source-author' } as ScorecardRow;
     const pool = routeOf([cand('source-author'), cand('peer')]);

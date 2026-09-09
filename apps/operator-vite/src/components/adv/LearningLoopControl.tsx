@@ -645,7 +645,10 @@ export default function LearningLoopControl() {
           /* 256px → 340px: it now carries a pot list whose rows are a name
              over a sub-line plus a spend and a switch. */
           position: absolute; right: 0; top: 30px; z-index: 30; width: 340px;
-          background: var(--bg-2); border: 1px solid var(--border-strong);
+          /* Floating controls must be opaque: --bg-2 is intentionally a
+             translucent in-panel wash, so content behind this menu otherwise
+             bleeds through and competes with the pause/resume copy. */
+          background: var(--bg-popover); border: 1px solid var(--border-strong);
           border-radius: 10px; padding: 12px 14px;
           box-shadow: 0 12px 32px color-mix(in srgb, var(--fg) 12%, transparent);
           font-size: 12px; color: var(--fg-dim); text-align: left;

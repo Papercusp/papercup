@@ -196,6 +196,19 @@ describe('<LearningLoopControl>', () => {
     expect(screen.getByText('paused')).toBeTruthy();
   });
 
+  it('uses the solid popover surface for the pause/resume dropdown', () => {
+    render(<LearningLoopControl />);
+    openDropdown();
+    expect(screen.getByRole('dialog', { name: 'Learning loops' })).toBeTruthy();
+
+    const styles = [...document.querySelectorAll('style')]
+      .map((style) => style.textContent)
+      .join('\n');
+    const popoverRule = styles.match(/\.pc-lloop__pop\s*\{[^}]+\}/)?.[0];
+    expect(popoverRule).toContain('background: var(--bg-popover)');
+    expect(popoverRule).not.toContain('background: var(--bg-2)');
+  });
+
   it('pause sends routines:group-set { active:false, reason } through the gated bridge, then refetches', async () => {
     render(<LearningLoopControl />);
     fireEvent.click(screen.getByRole('button', { name: 'Pause all learning loops' }));

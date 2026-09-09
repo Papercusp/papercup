@@ -36,6 +36,7 @@ import { PORTS, killSwitchState, specFor } from './ports.mjs';
  * @property {string} [prompt]
  * @property {Array<{ tool: string, toolInput: string, toolResponse: string }>} [toolCalls]
  * @property {boolean} [memoryEnabled]
+ * @property {string} [detectorSessionKey] private failure-loop detector key
  */
 
 /** Loopback operator. */
@@ -260,11 +261,21 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     const partial = adapter.parse(port, event);
     if (!partial) return null;
 
+    const detectorSessionKey =
+      typeof env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY === 'string' &&
+      env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
+        ? env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
+        : owner;
     const request = {
       ...baseRequest({ port, client: adapter.client, owner, cwd: partial.cwd, env }),
       ...partial,
       owner,
       client: adapter.client,
+      // Keep the detector key explicit in the request while retaining the
+      // public owner for memory recall. The producer copies the private key
+      // used to sign MCP `?detector=` into this env carrier; the owner fallback
+      // preserves older hook launches that predate the carrier.
+      ...(port === 'mid-turn' ? { detectorSessionKey } : {}),
     };
 
     const text = await postInjection(port, request, { env, fetchImpl });

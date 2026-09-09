@@ -329,6 +329,18 @@ describe('mid-turn-context — EI-6139 failure-loop bridge', () => {
     expect(out.text).toBe('FAILURE LOOP HINT\n\nMEM');
   });
 
+  it('drains detector state by the private key, not the public recall owner', async () => {
+    takePendingFailureLoopHintMock.mockReturnValueOnce(pending);
+    const out = await post({
+      owner: 'harness:papercusp',
+      detectorSessionKey: 'auditor-session-a',
+      tool: 'Grep',
+      toolInput: { pattern: 'harness required' },
+    });
+    expect(takePendingFailureLoopHintMock).toHaveBeenCalledWith('auditor-session-a');
+    expect(out.text).toBe('FAILURE LOOP HINT\n\nMEM');
+  });
+
   it('delivers the intervention when a no-signal batch exits before recall', async () => {
     takePendingFailureLoopHintMock.mockReturnValueOnce(pending);
     const out = await post({

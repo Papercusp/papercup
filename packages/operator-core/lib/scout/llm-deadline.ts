@@ -107,8 +107,8 @@ export async function callScoutPhaseLlm(opts: ScoutPhaseLlmOptions): Promise<Sco
           abort(
             new Error(
               `Scout ${opts.phase} did not receive an upstream response before the cycle deadline ` +
-                `(${locallyAdmitted ? 'left the local governor but remained queued/stalled downstream' : 'never admitted by the local governor — no capacity within the remaining budget'}; ` +
-                `not generation)`,
+                `(${locallyAdmitted ? 'local admission observed' : 'local admission unobserved — transport may not expose admission'}; ` +
+                `response start unobserved; queueing versus generation unknown)`,
             ),
           );
         } else {

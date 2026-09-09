@@ -205,6 +205,44 @@ describe('the happy path (so the fail-silent tests below are not vacuous)', () =
     expect(op.received[0].body.client).toBe('codex');
     expect(op.received[0].url).toContain('turn-start-memory');
   });
+
+  it('carries the private mid-turn detector key separately from the public owner', async () => {
+    const op = fakeOperator();
+    const base = await op.start();
+    running = op;
+    const res = await runCli(
+      ['--client=claude', '--event=PostToolBatch'],
+      JSON.stringify({
+        tool_calls: [{ tool_name: 'Grep', tool_input: { pattern: 'failure-loop' }, tool_response: 'hit' }],
+      }),
+      {
+        PAPERCUSP_SID: 'public-owner',
+        PAPERCUSP_FAILURE_LOOP_SESSION_KEY: 'private-detector',
+        PAPERCUSP_OPERATOR_URL: base,
+      },
+    );
+    expect(res.code).toBe(0);
+    expect(op.received).toHaveLength(1);
+    expect(op.received[0].body.owner).toBe('public-owner');
+    expect(op.received[0].body.detectorSessionKey).toBe('private-detector');
+  });
+
+  it('falls back to the public owner for legacy hook environments without a carrier', async () => {
+    const op = fakeOperator();
+    const base = await op.start();
+    running = op;
+    const res = await runCli(
+      ['--client=claude', '--event=PostToolBatch'],
+      JSON.stringify({
+        tool_calls: [{ tool_name: 'Grep', tool_input: { pattern: 'failure-loop' }, tool_response: 'hit' }],
+      }),
+      { PAPERCUSP_SID: 'legacy-owner', PAPERCUSP_OPERATOR_URL: base },
+    );
+    expect(res.code).toBe(0);
+    expect(op.received).toHaveLength(1);
+    expect(op.received[0].body.owner).toBe('legacy-owner');
+    expect(op.received[0].body.detectorSessionKey).toBe('legacy-owner');
+  });
 });
 
 describe('CTRL target-owner fence', () => {

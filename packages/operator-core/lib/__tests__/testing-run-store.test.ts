@@ -153,7 +153,12 @@ describe('durable detached snapshots', () => {
       output: 'still running',
       truncated: false,
     };
-    const sql = vi.fn(async () => [remote]) as unknown as Sql;
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots')) return [remote];
+      if (statement.includes('FROM harness_shared.test_runs')) return [];
+      throw new Error(`Unexpected detached snapshot query: ${statement}`);
+    }) as unknown as Sql;
 
     await expect(getRunAsync(remote.run_id, sql)).resolves.toEqual({
       runId: remote.run_id,
@@ -168,7 +173,10 @@ describe('durable detached snapshots', () => {
       output: remote.output,
       truncated: false,
     });
-    expect(sql).toHaveBeenCalledTimes(1);
+    // A running remote snapshot also checks the reporter's durable verdict
+    // ledger. No completed test rows means it must remain running.
+    expect(sql).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(sql).mock.calls[1]![0].join(' ')).toContain('FROM harness_shared.test_runs');
   });
 
   it('prefers the local process-control snapshot without querying shared storage', async () => {

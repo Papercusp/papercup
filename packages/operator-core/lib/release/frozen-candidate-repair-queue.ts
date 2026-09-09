@@ -984,6 +984,7 @@ export interface FrozenRepairQueueDiagnostic {
     repairHeadVerdict:
       | 'not-judged'
       | 'same-as-frozen-full-gate-red'
+      | 'full-gate-red'
       | 'isolated-repair-green';
   };
   retireAllowed: boolean;
@@ -1010,6 +1011,14 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
   phase: FrozenCandidateRepairPhase;
   verdictProvenance: NonNullable<FrozenRepairQueueDiagnostic['verdictProvenance']>;
 } {
+  // EI-22767271786772554: phase describes what the queue should do NEXT; it is not a
+  // history of what this exact repair head has already measured. Every canonical red
+  // writer appends a convergence round at the SHA it judged, so consult that durable
+  // provenance before calling a distinct repair head "not-judged". A later green still
+  // wins because ready-to-promote is the current, terminal verdict for this head.
+  const repairHeadWasJudgedRed = (queue.convergenceRounds ?? []).some(
+    (round) => round.head === queue.repairHead,
+  );
   return {
     frozenCandidate: queue.candidate,
     repairHead: queue.repairHead,
@@ -1025,7 +1034,9 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
           ? 'isolated-repair-green'
           : queue.phase !== 'ready-to-test' && queue.repairHead === queue.candidate
             ? 'same-as-frozen-full-gate-red'
-            : 'not-judged',
+            : repairHeadWasJudgedRed
+              ? 'full-gate-red'
+              : 'not-judged',
     },
   };
 }

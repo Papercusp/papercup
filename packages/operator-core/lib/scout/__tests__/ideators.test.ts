@@ -357,7 +357,7 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
     expect(err).not.toMatch(/no capacity|queued\/stalled/);
   });
 
-  it('never admitted ⇒ an HONEST capacity error, never a bogus transport "timeout"', async () => {
+  it('missing admission telemetry remains unknown, not a proven capacity wall', async () => {
     const { call } = governedLlm({ admissionMs: 0, admit: false });
     const res = await runIdeators(digest, {
       llmCall: call,
@@ -369,9 +369,10 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
     });
     expect(res.ideas).toHaveLength(0);
     const err = res.ideators[0]?.error ?? '';
-    // The whole point: this failure names CAPACITY, not a transport timeout. Misreporting it
-    // as a "timeout" is what sent WI-4475 chasing a phantom hang for days.
-    expect(err).toMatch(/never admitted|no capacity/i);
+    // A callback-silent buffered transport is indistinguishable from this fake
+    // unadmitted call. Neither absence proves a capacity wall or rules out generation.
+    expect(err).toContain('queueing versus generation unknown');
+    expect(err).not.toMatch(/never admitted|no capacity|not generation|ms of GENERATION/);
   });
 
   it('bounds the ADMISSION wait by the cycle deadline, reserving room for generation', async () => {

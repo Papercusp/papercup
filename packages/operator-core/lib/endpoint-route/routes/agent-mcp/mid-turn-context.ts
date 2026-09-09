@@ -987,6 +987,8 @@ const midTurnContext = defineTool({
   async handler(req) {
     let body: {
       owner?: string;
+      /** Private detector key carried separately from the public injection owner. */
+      detectorSessionKey?: string;
       toolCalls?: BatchCall[];
       // Single-call form, kept for a direct caller / probe. The hook sends a batch.
       tool?: string;
@@ -1008,7 +1010,13 @@ const midTurnContext = defineTool({
     // Drain before any query/admission branch. A repeated-failure advisory is
     // orthogonal to memory recall, so it must still be delivered when this
     // batch has no recall signal, is a duplicate, or the recall lane is full.
-    const pendingFailureHint = takePendingFailureLoopHint(owner);
+    // EI-22762647123007262: signed/client-less MCP calls may attribute the
+    // detector to a private session key while the hook still uses the public
+    // owner for memory recall. Keep the two identities as separate request
+    // fields; the owner fallback preserves legacy callers that predate the
+    // detector-session transport field.
+    const detectorSessionKey = (body.detectorSessionKey ?? owner).trim();
+    const pendingFailureHint = takePendingFailureLoopHint(detectorSessionKey);
     const failureHintText = pendingFailureHint ? resolveFailureLoopHintText(pendingFailureHint) : Promise.resolve('');
     const respond = async (memoryBlock = ''): Promise<Response> =>
       Response.json({

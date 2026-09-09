@@ -64,6 +64,19 @@ const NOW_CLOSED_RE =
 // "pass P-013" must remain a contradiction.
 const NOW_PASSED_TEST_EVIDENCE_RE =
   /\bpassed\s+(?:(?:\d+\s*\/\s*\d+|\d+)\s+)?(?:[\w-]+\s+){0,4}(?:tests?|checks?|cases?|verifications?|validations?)\b|\b(?:tests?|checks?|cases?|verifications?|validations?)\b[^.!?;:\n]{0,80}\bpassed\b/i;
+// A terminal item's status can be followed by an explanation that contains
+// future/negative vocabulary: `P-001 is DROPPED and will never report` is an
+// affirmative status assertion, not a direction to revisit P-001. Keep this
+// anchored immediately after the id so `P-001 is done; revisit P-001` still
+// reaches the later action-oriented occurrence.
+const NOW_TERMINAL_STATUS_ASSERTION_RE =
+  /^\s*(?:is|was|were|has\s+been|have\s+been|remains?)\s+(?:already\s+)?(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b/i;
+// Completed items are often cited through a measured/reporting result rather
+// than a status verb. This deliberately accepts only a narrow, past-tense
+// reporting vocabulary; future/imperative forms such as `will measure` and
+// `measure P-005` remain contradictions.
+const NOW_PAST_TENSE_REPORT_RE =
+  /^\s*(?:(?:was|were)\s+)?(?:measured|observed|recorded|reported|found|calculated|quantified|audited|validated|verified|documented|identified|confirmed|showed|demonstrated|tested|extracted|implemented|addressed|repaired|corrected)\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
 // EI-21987261152536728: P-002's completion can be narrated as a resulting
@@ -204,6 +217,24 @@ function isPlanItemRangeReference(text: string, start: number, end: number): boo
   return false;
 }
 
+function isInsideQuotedFragment(text: string, start: number, end: number): boolean {
+  let quote: '"' | "'" | '`' | null = null;
+  const isWord = (char: string | undefined) => Boolean(char && /[A-Za-z0-9_]/.test(char));
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    // Do not treat possessives/contractions (for example, `P-001's`) as
+    // quote delimiters while scanning attributed prose.
+    if (char === "'" && isWord(text[index - 1]) && isWord(text[index + 1])) continue;
+    if (char === '"' || char === "'" || char === '`') {
+      if (quote === null) quote = char;
+      else if (quote === char) quote = null;
+    }
+    if (index === start) return quote !== null && end <= text.length;
+  }
+  return false;
+}
+
 /**
  * PURE: find terminal plan items that the cold-resume Now block still presents
  * as current/future work. Explicit completion prose ("P-001 is done") is
@@ -234,6 +265,11 @@ export function detectNowItemContradictions(
     const start = match.index ?? 0;
     const end = start + id.length;
     if (isPlanItemRangeReference(nowText, start, end)) continue;
+    // A Now may quote an item's stale trigger text while explaining why the
+    // trigger is no longer applicable. The quoted id is not a claim about the
+    // current plan item and must not poison the actual status assertion that
+    // follows it.
+    if (isInsideQuotedFragment(nowText, start, end)) continue;
     // Keep the window local to a sentence/clause. This makes a completion note
     // for one item unable to excuse a later action over another item.
     const leftBoundary = Math.max(
@@ -261,6 +297,8 @@ export function detectNowItemContradictions(
     const closeAfter =
       (NOW_CLOSED_RE.test(after) || NOW_PASSED_TEST_EVIDENCE_RE.test(after)) &&
       !NOW_NEGATED_OR_FUTURE_RE.test(after);
+    const explicitTerminalStatus = NOW_TERMINAL_STATUS_ASSERTION_RE.test(after);
+    const pastTenseReport = NOW_PAST_TENSE_REPORT_RE.test(after);
     const derivationCompletionAfter =
       NOW_DERIVATION_COMPLETION_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const closeBefore =
@@ -349,6 +387,8 @@ export function detectNowItemContradictions(
       precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== parsed.slug.toLowerCase();
     if (
       closeAfter ||
+      explicitTerminalStatus ||
+      pastTenseReport ||
       derivationCompletionAfter ||
       closeBefore ||
       stagingOnlyCompletion ||

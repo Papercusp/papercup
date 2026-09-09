@@ -84,6 +84,18 @@ const RESIDUE_CARRY_FORWARD = CURRENT.replace(
   "**State:** P-001's measurement residue carries forward under WI-1311290.",
 );
 
+const DROPPED_ITEM_EXPLANATION = CURRENT.replace(
+  '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+  "**State:** P-002 and P-003 item text states its trigger as 'only if P-001 resolves', but P-001 is DROPPED and will never report.\n\n**Next:** Continue with P-002.",
+)
+  .replace('- **P-001** `done` Finished item.', '- **P-001** `dropped` Dropped item.')
+  .replace('- **P-002** `todo` Open item.', '- **P-002** `todo` Open item.\n- **P-003** `todo` Open item.');
+
+const MEASURED_TERMINAL_ITEM = CURRENT.replace(
+  '**State:** P-001 is done.',
+  '**State:** P-005 measured 9.27% of rows / 5.73% of cost.',
+).replace('- **P-002** `todo` Open item.', '- **P-002** `todo` Open item.\n- **P-005** `done` Measured item.');
+
 const EXHAUSTIVE_OMISSION = CURRENT.replace(
   '**Next:** Continue with P-002.',
   '**Next:** P-002 only, and it is not actionable yet.',
@@ -114,6 +126,25 @@ describe('detectNowItemContradictions', () => {
     const parsed = parsePlan(CURRENT);
 
     expect(detectNowItemContradictions(parsed)).toEqual([]);
+  });
+
+  it('ignores a quoted stale trigger and accepts the explicit dropped status that corrects it', () => {
+    expect(detectNowItemContradictions(parsePlan(DROPPED_ITEM_EXPLANATION))).toEqual([]);
+  });
+
+  it('allows an affirmative past-tense measurement of a terminal item', () => {
+    expect(detectNowItemContradictions(parsePlan(MEASURED_TERMINAL_ITEM))).toEqual([]);
+  });
+
+  it.each([
+    'P-005 will measure 9.27% of rows.',
+    'Measure P-005 again before continuing.',
+    'P-005 is still open for measurement.',
+  ])('keeps future, imperative, and active measurement prose contradictory: %s', (state) => {
+    const proposed = MEASURED_TERMINAL_ITEM.replace('**State:** P-005 measured 9.27% of rows / 5.73% of cost.', `**State:** ${state}`);
+    expect(detectNowItemContradictions(parsePlan(proposed))).toEqual([
+      expect.objectContaining({ id: 'P-005', status: 'done' }),
+    ]);
   });
 
   it.each(['P-001–P-002', 'P-001-P-002', 'P-001 to P-002'])(

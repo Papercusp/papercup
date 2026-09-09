@@ -260,7 +260,11 @@ export interface GateOwnerBrief {
       phase: string;
       currentStatus: 'no-suite' | 'isolated-suite-result';
       frozenCandidateVerdict: 'not-judged' | 'full-gate-red';
-      repairHeadVerdict: 'not-judged' | 'same-as-frozen-full-gate-red' | 'isolated-repair-green';
+      repairHeadVerdict:
+        | 'not-judged'
+        | 'same-as-frozen-full-gate-red'
+        | 'full-gate-red'
+        | 'isolated-repair-green';
     } | null;
     attempts: number | null;
     fixerSpawnId: string | null;

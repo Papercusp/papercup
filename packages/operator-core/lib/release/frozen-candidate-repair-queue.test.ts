@@ -765,6 +765,28 @@ describe('frozen-candidate repair queue', () => {
       frozenCandidateVerdict: 'full-gate-red',
       repairHeadVerdict: 'same-as-frozen-full-gate-red',
     });
+
+    // EI-22767271786772554: after the canonical red writer appends a round at a
+    // distinct repair head, the queue returns to awaiting-fixer. That NEXT-action
+    // phase must not erase the completed full-gate verdict from the status identity.
+    const redRepairHead = markFrozenRepairVerificationRed(repaired, {
+      repairHead: C1,
+      failingTests: ['lib/still-red.test.ts'],
+      nowMs: T0 + 4,
+    });
+    expect(
+      diagnoseFrozenCandidateRepairQueue(redRepairHead, {
+        nowMs: T0 + 5,
+        fixerAlive: false,
+      })?.verdictProvenance,
+    ).toEqual({
+      frozenCandidate: C,
+      repairHead: C1,
+      phase: 'awaiting-fixer',
+      currentStatus: 'no-suite',
+      frozenCandidateVerdict: 'full-gate-red',
+      repairHeadVerdict: 'full-gate-red',
+    });
   });
 
   it('WI-1586801: advertises the retire recipe ONLY when the decision is terminal', () => {

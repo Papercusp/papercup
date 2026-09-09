@@ -589,8 +589,8 @@ async function callIdeatorLlm(
 
     // The failure MESSAGE is chosen when the timer FIRES. Local admission is deliberately
     // NOT the generation boundary: the HTTP request can still spend minutes in the inference
-    // gateway's own queue/account governor (EI-11417). Only response start proves the request
-    // cleared every admission layer.
+    // gateway's own queue/account governor (EI-11417). Conversely, buffered transports
+    // may expose neither hook until completion; missing hooks cannot prove a capacity wall.
     const arm = (ms: number) => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
@@ -605,8 +605,8 @@ async function callIdeatorLlm(
           abort(
             new Error(
               `Scout ideator ${slot.lens} did not receive an upstream response before the cycle deadline ` +
-                `(${locallyAdmitted ? 'left the local governor but remained queued/stalled downstream' : 'never admitted by the local governor — no capacity within the remaining budget'}; ` +
-                `not generation)`,
+                `(${locallyAdmitted ? 'local admission observed' : 'local admission unobserved — transport may not expose admission'}; ` +
+                `response start unobserved; queueing versus generation unknown)`,
             ),
           );
         } else {
