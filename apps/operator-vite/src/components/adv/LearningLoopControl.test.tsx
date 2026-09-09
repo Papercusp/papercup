@@ -215,6 +215,21 @@ describe('<LearningLoopControl>', () => {
     expect(popoverRule).not.toContain('background: var(--bg-2)');
   });
 
+  it('keeps the dropdown footer reachable when the window has limited space below it', () => {
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ top: 500 } as DOMRect);
+    try {
+      render(<LearningLoopControl />);
+      openDropdown();
+      const popover = screen.getByRole('dialog', { name: 'Learning loops' });
+      expect(popover.style.maxHeight).toBe(`${window.innerHeight - 516}px`);
+      bounds.mockReturnValue({ top: 600 } as DOMRect);
+      fireEvent(window, new Event('resize'));
+      expect(popover.style.maxHeight).toBe(`${window.innerHeight - 616}px`);
+    } finally {
+      bounds.mockRestore();
+    }
+  });
+
   it('pause sends routines:group-set { active:false, reason } through the gated bridge, then refetches', async () => {
     render(<LearningLoopControl />);
     fireEvent.click(screen.getByRole('button', { name: 'Pause all learning loops' }));

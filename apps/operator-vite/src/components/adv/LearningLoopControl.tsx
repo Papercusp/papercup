@@ -337,6 +337,21 @@ export default function LearningLoopControl() {
   const [error, setError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    if (!open) return;
+    const fit = () => {
+      const popover = rootRef.current?.querySelector<HTMLElement>(".pc-lloop__pop");
+      if (popover) popover.style.maxHeight = `${Math.max(120, window.innerHeight - popover.getBoundingClientRect().top - 16)}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    window.addEventListener("scroll", fit, true);
+    return () => {
+      window.removeEventListener("resize", fit);
+      window.removeEventListener("scroll", fit, true);
+    };
+  }, [open, sync.data]);
+
   // Outside-click / Escape close for the popover.
   useEffect(() => {
     if (!open) return;
@@ -653,6 +668,7 @@ export default function LearningLoopControl() {
         .pc-lloop__pop {
           position: absolute; right: 0; top: 30px; z-index: 30; width: min(440px, calc(100vw - 32px));
           box-sizing: border-box;
+          max-height: 70vh; overflow-y: auto; overscroll-behavior: contain;
           /* Floating controls must be opaque: --bg-2 is intentionally a
              translucent in-panel wash, so content behind this menu otherwise
              bleeds through and competes with the pause/resume copy. */
