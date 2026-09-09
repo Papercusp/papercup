@@ -678,6 +678,25 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     }
   });
 
+  it('keeps canonical observed context when compatibility status/evidence aliases are also present', () => {
+    const repairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        {
+          claim: 'the audit is terminal',
+          observed: 'canonical current state',
+          status: 'predicted',
+          evidence: 'stale compatibility value',
+        },
+        'checks[0]',
+        repairs,
+      ),
+    ).toEqual({ claim: 'the audit is terminal', observed: 'canonical current state' });
+    expect(repairs).toEqual([
+      expect.objectContaining({ field: 'checks[0]', detail: expect.stringContaining('`observed`') }),
+    ]);
+  });
+
   it('normalizes boolean `ok` check rows to the canonical evidence slot (EI-21828094173087688)', () => {
     const verifiedRepairs: CarryArgRepair[] = [];
     expect(

@@ -139,6 +139,33 @@ describe('locks:acquire_resource exclusive', () => {
     expect(b).toMatchObject({ ok: true, status: 'held', mode: 'exclusive', fence_seq: 7, waited_sec: 3 });
   });
 
+  it('forwards exclusive drain ticks to ctx.progress so the MCP idle clock stays alive', async () => {
+    const progress = vi.fn();
+    exclM.mockImplementation(async (params) => {
+      params.onTick?.({ waited_sec: 2, holders: [] });
+      return { ok: true, status: 'held', lock_id: 'L2', waited_sec: 2, shared_holders: [], fence_seq: 7 } as never;
+    });
+
+    const b = body(
+      await tool.handler(
+        { resource: 'dev-server', mode: 'exclusive', wait: { max_drain_sec: 5 } } as never,
+        { progress } as never,
+      ),
+    );
+
+    expect(b).toMatchObject({ ok: true, status: 'held', mode: 'exclusive', fence_seq: 7 });
+    expect(progress).toHaveBeenCalledWith(
+      undefined,
+      JSON.stringify({
+        phase: 'draining',
+        elapsed_sec: 2,
+        max_drain_sec: 5,
+        remaining_sec: 3,
+        holders: [],
+      }),
+    );
+  });
+
   it('draining returns the current holders', async () => {
     exclM.mockResolvedValue({ ok: true, status: 'draining', lock_id: 'L2', holders: [holder] } as never);
     const b = body(await callExcl());

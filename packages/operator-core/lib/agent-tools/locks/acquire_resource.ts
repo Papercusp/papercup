@@ -113,6 +113,13 @@ export default defineTool({
     const coordinationDomain = resourceLockDomain(args.resource);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
     const reason = args.reason ?? '';
+    // EI-22433934758916322: a bounded exclusive drain can legitimately occupy
+    // the handler for up to 45s. Forward the wait loop's five-second ticks to
+    // the transport so an MCP client sees liveness and refreshes its idle clock
+    // instead of treating a still-progressing acquisition as an unknown-outcome
+    // timeout. Older direct/shim callers may not provide progress.
+    const emitProgress =
+      (ctx as { progress?: (pct: number | undefined, msg?: string) => void }).progress ?? (() => undefined);
 
     // WI-562584: the domain above is INFERRED from the resource name, and a
     // wrong inference used to fail OPEN — granting over a live hold that the
@@ -202,6 +209,18 @@ export default defineTool({
           // P-009: tell the shared holders to release when the drain begins.
           onDrainStart: (holders) =>
             broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
+          onTick: ({ waited_sec, holders }) => {
+            emitProgress(
+              undefined,
+              JSON.stringify({
+                phase: 'draining',
+                elapsed_sec: waited_sec,
+                max_drain_sec: maxWaitSec,
+                remaining_sec: Math.max(0, maxWaitSec - waited_sec),
+                holders: holders.map(holderJson),
+              }),
+            );
+          },
           // EI-22365267258322901: an exclusive held by an ended agent session
           // must be reclaimed before reporting held_exclusive. The wait helper
           // is fail-safe and only condemns owners that the shared liveness
