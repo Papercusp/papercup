@@ -978,6 +978,7 @@ export default defineTool({
         persisted,
         auditRecorded,
         ...base,
+        ...(patch ? { source: { ref: sourceRef, root } } : {}),
         repairQueue: persisted
           ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
           : inspected.diagnostic,
