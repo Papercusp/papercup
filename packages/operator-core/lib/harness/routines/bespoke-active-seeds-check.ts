@@ -118,6 +118,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // that this registry was written to close. Found red in committed staging while greening
   // main on 2026-08-30; unrelated to the frozen-candidate entry below.
   { name: 'dead-citation-sweep', seedScript: 'seed-dead-citation-sweep-routine.ts' },
+  { name: 'dead-target-reaper-sweep', seedScript: 'seed-heavy-maintenance-sweep-routines.ts' },
   // WI-1741477. Added in the SAME change as the action, its import and its spend entry —
   // deliberately not deferred. The entry above records that dead-citation-sweep landed
   // always-on but was missed here, so the "seed script nobody ever ran" guard could not see
@@ -165,6 +166,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   },
   { name: 'precompute-derived-reads', seedScript: 'seed-precompute-derived-reads-routine.ts' },
   { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts' },
+  {
+    name: 'scout-signal-accumulator-sweep',
+    seedScript: 'seed-heavy-maintenance-sweep-routines.ts',
+  },
   // WI-35718. The INACTIVE-loop sibling of sweep-stalled-loops below: that one acts on armed
   // loops that stopped producing turns, this one on a loop already switched OFF while its
   // session's process is still alive and still holds an autonomy posture. Registered here for
@@ -515,7 +520,8 @@ export function isReaffirmed(reviewBy: string | null, now: number): boolean {
 
 /** Resolve the install slug used by a seed writer's default configuration. */
 function resolveInstallSlug(scope: BespokeActiveSeed['scope'], operatorHomeInstallSlug: string): string {
-  if (scope === 'hive-canary') return process.env.POT_CANARY_HARNESS ?? process.env.HIVE_CANARY_HARNESS ?? 'hive-canary';
+  if (scope === 'hive-canary')
+    return process.env.POT_CANARY_HARNESS ?? process.env.HIVE_CANARY_HARNESS ?? 'hive-canary';
   // Reuse the seed writer's own constant rather than re-deriving the env var name here —
   // seed-oddsmith-cron-routines.ts and this check must never disagree about the target.
   if (scope === 'oddsmith') return ODDSMITH_HARNESS_SLUG;

@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BindSpecEvidenceInput } from '../plans/spec-evidence-store';
+import { REPO_ROOT } from '../docs/_repo-paths';
 
 const phases = vi.hoisted(() => ({ prepare: vi.fn(), finish: vi.fn() }));
 vi.mock('./evidence', async (original) => ({
@@ -25,7 +25,9 @@ afterEach(async () => {
 });
 
 it('the public run handler prepares mappings before real execution and returns the persisted completion bundle', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'testing-run-evidence-handler-'));
+  const parent = join(REPO_ROOT, '.papercusp', 'tmp');
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, 'testing-run-evidence-handler-'));
   roots.push(root);
   await mkdir(join(root, '.git'));
   await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
@@ -54,7 +56,9 @@ it('the public run handler prepares mappings before real execution and returns t
       if (stored.length === 1) {
         await writeFile(declarationPath, JSON.stringify({ specId: input.specId, causalPairId: 'original-failure' }));
       }
-      return { status: 'created' as const, id: stored.length };
+      return { status: 'created' as const, id: stored.length, workItemId: input.workItemId,
+        planSlug: input.planSlug!, specId: input.specId!, sourceValId: null, specRevision: input.specRevision!,
+        specFingerprint: 'fixture-spec', bindingFingerprint: `fixture-binding-${stored.length}` };
     }),
     measure: measureRepoFilesEvidenceAtRoot,
     ledger: vi.fn().mockResolvedValue([
@@ -70,10 +74,20 @@ it('the public run handler prepares mappings before real execution and returns t
     specId: 'SPEC-001', specRevision: 1, testPath: 'feature.test.ts', sourcePaths: ['feature.ts'],
     testLayer: 'integration' as const, causalPairId: 'original-failure',
   }] };
+  const ctx = { projectDir: root, workspaceId: 'handler-workspace', uiClientId: 'su-handler-test',
+    isSuperuser: true } as const;
+  // A real execution without declaration is the negative control. It fails for
+  // the missing declaration, not because the feature or test runner is absent.
+  const undeclared = await runTool.handler(runTool.args.parse({ files: ['feature.test.ts'], harness: 'handler-harness' }),
+    ctx as never) as { data: Record<string, any> };
+  expect(undeclared.data).toMatchObject({ ok: false, failed: 1 });
+  expect(undeclared.data.failures).toContainEqual(expect.objectContaining({
+    test: 'observes the declaration before executing the feature', message: expect.stringContaining('declared.json'),
+  }));
+  expect(phases.prepare).not.toHaveBeenCalled();
+  expect(stored).toHaveLength(0);
   const args = runTool.args.parse({ files: ['feature.test.ts'], harness: 'handler-harness', evidence });
-  const result = await runTool.handler(args, {
-    projectDir: root, workspaceId: 'handler-workspace', uiClientId: 'su-handler-test',
-  } as never) as { data: Record<string, any> };
+  const result = await runTool.handler(args, ctx as never) as { data: Record<string, any> };
 
   expect(result.data).toMatchObject({ ok: true, passed: 1, failed: 0, files: 1 });
   expect(phases.prepare).toHaveBeenCalledExactlyOnceWith(evidence, result.data.runId, ['feature.test.ts'],

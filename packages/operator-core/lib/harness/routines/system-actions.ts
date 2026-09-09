@@ -43,6 +43,13 @@ export interface SystemActionCtx {
  */
 export interface SystemActionResult {
   /**
+   * Compact, JSON-serializable evidence retained in the action's DBOS
+   * operation_output. A handler that intentionally fails soft still needs to
+   * distinguish "healthy and empty" from "shed" or "completed with per-target
+   * errors" after the fact; logs alone are not a durable measurement surface.
+   */
+  diagnostics?: Record<string, unknown>;
+  /**
    * Durable child-workflow fires the engine starts AFTER this action's step, from
    * the workflow context (the action cannot start them from inside its own step).
    * Each must carry a STABLE idempotencyKey (derived from durable state, not a

@@ -20,6 +20,7 @@
  */
 
 import { LlmCallError, tryParseJson, type LlmCallOpts, type LlmCallResult } from '@papercusp/testing-shell/llm';
+import { costFromTokens, priceFor } from '@papercusp/model-pricing';
 
 import {
   runAgentChat,
@@ -148,19 +149,13 @@ function extractResponsesText(value: unknown): string {
   return parts.join('\n');
 }
 
-function codexCostUsd(model: string | undefined, inputTokens: number, outputTokens: number): number {
-  // Strip a `:effort` suffix (e.g. 'gpt-5.5:low') — the gateway bridge parses it
-  // out of the model id, so pricing must key on the bare id too.
-  const m = model?.trim().toLowerCase().split(':')[0];
-  const price = m === 'gpt-5.5' ? { in: 2.5, out: 20 } : m === 'gpt-5' ? { in: 1.25, out: 10 } : { in: 0, out: 0 };
-  return (inputTokens * price.in + outputTokens * price.out) / 1_000_000;
-}
-
 async function llmCallViaCodexGateway(
   opts: LlmCallOpts,
   model: string | undefined,
   promptText: string,
 ): Promise<LlmCallResult> {
+  const pricedModel = model ?? 'gpt-5.5';
+  if (!priceFor(pricedModel)) throw new Error('Codex model has no registered usage price: ' + pricedModel);
   const input =
     opts.responseFormat === 'json' && !/\bjson\b/i.test(promptText)
       ? `${promptText}\n\nRespond with valid json.`
@@ -226,11 +221,18 @@ async function llmCallViaCodexGateway(
   const finalText = extractResponsesText(raw);
   const usage =
     raw && typeof raw === 'object'
-      ? (raw as { usage?: { input_tokens?: number; output_tokens?: number } }).usage
+      ? (raw as { usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } }).usage
       : undefined;
-  const inputTokens = usage?.input_tokens ?? 0;
-  const outputTokens = usage?.output_tokens ?? 0;
-  const costUsd = codexCostUsd(model, inputTokens, outputTokens);
+  const inputTokens = usage?.input_tokens;
+  const outputTokens = usage?.output_tokens;
+  const cachedInput = usage?.input_tokens_details?.cached_tokens ?? 0;
+  if (typeof inputTokens !== 'number' || !Number.isSafeInteger(inputTokens) || inputTokens < 0 ||
+      typeof outputTokens !== 'number' || !Number.isSafeInteger(outputTokens) || outputTokens < 0 ||
+      !Number.isSafeInteger(cachedInput) || cachedInput < 0 || cachedInput > inputTokens)
+    throw new Error('Codex response has missing or invalid usage; retain the admitted cost reservation');
+  const costUsd = costFromTokens(pricedModel, {
+    inputTokens: inputTokens - cachedInput, outputTokens, cacheReadTokens: cachedInput,
+  }).usd;
   const json = opts.responseFormat === 'json' ? tryParseJson(finalText) : undefined;
 
   const servedAccount = res.headers.get(ROUTED_ACCOUNT_HEADER)?.trim() || undefined;

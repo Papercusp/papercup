@@ -37,8 +37,8 @@
  * probed path, confirmation count and timestamps — surfaced by `routines:list`.
  *
  * FAIL-SOFT BY CONTRACT: every write is individually guarded, and the sweep returns a result
- * row per install rather than throwing. It runs on the routines tick; an observability write
- * that could break dispatch would be a worse bug than the one it reports.
+ * row per install rather than throwing. It runs as its own durable routine; an observability
+ * write that could break the scheduler would be a worse bug than the one it reports.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
@@ -217,7 +217,14 @@ export async function deadTargetReaperSweep(now = Date.now()): Promise<DeadTarge
     ({ sql } = getOrgPg());
     workspaceId = activeWorkspaceId();
   } catch (e: any) {
-    return [{ installSlug: '(none)', outcome: 'error', state: 'not-probed', reason: `sweep could not start: ${String(e?.message ?? e)}` }];
+    return [
+      {
+        installSlug: '(none)',
+        outcome: 'error',
+        state: 'not-probed',
+        reason: `sweep could not start: ${String(e?.message ?? e)}`,
+      },
+    ];
   }
 
   // Canonical form, so a routine still installed under a RETIRED alias of the home slug
@@ -234,7 +241,14 @@ export async function deadTargetReaperSweep(now = Date.now()): Promise<DeadTarge
          AND active = true
          AND install_slug IS NOT NULL`;
   } catch (e: any) {
-    return [{ installSlug: '(none)', outcome: 'error', state: 'not-probed', reason: `routine read failed: ${String(e?.message ?? e)}` }];
+    return [
+      {
+        installSlug: '(none)',
+        outcome: 'error',
+        state: 'not-probed',
+        reason: `routine read failed: ${String(e?.message ?? e)}`,
+      },
+    ];
   }
 
   const byInstall = new Map<string, RoutineRow[]>();
@@ -248,7 +262,12 @@ export async function deadTargetReaperSweep(now = Date.now()): Promise<DeadTarge
     try {
       // (2) The home harness never reaches a probe, let alone a park.
       if (isProtectedInstall(canonicalHarnessSlug(installSlug), homeSlug)) {
-        results.push({ installSlug, outcome: 'protected', state: 'not-probed', reason: `${installSlug} is the operator home harness — excluded from reaping unconditionally` });
+        results.push({
+          installSlug,
+          outcome: 'protected',
+          state: 'not-probed',
+          reason: `${installSlug} is the operator home harness — excluded from reaping unconditionally`,
+        });
         continue;
       }
 
@@ -302,7 +321,14 @@ export async function deadTargetReaperSweep(now = Date.now()): Promise<DeadTarge
         }
       }
 
-      const escalated = await escalate(workspaceId, installSlug, verdict.reason, stamp, parked, group.map((r) => r.name));
+      const escalated = await escalate(
+        workspaceId,
+        installSlug,
+        verdict.reason,
+        stamp,
+        parked,
+        group.map((r) => r.name),
+      );
       results.push({
         installSlug,
         outcome: escalated ? 'parked' : 'debounced',
@@ -339,7 +365,12 @@ async function escalate(
   try {
     if ((await recentWatchdogFires(workspaceId, installSlug, 24, WATCHDOG_SOURCE)) > 0) return false;
     const claimed = await claimWatchdogFire({
-      workspaceId, installSlug, source: WATCHDOG_SOURCE, windowHours: 24, reason, wakeAt: null,
+      workspaceId,
+      installSlug,
+      source: WATCHDOG_SOURCE,
+      windowHours: 24,
+      reason,
+      wakeAt: null,
     });
     if (!claimed) return false;
 
@@ -359,7 +390,9 @@ async function escalate(
         `THIS IS REVERSIBLE AND NOTHING WAS DELETED. If the tree is restored and you want the ` +
         `routines back, re-arm them explicitly — routines:set takes ONE routine at a time, so ` +
         `there is a line per parked routine:\n` +
-        routineNames.map((n) => `    routines:set { name: '${n}', installSlug: '${installSlug}', active: true }`).join('\n') +
+        routineNames
+          .map((n) => `    routines:set { name: '${n}', installSlug: '${installSlug}', active: true }`)
+          .join('\n') +
         `\n(or routines:group-set to resume a whole group at once).\n` +
         `The reaper does NOT auto-unpark: a flapping mount would otherwise oscillate the routines. ` +
         `If instead the pot is genuinely finished with, leave it parked — that is the intended end state.`,

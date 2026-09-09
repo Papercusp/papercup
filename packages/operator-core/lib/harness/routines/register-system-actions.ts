@@ -594,6 +594,11 @@ import './gate-fire-drill-action';
 // interface. A bespoke ephemeral (tier:'ephemeral', 600s) operator-HOME cadence (one sweep
 // serves every workspace's plans). Seeded ACTIVE by seed-acceptance-grading-sweep-routine.ts.
 import './acceptance-grading-sweep-action';
+// WI-10000846: the signal-accumulator recount and dead-target reaper used to run
+// serially inside routinesTick, consuming ~68% of a working scheduler pass. They
+// now retain their own durable cadences and heavy-work shedding, so dispatch no
+// longer waits for either maintenance scan.
+import './heavy-maintenance-sweep-actions';
 // autonomous-inbox-resolution-2026-08-31 P-002: `system:bulk-run-watchdog` — the clock the bulk-run
 // lifecycle never had. Every recovery path was pull-triggered (an owner pressing Restart), so a
 // resolver that died mid-run left the run in `running` with its remaining items on `pending`

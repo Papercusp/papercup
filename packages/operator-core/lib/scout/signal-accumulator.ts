@@ -13,7 +13,7 @@
  * should be DATA-VOLUME based — "sometimes agents are very active so there is
  * a lot of new data … sometimes they are not active so there isn't new data".
  *
- * THE MECHANISM (deterministic, zero-token): a 30s routinesTick sweep RECOUNTS
+ * THE MECHANISM (deterministic, zero-token): its own durable two-minute routine RECOUNTS
  * per-lane "new signal since the last SUCCESSFUL Scout cycle" from the source
  * tables and caches the counts in harness_shared.scout_signal_accumulator
  * (migration 582) — one row per (workspace, install, lane). The watermark is
@@ -92,9 +92,10 @@ export function signalAccumulatorLookbackSec(): number {
   return Number.isFinite(n) ? n : 604_800;
 }
 
-/** In-process throttle between full recount sweeps (the routinesTick fires
- *  every ~30s; a recount every tick buys nothing — the gate reads at most once
- *  per scout-cycle tick). Default 120s; env PAPERCUSP_SIGNAL_ACCUM_SWEEP_SEC. */
+/** In-process backstop throttle between full recount sweeps. The durable routine
+ *  fires every two minutes by default; this guard also protects on-demand calls
+ *  and replayed fires from recounting more frequently. Default 120s; env
+ *  PAPERCUSP_SIGNAL_ACCUM_SWEEP_SEC. */
 export function signalAccumulatorSweepSec(): number {
   const n = Number(process.env.PAPERCUSP_SIGNAL_ACCUM_SWEEP_SEC ?? 120);
   return Number.isFinite(n) && n >= 0 ? n : 120;
@@ -107,11 +108,7 @@ export function signalAccumulatorSweepSec(): number {
  * Scout cycle, FLOORED by the bounded lookback (a never-ran scope counts the
  * recent window, not all history; an ancient last-run doesn't scan months).
  */
-export function effectiveWatermarkMs(
-  lastRanAtMs: number | null,
-  nowMs: number,
-  lookbackSec: number,
-): number {
+export function effectiveWatermarkMs(lastRanAtMs: number | null, nowMs: number, lookbackSec: number): number {
   const floor = nowMs - Math.max(0, lookbackSec) * 1_000;
   if (lastRanAtMs == null || !Number.isFinite(lastRanAtMs)) return floor;
   return Math.max(lastRanAtMs, floor);
@@ -254,27 +251,24 @@ const RATING_PRIOR_CONTEXT_MS = 30 * 86_400_000;
  * A window straddling that date measures the ledger's birth, not agent
  * behaviour, and would read as a spectacular (false) increase in filings.
  */
-export async function readLaneCounts(
-  sql: Sql,
-  workspaceId: string,
-  watermark: Date,
-): Promise<LaneCount[]> {
+export async function readLaneCounts(sql: Sql, workspaceId: string, watermark: Date): Promise<LaneCount[]> {
   const wmMs = watermark.getTime();
   const wmIso = watermark.toISOString();
 
-  const [observations, observationFilings, captures, ratingChanges, completions, reverts, deferrals] = await Promise.all([
-    sql<CountRow[]>`
+  const [observations, observationFilings, captures, ratingChanges, completions, reverts, deferrals] =
+    await Promise.all([
+      sql<CountRow[]>`
       SELECT count(*)::int AS c, max(created_at) AS hw
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
          AND created_at > ${wmIso}
          AND payload ? 'observation'`,
-    // The FILINGS leg (see the note above readLaneCounts). One row per capture
-    // call that landed, including the ones that folded onto an existing row and
-    // therefore minted nothing. Classified by the SAME `payload ? 'observation'`
-    // predicate as the row leg, read off the canonical row the filing landed on,
-    // so the lane's MEANING is unchanged and only its COUNTING BASIS moves.
-    sql<CountRow[]>`
+      // The FILINGS leg (see the note above readLaneCounts). One row per capture
+      // call that landed, including the ones that folded onto an existing row and
+      // therefore minted nothing. Classified by the SAME `payload ? 'observation'`
+      // predicate as the row leg, read off the canonical row the filing landed on,
+      // so the lane's MEANING is unchanged and only its COUNTING BASIS moves.
+      sql<CountRow[]>`
       SELECT count(*)::int AS c, max(o.occurred_at) AS hw
         FROM harness_shared.work_item_occurrences o
         JOIN harness_shared.work_items wi
@@ -283,21 +277,21 @@ export async function readLaneCounts(
        WHERE o.workspace_id = ${workspaceId}
          AND o.occurred_at > ${wmIso}
          AND wi.payload ? 'observation'`,
-    sql<CountRow[]>`
+      sql<CountRow[]>`
       SELECT count(*)::int AS c, max(created_at) AS hw
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
          AND created_at > ${wmIso}
          AND NOT payload ? 'observation'`,
-    // A criterion counts when its rating DIFFERS from that criterion's most
-    // recent PRIOR grade for the same rubric (IS DISTINCT FROM: a first-ever
-    // grade has no prior row → NULL → distinct → counts as new signal). ONE
-    // pass with lag() over a bounded prior-context window — a correlated
-    // per-criterion probe re-scanned the table per row and ran minutes on the
-    // live corpus (perf anti-pattern A-family: no N+1 probes in a sweep). A
-    // prior grade OLDER than the context window is unseen, so the first
-    // in-window grade counts as a change — acceptable for a firing signal.
-    sql<CountRow[]>`
+      // A criterion counts when its rating DIFFERS from that criterion's most
+      // recent PRIOR grade for the same rubric (IS DISTINCT FROM: a first-ever
+      // grade has no prior row → NULL → distinct → counts as new signal). ONE
+      // pass with lag() over a bounded prior-context window — a correlated
+      // per-criterion probe re-scanned the table per row and ran minutes on the
+      // live corpus (perf anti-pattern A-family: no N+1 probes in a sweep). A
+      // prior grade OLDER than the context window is unseen, so the first
+      // in-window grade counts as a change — acceptable for a firing signal.
+      sql<CountRow[]>`
       WITH graded AS (
         SELECT created_at,
                payload->'observation'->>'rubricRef' AS rubric_ref,
@@ -320,24 +314,24 @@ export async function readLaneCounts(
         FROM with_prior
        WHERE created_at > ${wmIso}
          AND rating IS DISTINCT FROM prior`,
-    sql<CountRow[]>`
+      sql<CountRow[]>`
       SELECT count(*)::int AS c, max(to_timestamp(updated_ts / 1000.0)) AS hw
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND status IN ('resolved', 'closed', 'passed')
          AND updated_ts > ${wmMs}`,
-    sql<CountRow[]>`
+      sql<CountRow[]>`
       SELECT count(*)::int AS c, max(last_released_at) AS hw
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND last_released_at > ${wmIso}`,
-    sql<CountRow[]>`
+      sql<CountRow[]>`
       SELECT count(*)::int AS c, max(to_timestamp(updated_ts / 1000.0)) AS hw
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND status IN ('blocked', 'deprecated', 'needs-human')
          AND updated_ts > ${wmMs}`,
-  ]);
+    ]);
 
   return [
     toLaneCount('scorecard-rating-changes', ratingChanges),
@@ -396,7 +390,8 @@ export async function readAccumulatorCounts(opts: {
     if (!SIGNAL_LANES.includes(lane)) continue;
     if (counts[lane] !== undefined) continue; // freshest row per lane wins
     counts[lane] = Math.max(0, Number(r.new_count) || 0);
-    const wm = r.watermark_at == null ? null : r.watermark_at instanceof Date ? r.watermark_at : new Date(r.watermark_at);
+    const wm =
+      r.watermark_at == null ? null : r.watermark_at instanceof Date ? r.watermark_at : new Date(r.watermark_at);
     if (wm && Number.isFinite(wm.getTime()) && (watermarkAt == null || wm > watermarkAt)) watermarkAt = wm;
   }
   return { counts, watermarkAt };
@@ -446,9 +441,7 @@ export async function scoutSignalAccumulatorSweep(
       // silent success. Probe the same workspace population without requiring a
       // Hive row, and emit a durable error-shaped result only when work exists.
       const workspaceIds =
-        typeof listBlenderMaintenanceWorkspaceIds === 'function'
-          ? listBlenderMaintenanceWorkspaceIds()
-          : [];
+        typeof listBlenderMaintenanceWorkspaceIds === 'function' ? listBlenderMaintenanceWorkspaceIds() : [];
       if (workspaceIds.length === 0) return results;
       const { sql } = getOrgPg();
       let eligibleBacklogCount = 0;
@@ -490,9 +483,7 @@ export async function scoutSignalAccumulatorSweep(
         // @singleton), and the Scout is one brain per workspace — the newest
         // successful cycle for the workspace IS the watermark, whatever slug
         // recorded it. origin defaults to 'scout' (su-ideate rows excluded).
-        const lastRanAtMs = await readLastRanTickAtMs({ installSlugs: [], workspaceId }).catch(
-          () => null,
-        );
+        const lastRanAtMs = await readLastRanTickAtMs({ installSlugs: [], workspaceId }).catch(() => null);
         const watermark = new Date(effectiveWatermarkMs(lastRanAtMs, now, lookbackSec));
         const counts = await readLaneCounts(sql, workspaceId, watermark);
         await upsertAccumulatorRows(sql, workspaceId, installSlug, watermark, counts);

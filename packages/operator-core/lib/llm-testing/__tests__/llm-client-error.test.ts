@@ -122,7 +122,7 @@ describe('llmCall backend selection', () => {
       expect(body.instructions).toContain('JSON');
       expect(body.input).toBe('generate one idea\n\nRespond with valid json.');
       expect(body.text).toEqual({ format: { type: 'json_object' } });
-      return new Response(JSON.stringify({ output_text: '{"ok":true}' }), {
+      return new Response(JSON.stringify({ output_text: '{"ok":true}', usage: { input_tokens: 10, output_tokens: 4 } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -157,7 +157,7 @@ describe('llmCall backend selection', () => {
         });
       }
       expect(body).toMatchObject({ model, instructions: 'Return JSON.', text: { format: { type: 'json_object' } } });
-      return new Response(JSON.stringify({ output_text: '{"ok":true}' }), {
+      return new Response(JSON.stringify({ output_text: '{"ok":true}', usage: { input_tokens: 10, output_tokens: 4 } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -177,6 +177,38 @@ describe('llmCall backend selection', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it.each([
+    ['gpt-5.6-luna:medium', (688 * 0.2 + 1922 * 1.2 + 3840 * 0.02) / 1_000_000],
+    ['gpt-5.6-sol:xhigh', (688 * 4 + 1922 * 20 + 3840 * 0.4) / 1_000_000],
+  ])('accounts for %s nonzero gateway usage through canonical model pricing', async (model, expected) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ output_text: '{}',
+      usage: { input_tokens: 4528, output_tokens: 1922, input_tokens_details: { cached_tokens: 3840 } },
+    }), { status: 200 })));
+    try {
+      const { llmCall } = await import('../llm-client');
+      const result = await llmCall({ model, messages: [{ role: 'user', content: 'json' }] });
+      expect(result.costUsd).toBeCloseTo(expected, 8);
+      expect(result.inputTokens).toBe(4528);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('refuses an unpriced model before sending a request', async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { llmCall } = await import('../llm-client');
+      await expect(llmCall({ model: 'gpt-99-unknown', messages: [{ role: 'user', content: 'hello' }] })).rejects.toThrow(/no registered usage price/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each([undefined, { input_tokens: 10 }, { input_tokens: -1, output_tokens: 3 }])('does not turn incomplete usage %j into a free response', async usage => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ output_text: '{}', usage }), { status: 200 })));
+    try {
+      const { llmCall } = await import('../llm-client');
+      await expect(llmCall({ model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hello' }] })).rejects.toThrow(/missing or invalid usage/);
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it('preserves caller temperature on the Anthropic transport', async () => {
