@@ -20322,7 +20322,7 @@
           "POST"
         ]
       },
-      "description": "Record a plan audit: `completion` (default) re-resolves each item's code/test citations and preserves provenance; `activation` maps canonical `session_turn` refs to P-NNN/D-NNN/sections, resolves them, records the current revision, and returns an advisory activation-readiness consult preview. Post-epoch activation transactionally seeds unchanged acceptance BARs; after a semantic Requirements/map edit it records the exact audited revision and returns barSeedPendingAmendment while leaving rubric meaning and projections exclusively to rubrics:amend. No parallel review tool.",
+      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch, unchanged BAR source is seeded atomically; changed Requirements/map returns barSeedPendingAmendment without changing rubric/projections, which only rubrics:amend may do.",
       "capabilities": [
         "plans:write"
       ],

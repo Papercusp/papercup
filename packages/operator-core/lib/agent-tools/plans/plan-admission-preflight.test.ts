@@ -610,6 +610,47 @@ describe('evaluateExactPlanAdmission', () => {
 
     expect(verdict).toMatchObject({ ready: false, reason: 'floor-gated' });
   });
+
+  it('admits plans:start when the caller owns active non-final lanes beside a blocked frontier', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001', 'wip'), item('P-002', 'wip'), item('P-003')],
+      workItems: [
+        {
+          id: 'WI-1',
+          family: 'issue',
+          sourcePlanItemIds: ['P-001'],
+          payload: null,
+          assignee: 'su-caller',
+        },
+        {
+          id: 'WI-2',
+          family: 'issue',
+          sourcePlanItemIds: ['P-002'],
+          payload: null,
+          assignee: 'su-caller',
+        },
+        {
+          id: 'WI-3',
+          family: 'issue',
+          sourcePlanItemIds: ['P-003'],
+          payload: null,
+          assignee: 'su-other',
+        },
+      ],
+      laneHealth: lane({
+        issue: 0,
+        issueMatchedByFilter: 3,
+        issueExcluded: { planLaneReserved: 2, stopTheLine: 1 },
+        featureReachable: false,
+      }),
+      assignee: 'su-caller',
+      allowCallerHeld: true,
+    });
+
+    expect(verdict).toMatchObject({ ready: true, status: 'ready', reason: 'ready' });
+    expect(verdict.message).toContain('caller already owns 2 active non-final lane(s)');
+  });
 });
 
 describe('preflightExactPlanAdmission IO wiring', () => {

@@ -286,10 +286,28 @@ export function evaluateExactPlanAdmission(args: {
         })
         .sort((a, b) => a.planItemId.localeCompare(b.planItemId) || a.workItemId.localeCompare(b.workItemId))
     : [];
+  const resolvedById = new Map(resolved.items.map((item) => [item.id, item]));
+  const callerOwnedActivePlanItemIds = new Set(
+    activePromotedRows.flatMap((row) => {
+      if (!args.allowCallerHeld || args.requestedSeats != null || !args.assignee || row.assignee !== args.assignee) {
+        return [];
+      }
+      return provenanceIds(row).filter((planItemId) => {
+        const planItem = resolvedById.get(planItemId);
+        return Boolean(
+          planItem &&
+          (planItem.effectiveStatus === 'wip' ||
+            (planItem.effectiveStatus === 'todo' && planItem.unresolvedBlockers.length === 0 && !planItem.needsHuman)),
+        );
+      });
+    }),
+  );
+  const callerOwnsActiveLane = callerOwnedActivePlanItemIds.size > 0;
   // `readClaimSpecLaneHealth` deliberately excludes taken rows from claimable. That is
-  // correct for a new fleet, but plans:start is also called by the agent that may have
-  // already claimed the plan's only actionable row. In that case a zero claimable count
-  // is not a floor-gated failure: the caller already owns the complete ready frontier.
+  // correct for a new fleet, but plans:start is also called by the agent that may already
+  // own an actionable row or be actively progressing a WIP lane. In that case a zero
+  // claimable count caused by another holder or a stop-the-line floor is not a failure:
+  // plans:start acknowledges existing work and does not need to open a new claim.
   const callerHoldsAllReadyRows =
     args.allowCallerHeld === true &&
     args.requestedSeats == null &&
@@ -379,7 +397,7 @@ export function evaluateExactPlanAdmission(args: {
   // claimable row. Treat the zero family as diagnostic context when the
   // requested seat count is already satisfied; an unbounded plans:start call
   // and a request with a real shortfall retain the refusal diagnostics.
-  if (unreachable || (familyDisagreement && seatShortfall !== 0)) {
+  if (unreachable || (familyDisagreement && seatShortfall !== 0 && !callerOwnsActiveLane)) {
     return finish(
       base,
       'refused',
@@ -387,14 +405,17 @@ export function evaluateExactPlanAdmission(args: {
       'Actionable promoted families disagree with the exact-plan lane reachability/counts.',
     );
   }
-  if (callerHoldsAllReadyRows) {
+  if (callerHoldsAllReadyRows || callerOwnsActiveLane) {
     return finish(
       base,
       'ready',
       'ready',
-      'Exact-plan admission is ready: the caller already holds all ' +
-        blockingRows.length +
-        ' actionable ready row(s); no additional claimable row is required.',
+      callerHoldsAllReadyRows
+        ? 'Exact-plan admission is ready: the caller already holds all ' +
+            blockingRows.length +
+            ' actionable ready row(s); no additional claimable row is required.'
+        : `Exact-plan admission is ready: the caller already owns ${callerOwnedActivePlanItemIds.size} active non-final lane(s); ` +
+            'no additional claimable row is required for those lanes.',
     );
   }
   if (args.laneHealth.effective.claimable === 0) {
