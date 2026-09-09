@@ -150,6 +150,7 @@ export interface CapabilityReviewDeps {
   rerank: (
     query: string,
     priors: CapabilityReviewPrior[],
+    options?: { timeoutMs: number },
   ) => Promise<{
     priors: CapabilityReviewPrior[];
     outcome: RerankStageOutcome;
@@ -161,14 +162,16 @@ const defaultDeps: CapabilityReviewDeps = {
 };
 
 /** Dream uses the shared local cross-encoder; a configured hosted key cannot add unmetered spend. */
-export async function rerankCapabilityPriors(query: string, priors: CapabilityReviewPrior[]) {
+export async function rerankCapabilityPriors(query: string, priors: CapabilityReviewPrior[], options?: { timeoutMs: number }) {
+  const timeoutMs = options?.timeoutMs ?? 5_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError('Rerank requires a remaining review budget');
   let outcome: RerankStageOutcome = { attempted: false, reason: 'no-outcome' };
   const ranked = await rerankRows(query, priors, {
     engine: 'local',
     limit: 8,
     id: (p) => p.ref,
     text: (p) => p.text,
-    rerankTimeoutMs: 5_000,
+    rerankTimeoutMs: timeoutMs,
     onOutcome: (value) => {
       outcome = value;
     },
@@ -330,6 +333,9 @@ export async function runCapabilityDreamReview(
   deps: CapabilityReviewDeps = defaultDeps,
 ): Promise<CapabilityReviewResult> {
   const config = resolveDreamReviewConfig({ maxOutputTokens: 4_096, ...options.config });
+  // Source retrieval and reranking share the already configured review budget.
+  // A fixed interactive-search timeout does not cover this three-facet union.
+  const sourceDeadline = Math.min(Date.now() + config.timeoutMs, options.cycleDeadlineMs ?? Infinity);
   const packets = validateCapabilityDreamSelection(options.selection);
   const candidate = CapabilityProposalSchema.parse(options.candidate);
   const admitted = parseCapabilityDreamPayload(
@@ -463,7 +469,9 @@ export async function runCapabilityDreamReview(
     if (exact) return finish('reject', 'duplicate', 'Exact candidate content already recorded at ' + exact.ref);
     if (!priors.length)
       return unavailable('empty-search', 'No supporting prior sources were retrieved; global novelty remains unknown.');
-    const ranked = await deps.rerank(candidate.behavior + '\n' + candidate.priorArt.proposedDelta, priors);
+    const remainingMs = sourceDeadline - Date.now();
+    if (remainingMs <= 0) return unavailable('rerank-unavailable', 'The review source deadline elapsed before reranking.');
+    const ranked = await deps.rerank(candidate.behavior + '\n' + candidate.priorArt.proposedDelta, priors, { timeoutMs: remainingMs });
     coverage.rerank = ranked.outcome;
     if (
       !ranked.priors.length ||

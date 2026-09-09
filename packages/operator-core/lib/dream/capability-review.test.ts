@@ -473,6 +473,23 @@ describe('independent capability source and skeptical review', () => {
     });
     expect(f.calls).toHaveLength(3);
   });
+  it('passes remaining configured review time to the full source rerank, bounded by the cycle', async () => {
+    const f = await fixture();
+    f.options.config = { model: 'reviewer-model', timeoutMs: 180_000 };
+    f.options.cycleDeadlineMs = Date.now() + 30_000;
+    await runCapabilityDreamReview(f.options, f.deps);
+    const options = vi.mocked(f.deps.rerank).mock.calls[0]![2]!;
+    expect(options.timeoutMs).toBeGreaterThan(5_000);
+    expect(options.timeoutMs).toBeLessThanOrEqual(30_000);
+  });
+  it('retains a rejection and calls neither scorer nor reviewer after the source deadline', async () => {
+    const f = await fixture();
+    f.options.cycleDeadlineMs = Date.now() - 1;
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'unverified', reason: 'rerank-unavailable' });
+    expect(f.deps.rerank).not.toHaveBeenCalled();
+    expect(f.calls).toHaveLength(0);
+  });
   it('requires the reranker to actually score candidates and preserves rejected prior attempts', async () => {
     const f = await fixture();
     f.priors.push(prior('wi:rejected', 'rejected-attempt'));

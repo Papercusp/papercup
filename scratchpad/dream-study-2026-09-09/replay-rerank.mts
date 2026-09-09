@@ -52,5 +52,11 @@ try {
   }
   const fullRanked = await rerankCapabilityPriors(query, found);
   console.log(JSON.stringify({ phase: 'union-production', count: found.length, outcome: fullRanked.outcome }));
+  // Change only the local probe query to avoid cached pair scores. This is an
+  // execution probe, not a new study observation or a replacement verdict.
+  const uncachedQuery = query + '\nExecution probe ' + new Date().toISOString();
+  const coldStart = Date.now();
+  const uncached = await rerankCapabilityPriors(uncachedQuery, found, { timeoutMs: 180_000 });
+  console.log(JSON.stringify({ phase: 'uncached-budgeted-union', elapsedMs: Date.now() - coldStart, count: found.length, outcome: uncached.outcome }));
 } finally { await sql.end(); }
 process.exit(0);
