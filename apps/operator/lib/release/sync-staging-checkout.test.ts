@@ -41,6 +41,17 @@ import { createServer, connect, type Server, type Socket } from 'node:net';
 // apps/operator/lib/release → apps/operator/bin/release/sync-staging-checkout.sh
 const SCRIPT_PATH = join(__dirname, '../../bin/release/sync-staging-checkout.sh');
 
+function runScriptArgs(
+  args: string[],
+  opts: { env?: Record<string, string> } = {},
+): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync('bash', [SCRIPT_PATH, ...args], {
+    env: { ...process.env, ...(opts.env ?? {}) },
+    encoding: 'utf8',
+  });
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
 /** Extract one function (plus any it depends on) from the live script and run it. */
 function runFn(
   fns: string[],
@@ -96,6 +107,31 @@ function healthMatchesTarget(healthSha: string, targetSha: string): boolean {
   }
   return r.status === 0;
 }
+
+describe('sync-staging-checkout.sh argument parsing', () => {
+  it('prints help and exits before touching the live sync workflow', () => {
+    const r = runScriptArgs(['--help'], {
+      // If argument parsing regresses and falls through, this invalid root makes
+      // the live path fail instead of accidentally operating on this checkout.
+      env: { PAPERCUSP_INTEGRATION_ROOT: '/definitely/not-a-live-checkout' },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Usage: sync-staging-checkout.sh');
+    expect(r.stdout).toContain('--help');
+    expect(r.stdout).not.toContain('[staging-sync]');
+    expect(r.stderr).toBe('');
+  });
+
+  it('rejects unknown arguments without entering the live sync workflow', () => {
+    const r = runScriptArgs(['--not-an-option'], {
+      env: { PAPERCUSP_INTEGRATION_ROOT: '/definitely/not-a-live-checkout' },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('unknown argument: --not-an-option');
+    expect(r.stderr).toContain('Usage: sync-staging-checkout.sh');
+    expect(r.stdout).toBe('');
+  });
+});
 
 describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347)', () => {
   it('accepts the shipped shape: source .env.local, then explicitly force loopback', () => {

@@ -59,7 +59,21 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
               async execute(_id, params, signal) {
                 if (!catalog.has(tool.name)) throw new Error('native_mcp_tool_removed');
                 const result = await client.callTool({ name: tool.name, arguments: params }, undefined, { signal });
-                return { content: result.content, details: result, isError: result.isError };
+                return {
+                  content: result.content,
+                  details: {
+                    ...result,
+                    // Client-observed connection, never a server-authored claim.
+                    // Keep compact model-visible content untouched and expose no
+                    // socket paths, credential headers or credential-bearing URLs.
+                    nativeMcp: {
+                      transportKind: connection.transportKind,
+                      ...(connection.operatorId ? { operatorId: connection.operatorId } : {}),
+                      ...(connection.generation ? { generation: connection.generation } : {}),
+                    },
+                  },
+                  isError: result.isError,
+                };
               },
             });
           }

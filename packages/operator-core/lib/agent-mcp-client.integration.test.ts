@@ -45,6 +45,7 @@ const expectedCtx: BuiltSpawnContext = {
 };
 async function server() {
   const witness = vi.fn();
+  const fixture = { value: 'initial', writes: [] as string[] };
   const verify = vi.fn(async (extra: unknown) => {
     const headers = (extra as { requestInfo: { headers: Record<string, string> } }).requestInfo.headers;
     return headers.authorization === 'Bearer fixture-token'
@@ -58,24 +59,38 @@ async function server() {
       register(host) {
         host.server.setRequestHandler(ListToolsRequestSchema, async () => {
           witness('list');
-          return { tools: [{ name: 'echo', description: 'Echo fixture row', inputSchema: {
+          return { tools: [{ name: 'echo', description: 'Read fixture row',
+            annotations: { readOnlyHint: true }, inputSchema: {
             type: 'object', properties: { row: { type: 'string' } },
-          } }] };
+          } }, { name: 'fixture_set', description: 'Reversibly update this isolated fixture',
+            annotations: { readOnlyHint: false }, inputSchema: {
+              type: 'object', properties: { value: { type: 'string' } }, required: ['value'],
+            } }] };
         });
         host.server.setRequestHandler(CallToolRequestSchema, async request => {
+          if (request.params.name === 'fixture_set') {
+            const value = request.params.arguments?.value;
+            if (typeof value !== 'string') throw new Error('fixture_value_required');
+            fixture.value = value;
+            fixture.writes.push(value);
+            witness('set', value);
+            return { content: [{ type: 'text' as const, text: `fixture=${value}` }] };
+          }
+          if (request.params.name !== 'echo') throw new Error('unknown_fixture_tool');
           witness('call', request.params.arguments);
-          return { content: [{ type: 'text' as const, text: 'compact-result' }], _meta: { retained: true } };
+          return { content: [{ type: 'text' as const, text: 'compact-result' }],
+            _meta: { retained: true, fixtureValue: fixture.value } };
         });
       },
     },
   });
   await writeEndpointIpcDiscovery('/tmp/ui-unused.sock', { port: 33170, agentMcp: listener.endpoint });
-  return { witness, verify };
+  return { witness, verify, fixture };
 }
 
 describe('owned native MCP client', () => {
   it('discovers, initializes, lists and calls the actual listener without HTTP', async () => {
-    const { witness, verify } = await server();
+    const { witness, verify, fixture } = await server();
     const connection = await connectAgentMcp({
       url, mode: 'uds', headers: { Authorization: 'Bearer fixture-token' }, home: h.home,
     });
@@ -86,6 +101,7 @@ describe('owned native MCP client', () => {
       expect(await connection.client.callTool({ name: 'echo', arguments: { row: 'a,b' } }))
         .toMatchObject({ content: [{ text: 'compact-result' }], _meta: { retained: true } });
       expect(witness.mock.calls).toEqual([['list'], ['call', { row: 'a,b' }]]);
+      expect(fixture).toEqual({ value: 'initial', writes: [] });
       expect(verify).toHaveBeenCalledTimes(3);
     } finally { await connection.client.close(); }
   });
@@ -179,7 +195,7 @@ describe('installed clients using the built production adapter', () => {
   }, 25_000);
 
   it.skipIf(!omp)('runs installed OMP through the launcher profile and resumes the same native session over UDS', async () => {
-    const { witness, verify } = await server();
+    const { witness, verify, fixture } = await server();
     const sourceAgentDir = join(h.home, '.omp', 'agent');
     await mkdir(sourceAgentDir, { recursive: true });
     await writeFile(join(sourceAgentDir, 'config.yml'), 'tools:\n  discoveryMode: false\n');
@@ -213,13 +229,18 @@ describe('installed clients using the built production adapter', () => {
     await writeFile(provider, `
 export default function(pi) {
  let turn=0;
+ const journey=[
+  ['echo',{row:'omp-row'}],['fixture_set',{value:'changed'}],
+  ['echo',{row:'omp-row'}],['fixture_set',{value:'initial'}],
+ ];
  pi.registerProvider('p005-offline', {
   api:'p005-offline-api',apiKey:'fixture',baseUrl:'http://unused.invalid',
   models:[{id:'proof',name:'Offline',reasoning:false,input:['text'],
    cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:1024}],
   streamSimple(model) {
-   const tool=turn++===0;
-   const content=tool?[{type:'toolCall',id:'actual-omp-call',name:'mcp__papercusp_echo',arguments:{row:'omp-row'}}]
+   const step=journey[turn++];
+   const tool=Boolean(step);
+   const content=tool?[{type:'toolCall',id:'actual-omp-call-'+turn,name:'mcp__papercusp_'+step[0],arguments:step[1]}]
     :[{type:'text',text:'done'}];
    const message={role:'assistant',content,api:model.api,provider:model.provider,model:model.id,
     usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},
@@ -271,9 +292,25 @@ export default function(pi) {
         child.stdin.write(JSON.stringify({ id: 'native-call', type: 'prompt', message: 'Invoke the MCP fixture.' }) + '\n');
         await wait(() => frames.some(x => x.type === 'agent_end'));
         const calls = frames.filter(x => x.type === 'tool_execution_end');
-        expect(calls).toHaveLength(1);
+        expect(calls).toHaveLength(4);
         expect(calls[0]).toMatchObject({ toolName: 'mcp__papercusp_echo', isError: false });
         expect(calls[0].result.content).toEqual([{ type: 'text', text: 'compact-result' }]);
+        expect(calls[0].result.details._meta.fixtureValue).toBe('initial');
+        expect(calls[1]).toMatchObject({
+          toolName: 'mcp__papercusp_fixture_set', isError: false,
+          result: { content: [{ type: 'text', text: 'fixture=changed' }] },
+        });
+        expect(calls[2].result.details._meta.fixtureValue).toBe('changed');
+        expect(calls[3]).toMatchObject({
+          toolName: 'mcp__papercusp_fixture_set', isError: false,
+          result: { content: [{ type: 'text', text: 'fixture=initial' }] },
+        });
+        for (const call of calls) {
+          expect(call.result.details.nativeMcp).toEqual({
+            transportKind: 'uds', operatorId: listener!.endpoint.operatorId,
+            generation: listener!.endpoint.generation,
+          });
+        }
         return state!.data.sessionId;
       } finally {
         child.stdin.end();
@@ -293,7 +330,10 @@ export default function(pi) {
     for (const addon of addons) expect((await stat(join(natives, addon))).size).toBeGreaterThan(0);
     expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([]);
     const sessionId = await run(freshArgs, freshEnv);
-    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([['call', { row: 'omp-row' }]]);
+    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([
+      ['call', { row: 'omp-row' }], ['call', { row: 'omp-row' }],
+    ]);
+    expect(fixture).toEqual({ value: 'initial', writes: ['changed', 'initial'] });
     // Fresh process and no ambient opt-in: restore from the launcher-written
     // config, pass the REAL saved native id, and prove the resumed tool runs.
     vi.stubEnv('PAPERCUSP_MCP_TRANSPORT', '');
@@ -304,7 +344,9 @@ export default function(pi) {
     expect(await run(resume.args, restoredEnv)).toBe(sessionId);
     expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([
       ['call', { row: 'omp-row' }], ['call', { row: 'omp-row' }],
+      ['call', { row: 'omp-row' }], ['call', { row: 'omp-row' }],
     ]);
+    expect(fixture).toEqual({ value: 'initial', writes: ['changed', 'initial', 'changed', 'initial'] });
     for (const [extra] of verify.mock.calls) {
       expect(extra).toMatchObject({ requestInfo: { headers: {
         'x-papercusp-client': 'fixture-agent', 'x-papercusp-workspace': 'fixture',

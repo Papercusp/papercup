@@ -9,7 +9,7 @@ import { buildAutomaticCompactionRecovery } from './compaction-recovery';
 import { renderCarryDoc, type CarryDoc } from '../../carry-doc';
 import { setSpecClause } from '../plans/spec-clauses-store';
 import {
-  cleanupPlans, registerHarnessProject, seedPlan, setupPlanPgFixture, type PlanPgFixture,
+  registerHarnessProject, seedPlan, setupPlanPgFixture, type PlanPgFixture,
 } from '../plans/__tests__/_pg-tool-fixture';
 
 const controlRead = vi.hoisted(() => vi.fn());
@@ -88,13 +88,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!fx) return;
-  for (const harness of [HARNESS, OTHER, MISSING]) {
-    await fx.admin`DELETE FROM harness_shared.plan_spec_clause_revisions WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${harness}`;
-    await fx.admin`DELETE FROM harness_shared.plan_spec_clauses WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${harness}`;
-    await fx.admin`DELETE FROM harness_shared.plan_items WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${harness}`;
-    await cleanupPlans(fx.admin, fx.workspaceId, harness);
-    await fx.admin`DELETE FROM harness_shared.projects WHERE workspace_id = ${fx.workspaceId} AND id = ${harness}`;
-  }
+  // Spec revisions are deliberately immutable, including DELETE. These uniquely
+  // scoped rows live only in the injected disposable baseline testcontainer;
+  // its global teardown destroys them without disabling production invariants.
   if (previousWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspace;
   await fx.dispose();

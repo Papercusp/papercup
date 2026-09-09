@@ -28,6 +28,44 @@
 # 50-staging-checkout.conf drop-in, daemon-reload, restart papercusp-staging-api.
 set -euo pipefail
 
+usage() {
+  cat <<'USAGE'
+Usage: sync-staging-checkout.sh
+
+Advance the isolated staging checkout to the committed staging HEAD and,
+when needed, request a coordinated :3170 restart.
+
+Options:
+  -h, --help  Show this help and exit without inspecting or mutating staging.
+
+Configuration is supplied through the PAPERCUSP_* environment variables used
+by the staging sync timer; this command accepts no positional arguments.
+USAGE
+}
+
+# Parse arguments before any repository, service, network, or lock inspection.
+# This script is also used for usage discovery, so --help must be a genuinely
+# side-effect-free operation rather than an argument that falls through into
+# the live sync workflow.
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    -h|--help)
+      if [ "$#" -ne 1 ]; then
+        printf 'sync-staging-checkout.sh: --help does not accept additional arguments\n' >&2
+        usage >&2
+        exit 2
+      fi
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'sync-staging-checkout.sh: unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+fi
+
 # Default to the checkout this script actually lives in — never one box's path
 # (WI-4419: a hardcoded /home/<user>/… default is wrong on every other machine
 # AND ships the owner's identity inside the release source drop).
