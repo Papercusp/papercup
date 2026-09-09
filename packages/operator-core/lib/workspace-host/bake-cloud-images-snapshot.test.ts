@@ -252,6 +252,78 @@ set -euo pipefail
   };
 }
 
+function runImageBuildProbeStorageFixture(
+  nativeOverlayDiff: 'true' | 'false',
+  mountProgramMarker: boolean,
+): { status: number; output: string; podmanCalls: string[] } {
+  const dir = mkdtempSync(join(tmpdir(), 'ei-227724-p306-storage-'));
+  const bin = join(dir, 'bin');
+  const graphRoot = join(dir, 'graph-root');
+  const runRoot = join(dir, 'run-root');
+  const privateStorageParent = join(dir, 'private-storage-parent');
+  const privateRunParent = join(dir, 'private-run-parent');
+  const buildLogPath = join(dir, 'p306-build.log');
+  const callsPath = join(dir, 'podman-calls');
+
+  mkdirSync(join(bin), { recursive: true });
+  mkdirSync(join(graphRoot, 'overlay'), { recursive: true });
+  mkdirSync(runRoot, { recursive: true });
+  if (mountProgramMarker) writeFileSync(join(graphRoot, 'overlay', '.has-mount-program'), 'true\n');
+  writeFileSync(
+    join(bin, 'podman'),
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'raw_args="$*"',
+      'while [[ "${1:-}" == --root || "${1:-}" == --runroot ]]; do shift 2; done',
+      'subcommand="${1:-}"',
+      'shift || true',
+      'args="$raw_args"',
+      'printf "%s\\n" "$args" >> "$P306_TEST_CALLS"',
+      'if [[ "$subcommand" == info ]]; then',
+      '  format="${2:-}"',
+      '  case "$format" in',
+      '    *GraphDriverName*) printf "overlay\\n" ;;',
+      '    *GraphRoot*) printf "%s\\n" "$P306_TEST_GRAPH_ROOT" ;;',
+      '    *RunRoot*) printf "%s\\n" "$P306_TEST_RUN_ROOT" ;;',
+      '    *GraphStatus*) printf "%s\\n" "$P306_TEST_NATIVE_OVERLAY_DIFF" ;;',
+      '    *) printf "\\n" ;;',
+      '  esac',
+      '  exit 0',
+      'fi',
+      'if [[ "$args" == build\ * || "$args" == *" build "* ]]; then exit 1; fi',
+      'exit 1',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  chmodSync(join(bin, 'podman'), 0o755);
+
+  const result = spawnSync('bash', [IMAGE_BUILD_PROBE], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      P306_TEST_CALLS: callsPath,
+      P306_TEST_GRAPH_ROOT: graphRoot,
+      P306_TEST_RUN_ROOT: runRoot,
+      P306_TEST_NATIVE_OVERLAY_DIFF: nativeOverlayDiff,
+      P306_PRIVATE_STORAGE_PARENT: privateStorageParent,
+      P306_PRIVATE_RUN_PARENT: privateRunParent,
+      P306_BUILD_LOG: buildLogPath,
+    },
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  const podmanCalls = existsSync(callsPath)
+    ? readFileSync(callsPath, 'utf8').split(/\r?\n/).filter(Boolean)
+    : [];
+  rmSync(dir, { recursive: true, force: true });
+  return { status: result.status ?? -1, output, podmanCalls };
+}
+
 describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
   it('keeps a live bake on the startup bytes after the source is rewritten', () => {
     const result = runFixture(SOURCE);
@@ -433,5 +505,31 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
       'systemd-tmpfiles --create /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf',
     );
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain('expected 755:0:0');
+  });
+});
+
+describe('p306 rootful Podman storage preflight (EI-22772454141611988)', () => {
+  it.each([
+    ['non-native overlay diff', 'false', false, 'private'],
+    ['mount-program marker', 'true', true, 'private'],
+    ['native overlay diff without marker', 'true', false, 'shared'],
+  ] as const)('routes the %s shape before the first build', (_name, nativeOverlayDiff, marker, mode) => {
+    const result = runImageBuildProbeStorageFixture(nativeOverlayDiff, marker);
+
+    // The fake build deliberately fails immediately; the assertion is about
+    // the storage boundary selected before any build can touch the store.
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(`P306_STORAGE_MODE=${mode}`);
+    expect(result.podmanCalls.some((call) => call.includes('build ')), result.output).toBe(true);
+
+    const buildCall = result.podmanCalls.find((call) => call.includes('build '));
+    expect(buildCall).toBeDefined();
+    if (mode === 'private') {
+      expect(buildCall).toMatch(/--root \/.*\/private-storage-parent\/p306-probe-storage\.[A-Za-z0-9]+/);
+      expect(buildCall).toMatch(/--runroot \/.*\/private-run-parent\/p306-probe-run\.[A-Za-z0-9]+/);
+    } else {
+      expect(buildCall).not.toContain('--root ');
+      expect(buildCall).not.toContain('--runroot ');
+    }
   });
 });
