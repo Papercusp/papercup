@@ -52,6 +52,9 @@ function standardRubric(): Rubric {
 }
 
 function deps() {
+  const route = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['route']>>().mockResolvedValue({
+    state: 'fallback', reason: 'existing router: no_qualified_responder',
+  });
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
   const launch = vi
@@ -63,10 +66,55 @@ function deps() {
   }));
   const release = vi.fn(async () => true);
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
-  return { listScorecards, getRubric, launch, reserve, release, listWorkspaceWideLoopStanddownOwners };
+  return { listScorecards, getRubric, launch, route, reserve, release, listWorkspaceWideLoopStanddownOwners };
 }
 
 describe('dispatchPendingGradingAudits', () => {
+  it('routes the exact source card before launch, retaining reservation and subject evidence', async () => {
+    const d = deps();
+    const source = card('EI-routed', { subject: { kind: 'plan', ref: 'source-plan' }, evidenceFingerprint: 'frozen-fingerprint' });
+    d.listScorecards.mockResolvedValue([source]);
+    d.route.mockResolvedValue({ state: 'routed', conversationId: 'audit-consult' });
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-routed'], ctx }, d);
+    expect(d.reserve.mock.invocationCallOrder[0]).toBeLessThan(d.route.mock.invocationCallOrder[0]);
+    expect(d.route).toHaveBeenCalledWith(expect.objectContaining({
+      card: source, reservationKey: 'grading-audit:EI-routed',
+      brief: expect.stringContaining('frozen-fingerprint'),
+    }));
+    expect(result.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'audit-consult' });
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('reuses an active routed audit and never falls through to launch', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-active')]);
+    d.route.mockResolvedValue({ state: 'deduped', conversationId: 'existing-consult' });
+    const result = await reconcilePendingGradingAudits({ ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', conversationId: 'existing-consult' });
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('reports routing failure without launching past an uncertain persisted dispatch', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-fault')]);
+    d.route.mockRejectedValue(new Error('lineage unavailable'));
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-fault'], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: 'lineage unavailable' });
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(d.release).toHaveBeenCalledOnce();
+  });
+
+  it('serializes concurrent routed dispatches through the existing card reservation', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-race')]);
+    d.reserve.mockResolvedValueOnce({ status: 'claimed' }).mockResolvedValue({ status: 'already-reserved' });
+    d.route.mockResolvedValue({ state: 'routed', conversationId: 'one-consult' });
+    const results = await Promise.all([1, 2].map(() => dispatchPendingGradingAudits({ targetIds: ['EI-race'], ctx }, d)));
+    expect(results.flatMap((r) => r.receipts.map((receipt) => receipt.state)).sort()).toEqual(['routed', 'skipped']);
+    expect(d.route).toHaveBeenCalledOnce();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
   it('suppresses terminal auditor dispatch during an active workspace-wide loop stand-down', async () => {
     const d = deps();
     d.listWorkspaceWideLoopStanddownOwners.mockResolvedValue(new Set(['su-owner']));
