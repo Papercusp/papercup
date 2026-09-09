@@ -158,10 +158,10 @@ if ! systemctl is-active --quiet papercusp-host-prepare.service; then
   sub_state="$(systemctl show papercusp-host-prepare.service --property=SubState --value 2>/dev/null || true)"
   service_result="$(systemctl show papercusp-host-prepare.service --property=Result --value 2>/dev/null || true)"
   exec_main_status="$(systemctl show papercusp-host-prepare.service --property=ExecMainStatus --value 2>/dev/null || true)"
-  active_state="${active_state:-unknown}"
-  sub_state="${sub_state:-unknown}"
-  service_result="${service_result:-unknown}"
-  exec_main_status="${exec_main_status:-unknown}"
+  active_state="\${active_state:-unknown}"
+  sub_state="\${sub_state:-unknown}"
+  service_result="\${service_result:-unknown}"
+  exec_main_status="\${exec_main_status:-unknown}"
   { systemctl status papercusp-host-prepare.service --no-pager --full 2>&1 || true; } \
     | tail -n 6 | cut -c1-240 | sed 's/^/${P305_HOST_PREPARE_STATUS_PREFIX}/' >&2
   { journalctl --unit=papercusp-host-prepare.service --boot --no-pager --output=cat --lines=6 2>&1 || true; } \
