@@ -232,7 +232,89 @@ export function buildDetachedTestRunRequest(opts: {
     command: process.execPath,
     args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
     cwd: opts.root,
-    ...(opts.timeoutMs && opts.timeoutMs > 0 ? { runtimeMaxSec: Math.max(1, Math.ceil(opts.timeoutMs / 1000)) } : {}),
+    ...(opts.timeoutMs && opts.timeoutMs > 0
+      ? { runtimeMaxSec: Math.max(1, Math.ceil(Math.max(opts.timeoutMs, DEFAULT_TIMEOUT_MS) / 1000)) }
+      : {}),
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+  };
+}
+
+/**
+ * Build one durable recovery process for a request spanning independent checkouts.
+ *
+ * A normal recovery request has one checkout root, so its detached store process
+ * can invoke that root's router directly. A mixed-root request needs one
+ * pollable lifecycle while still invoking each checkout's own runner. Keep the
+ * orchestration in the detached child: its inherited PAPERCUSP_TEST_RUN_GROUP
+ * gives every checkout's reporter one durable run-group id, and its process
+ * status becomes the whole operation's terminal status. Every command is
+ * attempted even when an earlier checkout exits non-zero.
+ */
+export function buildDetachedMixedTestRunRequest(opts: {
+  groups: TestFileCheckoutGroup[];
+  testNamePattern?: string;
+  workspaceId?: string;
+  harnessSlug?: string;
+  timeoutMs?: number;
+}): SpawnRequest {
+  const commands: Array<{ command: string; args: string[]; cwd: string }> = [];
+  for (const group of opts.groups) {
+    const adminReporterPath = resolveAdminTestRunsReporterPath(group.root);
+    const vitestArgs = [
+      ...(adminReporterPath ? [`--reporter=${adminReporterPath}`] : []),
+      ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
+    ];
+    if (existsSync(join(group.root, 'scripts', 'test-files.mjs'))) {
+      commands.push({
+        command: process.execPath,
+        args: [join(group.root, 'scripts', 'test-files.mjs'), ...group.files, '--', ...vitestArgs],
+        cwd: group.root,
+      });
+      continue;
+    }
+    for (const route of groupDirectVitestRoutes(group.files, group.root)) {
+      commands.push({
+        command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
+        args: [
+          '--no-install',
+          'vitest',
+          'run',
+          ...(route.config ? ['--config', route.config] : []),
+          ...vitestArgs,
+          ...route.files,
+        ],
+        cwd: route.cwd,
+      });
+    }
+  }
+
+  const script = [
+    "const { spawnSync } = require('node:child_process');",
+    'const commands = ' + JSON.stringify(commands) + ';',
+    'let exitCode = 0;',
+    'for (const entry of commands) {',
+    "  const result = spawnSync(entry.command, entry.args, { cwd: entry.cwd, stdio: 'inherit' });",
+    "  if (result.error || result.status === null) { exitCode ||= 2; } else if (result.status !== 0) { exitCode ||= result.status; }",
+    '}',
+    'process.exitCode = exitCode;',
+  ].join('\n');
+  const root = opts.groups[0]?.root ?? resolveAgentWorkspaceRoot({});
+  const env: NodeJS.ProcessEnv = {
+    ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
+    ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
+  };
+  return {
+    kind: 'vitest',
+    label: 'testing:run mixed-root timeout recovery (' + opts.groups.flatMap((group) => group.files).join(', ') + ')',
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: root,
+    // A detached continuation is a fresh operation, not the expired foreground
+    // remainder. Keep the existing default recovery budget when a caller chose
+    // the foreground transport ceiling.
+    ...(opts.timeoutMs && opts.timeoutMs > 0
+      ? { runtimeMaxSec: Math.max(1, Math.ceil(Math.max(opts.timeoutMs, DEFAULT_TIMEOUT_MS) / 1000)) }
+      : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -1706,6 +1788,8 @@ export async function runTestFilesCore(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   runId?: string;
+  /** Recursive mixed-root groups defer detached recovery to their outer operation. */
+  allowDetachedRecovery?: boolean;
 }): Promise<TestFilesCoreResult> {
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
@@ -1722,6 +1806,7 @@ export async function runTestFilesCore(opts: {
       const roots = groups.map((group) => group.root);
       const deadline = Date.now() + timeoutMs;
       const completed: Array<Extract<TestFilesCoreResult, { error?: undefined }>> = [];
+      const errors: Array<Extract<TestFilesCoreResult, { error: string }>> = [];
       for (const group of groups) {
         const result = await runTestFilesCore({
           ...opts,
@@ -1729,9 +1814,35 @@ export async function runTestFilesCore(opts: {
           root: group.root,
           runId,
           timeoutMs: Math.max(1000, deadline - Date.now()),
+          allowDetachedRecovery: false,
         });
-        if (result.error !== undefined) return { ...result, runId, roots };
-        completed.push(result);
+        if (result.error !== undefined) errors.push(result);
+        else completed.push(result);
+      }
+      const timeout = errors.find((result) => result.error === 'timeout');
+      if (timeout) {
+        const detachedStart = await startRunDurable(
+          buildDetachedMixedTestRunRequest({
+            groups,
+            ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
+            ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
+            ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+            timeoutMs,
+          }),
+        );
+        return {
+          ...timeout,
+          runId,
+          root: resolve(opts.root),
+          roots,
+          timeoutMs,
+          detachedRunId: detachedStart.snapshot.runId,
+          detachedDurable: detachedStart.durable,
+          routerOutput: errors.map((result) => result.routerOutput ?? result.hint ?? result.error).join('\n'),
+        };
+      }
+      if (errors.length > 0) {
+        return { ...errors[0]!, runId, roots };
       }
       const merged = mergeDistilledRuns(
         completed.map((result, index) => rebaseDistilledRunToAmbient(result, groups[index]!.root, opts.root)),
@@ -1922,7 +2033,7 @@ export async function runTestFilesCore(opts: {
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedStart = hasRouter
+      const detachedStart = hasRouter && opts.allowDetachedRecovery !== false
         ? await startRunDurable(
             buildDetachedTestRunRequest({
               root,
