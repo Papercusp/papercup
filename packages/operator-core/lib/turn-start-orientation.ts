@@ -84,6 +84,50 @@ export interface OrientationInboxEntry {
 export interface OrientationAnnouncedGate {
   event: string;
   note?: string | null;
+  /** Stable logical gate identity, when the declarer supplied one. */
+  logical_gate?: string | null;
+  /** Number of live non-announce awaits on this event key, when measured. */
+  live_awaiters?: number;
+  /** Live successors that can declare a replacement for a stale binding. */
+  live_successor_ids?: string[];
+  /** True only when the declarer ended and no live successor owns the binding. */
+  stale_owner?: boolean;
+  /** Actionable warning about a stranded or ambiguous announced gate. */
+  warning?: string;
+}
+
+/**
+ * Plan-item-shaped gate names are dangerous when announced globally: a bare
+ * `p006-complete` is easy to mistake for the completion edge of the current
+ * plan even when another plan owns it. Keep this detector deliberately narrow
+ * so ordinary `phase3-open`/`p2p-ready` event names do not become warnings.
+ */
+export function isPlanItemLikeGateName(value: string | null | undefined): boolean {
+  return typeof value === 'string' && /^p-?\d+(?:[-_:.\/].*)?$/i.test(value.trim());
+}
+
+/** Build the shared, concise warning rendered by both orientation surfaces. */
+export function buildAnnouncedGateWarning(input: {
+  event: string;
+  logical_gate?: string | null;
+  scope?: string | null;
+  announcedBy?: string | null;
+  stale_owner?: boolean;
+}): string | undefined {
+  const warnings: string[] = [];
+  if (input.stale_owner) {
+    warnings.push(
+      `STALE announced gate "${input.event}": declarer ${input.announcedBy ?? 'unknown'} ended and no live successor holds its binding; do not await it.`,
+    );
+  }
+  const global = !input.scope || input.scope === 'global';
+  const ambiguousName = [input.event, input.logical_gate].find(isPlanItemLikeGateName);
+  if (global && ambiguousName) {
+    warnings.push(
+      `AMBIGUOUS GLOBAL announced gate "${ambiguousName}": its name resembles a plan-item key; verify the plan/owner before awaiting.`,
+    );
+  }
+  return warnings.length > 0 ? warnings.join(' ') : undefined;
 }
 
 /**
@@ -449,6 +493,18 @@ function encodeExecutableFrontier(frontier: OrientationExecutableFrontier): stri
   return JSON.stringify([frontier.planSlug, frontier.executableWidth]);
 }
 
+function encodeAnnouncedGate(gate: OrientationAnnouncedGate): string {
+  return JSON.stringify([
+    gate.event,
+    gate.note ?? null,
+    gate.logical_gate ?? null,
+    gate.live_awaiters === undefined ? null : gate.live_awaiters,
+    gate.live_successor_ids === undefined ? null : [...gate.live_successor_ids].sort(),
+    gate.stale_owner === undefined ? null : gate.stale_owner,
+    gate.warning ?? null,
+  ]);
+}
+
 function decodeExecutableFrontier(value: unknown): OrientationExecutableFrontier | null {
   if (typeof value !== 'string' || value.length === 0) return null;
   try {
@@ -495,7 +551,7 @@ export function fingerprintOrientation(
     openAsks: state.openAsks ? state.openAsks.count : 0,
     inbox: state.inboxRecent.map((entry) => `${entry.msgId}:${entry.from}:${entry.summary ?? ''}`).join('|'),
     gates: state.announcedGates
-      .map((gate) => `${gate.event}:${gate.note ?? ''}`)
+      .map(encodeAnnouncedGate)
       .sort()
       .join('|'),
     loop: state.loopArmed ? 1 : 0,
@@ -762,6 +818,9 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
     lines.push('- holding: nothing — claim before your first edit.');
   }
   if (state.announcedGates.length > 0) {
+    for (const warning of state.announcedGates.map((gate) => gate.warning).filter(Boolean)) {
+      lines.push(`- ⚠ ${compactHeadline(warning)}`);
+    }
     lines.push(
       `- announced gates: ${compactIds(
         state.announcedGates.map((gate) => gate.event),
@@ -862,7 +921,7 @@ export interface OrientationDeps {
      *  an older/stubbed seam still satisfies this contract (absent ⇒ 0). */
     staleCount?: number;
   }>;
-  announcedGates: (ownerId: string) => Promise<OrientationAnnouncedGate[]>;
+  announcedGates: (ownerId: string, workspaceId: string) => Promise<OrientationAnnouncedGate[]>;
   /** WI-2142142: directed messages this agent sent that a peer has not yet
    *  answered; null for none/unreadable — same fail-soft contract as every
    *  other source here. */
@@ -930,7 +989,7 @@ export async function resolveOrientationState(
   ] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
-    d.announcedGates(ownerId).catch(() => [] as OrientationAnnouncedGate[]),
+    d.announcedGates(ownerId, workspaceId).catch(() => [] as OrientationAnnouncedGate[]),
     // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
     // render as silence, never as a false "nothing outstanding".
     d.openAsks(ownerId).catch(() => null as OrientationOpenAsk | null),
@@ -1059,13 +1118,22 @@ export function defaultOrientationDeps(): OrientationDeps {
     // store + visibility predicate as coord:orient/events:catalog, deriving the
     // caller scope from its durable brief and live fleet label. Never copy gate
     // keys into a hand-maintained table.
-    announcedGates: async (ownerId) => {
-      const [{ listActiveAnnouncements }, { announcementVisibleTo }, { getSessionBrief }, { fetchPresenceFleet }] =
+    announcedGates: async (ownerId, workspaceId) => {
+      const [
+        { listActiveAnnouncements, countActiveAwaitsByPrefixes },
+        { announcementVisibleTo },
+        { getSessionBrief },
+        { fetchPresenceFleet },
+        { resolveAnnouncementOwnership },
+        timeout,
+      ] =
         await Promise.all([
           import('./events/await/store'),
           import('./events/await/announce-key'),
           import('./session-brief'),
           import('./agent-tools/coordination/presence-fleet'),
+          import('./agent-tools/events/status'),
+          import('./bounded-timeout'),
         ]);
       const [announcements, brief, memberships] = await Promise.all([
         listActiveAnnouncements({ unfiredOnly: true, limit: 50 }),
@@ -1073,17 +1141,59 @@ export function defaultOrientationDeps(): OrientationDeps {
         fetchPresenceFleet([ownerId]),
       ]);
       const fleet = memberships.get(ownerId)?.fleetSlug ?? null;
-      return announcements
+      const visible = announcements.filter((announcement) =>
+        announcementVisibleTo(announcement, {
+          fleetSlug: fleet,
+          planSlug: brief?.currentPlanSlug ?? null,
+          harnessSlug: brief?.harnessSlug ?? null,
+        }),
+      );
+      // Metadata is advisory and independently bounded. A failure omits only
+      // the affected optional fields; it must not erase the gate directory.
+      const [countsResult, ownershipResult] = await Promise.all([
+        timeout.withBoundedTimeout(countActiveAwaitsByPrefixes(visible.map((announcement) => announcement.eventKey)), {
+          fallback: null as Map<string, number> | null,
+          timeoutMs: 1_000,
+          label: 'turn-start:announcedGateAwaiters',
+        }),
+        timeout.withBoundedTimeout(resolveAnnouncementOwnership(visible, workspaceId), {
+          fallback: null as Map<number, { liveSuccessorIds: string[]; staleOwner: boolean }> | null,
+          timeoutMs: 1_000,
+          label: 'turn-start:announcedGateOwnership',
+        }),
+      ]);
+      const counts = countsResult.value;
+      const ownership = ownershipResult.value;
+      return visible
         .filter((announcement) =>
-          announcementVisibleTo(announcement, {
-            fleetSlug: fleet,
-            planSlug: brief?.currentPlanSlug ?? null,
-            harnessSlug: brief?.harnessSlug ?? null,
-          }),
+          Boolean(announcement.eventKey),
         )
         .map((announcement) => ({
           event: announcement.eventKey,
+          logical_gate: announcement.logicalGateKey ?? null,
           note: announcement.note,
+          ...(counts ? { live_awaiters: counts.get(announcement.eventKey) ?? 0 } : {}),
+          ...(ownership?.get(announcement.id)?.liveSuccessorIds.length
+            ? { live_successor_ids: ownership.get(announcement.id)!.liveSuccessorIds }
+            : {}),
+          ...(ownership?.get(announcement.id)?.staleOwner ? { stale_owner: true } : {}),
+          ...(buildAnnouncedGateWarning({
+            event: announcement.eventKey,
+            logical_gate: announcement.logicalGateKey ?? null,
+            scope: announcement.scopeKind ? `${announcement.scopeKind}${announcement.scopeRef ? ':' + announcement.scopeRef : ''}` : 'global',
+            announcedBy: announcement.subscriberId,
+            stale_owner: ownership?.get(announcement.id)?.staleOwner,
+          })
+            ? {
+                warning: buildAnnouncedGateWarning({
+                  event: announcement.eventKey,
+                  logical_gate: announcement.logicalGateKey ?? null,
+                  scope: announcement.scopeKind ? `${announcement.scopeKind}${announcement.scopeRef ? ':' + announcement.scopeRef : ''}` : 'global',
+                  announcedBy: announcement.subscriberId,
+                  stale_owner: ownership?.get(announcement.id)?.staleOwner,
+                }),
+              }
+            : {}),
         }));
     },
     loopArmed: async (ownerId) => {
