@@ -112,10 +112,17 @@ export async function readEventConditionReachability(
   const inspect = opts.inspect ?? inspectEventKey;
   try {
     const snapshot = await inspect(eventKey);
-    const announcementFire = snapshot.announcements.find((row) => row.firedAt)?.firedAt ?? null;
+    // An announcement is a causal generation boundary. The per-key fire latch
+    // intentionally retains history across generations, so it may only be used
+    // when there is no current declaration. Otherwise a fire from generation N
+    // would incorrectly satisfy a newly declared generation N+1.
+    const currentAnnouncement = snapshot.announcements.find((row) => !row.supersededAt);
+    const firedAt = currentAnnouncement
+      ? currentAnnouncement.firedAt
+      : snapshot.fireLatch?.lastFiredAt ?? null;
     return classifyExternalConditionReachability(
       {
-        firedAt: snapshot.fireLatch?.lastFiredAt ?? announcementFire,
+        firedAt,
         liveResolver: keyMatchesCatalog(eventKey, EVENT_CATALOG),
         registration: latestAnnouncementState(snapshot.announcements, now.getTime()),
       },

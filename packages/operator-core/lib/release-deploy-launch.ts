@@ -462,6 +462,23 @@ export function computeDeployStatus(
     lastCheckpointEvent !== undefined &&
     !latestCheckpointIsStaleRepairHold &&
     (!isRecordableVerdict(lastCheckpointEvent.status) || isRecordedInconclusiveStatus(lastCheckpointEvent.status));
+  // A completed inconclusive tick is different from a skipped tick: the former ran far enough
+  // to publish its own no-verdict reason (for example `repair-in-progress`), while the latter
+  // never started the suite (for example `skipped-locked`). When the rolling gate-health cache
+  // is also stale, prefer the event's first-hand disposition over the generic freshness
+  // evaluator's historical run-lock inference. Otherwise a completed repair run is reported as
+  // lock contention, sending the reader to hunt for a lock that was not held by that run.
+  const latestCompletedNoVerdictReason =
+    latestCheckpointIsNonVerdict &&
+    !checkpointRunActive &&
+    lastCheckpointEvent &&
+    !lastCheckpointEvent.status.startsWith('skipped-')
+      ? `the latest green-checkpoint run completed without producing a gate verdict (reason: ${lastCheckpointEvent.status})` +
+        (typeof lastCheckpointEvent.detail?.logPath === 'string'
+          ? `; run log: ${lastCheckpointEvent.detail.logPath}`
+          : '') +
+        ` — this is not evidence of run-lock contention`
+      : null;
   const checkpointRoutine = snap.routines.greenCheckpoint;
   const checkpointProbe =
     checkpointRunInFlight == null
@@ -549,11 +566,11 @@ export function computeDeployStatus(
                   probe: checkpointProbe,
                 };
   const verdictStale = g.verdictStale || latestCheckpointIsStaleRepairHold;
-  const verdictStaleReason = g.verdictStale
+  const verdictStaleReason = latestCompletedNoVerdictReason ?? (g.verdictStale
     ? g.verdictStaleReason
     : latestCheckpointIsStaleRepairHold
       ? `the latest ${lastCheckpointEvent!.status} event is historical: its repair queue is absent and the checkpoint run-lock is measured idle`
-      : null;
+      : null);
   // EI-18646778682511611: a partial advance ('advanced-prefix', P-016/D-010) resets
   // `consecutiveReds` to 0 by design (trackGateStall treats it as "main is advancing,
   // not stalled") — but it is EXPLICITLY the case where the CANDIDATE/tip is still red

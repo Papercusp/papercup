@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10000723",
+  "status": "navigation-verified-final-acceptance-pending",
+  "targetUrl": "http://127.0.0.1:3801",
+  "actualServedBuild": {
+    "buildId": "sAkL9leDemaAAqkCOmti2",
+    "release": "sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6fa24f",
+    "sourceRootDigest": "820d2f1184e5cd448761f272cab6621476171105a8d3589d8b9c45109f2f157c",
+    "verifiedHow": "All nine trace archives from test-run:17729420 contain this build ID in captured HTTP resources; the earlier single-case trace from test-run:17729283 agrees. Immutable release metadata independently resolves. The current symlink is not the served identity."
+  },
+  "currentLinkDuringFullRun": {
+    "release": "T_4RctG5DhX_tZQQY9VdW-20260909034118232-2813910-b5f02bb9",
+    "sourceRootDigest": "1f8403deaff4b6a0282b0513ba058b4a58083e5bafc468bba033062626dce397",
+    "unchangedBeforeAndAfter": true,
+    "wasServedBy3801": false
+  },
+  "runs": [
+    {
+      "id": 17729281,
+      "group": "desktop-repair-live-final-20260909",
+      "result": "fail",
+      "passed": 7,
+      "failed": 1,
+      "scope": "Eight navigation cases; held-stats excluded. Clean entry timed out in the page-level Loading portal Suspense fallback.",
+      "failure": "cold-entry-failure.md",
+      "followup": "EI-22753245451678026"
+    },
+    {
+      "id": 17729283,
+      "group": "desktop-repair-live-entry-trace-20260909",
+      "result": "pass",
+      "passed": 1,
+      "scope": "Exact clean-entry rerun with trace passed in 2.5s. Recovery does not establish the first failure's cause."
+    },
+    {
+      "id": 17729408,
+      "group": "desktop-repair-live-final-traced-20260909",
+      "result": "pass",
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "Eight navigation cases; held-stats excluded. Fresh 1440/390 and narrow roster captures inspected."
+    },
+    {
+      "id": 17729420,
+      "group": "desktop-current-build-final-20260909",
+      "result": "fail",
+      "passed": 8,
+      "failed": 1,
+      "skipped": 0,
+      "runnerCommit": "7cb21e82147f1c041ae94f571cb92026ec8941dd",
+      "scope": "All navigation cases pass. Holding workspace-stats prevents the destination appearing on the actual served old build.",
+      "failure": "served-held-stats-failure.md",
+      "existingImplementationFix": "EI-22708091798400094",
+      "fixPreviewEvidence": "test-run:17713845"
+    }
+  ],
+  "captures": [
+    {
+      "path": "desktop-option-b-1440.png",
+      "sha256": "fed474bcdfbc97416d2030957ab2c8f2ceabe332cbc904db955ef3ae6f06548b"
+    },
+    {
+      "path": "desktop-option-b-390.png",
+      "sha256": "ddd45e9dbfb4d086336b2d8955d7e7902715b7bf7319d4ca0d8ac657cd7cf670"
+    },
+    {
+      "path": "desktop-option-b-390-roster.png",
+      "sha256": "8a4ea2bbea8a68777b54a7f5aec6cc22555beab600c61c158bf268a5a53e831c"
+    }
+  ],
+  "localTraces": "/tmp/desktop-current-build-final-20260909",
+  "limits": [
+    "No portal restart or deployment was performed in this verification. The held-stats fix is verified on an unpromoted preview, not live here.",
+    "Cold-entry failure remains an owned unresolved defect; passing reruns are not a root-cause fix.",
+    "Real canary disconnected, no reported desktops; no connected cloud, video or remote input acceptance.",
+    "Runner commit identifies test source, separately from served portal build."
+  ]
+}

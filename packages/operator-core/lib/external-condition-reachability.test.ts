@@ -51,6 +51,33 @@ describe('external condition reachability', () => {
     expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
   });
 
+  it('does not reuse a historical fire latch for a fresh announcement generation', async () => {
+    const reachability = await readEventConditionReachability('invented:key', {
+      now: new Date(NOW),
+      inspect: async () => ({
+        announcements: [
+          {
+            causalGeneration: 2,
+            firedAt: null,
+            supersededAt: null,
+            cancelledAt: null,
+            expiresTs: '2026-08-27T13:00:00.000Z',
+          },
+          {
+            causalGeneration: 1,
+            firedAt: '2026-08-27T11:30:00.000Z',
+            supersededAt: '2026-08-27T11:45:00.000Z',
+          },
+        ] as never,
+        waiters: [],
+        deliveries: [],
+        fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never,
+      }),
+    });
+    expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'live-resolver', authoritative: true });
+    expect(reachability.evidence).not.toContain('event fired at');
+  });
+
   it('does not treat a cancelled consumer await as a cancelled producer registration', async () => {
     const reachability = await readEventConditionReachability('invented:key', {
       now: new Date(NOW),

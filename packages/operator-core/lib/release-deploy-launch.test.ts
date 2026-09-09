@@ -385,6 +385,8 @@ describe('computeDeployStatus — decision tree', () => {
       {
         consecutiveReds: 41,
         failingTests: ['historical-red.test.ts'],
+        verdictStale: true,
+        verdictStaleReason: 'its runs are being SKIPPED (run-lock contention), so this red is unverified',
         inconclusive: {
           status: 'repair-in-progress',
           candidate: 'dfe7bd9f',
@@ -407,6 +409,10 @@ describe('computeDeployStatus — decision tree', () => {
       verdictPending: false,
     });
     expect(s.gate.failingTests).toEqual([]);
+    expect(s.gate.verdictStaleReason).toMatch(/completed without producing a gate verdict/);
+    expect(s.gate.verdictStaleReason).toMatch(/reason: repair-in-progress/);
+    expect(s.gate.verdictStaleReason).toMatch(/not evidence of run-lock contention/);
+    expect(s.gate.verdictStaleReason).not.toMatch(/SKIPPED \(run-lock contention\)/);
     expect(s.state).toBe('gate-wedged');
     expect(s.recommendation).toMatch(/scheduled routine.*FRESH guarded verdict/i);
     expect(s.recommendation).not.toMatch(/Run release:checkpoint-run/);
