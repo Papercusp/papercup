@@ -68,6 +68,7 @@ import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import {
   BRIDGE_CANONICAL_REF,
+  BRIDGE_REMOTE_STAGING_REF,
   GITHUB_CREDENTIAL_HELPER_KEY,
   runGithubBridgeTick,
 } from '../../sync/pot-git/github-bridge-tick';
@@ -3643,7 +3644,87 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
 /** The P-008 bridge leg of one bridged-hive git-sync tick. Best-effort: never
  *  throws (the code plane must keep syncing even when GitHub is unreachable);
  *  outcome + the `last_admitted` watermark persist on the routine metadata. */
-export async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<void> {
+export interface RemoteTrackingRefreshOutcome {
+  refreshed: boolean;
+  trackingRef: string;
+  observedSha: string | null;
+  detail?: string;
+}
+
+/**
+ * Refresh the checkout's remote-tracking staging ref from a bridge-proven tip.
+ *
+ * Non-legacy git-sync deliberately skips the ordinary fetch+merge path: the
+ * P2P admission and worktree bridge own content flow. That also means their
+ * local-path/ref-less fetches can leave FETCH_HEAD fresh while
+ * refs/remotes/origin/staging remains stale. Keep the two surfaces separate:
+ * an explicit remote refspec refreshes only the tracking ref, never the
+ * worktree, and the bridge's writer-backed egressHead is the proof that makes
+ * this read-only-to-content repair appropriate. The ancestry check refuses to
+ * bless a remote rewind/divergence as a freshness update.
+ */
+export async function refreshRemoteTrackingRefFromProvenTip(
+  repoPath: string,
+  provenTip: string,
+  opts: {
+    remote?: string;
+    runGit?: RunGit;
+    log?: (message: string) => void;
+  } = {},
+): Promise<RemoteTrackingRefreshOutcome> {
+  const remote = opts.remote ?? 'origin';
+  const runGit = opts.runGit ?? defaultRunGit;
+  const trackingRef = `refs/remotes/${remote}/staging`;
+  const sourceRef = BRIDGE_REMOTE_STAGING_REF;
+  const unchanged = (detail?: string): RemoteTrackingRefreshOutcome => ({
+    refreshed: false,
+    trackingRef,
+    observedSha: null,
+    ...(detail ? { detail } : {}),
+  });
+
+  if (!FULL_COMMIT_SHA.test(provenTip)) return unchanged('bridge egress proof was not a full commit sha');
+
+  try {
+    // The explicit <source>:<destination> refspec is intentional. A plain
+    // FETCH_HEAD-only fetch is exactly the P2P failure mode this repairs, and
+    // no merge is allowed because P2P admission owns worktree content.
+    const fetched = await runGit(['fetch', '--no-tags', remote, `${sourceRef}:${trackingRef}`], repoPath);
+    if (fetched.code !== 0) {
+      return unchanged(`could not refresh ${trackingRef}: ${(fetched.stderr || fetched.stdout).trim().slice(0, 240)}`);
+    }
+
+    const observed = await runGit(['rev-parse', '--verify', '--quiet', `${trackingRef}^{commit}`], repoPath);
+    const observedSha = observed.code === 0 ? observed.stdout.trim() : '';
+    if (!FULL_COMMIT_SHA.test(observedSha)) {
+      return unchanged(`refresh completed but ${trackingRef} could not be resolved`);
+    }
+
+    const contains = await runGit(['merge-base', '--is-ancestor', provenTip, observedSha], repoPath);
+    if (contains.code !== 0) {
+      return {
+        refreshed: false,
+        trackingRef,
+        observedSha,
+        detail: `${trackingRef} at ${observedSha.slice(0, 12)} does not contain proven egress ${provenTip.slice(0, 12)}`,
+      };
+    }
+
+    opts.log?.(
+      `[git-sync] refreshed ${trackingRef} from proven bridge egress ${provenTip.slice(0, 12)} ` +
+        `(observed ${observedSha.slice(0, 12)})`,
+    );
+    return { refreshed: true, trackingRef, observedSha };
+  } catch (error) {
+    return unchanged(`could not refresh ${trackingRef}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export async function runGithubBridgeLeg(
+  slug: string,
+  workspaceId: string,
+  opts: { remote?: string } = {},
+): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
     try {
@@ -3792,6 +3873,19 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
       // instead of silently reading `divergence: clear`.
       expectedCanonicalSha: wbSha,
     });
+
+    // EI-22754766601034346: P2P/local-path fetches intentionally do not update
+    // the checkout's refs/remotes/*, so a fresh bridge egress can coexist with a
+    // stale origin/staging containment ref. Refresh only after upstream egress
+    // proof; fork egress must not be misrepresented as origin egress.
+    if (outcome.egressTarget === 'upstream' && outcome.egressHead && entry.path) {
+      const refresh = await refreshRemoteTrackingRefFromProvenTip(entry.path, outcome.egressHead, {
+        remote: opts.remote,
+      });
+      if (!refresh.refreshed && refresh.detail) {
+        console.warn(`[git-sync] ${slug}: remote-tracking freshness refresh skipped — ${refresh.detail}`);
+      }
+    }
 
     // A bridge egress rejection is reported by the bridge escalation writer, but
     // this leg runs AFTER recordOutcome (which may have recorded a clean commit
