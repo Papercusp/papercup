@@ -22,14 +22,14 @@ import { newDreamCapabilityRun, type BeginCapabilityRunInput } from '../lib/drea
 import type { DreamRun } from '../lib/dream/dream-run-store';
 
 /** Real source bytes with a fixed reviewed proposal. No model or provider calls. */
-export async function createDreamCapabilityFixture(workspaceId = 'ws-capability-sink', potSlug = 'papercusp') {
+export async function createDreamCapabilityFixture(workspaceId = 'ws-capability-sink', potSlug = 'papercusp', includeThird = false) {
   const packs = join(homedir(), '.papercusp', 'scratch', 'packs');
   await mkdir(packs, { recursive: true });
   const root = await mkdtemp(join(packs, 'dream-capability-ledger-'));
   await mkdir(join(root, 'evidence'));
   await writeFile(join(root, 'pack.xml'), 'bounded source pack');
   const scope = { workspaceId, potSlug, repositoryId: 'fixture-repo' };
-  async function packet(label: 'A' | 'B'): Promise<CapabilityPacket> {
+  async function packet(label: 'A' | 'B' | 'C'): Promise<CapabilityPacket> {
     const unit = structuredClone(getPilotCapabilityManifest().units[0]!);
     Object.assign(unit, {
       id: 'capability:' + label,
@@ -107,7 +107,7 @@ export async function createDreamCapabilityFixture(workspaceId = 'ws-capability-
       },
     };
   }
-  const packets = await Promise.all([packet('A'), packet('B')]);
+  const packets = await Promise.all([packet('A'), packet('B'), ...(includeThird ? [packet('C')] : [])]);
   const [a, b] = packets.map((packet) => ({ packet, contentVersion: capabilityContentVersion(packet) }));
   const selection = {
     a: a!,

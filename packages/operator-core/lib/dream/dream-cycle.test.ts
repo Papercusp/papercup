@@ -6,7 +6,7 @@ import { dreamRunId, estimateDreamCall, runDreamCycle, type DreamCycleDeps, type
 import { DreamAdmissionError } from './dream-governor';
 import { dreamCapabilityRun, dreamCallTotals, newDreamCapabilityRun } from './dream-run-provenance';
 import type { DreamRun } from './dream-run-store';
-import { buildCapabilitySamplingSnapshot } from './capability-sampler';
+import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
 import { freezeDreamEvaluationProtocol } from './dream-evaluation';
 
 type Fixture = Awaited<ReturnType<typeof createDreamCapabilityFixture>>;
@@ -280,6 +280,54 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
       arm: 'structured-pair',
     });
     expect(h.llm).toHaveBeenCalled();
+  });
+
+  it('holds actual A/B selection fixed across separate pair/triple cycles and changed live history', async () => {
+    await rm(f.root, { recursive: true, force: true });
+    f = await createDreamCapabilityFixture('ws-cycle', 'papercusp', true);
+    const pair = harness(), triple = harness();
+    const bound = await pilot(pair);
+    const snapshot = await buildCapabilitySamplingSnapshot({ rootPath: f.root, scope: f.scope, manifest: f.manifest, packets: f.packets });
+    const thirdRoles = snapshot.eligible.flatMap(a => snapshot.eligible.filter(b => b !== a).map(b => {
+      const c = snapshot.eligible.find(e => e !== a && e !== b)!;
+      return { aId: a.packet.unit.id, aVersion: a.contentVersion, bId: b.packet.unit.id, bVersion: b.contentVersion,
+        cId: c.packet.unit.id, cVersion: c.contentVersion, role: 'constraint' as const,
+        contribution: 'Constrain fixture output.', removalEffect: 'The fixture constraint is absent.', evidenceIds: ['code', 'test'] };
+    }));
+    pair.input.pilot = { ...bound, arm: 'structured-pair', matchedPairIndex: 3 };
+    triple.input.pilot = { ...bound, arm: 'structured-triple', matchedPairIndex: 3 };
+    triple.input.cycleId = 'different-cycle';
+    for (const [h, arity] of [[pair, 2], [triple, 3]] as const) {
+      h.input.sampler = { mode: 'structured', arity, thirdRoles };
+      h.d.sample = vi.fn(sampleCapabilityCombination);
+      h.d.dream = vi.fn(async () => ({ verdict: 'none' as const, usage: { model: 'dreamer', costUsd: 0, inputTokens: 0, outputTokens: 0 } }));
+    }
+    await runDreamCycle(pair.input, pair.d);
+    triple.d.loadHistory = vi.fn(async () => [pair.row('cycle-1:dream:1')]);
+    await runDreamCycle(triple.input, triple.d);
+    const a = dreamCapabilityRun(pair.row('cycle-1:dream:1'))!;
+    const b = dreamCapabilityRun(triple.row('different-cycle:dream:1'))!;
+    if (a.sampling?.status !== 'selected' || b.sampling?.status !== 'selected') throw new Error('Missing real matched draw');
+    expect(b.sampling.selection.pairKey).toBe(a.sampling.selection.pairKey);
+    expect(b.sampling.selection.a.packet.unit.id).toBe(a.sampling.selection.a.packet.unit.id);
+    expect(b.sampling.selection.c).not.toBeNull();
+    expect(a.sampling.selection.c).toBeNull();
+    expect(b.sampling.log.seed).toBe(a.sampling.log.seed);
+    expect(b.sampling.log.exposures).toEqual(a.sampling.log.exposures);
+    expect(b.evaluation).toMatchObject({ protocolPin: bound.pin, arm: 'structured-triple', matchedPairIndex: 3 });
+    expect(triple.d.dream).toHaveBeenCalledOnce();
+    expect(triple.d.preflight).toHaveBeenCalledOnce();
+  });
+
+  it('refuses an unmatched control arm or overflowing matched assignment before admission', async () => {
+    const h = harness(); await pilot(h);
+    h.input.pilot!.matchedPairIndex = 0; h.input.pilot!.arm = 'uniform-pair';
+    await expect(runDreamCycle(h.input, h.d)).rejects.toThrow(/structured arm/);
+    h.input.pilot!.arm = 'structured-pair'; h.input.pilot!.matchedPairIndex = 49;
+    h.input.cycle = { maxDreamsPerCycle: 2 };
+    await expect(runDreamCycle(h.input, h.d)).rejects.toThrow(/assignment window/);
+    expect(h.d.preflight).not.toHaveBeenCalled();
+    expect(h.llm).not.toHaveBeenCalled();
   });
 
   it('does not count a pair fallback as a structured-triple experiment', async () => {

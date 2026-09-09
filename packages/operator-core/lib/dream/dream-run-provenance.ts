@@ -54,6 +54,7 @@ const HeaderSchema = z
       .object({
         protocolPin: z.string().regex(/^[a-f0-9]{64}$/),
         arm: z.enum(['uniform-pair', 'structured-pair', 'structured-triple']),
+        matchedPairIndex: z.number().int().min(0).max(49).optional(),
       })
       .strict()
       .optional(),

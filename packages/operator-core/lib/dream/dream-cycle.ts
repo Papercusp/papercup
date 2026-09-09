@@ -169,6 +169,8 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
   // Validate the protocol pin and policy before any adapter can perform work.
   // The real on-disk population is independently compared below, before generation.
   if (pilot) requireDreamPilotProtocol(pilot, { ...pilotConfig!, sourceSnapshot: pilot.protocol.sourceSnapshot });
+  if (pilot?.matchedPairIndex !== undefined && pilot.matchedPairIndex + config.maxDreamsPerCycle > 50)
+    throw new Error('Matched Dream cycle exceeds the bounded pair assignment window');
   const now = deps.now ?? Date.now;
   const result: DreamCycleResult = {
     fired: false,
@@ -257,6 +259,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
                 evaluation: {
                   protocolPin: pilot.pin,
                   arm: pilot.arm as 'uniform-pair' | 'structured-pair' | 'structured-triple',
+                  ...(pilot.matchedPairIndex !== undefined ? { matchedPairIndex: pilot.matchedPairIndex + index } : {}),
                 },
               }
             : {}),
@@ -410,13 +413,18 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
         for (const p of past)
           for (const entry of [p.selection.a, p.selection.b, ...(p.selection.c ? [p.selection.c.entry] : [])])
             exposures[entry.packet.unit.id] = (exposures[entry.packet.unit.id] ?? 0) + 1;
+        // A matched ablation uses the same frozen population, assignment and exposure
+        // weights on both sides. Live history differs after the first side runs and
+        // otherwise changes the draw even with an identical seed.
+        const matchedIndex = pilot?.matchedPairIndex === undefined ? undefined : pilot.matchedPairIndex + index;
         const sampling = (deps.sample ?? sampleCapabilityCombination)(snapshot, {
           ...input.sampler,
-          seed: pilot ? `${pilot.protocol.seed}:${pilot.arm}:${runId}` : runId,
+          seed: matchedIndex !== undefined ? `${pilot!.protocol.seed}:matched-pair:${matchedIndex}` :
+            pilot ? `${pilot.protocol.seed}:${pilot.arm}:${runId}` : runId,
           promptVersion: CAPABILITY_DREAM_PROMPT_VERSION,
           now: now(),
-          exposures,
-          history: past.map((p) => ({ pairKey: p.selection.pairKey, selectedAt: p.selectedAt })),
+          exposures: matchedIndex !== undefined ? {} : exposures,
+          history: matchedIndex !== undefined ? [] : past.map((p) => ({ pairKey: p.selection.pairKey, selectedAt: p.selectedAt })),
         });
         latest = await deps.recordSelection({ runId, capability: sampling });
         if (sampling.status === 'no-pair') {

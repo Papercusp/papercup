@@ -137,12 +137,15 @@ export interface DreamPilotPin {
   protocol: unknown;
   pin: string;
   arm: DreamEvaluationArm;
+  /** Shared assignment for the pair/triple ablation, separate from the unique attempt identity. */
+  matchedPairIndex?: number;
 }
 export const DreamPilotPinSchema = z
   .object({
     protocol: DreamEvaluationProtocolSchema,
     pin: sha,
     arm: z.enum(DREAM_EVALUATION_ARMS),
+    matchedPairIndex: z.number().int().min(0).max(49).optional(),
   })
   .strict();
 
@@ -169,6 +172,10 @@ export function requireDreamPilotProtocol(
   if (protocol.models.generator !== current.generator || protocol.models.reviewer !== current.reviewer)
     throw new Error('Dream pilot model configuration changed');
   if (current.mode !== 'manual') throw new Error('Dream pilot requires manual control');
+  if (input.matchedPairIndex !== undefined &&
+      (!Number.isInteger(input.matchedPairIndex) || input.matchedPairIndex < 0 || input.matchedPairIndex >= 50 ||
+       !['structured-pair', 'structured-triple'].includes(input.arm)))
+    throw new Error('Matched Dream assignment requires a structured arm and a bounded pair index');
   if (
     current.cycle.maxCostUsd !== protocol.limits.cycleUsd ||
     current.cycle.rolling24hCostUsd !== protocol.limits.rollingDayUsd
