@@ -305,7 +305,17 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     includeNestedFields = true,
   ): string => {
     const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
-    const shape = schemaShape(child, depth, withDescription, includeNestedFields);
+    // rootCauseVerification publishes its conditional required-field contract
+    // through x-papercusp-call-constraint. Rendering its now-wide v2 object in
+    // full would consume this entire bounded segment and evict the equally
+    // load-bearing completion.verification.coverage path. Keep the object name
+    // here; the constraint above retains every required causal field verbatim.
+    const shape = schemaShape(
+      child,
+      depth,
+      withDescription,
+      includeNestedFields && name !== 'rootCauseVerification',
+    );
     const description = withDescription ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
   };
