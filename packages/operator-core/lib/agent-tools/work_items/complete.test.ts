@@ -1743,6 +1743,23 @@ describe('work_items:complete (keyed-array)', () => {
       sourcePlanSlug: 'reconnect-plan',
       sourcePlanItemIds: ['P-003'],
     };
+    const linkedFeature = {
+      ...item,
+      id: 'F-101',
+      kind: 'feature',
+      family: 'feature',
+      state: 'in_progress',
+      harness: 'papercusp',
+      payload: {
+        plan_item: {
+          plan_slug: 'reconnect-plan',
+          item_id: 'P-004',
+          harness_slug: 'papercusp',
+        },
+      },
+      sourcePlanSlug: 'reconnect-plan',
+      sourcePlanItemIds: ['P-004'],
+    };
     const specAdequacy = {
       classRef: 'plan-class-feature-ship',
       evidenceRefs: ['test:reconnect'],
@@ -1902,6 +1919,61 @@ describe('work_items:complete (keyed-array)', () => {
         attestation: specAdequacy,
       });
       expect(r.specAdequacy).toEqual({ applicable: true, checked: ['SPEC-003-01@1'] });
+    });
+
+    it('routes a successful feature close with changed paths through grading-audit reopen dispatch', async () => {
+      getWorkItem.mockResolvedValue(linkedFeature);
+      const pendingTargets = ['EI-feature-legacy-audit'];
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'SPEC-004-01@1: no current terminal complete scorecard',
+        checked: [],
+        pendingGradingAuditTargetIds: pendingTargets,
+      });
+      const dispatchResult = {
+        requestedTargetIds: pendingTargets,
+        receipts: [{ issueId: pendingTargets[0], state: 'routed' as const, conversationId: 'audit-feature' }],
+      };
+      dispatchPendingGradingAudits.mockResolvedValue(dispatchResult);
+
+      const r = await one({
+        id: 'F-101',
+        state: 'passed',
+        completion: { summary: 'shipped', filesChanged: [behaviorChangePath] },
+        specAdequacy,
+      });
+
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
+        workItem: linkedFeature,
+        attestation: specAdequacy,
+      });
+      expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
+        targetIds: pendingTargets,
+        ctx,
+        harness: 'papercusp',
+      });
+      expect(r).toMatchObject({
+        ok: false,
+        specAdequacy: { gradingAuditDispatch: dispatchResult },
+      });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('keeps a deprecated feature close outside the spec-adequacy gate', async () => {
+      getWorkItem.mockResolvedValue(linkedFeature);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedFeature, state: 'deprecated' }));
+
+      const r = await one({
+        id: 'F-101',
+        state: 'deprecated',
+        completion: { summary: 'declined', filesChanged: [behaviorChangePath] },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(specTestAdequacyCompletionGate).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
     it('passes the exact caller attestation and reports every checked clause on success', async () => {

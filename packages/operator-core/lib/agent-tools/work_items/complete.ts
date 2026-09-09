@@ -2643,6 +2643,9 @@ async function completeOne(
   // intent can be inferred from completion.status after the schema has parsed.
   const closeIntentRequested =
     Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  const successfulClose =
+    Boolean(effectiveState) &&
+    ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some((state) => state === String(effectiveState).trim().toLowerCase());
 
   // EI-22410970761779199: the behavior-contract resolver correctly classifies a
   // `kind:'change'` item, but a completion close also knows whether this particular
@@ -2667,8 +2670,18 @@ async function completeOne(
       status: String(effectiveState ?? ''),
       terminalReason: duplicateCloseCoverageException ? 'duplicate' : String(effectiveState ?? ''),
     });
+  // Plan-promoted implementation items are feature-family rows, while the generic
+  // remediation classifier deliberately covers only bug/change. The spec-evidence gate
+  // is broader than that classifier: a successful feature close that names changed paths
+  // must prove its active clauses too, or a pending/legacy grading audit can never reach
+  // the reopen dispatcher. Preserve the administrative exemptions for deprecated/dropped
+  // and duplicate closes.
+  const successfulFeatureClose =
+    existing.family === 'feature' && successfulClose && !duplicateCloseCoverageException;
   const shouldEvaluateSpecAdequacyAtCompletion =
-    closeIntentRequested && completionClaimsRemediation && completionHasChangedOrDeletedPaths;
+    closeIntentRequested &&
+    (completionClaimsRemediation || successfulFeatureClose) &&
+    completionHasChangedOrDeletedPaths;
 
   // ---- CONTRACT-GATE ACCUMULATION (EI-20286699547467039) ---------------------------
   // Every gate from here to the self-review gate below answers the SAME question — "is
@@ -2730,9 +2743,6 @@ async function completeOne(
         capabilityGapMarker(record[key]),
       ),
     );
-  const successfulClose =
-    Boolean(effectiveState) &&
-    ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some((state) => state === String(effectiveState).trim().toLowerCase());
   const rootCauseVerificationRequired =
     closeIntentRequested && successfulClose && (existing.kind === 'bug' || capabilityGapItem);
   if (rootCauseVerificationRequired && !it.completion.rootCauseVerification) {
