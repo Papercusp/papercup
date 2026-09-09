@@ -43,6 +43,7 @@ describe('parseRequestContext — happy path', () => {
       chunkId: null,
       parentSpawnId: null,
       uiClientId: null,
+      detectorSessionKey: null,
     });
   });
 
@@ -54,12 +55,14 @@ describe('parseRequestContext — happy path', () => {
         chunk: 'ck_3',
         parent_spawn: 'spw_parent',
         client: 'tab_42',
+        detector: ' sid-auditor-1 ',
       }),
     );
     expect(ctx.featureId).toBe('F-9');
     expect(ctx.chunkId).toBe('ck_3');
     expect(ctx.parentSpawnId).toBe('spw_parent');
     expect(ctx.uiClientId).toBe('tab_42');
+    expect(ctx.detectorSessionKey).toBe('sid-auditor-1');
   });
 });
 
@@ -181,26 +184,29 @@ describe('parseRequestContext — optional param null-coercion', () => {
     expect(ctx.chunkId).toBeNull();
     expect(ctx.parentSpawnId).toBeNull();
     expect(ctx.uiClientId).toBeNull();
+    expect(ctx.detectorSessionKey).toBeNull();
   });
 
   it('coerces empty-string optional params to null', () => {
     const ctx = parseRequestContext(
-      url({ ...ALL_REQUIRED, feature: '', chunk: '', parent_spawn: '', client: '' }),
+      url({ ...ALL_REQUIRED, feature: '', chunk: '', parent_spawn: '', client: '', detector: '' }),
     );
     expect(ctx.featureId).toBeNull();
     expect(ctx.chunkId).toBeNull();
     expect(ctx.parentSpawnId).toBeNull();
     expect(ctx.uiClientId).toBeNull();
+    expect(ctx.detectorSessionKey).toBeNull();
   });
 
   it('coerces whitespace-only optional params to null', () => {
     const ctx = parseRequestContext(
-      url({ ...ALL_REQUIRED, feature: '  ', chunk: '\t', parent_spawn: ' ', client: '   ' }),
+      url({ ...ALL_REQUIRED, feature: '  ', chunk: '\t', parent_spawn: ' ', client: '   ', detector: ' \t ' }),
     );
     expect(ctx.featureId).toBeNull();
     expect(ctx.chunkId).toBeNull();
     expect(ctx.parentSpawnId).toBeNull();
     expect(ctx.uiClientId).toBeNull();
+    expect(ctx.detectorSessionKey).toBeNull();
   });
 });
 
@@ -218,7 +224,7 @@ describe('parseRequestContext — URL vs string input', () => {
   });
 
   it('string and URL forms produce equal results', () => {
-    const s = url({ ...ALL_REQUIRED, feature: 'F-1', client: 'tab_9' });
+    const s = url({ ...ALL_REQUIRED, feature: 'F-1', client: 'tab_9', detector: 'sid-auditor-2' });
     const fromString = parseRequestContext(s);
     const fromUrl = parseRequestContext(new URL(s));
     expect(fromString).toEqual(fromUrl);

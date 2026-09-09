@@ -25,6 +25,7 @@ import {
   buildP305RollbackScript,
   buildP305SwitchScript,
   normalizeP305LifecycleInput,
+  parseP305HostPrepareDiagnostics,
   parseP305PhaseMarker,
 } from './gcp-bootc-lifecycle-args.mjs';
 import { openPrivateVmSession } from './gcp-private-vm-session.mjs';
@@ -272,7 +273,14 @@ async function lifecycle(input) {
 
   if (lifecycleError) {
     const details = lifecycleError.details && typeof lifecycleError.details === 'object' ? lifecycleError.details : {};
-    lifecycleError.details = { ...details, phases, reboots, residualResourceIds };
+    const hostPrepareDiagnostics = parseP305HostPrepareDiagnostics(details.stderr);
+    lifecycleError.details = {
+      ...details,
+      ...(hostPrepareDiagnostics ? { hostPrepareDiagnostics } : {}),
+      phases,
+      reboots,
+      residualResourceIds,
+    };
     throw lifecycleError;
   }
   if (residualResourceIds.length > 0) {

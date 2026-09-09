@@ -6,7 +6,7 @@
  * argument SHAPE, and error CLASS); raw arguments and error messages never
  * enter the detector or its pending hint.
  *
- * State is per owner + tool. A successful call or a changed argument/error
+ * State is per detector session + tool. A successful call or a changed argument/error
  * shape resets that tool's streak, while unrelated tools do not interrupt it.
  * This lets three failed retries separated by ordinary investigation calls
  * trip the breaker without combining unrelated failures.
@@ -179,6 +179,8 @@ function boundedClass(value: string): string {
 
 export function observeFailureLoop(input: {
   ownerId: string;
+  /** Private per-session key used only for detector state; never exposed in the hint. */
+  detectorSessionKey?: string | null;
   toolName: string;
   args: unknown;
   result: DispatchProjectedResult;
@@ -189,24 +191,25 @@ export function observeFailureLoop(input: {
   if (!ownerId || !toolName) return null;
 
   const now = input.now ?? Date.now();
+  const stateKey = input.detectorSessionKey?.trim() || ownerId;
   pruneState(now);
   const failureClass = failureClassOf(input.result);
   const repetition = failureClass === null ? repetitionSignature(input) : null;
   const errorClass = failureClass ?? (repetition ? `unchanged-result:${repetition.category}` : null);
-  const ownerStates = statesByOwner.get(ownerId);
+  const ownerStates = statesByOwner.get(stateKey);
 
   // A clean call proves this tool/owner streak has ended. A pending advisory
   // for the same tool is stale too: the agent already found a working call.
   if (!errorClass) {
     ownerStates?.delete(toolName);
-    if (ownerStates?.size === 0) statesByOwner.delete(ownerId);
-    if (pendingByOwner.get(ownerId)?.toolName === toolName) pendingByOwner.delete(ownerId);
+    if (ownerStates?.size === 0) statesByOwner.delete(stateKey);
+    if (pendingByOwner.get(stateKey)?.toolName === toolName) pendingByOwner.delete(stateKey);
     return null;
   }
 
   const argsShape = repetition?.fingerprint ?? argumentShapeFingerprint(input.args);
   const byTool = ownerStates ?? new Map<string, FailureState>();
-  if (!ownerStates) statesByOwner.set(ownerId, byTool);
+  if (!ownerStates) statesByOwner.set(stateKey, byTool);
   const prior = byTool.get(toolName);
   const sameSignal =
     prior &&
@@ -223,7 +226,7 @@ export function observeFailureLoop(input: {
         lastHintAt: null,
       };
 
-  if (!sameSignal && pendingByOwner.get(ownerId)?.toolName === toolName) pendingByOwner.delete(ownerId);
+  if (!sameSignal && pendingByOwner.get(stateKey)?.toolName === toolName) pendingByOwner.delete(stateKey);
 
   state.failuresAt = state.failuresAt.filter((at) => now - at <= FAILURE_LOOP_WINDOW_MS);
   state.failuresAt.push(now);
@@ -245,15 +248,17 @@ export function observeFailureLoop(input: {
   };
   // One mid-turn response can carry one actionable interruption. Prefer the
   // freshest signal when several tools cross the threshold in one batch.
-  pendingByOwner.set(ownerId, hint);
+  pendingByOwner.set(stateKey, hint);
   return hint;
 }
 
 /** Drain-once bridge from the settled dispatcher to PostToolBatch context. */
-export function takePendingFailureLoopHint(ownerId: string, now: number = Date.now()): FailureLoopHint | null {
-  const hint = pendingByOwner.get(ownerId) ?? null;
+export function takePendingFailureLoopHint(detectorSessionKey: string, now: number = Date.now()): FailureLoopHint | null {
+  const stateKey = detectorSessionKey.trim();
+  if (!stateKey) return null;
+  const hint = pendingByOwner.get(stateKey) ?? null;
   if (!hint) return null;
-  pendingByOwner.delete(ownerId);
+  pendingByOwner.delete(stateKey);
   return now - hint.detectedAt <= FAILURE_LOOP_PENDING_TTL_MS ? hint : null;
 }
 

@@ -134,6 +134,31 @@ describe('failure-loop circuit breaker', () => {
     ).not.toBeNull();
   });
 
+  it('isolates detector state for same-public-owner sessions while keeping hint owner public', () => {
+    const observe = (detectorSessionKey: string, now: number) =>
+      observeFailureLoop({
+        ownerId: 'harness:papercusp',
+        detectorSessionKey,
+        toolName: 'dev:pg_query',
+        args: { query: 'SELECT 1' },
+        result: dispatchFailure('missing_capability'),
+        now,
+      });
+
+    observe('auditor-a', 0);
+    observe('auditor-a', 1);
+    const fired = observe('auditor-a', 2);
+    expect(fired).toMatchObject({ ownerId: 'harness:papercusp', count: 3 });
+
+    observe('auditor-b', 3);
+    observe('auditor-b', 4);
+    expect(takePendingFailureLoopHint('auditor-b', 5)).toBeNull();
+    expect(takePendingFailureLoopHint('auditor-a', 5)).toMatchObject({
+      ownerId: 'harness:papercusp',
+      toolName: 'dev:pg_query',
+    });
+  });
+
   it('resets on a success or changed shape/error class for the same tool', () => {
     observeFailureLoop({ ownerId: 'su-1', toolName: 'x', args: { a: 1 }, result: dispatchFailure(), now: 0 });
     observeFailureLoop({ ownerId: 'su-1', toolName: 'x', args: { a: 2 }, result: success, now: 1 });

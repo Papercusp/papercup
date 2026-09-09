@@ -9,6 +9,7 @@
  *   ?harness=<slug?>&workspace=<id>&role=<role>
  *   &run=<runId>&spawn=<spawnId>
  *   &feature=<id?>&chunk=<id?>&parent_spawn=<id?>&client=<uiClientId?>
+ *   &detector=<private failure-loop session key?>
  *
  * Required: workspace, role, run, spawn.
  * Optional: harness (a WORKSPACE-LEVEL role session — operator/planner
@@ -36,6 +37,7 @@ export interface PluginRequestContext {
   spawnId: string;
   parentSpawnId: string | null;
   uiClientId: string | null;
+  detectorSessionKey: string | null;
 }
 
 export class InvalidRequestContextError extends Error {
@@ -58,6 +60,7 @@ export function parseRequestContext(url: URL | string): PluginRequestContext {
   const chunkRaw = (u.searchParams.get('chunk') ?? '').trim();
   const parentRaw = (u.searchParams.get('parent_spawn') ?? '').trim();
   const clientRaw = (u.searchParams.get('client') ?? '').trim();
+  const detectorRaw = (u.searchParams.get('detector') ?? '').trim();
 
   const missing: string[] = [];
   if (!workspaceId) missing.push('workspace');
@@ -78,5 +81,6 @@ export function parseRequestContext(url: URL | string): PluginRequestContext {
     chunkId: chunkRaw.length > 0 ? chunkRaw : null,
     parentSpawnId: parentRaw.length > 0 ? parentRaw : null,
     uiClientId: clientRaw.length > 0 ? clientRaw : null,
+    detectorSessionKey: detectorRaw.length > 0 ? detectorRaw : null,
   };
 }

@@ -11,6 +11,10 @@ export const P305_LIFECYCLE_SCHEMA_VERSION = 'papercusp-gcp-bootc-lifecycle-v1';
 export const P305_RELEASE_REGISTRY_NAMESPACE = '127.0.0.1:5096/papercusp';
 export const P305_RELEASE_REGISTRY_REPOSITORY = `${P305_RELEASE_REGISTRY_NAMESPACE}/workspace-host`;
 export const P305_LIFECYCLE_MARKER = 'PAPERCUSP-P305-LIFECYCLE';
+export const P305_HOST_PREPARE_DIAGNOSTIC_MARKER = 'PAPERCUSP-P305-HOST-PREPARE-DIAGNOSTIC';
+
+const P305_HOST_PREPARE_STATUS_PREFIX = 'PAPERCUSP-P305-HOST-PREPARE-STATUS ';
+const P305_HOST_PREPARE_JOURNAL_PREFIX = 'PAPERCUSP-P305-HOST-PREPARE-JOURNAL ';
 
 const VERSION_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/i;
 const BUCKET_RE = /^gs:\/\/[a-z0-9][a-z0-9._-]{1,221}[a-z0-9]$/;
@@ -80,6 +84,34 @@ function markerLine(phase, expectedVersion, updateDigest) {
   ].join(' ');
 }
 
+/** Recover bounded, typed host-prepare failure evidence before the disposable VM is destroyed. */
+export function parseP305HostPrepareDiagnostics(stderr) {
+  if (typeof stderr !== 'string' || stderr === '') return null;
+  const lines = stderr.split(/\r?\n/);
+  const marker = [...lines]
+    .reverse()
+    .find((line) => line.startsWith(`${P305_HOST_PREPARE_DIAGNOSTIC_MARKER} `));
+  if (!marker) return null;
+  const match = marker.match(
+    /^PAPERCUSP-P305-HOST-PREPARE-DIAGNOSTIC phase=(initial|updated|rolled-back) active_state=([^\s]+) sub_state=([^\s]+) result=([^\s]+) exec_main_status=([^\s]+)$/,
+  );
+  if (!match) return null;
+  const excerpt = (prefix) =>
+    lines
+      .filter((line) => line.startsWith(prefix))
+      .map((line) => line.slice(prefix.length, prefix.length + 240))
+      .slice(-6);
+  return {
+    phase: match[1],
+    activeState: match[2],
+    subState: match[3],
+    result: match[4],
+    execMainStatus: /^\d+$/.test(match[5]) ? Number(match[5]) : null,
+    statusExcerpt: excerpt(P305_HOST_PREPARE_STATUS_PREFIX),
+    journalExcerpt: excerpt(P305_HOST_PREPARE_JOURNAL_PREFIX),
+  };
+}
+
 /**
  * Build the paired D-043/D-251 identity, ACL, signature and /var-persistence probe.
  * `initial` creates the sentinel and runs both signature controls; later phases must read
@@ -117,11 +149,27 @@ workspace_user=papercusp-workspace
 agent_user=papercusp-agent
 
 fail() { printf 'PAPERCUSP-P305-FAIL phase=%s %s\\n' "$phase" "$*" >&2; exit 1; }
-for command in bootc getfacl getent grep openssl readlink runuser sha256sum skopeo systemctl; do
+for command in bootc cut getfacl getent grep journalctl openssl readlink runuser sed sha256sum skopeo systemctl tail; do
   command -v "$command" >/dev/null 2>&1 || fail "missing-command=$command"
 done
 
-systemctl is-active --quiet papercusp-host-prepare.service || fail host-prepare-not-active
+if ! systemctl is-active --quiet papercusp-host-prepare.service; then
+  active_state="$(systemctl show papercusp-host-prepare.service --property=ActiveState --value 2>/dev/null || true)"
+  sub_state="$(systemctl show papercusp-host-prepare.service --property=SubState --value 2>/dev/null || true)"
+  service_result="$(systemctl show papercusp-host-prepare.service --property=Result --value 2>/dev/null || true)"
+  exec_main_status="$(systemctl show papercusp-host-prepare.service --property=ExecMainStatus --value 2>/dev/null || true)"
+  active_state="${active_state:-unknown}"
+  sub_state="${sub_state:-unknown}"
+  service_result="${service_result:-unknown}"
+  exec_main_status="${exec_main_status:-unknown}"
+  { systemctl status papercusp-host-prepare.service --no-pager --full 2>&1 || true; } \
+    | tail -n 6 | cut -c1-240 | sed 's/^/${P305_HOST_PREPARE_STATUS_PREFIX}/' >&2
+  { journalctl --unit=papercusp-host-prepare.service --boot --no-pager --output=cat --lines=6 2>&1 || true; } \
+    | cut -c1-240 | sed 's/^/${P305_HOST_PREPARE_JOURNAL_PREFIX}/' >&2
+  printf '${P305_HOST_PREPARE_DIAGNOSTIC_MARKER} phase=%s active_state=%s sub_state=%s result=%s exec_main_status=%s\\n' \
+    "$phase" "$active_state" "$sub_state" "$service_result" "$exec_main_status" >&2
+  fail host-prepare-not-active
+fi
 actual_release="$(basename "$(readlink -f "$runtime_root/current")")"
 [[ "$actual_release" == "$expected_release" ]] || fail "release=$actual_release expected=$expected_release"
 
