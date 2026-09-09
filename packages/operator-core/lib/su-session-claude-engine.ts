@@ -258,11 +258,14 @@ export function startClaudeSuEngine(
           }
           if (event.type === 'user' && event.uuid) pending.get(event.uuid)?.resolve({ ok: true });
           // The SDK can begin the root API request before it replays the input
-          // or starts an assistant message. Its UUID-bound `requesting` status
-          // is already a positive delivery receipt for that exact owner turn.
+          // or starts an assistant message. The live CLI does not guarantee
+          // that a status message's UUID echoes the submitted input UUID. The
+          // stream is session-bound and owner inputs are serialized, so a
+          // same-session `requesting` status while one root input is active is
+          // already a positive delivery receipt for that exact owner turn.
           if (event.type === 'system' && event.subtype === 'status' && event.status === 'requesting'
-            && event.session_id === nativeId && event.uuid === activeInputUuid) {
-            pending.get(event.uuid)?.resolve({ ok: true });
+            && event.session_id === nativeId && activeInputUuid) {
+            pending.get(activeInputUuid)?.resolve({ ok: true });
           }
           // Native input replay can arrive only after a long response. The
           // root model response starting also proves this serialized input

@@ -41,7 +41,7 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; statusAck?: boolean; statusUuid?: string; holdResult?: boolean; streamOnly?: boolean; streamParent?: string } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; statusAck?: boolean; statusBeforeInput?: boolean; statusUuid?: string; holdResult?: boolean; streamOnly?: boolean; streamParent?: string } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
@@ -50,6 +50,10 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
   let mcpReads = 0;
   const factory: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options }) => {
     receivedOptions = options;
+    if (config.statusBeforeInput) output.write({
+      type: 'system', subtype: 'status', status: 'requesting', session_id: nativeId,
+      uuid: config.statusUuid ?? 'status-before-input',
+    });
     void (async () => {
       for await (const message of prompt) {
         prompts.push(message);
@@ -307,8 +311,8 @@ describe('structured Claude SU engine', () => {
     });
   });
 
-  it('acknowledges an exact-input SDK requesting status before replay or assistant output', async () => {
-    const p = peer({ noAck: true, statusAck: true });
+  it('acknowledges a same-session SDK requesting status while one owner input is active', async () => {
+    const p = peer({ noAck: true, statusAck: true, statusUuid: 'sdk-status-event-id' });
     const engine = open(p, { deliveryTimeoutMs: 20 });
     await engine.ready;
     expect(await engine.adapter.host.startCommand(command(engine)).terminal).toMatchObject({
@@ -319,10 +323,13 @@ describe('structured Claude SU engine', () => {
     }));
   });
 
-  it('does not acknowledge an SDK requesting status for another input UUID', async () => {
-    const p = peer({ noAck: true, statusAck: true, statusUuid: 'another-input' });
+  it('does not acknowledge an SDK requesting status that precedes owner input', async () => {
+    const p = peer({ noAck: true, statusBeforeInput: true });
     const engine = open(p, { deliveryTimeoutMs: 20 });
     await engine.ready;
+    await vi.waitFor(() => expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(
+      expect.objectContaining({ type: 'transcript', role: 'system', content: 'requesting' }),
+    ));
     expect(await engine.adapter.host.startCommand(command(engine)).terminal).toMatchObject({
       status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false },
     });
