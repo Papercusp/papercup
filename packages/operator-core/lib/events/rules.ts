@@ -14,6 +14,8 @@ import { registerReactionRule } from './registry';
 import { formatHandoff, type HandoffArgs } from './format-handoff';
 import { registerCacheTagEcaRule } from './cache-eca-rule';
 import { registerAccountDefaultMarkerRule } from '../deployment/account-default-marker-rule';
+import { buildKey } from './await/catalog';
+import { GATE_REJUDGE_ADMITTED_REPAIR_ACTION } from './builtin-actions';
 // oddsmith-domain reaction: a completed bet-analysis item → one decision-ledger
 // disposition (the signals/recent-auto-decisions feed). Self-registers on import.
 // (Cleaner long-term home: an oddsmith PluginReactionRule — see on-papercusp plan P3.)
@@ -73,6 +75,81 @@ registerCacheTagEcaRule();
  * table already emits, rather than re-polling PG from every host on a timer.
  */
 registerAccountDefaultMarkerRule();
+
+interface ConfirmedRepairAdmission {
+  candidate: string;
+  repairHead: string;
+  installSlug: string;
+}
+
+/** Extract only the one successful write shape that is allowed to wake repair verification. */
+function confirmedRepairAdmission(e: import('./types').ToolInvocationEvent): ConfirmedRepairAdmission | null {
+  const args = e.args as { op?: unknown; confirm?: unknown } | undefined;
+  if ((args?.op !== 'admit' && args?.op !== 'converge') || args.confirm !== true) return null;
+  const data = e.result.data as
+    | {
+        ok?: unknown;
+        admitted?: unknown;
+        persisted?: unknown;
+        target?: { installSlug?: unknown };
+        repairQueue?: { candidate?: unknown; repairHead?: unknown };
+        movedRepairHead?: { to?: unknown };
+      }
+    | undefined;
+  const candidate = data?.repairQueue?.candidate;
+  const repairHead = data?.movedRepairHead?.to ?? data?.repairQueue?.repairHead;
+  const installSlug = data?.target?.installSlug;
+  if (
+    data?.ok !== true ||
+    data.admitted !== true ||
+    data.persisted !== true ||
+    typeof candidate !== 'string' ||
+    typeof repairHead !== 'string' ||
+    typeof installSlug !== 'string'
+  ) {
+    return null;
+  }
+  return { candidate, repairHead, installSlug };
+}
+
+/** P-001/R-1: the catalogued, awaitable observation of a persisted admission. */
+registerReactionRule({
+  id: 'gate:repair-admitted:event',
+  on: 'release:repair-queue',
+  when: (e) => confirmedRepairAdmission(e) !== null,
+  fire: 'events:emit',
+  args: (e) => {
+    const admission = confirmedRepairAdmission(e)!;
+    return {
+      event: buildKey('repair-admitted', { candidate: admission.candidate }),
+      summary:
+        `Frozen repair ${admission.candidate.slice(0, 8)} admitted head ` +
+        `${admission.repairHead.slice(0, 8)}; immediate re-judge requested`,
+      payload: admission,
+    };
+  },
+  dedupKey: (e) => {
+    const admission = confirmedRepairAdmission(e);
+    return admission ? `${admission.candidate}:${admission.repairHead}` : '';
+  },
+  onlyOnSuccess: true,
+  source: 'events-file',
+});
+
+/** P-001/R-1: pull the existing routine due now. Default durable mode survives host restart. */
+registerReactionRule({
+  id: 'gate:repair-admitted:rejudge',
+  on: 'release:repair-queue',
+  when: (e) => confirmedRepairAdmission(e) !== null,
+  fire: GATE_REJUDGE_ADMITTED_REPAIR_ACTION,
+  args: (e) => ({ ...confirmedRepairAdmission(e)! }),
+  dedupKey: (e) => {
+    const admission = confirmedRepairAdmission(e);
+    return admission ? `${admission.candidate}:${admission.repairHead}` : '';
+  },
+  onlyOnSuccess: true,
+  source: 'events-file',
+});
 
 /**
  * WI-5271 — critical-severity work-item alert, event-driven (replaces the leaking

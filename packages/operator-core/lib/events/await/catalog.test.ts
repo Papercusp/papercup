@@ -64,6 +64,7 @@ describe('buildKey', () => {
       'ext:gmail:message.received',
     );
     expect(buildKey('consult-reply', { conversationId: 'conv-123' })).toBe('consult:reply:conv-123');
+    expect(buildKey('repair-admitted', { candidate: 'abc123' })).toBe('gate:repair-admitted:abc123');
   });
 
   it('throws when a required param is missing', () => {

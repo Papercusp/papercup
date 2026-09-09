@@ -10,7 +10,7 @@
  * have helped — the agent already had the count. What was missing was the skipped test's NAME,
  * which vitest's human reporter never prints.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +20,8 @@ import {
   allSkippedVerdict,
   assertionOutcomesFromReport,
   callerChoseReporting,
+  main,
+  nonVerdictOptionFrom,
   parseCli,
   requireRanFrom,
   requireRanVerdict,
@@ -28,6 +30,34 @@ import {
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore — untyped .mjs router, imported by path like its sibling suites
 } from '../../../../scripts/test-files.mjs';
+
+describe('non-verdict Vitest options cannot manufacture a green router result', () => {
+  it.each(['-h', '--help', '--help=api', '-v', '--version', '--version=short'])('recognizes %s', (option) => {
+    expect(nonVerdictOptionFrom([option])).toBe(option);
+  });
+
+  it('ignores ordinary execution options', () => {
+    expect(nonVerdictOptionFrom(['--run', '--reporter=json'])).toBeNull();
+  });
+
+  it.each(['--help', '--version'])('refuses %s before route discovery or child execution', async (option) => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const code = await main([
+        'packages/operator-core/lib/harness/routines/hive-release-env.integration.test.ts',
+        option,
+      ]);
+      expect(code).toBe(2);
+      const output = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(output).toContain('TEST_FILE_NOT_MEASURED');
+      expect(output).toContain('reason=non-verdict-option');
+      expect(output).toContain(`option=${JSON.stringify(option)}`);
+      expect(output).not.toContain('TEST_FILE_RESULT');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
 
 describe('testsSkippedFrom — three-state, because an unreadable row must not read as "nothing skipped"', () => {
   it('reads the skipped segment of a mixed summary row', () => {

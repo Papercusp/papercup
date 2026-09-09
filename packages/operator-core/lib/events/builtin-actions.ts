@@ -13,7 +13,7 @@
  * (the caller resolved the workspace from the trigger ctx) and never throw —
  * they return the same `{ ok, error }` shape the engine logs.
  *
- * Today the set is exactly `cache.bumpTags`. Add a new built-in by adding a case
+ * Add a new built-in by adding a case
  * to {@link fireBuiltinReactionAction} and its name to {@link BUILTIN_ACTIONS}.
  */
 
@@ -58,6 +58,10 @@ export const PLAN_DRAIN_TRANSITION_ACTION = "plan.applyDrainTransition";
  *  to move. Rides the change stream the override table already emits. */
 export const ACCOUNT_DEFAULT_MARKER_SYNC_ACTION = "accounts.syncDefaultMarker";
 
+/** green-gate-zero-wait P-001: a confirmed frozen-lineage admission pulls the existing
+ * system:green-checkpoint routine due immediately after re-validating the live queue tuple. */
+export const GATE_REJUDGE_ADMITTED_REPAIR_ACTION = "gate.rejudgeAdmittedRepair";
+
 /** The closed set of recognised built-in (non-tool) reaction action names. */
 export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
   CACHE_BUMP_TAGS_ACTION,
@@ -65,6 +69,7 @@ export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
   PLAN_ITEM_LANE_RESYNC_ACTION,
   PLAN_DRAIN_TRANSITION_ACTION,
   ACCOUNT_DEFAULT_MARKER_SYNC_ACTION,
+  GATE_REJUDGE_ADMITTED_REPAIR_ACTION,
 ]);
 
 /** Whether `fire` names a built-in in-process action (vs a projected tool). */
@@ -280,6 +285,36 @@ export async function fireBuiltinReactionAction(
       const { syncDefaultAccountEnv } = await import("../deployment/account-pool-store");
       await syncDefaultAccountEnv(workspaceId).catch(() => undefined);
       return { ok: true };
+    }
+    case GATE_REJUDGE_ADMITTED_REPAIR_ACTION: {
+      const candidate = typeof args.candidate === "string" ? args.candidate : "";
+      const repairHead = typeof args.repairHead === "string" ? args.repairHead : "";
+      const installSlug = typeof args.installSlug === "string" ? args.installSlug : "";
+      if (!candidate || !repairHead || !installSlug) {
+        return { ok: false, error: "gate.rejudgeAdmittedRepair requires candidate, repairHead, and installSlug" };
+      }
+      try {
+        // The builtin runs before dispatch-reaction's generic withWorkspace branch. Establish the
+        // originating workspace explicitly, then reuse the one frozen-queue reader and the one
+        // routine requeue writer — no parallel launch or scheduler surface.
+        const { withWorkspace, getOrgPg } = await import("@papercusp/db-org");
+        const { readFrozenCandidateRepairQueue, requeueGreenCheckpointAfterCapacity } = await import(
+          "../harness/routines/release-actions"
+        );
+        return await withWorkspace(workspaceId, async () => {
+          const queue = await readFrozenCandidateRepairQueue({ workspaceId, installSlug });
+          // Durable reactions may arrive late or out of order. Only the exact live tuple may
+          // advance scheduling; a newer admission has its own reaction, and a retired/replaced
+          // queue must stay untouched.
+          if (!queue || queue.candidate !== candidate || queue.repairHead !== repairHead) {
+            return { ok: true };
+          }
+          await requeueGreenCheckpointAfterCapacity(getOrgPg().sql, installSlug, 0);
+          return { ok: true };
+        });
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
     }
     default:
       return { ok: false, error: `unknown built-in reaction action "${fire}"` };

@@ -217,7 +217,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
+    "Bounded read-only SQL/EXPLAIN or relation description in operator Postgres. Tenant reads need scope unless `allowUnscoped`; pass `positiveControlSql` for zero-row absence claims. PostgreSQL regex repetition is limited to 255; use `left()`/`substring()` for larger excerpts. Rubrics use `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
   capability: 'intel:read',
   guidance: {
     when:
@@ -225,7 +225,7 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      "Use `describe` before guessing schema. For rubric schema, describe `harness_shared.harness_plans`; use `rubrics:list`, `rubrics:get`, or `rubrics:search` for canonical rubric reads. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. For raw `harness_shared.work_items` SQL, response vocabulary is not relation vocabulary: `work_items:get`'s `state` maps to table `status`, `id` maps to `feature_id`, and structured completion maps to `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` before adding predicates. Alias duplicate columns and tighten the query when `truncated`. Do not search `tool_invocations.args_json::text` or `metadata_json::text` with LIKE/ILIKE without a SQL LIMIT; `maxRows` does not bound the WHERE scan. Prefer indexed scalar predicates or `activity:tool-log`/`dev:telemetry`; pass `allowUnboundedJsonSearch: true` only for deliberate forensic work. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
+      "Use `describe` before guessing schema. For rubric reads use `rubrics:list`, `rubrics:get`, or `rubrics:search`; raw schema is `harness_shared.harness_plans`. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`. Raw `harness_shared.work_items` SQL: `state` maps to table `status`, `id` maps to `feature_id`, and structured completion maps to `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` first. Alias duplicate columns and tighten truncated queries. Avoid unbounded JSON-text LIKE/ILIKE; prefer indexed predicates or `activity:tool-log`/`dev:telemetry`, and set `allowUnboundedJsonSearch: true` only deliberately. PostgreSQL regex repetition is at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
     returns:
       'A DISCRIMINATED UNION on `mode` — switch on it, do not probe for `rows` vs `columns`. ' +
       `\`mode:"${PG_QUERY_MODE.query}"\` (you passed \`sql\`): ` +

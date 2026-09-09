@@ -1852,6 +1852,33 @@ export function parseCli(argv) {
   return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs) };
 }
 
+/**
+ * Identify Vitest options that print CLI metadata instead of executing tests.
+ *
+ * A file route can still resolve successfully when one of these is forwarded: Vitest prints its
+ * help/version text, exits 0, and the router's file-count accounting would otherwise manufacture a
+ * `TEST_FILE_RESULT ... status=passed` marker for a run that executed no assertions. Keep this
+ * check on the router boundary so every caller (including the npm-forwarded and explicit `--`
+ * forms) gets the same NOT-MEASURED contract.
+ *
+ * @param {string[]} vitestArgs args forwarded after the router's file list
+ * @returns {string | null} the first non-verdict option, if any
+ */
+export function nonVerdictOptionFrom(vitestArgs) {
+  const args = vitestArgs ?? [];
+  return (
+    args.find(
+      (arg) =>
+        arg === '-h' ||
+        arg === '--help' ||
+        arg.startsWith('--help=') ||
+        arg === '-v' ||
+        arg === '--version' ||
+        arg.startsWith('--version='),
+    ) ?? null
+  );
+}
+
 function run(command, args, options) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
@@ -2369,6 +2396,16 @@ export async function main(
   const { dry, requireRan, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
+  const nonVerdictOption = nonVerdictOptionFrom(vitestArgs);
+  if (nonVerdictOption) {
+    console.error(
+      `TEST_FILE_NOT_MEASURED requested=${files.length} executed=0 matched=0 status=not-measured ` +
+        `reason=non-verdict-option option=${JSON.stringify(nonVerdictOption)} — Vitest printed CLI ` +
+        'metadata instead of executing tests; refusing to report a test verdict. ' +
+        'Remove the help/version option and rerun the same command.',
+    );
     return TEST_FILE_EXIT_NOT_MEASURED;
   }
 

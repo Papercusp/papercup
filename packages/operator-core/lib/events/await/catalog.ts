@@ -384,6 +384,16 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     // arms it alongside the other three by default — see events/sugar.ts).
     payloadFiltered: true,
   },
+  {
+    family: 'repair-admitted',
+    keyTemplate: 'gate:repair-admitted:<candidate>',
+    params: [{ name: 'candidate', required: true, describe: 'immutable frozen candidate sha' }],
+    describe:
+      'A confirmed release:repair-queue admission persisted a new repairHead and requested an immediate re-judge.',
+    emitter: 'repair admission reaction (packages/operator-core/lib/events/rules.ts)',
+    exists: true,
+    replacesPoll: 'the hourly system:green-checkpoint cron wait after release:repair-queue admit confirm',
+  },
   // ── Locks / plan runs ─────────────────────────────────────────────────────
   {
     family: 'lock',

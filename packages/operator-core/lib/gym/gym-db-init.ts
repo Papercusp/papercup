@@ -302,6 +302,9 @@ export async function provisionGymDatabase(opts: ProvisionGymDbOpts): Promise<{ 
   const mainSqlDir = opts.mainSqlDir ?? MAIN_SQL_DIR;
   const maint = postgres(opts.maintenanceUri, { max: 1, onnotice: () => {} });
   const targetLockName = `pc-gym-database-${opts.dbName}`;
+  const u = new URL(opts.maintenanceUri);
+  u.pathname = `/${opts.dbName}`;
+  const databaseUri = u.toString();
   try {
     // Serialize callers targeting the same DB, including a race between the
     // existence check and CREATE DATABASE. Different targets still clone in parallel.
@@ -311,21 +314,16 @@ export async function provisionGymDatabase(opts: ProvisionGymDbOpts): Promise<{ 
         const templateName = await getOrBuildGymTemplate(opts.maintenanceUri, mainSqlDir);
         await createDatabaseFromTemplate(maint, opts.dbName, templateName);
       }
+      // Keep the target lock until the repair/key-mint step completes too. This
+      // prevents two callers racing on an existing or just-cloned target's
+      // schema_migrations tracker.
+      await applyGymDatabaseContents(databaseUri, mainSqlDir, { premintKey: true });
     } finally {
       await maint.unsafe(`SELECT pg_advisory_unlock(hashtext('${targetLockName}'))`).catch(() => {});
     }
   } finally {
     await maint.end({ timeout: 5 });
   }
-
-  const u = new URL(opts.maintenanceUri);
-  u.pathname = `/${opts.dbName}`;
-  const databaseUri = u.toString();
-
-  // A cloned target already contains the complete schema; this is a quick tracker
-  // check plus a per-target signing key insert. Existing pre-template DBs retain
-  // the old idempotent repair path through applyPendingMigrations.
-  await applyGymDatabaseContents(databaseUri, mainSqlDir, { premintKey: true });
 
   return { databaseUri };
 }

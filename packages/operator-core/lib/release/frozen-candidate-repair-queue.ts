@@ -503,6 +503,14 @@ export interface FrozenCandidateRepairQueue {
    */
   admissions?: readonly FrozenRepairAdmission[];
   /**
+   * green-gate-zero-wait P-001: the newest admitted head the currently-running checkpoint
+   * process may not have seen. The admission writer persists this marker in the SAME row write
+   * that advances repairHead. A checkpoint clears it only after completing a pass at this exact
+   * head; a pass at an older head leaves it intact and self-refires in-process. Optional and
+   * additive so a pre-P-001 row keeps parsing and simply relies on the ordinary routine tick.
+   */
+  retestRequested?: FrozenRepairRetestRequest;
+  /**
    * P-021 (D-007 #1): the per-leg REPAIR MANIFEST derived from this row — subject paths, red /
    * admitted / green status, the exact admit command, leg claims. Rebuilt by
    * `withRepairManifest` inside the ONE production write path (`writeFrozenCandidateRepairQueue`),
@@ -580,6 +588,19 @@ export interface FrozenRepairAdmission {
    */
   provenance?: 'reconciled-from-ref';
 }
+
+/** Durable admission-to-checkpoint handoff. Identity is explicit so a stale process can never
+ * clear a request belonging to another frozen candidate or a newer repair head. */
+export interface FrozenRepairRetestRequest {
+  candidate: string;
+  repairHead: string;
+  requestedAtMs: number;
+}
+
+export type FrozenRepairRetestDecision =
+  | { kind: 'none'; queue: FrozenCandidateRepairQueue; request: null }
+  | { kind: 'settled'; queue: FrozenCandidateRepairQueue; request: FrozenRepairRetestRequest }
+  | { kind: 'refire'; queue: FrozenCandidateRepairQueue; request: FrozenRepairRetestRequest };
 
 /** Ledger cap: a runaway admission loop cannot grow the persisted queue without bound. The
  * NEWEST entries are kept — the ledger's job is "what is on the lineage now", and every
@@ -1132,6 +1153,30 @@ function validTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+/** Parse liveness metadata fail-soft: a malformed marker must not make the safety-critical
+ * frozen queue unreadable. Dropping it costs only the ordinary scheduled backstop. */
+function parseFrozenRepairRetestRequest(
+  value: unknown,
+  candidate: string,
+  updatedAtMs: number,
+): FrozenRepairRetestRequest | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (
+    row.candidate !== candidate ||
+    !nonBlank(row.repairHead) ||
+    !validTimestamp(row.requestedAtMs) ||
+    row.requestedAtMs > updatedAtMs
+  ) {
+    return undefined;
+  }
+  return {
+    candidate,
+    repairHead: row.repairHead,
+    requestedAtMs: row.requestedAtMs,
+  };
+}
+
 function parseDispatchReservation(value: unknown): FrozenRepairDispatchReservation | null | undefined {
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -1323,6 +1368,11 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   // and a spawn id) OR by an admission through the one door — an admitted fix from any agent
   // needs no fixer bookkeeping. A legacy row with no admissions keeps the old invariant exactly.
   const admissions = parseAdmissions(row.admissions);
+  const retestRequested = parseFrozenRepairRetestRequest(
+    row.retestRequested,
+    row.candidate,
+    row.updatedAtMs as number,
+  );
   if (row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') {
     const viaFixer = (row.attempts as number) >= 1 && nonBlank(row.fixerSpawnId);
     if (!viaFixer && admissions.length === 0) return null;
@@ -1393,6 +1443,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(legs.length > 0 ? { legs } : {}),
     ...(admissions.length > 0 ? { admissions } : {}),
+    ...(retestRequested ? { retestRequested } : {}),
     ...(manifest ? { manifest } : {}),
     failingTests: boundedFailures(typed.failingTests),
     signature: typed.signature,
@@ -1977,8 +2028,35 @@ export function markFrozenRepairAdmitted(
     phase,
     repairHead: entry.toRepairHead,
     admissions,
+    retestRequested: {
+      candidate: queue.candidate,
+      repairHead: entry.toRepairHead,
+      requestedAtMs: entry.atMs,
+    },
     updatedAtMs: Math.max(queue.updatedAtMs, entry.atMs),
   };
+}
+
+/**
+ * Settle the durable P-001 marker after one checkpoint pass.
+ *
+ * A pass at the requested head consumes the marker. A pass at any older/different head returns
+ * `refire` WITHOUT changing the row: the marker remains durable until the recursive pass really
+ * completes, so a crash between the decision and recursion cannot lose the wake. The CAS writer
+ * re-runs this reducer on conflict, which also preserves an admission that races the clear.
+ */
+export function settleFrozenRepairRetestRequest(
+  queue: FrozenCandidateRepairQueue,
+  judgedRepairHead: string,
+): FrozenRepairRetestDecision {
+  const request = queue.retestRequested;
+  if (!request) return { kind: 'none', queue, request: null };
+  if (request.repairHead !== judgedRepairHead) {
+    return { kind: 'refire', queue, request };
+  }
+  const { retestRequested: _settled, ...rest } = queue;
+  void _settled;
+  return { kind: 'settled', queue: rest, request };
 }
 
 /**

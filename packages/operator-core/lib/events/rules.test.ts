@@ -19,6 +19,13 @@ function createWorkItemEvent(
   return { tool: 'work_items:create', args: {}, result: { ok: true, data }, ctx: ctx(over) };
 }
 
+function repairAdmissionEvent(
+  args: Record<string, unknown>,
+  data: Record<string, unknown>,
+): ToolInvocationEvent {
+  return { tool: 'release:repair-queue', args, result: { ok: true, data }, ctx: ctx({}) };
+}
+
 describe('the defer→pane rule (D-008)', () => {
   it('is registered on coord:handoff', () => {
     const rules = reactionRulesFor('coord:handoff');
@@ -85,5 +92,46 @@ describe('the critical-work-item-alert rule (WI-5271)', () => {
       createWorkItemEvent({ ok: false, workItem: { id: 'EI-997', severity: 'critical' } }),
     );
     expect(actions.find((x) => x.ruleId === 'critical-work-item-alert')).toBeUndefined();
+  });
+});
+
+describe('P-001 confirmed repair admission reactions', () => {
+  const candidate = 'a'.repeat(40);
+  const repairHead = 'b'.repeat(40);
+  const persisted = {
+    ok: true,
+    admitted: true,
+    persisted: true,
+    target: { workspaceId: 'w1', installSlug: 'papercusp' },
+    movedRepairHead: { from: candidate, to: repairHead },
+    repairQueue: { candidate, repairHead },
+  };
+
+  it('fires both durable actions with the exact persisted candidate/head tuple', () => {
+    const actions = matchReactions(repairAdmissionEvent({ op: 'admit', confirm: true }, persisted));
+    const event = actions.find((action) => action.ruleId === 'gate:repair-admitted:event');
+    const rejudge = actions.find((action) => action.ruleId === 'gate:repair-admitted:rejudge');
+    expect(event).toMatchObject({
+      fire: 'events:emit',
+      args: {
+        event: `gate:repair-admitted:${candidate}`,
+        payload: { candidate, repairHead, installSlug: 'papercusp' },
+      },
+    });
+    expect(rejudge).toMatchObject({
+      fire: 'gate.rejudgeAdmittedRepair',
+      args: { candidate, repairHead, installSlug: 'papercusp' },
+    });
+  });
+
+  it('fires nothing for dry-runs, failed persistence, or already-admitted reads', () => {
+    const controls = [
+      repairAdmissionEvent({ op: 'admit', confirm: false }, persisted),
+      repairAdmissionEvent({ op: 'admit', confirm: true }, { ...persisted, ok: false, persisted: false }),
+      repairAdmissionEvent({ op: 'admit', confirm: true }, { ...persisted, admitted: false }),
+    ];
+    for (const event of controls) {
+      expect(matchReactions(event).filter((action) => action.ruleId.startsWith('gate:repair-admitted'))).toEqual([]);
+    }
   });
 });

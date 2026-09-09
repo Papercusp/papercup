@@ -26,6 +26,7 @@ import {
   markFrozenRepairVerificationRed,
   recordFrozenRepairLegMeasurement,
   recordFrozenRepairSupersededRed,
+  settleFrozenRepairRetestRequest,
   parseFrozenCandidateRepairQueue,
   parseFrozenCandidateRepairQueueRead,
   summarizeFrozenRepairConvergence,
@@ -483,6 +484,11 @@ describe('frozen-candidate repair queue', () => {
     });
     expect(admitted.updatedAtMs).toBe(T0 + 10 * 60 * 60 * 1_000);
     expect(admitted.fixerStateChangedAtMs).toBe(T0);
+    expect(admitted.retestRequested).toEqual({
+      candidate: C,
+      repairHead: C1,
+      requestedAtMs: T0 + 10 * 60 * 60 * 1_000,
+    });
 
     const dispatched = markFrozenRepairFixerDispatched(withLeg, {
       spawnId: 'fixer-1',
@@ -490,6 +496,41 @@ describe('frozen-candidate repair queue', () => {
     });
     // Dispatch is the real succession transition; bookkeeping before it must not move the clock.
     expect(dispatched.fixerStateChangedAtMs).toBe(T0 + 11 * 60 * 60 * 1_000);
+  });
+
+  it('P-001 round-trips the durable retest marker and settles it only after its exact head was judged', () => {
+    const admitted = markFrozenRepairAdmitted(fresh(), {
+      atMs: T0 + 1,
+      actor: 'su-fixer',
+      source: { ref: 'staging', sha: C1 },
+      fromRepairHead: C,
+      toRepairHead: C1,
+      paths: ['lib/a.test.ts'],
+      unchanged: [],
+      blobs: { 'lib/a.test.ts': 'blob-a' },
+    });
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(admitted)));
+    expect(parsed?.retestRequested).toEqual({
+      candidate: C,
+      repairHead: C1,
+      requestedAtMs: T0 + 1,
+    });
+
+    const stalePass = settleFrozenRepairRetestRequest(parsed!, C);
+    expect(stalePass.kind).toBe('refire');
+    expect(stalePass.queue).toBe(parsed);
+    expect(stalePass.queue.retestRequested?.repairHead).toBe(C1);
+
+    const requestedPass = settleFrozenRepairRetestRequest(parsed!, C1);
+    expect(requestedPass.kind).toBe('settled');
+    expect(requestedPass.queue.retestRequested).toBeUndefined();
+
+    const malformed = parseFrozenCandidateRepairQueue({
+      ...admitted,
+      retestRequested: { candidate: 'wrong-candidate', repairHead: C1, requestedAtMs: T0 + 1 },
+    });
+    expect(malformed).not.toBeNull();
+    expect(malformed?.retestRequested).toBeUndefined();
   });
 
   it('P-003 preserves the dedicated clock through JSONB round-trip and falls back for legacy rows', () => {
