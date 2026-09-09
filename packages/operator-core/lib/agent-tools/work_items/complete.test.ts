@@ -1859,9 +1859,12 @@ describe('work_items:complete (keyed-array)', () => {
         landedState: 'resolved',
         completion: { summary: 'superseded by the canonical item', duplicateOf: 'EI-survivor' },
       },
-    ])('does not pass $label through the behavior gate', async ({ state, landedState, completion }) => {
+    ])('does not pass $label through the behavior gate', async ({ label, state, landedState, completion }) => {
       getWorkItem.mockResolvedValue(linkedIssue);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedIssue, state: landedState }));
+      if (label === 'a duplicate close') {
+        resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: 'papercup#EI-survivor' });
+      }
 
       const r = await one({ id: 'WI-101', state, completion });
 
@@ -2093,7 +2096,7 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'WI-101',
         state: 'resolved',
-        completion: { summary: 'fixed' },
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
         specAdequacy,
       });
 
@@ -4990,6 +4993,30 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completionAuthority).toBe('committed');
       expect(r.countsTowardBurnDown).toBe(true);
       expect(r.authorityWarning).toBeUndefined();
+    });
+
+    it('does not call an authority-changing replay idempotent', async () => {
+      const replayed = { ...item, id: 'WI-1', family: 'issue', state: 'open', completionAuthority: 'committed' };
+      getWorkItem.mockResolvedValue(replayed);
+      setWorkItemStateWithAliasInfo.mockResolvedValue({
+        ...okState({ ...replayed, state: 'done', completionAuthority: 'proposed' }),
+        workItem: { ...replayed, state: 'done', completionAuthority: 'proposed' },
+      });
+
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'replayed the stored completion', verifiedHow: 'unit', testResult: '26/26 green' },
+      });
+
+      expect(r.completionAuthority).toBe('proposed');
+      expect(r.authorityWarning).toMatch(/authority:'proposed'/);
+      expect(r.finish).toMatchObject({
+        complete: true,
+        idempotent: false,
+        retrySafe: true,
+        authorityChanged: true,
+      });
     });
 
     it('verifiedHow + testsRun also lands `committed` (either half of the test pair qualifies)', async () => {

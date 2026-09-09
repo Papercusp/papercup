@@ -138,6 +138,7 @@ import {
   countsTowardBurnDown,
   insufficientEvidenceReason,
   reconcileStampedAuthority,
+  type CompletionAuthorityFrom,
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
 import {
@@ -2130,7 +2131,12 @@ interface FinishPlanStamp {
 }
 
 export interface FinishWorkReceipt {
-  idempotent: true;
+  /** True when the finish replay did not change an existing completion authority. */
+  idempotent: boolean;
+  /** Finish-side effects remain safe to retry even when authority was re-evaluated. */
+  retrySafe: true;
+  /** Whether this close changed a previously judged authority. */
+  authorityChanged: boolean;
   complete: boolean;
   workItemState: string;
   completionEvidenceStored: boolean;
@@ -2195,6 +2201,10 @@ export async function synchronizeFinishWork(
     id: string;
     workItem: Record<string, unknown>;
     completionEvidenceStored: boolean;
+    /** Authority on the row before this close/replay; omitted by direct finish callers. */
+    completionAuthorityBefore?: CompletionAuthorityFrom;
+    /** Authority read from the row after this close/replay; omitted by direct finish callers. */
+    completionAuthorityAfter?: CompletionAuthorityFrom;
     ctx: UnifiedToolContext;
   },
   deps: {
@@ -2210,6 +2220,16 @@ export async function synchronizeFinishWork(
   const reflected = reflectedTerminalStatus(state);
   const stamp = finishPlanStamp(opts.workItem);
   const errors: string[] = [];
+  // A first close stamps authority from the legacy/null baseline and remains an
+  // idempotent finish operation. A replay that changes an existing judgement is
+  // different: callers must not read `idempotent:true` as proof that the durable
+  // completion was unchanged (EI-22421597152864352). Keep retry safety explicit
+  // below so the finish legs remain safely repeatable without hiding this change.
+  const authorityChanged =
+    opts.completionAuthorityBefore !== undefined &&
+    opts.completionAuthorityAfter !== undefined &&
+    opts.completionAuthorityBefore !== null &&
+    opts.completionAuthorityBefore !== opts.completionAuthorityAfter;
 
   let checkpointCleared = false;
   try {
@@ -2315,7 +2335,9 @@ export async function synchronizeFinishWork(
     planItem !== 'failed' &&
     claimRelease !== 'failed';
   return {
-    idempotent: true,
+    idempotent: !authorityChanged,
+    retrySafe: true,
+    authorityChanged,
     complete,
     workItemState: state,
     completionEvidenceStored: opts.completionEvidenceStored,
@@ -4231,12 +4253,14 @@ async function completeOne(
         id: it.id,
         workItem: workItem as unknown as Record<string, unknown>,
         completionEvidenceStored: true,
+        completionAuthorityBefore: existing.completionAuthority ?? null,
+        completionAuthorityAfter: workItem?.completionAuthority ?? completionAuthority ?? null,
         ctx,
       })
     : undefined;
   const finishFailed = Boolean(finish && !finish.complete);
   const finishFailure = finishFailed
-    ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. Re-call the SAME completion; finish is idempotent and resumes the missing legs.`
+    ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. Re-call the SAME completion; finish legs are retry-safe and resume the missing legs.`
     : undefined;
 
   // EI-19312103118112942: a fleet drain member's confirmed failure mode is treating
