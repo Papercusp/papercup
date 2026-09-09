@@ -233,6 +233,7 @@ export async function synchronizeAcceptanceBarRevision(
     rubricSlug: string;
     rubricRevision: number;
     templateData: unknown;
+    previousTemplateData?: unknown;
     actorId: string;
   },
 ): Promise<Map<string, number>> {
@@ -241,6 +242,10 @@ export async function synchronizeAcceptanceBarRevision(
     return new Map();
   }
   const data = parsed.data;
+  const previous = rubricTemplateDataAuthoringSchema.safeParse(args.previousTemplateData);
+  const previousByKey = new Map(previous.success && previous.data.subjectPlan === data.subjectPlan
+    ? previous.data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion])
+    : []);
   const subjectPlan = data.subjectPlan!;
   // Generic METHOD writers already hold the rubric lock. Never wait while
   // acquiring their second lock: refusal rolls back instead of deadlocking a
@@ -288,6 +293,7 @@ export async function synchronizeAcceptanceBarRevision(
      ORDER BY c.spec_id LIMIT 1001`;
   if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
   const { acceptanceBarBehaviorClass } = await import('./acceptance-bar-seed');
+  const { computeAcceptanceBarHash } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const revisions = new Map<string, number>();
   const missing = data.criteria.filter(
@@ -377,25 +383,38 @@ export async function synchronizeAcceptanceBarRevision(
     if (!criterion?.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
     }
-    // A metadata/METHOD revision refreshes provenance, not the author's atomic
-    // contract. Replacing it with the parent BAR would discard its narrower
-    // behavior and falsifier while leaving the replacement marked accepted.
+    // METHOD and test-layer changes do not replace an author's atomic behavior.
+    // Verify the old canonical BAR matches this clause, then compare with only
+    // the layer field restored. All other meaning fields remain hash-checked.
+    // Comparing whole hashes alone erased reviewed scenarios and causal pairs
+    // whenever an approved amendment changed proof depth (EI-22755746610403259).
     const unchangedBar = clause.source_bar_hash === criterion.barHash;
+    const prior = previousByKey.get(clause.source_bar_key);
+    const layersOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
+      computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers }) === clause.source_bar_hash;
+    const preserveRefinements = unchangedBar || layersOnly;
+    // Replace the parent's layer requirements while retaining any extra layers
+    // authored on this atomic clause. This also respects an approved removal.
+    const requiredTestLayers = unchangedBar ? clause.required_test_layers : layersOnly
+      ? [...new Set([
+          ...clause.required_test_layers.filter((layer) => !prior!.requiredTestLayers?.includes(layer)),
+          ...(criterion.requiredTestLayers ?? []),
+        ])]
+      : criterion.requiredTestLayers ?? clause.required_test_layers;
     const result = await setSpecClause({
       planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
-      behavior: unchangedBar ? clause.behavior : criterion.model!,
-      behaviorClass: unchangedBar
+      behavior: preserveRefinements ? clause.behavior : criterion.model!,
+      behaviorClass: preserveRefinements
         ? clause.behavior_class
         : acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
-      requiredEvidence: unchangedBar ? clause.required_evidence
+      requiredEvidence: preserveRefinements ? clause.required_evidence
         : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
-      requiredTestLayers: unchangedBar ? clause.required_test_layers
-        : criterion.requiredTestLayers ?? clause.required_test_layers, mutationRequired: clause.mutation_required,
+      requiredTestLayers, mutationRequired: clause.mutation_required,
       lifecycleStatus: clause.lifecycle_status, exemption: clause.exemption,
       supersedes: clause.supersedes_spec_id && clause.supersedes_revision
         ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,
-      falsifier: unchangedBar ? clause.falsifier : { observation: criterion.driftMarkers! },
+      falsifier: preserveRefinements ? clause.falsifier : { observation: criterion.driftMarkers! },
       acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${clause.source_bar_key}`,
       sourceBar: { barKey: clause.source_bar_key, barHash: criterion.barHash,
         barSetHash: data.barSetHash, rubricSlug: args.rubricSlug,
