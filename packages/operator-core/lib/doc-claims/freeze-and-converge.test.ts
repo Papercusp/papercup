@@ -61,6 +61,7 @@ function routeViolations(body: string): string[] {
   ];
 }
 const QUEUE = join(ROOT, 'packages/operator-core/lib/release/frozen-candidate-repair-queue.ts');
+const CHECKPOINT_RUN = join(ROOT, 'packages/operator-core/lib/agent-tools/release/checkpoint-run.ts');
 // P-001 / D-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ONE door a
 // fix enters the frozen lineage through. `converge-repair-head.ts` (the fast-forward plan) is
 // gone; what remains of it is the read-only containment probe in `judged-sha-containment.ts`.
@@ -127,6 +128,24 @@ describe('the live claim', () => {
     // The prose half of the pair: if this wording goes, CLAUDE.md's claim has lost its
     // in-code counterpart and the next reader has only the doc to trust.
     expect(readFileSync(QUEUE, 'utf8')).toMatch(/immutable/i);
+  });
+
+  it('the checkpoint-run guidance distinguishes frozen-queue resume from a no-queue quiet cut', () => {
+    const section = frozenSection(readCorpus());
+    const checkpointRun = readFileSync(CHECKPOINT_RUN, 'utf8');
+    const queue = readFileSync(QUEUE, 'utf8');
+
+    // A manual run is queue-aware now: claiming every run cuts at tip would send agents to the
+    // old treadmill and contradict the exact candidate the detached writer is given.
+    expect(section).toMatch(/when a frozen queue\s+exists, it applies the queue policy and resumes the exact frozen lineage/i);
+    expect(section).toMatch(/`ready-to-test` uses\s+`queue\.candidate`; `ready-to-verify` uses\s+`queue\.repairHead`/);
+    expect(section).toMatch(/Only when no frozen queue exists does it cut a fresh candidate from the current quiet\s+cut at tip/i);
+
+    // Positive controls: the source files named by the prose implement both halves.
+    expect(checkpointRun).toMatch(/assessFrozenRepairQueuePreflight/);
+    expect(checkpointRun).toMatch(/candidateSource/);
+    expect(queue).toMatch(/queue\.phase === 'ready-to-verify'/);
+    expect(queue).toMatch(/candidate: queue\.repairHead/);
   });
 });
 

@@ -6,6 +6,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { installFlagOverrideStore } from '../../packages/operator-core/lib/flag-override-store.ts';
 import { productionDreamCycle } from '../../packages/operator-core/lib/dream/dream-cycle-action.ts';
 import { dreamEvaluationProtocolHash, DreamPilotPinSchema } from '../../packages/operator-core/lib/dream/dream-evaluation.ts';
+import { rerankCapabilityPriors } from '../../packages/operator-core/lib/dream/capability-review.ts';
+
+// This standalone driver does not inherit the operator service's environment.
+// A fresh in-process model can miss the review deadline after generation is paid.
+// Require the operator's configured local sidecar and prove readiness before any write.
+const sidecar = process.env.PAPERCUSP_EMBED_SIDECAR_URL;
+if (!sidecar || !/^http:\/\/(127\.0\.0\.1|localhost):[0-9]+\/?$/.test(sidecar))
+  throw new Error('D017 study requires PAPERCUSP_EMBED_SIDECAR_URL from the local operator service before any settings change or paid call');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -58,6 +66,21 @@ const used = totals.find(row => row.arm === arm);
 if ((used?.attempts ?? 0) >= frozen.protocol.limits.attemptsPerArm ||
     (used?.cost ?? 0) + frozen.protocol.limits.cycleUsd > frozen.protocol.limits.discoveryUsdPerArm)
   throw new Error('Arm attempt or conservative monetary admission cap reached');
+// Replay the actual bounded source set from the failed review, without repeating
+// its generation or changing the study record. Keep original failures in the funnel.
+const [readiness] = await sql<Array<{ review: any; outcome: any }>>`
+  SELECT review, outcome FROM harness_shared.dream_runs
+   WHERE workspace_id = ${workspaceId}
+     AND run_id = 'dream-cycle:papercusp-workspace:papercusp:edd8d09c-5088-4ed8-b567-7bb6a3b917bf:dream:1'`;
+if (!readiness?.review?.priorMatches?.length || !readiness?.outcome?.insight?.capability)
+  throw new Error('D017 rerank readiness evidence is missing');
+const candidate = readiness.outcome.insight.capability;
+const ranked = await rerankCapabilityPriors(candidate.behavior + '\n' + candidate.priorArt.proposedDelta, readiness.review.priorMatches);
+await log({ phase: 'rerank-readiness', outcome: ranked.outcome, expected: readiness.review.priorMatches.length });
+if (!ranked.outcome.attempted || ranked.outcome.scored !== readiness.review.priorMatches.length) {
+  await sql.end();
+  throw new Error('D017 reranker is not ready; no settings changed and no provider called');
+}
 await log({ phase: 'prepared', arm, protocolPin: frozen.pin, masterEnabled: false, priorStudyArms: totals });
 if (!process.argv.includes('--run')) {
   await log({ phase: 'dry-run', message: 'No settings changed and no provider called. Pass --run for one governed attempt.' });
@@ -103,4 +126,3 @@ try {
   if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Study restoration needs immediate attention');
 }
 process.exit(0);
-

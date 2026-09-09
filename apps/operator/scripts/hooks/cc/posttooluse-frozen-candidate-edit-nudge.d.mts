@@ -103,18 +103,28 @@ export function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, t
     unknownOperation: boolean;
     inserted?: undefined;
     inner?: undefined;
+    transportFailure?: undefined;
 } | {
     recorded: boolean;
     inserted: boolean;
     inner: any;
     detail?: undefined;
     unknownOperation?: undefined;
+    transportFailure?: undefined;
 } | {
     recorded: boolean;
     detail: any;
     inner: any;
     unknownOperation: boolean;
     inserted?: undefined;
+    transportFailure?: undefined;
+} | {
+    recorded: boolean;
+    detail: string;
+    unknownOperation: boolean;
+    transportFailure: boolean;
+    inserted?: undefined;
+    inner?: undefined;
 }>;
 import { execFileSync } from 'node:child_process';
 /** Result-door spill files contain a magic line, a manifest, then JSON payload. */

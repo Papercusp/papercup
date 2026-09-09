@@ -39,10 +39,11 @@
 //     below must agree with the gate's own (`frozen-candidate-repair-queue.ts`,
 //     `frozen-repair-edit-ledger.ts`); `frozen-repair-edit-hook-parity.test.ts` imports both
 //     sides and fails the build if they ever diverge.
-//   - FAILS OPEN on every internal error, including a ledger write the operator refuses or
-//     cannot reach (e.g. :3070 still serving a release without `record-edit`). The nudge
-//     then says the hunks were NOT recorded, so the agent knows admission will need
-//     `wholeBlob:true, reason` rather than believing it is covered.
+//   - FAILS OPEN after bounded recovery on every internal error. A transport failure on the
+//     primary operator is retried through the request-only staging operator (`:3170`) because
+//     both doors write the same idempotent ledger key; an application refusal remains
+//     authoritative and is never rerouted. If both doors refuse or cannot be reached, the
+//     nudge says the hunks were NOT recorded, so admission needs `wholeBlob:true, reason`.
 //   - `--self-test` runs the embedded cases (no stdin, no network) and exits non-zero on failure.
 //
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -531,6 +532,7 @@ async function recordAtOperatorUrl({
       recorded: false,
       detail: err?.name === 'TimeoutError' ? 'operator timeout' : String(err?.message ?? err).slice(0, 120),
       unknownOperation: false,
+      transportFailure: true,
     };
   }
 }
@@ -552,15 +554,18 @@ export async function recordOneHunk({ operatorUrl, token, owner, marker, path, h
     atMs,
     fetchImpl,
   });
+  const hasStableToolUseId = typeof toolUseId === 'string' && toolUseId.trim().length > 0;
   if (
     !primary.recorded &&
-    primary.unknownOperation &&
+    (primary.unknownOperation || primary.transportFailure) &&
+    hasStableToolUseId &&
     normalizedOperatorOrigin(operatorUrl) !== normalizedOperatorOrigin(STAGING_OPERATOR_URL)
   ) {
     // A release operator can legitimately be older than the hook's record-edit
-    // protocol. Only that explicit unknown-op/unknown-tool response may cross
-    // the two-port boundary; ordinary refusals and transport failures stay
-    // authoritative and must not be retried as a different write.
+    // protocol, and the primary operator/proxy can transiently be unreachable.
+    // The ledger key is idempotent, so retry those two transport/protocol cases
+    // through staging. Ordinary application refusals stay authoritative and must
+    // not be retried as a different write.
     return recordAtOperatorUrl({
       operatorUrl: STAGING_OPERATOR_URL,
       token,

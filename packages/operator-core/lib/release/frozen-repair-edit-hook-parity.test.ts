@@ -324,6 +324,48 @@ describe('P-019 record-edit transport parsing and fallback', () => {
     expect(new URL(calls[1]).port).toBe('3170');
   });
 
+  it('falls back from a release transport failure to staging and records the hunk', async () => {
+    const calls: string[] = [];
+    const result = await recordOneHunk({
+      ...recordArgs,
+      operatorUrl: 'http://127.0.0.1:3070',
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        calls.push(url);
+        if (calls.length === 1) {
+          throw new TypeError('fetch failed: ECONNREFUSED');
+        }
+        return new Response(rpcResult({ ok: true, recorded: true, ledgerId: 24 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+
+    expect(result.recorded).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[0]).port).toBe('3070');
+    expect(new URL(calls[1]).port).toBe('3170');
+  });
+
+  it('does not retry a transport failure when the hook has no stable tool-use key', async () => {
+    const calls: string[] = [];
+    const result = await recordOneHunk({
+      ...recordArgs,
+      toolUseId: '',
+      operatorUrl: 'http://127.0.0.1:3070',
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        calls.push(url);
+        throw new TypeError('fetch failed: ECONNREFUSED');
+      },
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0]).port).toBe('3070');
+  });
+
   it('does not fall back for an ordinary refusal', async () => {
     const calls: string[] = [];
     const result = await recordOneHunk({
