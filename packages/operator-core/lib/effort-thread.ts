@@ -137,7 +137,10 @@ export async function postEffortNote(input: EffortNoteInput): Promise<EffortNote
   }
 }
 
-/** Read a plan's or goal's own thread, newest LAST (matching work-item thread windows). */
+/** Read a plan's or goal's own thread, newest LAST (matching work-item thread windows).
+ * Store failures must reject: rollup callers turn them into scoped unknowns and
+ * recovery actions. Returning [] here would make an unreadable lesson look absent.
+ */
 export async function readEffortThread(
   target: ContainmentRef,
   limit = 25,
@@ -148,15 +151,11 @@ export async function readEffortThread(
   }
   const ws = resolveConcreteWorkspaceId(workspaceId);
   if (!ws || !target.ref) return [];
-  try {
-    const store = storeFor(ws);
-    const thread = await store.getThreadByParent(effortObjectRef(target));
-    if (!thread) return [];
-    const window = await store.listRecentPosts(thread.thread_id, Math.max(1, limit));
-    return window.posts;
-  } catch {
-    return [];
-  }
+  const store = storeFor(ws);
+  const thread = await store.getThreadByParent(effortObjectRef(target));
+  if (!thread) return [];
+  const window = await store.listRecentPosts(thread.thread_id, Math.max(1, limit));
+  return window.posts;
 }
 
 /**

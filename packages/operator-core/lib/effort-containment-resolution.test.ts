@@ -24,6 +24,8 @@ const commentWorkItem = vi.hoisted(() => vi.fn());
 const setCarryNoteWithPrior = vi.hoisted(() => vi.fn());
 const addPost = vi.hoisted(() => vi.fn());
 const getOrCreateThread = vi.hoisted(() => vi.fn());
+const getThreadByParent = vi.hoisted(() => vi.fn());
+const listRecentPosts = vi.hoisted(() => vi.fn());
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
@@ -59,6 +61,8 @@ vi.mock('@papercusp/coordination/capabilities', async (orig) => ({
   PgThreadStore: class {
     getOrCreateThread = getOrCreateThread;
     addPost = addPost;
+    getThreadByParent = getThreadByParent;
+    listRecentPosts = listRecentPosts;
   },
 }));
 
@@ -67,7 +71,7 @@ import {
   OMITTED_DESCENDANT_REF_CAP,
   resolveContainmentTree,
 } from './containment-tree';
-import { effortObjectRef, postLearnedAtLevel } from './effort-thread';
+import { effortObjectRef, postLearnedAtLevel, readEffortThread } from './effort-thread';
 import { setWorkItemCheckpointWithPrior } from './work-item-checkpoint';
 
 const WS = 'ws-effort-test';
@@ -97,6 +101,8 @@ beforeEach(() => {
   commentWorkItem.mockReset();
   addPost.mockReset();
   getOrCreateThread.mockReset();
+  getThreadByParent.mockReset();
+  listRecentPosts.mockReset();
   setCarryNoteWithPrior.mockReset();
 });
 
@@ -395,6 +401,26 @@ describe('resolution failure is never a failed claim', () => {
 // ── P-017: the write attaches at the level asked for, or the nearest it HAS ─────
 
 describe('capture level resolution (P-017 / D-009)', () => {
+  it.each(['plan', 'goal'] as const)('preserves %s thread read failures for the caller to report unknown', async (kind) => {
+    const target = { kind, ref: 'capture-history', harness: 'papercusp' };
+    const failure = new Error('effort history store unavailable');
+    getThreadByParent.mockRejectedValueOnce(failure);
+    await expect(readEffortThread(target, 25, WS)).rejects.toBe(failure);
+
+    getThreadByParent.mockResolvedValueOnce({ thread_id: 'captured-thread' });
+    listRecentPosts.mockRejectedValueOnce(failure);
+    await expect(readEffortThread(target, 25, WS)).rejects.toBe(failure);
+
+    // The positive controls separate an unreadable thread from honest absence
+    // and show that a retry uses the same reader rather than inventing a lesson.
+    getThreadByParent.mockResolvedValueOnce(null);
+    await expect(readEffortThread(target, 25, WS)).resolves.toEqual([]);
+    const posts = [{ id: 1, body: 'False premise: the lesson was absent. Residue: verify recovery.' }];
+    getThreadByParent.mockResolvedValueOnce({ thread_id: 'captured-thread' });
+    listRecentPosts.mockResolvedValueOnce({ posts });
+    await expect(readEffortThread(target, 25, WS)).resolves.toEqual(posts);
+  });
+
   it('writes at the item by default — the level 94% of work actually has', async () => {
     commentWorkItem.mockResolvedValue({ post_id: 'post-1' });
     const res = await postLearnedAtLevel({

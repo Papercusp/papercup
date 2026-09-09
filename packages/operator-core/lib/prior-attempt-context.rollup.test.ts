@@ -168,6 +168,49 @@ afterEach(() => {
 });
 
 describe('plan history production projection', () => {
+  it.each(['plan', 'goal', 'child-plan'] as const)('keeps failed %s learned-history reads unknown and recovers through the same reader', async (kind) => {
+    const goalTarget = { kind: 'goal' as const, ref: 'goal-history' };
+    if (kind !== 'plan') {
+      reads.tree.mockResolvedValue({
+        ...tree(0),
+        root: { ...goalTarget, depth: 0 },
+        descendants: kind === 'child-plan'
+          ? [{ kind: 'plan', ref: 'plan-child', harness: 'papercusp', depth: 1 }]
+          : [],
+      });
+    } else reads.tree.mockResolvedValue(tree(0));
+    const deps = dependencies();
+    const failedRef = kind === 'plan' ? target.ref : kind === 'goal' ? goalTarget.ref : 'plan-child';
+    reads.thread.mockImplementation(async (ref: { ref: string }) => {
+      if (ref.ref === failedRef) throw new Error('stored effort history unavailable');
+      return [];
+    });
+    const read = () => kind === 'plan'
+      ? readPlanHistoryContext(target.ref, target.harness, opts => getContainmentRollupBrief(opts, deps as never))
+      : readGoalHistoryContext(goalTarget.ref, opts => getContainmentRollupBrief(opts, deps as never));
+    const failed = await read();
+    expect(failed.status).toBe('unknown');
+    expect(failed.brief?.degradedSources).toContain(
+      kind === 'child-plan' ? 'plan-thread:plan-child' : `${kind}-thread`,
+    );
+    expect(failed.recovery).toEqual(kind === 'plan'
+      ? { tool: 'plans:get', args: { slug: target.ref, harness: target.harness, heading: 'History' } }
+      : { tool: 'goals:get', args: { id: goalTarget.ref, detail: 'full' } });
+
+    reads.thread.mockResolvedValue([{
+      id: 'recovered-note',
+      body: 'False premise: history was empty. Root cause: the thread read failed. Residue: verify the next depth.',
+      created_ts: '2026-09-07T00:00:00Z',
+      author_id: 'su-test',
+    }]);
+    const recovered = await read();
+    expect(recovered.status).toBe('available');
+    expect(recovered.brief?.degradedSources).toEqual([]);
+    expect(JSON.stringify(recovered)).toContain('history was empty');
+    expect(JSON.stringify(recovered)).toContain(`#comment:recovered-note`);
+    expect(recovered.recovery).toEqual(failed.recovery);
+  });
+
   it('delivers the plan and child lessons from one bounded tree read', async () => {
     const deps = dependencies();
     const history = await readPlanHistoryContext(target.ref, target.harness, (opts) =>
