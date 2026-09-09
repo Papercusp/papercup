@@ -1975,6 +1975,14 @@ export async function dispatchScriptedToolWithoutCatalog(
  * socket-down window. Retrying the connection is safe because no tool has been
  * dispatched yet; never extend this to a tools/call transport failure, whose
  * mutation status is ambiguous.
+ * @template T
+ * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
+ * @param {string} operatorUrl
+ * @param {object} scope
+ * @param {{maxAttempts?: number, retryDelayMs?: number, attemptTimeoutMs?: number,
+ * totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>, rand?: () => number,
+ * retryJitterMs?: number, rediscover?: (() => string | null) | null,
+ * onRebase?: ((url: string) => void) | null}} [options]
  */
 export async function connectWithLocalRetry(
   connectOnce,
@@ -2354,7 +2362,14 @@ async function connect(operatorUrl, { workspace, harness, tokenFile, transport: 
   return client;
 }
 
-/** List every tool, following pagination if the server returns a cursor. */
+/**
+ * List every tool, following pagination if the server returns a cursor.
+ * @param {{listTools: (params?: {cursor?: string}, options?: {timeout?: number,
+ * maxTotalTimeout?: number}) => Promise<{tools?: ToolCatalogEntry[], nextCursor?: string}>}} client
+ * @param {{timeoutMs?: number, retryLocalErrors?: boolean, maxAttempts?: number,
+ * retryDelayMs?: number, totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>,
+ * rand?: () => number, retryJitterMs?: number}} [options]
+ */
 export async function listAllTools(
   client,
   {

@@ -999,7 +999,7 @@ describe('ptool serviceOf / groupTools', () => {
     ];
     const g = groupTools(tools);
     expect([...g.keys()]).toEqual(['coord', 'harness']);
-    expect(g.get('harness').map((t) => t.name)).toEqual(['harness:list', 'harness:status']);
+    expect(g.get('harness')?.map((t) => t.name)).toEqual(['harness:list', 'harness:status']);
   });
 });
 

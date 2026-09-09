@@ -1,3 +1,5 @@
+// Real sockets, packaged adapters and an installed runtime: this proof belongs
+// to the integration layer required by SPEC-UDS-005-01, not the pure unit lane.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';

@@ -478,16 +478,27 @@ export function dispatchScriptedToolWithoutCatalog(client: any, toolName: any, c
  * socket-down window. Retrying the connection is safe because no tool has been
  * dispatched yet; never extend this to a tools/call transport failure, whose
  * mutation status is ambiguous.
+ * @template T
+ * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
+ * @param {string} operatorUrl
+ * @param {object} scope
+ * @param {{maxAttempts?: number, retryDelayMs?: number, attemptTimeoutMs?: number,
+ * totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>, rand?: () => number,
+ * retryJitterMs?: number, rediscover?: (() => string | null) | null,
+ * onRebase?: ((url: string) => void) | null}} [options]
  */
-export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rand, retryJitterMs, rediscover, onRebase, }?: {
-    maxAttempts?: number | undefined;
-    retryDelayMs?: number | undefined;
-    totalTimeoutMs?: number | undefined;
-    sleep?: ((ms: any) => Promise<any>) | undefined;
-    rand?: (() => number) | undefined;
-    retryJitterMs?: number | undefined;
-    rediscover?: null | undefined;
-    onRebase?: null | undefined;
+export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: object, options?: {
+    timeoutMs: number;
+}) => Promise<T>, operatorUrl: string, scope: object, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rand, retryJitterMs, rediscover, onRebase, }?: {
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    attemptTimeoutMs?: number;
+    totalTimeoutMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    rand?: () => number;
+    retryJitterMs?: number;
+    rediscover?: (() => string | null) | null;
+    onRebase?: ((url: string) => void) | null;
 }): Promise<any>;
 /**
  * One short token per failed connect attempt, for the attempt-history suffix.
@@ -557,13 +568,33 @@ export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, 
     totalMs?: number | undefined;
     intervalMs?: number | undefined;
 }): Promise<any>;
-/** List every tool, following pagination if the server returns a cursor. */
-export function listAllTools(client: any, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, }?: {
-    timeoutMs?: number | undefined;
-    retryLocalErrors?: boolean | undefined;
-    maxAttempts?: number | undefined;
-    retryDelayMs?: number | undefined;
-    totalTimeoutMs?: number | undefined;
+/**
+ * List every tool, following pagination if the server returns a cursor.
+ * @param {{listTools: (params?: {cursor?: string}, options?: {timeout?: number,
+ * maxTotalTimeout?: number}) => Promise<{tools?: ToolCatalogEntry[], nextCursor?: string}>}} client
+ * @param {{timeoutMs?: number, retryLocalErrors?: boolean, maxAttempts?: number,
+ * retryDelayMs?: number, totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>,
+ * rand?: () => number, retryJitterMs?: number}} [options]
+ */
+export function listAllTools(client: {
+    listTools: (params?: {
+        cursor?: string;
+    }, options?: {
+        timeout?: number;
+        maxTotalTimeout?: number;
+    }) => Promise<{
+        tools?: ToolCatalogEntry[];
+        nextCursor?: string;
+    }>;
+}, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, }?: {
+    timeoutMs?: number;
+    retryLocalErrors?: boolean;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    totalTimeoutMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    rand?: () => number;
+    retryJitterMs?: number;
 }): Promise<any[]>;
 /** The live stdout delivery-failure probe (injectable in printResult for tests).
  *  Node SWALLOWS EPIPE on process.stdout by design: when the consumer of a
