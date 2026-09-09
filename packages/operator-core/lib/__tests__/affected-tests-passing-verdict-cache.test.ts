@@ -365,6 +365,27 @@ describe('gate wiring safety contract', () => {
     expect(AFFECTED_TESTS_SRC).toContain('formatPassingTaskVerdictSummary(');
   });
 
+  // AUTO-BAR-R-8 identity drift guard: changing either the cache version or the checkout-root
+  // scope can make a verdict earned by one tree or environment appear valid in another. The
+  // filename is the durable identity boundary, so pin both pieces of that expression here.
+  it('pins the passing-task cache filename to its version and checkout-root scope', () => {
+    const rootScopeStart = AFFECTED_TESTS_SRC.indexOf('const TASK_VERDICT_CACHE_ROOT_SCOPE =');
+    const cachePathStart = AFFECTED_TESTS_SRC.indexOf('const TASK_VERDICT_CACHE_PATH =');
+    const cachePathEnd = AFFECTED_TESTS_SRC.indexOf('const taskVerdictCacheRead =', cachePathStart);
+
+    expect(rootScopeStart).toBeGreaterThan(-1);
+    expect(cachePathStart).toBeGreaterThan(rootScopeStart);
+    expect(cachePathEnd).toBeGreaterThan(cachePathStart);
+
+    const rootScopeSource = AFFECTED_TESTS_SRC.slice(rootScopeStart, cachePathStart);
+    const cachePathSource = AFFECTED_TESTS_SRC.slice(cachePathStart, cachePathEnd);
+    expect(rootScopeSource).toContain('.update(ROOT)');
+    expect(rootScopeSource).toContain(".digest('hex')");
+    expect(cachePathSource).toContain(
+      '`papercusp-affected-passing-verdicts-v2-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json`',
+    );
+  });
+
   it('persists a validated clean first pass from the task-settlement callback', () => {
     const persist = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
     // Anchor on the ASSIGNMENT, not the declaration: the contract is that the persist
