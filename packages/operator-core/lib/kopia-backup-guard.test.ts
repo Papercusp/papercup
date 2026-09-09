@@ -168,7 +168,7 @@ describe('Kopia global backup guard', () => {
     const installedGuard = join(dir, 'installed-guard.sh');
     const ready = join(dir, 'ready');
     const source = readFileSync(guard, 'utf8');
-    const commandTail = '"$@" &';
+    const commandTail = '"$@" 9>&- &';
     expect(source).toContain(commandTail);
 
     // Make the still-unparsed tail much larger than Bash's read buffer. A
@@ -179,7 +179,7 @@ describe('Kopia global backup guard', () => {
       { length: 8_192 },
       (_, index) => `: # LIVE_SOURCE_PAD_${index.toString().padStart(5, '0')}\n`,
     ).join('');
-    const paddedSource = source.replace(commandTail, `"$@" &\n${padding}child_pid=$!`);
+    const paddedSource = source.replace(commandTail, `"$@" 9>&- &\n${padding}child_pid=$!`);
     const mutationOffset = paddedSource.lastIndexOf(': # LIVE_SOURCE_PAD_');
     expect(mutationOffset).toBeGreaterThan(0);
 
@@ -424,6 +424,56 @@ describe('Kopia global backup guard', () => {
     expect(next.status, next.stderr).toBe(0);
     expect(readFileSync(marker, 'utf8')).toBe('');
   });
+
+  it('releases the flock if a wait-mode guard is SIGKILLed while its child survives', async () => {
+    const { dir, env } = fixture();
+    const childPidPath = join(dir, 'child.pid');
+    const afterOrphan = join(dir, 'after-orphan');
+    const holder = spawn(
+      'bash',
+      [
+        guard,
+        '--mode',
+        'wait',
+        '--label',
+        'kill-boundary',
+        '--',
+        'bash',
+        '-c',
+        'printf "%s\\n" "$$" >"$1"; exec sleep 300',
+        '_',
+        childPidPath,
+      ],
+      // The child is supposed to outlive the guard in this reproduction. Keep
+      // it off the guard's pipes, otherwise Node's `close` event correctly
+      // waits for the still-live descendant to close those descriptors too.
+      { env, stdio: 'ignore' },
+    );
+
+    await waitForPath(childPidPath);
+    const childPid = Number(readFileSync(childPidPath, 'utf8').trim());
+    expect(Number.isSafeInteger(childPid)).toBe(true);
+
+    try {
+      holder.kill('SIGKILL');
+      await new Promise((resolve) => holder.once('exit', resolve));
+
+      // SIGKILL cannot be trapped or forwarded. The child deliberately stays
+      // alive, reproducing the production orphan, but must not retain FD 9's
+      // open file description and therefore cannot retain the global flock.
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+      const next = run(
+        ['--mode', 'scheduled', '--label', 'after-orphan', '--', 'touch', afterOrphan],
+        env,
+      );
+      expect(next.status, `${next.stdout}\n${next.stderr}`).toBe(0);
+      expect(existsSync(afterOrphan)).toBe(true);
+      expect(next.stdout).toContain('result=started mode=scheduled');
+    } finally {
+      try { process.kill(childPid, 'SIGKILL'); } catch { /* already gone */ }
+      try { holder.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }, 20_000);
 
   const canRunMixedUid =
     typeof process.getuid === 'function' && process.getuid() !== 0

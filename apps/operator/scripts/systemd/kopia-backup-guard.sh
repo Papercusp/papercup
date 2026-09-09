@@ -248,7 +248,14 @@ at_or_above() {
 # wrapper cannot leave an unbounded root process behind.
 runtime_abort_reason=
 run_scheduled_command() {
-  "$@" &
+  # FD 9 is the guard's ownership token, not part of the command contract.
+  # Never let the child inherit it. If this wrapper is SIGKILLed, an otherwise
+  # healthy/blocked child can outlive us; inheriting the open file description
+  # made that orphan retain the global flock indefinitely (WI-10000839).
+  # Keeping the descriptor only in this supervising shell makes wrapper death
+  # release the lock immediately, while normal runs remain serialized for the
+  # full child lifetime because this shell waits below.
+  "$@" 9>&- &
   child_pid=$!
 
   while kill -0 "$child_pid" 2>/dev/null; do
@@ -425,7 +432,10 @@ if [ "$mode" = scheduled ]; then
     return 0
   fi
 else
-  "$@"
+  # Same ownership boundary as the scheduled path above. In particular, the
+  # workspace pg_dump hook has its own watchdog; killing this wait-mode wrapper
+  # must not leave pg_dump holding our flock after it is reparented to systemd.
+  "$@" 9>&-
   rc=$?
 fi
 guard_log "result=finished mode=$mode rc=$rc"

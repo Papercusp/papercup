@@ -23,7 +23,12 @@ import {
 const h = vi.hoisted(() => ({
   guardBin: '/test/kopia-backup-guard.sh',
   adminUrl: { url: 'postgres://postgres:postgres@127.0.0.1:5432/db', source: 'env' },
-  spawnCalls: [] as Array<{ cmd: string; args: string[]; env?: NodeJS.ProcessEnv }>,
+  spawnCalls: [] as Array<{
+    cmd: string;
+    args: string[];
+    env?: NodeJS.ProcessEnv;
+    detached?: boolean;
+  }>,
   // Size returned by the mocked stat() of the temp dump — >=10KiB ⇒ success path.
   dumpSize: 16_384,
   closeCodes: { pg_dump: 0, gzip: 0 } as Record<string, number>,
@@ -70,9 +75,13 @@ function fakeChild() {
 vi.mock('node:child_process', () => ({
   // gzipArgs() probes `gzip --help` once via spawnSync; return rsyncable-capable.
   spawnSync: vi.fn(() => ({ stdout: '  --rsyncable\n', stderr: '' })),
-  spawn: vi.fn((cmd: string, args: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
+  spawn: vi.fn((
+    cmd: string,
+    args: string[],
+    opts?: { env?: NodeJS.ProcessEnv; detached?: boolean },
+  ) => {
     const child = fakeChild();
-    h.spawnCalls.push({ cmd, args, env: opts?.env });
+    h.spawnCalls.push({ cmd, args, env: opts?.env, detached: opts?.detached });
     // Settle on next tick: each child closes with the configured code. For the
     // broken-pipe regression, the gzip stdin socket errors first (mid-stream).
     queueMicrotask(() => {
@@ -144,6 +153,7 @@ import {
   requiredFreeBytes,
   resolveKopiaBackupGuard,
   runPreSnapshotHook,
+  terminateSpawnTree,
   WORKSPACE_BACKUP_GUARD_LABEL,
 } from './hook';
 
@@ -243,6 +253,24 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
       '--',
     ]);
     expect(pgDumpIndex).toBeGreaterThan(-1);
+    expect(c.detached).toBe(process.platform !== 'win32');
+  });
+
+  it('targets the isolated dump process group, not only the guard shell', () => {
+    const directKill = vi.fn(() => true);
+    const child = { pid: 4242, kill: directKill } as unknown as Pick<
+      import('node:child_process').ChildProcess,
+      'pid' | 'kill'
+    >;
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+
+    try {
+      terminateSpawnTree(child, true);
+      expect(processKill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+      expect(directKill).not.toHaveBeenCalled();
+    } finally {
+      processKill.mockRestore();
+    }
   });
 
   it('uses the installed guard path by default and respects the shared override', () => {

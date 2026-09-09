@@ -25,7 +25,7 @@
  * Never throws — losing a dump is better than losing the snapshot.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdir, readdir, stat, statfs, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { createWriteStream, type Dirent } from 'node:fs';
@@ -143,6 +143,36 @@ const DEFAULT_BACKUP_GUARD_PATH = join(homedir(), '.config', 'kopia', 'kopia-bac
 export function resolveKopiaBackupGuard(): string | null {
   if (process.env.KOPIA_BACKUP_GUARD_ACTIVE === '1') return null;
   return process.env.KOPIA_BACKUP_GUARD_BIN?.trim() || DEFAULT_BACKUP_GUARD_PATH;
+}
+
+/**
+ * Terminate one spawned command and every descendant that remains in its
+ * isolated POSIX process group.
+ *
+ * The workspace dump normally starts through the shell backup guard. Killing
+ * only that direct child leaves its pg_dump grandchild alive and reparented to
+ * systemd; before WI-10000839 that orphan also inherited the guard's flock and
+ * blocked the hourly recovery-point dump for hours. `detached` below creates a
+ * group whose id is the direct child's pid, so a negative-pid signal has exact
+ * spawn-tree scope. Windows has no POSIX process groups and keeps the direct
+ * ChildProcess fallback.
+ */
+export function terminateSpawnTree(
+  child: Pick<ChildProcess, 'pid' | 'kill'>,
+  detached: boolean,
+  signal: NodeJS.Signals = 'SIGKILL',
+): void {
+  if (detached && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      // ESRCH means the isolated group is already gone. Any other failure may
+      // still permit the direct-child fallback below.
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    }
+  }
+  try { child.kill(signal); } catch { /* already gone */ }
 }
 
 /** Stable application identity used by migration preflight and lock monitors
@@ -494,7 +524,14 @@ async function dumpPg(opts: {
     ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, '--', 'pg_dump', ...pgDumpArgs]
     : pgDumpArgs;
   return new Promise<PreSnapshotHookResult>((resolve) => {
-    const dump = spawn(dumpCommand, dumpArgs, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const dumpDetached = process.platform !== 'win32';
+    const dump = spawn(dumpCommand, dumpArgs, {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // The watchdog owns this entire guard -> pg_dump tree. Without an
+      // isolated group, ChildProcess.kill() reaches only the guard shell.
+      detached: dumpDetached,
+    });
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 
@@ -504,9 +541,11 @@ async function dumpPg(opts: {
     dump.stderr.on('data', (d) => { stderr += d.toString(); });
     gz.stderr.on('data', (d) => { stderr += d.toString(); });
 
+    const killDumpTree = () => terminateSpawnTree(dump, dumpDetached);
+
     const t = setTimeout(() => {
       stderr += `pg dump timed out after ${PG_DUMP_TIMEOUT_MS}ms\n`;
-      dump.kill('SIGKILL');
+      killDumpTree();
       gz.kill('SIGKILL');
     }, PG_DUMP_TIMEOUT_MS);
     let settled = false;
@@ -556,7 +595,7 @@ async function dumpPg(opts: {
     });
     gz.on('error', (e) => {
       stderr += `gzip spawn failed: ${e.message}\n`;
-      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      killDumpTree();
       void finalize(false);
     });
     // The output file stream fails independently of the children —
@@ -565,7 +604,7 @@ async function dumpPg(opts: {
     // spawn error, so route it through finalize(false) too.
     out.on('error', (e) => {
       stderr += `output stream failed: ${e.message}\n`;
-      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      killDumpTree();
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
     });
@@ -584,13 +623,13 @@ async function dumpPg(opts: {
     // snapshot proceed.
     gz.stdin.on('error', (e) => {
       stderr += `gzip stdin pipe failed: ${e.message}\n`;
-      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      killDumpTree();
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
     });
     dump.stdout.on('error', (e) => {
       stderr += `pg_dump stdout pipe failed: ${e.message}\n`;
-      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      killDumpTree();
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
     });
