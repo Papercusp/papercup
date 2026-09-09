@@ -135,6 +135,7 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   recordFrozenRepairSupersededRed,
+  settleFrozenRepairRetestRequest,
   buildFrozenRepairStatusIdentity,
   classifyRepairSignature,
   classifyRepairSignatureEntry,
@@ -144,6 +145,7 @@ import {
   type RepairSignatureEntry,
   type RepairSignatureInput,
   type RepairSignatureKind,
+  type FrozenRepairRetestRequest,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import type {
   FreezeAndConvergeDisposition,
@@ -1191,6 +1193,18 @@ export interface CheckpointDeps {
       fresh: FrozenCandidateRepairQueue,
     ) => FrozenCandidateRepairQueue,
   ): Promise<FrozenRepairQueueTransitionResult>;
+  /**
+   * green-gate-zero-wait P-001: CAS-consume the newest admission's durable retest marker after
+   * this process completes a pass. A different requested head returns `refire` while preserving
+   * the marker; the caller then recurses in-process under the same run lock and wall budget.
+   */
+  consumeFrozenRepairRetestRequest?(
+    input: {
+      judgedRepairHead: string;
+      /** True only when this pass actually rendered a verdict/repair round at that head. */
+      settleJudgedHead: boolean;
+    },
+  ): Promise<FrozenRepairRetestConsumeResult>;
   /**
    * P-027 (D-014): reconcile the row with `refs/papercusp/frozen/<candidate>` at run start —
    * every lineage commit beyond the row's repairHead gets its ledger entry rebuilt from the
@@ -5230,6 +5244,14 @@ export interface FrozenRepairQueueTransitionResult {
   queue: FrozenCandidateRepairQueue | null;
 }
 
+export type FrozenRepairRetestConsumeResult =
+  | { kind: "absent"; queue: null; request: null }
+  | {
+      kind: "none" | "settled" | "refire";
+      queue: FrozenCandidateRepairQueue;
+      request: FrozenRepairRetestRequest | null;
+    };
+
 /** P-027 (D-014): what `CheckpointDeps.reconcileFrozenRepairQueueWithLineage` reports back. */
 export interface FrozenRepairQueueReconcileResult {
   status: string;
@@ -8254,7 +8276,14 @@ export interface CheckpointOpts {
    *  is never organically out of time and the skip branch would otherwise be unreachable.
    *  Mirrors the isolation phase's own injectable `phaseDeadlineMs`. */
   salvageDeadlineMs?: number;
+  /** P-001: admission-driven recursive passes, independent of stale-red refire accounting. */
+  admissionRefires?: number;
 }
+
+/** A burst of admissions is finite even when every pass races another writer. The durable marker
+ * stays set after this bound, so the already-due routine is the backstop instead of an unbounded
+ * in-process loop. */
+export const MAX_ADMISSION_REFIRE_ATTEMPTS = 3;
 
 /**
  * P-016 (release-pipeline-resilience-2026-06-09 D-010): is the longest-green-PREFIX
@@ -13458,6 +13487,8 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  const admissionPassStartedAtMs = Date.now();
+  const admissionRunStartedAtMs = opts.runStartedAtMs ?? admissionPassStartedAtMs;
   const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const innerOpts: CheckpointOpts = {
     ...opts,
@@ -13466,10 +13497,11 @@ export async function runGreenCheckpoint(
     ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
   };
   const result = await runGreenCheckpointInner(cfg, deps, innerOpts);
+  const judgedRepairHead = result.candidate;
   const repairIdentity = result.repairQueue
     ? buildFrozenRepairStatusIdentity(result.repairQueue)
     : null;
-  const finalResult: CheckpointResult = {
+  let finalResult: CheckpointResult = {
     ...result,
     // P-003 / D-002: a result carrying a repair queue always reserves the generic
     // candidate label for the immutable full-gate pin. repairHead remains explicit;
@@ -13485,6 +13517,67 @@ export async function runGreenCheckpoint(
     candidateSource,
     ...(diagnostic ? { diagnostic } : {}),
   };
+  const passSettledJudgedHead =
+    finalResult.green !== null ||
+    Boolean(
+      finalResult.repairQueue?.convergenceRounds?.some(
+        (round) => round.head === judgedRepairHead,
+      ),
+    );
+  if (
+    deps.consumeFrozenRepairRetestRequest &&
+    candidateSource !== "pinned"
+  ) {
+    let consumed: FrozenRepairRetestConsumeResult | null = null;
+    try {
+      consumed = await deps.consumeFrozenRepairRetestRequest({
+        judgedRepairHead,
+        settleJudgedHead: passSettledJudgedHead,
+      });
+    } catch (error) {
+      deps.log(
+        `repair admission retest marker consume failed (marker retained): ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    if (consumed?.kind === "settled") {
+      const identity = buildFrozenRepairStatusIdentity(consumed.queue);
+      finalResult = { ...finalResult, repairQueue: consumed.queue, ...identity };
+      deps.log(
+        `repair admission retest settled at ${judgedRepairHead.slice(0, 8)}; durable marker consumed`,
+      );
+    } else if (consumed?.kind === "refire" && consumed.request) {
+      const admissionRefires = opts.admissionRefires ?? 0;
+      const nowMs = Date.now();
+      const deadlineExceeded = refireDeadlineExceeded({
+        elapsedMs: nowMs - admissionRunStartedAtMs,
+        lastPassMs: nowMs - admissionPassStartedAtMs,
+        budgetMs: refireRunBudgetMsFromEnv(),
+      });
+      if (
+        admissionRefires < MAX_ADMISSION_REFIRE_ATTEMPTS &&
+        !deadlineExceeded
+      ) {
+        deps.log(
+          `repair admission advanced the in-flight pass ${judgedRepairHead.slice(0, 8)} → ` +
+            `${consumed.request.repairHead.slice(0, 8)}; self-refiring now ` +
+            `(admission refire ${admissionRefires + 1}/${MAX_ADMISSION_REFIRE_ATTEMPTS})`,
+        );
+        return runGreenCheckpoint(cfg, deps, {
+          ...opts,
+          candidate: consumed.request.repairHead,
+          admissionRefires: admissionRefires + 1,
+          runStartedAtMs: admissionRunStartedAtMs,
+        });
+      }
+      deps.log(
+        `repair admission retest remains requested at ${consumed.request.repairHead.slice(0, 8)}; ` +
+          (deadlineExceeded
+            ? "the shared gate-run wall budget cannot fit another pass"
+            : `the admission self-refire bound ${MAX_ADMISSION_REFIRE_ATTEMPTS} is exhausted`) +
+          ". The durable marker and due-now routine remain as the backstop.",
+      );
+    }
+  }
   // P-008: leave exactly ONE freeze disposition describing THIS tick, from the one place
   // every return site and every caller already funnels through. `converging` and `none` are
   // recorded by no branch, and the stored record is shallow-merged and never cleared — so
@@ -16616,6 +16709,42 @@ export function realCheckpointDeps(
               transition,
             );
             return { status: outcome.status, queue: outcome.queue };
+          },
+          async consumeFrozenRepairRetestRequest(input) {
+            const { applyFrozenCandidateRepairQueueTransition } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            const outcome = await applyFrozenCandidateRepairQueueTransition(
+              repairTarget,
+              (fresh) => {
+                if (
+                  fresh.retestRequested?.repairHead === input.judgedRepairHead &&
+                  !input.settleJudgedHead
+                ) {
+                  return fresh;
+                }
+                return settleFrozenRepairRetestRequest(
+                  fresh,
+                  input.judgedRepairHead,
+                ).queue;
+              },
+            );
+            if (!outcome.queue) {
+              return { kind: "absent" as const, queue: null, request: null };
+            }
+            const observed = outcome.fresh ?? outcome.queue;
+            const decision =
+              observed.retestRequested?.repairHead === input.judgedRepairHead &&
+              !input.settleJudgedHead
+                ? null
+                : settleFrozenRepairRetestRequest(
+                    observed,
+                    input.judgedRepairHead,
+                  );
+            return {
+              kind: decision?.kind ?? "none",
+              queue: outcome.queue,
+              request: decision?.request ?? null,
+            };
           },
           // P-027 (D-014): ledger totality — rebuild the row's missing admissions from the
           // lineage ref's commits, INSIDE the CAS transition so a concurrent admit is carried.

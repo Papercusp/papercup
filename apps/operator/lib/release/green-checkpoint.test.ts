@@ -60,6 +60,7 @@ import {
   refireRunBudgetMsFromEnv,
   refireBudgetInputs,
   nextRefireOpts,
+  MAX_ADMISSION_REFIRE_ATTEMPTS,
   DEFAULT_REFIRE_RUN_BUDGET_MS,
   evaluateDeployStaleness,
   buildGreenCheckpointEnv,
@@ -166,6 +167,7 @@ import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
   FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
   frozenRepairHeadAwaitsVerification,
+  settleFrozenRepairRetestRequest,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import type { TickFreezeObservation } from "@papercusp/operator-core/lib/release/freeze-disposition";
@@ -1032,6 +1034,98 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(
       logs.some((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED")),
     ).toBe(false);
+  });
+
+  it("P-001 self-refires in-process when an admission supersedes the running pass, then consumes the marker only after judging the new head", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const admitted = await commit("b", "fixed", "admitted repair");
+    const cell = {
+      queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null,
+    };
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    wireP027Transition(deps, cell);
+    let runCount = 0;
+    const runGreen = deps.runGreen;
+    deps.runGreen = async (...args) => {
+      runCount += 1;
+      if (runCount === 1 && cell.queue) {
+        const requestedAtMs = Date.now();
+        cell.queue = {
+          ...cell.queue,
+          phase: "ready-to-verify",
+          repairHead: admitted,
+          updatedAtMs: requestedAtMs,
+          retestRequested: {
+            candidate: frozen,
+            repairHead: admitted,
+            requestedAtMs,
+          },
+        };
+      }
+      return runGreen(...args);
+    };
+    deps.consumeFrozenRepairRetestRequest = async ({ judgedRepairHead, settleJudgedHead }) => {
+      if (!cell.queue) return { kind: "absent", queue: null, request: null };
+      if (cell.queue.retestRequested?.repairHead === judgedRepairHead && !settleJudgedHead) {
+        return { kind: "none", queue: cell.queue, request: null };
+      }
+      const decision = settleFrozenRepairRetestRequest(cell.queue, judgedRepairHead);
+      cell.queue = decision.queue;
+      return decision;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(runCount).toBe(2);
+    expect(calls).toContain(`setup:${frozen.slice(0, 7)}`);
+    expect(calls).toContain(`setup:${admitted.slice(0, 7)}`);
+    expect(result.candidate).toBe(admitted);
+    expect(cell.queue?.retestRequested).toBeUndefined();
+  });
+
+  it("P-001 leaves the durable marker intact when the independent admission-refire bound is exhausted", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const admitted = await commit("b", "fixed", "admitted repair");
+    const cell = {
+      queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null,
+    };
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    wireP027Transition(deps, cell);
+    const runGreen = deps.runGreen;
+    deps.runGreen = async (...args) => {
+      if (cell.queue) {
+        const requestedAtMs = Date.now();
+        cell.queue = {
+          ...cell.queue,
+          phase: "ready-to-verify",
+          repairHead: admitted,
+          updatedAtMs: requestedAtMs,
+          retestRequested: { candidate: frozen, repairHead: admitted, requestedAtMs },
+        };
+      }
+      return runGreen(...args);
+    };
+    deps.consumeFrozenRepairRetestRequest = async ({ judgedRepairHead, settleJudgedHead }) => {
+      if (!cell.queue) return { kind: "absent", queue: null, request: null };
+      if (cell.queue.retestRequested?.repairHead === judgedRepairHead && !settleJudgedHead) {
+        return { kind: "none", queue: cell.queue, request: null };
+      }
+      const decision = settleFrozenRepairRetestRequest(cell.queue, judgedRepairHead);
+      cell.queue = decision.queue;
+      return decision;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      noPush: true,
+      admissionRefires: MAX_ADMISSION_REFIRE_ATTEMPTS,
+    });
+
+    expect(result.candidate).toBe(frozen);
+    expect(cell.queue?.retestRequested).toMatchObject({ repairHead: admitted });
   });
 
   it("WI-212675: a dead fixer that changed nothing at an ADMITTED, never-verified head moves the queue to ready-to-verify and runs the suite there instead of re-dispatching", async () => {
