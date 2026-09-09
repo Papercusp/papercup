@@ -769,7 +769,7 @@ describe('processes:list structured output', () => {
       endedUnobservedCount: 0,
       unaccountedPersisted: 1,
       residueCleared: 0,
-    } as ReconcileTickResult);
+    } as unknown as ReconcileTickResult);
 
     const dispatched = await dispatchProjectedTool(
       projected,

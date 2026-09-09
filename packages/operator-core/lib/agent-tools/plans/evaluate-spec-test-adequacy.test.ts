@@ -289,7 +289,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       { ...binding(3, 'sha256:other-clause'), specId: 'SPEC-OTHER' },
     ];
     listEvidence.mockResolvedValue(
-      (order === 'newest-first' ? rows : [...rows].reverse()) as Awaited<ReturnType<typeof listSpecEvidence>>,
+      (order === 'newest-first' ? rows : [...rows].reverse()) as unknown as Awaited<ReturnType<typeof listSpecEvidence>>,
     );
 
     const result = await call({

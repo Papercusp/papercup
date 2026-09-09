@@ -1499,7 +1499,7 @@ describe('EI-21565976517547834 — reconcile an already-claimable level after aw
   };
 
   it('retires the pending await and returns already_claimable when a matching row is live after registration', async () => {
-    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as ClaimSpecRecord);
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as unknown as ClaimSpecRecord);
     vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [{ id: 'WI-42252' }] } as never);
     vi.mocked(liveWorkItemClaimableEventPayload).mockResolvedValueOnce({
       id: 'WI-42252',
@@ -1528,7 +1528,7 @@ describe('EI-21565976517547834 — reconcile an already-claimable level after aw
   });
 
   it('lets a concurrently-fired durable delivery win when the pending-row cancellation loses', async () => {
-    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as ClaimSpecRecord);
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as unknown as ClaimSpecRecord);
     vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [{ id: 'WI-42252' }] } as never);
     vi.mocked(liveWorkItemClaimableEventPayload).mockResolvedValueOnce({
       id: 'WI-42252', kind: 'task', harness: 'papercusp', plan: 'byoc-plan', state: 'open',
@@ -1543,7 +1543,7 @@ describe('EI-21565976517547834 — reconcile an already-claimable level after aw
   });
 
   it('keeps the ordinary edge await when the current oracle has no matching survivor', async () => {
-    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as ClaimSpecRecord);
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as unknown as ClaimSpecRecord);
     vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [] } as never);
 
     const out = await call({ event: 'work-item:claimable' });
@@ -1555,7 +1555,7 @@ describe('EI-21565976517547834 — reconcile an already-claimable level after aw
 
   it('fails soft when the bounded current-level oracle cannot answer', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as ClaimSpecRecord);
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as unknown as ClaimSpecRecord);
     vi.mocked(readIssueClaimability).mockRejectedValueOnce(new Error('claimability read timed out'));
 
     const out = await call({ event: 'work-item:claimable' });
