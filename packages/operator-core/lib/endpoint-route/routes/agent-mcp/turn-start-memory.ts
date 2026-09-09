@@ -193,6 +193,7 @@ const turnStartMemory = defineTool({
               transition,
               activationRevision
                 ? {
+                    repoDir: typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : undefined,
                     activation: {
                       specificationRevision: activationRevision.specificationRevision,
                       stateRevision: activationRevision.stateRevision,

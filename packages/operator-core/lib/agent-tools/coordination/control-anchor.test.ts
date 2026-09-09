@@ -350,7 +350,7 @@ describe('compact durable CTRL anchor', () => {
       failControlTransitionActivation('su-x', 'ws-test', 8, revision, 'render failed', db.sql)],
   ])('rolls back %s state when its append-only event cannot be recorded', async (phase, run) => {
     const revision = { specificationRevision: 'd'.repeat(64), stateRevision: '4' };
-    const db = transactionalSqlSequence([{ control_generation: 8 }, [], []]);
+    const db = transactionalSqlSequence([[{ control_generation: 8 }], [], []]);
     await expect(run(db, revision)).rejects.toThrow(`session_identity_activation_${phase}_not_recorded`);
     expect(db.rolledBack()).toBe(true);
     expect(db.committed()).toBe(false);

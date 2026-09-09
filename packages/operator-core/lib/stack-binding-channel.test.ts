@@ -121,7 +121,7 @@ describe('renderStackTransitionContext (P-012)', () => {
   it('marks domain/client mutations fresh-context so the old host cannot acknowledge them', async () => {
     const result = await renderStackTransitionContextResult(
       {
-        state: state({ stack: ['domain:papercusp-engineer'] }),
+        state: state({ stack: ['domain:research-steward'] }),
         stackBefore: [],
       },
       opts,

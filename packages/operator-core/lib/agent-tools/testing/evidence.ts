@@ -152,6 +152,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     }
     const measuredResult = result ?? recoveredFileResult(run, row.binding, runId, scope);
     const outcome = testEvidenceOutcome(row.binding, measuredResult);
+    const testNamePattern = measuredResult && !measuredResult.error ? measuredResult.testNamePattern : undefined;
     // Legacy status-only rows remain unknown. Measured details are usable only
     // after exact scope/file attribution and the existing before/after hash check.
     const phase = !run ? 'pending' : !sourceStable ? 'source-changed'
@@ -159,7 +160,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     const details = {
       ...row.input.details,
         testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
-          ...(measuredResult?.testNamePattern ? { testNamePattern: measuredResult.testNamePattern } : {}),
+          ...(testNamePattern ? { testNamePattern } : {}),
           sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length, measuredOutcome: outcome.outcome,
         ...(result?.error ? { resultError: result.error } : {}),
       },

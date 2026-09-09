@@ -112,7 +112,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'advRoster.list',
     'planSessions.list',
     'conversations.contextProjection',
+    'identities.surface',
   ],
+  'harness_shared.session_briefs': ['identities.surface'],
+  'harness_shared.session_identity_activation_events': ['identities.surface'],
   /* agent_modes — the standing MODE per agent per axis (auto / ideate / drain /
      grade). session-chat-popup-timestamps-and-modes-2026-08-09 P-003; trigger
      attached in migration 763.

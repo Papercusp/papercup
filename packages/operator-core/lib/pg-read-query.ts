@@ -526,9 +526,10 @@ const CORPUS_NAMESPACED_TABLES = new Set([
  * clean-looking empty result, indistinguishable from "no failures". `source`/`commit_sha` are the
  * columns that actually discriminate a gate row, so `test_runs` is excluded from the
  * generic/override checks below and gets its own advisory ({@link buildTestRunsAdvisory}). An
- * an exact run_group_id (or bounded row-id group) fenced by BOTH explicit tenant predicates is
- * the separate safe case: it is an intentional per-run/local-group tenant read, so it must not
- * be rejected as an unscoped query. Broad/partial tenant filters retain the CI warning.
+ * exact run_group_id, bounded row-id group, or bounded exact file_path read fenced by BOTH
+ * explicit tenant predicates is the separate safe case: it is an intentional per-run/local
+ * evidence read, so it must not be rejected as an unscoped query. Broad/partial tenant filters
+ * retain the CI warning.
  */
 const TEST_RUNS_TABLE = 'test_runs';
 
@@ -537,10 +538,10 @@ const TEST_RUNS_TABLE = 'test_runs';
  * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
  * mentioned"; here workspace_id/harness_slug mentioned is not enough for a broad CI read).
  * Fires whenever `test_runs` is referenced with a WHERE clause and neither `source` nor
- * `commit_sha` is mentioned, unless the query has an exact run_group_id or bounded row-id
- * predicate alongside both workspace_id and harness_slug predicates. The latter is an explicit
- * per-run/local-group tenant fence and is safe to execute without allowUnscoped; broad/partial
- * tenant filters retain the CI warning.
+ * `commit_sha` is mentioned, unless the query has an exact run_group_id, bounded row-id, or
+ * bounded exact file_path predicate alongside both workspace_id and harness_slug predicates.
+ * The latter are explicit per-run/local-evidence tenant fences and are safe to execute without
+ * allowUnscoped; broad/partial tenant filters retain the CI warning.
  */
 function buildTestRunsAdvisory(stripped: string, tables: string[]): string | null {
   if (!tables.some((t) => bareTableName(t) === TEST_RUNS_TABLE)) return null;
@@ -555,7 +556,16 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
   const boundedLocalGroup =
     tables.length === 1 &&
     (hasBoundedPredicate(stripped, 'run_group_id') || hasBoundedPredicate(stripped, 'id'));
-  if (explicitTenantFence && boundedLocalGroup) return null;
+  // An exact file path is a local reporter identity fence when the result is
+  // explicitly bounded. Without LIMIT/FETCH, the same path can span every
+  // historical run and must retain the CI-row warning.
+  const boundedLocalFileRead =
+    tables.length === 1 &&
+    hasBoundedPredicate(stripped, 'file_path') &&
+    /\b(?:limit\s+(?!all\b)(?:\d+|\$\d+)|fetch\s+(?:first|next)\s+(?:\d+|\$\d+)\s+rows?\s+only)\b/i.test(
+      stripped,
+    );
+  if (explicitTenantFence && (boundedLocalGroup || boundedLocalFileRead)) return null;
   return (
     '⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI/dogfood-reporter ' +
     'rows (env-derived — libs/test-config/src/admin-test-runs-reporter.ts — and stamped ONLY by the ' +

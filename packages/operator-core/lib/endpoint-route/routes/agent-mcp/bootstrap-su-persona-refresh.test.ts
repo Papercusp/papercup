@@ -185,6 +185,20 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
     );
   });
 
+  it('rebuilds the full render with explicit stack plus live mode/fleet identity layers', async () => {
+    readLaunchSpecMock.mockResolvedValue(spec({
+      autoMode: true,
+      stack: ['practice:citations'],
+      fleet: { slug: 'alpha', role: 'leader' },
+    }));
+    await refresh({ coordOwnerId: OWNER });
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      stack: ['practice:citations'],
+      fleetRole: 'leader',
+      modes: ['auto'],
+    }));
+  });
+
   it('overwrites its own previous refresh instead of accumulating one file per respawn', async () => {
     // A long-lived session respawns many times; a per-respawn unique filename would
     // grow the launch-context dir without bound for the life of the box.

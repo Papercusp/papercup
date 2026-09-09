@@ -1133,6 +1133,43 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     expect(calls).toHaveLength(0);
   });
 
+  // EI-22773920937987602: local acceptance evidence is also recovered by an
+  // exact file path, newest-first, with a one-row result cap. The explicit
+  // tenant fence identifies the local reporter population; the cap keeps this
+  // exception from turning into a historical file-path scan.
+  it('allows a bounded exact file-path read fenced by both explicit tenant predicates', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT id, file_path, status FROM harness_shared.test_runs " +
+        "WHERE file_path = 'packages/operator-core/lib/plan-audits.test.ts' " +
+        "AND workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' " +
+        'ORDER BY started_at DESC LIMIT 1',
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps the CI-null warning for an exact file path without a result cap', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE file_path = 'packages/operator-core/lib/plan-audits.test.ts' " +
+        "AND workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
+  it('keeps the CI-null warning for an open-ended file-path pattern even with LIMIT', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE file_path LIKE 'packages/operator-core/%' " +
+        "AND workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' LIMIT 1",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
   it('keeps the CI-null warning for an open-ended id predicate despite the tenant fence', async () => {
     const { sql } = stubClient([]);
     const advisory = await buildTenantScopeAdvisory(
