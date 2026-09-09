@@ -540,6 +540,47 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     ]));
   });
 
+  it.each(['pass', 'failed', 'unknown', 'pending', 'stale'])(
+    'shipment selects the latest equivalent registered attempt (%s), retaining immutable history', outcome => {
+      const input = provedFixture(1);
+      const base = input.evidence.rows[0]!;
+      const makeAttempt = (n: number, result: string): AcceptanceBarEvidenceSource[] => {
+        const binding = { specId: base.specId, specRevision: base.specRevision,
+          testPath: 'test/journey.test.ts', sourcePaths: ['src/journey.ts'], testLayer: 'integration' };
+        const pending = { ...base, id: n * 10, evidenceRef: `test-run-group:attempt-${n}:0`, testRunId: null,
+          details: { currentMeasurement: { schemaVersion: 1, kind: 'repo-files',
+            testPaths: [binding.testPath], sourcePaths: binding.sourcePaths },
+          testExecution: { schemaVersion: 1, phase: 'pending', originRunId: `attempt-${n}`, binding },
+          adequacy: { testLayer: 'integration', outcome: 'pending', executed: false, collected: false } } };
+        return [pending, ...(result === 'pending' ? [] : [{ ...pending, id: n * 10 + 1, testRunId: n,
+          details: { ...pending.details, evidencePlane: 'tree',
+            testExecution: { ...pending.details.testExecution, phase: 'settled' },
+            adequacy: { ...(base.details.adequacy as object), outcome: result } } }])];
+      };
+      const old = makeAttempt(1, outcome === 'pass' ? 'unknown' : 'pass');
+      const fresh = makeAttempt(2, outcome === 'stale' ? 'pass' : outcome);
+      if (outcome === 'stale') fresh[1]!.currentness = { ...fresh[1]!.currentness, overall: 'stale',
+        staleReasons: ['source-fingerprint-changed'] };
+      input.evidence.rows = [...old, ...fresh, input.evidence.rows[1]!];
+      const before = JSON.stringify(input.evidence.rows);
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(JSON.stringify(input.evidence.rows)).toBe(before);
+      expect(snapshot.bars[0]!.proof.history).toHaveLength(input.evidence.rows.length);
+      if (outcome !== 'pending') {
+        expect(snapshot.bars[0]!.proof.history?.find(row => row.id === old[1]!.id)?.activeAttempt).toBe(false);
+        expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.evidenceRefs).not.toContain(old[1]!.evidenceRef);
+      }
+      if (outcome === 'pass') {
+        expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+        expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).not.toContain('bar_snapshot_proof_inadequate');
+      } else {
+        expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock)
+          .toContain(outcome === 'stale' ? 'freshness' : 'execution-integrity');
+        expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+      }
+    },
+  );
+
   it('fails source completeness when BAR meaning no longer matches the server hash', () => {
     const input = fixture(1);
     input.rubrics.rows[0]!.criteria[0]!.model = 'Quietly rewritten outcome.';
