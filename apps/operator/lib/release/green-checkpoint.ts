@@ -1008,7 +1008,10 @@ export interface CheckpointDeps {
    *  `lint:tsc:* --files` gate in the isolated checkpoint tree. `skipped` means no changed
    *  file had a resolvable owning gate, not green. Optional so older/test deps keep their
    *  current behaviour; runGreen's unscoped post-suite typechecks remain the final assurance. */
-  runChangedFileTypecheckPreflight?(files: string[]): Promise<{
+  runChangedFileTypecheckPreflight?(
+    files: string[],
+    range?: { from: string; to: string },
+  ): Promise<{
     status: "passed" | "failed" | "skipped";
     summary: string;
     /** The subset actually checked by one or more owning gates. */
@@ -11127,7 +11130,10 @@ async function runGreenCheckpointInner(
             );
           } else {
             const preflight =
-              await deps.runChangedFileTypecheckPreflight(files);
+              await deps.runChangedFileTypecheckPreflight(files, {
+                from: lastReady,
+                to: candidate,
+              });
             const checkedFiles = preflight.checkedFiles?.length
               ? [...new Set(preflight.checkedFiles)]
               : files;
@@ -17020,7 +17026,7 @@ export function realCheckpointDeps(
     // release-gate env isolation and sequential-leg heap. The only difference is scope:
     // `--files-from` attributes each verdict to the committed last-green..candidate diff.
     // A pass is provisional; runGreen still runs the unscoped post-suite legs later.
-    async runChangedFileTypecheckPreflight(files) {
+    async runChangedFileTypecheckPreflight(files, range) {
       let discovered: Awaited<ReturnType<typeof discoverSiblingTypecheckGates>>;
       try {
         discovered = await discoverSiblingTypecheckGates(cfg.checkpointRoot);
@@ -17037,6 +17043,26 @@ export function realCheckpointDeps(
         };
       }
 
+      // EI-22801066927551983: the change radius includes committed deletions, but
+      // --files-from intentionally rejects missing paths. Subtract only deletions
+      // proved in the exact candidate range (including moved submodules), never
+      // arbitrary missing materialized files. Keep the broad radius unchanged for
+      // affected tests/salvage and retain the final unscoped typechecks.
+      const deletedFiles = new Set<string>();
+      if (range) {
+        try {
+          const deleted = await changedFilesRecursive(
+            cfg.integrationRoot, range.from, range.to, { deletedOnly: true },
+          );
+          for (const file of deleted.files) deletedFiles.add(file);
+        } catch (error) {
+          log(
+            `early typecheck deletion proof unavailable (${error instanceof Error ? error.message : error}); ` +
+              "retaining the strict explicit-file selection",
+          );
+        }
+      }
+
       // `gateCoveringFile` is the resolver's precise ownership predicate. Filter here before
       // building the route plan so docs/assets and other non-typecheck paths remain a fail-soft
       // fallback to the ordinary full gate, while every discovered source owner is checked.
@@ -17045,6 +17071,7 @@ export function realCheckpointDeps(
           files
             .map((file) => file.replaceAll("\\", "/"))
             .filter((file) =>
+              !deletedFiles.has(file) &&
               Boolean(gateCoveringFile(discovered.gates, file)),
             ),
         ),

@@ -47,6 +47,7 @@ function makeFakes(over: Partial<Record<keyof ConsultReviveDeps, unknown>> = {})
         sessionId: 'sess-1',
         ownerId: 'su-dead-expert',
         agent: 'claude',
+        ompThreadId: null,
         cwd: '/recorded/cwd',
         endedAt: '2026-08-18T00:00:00Z',
         endedBy: 'self',
@@ -58,6 +59,7 @@ function makeFakes(over: Partial<Record<keyof ConsultReviveDeps, unknown>> = {})
       calls.build.push(o);
       return 'psu --no-picker --account=default --resume=sess-1 --headless';
     },
+    checkResumeTranscript: async () => ({ available: true, detail: 'fixture transcript' }),
     injectLaunchedByArg: (command: string, launcherOwnerId: string | null) => {
       calls.inject.push({ command, launcherOwnerId });
       return { command: `${command} --launched-by=${launcherOwnerId}`, injected: true };
@@ -170,6 +172,22 @@ describe('reviveConsultResponder', () => {
     expect(r).toMatchObject({ spawned: false, verified: null });
     expect(r.detail).toContain('current context is CRITICAL');
     expect(r.detail).toContain('refused before spawn');
+    expect(calls.spawn).toHaveLength(0);
+    expect(calls.verify).toHaveLength(0);
+  });
+
+  it('refuses an ended target with no transcript or archive before spawning', async () => {
+    const { deps, calls } = makeFakes({
+      checkResumeTranscript: async () => ({
+        available: false,
+        detail: 'native transcript unavailable (not_archived)',
+      }),
+    });
+    const r = await reviveConsultResponder(OPTS, CTX, deps);
+    expect(r).toMatchObject({ spawned: false, verified: null });
+    expect(r.detail).toContain('native transcript unavailable');
+    expect(r.detail).toContain('refused before spawn');
+    expect(calls.build).toHaveLength(0);
     expect(calls.spawn).toHaveLength(0);
     expect(calls.verify).toHaveLength(0);
   });

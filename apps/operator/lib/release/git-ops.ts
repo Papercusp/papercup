@@ -150,10 +150,17 @@ export async function changedFiles(
   repo: string,
   from: string | null,
   to: string,
+  options: { deletedOnly?: boolean } = {},
 ): Promise<string[]> {
   if (!from) return [];
-  const out = await git(repo, ['diff', '--name-only', `${from}..${to}`]);
-  return out ? out.split('\n').filter(Boolean) : [];
+  // Treat rename sources as deletions for an explicit-file compiler selection.
+  // Default callers still receive every change, including deletions.
+  const out = await git(repo, [
+    'diff', '--name-only',
+    ...(options.deletedOnly ? ['-z', '--no-renames', '--diff-filter=D'] : []),
+    `${from}..${to}`,
+  ]);
+  return out ? out.split(options.deletedOnly ? '\0' : '\n').filter(Boolean) : [];
 }
 
 /** SQL migration files newly added/changed between commits (deploy-staged schema).
@@ -207,6 +214,7 @@ export async function changedFilesInSubmodule(
   to: string,
   submodulePath: string,
   pins?: { from: Map<string, string>; to: Map<string, string> },
+  options: { deletedOnly?: boolean } = {},
 ): Promise<string[]> {
   const [pinsFrom, pinsTo] = pins
     ? [pins.from, pins.to]
@@ -221,8 +229,9 @@ export async function changedFilesInSubmodule(
   // Skipping this case would put a failing test in a newly-vendored submodule right back
   // in the blind spot — reported as "not modified in range", i.e. presumptively a real red.
   const files = fromPin
-    ? await changedFiles(submoduleRepo, fromPin, toPin)
-    : (await git(submoduleRepo, ['ls-tree', '-r', '--name-only', toPin])).split('\n').filter(Boolean);
+    ? await changedFiles(submoduleRepo, fromPin, toPin, options)
+    : options.deletedOnly ? []
+      : (await git(submoduleRepo, ['ls-tree', '-r', '--name-only', toPin])).split('\n').filter(Boolean);
   // Paths here are relative to the SUBMODULE root (e.g. `libs/papercusp/`), so a
   // migration reads as `libs/db/sql/...` from inside it — re-prefix with the mount
   // path for a consistent, superproject-relative result callers can compare directly.
@@ -284,8 +293,9 @@ export async function changedFilesRecursive(
   repo: string,
   from: string | null,
   to: string,
+  options: { deletedOnly?: boolean } = {},
 ): Promise<RangeChangeSet> {
-  const files = await changedFiles(repo, from, to);
+  const files = await changedFiles(repo, from, to, options);
   if (!from) return { files, unexpandedSubmodules: [] };
 
   let moved: string[];
@@ -300,7 +310,7 @@ export async function changedFilesRecursive(
     const unexpandedSubmodules: string[] = [];
     for (const path of moved) {
       try {
-        expanded.push(...(await changedFilesInSubmodule(repo, from, to, path, { from: pinsFrom, to: pinsTo })));
+        expanded.push(...(await changedFilesInSubmodule(repo, from, to, path, { from: pinsFrom, to: pinsTo }, options)));
       } catch {
         unexpandedSubmodules.push(path);
       }

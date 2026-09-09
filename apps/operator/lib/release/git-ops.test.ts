@@ -303,6 +303,42 @@ describe('changedFilesRecursive — gitlink expansion', () => {
     expect(files).toContain('libs/generic/memory/src/embedder-dims.test.ts');
   });
 
+  it('proves only committed deletions, including rename sources and moved-submodule files', async () => {
+    const mount = 'libs/generic/memory';
+    const subRepo = await createSubmodule(mount);
+    await bumpPin(mount, 'src/removed.ts');
+    await commit('old.ts', 'export const value = 1;', 'old source');
+    const before = await revParse(repo, 'HEAD');
+    await git(repo, ['mv', 'old.ts', 'new.ts']);
+    await git(subRepo, ['rm', 'src/removed.ts']);
+    await bumpPin(mount, 'src/added.ts');
+    const after = await revParse(repo, 'HEAD');
+    const deleted = await changedFilesRecursive(repo, before, after, { deletedOnly: true });
+    expect(deleted).toEqual({
+      files: ['old.ts', `${mount}/src/removed.ts`],
+      unexpandedSubmodules: [],
+    });
+    const all = await changedFilesRecursive(repo, before, after);
+    // The unchanged default is rename-aware, so this identical-content move
+    // names its destination. Only deletedOnly also names the vanished source.
+    expect(all.files).not.toContain(`${mount}/src/removed.ts`);
+    expect(all.files).toContain(`${mount}/src/added.ts`);
+    expect(all.files).toContain('new.ts');
+    // Uncommitted loss is not a deletion proof.
+    rmSync(join(repo, 'new.ts'));
+    expect(await changedFilesRecursive(repo, before, after, { deletedOnly: true })).toEqual(deleted);
+  });
+
+  it('does not call additions in a newly pinned submodule deletions', async () => {
+    const before = await commit('root.ts', 'export {};', 'root');
+    await createSubmodule('libs/generic/memory');
+    const after = await revParse(repo, 'HEAD');
+    expect(await changedFilesRecursive(repo, before, after, { deletedOnly: true })).toEqual({
+      files: [],
+      unexpandedSubmodules: [],
+    });
+  });
+
   it('adds nothing when no gitlink moved (no false positives from unrelated submodules)', async () => {
     const { after } = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
     await commit('apps/operator/lib/x.ts', 'x', 'superproject only');

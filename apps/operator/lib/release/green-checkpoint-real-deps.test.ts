@@ -820,6 +820,54 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
 describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () => {
   const preflightCfg: ReleaseConfig = { ...cfg, checkpointRoot: typecheckTree };
 
+  it("excludes proved candidate deletions without hiding unexpected missing files", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "preflight-deletion-proof-"));
+    onTestFinished(() => rmSync(repo, { recursive: true, force: true }));
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    git("init", "-q");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    git("config", "commit.gpgsign", "false");
+    const deleted = "packages/operator-core/lib/deleted.ts";
+    const missing = "packages/operator-core/lib/missing.ts";
+    mkdirSync(join(repo, "packages/operator-core/lib"), { recursive: true });
+    writeFileSync(join(repo, deleted), "export {};");
+    writeFileSync(join(repo, missing), "export const value = 1;");
+    git("add", ".");
+    git("commit", "--no-verify", "-qm", "before");
+    const from = git("rev-parse", "HEAD");
+    git("rm", deleted);
+    writeFileSync(join(repo, missing), "export const value = 2;");
+    git("add", ".");
+    git("commit", "--no-verify", "-qm", "after");
+    const to = git("rev-parse", "HEAD");
+    // Neither file exists in typecheckTree: only the committed deletion may
+    // disappear from the response file. The strict CLI must still see the other.
+    const selections: string[][] = [];
+    const exec: CheckpointExec = async (_cmd, args) => {
+      const response = args.find((arg) => arg.startsWith("--files-from="))!;
+      selections.push(JSON.parse(readFileSync(response.slice("--files-from=".length), "utf8")));
+      return { code: 1, stdout: "explicit file selection contains missing paths", stderr: "" };
+    };
+    const deps = realCheckpointDeps({ ...preflightCfg, integrationRoot: repo }, exec);
+    const result = await deps.runChangedFileTypecheckPreflight?.([deleted, missing], { from, to });
+    expect(selections).toEqual([[missing]]);
+    expect(result).toMatchObject({ status: "failed", checkedFiles: [missing] });
+
+    selections.length = 0;
+    const deletionOnly = await deps.runChangedFileTypecheckPreflight?.([deleted], { from, to });
+    expect(deletionOnly?.status).toBe("skipped");
+    expect(selections).toEqual([]);
+
+    // Unavailable revision evidence cannot silently bless missing files.
+    await deps.runChangedFileTypecheckPreflight?.([deleted, missing], { from, to: "missing-ref" });
+    expect(selections).toEqual([[deleted, missing]]);
+  });
+
   it("runs the existing lint:tsc gate with the exact committed diff, release env, and sequential-leg heap", async () => {
     const { exec, calls } = makeExec([
       {

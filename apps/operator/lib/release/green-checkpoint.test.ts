@@ -4825,8 +4825,9 @@ describe("runGreenCheckpoint", () => {
       calls.push("changedFilesForRange");
       return ["docs/note.md", "packages/operator-core/lib/a.ts"];
     };
-    deps.runChangedFileTypecheckPreflight = async (files) => {
+    deps.runChangedFileTypecheckPreflight = async (files, range) => {
       calls.push("runChangedFileTypecheckPreflight");
+      expect(range).toEqual({ from: c1, to: c2 });
       expect(files).toEqual([
         "docs/note.md",
         "packages/operator-core/lib/a.ts",
