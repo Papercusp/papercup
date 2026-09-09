@@ -473,8 +473,19 @@ export async function refreshGoalTripwires(
     // measurement does: the refresh stays pure and testable without a fake timer.
     nowMs,
   });
+  // EI-22795409618800494: preserving the last visible value is NOT permission
+  // to enforce it. An unmeasured refresh deliberately retains manual/stale
+  // current values; only this sweep's resolved measurements may cause a stop.
+  // Include unchanged-but-confirmed readings: a real breach remains enforceable
+  // even when neither its number nor its stored provenance needed a write.
+  const measuredMetrics = new Set(
+    res.outcomes
+      .filter((outcome) => outcome.reason === 'advanced' || outcome.reason === 'unchanged')
+      .map((outcome) => outcome.metric),
+  );
+  const breached = breachedTripwires(res.next.filter((tripwire) => measuredMetrics.has(tripwire.metric)));
   if (!res.changed) {
-    return { advanced: 0, written: false, breached: breachedTripwires(res.next) };
+    return { advanced: 0, written: false, breached };
   }
 
   // sql.json for the same double-encoding reason documented on the snapshot write.
@@ -486,7 +497,6 @@ export async function refreshGoalTripwires(
   `;
   if (upd.count !== 1) throw new Error(`tripwire UPDATE matched ${upd.count} rows`);
 
-  const breached = breachedTripwires(res.next);
   return { advanced: res.advanced, written: true, breached };
 }
 
