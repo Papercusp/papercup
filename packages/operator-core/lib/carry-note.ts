@@ -932,7 +932,13 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     // shape, preserve `{status, evidence}` losslessly in the authority slot named by
     // the status. A non-verifying status keeps its evidence as observed CONTEXT; it
     // must never become `verified` merely because the evidence string is non-empty.
-    if (r.verified === undefined && booleanVerified === undefined && booleanOk === undefined) {
+    if (
+      r.verified === undefined &&
+      r.observed === undefined &&
+      r.contested === undefined &&
+      booleanVerified === undefined &&
+      booleanOk === undefined
+    ) {
       if (evidence && statusContested) r.contested = evidence;
       else if (evidence && status && !statusVerified) r.observed = evidence;
       else if (evidence) r.verified = evidence;
