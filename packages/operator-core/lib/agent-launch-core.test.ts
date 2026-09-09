@@ -117,7 +117,7 @@ describe('claimAgentLaunch crash recovery', () => {
     expect(replay.priorSummary).toEqual(summary);
   });
 
-  it('reclaims an old explicit agentStarted:null receipt so a stalled launch can be replaced', async () => {
+  it('reclaims an old explicit agentStarted:null receipt with no recoverable task identity', async () => {
     const now = 1_800_000_000_000;
     launchCoreSql
       .mockResolvedValueOnce([])
@@ -133,9 +133,45 @@ describe('claimAgentLaunch crash recovery', () => {
     expect(retry.won).toBe(true);
     const query = String(launchCoreSql.mock.calls[1]?.[0]?.join(' '));
     expect(query).toContain("existing.summary -> 'agentStarted' = 'null'::jsonb");
+    expect(query).toContain("jsonb_typeof(existing.summary -> 'tasks') IS DISTINCT FROM 'array'");
+    expect(query).toContain("jsonb_array_length(existing.summary -> 'tasks') = 0");
     expect(launchCoreSql.mock.calls[1]?.slice(1)).toContain(
       now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS,
     );
+  });
+
+  it('never leases over an old agentStarted:null receipt with a durable task identity', async () => {
+    const now = 1_800_000_000_000;
+    const summary = {
+      opened: 1,
+      agentStarted: null,
+      mode: 'fresh',
+      tasks: [{ taskId: 'task-still-recoverable', logPath: '/tmp/recoverable.log' }],
+    };
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        summary,
+        launched_at: now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS - 1,
+        launched_by: 'su-first',
+      }]);
+
+    const replay = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'recoverable-launch',
+      launchedBy: 'su-retry',
+      now,
+    });
+
+    expect(replay).toEqual({
+      won: false,
+      priorSummary: summary,
+      priorLaunchedAt: now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS - 1,
+      priorLaunchedBy: 'su-first',
+    });
+    const query = String(launchCoreSql.mock.calls[1]?.[0]?.join(' '));
+    expect(query).toContain("jsonb_array_length(existing.summary -> 'tasks') = 0");
   });
 
   it('keeps a recent agentStarted:null receipt fail-closed', async () => {

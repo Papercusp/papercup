@@ -83,10 +83,8 @@ const ENFORCEABLE_LIFECYCLE = new Set<string>(ENFORCEABLE_LIFECYCLE_STATUSES);
 type NotEnforcedReason = Extract<EnforcementEligibility, { enforcing: false }>['reason'];
 
 const NOT_ENFORCED_BECAUSE = {
-  historical:
-    "the plan already shipped, so its clauses are carried for visibility and never block — no action needed",
-  'pre-enforcement':
-    'the plan is still a draft, so its clauses are candidate inputs until it is promoted (D-012)',
+  historical: 'the plan already shipped, so its clauses are carried for visibility and never block — no action needed',
+  'pre-enforcement': 'the plan is still a draft, so its clauses are candidate inputs until it is promoted (D-012)',
   'not-yet-reconciled':
     'the plan is active but has not adopted behavior clauses yet — reconcile that plan to enforce them',
 } satisfies Record<NotEnforcedReason, string>;
@@ -190,6 +188,24 @@ function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): b
 }
 
 /**
+ * Legacy settled stamps created before rubric identity stamping cannot be
+ * admitted, but they are repairable when scorecards:list resolved the current
+ * meta-rubric identity. Route them through the same pending-audit dispatcher as
+ * an ordinary pending stamp; a real current failed audit remains a failure.
+ */
+function gradingAuditNeedsIdentityReopen(card: ScorecardRow): boolean {
+  const currentness = card.gradingAuditCurrentness;
+  return Boolean(
+    card.gradingAudit &&
+    card.gradingAudit.state !== 'pending' &&
+    currentness?.state === 'unknown' &&
+    currentness.reason === 'recorded-identity-missing' &&
+    currentness.currentRevision != null &&
+    currentness.currentCriteriaHash != null,
+  );
+}
+
+/**
  * Keep the machine-readable would-block list, but do not throw away the evaluator's
  * criterion evidence. In particular, `unknown [freshness]` is not actionable when the
  * actual cause is an omitted `testFingerprint`/`fixtureFingerprint`/other dimension.
@@ -209,9 +225,7 @@ function humanizeFreshnessEvidence(evidence: string): string {
     /\b(source|test|fixture|rubric|environment)(-current-fingerprint-not-supplied|-stale|_fingerprint_absent|_fingerprint_mismatch)\b/g,
     (_match, dimension: keyof typeof FINGERPRINT_FIELD_BY_DIMENSION, reason: string) => {
       const field = FINGERPRINT_FIELD_BY_DIMENSION[dimension];
-      return reason === '-stale' || reason === '_fingerprint_mismatch'
-        ? `${field} mismatched`
-        : `${field} omitted`;
+      return reason === '-stale' || reason === '_fingerprint_mismatch' ? `${field} mismatched` : `${field} omitted`;
     },
   );
 }
@@ -295,7 +309,8 @@ export async function specTestAdequacyCompletionGate(
 
   if (!input.attestation) {
     const potentiallyTestRequiring = clauses.filter(
-      (clause) => clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
+      (clause) =>
+        clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
     );
     if (potentiallyTestRequiring.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
     return withReport({
@@ -370,14 +385,16 @@ export async function specTestAdequacyCompletionGate(
     });
     if (!cards.some((card) => scorecardMatches(card, result))) {
       for (const card of cards) {
+        const needsIdentityReopen = gradingAuditNeedsIdentityReopen(card);
         if (
-          (card.gradingAudit?.state === 'pending' || card.gradingAudit?.state === 'failed') &&
+          (card.gradingAudit?.state === 'pending' || card.gradingAudit?.state === 'failed' || needsIdentityReopen) &&
           !card.supersededBy &&
           !card.retracted &&
           card.issueId
         ) {
-          if (card.gradingAudit.state === 'pending') pendingGradingAuditTargetIds.add(card.issueId);
-          else failedGradingAuditTargetIds.add(card.issueId);
+          if (card.gradingAudit.state === 'pending' || needsIdentityReopen) {
+            pendingGradingAuditTargetIds.add(card.issueId);
+          } else failedGradingAuditTargetIds.add(card.issueId);
         }
       }
       failures.push(`${label}: no current terminal complete scorecard matches the exact evaluator verdicts`);
@@ -392,12 +409,8 @@ export async function specTestAdequacyCompletionGate(
       retryable: true,
       checked,
       reason: failures.join('; '),
-      ...(pendingGradingAuditTargetIds.size
-        ? { pendingGradingAuditTargetIds: [...pendingGradingAuditTargetIds] }
-        : {}),
-      ...(failedGradingAuditTargetIds.size
-        ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] }
-        : {}),
+      ...(pendingGradingAuditTargetIds.size ? { pendingGradingAuditTargetIds: [...pendingGradingAuditTargetIds] } : {}),
+      ...(failedGradingAuditTargetIds.size ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] } : {}),
     });
   }
   return withReport({ ok: true, applicable: true, checked });

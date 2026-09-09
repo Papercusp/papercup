@@ -1093,9 +1093,12 @@ export const AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS = 15 * 60 * 1000;
  * An explicit `agentStarted: null` result means the launch verifier's bounded
  * window expired without enough evidence to call the launch healthy or dead.
  * Keep that receipt authoritative while a slow first turn can still reasonably
- * arrive, then let one retry reclaim it. The JSON null check below is
- * deliberately stricter than "field missing": callers that could not run the
- * verifier have no liveness evidence and must remain deduped.
+ * arrive, then let one retry reclaim it only when the receipt has no durable
+ * task identity. A task/log identity makes the launch recoverable even when
+ * bounded kickoff proof is absent; leasing over that receipt can duplicate a
+ * still-live process. The JSON null check below is deliberately stricter than
+ * "field missing": callers that could not run the verifier have no liveness
+ * evidence and must remain deduped.
  */
 export const AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS = 30 * 60 * 1000;
 
@@ -1146,6 +1149,10 @@ export async function claimAgentLaunch(opts: {
            OR (
              existing.summary -> 'agentStarted' = 'null'::jsonb
              AND existing.launched_at < ${now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS}
+             AND (
+               jsonb_typeof(existing.summary -> 'tasks') IS DISTINCT FROM 'array'
+               OR jsonb_array_length(existing.summary -> 'tasks') = 0
+             )
            )
          )
       RETURNING idempotency_key

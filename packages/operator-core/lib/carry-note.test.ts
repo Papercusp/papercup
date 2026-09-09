@@ -242,6 +242,16 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(p).toContain('- ? ');
     expect(p).not.toContain(' — evidence:');
     expect(parseCheckLine(p)).toEqual(PREDICTED);
+    const observed: CheckEntry = {
+      claim: 'P-002 adequacy audits are terminal',
+      recheck: 'read all gradingAudit.state values',
+      observed: 'Pending with advancing reservations',
+    };
+    const o = renderCheckLine(observed);
+    expect(o).toContain('- ? ');
+    expect(o).toContain(' — evidence: Pending with advancing reservations');
+    expect(o).not.toContain('- ✓ ');
+    expect(parseCheckLine(o)).toEqual(observed);
     // Minimal check (claim only).
     expect(parseCheckLine(renderCheckLine({ claim: 'just a claim' }))).toEqual({ claim: 'just a claim' });
   });
@@ -632,6 +642,42 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(bothRepairs.some((r) => r.detail.includes('canonical id was kept'))).toBe(true);
   });
 
+  it('keeps predicted P-002/P-004 evidence as observed context instead of verification', () => {
+    const rows = [
+      {
+        id: 'p002-current-scorecard-audits',
+        claim: 'P-002 adequacy audits are terminal',
+        recheck: 'read all gradingAudit.state values',
+        status: 'predicted',
+        evidence: 'Pending with advancing reservations',
+      },
+      {
+        id: 'p004-current-measurement',
+        claim: 'P-004 has a current measurement',
+        recheck: 'read the newest measurement artifact',
+        status: 'predicted',
+        evidence: 'Prior artifact is stale',
+      },
+    ];
+
+    for (const [index, row] of rows.entries()) {
+      const repairs: CarryArgRepair[] = [];
+      const coerced = coerceCarryRowShape(row, `checks[${index}]`, repairs) as CheckEntry;
+      expect(coerced).toMatchObject({
+        id: row.id,
+        claim: row.claim,
+        recheck: row.recheck,
+        observed: row.evidence,
+      });
+      expect(coerced).not.toHaveProperty('verified');
+      expect(renderCheckLine(coerced)).toContain('- ? ');
+      expect(parseCheckLine(renderCheckLine(coerced))).toEqual(coerced);
+      expect(repairs).toEqual([
+        expect.objectContaining({ field: `checks[${index}]`, detail: expect.stringContaining('`observed`') }),
+      ]);
+    }
+  });
+
   it('normalizes boolean `ok` check rows to the canonical evidence slot (EI-21828094173087688)', () => {
     const verifiedRepairs: CarryArgRepair[] = [];
     expect(
@@ -894,6 +940,45 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     // Cap.
     const many = Array.from({ length: CARRY_NOTE_MAX_CHECKS + 3 }, (_, i) => ({ claim: `c${i}` }));
     expect(normalizeCheckEntries(many, [], now)).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+  });
+
+  it('normalizes, inherits, patches, and upgrades observed context without granting it authority', () => {
+    const now = Date.parse('2026-09-09T12:00:00.000Z');
+    const initial = normalizeCheckEntries(
+      [
+        {
+          id: 'audit',
+          claim: 'the audit is terminal',
+          recheck: 'read audit state',
+          observed: 'audit remains pending',
+        },
+      ],
+      [],
+      now,
+    );
+    expect(initial[0]).toMatchObject({ observed: `audit remains pending @${new Date(now).toISOString()}` });
+    expect(initial[0]).not.toHaveProperty('verified');
+
+    const inherited = normalizeCheckEntries([{ id: 'audit', claim: 'the audit is now terminal' }], initial, now + 1_000);
+    expect(inherited[0]?.observed).toBe(initial[0]?.observed);
+    expect(inherited[0]).not.toHaveProperty('verified');
+
+    const patched = patchExistingCheckEntries(
+      [{ id: 'audit', claim: 'the audit is now terminal', observed: 'reservation advanced but state is pending' }],
+      inherited,
+      now + 2_000,
+    );
+    expect(patched).not.toBeNull();
+    expect(patched?.[0]?.observed).toContain('reservation advanced but state is pending');
+    expect(patched?.[0]).not.toHaveProperty('verified');
+
+    const upgraded = normalizeCheckEntries(
+      [{ id: 'audit', claim: 'the audit is terminal', verified: 'all audit states are done' }],
+      patched ?? [],
+      now + 3_000,
+    );
+    expect(upgraded[0]?.verified).toContain('all audit states are done');
+    expect(upgraded[0]).not.toHaveProperty('observed');
   });
 });
 
@@ -1894,6 +1979,24 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
 
       expect(merged.droppedChecks).toEqual(['claim 2']);
       expect(merged.checks.map((c) => c.claim)).toContain('claim 1');
+    });
+
+    it('retains observed context ahead of a bare prediction without changing its ? marker', () => {
+      const observed = { claim: 'claim 1', recheck: 'probe 1', observed: 'probe is still pending' };
+      const predictedTail = { claim: 'claim 2', recheck: 'probe 2' };
+      const rest = Array.from({ length: CARRY_NOTE_MAX_CHECKS - 2 }, (_, i) => check(i + 3));
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([observed, predictedTail, ...rest]),
+        baseNote: 'body',
+        checks: [{ claim: 'one row past the cap' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+
+      expect(merged.droppedChecks).toEqual(['claim 2']);
+      const retained = merged.checks.find((c) => c.claim === 'claim 1');
+      expect(retained?.observed).toContain('probe is still pending');
+      expect(renderCheckLine(retained!)).toContain('- ? ');
     });
 
     it('evidence ordering STOPS PROTECTING once the supplied list alone fills the cap', () => {

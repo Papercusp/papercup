@@ -631,6 +631,7 @@ export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
     claim: string;
     recheck?: string;
     verified?: string;
+    observed?: string;
     contested?: string;
   }>;
   /**

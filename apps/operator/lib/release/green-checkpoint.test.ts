@@ -17,6 +17,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { linuxProcStateFromStat } from "@papercusp/operator-core/lib/process-identity";
 import {
   runGreenCheckpoint,
   emitInconclusiveCheckpointVerdict,
@@ -4471,6 +4472,58 @@ describe("runGreenCheckpoint", () => {
    * These two tests are each other's teeth: same repro shape, opposite expected outcome,
    * driven only by the flag under test.
    */
+  function grandchildStillRunning(
+    pid: number,
+    platform: string = process.platform,
+    probe: () => void = () => { process.kill(pid, 0); },
+    readStat: () => string = () => readFileSync(`/proc/${pid}/stat`, "utf8"),
+  ): boolean {
+    try {
+      probe();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      throw error;
+    }
+    if (platform !== "linux") return true;
+    try {
+      // kill(pid, 0) also succeeds for an unreaped zombie. It proves that the
+      // PID exists, not that the grandchild can still execute after SIGKILL.
+      const state = linuxProcStateFromStat(readStat());
+      if (state === null) throw new Error("Grandchild process state is unknown");
+      return state !== "Z" && state !== "X";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  it("WI-7069: the grandchild detector distinguishes running, zombie, gone, and unknown", () => {
+    const probe = vi.fn();
+    for (const state of ["R", "S", "D", "T"]) {
+      expect(grandchildStillRunning(123, "linux", probe, () => `123 (child (name)) ${state} 1`)).toBe(true);
+    }
+    for (const state of ["Z", "X"]) {
+      expect(grandchildStillRunning(123, "linux", probe, () => `123 (child (name)) ${state} 1`)).toBe(false);
+    }
+    expect(probe).toHaveBeenCalledTimes(6);
+    expect(grandchildStillRunning(123, "linux", () => {
+      throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    })).toBe(false);
+    expect(grandchildStillRunning(123, "linux", probe, () => {
+      throw Object.assign(new Error("reaped after probe"), { code: "ENOENT" });
+    })).toBe(false);
+    expect(() => grandchildStillRunning(123, "linux", probe, () => "malformed")).toThrow("state is unknown");
+    expect(() => grandchildStillRunning(123, "linux", probe, () => {
+      throw Object.assign(new Error("denied"), { code: "EACCES" });
+    })).toThrow("denied");
+    expect(() => grandchildStillRunning(123, "linux", () => {
+      throw Object.assign(new Error("probe denied"), { code: "EPERM" });
+    })).toThrow("probe denied");
+    const nonLinuxRead = vi.fn(() => { throw new Error("must not read proc"); });
+    expect(grandchildStillRunning(123, "darwin", probe, nonLinuxRead)).toBe(true);
+    expect(nonLinuxRead).not.toHaveBeenCalled();
+  });
+
   it("WI-7069: killProcessGroupOnTimeout reaches a GRANDCHILD process, not just the direct child", async () => {
     const dir = mkdtempSync(join(tmpdir(), "green-checkpoint-grandchild-"));
     const pidfile = join(dir, "pid");
@@ -4483,14 +4536,8 @@ describe("runGreenCheckpoint", () => {
       ).rejects.toThrow(/timed out/);
       await new Promise((r) => setTimeout(r, 200));
       const pid = Number(readFileSync(pidfile, "utf8").trim());
-      let alive = true;
-      try {
-        process.kill(pid, 0);
-      } catch {
-        alive = false;
-      }
       // The backgrounded grandchild must be dead too — the group-kill reached it.
-      expect(alive).toBe(false);
+      expect(grandchildStillRunning(pid)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -4508,15 +4555,9 @@ describe("runGreenCheckpoint", () => {
       ).rejects.toThrow(/timed out/);
       await new Promise((r) => setTimeout(r, 200));
       pid = Number(readFileSync(pidfile, "utf8").trim());
-      let alive = true;
-      try {
-        process.kill(pid, 0);
-      } catch {
-        alive = false;
-      }
       // Without the flag, only the direct `bash` child is killed — the backgrounded
       // grandchild survives as an orphan. This is the bug `killProcessGroupOnTimeout` fixes.
-      expect(alive).toBe(true);
+      expect(grandchildStillRunning(pid)).toBe(true);
     } finally {
       // Clean up the orphan so it doesn't linger on the shared box.
       if (pid) {

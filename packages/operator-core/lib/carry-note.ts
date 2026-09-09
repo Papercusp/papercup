@@ -121,6 +121,9 @@ export interface CheckEntry {
   /** Evidence pointer for a VERIFIED claim — what was observed, where ("tick 1944 @02:38Z, pg read").
    *  Absent ⇒ the claim renders as PREDICTED. */
   verified?: string;
+  /** Observed context that does NOT affirm the claim (for example, "audit still pending").
+   *  It remains visible on a ? PREDICTED row without acquiring verification authority. */
+  observed?: string;
   /** Evidence that was supplied as verification but contains a contradiction marker
    *  (for example, "STILL RUNNING"). It renders as CONTESTED, never VERIFIED. */
   contested?: string;
@@ -211,7 +214,7 @@ export const CHECKPOINT_BODY_CAP_CHARS = 32000;
  * must not re-create is EI-18723223344390510, where a nested row quietly dropped
  * fields and destroyed a verified check's evidence with no signal.
  */
-export const CARRY_ROW_SOFT_CAPS = { claim: 500, recheck: 300, verified: 300, contested: 300 } as const;
+export const CARRY_ROW_SOFT_CAPS = { claim: 500, recheck: 300, verified: 300, observed: 300, contested: 300 } as const;
 
 /** Soft cap on each narrative field (`did`/`left`/`insight`/`next`), same contract. */
 export const CARRY_TEXT_SOFT_CAP = 8000;
@@ -901,6 +904,7 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   // Only these read as an affirmative verification; anything else (predicted,
   // pending, unknown, false, …) must stay PREDICTED rather than be upgraded.
   const statusVerified = /^(verified|true|pass(ed)?|confirmed|done|ok|✓)$/i.test(status);
+  const statusContested = /^(contested|fail(?:ed|ure)?|false|error|red|⚠)$/i.test(status);
   const booleanVerified = typeof r.verified === 'boolean' ? r.verified : undefined;
 
   if (booleanVerified !== undefined) {
@@ -925,17 +929,32 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     delete r.evidence;
     // When a boolean was supplied, it is authoritative: only `true` with a real
     // evidence string above can become VERIFIED. Without the boolean compatibility
-    // shape, retain the older lossless `{status, evidence}` repair.
+    // shape, preserve `{status, evidence}` losslessly in the authority slot named by
+    // the status. A non-verifying status keeps its evidence as observed CONTEXT; it
+    // must never become `verified` merely because the evidence string is non-empty.
     if (r.verified === undefined && booleanVerified === undefined && booleanOk === undefined) {
-      if (evidence) r.verified = evidence;
+      if (evidence && statusContested) r.contested = evidence;
+      else if (evidence && status && !statusVerified) r.observed = evidence;
+      else if (evidence) r.verified = evidence;
       else if (statusVerified) r.verified = status;
     }
+    const mappedEvidenceSlot =
+      r.contested !== undefined
+        ? 'contested'
+        : r.verified !== undefined
+          ? 'verified'
+          : r.observed !== undefined
+            ? 'observed'
+            : null;
     repairs.push({
       field: path,
       kind: 'renamed',
-      detail: `{${[hasStatus && 'status', hasEvidence && 'evidence'].filter(Boolean).join(', ')}} is not this tool's row shape — mapped to \`verified\` (${
-        r.verified === undefined ? 'kept as PREDICTED' : 'evidence preserved'
-      }); pass {claim, recheck, verified} directly next time`,
+      detail:
+        `{${[hasStatus && 'status', hasEvidence && 'evidence'].filter(Boolean).join(', ')}} is not this tool's row shape — ` +
+        (mappedEvidenceSlot
+          ? `evidence preserved in \`${mappedEvidenceSlot}\``
+          : 'kept as PREDICTED') +
+        '; pass {claim, recheck, verified|observed|contested} directly next time',
     });
   }
 
@@ -1146,7 +1165,7 @@ function inferNestedProbeKind(row: unknown, source: Record<string, unknown>): un
  *  rows correctly with zero prior knowledge. Starts with `_` so line-parsers skip it. */
 export const CARRY_NOTE_CHECKS_LEGEND =
   '_✓ = VERIFIED (evidence attached) · ⚠ = CONTESTED (evidence contradicts verification; re-check now) · ' +
-  '? = PREDICTED — run the re-check before relying on it · ' +
+  '? = PREDICTED (observed context may be attached) — run the re-check before relying on it · ' +
   '[scope: …] = ALL the probe observed; a claim quantified beyond it is NOT verified by it_';
 
 /** Max length of a row `id`. Long enough to be descriptive (`gate-green-at-tip`),
@@ -1258,9 +1277,10 @@ export function parseWallLine(line: string): WallEntry | null {
 export function renderCheckLine(c: CheckEntry): string {
   const recheck = (c.recheck ?? '').trim();
   const verified = (c.verified ?? '').trim();
+  const observed = (c.observed ?? '').trim();
   const contested = (c.contested ?? '').trim();
   const conflict = findVerificationConflict(verified, c.claim);
-  const evidence = contested || verified;
+  const evidence = contested || verified || observed;
   const marker = contested || conflict ? '⚠' : verified ? '✓' : '?';
   const id = sanitizeCarryRowId(c.id);
   const scope = describeProbeScope(recheck);
@@ -1328,10 +1348,16 @@ export function parseCheckLine(line: string): CheckEntry | null {
   if (recheck) out.recheck = recheck;
   const probe = decodeContinuityProbe((m[5] ?? '').trim());
   if (probe) out.probe = probe;
-  const verified = (m[6] ?? '').trim();
-  if (verified) {
-    if (m[1] === '⚠' || findVerificationConflict(verified, claim)) out.contested = verified;
-    else out.verified = verified;
+  const evidence = (m[6] ?? '').trim();
+  if (evidence) {
+    // The rendered marker is the authority tier. In particular, `?` evidence is
+    // deliberately context ABOUT an unverified claim and commonly says "pending"
+    // or "stale"; running the contradiction detector first would misclassify that
+    // expected context as CONTESTED and destroy the observed round-trip. Only a
+    // purported ✓ needs the safety downgrade when its evidence contradicts it.
+    if (m[1] === '?') out.observed = evidence;
+    else if (m[1] === '⚠' || findVerificationConflict(evidence, claim)) out.contested = evidence;
+    else out.verified = evidence;
   }
   if (m[7]) {
     const t = Date.parse(m[7]);
@@ -1630,6 +1656,7 @@ export function normalizeCheckEntries(
     claim: string;
     recheck?: string;
     verified?: string;
+    observed?: string;
     contested?: string;
     probe?: ContinuityProbe;
     sinceMs?: number;
@@ -1653,30 +1680,53 @@ export function normalizeCheckEntries(
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
     const probe = e.probe ?? existing?.probe;
     // An explicit evidence field is an update, including an empty string that
-    // deliberately clears inherited evidence. `contested` is the lossless
-    // downgrade target for evidence that contradicts the affirmative ✓ meaning.
+    // deliberately clears inherited evidence. Exactly one authority slot survives:
+    // verified (✓), contested (⚠), or observed (? context without verification).
     let verified = (e.verified !== undefined ? e.verified : (existing?.verified ?? '')).trim();
     let contested = (
-      e.contested !== undefined ? e.contested : e.verified !== undefined ? '' : (existing?.contested ?? '')
+      e.contested !== undefined
+        ? e.contested
+        : e.verified !== undefined || e.observed !== undefined
+          ? ''
+          : (existing?.contested ?? '')
     ).trim();
-    if (e.contested !== undefined) verified = '';
+    let observed = (
+      e.observed !== undefined
+        ? e.observed
+        : e.verified !== undefined || e.contested !== undefined
+          ? ''
+          : (existing?.observed ?? '')
+    ).trim();
+    if (e.contested !== undefined) {
+      verified = '';
+      observed = '';
+    }
+    if (e.observed !== undefined) {
+      verified = '';
+      contested = '';
+    }
+    if (e.verified !== undefined) observed = '';
     const conflict = findVerificationConflict(verified, claim);
     if (conflict) {
       contested = verified;
       verified = '';
+      observed = '';
     }
     // Review fold #5: evidence never goes stale SILENTLY — stamp the verification
     // instant into the evidence text when it is NEWLY supplied (inherited evidence
     // keeps its original stamp), so a ✓ observed 20 wakes ago visibly carries its
     // age instead of rendering with fresh-evidence authority.
-    const suppliedEvidence = (e.verified ?? e.contested ?? '').trim();
-    const existingEvidence = (existing?.verified ?? existing?.contested ?? '').trim();
+    const suppliedEvidence = (e.verified ?? e.contested ?? e.observed ?? '').trim();
+    const existingEvidence = (existing?.verified ?? existing?.contested ?? existing?.observed ?? '').trim();
     const newlySupplied = Boolean(suppliedEvidence) && suppliedEvidence !== existingEvidence;
     if (newlySupplied && verified && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(verified)) {
       verified = `${verified} @${new Date(nowMs).toISOString()}`;
     }
     if (newlySupplied && contested && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(contested)) {
       contested = `${contested} @${new Date(nowMs).toISOString()}`;
+    }
+    if (newlySupplied && observed && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(observed)) {
+      observed = `${observed} @${new Date(nowMs).toISOString()}`;
     }
     out.push({
       ...(id ? { id } : {}),
@@ -1685,6 +1735,7 @@ export function normalizeCheckEntries(
       ...(probe ? { probe } : {}),
       ...(contested ? { contested } : {}),
       ...(verified ? { verified } : {}),
+      ...(observed ? { observed } : {}),
       sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,
     });
     if (out.length >= CARRY_NOTE_MAX_CHECKS) break;
@@ -1711,6 +1762,7 @@ export function patchExistingCheckEntries(
     claim: string;
     recheck?: string;
     verified?: string;
+    observed?: string;
     contested?: string;
     probe?: ContinuityProbe;
     sinceMs?: number;
@@ -1795,6 +1847,7 @@ export function mergeCarryRows(opts: {
     claim: string;
     recheck?: string;
     verified?: string;
+    observed?: string;
     contested?: string;
     probe?: ContinuityProbe;
     sinceMs?: number;
@@ -1964,7 +2017,7 @@ export function mergeCarryRows(opts: {
  */
 function upsertOntoPrior<T extends { id?: string; claim: string }>(
   supplied: ReadonlyArray<T>,
-  prior: ReadonlyArray<{ id?: string; claim: string; verified?: string; contested?: string }>,
+  prior: ReadonlyArray<{ id?: string; claim: string; verified?: string; observed?: string; contested?: string }>,
   merging: boolean,
   maxRows: number,
 ): ReadonlyArray<T | { id?: string; claim: string }> {
@@ -2034,23 +2087,25 @@ function upsertOntoPrior<T extends { id?: string; claim: string }>(
   return out;
 }
 
-/** Does this carried row carry an OBSERVATION — ✓ VERIFIED, or ⚠ CONTESTED (evidence that
- *  contradicts its own claim, which is a warning worth more than a guess, not less) — as
- *  opposed to a bare ? PREDICTED hypothesis? Deliberately the same `verified ?? contested`
+/** Does this carried row carry an OBSERVATION — ✓ VERIFIED, ⚠ CONTESTED, or useful
+ *  non-authoritative context on a ? PREDICTED row — as opposed to a bare hypothesis?
+ *  Deliberately the same `verified ?? contested ?? observed`
  *  evidence test {@link normalizeCheckEntries} already uses when deciding whether to stamp
  *  a row's evidence, so "has evidence" cannot come to mean two different things in one file.
  *
  *  A {@link WallEntry} has NEITHER field, so every wall reads as evidence-less and
  *  {@link evidenceFirst} is the identity for walls — wall order is unchanged by this rule. */
-function carriesEvidence(row: { verified?: string; contested?: string }): boolean {
-  return Boolean((row.verified ?? row.contested ?? '').trim());
+function carriesEvidence(row: { verified?: string; observed?: string; contested?: string }): boolean {
+  return Boolean((row.verified ?? row.contested ?? row.observed ?? '').trim());
 }
 
 /** Stable partition putting evidence-bearing rows ahead of PREDICTED ones, so a downstream
  *  cap that cuts from the tail cuts the cheapest-to-reproduce rows first. Stable WITHIN each
  *  tier: two rows of equal evidence status keep their established relative order, so this
  *  reorders a note only when the cap was about to destroy evidence anyway. */
-export function evidenceFirst<T extends { verified?: string; contested?: string }>(rows: ReadonlyArray<T>): T[] {
+export function evidenceFirst<T extends { verified?: string; observed?: string; contested?: string }>(
+  rows: ReadonlyArray<T>,
+): T[] {
   const withEvidence: T[] = [];
   const predicted: T[] = [];
   for (const row of rows) (carriesEvidence(row) ? withEvidence : predicted).push(row);

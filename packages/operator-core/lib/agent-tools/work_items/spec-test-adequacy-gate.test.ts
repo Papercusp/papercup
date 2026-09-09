@@ -2,10 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
 import type { SpecClauseRevision } from '../plans/spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from '../plans/spec-test-adequacy';
-import {
-  evaluateSpecTestAdequacy,
-  SPEC_TEST_ADEQUACY_RUBRIC_REF,
-} from '../plans/spec-test-adequacy';
+import { evaluateSpecTestAdequacy, SPEC_TEST_ADEQUACY_RUBRIC_REF } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 
 type GateDeps = NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[1]>;
@@ -191,8 +188,8 @@ const ATTESTATION = {
  * class. Tests that care about the non-enforcing lanes override this explicitly.
  */
 function planStatuses(byPlan: Record<string, string> = {}) {
-  return vi.fn<NonNullable<GateDeps['listPlanStatuses']>>(async ({ planSlugs }) =>
-    new Map(planSlugs.map((slug) => [slug, byPlan[slug] ?? 'active'])),
+  return vi.fn<NonNullable<GateDeps['listPlanStatuses']>>(
+    async ({ planSlugs }) => new Map(planSlugs.map((slug) => [slug, byPlan[slug] ?? 'active'])),
   );
 }
 
@@ -293,10 +290,7 @@ describe('specTestAdequacyCompletionGate', () => {
       }),
     ]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [] });
     if (!result.ok) {
@@ -333,10 +327,7 @@ describe('specTestAdequacyCompletionGate', () => {
       },
     ]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
   });
@@ -367,10 +358,7 @@ describe('specTestAdequacyCompletionGate', () => {
       ...ATTESTATION,
       evidenceRefs: [current.evidenceRef, counterexample.evidenceRef],
     };
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation }, deps);
 
     expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
   });
@@ -385,7 +373,10 @@ describe('specTestAdequacyCompletionGate', () => {
         },
       },
     ],
-    ['provisional scorecard', { provisional: { violatableKeys: ['freshness'], stampedAt: '2026-08-20T00:02:00.000Z' } }],
+    [
+      'provisional scorecard',
+      { provisional: { violatableKeys: ['freshness'], stampedAt: '2026-08-20T00:02:00.000Z' } },
+    ],
     [
       'pending grading audit',
       {
@@ -400,10 +391,7 @@ describe('specTestAdequacyCompletionGate', () => {
     const deps = passingDeps();
     deps.listCards.mockResolvedValue([matchingCard(cardPatch as Partial<ScorecardRow>)]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [] });
     if (!result.ok) expect(result.reason).toContain('no current terminal complete scorecard');
@@ -440,10 +428,7 @@ describe('specTestAdequacyCompletionGate', () => {
       }),
     ]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({
       ok: false,
@@ -452,6 +437,42 @@ describe('specTestAdequacyCompletionGate', () => {
       pendingGradingAuditTargetIds: ['EI-pending-current'],
     });
   });
+
+  it.each(['passed', 'failed'] as const)(
+    'routes a legacy %s audit stamp with missing recorded identity back through pending dispatch',
+    async (state) => {
+      const deps = passingDeps();
+      deps.listCards.mockResolvedValue([
+        matchingCard({
+          issueId: `EI-legacy-${state}`,
+          gradingAudit: {
+            state,
+            metaRubricRef: 'grading-integrity',
+            stampedAt: '2026-08-20T00:02:00.000Z',
+            auditIssueId: 'EI-old-audit',
+          },
+          gradingAuditCurrentness: {
+            state: 'unknown',
+            reason: 'recorded-identity-missing',
+            recordedRevision: null,
+            currentRevision: 6,
+            recordedCriteriaHash: null,
+            currentCriteriaHash: 'hash-current',
+          },
+        }),
+      ]);
+
+      const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+      expect(result).toMatchObject({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        pendingGradingAuditTargetIds: [`EI-legacy-${state}`],
+      });
+      if (!result.ok) expect(result.failedGradingAuditTargetIds).toBeUndefined();
+    },
+  );
 
   it('returns only current failed scorecard issue ids for state-specific repair guidance', async () => {
     const deps = passingDeps();
@@ -485,10 +506,7 @@ describe('specTestAdequacyCompletionGate', () => {
       }),
     ]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({
       ok: false,
@@ -521,10 +539,7 @@ describe('specTestAdequacyCompletionGate', () => {
       }),
     ]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!result.ok) expect(result.reason).toContain('freshness');
@@ -557,10 +572,7 @@ describe('specTestAdequacyCompletionGate', () => {
       }),
     ]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!result.ok) {
@@ -597,10 +609,7 @@ describe('specTestAdequacyCompletionGate', () => {
       }),
     ]);
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: WORK_ITEM, attestation: ATTESTATION },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!result.ok) {
@@ -625,10 +634,7 @@ describe('specTestAdequacyCompletionGate', () => {
   it('treats a task-kind plan deliverable as non-applicable without an executable-proof attestation', async () => {
     const deps = passingDeps();
 
-    const result = await specTestAdequacyCompletionGate(
-      { workItem: { ...WORK_ITEM, kind: 'task' } },
-      deps,
-    );
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'task' } }, deps);
 
     expect(result).toEqual({ ok: true, applicable: false, checked: [] });
     expect(deps.listEvidence).not.toHaveBeenCalled();
@@ -768,9 +774,7 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
     );
 
     expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
-    expect(deps.listEvidence).toHaveBeenCalledWith(
-      expect.objectContaining({ evidenceRefs }),
-    );
+    expect(deps.listEvidence).toHaveBeenCalledWith(expect.objectContaining({ evidenceRefs }));
   });
 
   it('does NOT enforce an active plan that has adopted no clauses — the per-plan migration lane', async () => {

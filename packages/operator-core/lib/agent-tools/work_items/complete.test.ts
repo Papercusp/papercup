@@ -605,6 +605,7 @@ describe('work_items:complete (keyed-array)', () => {
           '## Checks',
           '- ✓ [#gate] gate is green — re-check: state:read',
           '  Verified 10:00Z: 30/30 passed',
+          '- ? [#audit] audits are terminal — re-check: read audit state — evidence: audit remains pending',
           '- [ ] main is at abc123 — re-check: git rev-parse main',
         ].join('\n'),
       );
@@ -620,6 +621,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(evidenceCall).toBeTruthy();
       const carried = JSON.stringify(evidenceCall);
       expect(carried).toContain('gate is green');
+      expect(carried).toContain('"observed":"audit remains pending"');
       expect(carried).toContain('main is at abc123');
     });
 

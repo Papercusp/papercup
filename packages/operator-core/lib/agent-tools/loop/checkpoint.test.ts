@@ -2154,6 +2154,39 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(out.checks[0]).not.toHaveProperty('verified');
     });
 
+    it('preserves the reported predicted P-002/P-004 evidence as non-authoritative observed context', async () => {
+      const b = body(
+        await call({
+          did: 'recorded current audit context',
+          checks: [
+            {
+              id: 'p002-current-scorecard-audits',
+              claim: 'P-002 adequacy audits are terminal',
+              recheck: 'read all gradingAudit.state values',
+              status: 'predicted',
+              evidence: 'Pending with advancing reservations',
+            },
+            {
+              id: 'p004-current-measurement',
+              claim: 'P-004 has a current measurement',
+              recheck: 'read the newest measurement artifact',
+              status: 'predicted',
+              evidence: 'Prior artifact is stale',
+            },
+          ],
+        }),
+      );
+
+      expect(b).toMatchObject({ ok: true, checks: 2 });
+      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      expect(written).toContain('- ? [#p002-current-scorecard-audits]');
+      expect(written).toContain('evidence: Pending with advancing reservations');
+      expect(written).toContain('- ? [#p004-current-measurement]');
+      expect(written).toContain('evidence: Prior artifact is stale');
+      expect(written).not.toContain('- ✓ [#p002-current-scorecard-audits]');
+      expect(written).not.toContain('- ✓ [#p004-current-measurement]');
+    });
+
     it('accepts the boolean `verified` the schema used to reject, without upgrading false to verified', () => {
       const t = parse({ checks: [{ claim: 'a', verified: true, evidence: 'observed at 03:00Z' }] }) as {
         checks: { verified?: string }[];

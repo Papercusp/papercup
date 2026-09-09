@@ -1653,7 +1653,6 @@ export function roleLaunchArgs(
       ...ompTitleMitigationArgs(model),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
-    args.push(...nativeOmpExtensionArgs("omp"));
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
     // context injection, the omp half of what claude gets from its
     // UserPromptSubmit/PostToolBatch hooks. STRICTLY ADDITIVE — one more module
@@ -2122,7 +2121,10 @@ export function resumeArgsFor(
     const args = session.ompThreadId ? ["-r", session.ompThreadId] : ["-c"];
     args.push("--approval-mode", "yolo");
     if (coordExtPath) args.push("-e", coordExtPath);
-    args.push(...nativeOmpExtensionArgs("omp"));
+    // Signed role profiles still use their selected HTTP configuration. Never
+    // load a user-level SU native profile into a role-scoped resumed agent.
+    if (!session.role || SU_TIER_ROLES.includes(session.role))
+      args.push(...nativeOmpExtensionArgs("omp"));
     // omp-context-injection-parity P-003. CLI flags do not persist into an omp
     // resume, so the injection hook must be re-passed every resume exactly like
     // the coord extension above — otherwise a resumed session silently loses
@@ -4292,6 +4294,8 @@ export function writeOmpSessionConfigDir(
     // a selected auto/pin route cannot be shadowed by a direct provider entry.
     modelsYml = null,
     clientId = null,
+    nativeMcp = false,
+    mcpEnv = null,
     backendWindow = null,
     // P-019 residual sampler (D-010): the launcher is the ONLY layer that knows
     // whether this session is interactive (headless members / piped launches are
@@ -4574,11 +4578,11 @@ export function writeOmpSessionConfigDir(
         model: model || undefined,
         client: clientId || undefined,
       });
-      if (nativeOmpExtensionArgs("omp").length) {
+      if (nativeMcp && nativeOmpExtensionArgs("omp").length) {
         const native = nativeMcpRequire(fileURLToPath(nativeMcpBundle));
         mcpText = native.prepareNativeOmpConfig(mcpText, {
           mode: native.agentMcpMode(process.env.PAPERCUSP_MCP_TRANSPORT),
-          home, env: { ...process.env, PAPERCUSP_SID: clientId || process.env.PAPERCUSP_SID },
+          home, env: { ...process.env, ...mcpEnv, PAPERCUSP_SID: clientId || mcpEnv?.PAPERCUSP_SID },
         });
       }
       writeFileSync(join(dstAgent, "mcp.json"), mcpText, { mode: 0o600 });
@@ -13970,6 +13974,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
         model: effectiveModel,
         modelsYml: res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML || null,
         clientId: res.envelopeEnv?.PAPERCUSP_SID || null,
+        nativeMcp: true,
+        mcpEnv: res.envelopeEnv || null,
         backendWindow,
         interactive: !args.headless && !!process.stdout.isTTY,
       });

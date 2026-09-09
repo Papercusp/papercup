@@ -3175,6 +3175,7 @@ async function completeOne(
           claim: c.claim,
           ...(c.recheck ? { recheck: c.recheck } : {}),
           ...(c.verified ? { verified: c.verified } : {}),
+          ...(c.observed ? { observed: c.observed } : {}),
           ...(c.contested ? { contested: c.contested } : {}),
         }));
       }

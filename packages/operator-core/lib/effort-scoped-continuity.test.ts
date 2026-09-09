@@ -140,6 +140,59 @@ function source(overrides: Partial<PriorAttemptSource> = {}): PriorAttemptSource
 }
 
 describe('rollup compression ladder (D-008, corrected by D-010)', () => {
+  it.each([0, 1, 2, 4])('preserves captured corrections and residue at depth %i under growing fan-out', (depth) => {
+    const correction = [
+      'Root cause: the stored read swallowed a failure.',
+      'False premise: an empty read proved there was no saved lesson.',
+      'Outcome: the original note was recovered.',
+      'Residue: verify the next consumer.',
+    ].join('\n');
+    const ordinary = [
+      'Approach: read the stored note.',
+      'Outcome: the original note was recovered.',
+      'Root cause: the stored read swallowed a failure.',
+      'Residue: verify the next consumer.',
+    ].join('\n');
+    expect(describeCaptureGaps(correction).missing).toEqual([]);
+    for (const fanOut of [1, 8, DESCENDANT_FANOUT_CAP]) {
+      const notes = Array.from({ length: fanOut }, (_, i) => source({
+        rawRef: `WI-${i}#checkpoint`, workItemId: `WI-${i}`, authority: 'checkpoint',
+        text: ordinary, depth,
+      }));
+      const compiled = compilePriorAttempts([
+        source({ rawRef: 'plan#correction', authority: 'retraction', text: correction, depth }),
+        ...notes,
+      ]);
+      const brief = buildBoundedPriorAttemptBrief(compiled, { maxChars: 6000, maxRecords: 16, maxTextChars: 400 })!;
+      expect(brief.serializedChars).toBeLessThanOrEqual(6000);
+      expect(brief.protectedRefs.authority).toContainEqual({ authority: 'retraction', rawRef: 'plan#correction' });
+      for (const note of notes) {
+        expect(brief.protectedRefs.residue).toContain(note.rawRef);
+        // A retained detail or explicit omission must always name the original
+        // immutable reference; no reduction invents a replacement lesson.
+        expect(compiled.records.find((record) => record.rawRef === note.rawRef)?.text).toBe(ordinary);
+      }
+      for (const record of brief.attempts) {
+        expect(record.rootCauses).toEqual(['the stored read swallowed a failure.']);
+        if (depth >= 2) {
+          expect(record.text).toBe('');
+          expect(record.outcome).toBeUndefined();
+        } else {
+          // Checkpoints summarize the complete note in approach; outcome is
+          // reserved for verified-completion records, not an "Outcome:" keyword.
+          expect(record.approach).toContain('the original note was recovered.');
+        }
+      }
+      const retainedCorrection = brief.authority.find((record) => record.rawRef === 'plan#correction');
+      expect(retainedCorrection?.falsePremises).toEqual(['an empty read proved there was no saved lesson.']);
+      expect(brief.protectedRefs.residue).toContain('plan#correction');
+      expect([...brief.authority, ...brief.attempts].every((record) =>
+        compiled.records.some((original) => original.rawRef === record.rawRef &&
+          original.authority === record.authority),
+      )).toBe(true);
+    }
+  });
+
   it('keeps full text at depth 0 and drops it one level down', () => {
     const brief = buildBoundedPriorAttemptBrief(
       compilePriorAttempts([

@@ -314,6 +314,7 @@ const CHECK_ROW_SCHEMA_KEYS = new Set([
   'id',
   'recheck',
   'verified',
+  'observed',
   'ok',
   'contested',
   'probe',
@@ -668,6 +669,10 @@ export default defineTool({
                     'carries both the verified/PREDICTED flag and its justification: presence of `verified` (however ' +
                     'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
                     'boolean flag to set.',
+                ).optional(),
+                observed: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.observed,
+                  'Observed context that does not affirm the claim. It renders on a ? PREDICTED row so the context survives without acquiring verification authority.',
                 ).optional(),
                 ok: z
                   .boolean()
@@ -1248,7 +1253,9 @@ export default defineTool({
       const v = fields[key];
       if (typeof v === 'string') fields[key] = truncateCarryField(v, CARRY_TEXT_SOFT_CAP, key, repairs);
     }
-    const capRows = <T extends { id?: string; claim: string; recheck?: string; verified?: string; contested?: string }>(
+    const capRows = <
+      T extends { id?: string; claim: string; recheck?: string; verified?: string; observed?: string; contested?: string },
+    >(
       rows: T[] | undefined,
       label: string,
     ): T[] | undefined =>
@@ -1295,6 +1302,13 @@ export default defineTool({
             out.verified,
             CARRY_ROW_SOFT_CAPS.verified,
             `${label}[${i}].verified`,
+            repairs,
+          );
+        if (typeof out.observed === 'string')
+          out.observed = truncateCarryField(
+            out.observed,
+            CARRY_ROW_SOFT_CAPS.observed,
+            `${label}[${i}].observed`,
             repairs,
           );
         if (typeof out.contested === 'string')

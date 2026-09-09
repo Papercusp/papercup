@@ -1,0 +1,253 @@
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { once } from 'node:events';
+import { join, delimiter } from 'node:path';
+import { tmpdir } from 'node:os';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+
+const h = vi.hoisted(() => ({ home: '' }));
+vi.mock('node:os', async original => ({
+  ...await original<typeof import('node:os')>(), homedir: () => h.home,
+}));
+import { agentMcpMode, connectAgentMcp, localAgentMcpPort, prepareNativeOmpConfig } from './agent-mcp-client';
+import { writeEndpointIpcDiscovery } from './endpoint-ipc-discovery';
+import { startAgentMcpServer, type AgentMcpListener } from './endpoint-route/routes/transport/_mcp-uds';
+import type { BuiltSpawnContext } from './endpoint-route/routes/transport/_mcp-host';
+
+let listener: AgentMcpListener | undefined;
+beforeEach(async () => {
+  h.home = await mkdtemp(join(tmpdir(), 'native-client-'));
+  vi.stubEnv('WSL_INTEROP', '');
+  vi.stubEnv('WSL_DISTRO_NAME', '');
+  vi.stubEnv('PAPERCUSP_IPC_TCP', '');
+});
+afterEach(async () => {
+  await listener?.close();
+  listener = undefined;
+  await rm(h.home, { recursive: true, force: true });
+  vi.unstubAllEnvs();
+});
+
+const url = 'http://127.0.0.1:33170/api/mcp?superuser=1&workspace=fixture&client=fixture-agent';
+const expectedCtx: BuiltSpawnContext = {
+  workspaceId: 'fixture', harnessSlug: 'fixture', role: 'operator', uiClientId: 'fixture-agent',
+  runId: 'r', spawnId: 's', parentSpawnId: null, featureId: null, chunkId: null,
+  detectorSessionKey: null, isSuperuser: true,
+};
+async function server() {
+  const witness = vi.fn();
+  const verify = vi.fn(async (extra: unknown) => {
+    const headers = (extra as { requestInfo: { headers: Record<string, string> } }).requestInfo.headers;
+    return headers.authorization === 'Bearer fixture-token'
+      ? { kind: 'ok' as const, ctx: { ...expectedCtx } }
+      : { kind: 'failed' as const, reason: 'invalid' };
+  });
+  listener = await startAgentMcpServer({
+    port: 33170,
+    host: {
+      verify, options: { capabilities: { tools: {} } },
+      register(host) {
+        host.server.setRequestHandler(ListToolsRequestSchema, async () => {
+          witness('list');
+          return { tools: [{ name: 'echo', description: 'Echo fixture row', inputSchema: {
+            type: 'object', properties: { row: { type: 'string' } },
+          } }] };
+        });
+        host.server.setRequestHandler(CallToolRequestSchema, async request => {
+          witness('call', request.params.arguments);
+          return { content: [{ type: 'text' as const, text: 'compact-result' }], _meta: { retained: true } };
+        });
+      },
+    },
+  });
+  await writeEndpointIpcDiscovery('/tmp/ui-unused.sock', { port: 33170, agentMcp: listener.endpoint });
+  return { witness, verify };
+}
+
+describe('owned native MCP client', () => {
+  it('discovers, initializes, lists and calls the actual listener without HTTP', async () => {
+    const { witness, verify } = await server();
+    const connection = await connectAgentMcp({
+      url, mode: 'uds', headers: { Authorization: 'Bearer fixture-token' }, home: h.home,
+    });
+    try {
+      expect(connection.transportKind).toBe('uds');
+      expect(connection.generation).toBe(listener!.endpoint.generation);
+      expect((await connection.client.listTools()).tools[0].name).toBe('echo');
+      expect(await connection.client.callTool({ name: 'echo', arguments: { row: 'a,b' } }))
+        .toMatchObject({ content: [{ text: 'compact-result' }], _meta: { retained: true } });
+      expect(witness.mock.calls).toEqual([['list'], ['call', { row: 'a,b' }]]);
+      expect(verify).toHaveBeenCalledTimes(3);
+    } finally { await connection.client.close(); }
+  });
+
+  it('does not fall back to HTTP after a discovered UDS credential rejection', async () => {
+    const { witness } = await server();
+    await expect(connectAgentMcp({
+      url, mode: 'auto', headers: { Authorization: 'Bearer SECRET-wrong' }, home: h.home,
+    })).rejects.toThrow(/^uds_connection_failed$/);
+    expect(witness).not.toHaveBeenCalled();
+  });
+
+  it('requires a usable descriptor for explicit UDS, including after server shutdown', async () => {
+    await server();
+    await listener!.close();
+    await expect(connectAgentMcp({ url, mode: 'uds', home: h.home })).rejects.toThrow('uds_endpoint_unavailable');
+  });
+
+  it('fails pending calls instead of reopening or resending after disconnect', async () => {
+    await server();
+    const connected = await connectAgentMcp({
+      url, mode: 'uds', headers: { Authorization: 'Bearer fixture-token' },
+    });
+    try {
+      await listener!.close();
+      await expect(connected.client.callTool({ name: 'echo' })).rejects.toThrow();
+    } finally { await connected.client.close(); }
+  });
+
+  it.each([
+    ['https://127.0.0.1:33170/api/mcp', 'linux', {}],
+    ['http://remote.example/api/mcp', 'linux', {}],
+    [url, 'win32', {}],
+    [url, 'linux', { WSL_INTEROP: 'yes' }],
+    [url, 'linux', { PAPERCUSP_IPC_TCP: '1' }],
+  ])('preserves unsupported route %s %s %j', (value, platform, env) => {
+    expect(localAgentMcpPort(value as string, platform as string, env as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it('moves only eligible entries and resolves only maintained header templates, never a shell', () => {
+    const config = { mcpServers: {
+      papercusp: { type: 'http', url, headers: { 'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"' } },
+      remote: { type: 'http', url: 'https://remote.example/api/mcp' },
+      custom: { type: 'http', url, headers: { Authorization: '!do-not-run' } },
+      stdio: { type: 'stdio', command: 'never-executed' },
+    } };
+    const text = JSON.stringify(config);
+    expect(prepareNativeOmpConfig(text, { mode: 'http' })).toBe(text);
+    const result = JSON.parse(prepareNativeOmpConfig(text, {
+      mode: 'auto', home: h.home, platform: 'linux', env: { PAPERCUSP_SID: 'original' },
+    }));
+    expect(result.mcpServers).toEqual({
+      remote: config.mcpServers.remote, custom: config.mcpServers.custom, stdio: config.mcpServers.stdio,
+    });
+    expect(result.papercuspNativeMcp.servers.papercusp.headers['x-papercusp-client']).toBe('original');
+    expect(result.papercuspNativeMcp.home).toBe(h.home);
+    expect(JSON.stringify(result)).not.toContain('unix://');
+  });
+
+  it('keeps rollout policy explicit and rejects unknown transport values', () => {
+    expect(agentMcpMode(undefined)).toBe('http');
+    expect(agentMcpMode('uds')).toBe('uds');
+    expect(() => agentMcpMode('stdio')).toThrow();
+  });
+});
+
+const execute = promisify(execFile);
+const repo = fileURLToPath(new URL('../../../', import.meta.url));
+const omp = (process.env.PATH ?? '').split(delimiter)
+  .map(dir => join(dir, 'omp')).find(path => existsSync(path));
+
+describe('installed clients using the built production adapter', () => {
+  beforeAll(async () => {
+    await execute(process.execPath, [join(repo, 'packages/omp-plugin/build-native.mjs')], { timeout: 20_000 });
+  }, 25_000);
+  it('executes the actual ptool CLI through discovered UDS, not HTTP', async () => {
+    const { witness } = await server();
+    const token = join(h.home, 'fixture-token');
+    await writeFile(token, 'fixture-token', { mode: 0o600 });
+    const result = await execute(process.execPath, [
+      join(repo, 'apps/operator/scripts/ptool.mjs'), 'echo',
+      '--url=http://127.0.0.1:33170', '--transport=uds', `--token-file=${token}`,
+      '--workspace=fixture', '--harness=fixture', '--json={"row":"cli-row"}',
+    ], {
+      timeout: 15_000,
+      env: { PATH: process.env.PATH, HOME: h.home, PAPERCUSP_OPERATOR_HOME: h.home,
+        PAPERCUSP_SID: 'fixture-agent' },
+    });
+    expect(result.stdout).toContain('compact-result');
+    expect(witness.mock.calls).toContainEqual(['call', { row: 'cli-row' }]);
+  }, 25_000);
+
+  it.skipIf(!omp)('runs installed OMP tools through the packaged native extension and real listener', async () => {
+    const { witness } = await server();
+    const agentDir = join(h.home, 'agent');
+    await mkdir(agentDir);
+    await writeFile(join(agentDir, 'mcp.json'), prepareNativeOmpConfig(JSON.stringify({
+      mcpServers: { papercusp: { type: 'http', url, headers: { Authorization: 'Bearer fixture-token' } } },
+    }), { mode: 'uds', home: h.home }), { mode: 0o600 });
+    const provider = join(h.home, 'offline-provider.mjs');
+    // An offline deterministic provider drives OMP's actual agent loop. It
+    // cannot implement the tool or its transport; those come from the package.
+    await writeFile(provider, `
+export default function(pi) {
+ let turn=0;
+ pi.registerProvider('p005-offline', {
+  api:'p005-offline-api',apiKey:'fixture',baseUrl:'http://unused.invalid',
+  models:[{id:'proof',name:'Offline',reasoning:false,input:['text'],
+   cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:1024}],
+  streamSimple(model) {
+   const tool=turn++===0;
+   const content=tool?[{type:'toolCall',id:'actual-omp-call',name:'mcp__papercusp_echo',arguments:{row:'omp-row'}}]
+    :[{type:'text',text:'done'}];
+   const message={role:'assistant',content,api:model.api,provider:model.provider,model:model.id,
+    usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},
+    stopReason:tool?'toolUse':'stop',timestamp:Date.now()};
+   return {async *[Symbol.asyncIterator](){yield {type:'start',partial:message};
+    if(tool)yield {type:'toolcall_end',contentIndex:0,toolCall:content[0],partial:message};
+    yield {type:'done',reason:message.stopReason,message};},result:async()=>message};
+  }
+ });
+}
+`, { mode: 0o600 });
+    const child = spawn(omp!, [
+      '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-rules', '--no-session',
+      '--extension', join(repo, 'packages/omp-plugin/dist/native-extension.mjs'),
+      '--extension', provider, '--model', 'p005-offline/proof',
+    ], {
+      cwd: h.home, stdio: 'pipe',
+      env: { PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: h.home, PI_CODING_AGENT_DIR: agentDir },
+    });
+    const closed = once(child, 'close');
+    const frames: Array<Record<string, any>> = [];
+    let output = '', errors = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      output += chunk;
+      let newline: number;
+      while ((newline = output.indexOf('\n')) >= 0) {
+        const line = output.slice(0, newline);
+        output = output.slice(newline + 1);
+        if (line.trim()) frames.push(JSON.parse(line));
+      }
+    });
+    child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-4_000); });
+    const wait = async (predicate: () => boolean) => {
+      const end = Date.now() + 15_000;
+      while (!predicate()) {
+        if (Date.now() > end || child.exitCode !== null || child.signalCode !== null)
+          throw new Error(`Native OMP did not complete: ${errors}; ${JSON.stringify(frames.slice(-3))}`);
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await wait(() => frames.some(x => x.type === 'ready'));
+      child.stdin.write(JSON.stringify({ id: 'native-call', type: 'prompt', message: 'Invoke the MCP fixture.' }) + '\n');
+      await wait(() => frames.some(x => x.type === 'agent_end'));
+      const calls = frames.filter(x => x.type === 'tool_execution_end');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ toolName: 'mcp__papercusp_echo', isError: false });
+      expect(calls[0].result.content).toEqual([{ type: 'text', text: 'compact-result' }]);
+      expect(witness.mock.calls).toContainEqual(['call', { row: 'omp-row' }]);
+      expect(witness.mock.calls.filter(x => x[0] === 'call')).toHaveLength(1);
+    } finally {
+      child.stdin.end();
+      const timer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+      try { await closed; } finally { clearTimeout(timer); }
+    }
+  }, 25_000);
+});

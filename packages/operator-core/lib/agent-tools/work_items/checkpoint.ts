@@ -311,7 +311,9 @@ function priorChecksOverCapCount(priorNote: string | null): number {
  * This is the checkpoint-tool half of that established rule, reached now that an
  * over-cap prior normalizes on write instead of refusing (EI-21534719386975911).
  */
-function orderCarriedForUnion<T extends { id?: string; claim: string; verified?: string; contested?: string }>(
+function orderCarriedForUnion<
+  T extends { id?: string; claim: string; verified?: string; observed?: string; contested?: string },
+>(
   supplied: ReadonlyArray<{ id?: string; claim: string }>,
   prior: ReadonlyArray<T>,
 ): ReadonlyArray<T> {
@@ -326,6 +328,7 @@ type AppendChecksOverflowRow = {
   claim: string;
   recheck?: string;
   verified?: string;
+  observed?: string;
   contested?: string;
   sinceMs?: number;
 };
@@ -404,6 +407,14 @@ function fitChecksForAppendBody(
         repairs,
       );
     }
+    if (typeof out.observed === 'string') {
+      out.observed = truncateCarryField(
+        out.observed,
+        CARRY_ROW_SOFT_CAPS.observed,
+        `carriedChecks[${i}].observed`,
+        repairs,
+      );
+    }
     if (typeof out.contested === 'string') {
       out.contested = truncateCarryField(
         out.contested,
@@ -452,6 +463,7 @@ function appendChecksOverflowRows(
     claim: string;
     recheck?: string;
     verified?: string;
+    observed?: string;
     contested?: string;
     sinceMs?: number;
   }>,
@@ -471,12 +483,14 @@ function appendChecksOverflowRows(
     const id = sanitizeCarryRowId(row.id);
     const recheck = row.recheck?.trim();
     const verified = row.verified?.trim();
+    const observed = row.observed?.trim();
     const contested = row.contested?.trim();
     return {
       ...(id ? { id } : {}),
       claim: row.claim.trim(),
       ...(recheck ? { recheck } : {}),
       ...(verified ? { verified } : {}),
+      ...(observed ? { observed } : {}),
       ...(contested ? { contested } : {}),
       ...(row.sinceMs !== undefined && Number.isFinite(row.sinceMs) ? { sinceMs: row.sinceMs } : {}),
     };
@@ -770,6 +784,10 @@ function checksSpec() {
                 'is normalized before validation: `true` without evidence and `false` both remain ? PREDICTED. ' +
                 'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
                 'telling a successor to run `recheck` before relying on the claim.',
+            ).optional(),
+            observed: carryRowTextSchema(
+              CARRY_ROW_SOFT_CAPS.observed,
+              'Observed context that does not affirm the claim. It renders on a ? PREDICTED row so the context survives without acquiring verification authority.',
             ).optional(),
             // EI-22575327388783364: completion records call this evidence field
             // `testResult`. Publish the compatibility spelling because clients may
@@ -1576,6 +1594,13 @@ export default defineTool({
               out.verified,
               CARRY_ROW_SOFT_CAPS.verified,
               `checks[${i}].verified`,
+              repairs,
+            );
+          if (typeof out.observed === 'string')
+            out.observed = truncateCarryField(
+              out.observed,
+              CARRY_ROW_SOFT_CAPS.observed,
+              `checks[${i}].observed`,
               repairs,
             );
           return out;
