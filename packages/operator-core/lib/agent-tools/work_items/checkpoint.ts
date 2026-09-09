@@ -2297,11 +2297,51 @@ export default defineTool({
         // precisely write/read KEY divergence. A verify miss fails THIS item loudly
         // at write time instead of being discovered post-compaction.
         let readBack: string | null = null;
+        let readBackError: unknown;
+        let readBackFailed = false;
         if (stored !== null) {
           try {
             readBack = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
-          } catch {
-            readBack = null;
+          } catch (error) {
+            // EI-22707338795824591: the write transaction has already COMMITTED by
+            // the time this verifier runs. Collapsing a reader exception to `null`
+            // made transient DB contention indistinguishable from a genuine key miss,
+            // then told callers to retry the WRITE. That is destructive guidance for
+            // append:true: replaying the call can append the same update twice. Keep
+            // verifier unavailability distinct and point recovery at a read-only get.
+            readBackError = error;
+            readBackFailed = true;
+          }
+          const verifyRecovery = {
+            verify: {
+              tool: 'work_items:get',
+              args: {
+                id: it.id,
+                ...(harness ? { harness } : {}),
+                detail: true,
+                threadLimit: 0,
+              },
+              expectedContentHash: shortHash(stored),
+              description:
+                'Read the already-committed checkpoint without replaying this write, then compare checkpointContentHash with expectedContentHash.',
+            },
+          };
+          if (readBackFailed) {
+            const verifierMessage = readBackError instanceof Error ? readBackError.message : String(readBackError);
+            return {
+              ok: false as const,
+              id: it.id,
+              error:
+                `checkpoint_verify_unavailable — the checkpoint write committed, but the verifier read failed ` +
+                `(${verifierMessage}). Do NOT retry this write: append:true could duplicate the submitted update. ` +
+                'Use recovery.verify to confirm the committed checkpoint through the reader path.',
+              errorCode: 'checkpoint_verify_unavailable',
+              retryable: false,
+              writeCommitted: true,
+              storedLength: stored.length,
+              storedContentHash: shortHash(stored),
+              recovery: verifyRecovery,
+            };
           }
           if (readBack !== stored) {
             return {
@@ -2310,7 +2350,15 @@ export default defineTool({
               error:
                 `checkpoint_verify_failed — the write did not read back via the reader path ` +
                 `(stored ${stored.length} chars, read back ${readBack === null ? 'null' : `${readBack.length} chars`}). ` +
-              `The checkpoint would be INVISIBLE to the next pickup. Retry, or pass { harness } explicitly.`,
+                'The write committed, but its visibility is not verified. Do NOT retry this write: append:true could ' +
+                'duplicate the submitted update. Use recovery.verify to inspect the committed checkpoint.',
+              errorCode: 'checkpoint_verify_failed',
+              retryable: false,
+              writeCommitted: true,
+              storedLength: stored.length,
+              storedContentHash: shortHash(stored),
+              readBackContentHash: readBack === null ? null : shortHash(readBack),
+              recovery: verifyRecovery,
             };
           }
         }
