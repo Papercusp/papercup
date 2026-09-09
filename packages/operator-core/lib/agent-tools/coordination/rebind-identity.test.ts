@@ -29,6 +29,12 @@ interface FakeCall {
 interface FakeOpts {
   /** Does the from-id still hold a plan/work-item claim? (suspect-vs-ended input) */
   claimsHeld?: boolean;
+  /** The remaining protected predecessor surfaces used by the liveness guard. */
+  workItemsHeld?: boolean;
+  issueItemsHeld?: boolean;
+  presenceHeld?: boolean;
+  membershipHeld?: boolean;
+  leadershipHeld?: boolean;
   loops?: Array<{ id: string; install_slug: string }>;
   /** New loop ids that already exist (the live id armed its own loop). */
   loopIdExists?: string[];
@@ -76,9 +82,20 @@ function fakeSql(opts: FakeOpts = {}) {
     const text = strings.raw.join('?').replace(/\s+/g, ' ').trim();
     calls.push({ text, vals });
     if (opts.failOn?.test(text)) return Promise.reject(new Error('surface exploded'));
-    // The liveness guard's ONLY sql read: the claimsHeld EXISTS probe. The
-    // verdict itself comes through the injected `resolveLiveness` seam.
-    if (text.includes('SELECT (EXISTS')) return Promise.resolve([{ held: !!opts.claimsHeld }]);
+    // The liveness guard's one protected-state SQL read. The verdict itself
+    // comes through the injected `resolveLiveness` seam.
+    if (text.includes('AS claims_held') && text.includes('AS leadership_held')) {
+      return Promise.resolve([
+        {
+          claims_held: !!opts.claimsHeld,
+          work_items_held: !!opts.workItemsHeld,
+          issue_items_held: !!opts.issueItemsHeld,
+          presence_held: !!opts.presenceHeld,
+          membership_held: !!opts.membershipHeld,
+          leadership_held: !!opts.leadershipHeld,
+        },
+      ]);
+    }
     if (text.includes('SELECT id, install_slug FROM harness_shared.routines')) return Promise.resolve(opts.loops ?? []);
     if (text.includes('SELECT id FROM harness_shared.routines WHERE id =')) {
       return Promise.resolve((opts.loopIdExists ?? []).includes(String(vals[0])) ? [{ id: vals[0] }] : []);
@@ -309,19 +326,42 @@ describe('argument + liveness guards', () => {
     }
   });
 
-  it('proceeds under force even when the oracle says the from-id is LIVE', async () => {
+  it('still consults the oracle, then force proceeds when a live-ish predecessor has no protected state', async () => {
     const resolve = resolvesTo('live');
     const res = await rebind(FROM, TO, fakeSql(), { force: true, resolveLiveness: resolve });
     expect(res.ok).toBe(true);
     expectSurfaces(res);
-    // force skips the guard entirely — the oracle is never consulted.
-    expect(resolve.seen).toHaveLength(0);
+    expect(resolve.seen).toEqual([{ claimsHeld: false, nowMs: NOW }]);
+  });
+
+  it('force cannot bypass a live-ish predecessor that still has protected state', async () => {
+    const resolve = resolvesTo('live');
+    const sql = fakeSql({ presenceHeld: true });
+    const res = await rebind(FROM, TO, sql, { force: true, resolveLiveness: resolve });
+    expect(res).toMatchObject({ ok: false, refused: 'from_appears_live', fromSessionState: 'live' });
+    expect(res.surfaces).toHaveLength(0);
+    expect(resolve.seen).toEqual([{ claimsHeld: false, nowMs: NOW }]);
+  });
+
+  it('probes every protected predecessor representation in one read', async () => {
+    const sql = fakeSql();
+    await rebind(FROM, TO, sql);
+    const guard = sql.calls[0];
+    expect(guard.text).toContain('work_item_claims');
+    expect(guard.text).toContain('plan_item_claims');
+    expect(guard.text).toContain('work_items');
+    expect(guard.text).toContain('taken_by');
+    expect(guard.text).toContain('engineer_issues');
+    expect(guard.text).toContain('assignee');
+    expect(guard.text).toContain('coord_presence');
+    expect(guard.text).toContain('fleet_membership_events');
+    expect(guard.text).toContain('agent_fleets');
   });
 
   it('fails OPEN when the oracle returns no verdict, or the guard read throws', async () => {
     for (const opts of [
       { sql: fakeSql(), resolveLiveness: async () => null },
-      { sql: fakeSql({ failOn: /SELECT \(EXISTS/ }), resolveLiveness: warmDead },
+      { sql: fakeSql({ failOn: /AS claims_held/ }), resolveLiveness: warmDead },
     ]) {
       const res = await rebind(FROM, TO, opts.sql, { resolveLiveness: opts.resolveLiveness });
       expect(res.ok).toBe(true);

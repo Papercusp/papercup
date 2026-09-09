@@ -19,9 +19,11 @@
  * never cross tenants, and scoping would silently strand rows written under a
  * different partition (the raw-SQL-plan-reads trap inverted).
  *
- * SAFETY: refuses (without `force`) while the from-id resolves to a LIVE-ish
- * `sessionState` through the shared liveness oracle — rebinding a live peer's
- * identity steals its loop and claims.
+ * SAFETY: refuses while the from-id resolves to a LIVE-ish `sessionState`
+ * through the shared liveness oracle — rebinding a live peer's identity steals
+ * its loop and claims. `force` is only an override when the predecessor has no
+ * protected coordination state; it never bypasses the oracle or a protected
+ * claim/presence/membership/leadership row.
  *
  * ⚠ This guard used to read the RAW HEARTBEAT AGE (`heartbeat_at` within a
  * 180s window ⇒ "live"), and that was wrong in the exact case the module was
@@ -69,6 +71,23 @@ export interface FromLivenessVerdict {
 }
 
 /**
+ * OwnerId-keyed state that makes a predecessor unsafe to override, even when a
+ * caller supplied `force`. The probe deliberately spans both claim
+ * representations and both live/durable fleet representations: any one of
+ * these rows can still be acted on by the predecessor or can be stolen by the
+ * successor.
+ */
+export interface FromProtectionState {
+  claimsHeld: boolean;
+  workItemsHeld: boolean;
+  issueItemsHeld: boolean;
+  presenceHeld: boolean;
+  membershipHeld: boolean;
+  leadershipHeld: boolean;
+  protected: boolean;
+}
+
+/**
  * Resolve the from-id's verdict through THE shared oracle, so this guard cannot
  * drift from what coord:presence / fleet:status / the send-miss path report for
  * the same agent (presence-derivation-unification-2026-07-17 D-001: one
@@ -95,18 +114,64 @@ async function defaultResolveLiveness(
 }
 
 /**
- * Does the from-id still hold a claim? Read through the caller's OWN `sql` (the
- * surfaces below re-key these very rows). It only separates `suspect` from
- * `ended` — both permit the rebind — but the derived state is REPORTED to the
- * caller, and a state asserted from an input we never looked at is the same
- * class of false claim this work-item was filed about.
+ * Read every ownerId-keyed predecessor surface that must block an override.
+ * This is one query so the liveness verdict and the protection decision are
+ * based on the same snapshot. It is intentionally fail-soft at the caller:
+ * an unavailable read must not prevent the ordinary idempotent rebind path,
+ * but a successful read must never omit a protected surface.
  */
-async function readClaimsHeld(sql: Sql, f: string): Promise<boolean> {
-  const rows = await sql<Array<{ held: boolean }>>`
-    SELECT (EXISTS (SELECT 1 FROM harness_shared.work_item_claims WHERE owner = ${f})
-         OR EXISTS (SELECT 1 FROM harness_shared.plan_item_claims WHERE owner = ${f})) AS held
+async function readProtectionState(sql: Sql, f: string): Promise<FromProtectionState> {
+  const rows = await sql<
+    Array<{
+      claims_held: boolean;
+      work_items_held: boolean;
+      issue_items_held: boolean;
+      presence_held: boolean;
+      membership_held: boolean;
+      leadership_held: boolean;
+    }>
+  >`
+    SELECT
+      (EXISTS (SELECT 1 FROM harness_shared.work_item_claims WHERE owner = ${f})
+       OR EXISTS (SELECT 1 FROM harness_shared.plan_item_claims WHERE owner = ${f})) AS claims_held,
+      EXISTS (
+        SELECT 1 FROM harness_shared.work_items
+         WHERE taken_by = ${f} AND status <> ALL(${WORK_ITEM_NON_REQUEUE_STATES}::text[])
+      ) AS work_items_held,
+      EXISTS (
+        SELECT 1 FROM harness_shared.engineer_issues
+         WHERE assignee = ${f} AND state <> ALL(${WORK_ITEM_NON_REQUEUE_STATES}::text[])
+      ) AS issue_items_held,
+      EXISTS (
+        SELECT 1 FROM harness_shared.coord_presence
+         WHERE owner_id = ${f}
+      ) AS presence_held,
+      EXISTS (
+        SELECT 1
+          FROM harness_shared.fleet_membership_events current_membership
+         WHERE current_membership.owner_id = ${f}
+           AND current_membership.id = (
+             SELECT max(latest_membership.id)
+               FROM harness_shared.fleet_membership_events latest_membership
+              WHERE latest_membership.owner_id = ${f}
+           )
+           AND current_membership.fleet_slug IS NOT NULL
+      ) AS membership_held,
+      EXISTS (
+        SELECT 1 FROM harness_shared.agent_fleets
+         WHERE leader_owner_id = ${f}
+      ) AS leadership_held
   `;
-  return rows[0]?.held === true;
+  const row = rows[0];
+  const state = {
+    claimsHeld: row?.claims_held === true,
+    workItemsHeld: row?.work_items_held === true,
+    issueItemsHeld: row?.issue_items_held === true,
+    presenceHeld: row?.presence_held === true,
+    membershipHeld: row?.membership_held === true,
+    leadershipHeld: row?.leadership_held === true,
+  };
+  return { ...state, protected: Object.values(state).some(Boolean) };
 }
 
 /**
@@ -223,27 +288,37 @@ export async function rebindIdentity(
 
   let fromSessionState: SessionState | null = null;
   let fromHeartbeatFresh: boolean | undefined;
-  if (!opts.force) {
-    // The guard reads, never blocks on, liveness: a read failure — or a
-    // degraded oracle leg that yields NO verdict for this id — fails OPEN
-    // (proceed), because the surfaces are idempotent and the caller chose to
-    // rebind. Only an AFFIRMATIVE live-ish verdict refuses.
-    try {
-      const claimsHeld = await readClaimsHeld(sql, f);
-      const verdict = await (opts.resolveLiveness ?? defaultResolveLiveness)(f, { claimsHeld, nowMs: now });
-      fromSessionState = verdict?.sessionState ?? null;
-      fromHeartbeatFresh = verdict?.heartbeatFresh;
-      if (verdict && (REBIND_BLOCKING_SESSION_STATES as readonly SessionState[]).includes(verdict.sessionState)) {
-        return {
-          ...base,
-          refused: 'from_appears_live',
-          fromSessionState: verdict.sessionState,
-          ...(verdict.heartbeatFresh === undefined ? {} : { fromHeartbeatFresh: verdict.heartbeatFresh }),
-        };
-      }
-    } catch {
-      /* fail open */
+  let protection: FromProtectionState | null = null;
+  // Read the protection snapshot separately so a degraded SQL leg does not
+  // suppress the liveness oracle. The oracle is always consulted, including
+  // for force=true; force only changes the outcome when the read was
+  // successful and found no protected predecessor state.
+  try {
+    protection = await readProtectionState(sql, f);
+  } catch {
+    /* fail open for the idempotent rebind path */
+  }
+  try {
+    const verdict = await (opts.resolveLiveness ?? defaultResolveLiveness)(f, {
+      claimsHeld: protection?.claimsHeld ?? false,
+      nowMs: now,
+    });
+    fromSessionState = verdict?.sessionState ?? null;
+    fromHeartbeatFresh = verdict?.heartbeatFresh;
+    if (
+      verdict &&
+      (REBIND_BLOCKING_SESSION_STATES as readonly SessionState[]).includes(verdict.sessionState) &&
+      (!opts.force || protection?.protected === true)
+    ) {
+      return {
+        ...base,
+        refused: 'from_appears_live',
+        fromSessionState: verdict.sessionState,
+        ...(verdict.heartbeatFresh === undefined ? {} : { fromHeartbeatFresh: verdict.heartbeatFresh }),
+      };
     }
+  } catch {
+    /* fail open */
   }
 
   const surfaces: RebindSurfaceResult[] = [];
