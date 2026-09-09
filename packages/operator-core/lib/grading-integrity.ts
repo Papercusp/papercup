@@ -130,8 +130,29 @@ export interface GradingAuditReservationResult {
 interface GradingAuditReservationOptions {
   workspaceId?: string | null;
   now?: Date;
-  /** Currentness from scorecards:list; stale settled cards are reopened atomically. */
+  /** Currentness from scorecards:list; stale or legacy identity-less settled cards are reopened atomically. */
   currentness?: ScorecardGradingAuditCurrentness;
+}
+
+/**
+ * A settled stamp can be re-opened only when the current meta-rubric identity is
+ * known and the recorded identity is either stale or absent because the card was
+ * created before audit identity stamping. Other unknown states (missing live
+ * identity or a meta-rubric mismatch) remain fail-closed.
+ */
+function reopenableSettledAuditIdentity(
+  currentness: ScorecardGradingAuditCurrentness | undefined,
+): currentness is ScorecardGradingAuditCurrentness & {
+  currentRevision: number;
+  currentCriteriaHash: string;
+} {
+  return Boolean(
+    currentness &&
+    currentness.currentRevision != null &&
+    currentness.currentCriteriaHash != null &&
+    (currentness.state === 'stale' ||
+      (currentness.state === 'unknown' && currentness.reason === 'recorded-identity-missing')),
+  );
 }
 
 /**
@@ -152,18 +173,15 @@ export async function reservePendingGradingAudit(
   const reservedAt = now.toISOString();
   const staleBefore = new Date(now.getTime() - GRADING_AUDIT_RESERVATION_TTL_MS).toISOString();
   const reservation = JSON.stringify({ key: reservationKey, reservedAt });
-  const reopenStale =
-    options.currentness?.state === 'stale' &&
-    options.currentness.currentRevision != null &&
-    options.currentness.currentCriteriaHash != null
-      ? {
-          recordedRevision: options.currentness.recordedRevision,
-          recordedCriteriaHash: options.currentness.recordedCriteriaHash,
-          rubricRevision: options.currentness.currentRevision,
-          criteriaHash: options.currentness.currentCriteriaHash,
-        }
-      : null;
-  const reopenedStamp = reopenStale
+  const reopenIdentity = reopenableSettledAuditIdentity(options.currentness)
+    ? {
+        recordedRevision: options.currentness.recordedRevision,
+        recordedCriteriaHash: options.currentness.recordedCriteriaHash,
+        rubricRevision: options.currentness.currentRevision,
+        criteriaHash: options.currentness.currentCriteriaHash,
+      }
+    : null;
+  const reopenedStamp = reopenIdentity
     ? JSON.stringify({
         state: 'pending',
         metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
@@ -202,24 +220,28 @@ export async function reservePendingGradingAudit(
              )
            )
            OR (
-             ${reopenStale ? tx`payload->'observation'->'gradingAudit'->>'state' IN ('passed', 'failed')
+             ${
+               reopenIdentity
+                 ? tx`payload->'observation'->'gradingAudit'->>'state' IN ('passed', 'failed')
                AND (
                  payload->'observation'->'gradingAudit'->>'rubricRevision' IS NULL
-                 OR payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${String(reopenStale.recordedRevision)}
+                 OR payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${String(reopenIdentity.recordedRevision)}
                )
                AND (
                  payload->'observation'->'gradingAudit'->>'criteriaHash' IS NULL
-                 OR payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${reopenStale.recordedCriteriaHash}
+                 OR payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${reopenIdentity.recordedCriteriaHash}
                )
                AND (
-                 payload->'observation'->'gradingAudit'->>'rubricRevision' IS DISTINCT FROM ${String(reopenStale.rubricRevision)}
-                 OR payload->'observation'->'gradingAudit'->>'criteriaHash' IS DISTINCT FROM ${reopenStale.criteriaHash}
-               )` : tx`FALSE`}
+                 payload->'observation'->'gradingAudit'->>'rubricRevision' IS DISTINCT FROM ${String(reopenIdentity.rubricRevision)}
+                 OR payload->'observation'->'gradingAudit'->>'criteriaHash' IS DISTINCT FROM ${reopenIdentity.criteriaHash}
+               )`
+                 : tx`FALSE`
+             }
            )
          )
        RETURNING feature_id`;
     if (claimed[0]) {
-      if (reopenStale && reopenedStamp) {
+      if (reopenIdentity && reopenedStamp) {
         await tx`
           UPDATE harness_shared.work_items
              SET payload = jsonb_set(
@@ -258,8 +280,9 @@ export async function releasePendingGradingAudit(
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> = {},
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
-  const released = await boundedOrgTxn(async (tx: OrgSql) =>
-    tx<{ feature_id: string }[]>`
+  const released = await boundedOrgTxn(
+    async (tx: OrgSql) =>
+      tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = payload #- '{observation,gradingAudit,dispatchReservation}',
              origin = 'local',
@@ -276,9 +299,10 @@ export async function releasePendingGradingAudit(
 
 function currentPendingScorecard(card: ScorecardRow): boolean {
   const audit = card.gradingAudit;
-  const staleSettled = audit !== undefined && audit.state !== 'pending' && card.gradingAuditCurrentness?.state === 'stale';
+  const reopenableSettled =
+    audit !== undefined && audit.state !== 'pending' && reopenableSettledAuditIdentity(card.gradingAuditCurrentness);
   return (
-    (audit?.state === 'pending' || staleSettled) &&
+    (audit?.state === 'pending' || reopenableSettled) &&
     !card.supersededBy &&
     !card.retracted &&
     card.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF
@@ -454,12 +478,19 @@ export async function dispatchPendingGradingAudits(
       }
       reservationHeld = true;
       const routed = await (deps.route ?? routeSourceGradingAudit)({
-        card, reservationKey: idempotencyKey, brief: gradingAuditBrief(card), ctx: input.ctx,
+        card,
+        reservationKey: idempotencyKey,
+        brief: gradingAuditBrief(card),
+        ctx: input.ctx,
         ...(harness && harness !== '*' ? { harness } : {}),
       });
       if (routed.state !== 'fallback') {
-        receipts.push({ issueId, rubricRef: card.rubricRef, idempotencyKey,
-          state: routed.state, conversationId: routed.conversationId,
+        receipts.push({
+          issueId,
+          rubricRef: card.rubricRef,
+          idempotencyKey,
+          state: routed.state,
+          conversationId: routed.conversationId,
           ...(routed.reason ? { reason: routed.reason } : {}),
         });
         continue;

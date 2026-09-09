@@ -27694,7 +27694,7 @@
           "POST"
         ]
       },
-      "description": "Read ONE rubric scorecard by issue id using an evidence-first projection. Returns the exact per-criterion `{key, rating, evidence}` strings plus minimal card identity and completeness fields; omits replay recipes, generation metadata, links, and other history-only payload. Use this before a grading-integrity audit so evidence is inline rather than hidden by a history-row projection or result-door spill.",
+      "description": "Read ONE rubric scorecard by issue id using an evidence-first projection. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.",
       "capabilities": [
         "coord:read"
       ],
@@ -27722,7 +27722,7 @@
       "guidance": {
         "when": "You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.",
         "notWhen": "You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.",
-        "chaining": "scorecards:get { issueId } → re-run every returned criteria[].evidence probe → scorecards:emit { rubricRef:\"grading-integrity\", subject:{kind:\"scorecard\",ref:issueId}, ratings } to settle the audit."
+        "chaining": "scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index and every next page → re-run every complete evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence."
       }
     },
     {

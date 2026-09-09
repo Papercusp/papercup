@@ -53,17 +53,20 @@ function standardRubric(): Rubric {
 
 function deps() {
   const route = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['route']>>().mockResolvedValue({
-    state: 'fallback', reason: 'existing router: no_qualified_responder',
+    state: 'fallback',
+    reason: 'existing router: no_qualified_responder',
   });
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
   const launch = vi
     .fn<Launch>()
     .mockResolvedValue(launchResult({ deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-audit' }] } }));
-  const reserve = vi.fn(async (): Promise<GradingAuditReservationResult> => ({
-    status: 'claimed',
-    reservation: { key: 'grading-audit:test', reservedAt: '2026-09-08T00:00:00.000Z' },
-  }));
+  const reserve = vi.fn(
+    async (): Promise<GradingAuditReservationResult> => ({
+      status: 'claimed',
+      reservation: { key: 'grading-audit:test', reservedAt: '2026-09-08T00:00:00.000Z' },
+    }),
+  );
   const release = vi.fn(async () => true);
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
   return { listScorecards, getRubric, launch, route, reserve, release, listWorkspaceWideLoopStanddownOwners };
@@ -72,15 +75,21 @@ function deps() {
 describe('dispatchPendingGradingAudits', () => {
   it('routes the exact source card before launch, retaining reservation and subject evidence', async () => {
     const d = deps();
-    const source = card('EI-routed', { subject: { kind: 'plan', ref: 'source-plan' }, evidenceFingerprint: 'frozen-fingerprint' });
+    const source = card('EI-routed', {
+      subject: { kind: 'plan', ref: 'source-plan' },
+      evidenceFingerprint: 'frozen-fingerprint',
+    });
     d.listScorecards.mockResolvedValue([source]);
     d.route.mockResolvedValue({ state: 'routed', conversationId: 'audit-consult' });
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-routed'], ctx }, d);
     expect(d.reserve.mock.invocationCallOrder[0]).toBeLessThan(d.route.mock.invocationCallOrder[0]);
-    expect(d.route).toHaveBeenCalledWith(expect.objectContaining({
-      card: source, reservationKey: 'grading-audit:EI-routed',
-      brief: expect.stringContaining('frozen-fingerprint'),
-    }));
+    expect(d.route).toHaveBeenCalledWith(
+      expect.objectContaining({
+        card: source,
+        reservationKey: 'grading-audit:EI-routed',
+        brief: expect.stringContaining('frozen-fingerprint'),
+      }),
+    );
     expect(result.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'audit-consult' });
     expect(d.launch).not.toHaveBeenCalled();
     expect(d.release).not.toHaveBeenCalled();
@@ -110,7 +119,9 @@ describe('dispatchPendingGradingAudits', () => {
     d.listScorecards.mockResolvedValue([card('EI-race')]);
     d.reserve.mockResolvedValueOnce({ status: 'claimed' }).mockResolvedValue({ status: 'already-reserved' });
     d.route.mockResolvedValue({ state: 'routed', conversationId: 'one-consult' });
-    const results = await Promise.all([1, 2].map(() => dispatchPendingGradingAudits({ targetIds: ['EI-race'], ctx }, d)));
+    const results = await Promise.all(
+      [1, 2].map(() => dispatchPendingGradingAudits({ targetIds: ['EI-race'], ctx }, d)),
+    );
     expect(results.flatMap((r) => r.receipts.map((receipt) => receipt.state)).sort()).toEqual(['routed', 'skipped']);
     expect(d.route).toHaveBeenCalledOnce();
     expect(d.launch).not.toHaveBeenCalled();
@@ -238,6 +249,37 @@ describe('dispatchPendingGradingAudits', () => {
 
     expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-stale-settled', state: 'launched' })]);
     expect(d.reserve).toHaveBeenCalledWith('EI-stale-settled', 'grading-audit:EI-stale-settled', {
+      workspaceId: 'ws-test',
+      currentness,
+    });
+  });
+
+  it('reopens a settled legacy card whose recorded audit identity is missing', async () => {
+    const d = deps();
+    const currentness = {
+      state: 'unknown' as const,
+      reason: 'recorded-identity-missing' as const,
+      recordedRevision: null,
+      currentRevision: 6,
+      recordedCriteriaHash: null,
+      currentCriteriaHash: 'hash-current',
+    };
+    d.listScorecards.mockResolvedValue([
+      card('EI-legacy-settled', {
+        gradingAudit: {
+          state: 'failed',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-09-07T00:00:00.000Z',
+          auditIssueId: 'EI-retracted-audit',
+        },
+        gradingAuditCurrentness: currentness,
+      }),
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-legacy-settled'], ctx }, d);
+
+    expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-legacy-settled', state: 'launched' })]);
+    expect(d.reserve).toHaveBeenCalledWith('EI-legacy-settled', 'grading-audit:EI-legacy-settled', {
       workspaceId: 'ws-test',
       currentness,
     });

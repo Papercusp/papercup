@@ -24,6 +24,7 @@ import {
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import {
   parseArgs,
+  nativeOmpExtensionArgs,
   pickRole,
   PSU_HELP_TEXT,
   planValue,
@@ -1408,6 +1409,23 @@ describe("SU_CONTEXT_CHOICES (trimmed-only launch policy)", () => {
     )!;
     expect(defaultChoice.name).toMatch(/trimmed/i);
     expect(defaultChoice.name).toMatch(/default/i);
+  });
+});
+
+describe("native OMP capability selection", () => {
+  const env = { PAPERCUSP_MCP_TRANSPORT: "uds" };
+  it("loads an owned extension only for compatible OMP, never changes engines or emits unix URLs", () => {
+    const args = nativeOmpExtensionArgs("omp", env, "linux", () => true);
+    expect(args[0]).toBe("-e");
+    expect(args[1]).toMatch(/omp-plugin\/dist\/native-extension\.mjs$/);
+    expect(args.join(" ")).not.toContain("unix://");
+    for (const backend of ["claude", "codex"]) {
+      expect(nativeOmpExtensionArgs(backend, env, "linux", () => true)).toEqual([]);
+    }
+    expect(nativeOmpExtensionArgs("omp", {}, "linux", () => true)).toEqual([]);
+    expect(nativeOmpExtensionArgs("omp", env, "win32", () => true)).toEqual([]);
+    expect(nativeOmpExtensionArgs("omp", { ...env, WSL_INTEROP: "1" }, "linux", () => true)).toEqual([]);
+    expect(() => nativeOmpExtensionArgs("omp", env, "linux", () => false)).toThrow("bundle missing");
   });
 });
 

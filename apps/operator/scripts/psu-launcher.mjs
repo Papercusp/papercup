@@ -52,12 +52,12 @@ const nativeMcpExtension = new URL("../../../packages/omp-plugin/dist/native-ext
 const nativeMcpRequire = createRequire(import.meta.url);
 
 /** Explicit owned-OMP path only; stock Claude/Codex never receive this adapter. */
-export function nativeOmpExtensionArgs(backend, env = process.env, platform = process.platform) {
+export function nativeOmpExtensionArgs(backend, env = process.env, platform = process.platform, available = existsSync) {
   const mode = env.PAPERCUSP_MCP_TRANSPORT || "http";
   if (backend !== "omp" || mode === "http" || !["linux", "darwin"].includes(platform) ||
       env.WSL_INTEROP || env.WSL_DISTRO_NAME || env.PAPERCUSP_IPC_TCP === "1") return [];
   if (!["uds", "auto"].includes(mode)) throw new Error("Invalid MCP transport; expected http, uds or auto");
-  if (!existsSync(nativeMcpExtension) || !existsSync(nativeMcpBundle))
+  if (!available(nativeMcpExtension) || !available(nativeMcpBundle))
     throw new Error("Native MCP bundle missing; run npm run build:native -w @papercusp/omp");
   return ["-e", fileURLToPath(nativeMcpExtension)];
 }

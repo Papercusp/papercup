@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build-native.mjs",
     "build:native": "node build-native.mjs",
-    "typecheck": "bash ../../scripts/pc-heavy.sh tsc -p tsconfig.json --noEmit",
+    "typecheck": "bash ../../scripts/pc-heavy.sh tsc -p tsconfig.json --noEmit && bash ../../scripts/pc-heavy.sh tsc -p tsconfig.native.json",
     "test": "vitest run"
   },
   "engines": {
@@ -28,6 +28,10 @@
     "agent"
   ],
   "devDependencies": {
-    "@papercusp/test-config": "*"
+    "@papercusp/test-config": "*",
+    "esbuild": "^0.27.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }

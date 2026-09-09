@@ -3,7 +3,7 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // apps/operator/scripts/psu-launcher.mjs and regenerate.
 /** Explicit owned-OMP path only; stock Claude/Codex never receive this adapter. */
-export function nativeOmpExtensionArgs(backend: any, env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string[];
+export function nativeOmpExtensionArgs(backend: any, env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, available?: typeof existsSync): string[];
 /**
  * Build the public interactive backend choices. PUI is a launcher destination,
  * not an agent backend, so it is deliberately kept out of AGENTS (the backend
@@ -3981,6 +3981,7 @@ export type RunWrapperOptions = {
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;
 };
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 /** Numeric pid entries under `/proc`. Exported for tests via the injectable. */
