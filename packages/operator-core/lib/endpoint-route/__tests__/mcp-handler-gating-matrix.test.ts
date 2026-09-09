@@ -40,6 +40,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
 import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
+import { AGENT_MCP_AUTH_META, startAgentMcpServer } from '../routes/transport/_mcp-uds';
 import type { Principal, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
@@ -400,7 +401,7 @@ const { __buildMcpToolContext_forTests, resolveMcpTargetAfterPluginHostWarm } =
 const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
-const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES } =
+const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuildSpawnContext, pinVerifiedMcpRequest } =
   await import('../routes/transport/_mcp-host');
 
 /* ─── Synthetic probe tools ──────────────────────────────────────────── */
@@ -787,7 +788,25 @@ async function callTool(
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
 
 /** Exercise the SDK lifecycle independently of the HTTP adapter's handler capture. */
-async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T>, connection: 'memory' | 'uds'): Promise<T> {
+async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T>, connection: 'memory' | 'uds' | 'listener'): Promise<T> {
+  if (connection === 'listener') {
+    const listener = await startAgentMcpServer({ port: 3070, host: {
+      register: registerMcpHost, options: mcpHostServerOptions(),
+      verify: tryBuildSpawnContext, pin: pinVerifiedMcpRequest,
+    } });
+    const client = new Client({ name: 'authenticated-host-contract', version: '1' });
+    const wire = new UdsMcpTransport({ path: listener.endpoint.socketPath });
+    const originalSend = wire.send.bind(wire);
+    const info = (extra as { requestInfo: { url: string; headers: Record<string, string> } }).requestInfo;
+    const { host: _host, ...headers } = info.headers;
+    wire.send = message => originalSend('method' in message && message.method === 'initialize'
+      ? { ...message, params: { ...message.params, _meta: { [AGENT_MCP_AUTH_META]: {
+        version: 1, operatorId: listener.endpoint.operatorId, generation: listener.endpoint.generation,
+        url: info.url, headers,
+      } } } } : message);
+    try { await client.connect(wire); return await run(client); }
+    finally { await client.close(); await listener.close(); }
+  }
   let [clientWire, serverWire]: [Transport, Transport] = InMemoryTransport.createLinkedPair();
   let cleanupWire = async () => {};
   if (connection === 'uds') {
@@ -850,7 +869,7 @@ function assertPolicyResultParity(
   expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
 }
 
-describe.each(['memory', 'uds'] as const)('shared MCP host — %s SDK parity with the HTTP assembly', (connection) => {
+describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the HTTP assembly', (connection) => {
   it('negotiates existing capabilities and exposes the same allowed catalog', async () => {
     const extra = extraFor(signedUrl({ tools: 'gatingtest:scoped,gatingtest:engineer' }));
     const http = await listTools(extra);
@@ -902,12 +921,14 @@ describe.each(['memory', 'uds'] as const)('shared MCP host — %s SDK parity wit
   it('rejects invalid credentials before discovery and execution on both assemblies', async () => {
     const extra = superuserExtra('&workspace=ws-test', { authorization: 'Bearer invalid' });
     await expect(listTools(extra)).rejects.toThrow('mcp_auth_failed');
-    await withSdkHost(extra, async (client) => {
+    const run = withSdkHost(extra, async (client) => {
       await expect(client.listTools()).rejects.toThrow('mcp_auth_failed');
       const result = await client.callTool({ name: 'gatingtest:scoped', arguments: {} });
       expect(result.isError).toBe(true);
       expect(seen).toHaveLength(0);
     }, connection);
+    if (connection === 'listener') await expect(run).rejects.toThrow('uds_auth_failed');
+    else await run;
   });
 });
 
