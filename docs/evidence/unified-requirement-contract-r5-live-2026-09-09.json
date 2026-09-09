@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Unified requirement contract R-5 live Tauri journey",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_WINDOW=1280x800 scripts/verify-tauri-headless.sh --boot-only",
+    "tauri-agent-tools + owned-X11 keyboard assertions against unified-requirement-contract-2026-09-05",
+    "VERIFY_TAURI_WINDOW=390x844 scripts/verify-tauri-headless.sh --boot-only",
+    "tauri-agent-tools + owned-X11 keyboard assertions against unified-requirement-contract-2026-09-05"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-09T07:49:18.830Z",
+  "finishedAt": "2026-09-09T08:10:55.000Z",
+  "summary": "Fresh isolated-display Tauri journeys passed at 1280x800 and 390x844 against immutable current-tree snapshots and shared read-only plan data. Both runs opened the acceptance gate and R-1 through real X11 keyboard input, rendered Intent/Acceptance/Verification plus linked work/evidence/review history, opened WI-2146788 through the scoped wpop URL, and used Escape to close only the dialog while preserving the parent plan and expanded requirement. The narrow run also proved document scrollWidth <= 390. No console errors were observed during the asserted steps.",
+  "assertions": [
+    {
+      "id": "wide-viewport",
+      "passed": true,
+      "evidence": "Fresh verifier bridge reported viewport 1280x800 on owned display :90 and port 33700."
+    },
+    {
+      "id": "wide-keyboard-gate-return-space",
+      "passed": true,
+      "evidence": "Owned X11 pointer focused plan-acceptance-gate-toggle; Return changed aria-expanded true->false and Space changed false->true."
+    },
+    {
+      "id": "wide-r1-keyboard-open",
+      "passed": true,
+      "evidence": "Space on the focused native requirement-R-1 summary produced [data-testid=requirement-R-1][open]."
+    },
+    {
+      "id": "wide-unified-sections",
+      "passed": true,
+      "evidence": "R-1 Intent, Acceptance (BAR), Verification, Linked work and validation, Evidence history, and Review history all rendered."
+    },
+    {
+      "id": "wide-flow-order",
+      "passed": true,
+      "evidence": "Requirement acceptance flow rendered Build and run checks, Evidence, Independent grade, Author acceptance, Accepted."
+    },
+    {
+      "id": "wide-scoped-work-link",
+      "passed": true,
+      "evidence": "Focused WI-2146788 link had plan=unified-requirement-contract-2026-09-05 and wpop=papercusp::WI-2146788; Return opened a real dialog containing WI-2146788."
+    },
+    {
+      "id": "wide-escape-preserves-parent",
+      "passed": true,
+      "evidence": "Escape removed the work dialog and wpop parameter while preserving the parent plan parameter and open R-1 requirement."
+    },
+    {
+      "id": "wide-console",
+      "passed": true,
+      "evidence": "Every bounded wide DOM assertion included --no-errors and passed."
+    },
+    {
+      "id": "narrow-viewport",
+      "passed": true,
+      "evidence": "Fresh second verifier bridge reported viewport 390x844 on owned display :90 and port 33700."
+    },
+    {
+      "id": "narrow-keyboard-gate-return-space",
+      "passed": true,
+      "evidence": "Owned X11 pointer focused plan-acceptance-gate-toggle; Return changed aria-expanded true->false and Space reopened the gate with .pc-requirements rendered."
+    },
+    {
+      "id": "narrow-r1-keyboard-open",
+      "passed": true,
+      "evidence": "Space on the focused native requirement-R-1 summary produced [data-testid=requirement-R-1][open]."
+    },
+    {
+      "id": "narrow-unified-sections",
+      "passed": true,
+      "evidence": "All six R-1 inspection sections rendered at 390x844: Intent, Acceptance, Verification, Linked work, Evidence history, Review history."
+    },
+    {
+      "id": "narrow-no-horizontal-overflow",
+      "passed": true,
+      "evidence": "With R-1 expanded, innerWidth=390, innerHeight=844, and document.documentElement.scrollWidth=390."
+    },
+    {
+      "id": "narrow-scoped-work-link",
+      "passed": true,
+      "evidence": "Return on the focused WI-2146788 scoped link opened a dialog containing WI-2146788."
+    },
+    {
+      "id": "narrow-escape-preserves-parent",
+      "passed": true,
+      "evidence": "Escape removed the dialog and wpop while preserving plan=unified-requirement-contract-2026-09-05, open R-1, and scrollWidth<=innerWidth."
+    },
+    {
+      "id": "narrow-console",
+      "passed": true,
+      "evidence": "Every bounded narrow DOM assertion included --no-errors and passed."
+    }
+  ],
+  "scope": {
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "plan": "unified-requirement-contract-2026-09-05",
+    "workItem": "WI-2146793",
+    "evidencePlane": "live",
+    "viewports": [
+      [1280, 800],
+      [390, 844]
+    ]
+  },
+  "limitations": [
+    "The two isolated displays used the shared production-shaped database in read-only fashion; no UI write control was exercised.",
+    "The wide frozen snapshot exposed footer build f58d5b874f. The narrow footer-only probe raced teardown and is intentionally not asserted; current UI file identity is remeasured by plans:bind-spec-evidence.",
+    "A post-journey wide freshness probe saw unrelated shared dist churn. The completed run remained internally immutable; the second narrow run booted from a fresh freeze."
+  ]
+}
