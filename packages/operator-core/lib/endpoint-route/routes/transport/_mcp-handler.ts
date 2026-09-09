@@ -211,6 +211,33 @@ function stripNestedResultDoorSkip(result: McpCallResult): McpCallResult {
   return { ...result, _meta: Object.keys(meta).length > 0 ? meta : undefined };
 }
 
+/**
+ * A caller projection/view promotes the inner dispatch to a full source so the
+ * reduction can search the complete result. That internal promotion is not an
+ * explicit `payloadTier:'full'` request, but the generic tool serializer cannot
+ * distinguish the two and stamps `_meta.explicitFullRequest` for both. Remove
+ * the marker before the outer result door when the original context did not
+ * already carry a caller-selected full tier or transport exemption.
+ */
+function stripImplicitProjectionFullRequest(
+  result: McpCallResult,
+  projectionNeedsFullSource: boolean,
+  ctx: UnifiedToolContext,
+): McpCallResult {
+  if (
+    !projectionNeedsFullSource ||
+    ctx.contextTier === 'full' ||
+    ctx.payloadTierOverride === 'full' ||
+    ctx.transportCapExempt === true ||
+    !result._meta ||
+    !('explicitFullRequest' in result._meta)
+  ) {
+    return result;
+  }
+  const { explicitFullRequest: _implicitFullRequest, ...meta } = result._meta;
+  return { ...result, _meta: Object.keys(meta).length > 0 ? meta : undefined };
+}
+
 const REQUEST_ORIGIN_QUERY_KEYS = new Set([
   'superuser',
   'power_user',
@@ -2368,12 +2395,17 @@ async function buildMcpToolContext(
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
     const projectedDispatched = namedView ? applyNamedViewToResult(freeFormProjected, namedView) : freeFormProjected;
+    const doorInput = stripImplicitProjectionFullRequest(
+      projectedDispatched,
+      projectionNeedsFullSource,
+      ctxRef.current!,
+    );
     // A projected call was temporarily promoted to payloadTier:'full' above.
     // Do not carry the target's door exemption across that seam: a successful
     // projection is already small so the outer door is a no-op, while a
     // fail-open/miss must be bounded instead of leaking the full promoted body.
     return carryNestedResultDoorSkip(
-      projectedDispatched,
+      doorInput,
       // A NAMED VIEW is promoted to full source exactly like a projection, so it
       // must drop the exemption on the same terms: a successful view is already
       // budget-bounded (the door is a no-op), and a fail-open must be bounded
@@ -3767,6 +3799,7 @@ const handler = createMcpHandler(
               // reasoning — a reduction the caller ASKED for pre-empts the
               // door's fixed policy rather than racing it.
               const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
+              const doorInput = stripImplicitProjectionFullRequest(viewedResult, projectionNeedsFullSource, ctx);
               // EI-19386201256023240: a tool whose documented/near-exclusive
               // caller is a programmatic client (a shell hook `json.loads`-ing
               // the raw body — e.g. activity:report's hook_bundle fold — see
@@ -3786,10 +3819,10 @@ const handler = createMcpHandler(
               const resultDoorSkipReason =
                 projectionSpec || namedView
                   ? undefined
-                  : (projected.skipResultDoor ?? nestedResultDoorSkipReason(viewedResult));
+                  : (projected.skipResultDoor ?? nestedResultDoorSkipReason(doorInput));
               const doored = resultDoorSkipReason
-                ? viewedResult
-                : applyResultDoor(viewedResult, {
+                ? doorInput
+                : applyResultDoor(doorInput, {
                     toolName,
                     workspaceId: dispatchSpawnCtx.workspaceId,
                     runId: dispatchSpawnCtx.runId ?? null,

@@ -59,7 +59,11 @@ vi.mock('./git-sync-events', async (importOriginal) => ({
   emitGitSyncEgressedEvent: emitGitSyncEgressedEventMock,
 }));
 
-import { resolveGithubCredentialHelper, runGithubBridgeLeg } from './git-sync-action';
+import {
+  refreshRemoteTrackingRefFromProvenTip,
+  resolveGithubCredentialHelper,
+  runGithubBridgeLeg,
+} from './git-sync-action';
 import { BRIDGE_CANONICAL_REF, GITHUB_CREDENTIAL_HELPER_KEY } from '../../sync/pot-git/github-bridge-tick';
 
 const SLUG = 'shop-hive';
@@ -325,6 +329,73 @@ describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', ()
     egressHead,
     verdict: { action: 'clear' as const, needsOwner: false, signals: [], detail: '' },
     errors: [],
+  });
+
+  it('refreshes origin/staging with an explicit refspec from proven upstream egress, never FETCH_HEAD or a merge', async () => {
+    const checkout = '/clones/shop';
+    const proven = EGRESS_HEAD;
+    const calls: string[][] = [];
+    defaultRunGitMock.mockImplementation(async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'fetch') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse') return { code: 0, stdout: `${proven}\n`, stderr: '' };
+      if (args[0] === 'merge-base') return { code: 0, stdout: '', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    await expect(
+      refreshRemoteTrackingRefFromProvenTip(checkout, proven, { runGit: defaultRunGitMock }),
+    ).resolves.toMatchObject({
+      refreshed: true,
+      trackingRef: 'refs/remotes/origin/staging',
+      observedSha: proven,
+    });
+    expect(calls).toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'refs/heads/staging:refs/remotes/origin/staging',
+    ]);
+    expect(calls.some((args) => args[0] === 'merge')).toBe(false);
+    expect(calls.some((args) => args.includes('FETCH_HEAD'))).toBe(false);
+  });
+
+  it('does not bless a remote tip that no longer contains the bridge proof', async () => {
+    const calls: string[][] = [];
+    defaultRunGitMock.mockImplementation(async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'fetch') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse') return { code: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' };
+      if (args[0] === 'merge-base') return { code: 1, stdout: '', stderr: 'not contained' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    await expect(
+      refreshRemoteTrackingRefFromProvenTip('/clones/shop', EGRESS_HEAD, { runGit: defaultRunGitMock }),
+    ).resolves.toMatchObject({ refreshed: false, observedSha: 'f'.repeat(40) });
+    expect(calls).toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'refs/heads/staging:refs/remotes/origin/staging',
+    ]);
+  });
+
+  it('refreshes only the upstream target; fork egress does not masquerade as origin/staging', async () => {
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{ slug: SLUG, path: '/clones/shop', hive_slug: SLUG, self_repo: true, github_remote: 'https://github.com/acme/shop.git', fork_remote: 'https://github.com/me/shop.git' }],
+    });
+    pathExistsMock.mockResolvedValue(false);
+    runGithubBridgeTickMock.mockResolvedValue({ ...healthyOutcome(EGRESS_HEAD), egressTarget: 'fork' });
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    expect(defaultRunGitMock.mock.calls.map((c) => c[0] as string[])).not.toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'refs/heads/staging:refs/remotes/origin/staging',
+    ]);
   });
 
   it('uses the ticking workspace registry so a mismatched ambient registry cannot skip the metadata refresh', async () => {
