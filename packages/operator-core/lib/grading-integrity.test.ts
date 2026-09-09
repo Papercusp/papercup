@@ -15,6 +15,7 @@ import {
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
 type GetRubric = NonNullable<DispatchPendingGradingAuditsDeps['getRubric']>;
 type Launch = NonNullable<DispatchPendingGradingAuditsDeps['launch']>;
+type GetTask = NonNullable<DispatchPendingGradingAuditsDeps['getTask']>;
 type LaunchResult = Awaited<ReturnType<Launch>>;
 
 // Keep the mock result shape explicit without using `as never` at a mock call;
@@ -68,8 +69,9 @@ function deps() {
     }),
   );
   const release = vi.fn(async () => true);
+  const getTask = vi.fn<GetTask>().mockResolvedValue({ state: 'running' } as Awaited<ReturnType<GetTask>>);
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
-  return { listScorecards, getRubric, launch, route, reserve, release, listWorkspaceWideLoopStanddownOwners };
+  return { listScorecards, getRubric, launch, route, reserve, release, getTask, listWorkspaceWideLoopStanddownOwners };
 }
 
 describe('dispatchPendingGradingAudits', () => {
@@ -758,5 +760,79 @@ describe('dispatchPendingGradingAudits', () => {
         account: 'auto',
       }),
     );
+  });
+
+  it('recovers a deduped terminal task and gives each reservation epoch a fresh retry key', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-dead-receipt')]);
+    d.reserve
+      .mockResolvedValueOnce({
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-dead-receipt', reservedAt: '2026-09-09T10:00:00.000Z' },
+      })
+      .mockResolvedValueOnce({
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-dead-receipt', reservedAt: '2026-09-09T10:15:00.000Z' },
+      });
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: true,
+          launch: { tasks: [{ taskId: 'task-dead', logPath: '/tmp/dead.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-recovery-a', logPath: '/tmp/recovery-a.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: true,
+          launch: { tasks: [{ taskId: 'task-dead', logPath: '/tmp/dead.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-recovery-b', logPath: '/tmp/recovery-b.log' }] },
+        }),
+      );
+    d.getTask.mockResolvedValue({ state: 'killed' } as Awaited<ReturnType<GetTask>>);
+    const killTask = vi.fn(async (taskId: string) => ({
+      ok: false as const,
+      taskId,
+      action: 'kill',
+      error: 'not_live' as const,
+    }));
+    const run = () =>
+      dispatchPendingGradingAudits(
+        { targetIds: ['EI-dead-receipt'], ctx, harness: 'papercusp' },
+        {
+          ...d,
+          killTask,
+          readLogTail: () => 'no terminal model error was logged',
+          sleep: async () => undefined,
+          terminalLogMaxRechecks: 0,
+        },
+      );
+
+    const first = await run();
+    const second = await run();
+
+    expect(first.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: { retiredTaskIds: ['task-dead'], codes: ['task_receipt_not_live'] },
+    });
+    expect(second.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: { retiredTaskIds: ['task-dead'], codes: ['task_receipt_not_live'] },
+    });
+    const firstRetryKey = (d.launch.mock.calls[1]?.[0] as { idempotencyKey: string }).idempotencyKey;
+    const secondRetryKey = (d.launch.mock.calls[3]?.[0] as { idempotencyKey: string }).idempotencyKey;
+    expect(firstRetryKey).toMatch(/^grading-audit:EI-dead-receipt:recovery:[a-f0-9]{16}$/);
+    expect(secondRetryKey).toMatch(/^grading-audit:EI-dead-receipt:recovery:[a-f0-9]{16}$/);
+    expect(secondRetryKey).not.toBe(firstRetryKey);
   });
 });
