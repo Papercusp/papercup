@@ -8,6 +8,11 @@ import {
 } from './papercusp-content-bootstrap';
 import type { InstallBundleAppOutcome } from '@papercusp/operator-core/lib/cupboard/bundle-app-install-io';
 
+const offlineInstallBundle = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/operator-core/lib/cupboard/offline-content-bundle-install-io', () => ({
+  installBundleAppFromCupboard: offlineInstallBundle,
+}));
+
 type SuccessfulOutcome = Extract<InstallBundleAppOutcome, { ok: true }>;
 
 const roots: string[] = [];
@@ -44,12 +49,14 @@ function success(): SuccessfulOutcome {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 describe('papercusp-content-bootstrap', () => {
   it('pins the official bundle into the persistent state home and defers only rubric seeding', async () => {
     const state = stateRoot();
+    vi.stubEnv('PAPERCUSP_WORKSPACE', '');
     const installBundle = vi.fn(async () => {
       expect(process.env.PAPERCUSP_HOME).toBe(join(state, '.papercusp'));
       expect(process.env.PAPERCUSP_PROMPTS_DIR).toBe(
@@ -78,6 +85,21 @@ describe('papercusp-content-bootstrap', () => {
       installed: { blueprints: 1, templates: 1, rubrics: 1 },
       rubricSeed: 'deferred-to-operator-startup',
     });
+  });
+
+  it('uses the PG-free offline installer when no dependency override is supplied', async () => {
+    const state = stateRoot();
+    offlineInstallBundle.mockResolvedValue(success());
+    const stdout = vi.fn();
+
+    expect(await runContentBootstrap(['--state-root', state], { stdout, stderr: vi.fn() })).toBe(0);
+    expect(offlineInstallBundle).toHaveBeenCalledWith(
+      WORKSPACE_HOST_CONTENT_BUNDLE,
+      expect.objectContaining({
+        offlineContentOnly: true,
+        deferRubricSeed: true,
+      }),
+    );
   });
 
   it('rejects unsafe argv before installing and reports an incomplete bundle as failure', async () => {

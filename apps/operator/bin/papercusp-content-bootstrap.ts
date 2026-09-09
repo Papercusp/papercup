@@ -11,6 +11,7 @@ import type {
   InstallBundleAppOutcome,
   InstallBundleAppOptions,
 } from '@papercusp/operator-core/lib/cupboard/bundle-app-install-io';
+import { installBundleAppFromCupboard as installOfflineContentBundleAppFromCupboard } from '@papercusp/operator-core/lib/cupboard/offline-content-bundle-install-io';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 export const WORKSPACE_HOST_CONTENT_BUNDLE = Object.freeze({
@@ -91,8 +92,7 @@ export async function runContentBootstrap(
   try {
     const installBundle =
       deps.installBundle ??
-      (await import('@papercusp/operator-core/lib/cupboard/bundle-app-install-io'))
-        .installBundleAppFromCupboard;
+      installOfflineContentBundleAppFromCupboard;
     outcome = await installBundle(
       WORKSPACE_HOST_CONTENT_BUNDLE,
       {

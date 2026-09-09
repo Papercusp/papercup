@@ -203,7 +203,7 @@ function contentPath(kind: 'templates' | 'rubrics', unit: BundleContentUnit): st
 }
 
 function makeOfflineInstallers(): BundleAppInstallers {
-  const cloneDeps = { cloneRepo: gitCloneShallow, tmpDir };
+  const cloneDeps = { cloneRepo: gitCloneShallow, tmpDir: tmpdir };
   return {
     resolveAndInstallDeps: async (declared) => ({
       ok: (declared.packs?.length ?? 0) === 0 && (declared.plugins?.length ?? 0) === 0,
@@ -269,7 +269,7 @@ export async function installOfflineContentBundleAppFromCupboard(
   try {
     manifest = await fetchBundleManifest(
       { githubUrl: input.githubUrl, listingRef: input.listingRef },
-      { cloneRepo: gitCloneShallow, tmpDir },
+      { cloneRepo: gitCloneShallow, tmpDir: tmpdir },
     );
   } catch (error) {
     if (error instanceof BundleManifestError) return { ok: false, status: error.status, error: error.message };
