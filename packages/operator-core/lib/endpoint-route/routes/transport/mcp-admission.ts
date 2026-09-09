@@ -475,7 +475,7 @@ export function isBoundedScorecardsListArgs(args: unknown): boolean {
  * broader scorecards history reader.
  */
 function isBoundedScorecardsGetArgs(args: unknown): boolean {
-  if (!isRecord(args)) return false;
+  if (!isRecord(args) || Object.keys(args).length !== 1) return false;
   return (
     typeof args.issueId === 'string' &&
     args.issueId.trim().length > 0 &&
