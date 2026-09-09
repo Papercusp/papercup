@@ -809,6 +809,8 @@ export interface BuiltSpawnContext {
   spawnId: string;
   parentSpawnId: string | null;
   uiClientId: string | null;
+  /** Private detector-only session key; never used as public coordination identity. */
+  detectorSessionKey: string | null;
   /**
    * The CALLING agent's CLI backend + model, stamped by the launcher onto the session MCP URL
    * (`?agent=`/`?model=`; omp also via the `x-papercusp-agent`/`-model` headers). Folded onto the
@@ -1727,6 +1729,7 @@ async function tryBuildSpawnContext(
         spawnId: parsed.spawnId,
         parentSpawnId: parsed.parentSpawnId,
         uiClientId: parsed.uiClientId,
+        detectorSessionKey: parsed.detectorSessionKey,
         planRunSessionId,
         sigVerifiedSpawn: sigVerified,
         ...(sigVerified && verifiedKeySha256 ? { admissionRecoveryAuthority: {
@@ -2431,6 +2434,7 @@ async function buildMcpToolContext(
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
     uiClientId: spawn.uiClientId,
+    failureLoopSessionKey: spawn.detectorSessionKey,
     callerAgent: spawn.callerAgent ?? null,
     callerModel: spawn.callerModel ?? null,
     sigVerifiedSpawn: spawn.sigVerifiedSpawn ?? false,
