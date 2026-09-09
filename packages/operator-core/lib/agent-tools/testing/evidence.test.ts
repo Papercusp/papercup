@@ -44,6 +44,7 @@ describe('test-time evidence continuity', () => {
 
   it.each([
     [{ passed: 0, collectionFailed: true }, 'error', false],
+    [{ passed: 0, skipped: 1, collectionFailed: true }, 'error', false],
     [{ passed: 0, failed: 1 }, 'fail', true],
     [{ passed: 0, skipped: 1 }, 'skip', false],
     [{ passed: 1, skipped: 1 }, 'skip', true],
@@ -125,4 +126,52 @@ describe('test-time evidence continuity', () => {
       expect(d.bind.mock.calls.at(-1)![0].details.adequacy.executed).toBe(false);
     },
   );
+
+  const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
+  const measured = { schemaVersion: 1, root: scope.root, filePath: binding.testPath,
+    workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: detached,
+    testNamePattern: null, passed: 2, failed: 0, skipped: 0, collectionFailed: false };
+  async function pendingRecovery(detail: unknown, status = 'pass', sourceChanged = false) {
+    const d = deps();
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    await finishTestEvidence(prepared, runId, detached, scope,
+      { ok: false, runId, root: scope.root, error: 'timeout' }, d);
+    const stored = d.bind.mock.calls.at(-1)![0];
+    d.list.mockResolvedValue([{ ...stored, id: 2, fingerprints: {
+      sourceFingerprint: stored.sourceFingerprint, testFingerprint: stored.testFingerprint } }]);
+    d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status,
+      finished_at: '2026-09-09T00:00:00Z', execution_details: detail }]);
+    if (sourceChanged) d.measure.mockResolvedValue({ sourceFingerprint: 'changed', testFingerprint: 'test-before' });
+    return { d, bundle: await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: detached }, scope, d) };
+  }
+  it('settles a recovered run from complete measured details, not its pass status', async () => {
+    const { bundle } = await pendingRecovery(measured);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(bundle.verificationFingerprint).toBeTruthy();
+  });
+  it.each([
+    [{ skipped: 1 }, 'pass', 'skip'],
+    [{ passed: 0, failed: 1 }, 'fail', 'fail'],
+    [{ passed: 0, skipped: 1, collectionFailed: true }, 'fail', 'error'],
+    [{ passed: 0 }, 'pass', 'unknown'],
+  ])('preserves measured non-passing recovery %j', async (delta, status, outcome) => {
+    const { bundle } = await pendingRecovery({ ...measured, ...delta }, status);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome });
+  });
+  it.each([
+    null, {}, { ...measured, skipped: undefined }, { ...measured, passed: -1 },
+    { ...measured, workspaceId: 'other' }, { ...measured, harnessSlug: 'other' },
+    { ...measured, runGroupId: runId }, { ...measured, root: '/other' },
+    { ...measured, filePath: 'other.test.ts' }, { ...measured, collectionFailed: true },
+  ])('keeps missing, malformed, contradictory or wrong-scope details unproven: %j', async detail => {
+    const { bundle } = await pendingRecovery(detail);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'review-required', outcome: 'unknown' });
+    expect(bundle.verificationFingerprint).toBeNull();
+  });
+  it('does not make measured recovery source-current after a source edit', async () => {
+    const { bundle } = await pendingRecovery(measured, 'pass', true);
+    expect(bundle.rows[0].phase).toBe('source-changed');
+    expect(bundle.verificationFingerprint).toBeNull();
+  });
 });
