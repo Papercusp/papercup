@@ -5,6 +5,7 @@ import {
   extractRubricRatingInstructions,
   validateRubricRatingVocabulary,
 } from './rubric-rating-vocabulary';
+import { canonicalScorecardRating } from './harness/improvements/observation-types';
 import { proposeRubric, type ProposeRubricCriterion } from './rubrics';
 
 const criterion = (over: Partial<ProposeRubricCriterion> & { key: string }): ProposeRubricCriterion => {
@@ -221,5 +222,55 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
         ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
       }),
     ).rejects.toThrow(/off-scale rating instructions.*partial/);
+  });
+
+  // A rating scale routinely carries its definition inline. The authoring
+  // validator and scorecards:emit must agree about that form, or every rubric
+  // written that way becomes unproposable AND unamendable while grading it
+  // would have worked fine (measured on
+  // test-suite-recovery-2026-08-27-acceptance, whose C6 scale is em-dashed).
+  describe('a `label — definition` scale entry is satisfied by its leading label', () => {
+    const emDashScale = [
+      'fail — an ADMISSIBLE run that is red on its merits',
+      'undetermined — the verdict cannot be TRUSTED rather than being bad',
+      'partial — exit 0 with Vitest evidence but Cargo refused pre-spawn',
+      'pass — non-empty Vitest AND Cargo evidence, zero failed counts',
+    ];
+
+    it('accepts prose naming the short label, and agrees with canonicalScorecardRating', () => {
+      const method = "If it did not, the correct rating is 'undetermined' under D-007.";
+      const validation = validateRubricRatingVocabulary(
+        [criterion({ key: 'c6', method, ratingScale: emDashScale })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+      );
+      expect(validation.violations).toEqual([]);
+      expect(validation.ok).toBe(true);
+      // The half that ACCEPTS the rating resolves it to a real scale entry, which
+      // is precisely why refusing it at authoring time was wrong.
+      expect(emDashScale).toContain(canonicalScorecardRating('undetermined', emDashScale));
+    });
+
+    // CALIBRATION: the guard is still fail-closed for a genuinely off-scale
+    // rating, so the case above is not passing because nothing is checked.
+    it('still refuses a rating that no entry leads with', () => {
+      const validation = validateRubricRatingVocabulary(
+        [criterion({ key: 'c6', method: 'Grade `healthy` when the run is clean.', ratingScale: emDashScale })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+      );
+      expect(validation.ok).toBe(false);
+      expect(validation.violations[0]?.rating).toBe('healthy');
+    });
+
+    // An ambiguous leading label cannot resolve to one rating at emit time
+    // either, so it stays a violation rather than silently picking the first.
+    it('still refuses an ambiguous leading label', () => {
+      const ambiguous = ['pass — with evidence', 'pass — without evidence', 'unknown'];
+      const validation = validateRubricRatingVocabulary(
+        [criterion({ key: 'c6', method: 'Grade `pass` when both evidences are present.', ratingScale: ambiguous })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+      );
+      expect(validation.ok).toBe(false);
+      expect(validation.violations[0]?.rating).toBe('pass');
+    });
   });
 });
