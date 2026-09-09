@@ -1228,6 +1228,11 @@ export default defineTool({
       outerStageAttribution: 'tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time' as const,
     };
     ctx.metadata?.({ workItemsGet: read });
-    return bulkContent({ ...env, read, ...(args.resume ? { __resumeOnly: true } : {}) });
+    return bulkContent({
+      ...env,
+      read,
+      ...(args.resume ? { __resumeOnly: true } : {}),
+      ...(args.checksOnly ? { __checksOnly: true } : {}),
+    });
   },
 });
