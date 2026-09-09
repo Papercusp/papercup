@@ -656,6 +656,20 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     ).toBeNull();
   });
 
+  it('matches Claude’s Churned terminal footer after an account-scoped gateway 429', () => {
+    const raw =
+      '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429)\r\n' +
+      "This request would exceed your account's rate limit. Please try again later.\u001b[0m\r\n\r\n" +
+      '\u001b[38;5;246m✻ Churned for 1m 2s · done 12:02 PM\u001b[0m\r\n❯';
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'inference_gateway_error',
+      evidence:
+        "API Error: Request rejected (429) This request would exceed your account's rate limit. Please try again later. ✻ Churned for 1m 2s · done",
+    });
+  });
+
   it('matches the completed account-paced gateway 429 screen only for a controlled caller', () => {
     const error =
       "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
