@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 run50 current-source isolated two-host Papercup chat acceptance",
+  "framework": "playwright",
+  "command": [
+    "env",
+    "PAPERCUSP_CODEX_GATEWAY=1",
+    "PAPERCUSP_ACCOUNT_ID=aviynw6_codex",
+    "VERIFY_TAURI_ISOLATED_DB=1",
+    "VERIFY_TAURI_ISOLATED_SEED=ready",
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "node",
+    ".papercusp/tmp/p013-tauri-live.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-09T07:36:39.218Z",
+  "finishedAt": "2026-09-09T07:41:35.491Z",
+  "summary": "The frozen isolated operator desktop and external portal both rendered and persisted the same choice-card interaction and markdown prose on current source, rejected duplicate answers with HTTP 409, rendered compact inline semantic timestamps for same-day and older turns, and exposed Papercup identity to assistive technology without visible role text. The portal model needed three identical card-prompt submissions: two explicit tool-unavailable misses followed by the successful persisted chat:ask_choice call. The verifier tore down with exit=0.",
+  "assertions": [
+    {
+      "id": "same-input-contract",
+      "passed": true,
+      "evidence": "Both hosts used card prompt SHA-256 a263b284f284a07f95b5844c16df9cf171db6e6da9310222b34258dc21dba899 and prose prompt SHA-256 3c27fbad8472865ea2eb989de6fbcaa93d8166060f151d5fce23d66b81d7950c."
+    },
+    {
+      "id": "desktop-choice-card",
+      "passed": true,
+      "evidence": "Tauri recorded the visible question 'Choose P013 parity token', exactly Alpha/Beta options, persisted chat:ask_choice input, and answered pick Alpha on its first submission."
+    },
+    {
+      "id": "portal-choice-card",
+      "passed": true,
+      "evidence": "Portal recorded the same visible question and Alpha/Beta options, persisted chat:ask_choice input, and answered pick Alpha through the restricted PI tool surface. The first two identical submissions returned explicit tool-unavailable prose; the third emitted the required tool call and is the interaction asserted here."
+    },
+    {
+      "id": "duplicate-answer-conflict",
+      "passed": true,
+      "evidence": "Both hosts' second card-response attempts returned HTTP 409 after the Alpha answer had persisted."
+    },
+    {
+      "id": "markdown-parity",
+      "passed": true,
+      "evidence": "Both DOM snapshots contained strong text 'P013 parity bold', list items first/second, and inline code 'inline' after one prose submission."
+    },
+    {
+      "id": "compact-inline-semantic-time",
+      "passed": true,
+      "evidence": "Both hosts rendered same-day HH:MM labels and an older 'Sep 7 · HH:MM' label in the message line beside content; every inspected time carried a parseable ISO dateTime and was visible."
+    },
+    {
+      "id": "icon-only-visible-identity",
+      "passed": true,
+      "evidence": "Both DOM snapshots reported zero visible assistant-role labels and screen-reader-only 'Papercup' labels; the desktop snapshot also recorded avatar icons."
+    },
+    {
+      "id": "host-trust-boundary",
+      "passed": true,
+      "evidence": "Desktop DOM reported hostTrust=owner; portal DOM reported hostTrust=public. Portal PI discovery returned HTTP 200 and exposed only voice:delegate_deep and chat:ask_choice."
+    },
+    {
+      "id": "source-provenance",
+      "passed": true,
+      "evidence": "The frozen operator reported version 0.0.18 and source short SHA ae28cf24ee throughout; portal source HEAD a81782cd844c3200e5d9cfcdccf84325f38c6fe9 with runtime fingerprint e279fa82e812549997c980534d8fd41a9074559b22b77b9d66c3f4a08e60664d over 102 inputs."
+    }
+  ],
+  "rawRunLog": {
+    "temporaryPathAtExecution": "/tmp/p013-tauri-run50.log",
+    "sha256": "13677ff16df1e794884b389f8701b4454fea20c50395c11222904da7e33ac691",
+    "bytes": 42079
+  },
+  "operator": {
+    "origin": "http://127.0.0.1:33700",
+    "healthSha": "ae28cf24ee",
+    "version": "0.0.18"
+  },
+  "portal": {
+    "origin": "http://127.0.0.1:37671",
+    "sourceHead": "a81782cd844c3200e5d9cfcdccf84325f38c6fe9",
+    "sourceFingerprint": "e279fa82e812549997c980534d8fd41a9074559b22b77b9d66c3f4a08e60664d",
+    "runtimeInputCount": 102,
+    "cardPromptSubmissions": 3,
+    "cardModelMisses": 2
+  }
+}
