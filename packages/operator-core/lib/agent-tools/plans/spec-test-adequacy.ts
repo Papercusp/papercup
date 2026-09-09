@@ -291,8 +291,9 @@ function clauseIdentity(clause: SpecClauseRevision): string {
   return `${clause.planSlug}/${clause.specId}@${clause.revision} (${clause.contentHash})`;
 }
 
-function clauseProbe(clause: SpecClauseRevision): string {
+function clauseProbe(clause: SpecClauseRevision, harness?: string): string {
   const args = JSON.stringify({
+    ...(harness !== undefined ? { harness } : {}),
     slug: clause.planSlug,
     specIds: [clause.specId],
   });
@@ -480,6 +481,7 @@ function riskFloorRating(
   classRef: PlanClassRubricRef,
   evidence: SpecEvidenceForAdequacy[],
   now: Date,
+  harness?: string,
   workItemKind?: string | null,
 ): { floor: 'none' | 'l3' | 'l4'; rating: AdequacyRatingEntry } {
   const floor = requiredProofFloor(clause, classRef, workItemKind);
@@ -488,7 +490,7 @@ function riskFloorRating(
       floor,
       rating: {
         rating: 'not-applicable',
-        evidence: `Clause ${clauseIdentity(clause)} is non-automated and declares no required test layer. ${clauseProbe(clause)}`,
+        evidence: `Clause ${clauseIdentity(clause)} is non-automated and declares no required test layer. ${clauseProbe(clause, harness)}`,
       },
     };
   }
@@ -524,7 +526,7 @@ function riskFloorRating(
           rating: 'waived',
           evidence:
             `L4 for ${clauseIdentity(clause)} is explicitly waived by approvalRef=${waiver.approvalRef}: ` +
-            `${waiver.justification}${waiver.expiresAt ? ` (expires ${waiver.expiresAt})` : ''}. ${clauseProbe(clause)}`,
+            `${waiver.justification}${waiver.expiresAt ? ` (expires ${waiver.expiresAt})` : ''}. ${clauseProbe(clause, harness)}`,
         },
       };
     }
@@ -541,7 +543,7 @@ function riskFloorRating(
           : `${evidenceWithBindings(
               `No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound for ${clauseIdentity(clause)}.`,
               evidence,
-            )} ${clauseProbe(clause)}`,
+            )} ${clauseProbe(clause, harness)}`,
         suggestion: 'Bind targeted L4 proof or record a justified approvalRef-bearing waiver on the spec revision.',
       },
     };
@@ -567,7 +569,7 @@ function riskFloorRating(
             : `${evidenceWithBindings(
                 `No explicit meets_l3 result is bound for ${clauseIdentity(clause)}; depth or a generic passing test is not a rung verdict.`,
                 evidence,
-              )} ${clauseProbe(clause)}`,
+              )} ${clauseProbe(clause, harness)}`,
           suggestion: 'Bind a coverage-census row whose independent meets_l3 flag is current.',
         },
   };
@@ -750,7 +752,7 @@ export function evaluateSpecTestAdequacy(input: {
   ratings.traceability = !evidence.length
     ? {
         rating: 'fail',
-        evidence: `No immutable evidence binding resolves ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
+        evidence: `No immutable evidence binding resolves ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
         suggestion: 'Bind the work item and proof through plans:bind-spec-evidence.',
       }
     : ephemeralEvidence.length > 0
@@ -859,7 +861,7 @@ export function evaluateSpecTestAdequacy(input: {
   if (clause.requiredTestLayers.length === 0) {
     layerRating = {
       rating: 'not-applicable',
-      evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseProbe(clause)}`,
+      evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseProbe(clause, input.harness)}`,
     };
   } else {
     const required = [...new Set(clause.requiredTestLayers.map(normalizedLayer))];
@@ -885,7 +887,7 @@ export function evaluateSpecTestAdequacy(input: {
                 ...unreachable.map((layer) => `${layer}:unreachable`),
               ].join(', ')}.`,
               evidence,
-            )} ${clauseProbe(clause)}`,
+            )} ${clauseProbe(clause, input.harness)}`,
             suggestion: 'Bind proof for every requiredTestLayer and attest that it reaches the real path.',
           }
         : unresolved.length
@@ -1052,7 +1054,7 @@ export function evaluateSpecTestAdequacy(input: {
                   `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
                   executable,
                 )
-              : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
+              : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
           };
 
   let causalPairRating: AdequacyRatingEntry | null = null;
@@ -1210,10 +1212,10 @@ export function evaluateSpecTestAdequacy(input: {
           }
         : {
             rating: 'fail',
-            evidence: `No evidence exists whose freshness can be established for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
+            evidence: `No evidence exists whose freshness can be established for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
           };
 
-  const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date(), input.workItemKind);
+  const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date(), input.harness, input.workItemKind);
   ratings['plan-class-risk-floor'] = risk.rating;
 
   const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef, input.rerunSelection);
