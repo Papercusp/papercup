@@ -1203,7 +1203,7 @@ function runTestProcess(
 ): Promise<RouterOutcome> {
   const runGroup = env.PAPERCUSP_TEST_RUN_GROUP ?? 'unattributed';
   const plannedDemand = buildTestProcessDemand({ fileCount });
-  return runWithTestProcessDeadline({
+  return runWithTestProcessDeadline<RouterOutcome>({
     timeoutMs,
     parentSignal: signal,
     onAdmissionTimeout: (budgetMs) => ({
