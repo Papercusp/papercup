@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { REPO_ROOT } from '../../docs/_repo-paths';
 import runTool, {
+  buildDetachedMixedTestRunRequest,
   buildDetachedTestRunRequest,
   buildTestProcessDemand,
   classifyTestProcessOutcome,
@@ -266,6 +267,47 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     expect(out.byFile['ambient.test.ts']).toMatchObject({ passed: 1, failed: 0 });
     expect(out.byFile[siblingFile]).toMatchObject({ passed: 1, failed: 0 });
   }, 120_000);
+
+  it('starts one detached recovery containing every checkout after a mixed-root timeout', async () => {
+    await mkdir(join(REPO_ROOT, '.papercusp', 'tmp'), { recursive: true });
+    const parent = await mkdtemp(join(REPO_ROOT, '.papercusp', 'tmp', 'testing-run-mixed-timeout-'));
+    selectorRoots.push(parent);
+    const roots = [join(parent, 'ambient'), join(parent, 'portal')];
+    const files = roots.map((root, index) => join(root, `${index === 0 ? 'ambient' : 'portal'}.test.ts`));
+    const sleepingRouter = 'setTimeout(() => process.exit(0), 10_000);\n';
+    for (const [root, file] of roots.map((root, index) => [root, files[index]!] as const)) {
+      await mkdir(join(root, '.git'), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+      await writeFile(join(root, 'scripts', 'test-files.mjs'), sleepingRouter);
+      await writeFile(file, 'export {};\n');
+    }
+
+    const out = await runTestFilesCore({
+      root: roots[0]!,
+      files,
+      timeoutMs: 1_000,
+    });
+
+    expect(out.error, JSON.stringify(out)).toBe('timeout');
+    if (out.error !== 'timeout') return;
+    expect(out.roots).toEqual(roots);
+    const detachedRunId = out.detachedRunId;
+    expect(typeof detachedRunId).toBe('string');
+    if (typeof detachedRunId !== 'string') return;
+
+    const detached = getRun(detachedRunId);
+    expect(detached).not.toBeNull();
+    expect(detached?.command.join(' ')).toContain(roots[0]!);
+    expect(detached?.command.join(' ')).toContain(roots[1]!);
+    expect(detached?.command.join(' ')).toContain(files[0]!);
+    expect(detached?.command.join(' ')).toContain(files[1]!);
+
+    // This test proves request construction, but must not leave the fresh
+    // all-groups recovery running while the rest of this suite runs.
+    expect(cancelRun(detachedRunId)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }, 30_000);
 });
 
 describe('governed test-process admission (P-003)', () => {
@@ -290,7 +332,9 @@ describe('governed test-process admission (P-003)', () => {
   });
 
   it('gives the child only the budget remaining after admission completes', async () => {
-    const out = await runWithTestProcessDeadline({
+    const out = await runWithTestProcessDeadline<
+      { remaining: number; readBack: number } | { kind: 'timeout'; timeoutMs: number } | { kind: 'aborted' }
+    >({
       timeoutMs: 100,
       run: async ({ markAdmissionComplete, remainingTimeoutMs }) => {
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -895,6 +939,28 @@ describe('testing:run (integration)', () => {
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
     });
+  });
+
+  it('gives detached recovery an independent runtime floor beyond the foreground timeout', () => {
+    const foregroundTimeoutMs = 45_000;
+    const request = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/example.test.ts'],
+      timeoutMs: foregroundTimeoutMs,
+    });
+    const mixedRequest = buildDetachedMixedTestRunRequest({
+      groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
+      timeoutMs: foregroundTimeoutMs,
+    });
+
+    // The foreground transport ceiling is about 45s. Detached recovery must
+    // not inherit that wall or it reproduces the SIGTERM/143 failure as soon
+    // as the recovery starts; the recovery floor is the normal 5-minute run
+    // budget for both single-root and mixed-root continuations.
+    expect(request.runtimeMaxSec).toBe(300);
+    expect(mixedRequest.runtimeMaxSec).toBe(300);
+    expect(request.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
+    expect(mixedRequest.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
   });
 
   // EI-19324351741370770: the foreground timeout used to kill only the router
