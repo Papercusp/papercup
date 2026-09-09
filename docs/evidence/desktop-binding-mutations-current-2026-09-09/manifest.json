@@ -44,8 +44,10 @@
   },
   "instrument": {
     "config": "docs/evidence/desktop-binding-mutations-current-2026-09-09/probe-config.mts.txt",
-    "configSha256": "07b105f586a8290967c578971333ceb4033f909a6727efb6e98a6bc94da7a87c",
-    "scriptSha256": "8a001bec539852d44dadb3c9532c9615cf11d5cce177f552055f7598e1b50ab2"
+    "configSha256": "4c1ab081ac3e5aadcde3324191f0ddc00f4503e36d43332ec446d131b7527dff",
+    "scriptSha256": "8a001bec539852d44dadb3c9532c9615cf11d5cce177f552055f7598e1b50ab2",
+    "executedConfigSha256": "07b105f586a8290967c578971333ceb4033f909a6727efb6e98a6bc94da7a87c",
+    "configRepresentation": "Path-normalized archival template; executedConfigSha256 pins original measured config bytes."
   },
   "cases": [
     {
@@ -104,5 +106,14 @@
       "assertion": "expected true to be false // Object.is equality",
       "operationalEvidenceFile": "docs/evidence/desktop-binding-mutations-current-2026-09-09/malformed.json"
     }
-  ]
+  ],
+  "pathNormalization": {
+    "representation": "portable archival template, not the literal executed path spelling",
+    "substitutions": {
+      "@repo-root@": "absolute checkout root used by the completed probe",
+      "@probe-config@": "absolute local path of the executed probe config"
+    },
+    "replay": "Replace both tokens with the intended absolute paths before use; preserve shell quoting for the chosen paths. The config snapshot is a text template; materialize it as a .mts file before running Vitest.",
+    "verification": "Reversing only the two path substitutions reconstructs the original command and config bytes. Exit codes, timestamps, assertions, source hashes and full measured logs are unchanged."
+  }
 }

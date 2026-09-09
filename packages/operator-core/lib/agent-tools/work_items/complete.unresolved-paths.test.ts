@@ -31,10 +31,12 @@
  */
 import { readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 import {
+  COMPLETION_REGISTRY_ROOTS_TIMEOUT_MS,
   completionRepoRootsFromRegistry,
+  completionRepoRootsForWorkspace,
   unresolvedPathsInCompletion,
   workspaceQualifiedCompletionPathHint,
 } from './complete';
@@ -69,6 +71,10 @@ const probe = {
   exists: (abs: string) => TREE.has(abs),
   siblings: (abs: string) => DIR_ENTRIES[abs] ?? [],
 };
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const ev = (filesChanged: string[]): CompletionVerificationEvidence =>
   ({ filesChanged }) as CompletionVerificationEvidence;
@@ -249,6 +255,46 @@ describe('unresolvedPathsInCompletion — multiple checkout integrity', () => {
       repoRoots: [ROOT, '/another-repo'],
     });
     expect(got?.missing.map((entry) => entry.path)).toEqual(['only-there.ts']);
+  });
+});
+
+describe('completionRepoRootsForWorkspace — bounded registry enrichment', () => {
+  it('degrades a never-settling registry read to discovered roots within its budget', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+
+    try {
+      const pending = completionRepoRootsForWorkspace(
+        'papercusp-workspace',
+        [`${SIDESTAGE_ROOT}/apps/api/src/app.module.ts`],
+        {
+          primaryRoot: ROOT,
+          additionalRoots: [SIDESTAGE_ROOT],
+          homeRoot: '/',
+          loadRegistry: () => new Promise<never>(() => {}),
+        },
+      );
+      await vi.advanceTimersByTimeAsync(COMPLETION_REGISTRY_ROOTS_TIMEOUT_MS + 1);
+      await expect(pending).resolves.toEqual([ROOT, SIDESTAGE_ROOT]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('work_items:complete:registry-roots'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('keeps registered roots on the fast path while preserving the primary root first', async () => {
+    await expect(
+      completionRepoRootsForWorkspace('papercusp-workspace', [], {
+        primaryRoot: ROOT,
+        additionalRoots: [],
+        homeRoot: '/',
+        loadRegistry: async () => ({
+          projects: [{ slug: 'sidestage', path: SIDESTAGE_ROOT }],
+        }),
+      }),
+    ).resolves.toEqual([ROOT, SIDESTAGE_ROOT]);
   });
 });
 

@@ -1,0 +1,19 @@
+import { readFileSync } from 'node:fs';
+import base from '@repo-root@/packages/operator-core/vitest.config.ts';
+
+// Keep the real subject module ID, so its relative imports and the existing
+// completion-handler test graph are unchanged. Only its loaded bytes vary.
+const subject = '@repo-root@/packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts';
+export default {
+  ...base,
+  plugins: [{
+    name: 'desktop-binding-copy-out-probe',
+    enforce: 'pre',
+    load(id: string) {
+      if (id.split('?')[0] !== subject) return undefined;
+      const input = process.env.DESKTOP_BINDING_PROBE_SOURCE;
+      if (!input) throw new Error('DESKTOP_BINDING_PROBE_SOURCE must name the frozen subject');
+      return readFileSync(input, 'utf8');
+    },
+  }, ...(base.plugins ?? [])],
+};

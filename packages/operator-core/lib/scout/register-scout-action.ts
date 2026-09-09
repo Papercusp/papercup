@@ -151,8 +151,8 @@ export function resolveScoutModel(
   backendForModel: (model: string | undefined) => string,
   claudeModel: string,
 ): string | undefined {
-  if (!capacity.claudeAvailable && capacity.codexAvailable) return SCOUT_CODEX_FALLBACK_MODEL;
   if (backendForModel(requestedModel) === 'codex') return requestedModel;
+  if (!capacity.claudeAvailable && capacity.codexAvailable) return SCOUT_CODEX_FALLBACK_MODEL;
   return requestedModel ?? claudeModel;
 }
 

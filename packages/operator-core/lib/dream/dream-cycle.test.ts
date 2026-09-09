@@ -136,7 +136,7 @@ function harness() {
       };
     }),
     review: vi.fn(async (options, deps) => {
-      await deps!.rerank('query', f.review.priorMatches);
+      await deps!.rerank('query', f.review.priorMatches, { timeoutMs: options.config?.timeoutMs ?? 180_000 });
       const values = await Promise.allSettled(
         (['control-a', 'control-b'] as const).map((p) =>
           options.callForPhase!(p)({
@@ -280,6 +280,15 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
       arm: 'structured-pair',
     });
     expect(h.llm).toHaveBeenCalled();
+  });
+
+  it('forwards the reviewer budget through the local accounting wrapper into the production scorer seam', async () => {
+    const h = harness();
+    h.input.review = { model: 'reviewer', timeoutMs: 45_000 };
+    const result = await runDreamCycle(h.input, h.d);
+    expect(result.accepted).toBe(1);
+    expect(h.d.rerank).toHaveBeenCalledWith('query', f.review.priorMatches, { timeoutMs: 45_000 });
+    expect(dreamCapabilityRun(h.row('cycle-1:dream:1'))!.calls.some(call => call.phase === 'rerank' && call.status === 'settled')).toBe(true);
   });
 
   it('holds actual A/B selection fixed across separate pair/triple cycles and changed live history', async () => {

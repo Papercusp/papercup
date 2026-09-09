@@ -174,6 +174,7 @@ import {
 } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   itemIsArmB,
@@ -999,6 +1000,9 @@ export interface WorkspaceQualifiedCompletionPathProbe {
 /** Bounds the work: a pathological payload must never turn a completion into a tree walk. */
 const MAX_PATHS_PROBED = 60;
 
+/** Keep optional registry enrichment below the MCP transport deadline. */
+export const COMPLETION_REGISTRY_ROOTS_TIMEOUT_MS = 2_000;
+
 /**
  * Resolve a workspace-qualified app citation to the absolute path that
  * `work_items:complete` supports for an independent checkout.
@@ -1276,36 +1280,63 @@ export function completionCheckoutRootForPath(file: string): string | undefined 
   return undefined;
 }
 
-async function completionRepoRootsForWorkspace(
+export interface CompletionRepoRootsForWorkspaceOptions {
+  /** Injectable primary root for focused tests; production detects the Papercusp checkout. */
+  primaryRoot?: string | null;
+  /** Injectable discovered roots; production derives these from known Hives and path owners. */
+  additionalRoots?: readonly string[];
+  /** Optional sibling scan parent override for deterministic focused tests. */
+  homeRoot?: string;
+  /** Injectable registry read for the bounded/fail-open enrichment seam. */
+  loadRegistry?: (workspaceId?: string) => Promise<HarnessRegistry>;
+}
+
+export async function completionRepoRootsForWorkspace(
   workspaceId?: string,
   declaredPaths: readonly string[] = [],
+  opts: CompletionRepoRootsForWorkspaceOptions = {},
 ): Promise<string[]> {
-  const primaryRoot = detectPapercupRoot();
-  const additionalRoots = [
-    ...discoverKnownHiveCheckoutRoots(),
-    ...declaredPaths
-      .map((path) => completionCheckoutRootForPath(path) ?? checkoutRootForPath(path))
-      .filter((root): root is string => Boolean(root)),
-  ];
-  try {
-    return completionRepoRootsFromRegistry(
-      primaryRoot,
-      await loadHarnessRegistry(resolveConcreteWorkspaceId(workspaceId)),
-      additionalRoots,
-    );
-  } catch {
-    // This is an advisory check on an already-recorded completion. Registry trouble must never
-    // make the completion fail; preserve the primary root while retaining independently
-    // discovered Hive/path roots so an external completion is not silently stamped as Papercusp.
-    const canonicalPrimaryRoot = resolveCanonicalCompletionRoot(primaryRoot);
-    return [
-      ...new Set(
-        [canonicalPrimaryRoot, primaryRoot, ...additionalRoots]
-          .filter((root): root is string => Boolean(root))
-          .map((root) => nodePath.resolve(root)),
-      ),
-    ];
+  const primaryRoot = 'primaryRoot' in opts ? (opts.primaryRoot ?? null) : detectPapercupRoot();
+  const additionalRoots = 'additionalRoots' in opts
+    ? [...(opts.additionalRoots ?? [])]
+    : [
+        ...discoverKnownHiveCheckoutRoots(),
+        ...declaredPaths
+          .map((path) => completionCheckoutRootForPath(path) ?? checkoutRootForPath(path))
+          .filter((root): root is string => Boolean(root)),
+      ];
+  const registryRead = await withBoundedTimeout(
+    () => (opts.loadRegistry ?? loadHarnessRegistry)(resolveConcreteWorkspaceId(workspaceId)),
+    {
+      // Registry roots are advisory enrichment for an already-recorded completion. Keep this
+      // below the MCP transport deadline: a wedged PG read must not turn the warn-only path
+      // audit into a 300s completion hang. `withBoundedTimeout` also absorbs a late rejection.
+      fallback: null,
+      timeoutMs: COMPLETION_REGISTRY_ROOTS_TIMEOUT_MS,
+      label: 'work_items:complete:registry-roots',
+    },
+  );
+  if (!registryRead.degraded && registryRead.value) {
+    try {
+      return completionRepoRootsFromRegistry(primaryRoot, registryRead.value, additionalRoots, {
+        homeRoot: opts.homeRoot,
+      });
+    } catch {
+      // Fall through to the same fail-open root set used for registry timeout/error.
+    }
   }
+
+  // This is an advisory check on an already-recorded completion. Registry trouble must never
+  // make the completion fail; preserve the primary root while retaining independently
+  // discovered Hive/path roots so an external completion is not silently stamped as Papercus.
+  const canonicalPrimaryRoot = resolveCanonicalCompletionRoot(primaryRoot);
+  return [
+    ...new Set(
+      [canonicalPrimaryRoot, primaryRoot, ...additionalRoots]
+        .filter((root): root is string => Boolean(root))
+        .map((root) => nodePath.resolve(root)),
+    ),
+  ];
 }
 
 /** Injectable commit-history seam for the path-vintage detector below. */

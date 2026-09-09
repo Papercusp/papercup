@@ -13,6 +13,7 @@ import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from '..
 import { CAPABILITY_DREAM_PROMPT_VERSION } from '../../packages/operator-core/lib/dream/capability-pass.ts';
 import { studySampling } from './sampling.mts';
 import { STUDY_BLOCKS, validateStudyBlocks, requireStudyRoom, type StudyTotal } from './accounting.mts';
+import { DEFAULT_DREAM_REVIEW_CONFIG } from '../../packages/operator-core/lib/dream/dream-config.ts';
 
 // This standalone driver does not inherit the operator service's environment.
 // A fresh in-process model can miss the review deadline after generation is paid.
@@ -96,7 +97,7 @@ const [readiness] = await sql<Array<{ review: any; outcome: any }>>`
 if (!readiness?.review?.priorMatches?.length || !readiness?.outcome?.insight?.capability)
   throw new Error('D017 rerank readiness evidence is missing');
 const candidate = readiness.outcome.insight.capability;
-const ranked = await rerankCapabilityPriors(candidate.behavior + '\n' + candidate.priorArt.proposedDelta, readiness.review.priorMatches);
+const ranked = await rerankCapabilityPriors(candidate.behavior + '\n' + candidate.priorArt.proposedDelta, readiness.review.priorMatches, { timeoutMs: DEFAULT_DREAM_REVIEW_CONFIG.timeoutMs });
 await log({ phase: 'rerank-readiness', outcome: ranked.outcome, expected: readiness.review.priorMatches.length });
 if (!ranked.outcome.attempted || ranked.outcome.scored !== readiness.review.priorMatches.length) {
   await sql.end();

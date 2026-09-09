@@ -117,6 +117,8 @@ describe('register-scout-action (Scout production runner provider)', () => {
       .toBe(SCOUT_CODEX_FALLBACK_MODEL);
     expect(resolveScoutModel('claude-opus-4-8', { claudeAvailable: true, codexAvailable: true }, backend, 'claude-opus-4-8'))
       .toBe('claude-opus-4-8');
+    expect(resolveScoutModel('gpt-5.6-luna:medium', { claudeAvailable: false, codexAvailable: true }, backend, 'claude-opus-4-8'))
+      .toBe('gpt-5.6-luna:medium');
     expect(resolveScoutModel('gpt-5.6-sol:xhigh', { claudeAvailable: true, codexAvailable: true }, backend, 'claude-opus-4-8'))
       .toBe('gpt-5.6-sol:xhigh');
     expect(resolveScoutModel('claude-opus-4-8', { claudeAvailable: false, codexAvailable: false }, backend, 'claude-opus-4-8'))

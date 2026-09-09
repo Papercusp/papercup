@@ -471,8 +471,8 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
             },
             {
               verifyPacket: verifyCapabilityPacket,
-              rerank: (query, priors) =>
-                local('rerank', 'rerank', () => (deps.rerank ?? rerankCapabilityPriors)(query, priors)),
+              rerank: (query, priors, options) =>
+                local('rerank', 'rerank', () => (deps.rerank ?? rerankCapabilityPriors)(query, priors, options)),
             },
           ),
         );
