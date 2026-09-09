@@ -250,7 +250,12 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const recovered = await readOrientation();
     const recoveredReport = recovered.obligations.evaluations.find((entry) => entry.ruleId === 'goal-owner-report');
     expect(recoveredReport?.scope).toEqual(report?.scope);
-    expect(recoveredReport?.status).toBe('satisfied');
+    expect(recoveredReport).toMatchObject({
+      status: 'not-applicable',
+      title: 'Owner report is not due yet',
+      applicableDemand: 0,
+    });
+    expect(recoveredReport?.reason).toMatch(/^not due:/);
     expect(recoveredReport?.measurementFailure).toBeUndefined();
     expect(recoveredReport?.reason).not.toContain(failure);
   }, 90_000);
