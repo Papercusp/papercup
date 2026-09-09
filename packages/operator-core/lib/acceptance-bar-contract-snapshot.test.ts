@@ -562,6 +562,9 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       if (outcome === 'stale') fresh[1]!.currentness = { ...fresh[1]!.currentness, overall: 'stale',
         staleReasons: ['source-fingerprint-changed'] };
       input.evidence.rows = [...old, ...fresh, input.evidence.rows[1]!];
+      if (outcome === 'pass') input.evidence.rows.push({ ...old[1]!, id: 99,
+        evidenceKind: 'counterexample', evidenceRef: 'manual-negative-controls:old',
+        currentness: { ...old[1]!.currentness, overall: 'stale', staleReasons: ['source-stale'] } });
       const before = JSON.stringify(input.evidence.rows);
       const snapshot = projectAcceptanceBarContractSnapshot(input);
       expect(JSON.stringify(input.evidence.rows)).toBe(before);
