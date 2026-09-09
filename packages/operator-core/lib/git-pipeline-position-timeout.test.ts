@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const childProcessMocks = vi.hoisted(() => ({
   execFile: vi.fn(),
   spawnSync: vi.fn(),
+}));
+
+const sidecarMocks = vi.hoisted(() => ({
+  enabled: vi.fn(() => false),
+  run: vi.fn(),
+  noteFallback: vi.fn(),
 }));
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -14,6 +20,16 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
+vi.mock('./fleet/git-via-sidecar', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./fleet/git-via-sidecar')>();
+  return {
+    ...actual,
+    gitSidecarEnabled: sidecarMocks.enabled,
+    runGitViaSpawnerSidecar: sidecarMocks.run,
+    noteSidecarFallback: sidecarMocks.noteFallback,
+  };
+});
+
 import {
   GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
   realGit,
@@ -21,6 +37,11 @@ import {
 } from './git-pipeline-position';
 
 describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sidecarMocks.enabled.mockReturnValue(false);
+  });
+
   it('bounds realGit and preserves its fail-soft null on a timed-out child', async () => {
     childProcessMocks.execFile.mockImplementation((_command, _args, _options, callback) => {
       callback(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }));
@@ -35,6 +56,29 @@ describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () =>
       }),
       expect.any(Function),
     );
+  });
+
+  it('EI-22737582656157929: routes git through the small spawner sidecar when enabled', async () => {
+    sidecarMocks.enabled.mockReturnValue(true);
+    sidecarMocks.run.mockResolvedValue({ code: 0, stdout: 'abc123\n', stderr: '' });
+
+    await expect(realGit('/repo', ['rev-parse', 'HEAD'])).resolves.toBe('abc123');
+    expect(sidecarMocks.run).toHaveBeenCalledWith(
+      ['-C', '/repo', 'rev-parse', 'HEAD'],
+      process.cwd(),
+      GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+      process.env,
+    );
+    expect(childProcessMocks.execFile).not.toHaveBeenCalled();
+  });
+
+  it('treats a real non-zero sidecar git result as null without spawning the same command locally', async () => {
+    sidecarMocks.enabled.mockReturnValue(true);
+    sidecarMocks.run.mockResolvedValue({ code: 128, stdout: '', stderr: 'bad revision' });
+
+    await expect(realGit('/repo', ['rev-parse', 'missing'])).resolves.toBeNull();
+    expect(childProcessMocks.execFile).not.toHaveBeenCalled();
+    expect(sidecarMocks.noteFallback).not.toHaveBeenCalled();
   });
 
   it('bounds every gate-candidate probe and degrades a failed probe to null candidates', async () => {

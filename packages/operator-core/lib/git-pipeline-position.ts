@@ -80,6 +80,7 @@ import {
   type FrozenRepairConvergenceCellProjection,
 } from './release/frozen-candidate-repair-queue';
 import { isAuthoritativeJudgingShaSource, type JudgingShaSource } from './judging-sha-source';
+import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 
 const pexec = promisify(execFile);
 
@@ -93,9 +94,32 @@ export const GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS = 5_000;
 /** Injectable git runner (returns trimmed stdout, or null on any failure). */
 export type GitRunner = (repo: string, args: string[]) => Promise<string | null>;
 
+export function gitPipelinePositionSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR', env);
+}
+
 export const realGit: GitRunner = async (repo, args) => {
+  const argv = ['-C', repo, ...args];
+  // EI-22737582656157929: a decisive bg-host CPU profile attributed 23.9% of real sampled CPU
+  // to this runner's native spawn calls. Reuse the existing small-process git sidecar rather
+  // than forking from the multi-GB bg host. A real non-zero git result remains a fail-soft null;
+  // only a sidecar transport failure falls through to the identical local command, and that
+  // fallback is counted/circuit-broken by the shared seam.
+  if (gitPipelinePositionSidecarEnabled()) {
+    try {
+      const result = await runGitViaSpawnerSidecar(
+        argv,
+        process.cwd(),
+        GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+        process.env,
+      );
+      return result.code === 0 ? result.stdout.trim() : null;
+    } catch (error) {
+      noteSidecarFallback('git-pipeline-position', error);
+    }
+  }
   try {
-    const { stdout } = await pexec('git', ['-C', repo, ...args], {
+    const { stdout } = await pexec('git', argv, {
       maxBuffer: 16 * 1024 * 1024,
       timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
     });
@@ -5611,11 +5635,7 @@ export async function gitPipelinePosition(
   const persistedQueue = snap.gate.repairQueue ?? null;
   const unreadableQueue = snap.gate.repairQueueRead?.status === 'unreadable' ? snap.gate.repairQueueRead : null;
   const candidateFailures = await (deps.readGateCandidateFailures ?? readGateCandidateFailures)({
-    candidateSha:
-      persistedQueue?.frozenCandidate ??
-      persistedQueue?.candidate ??
-      unreadableQueue?.candidate ??
-      null,
+    candidateSha: persistedQueue?.frozenCandidate ?? persistedQueue?.candidate ?? unreadableQueue?.candidate ?? null,
     repairHeadSha: persistedQueue?.repairHead ?? unreadableQueue?.repairHead ?? null,
     root,
     submodulePaths: persistedQueue ? await submodulePaths(git, root) : [],
@@ -5633,6 +5653,9 @@ export async function gitPipelinePosition(
     // One tick says what it just ran; only the lifecycle says whether a leg's own
     // re-run has since passed — which is the half "did its fix land" needs.
     queueLegs: persistedQueue?.legs ?? null,
+    // Reuse this invocation's sidecar-aware runner. Without this, candidate-failure blob reads
+    // silently instantiate their own local-fork runner inside the same multi-GB process.
+    git,
   });
   // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
   // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
