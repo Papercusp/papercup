@@ -18,6 +18,7 @@ import { FLAGS } from '@papercusp/flags';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { reconcileTick, type ReconcilerDeps } from '../../supervision/unit-reconciler';
+import { probeNamedService } from '../../service-health';
 import { fileSupervisionGiveUpEi, resolveSupervisionGiveUpEi } from '../../supervision/give-up-ei';
 import { fileSupervisionPausedEi, resolveSupervisionPausedEi } from '../../supervision/paused-unit-ei';
 
@@ -68,6 +69,11 @@ function productionDeps(ctx: SystemActionCtx): ReconcilerDeps {
         harnessSlug: ctx.installSlug,
       })),
     autoRestartFlagOn: () => getFlag(FLAGS.SUPERVISOR_AUTO_RESTART, 'system').catch(() => false),
+    // EI-22777309029828628: systemd `ActiveState=active` is only the first half of a staging
+    // recovery verdict. The reconciler invokes this named HTTP probe (with its own bounded
+    // timeout) only after systemd classifies the unit healthy/recovered, so :3170 must also accept
+    // the canonical `/api/desktop/version` request before recovery is announced or resolved.
+    probeService: probeNamedService,
     // EI-19966318801100410: file/resolve a durable EI around a give-up escalation so the down
     // unit enters the claim queue instead of depending on someone reading the `*` broadcast.
     fileGiveUpEi: fileSupervisionGiveUpEi,

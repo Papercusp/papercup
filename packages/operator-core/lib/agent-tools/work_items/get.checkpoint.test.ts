@@ -283,6 +283,31 @@ describe('work_items:get — checkpoint field', () => {
     expect(r).not.toHaveProperty('workItem');
   });
 
+  it('keeps checksOnly shaped rows valid against the registered output schema', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-checks-only-schema',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'checkpoint ledger',
+      state: 'open',
+    });
+    const checkpoint = withCarryNoteChecks('private narrative', [
+      { id: 'gate-green', claim: 'gate is green', recheck: 'probe gate' },
+    ]);
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint, updatedAtMs: 123 });
+
+    const raw = await env({ id: 'WI-checks-only-schema', checksOnly: true });
+    const shaped = shapeWorkItemsGet(raw, 'trimmed');
+    const schema = (get as unknown as {
+      result: { safeParse: (value: unknown) => { success: boolean } };
+    }).result;
+
+    expect(raw.results[0]).not.toHaveProperty('workItem');
+    const parsed = schema.safeParse(shaped);
+    expect(parsed.success, JSON.stringify(parsed)).toBe(true);
+  });
+
   it('checksOnly reports a checkpoint-store failure without inventing an empty ledger', async () => {
     getWorkItem.mockResolvedValue({
       id: 'WI-checks-only-failed',
