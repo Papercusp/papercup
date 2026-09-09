@@ -11,6 +11,7 @@ import {
   AGENT_MCP_AUTH_META, startAgentMcpServer, type AgentMcpHost, type AgentMcpListener,
 } from '../routes/transport/_mcp-uds';
 import type { BuiltSpawnContext } from '../routes/transport/_mcp-host';
+import { getMcpAdmissionSnapshot } from '../routes/transport/mcp-admission';
 
 const live: AgentMcpListener[] = [];
 const clients: Client[] = [];
@@ -27,7 +28,7 @@ function context(): BuiltSpawnContext {
   };
 }
 
-async function fixture(authTimeoutMs?: number) {
+async function fixture(authTimeoutMs?: number, runtimeDir?: string) {
   let ctx = context();
   let revoked = false;
   const dispatched = vi.fn();
@@ -50,7 +51,7 @@ async function fixture(authTimeoutMs?: number) {
       });
     },
   };
-  const listener = await startAgentMcpServer({ port: 3170, host, authTimeoutMs });
+  const listener = await startAgentMcpServer({ port: 3170, host, authTimeoutMs, runtimeDir });
   live.push(listener);
   return {
     listener, verify, dispatched, revoke: () => { revoked = true; },
@@ -108,7 +109,8 @@ describe('private MCP listener lifecycle and connection authority', () => {
     try {
       const stale = join(root, 'agent.sock');
       await writeFile(stale, 'stale but not ours');
-      const f = await fixture();
+      const f = await fixture(undefined, root);
+      expect(dirname(dirname(f.listener.endpoint.socketPath))).toBe(root);
       expect(f.listener.endpoint.socketPath).not.toBe(stale);
       expect(await readFile(stale, 'utf8')).toBe('stale but not ours');
     } finally { await rm(root, { recursive: true }); }
@@ -125,6 +127,7 @@ describe('private MCP listener lifecycle and connection authority', () => {
     ]);
     expect(f.verify).toHaveBeenCalledTimes(4);
     expect(f.dispatched.mock.calls).toEqual([['list'], ['call'], ['call']]);
+    expect(getMcpAdmissionSnapshot().inFlight).toBe(0);
   });
 
   it.each(['missing', 'wrong-token', 'wrong-generation', 'wrong-operator', 'wrong-port',
@@ -180,5 +183,26 @@ describe('private MCP listener lifecycle and connection authority', () => {
     await ended;
     expect(f.verify).not.toHaveBeenCalled();
     expect(f.dispatched).not.toHaveBeenCalled();
+  });
+
+  it('bounds stalled authentication and releases the operator admission lease', async () => {
+    const f = await fixture(50);
+    f.verify.mockImplementation(() => new Promise(() => {}));
+    const { client, wire } = connection(f.listener);
+    await expect(client.connect(wire)).rejects.toThrow();
+    expect(f.dispatched).not.toHaveBeenCalled();
+    expect(getMcpAdmissionSnapshot().inFlight).toBe(0);
+  });
+
+  it('rejects a tools/list frame before initialize, without calling verification or catalog', async () => {
+    const f = await fixture();
+    const wire = new UdsMcpTransport({ path: f.listener.endpoint.socketPath });
+    const response = new Promise<unknown>(resolve => { wire.onmessage = resolve; });
+    await wire.start();
+    await wire.send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    expect(await response).toMatchObject({ id: 1, error: { code: -32001 } });
+    expect(f.dispatched).not.toHaveBeenCalled();
+    expect(f.verify).not.toHaveBeenCalled();
+    await wire.close();
   });
 });

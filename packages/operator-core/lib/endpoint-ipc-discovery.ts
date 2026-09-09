@@ -75,6 +75,11 @@ function validAgentEndpoint(value: unknown): value is AgentMcpEndpoint {
     typeof v.generation === 'string' && /^[a-f0-9-]{36}$/.test(v.generation);
 }
 
+function publicAgentEndpoint(value: AgentMcpEndpoint): AgentMcpEndpoint {
+  const { version, transport, socketPath, operatorId, generation } = value;
+  return { version, transport, socketPath, operatorId, generation };
+}
+
 async function writeAtomic(path: string, body: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
@@ -105,7 +110,7 @@ export async function writeEndpointIpcDiscovery(
     pid: process.pid,
     startedAt: Date.now(),
     port,
-    ...(options.agentMcp ? { agentMcp: options.agentMcp } : {}),
+    ...(options.agentMcp ? { agentMcp: publicAgentEndpoint(options.agentMcp) } : {}),
   };
   const body = JSON.stringify(payload, null, 2);
   await writeAtomic(endpointIpcDiscoveryPathForPort(port), body);
@@ -205,7 +210,7 @@ async function readEndpointIpcDiscoveryFrom(path: string): Promise<EndpointIpcDi
         pid: Number(j.pid) || 0,
         startedAt: Number(j.startedAt) || 0,
         ...(Number.isFinite(j.port) ? { port: Number(j.port) } : {}),
-        ...(validAgentEndpoint(j.agentMcp) ? { agentMcp: j.agentMcp } : {}),
+        ...(validAgentEndpoint(j.agentMcp) ? { agentMcp: publicAgentEndpoint(j.agentMcp) } : {}),
       };
     }
   } catch {
@@ -221,7 +226,8 @@ export async function readAgentMcpDiscoveryForPort(port: number): Promise<Endpoi
     const fileStat = await lstat(file);
     if (!fileStat.isFile() || fileStat.uid !== process.getuid?.() || (fileStat.mode & 0o077)) return null;
     const descriptor = await readEndpointIpcDiscoveryFrom(file);
-    if (!descriptor?.agentMcp || descriptor.port !== port || !pidAlive(descriptor.pid)) return null;
+    if (!descriptor?.agentMcp || descriptor.port !== port ||
+        !Number.isSafeInteger(descriptor.pid) || descriptor.pid < 1 || !pidAlive(descriptor.pid)) return null;
     const socket = await lstat(descriptor.agentMcp.socketPath);
     const dir = await lstat(dirname(descriptor.agentMcp.socketPath));
     if (!socket.isSocket() || socket.uid !== fileStat.uid || (socket.mode & 0o777) !== 0o600 ||

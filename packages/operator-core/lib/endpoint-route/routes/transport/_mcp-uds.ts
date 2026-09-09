@@ -12,6 +12,8 @@ import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
 import type { BuiltSpawnContext, TrySpawnContextResult } from './_mcp-host';
 import type { AgentMcpEndpoint } from '../../../endpoint-ipc-discovery';
 import { allowStalePlanRecoveryForMcpCall } from '../../../agent-tools/_harness-scope';
+import { loopPressure } from '../../../event-loop-lag-monitor';
+import { acquireMcpBodyAdmission, ADMISSION_CONTROL_ENABLED, type McpAdmissionLease } from './mcp-admission';
 
 /**
  * Client transport supplies this initialize.params._meta field, never the model.
@@ -48,7 +50,12 @@ function rejected(code: string): Error {
   return new Error(code);
 }
 
-type RequestInfo = NonNullable<MessageExtraInfo['requestInfo']>;
+type RequestInfo = { readonly url: string; readonly headers: Readonly<Record<string, string>> };
+function sdkInfo(info: RequestInfo): NonNullable<MessageExtraInfo['requestInfo']> {
+  // URL's setters survive Object.freeze. Keep a string privately and expose
+  // fresh URL/header copies so a handler cannot mutate the connection carrier.
+  return { url: new URL(info.url), headers: { ...info.headers } };
+}
 function credentialInfo(message: JSONRPCMessage, endpoint: AgentMcpEndpoint, port: number): RequestInfo {
   if (!('method' in message) || message.method !== 'initialize' || !('id' in message))
     throw rejected('uds_initialize_required');
@@ -107,6 +114,12 @@ export function authenticatedAgentTransport(
   let initializeResponded = false;
   let closed = false;
   let queued = 0;
+  let queuedBytes = 0;
+  const leases = new Map<string | number, McpAdmissionLease>();
+  const release = (id: string | number) => {
+    leases.get(id)?.release();
+    leases.delete(id);
+  };
   let chain = Promise.resolve();
   const deadline = setTimeout(() => void close(), authTimeoutMs);
   deadline.unref();
@@ -114,19 +127,25 @@ export function authenticatedAgentTransport(
     if (closed) return;
     closed = true;
     clearTimeout(deadline);
+    for (const id of leases.keys()) release(id);
     await wire.close();
   };
   const adapter: Transport = {
     start: () => wire.start(),
     async send(message, options) {
-      await wire.send(message, options);
-      if ('result' in message && message.id === initializeId) initializeResponded = true;
+      try {
+        await wire.send(message, options);
+        if ('result' in message && message.id === initializeId) initializeResponded = true;
+      } finally {
+        if ('id' in message && !('method' in message)) release(message.id);
+      }
     },
     close,
   };
   wire.onclose = () => {
     closed = true;
     clearTimeout(deadline);
+    for (const id of leases.keys()) release(id);
     adapter.onclose?.();
   };
   wire.onerror = () => adapter.onerror?.(rejected('uds_transport_error'));
@@ -134,7 +153,7 @@ export function authenticatedAgentTransport(
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        host.verify({ requestInfo }, { allowStalePlanRecovery: recovery }),
+        host.verify({ requestInfo: sdkInfo(requestInfo) }, { allowStalePlanRecovery: recovery }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(rejected('uds_auth_timeout')), authTimeoutMs);
           timer.unref();
@@ -144,7 +163,10 @@ export function authenticatedAgentTransport(
   };
   wire.onmessage = (message) => {
     if (closed) return;
-    if (++queued > 64) { void close(); return; }
+    const body = JSON.stringify(message);
+    const bytes = Buffer.byteLength(body);
+    queuedBytes += bytes;
+    if (++queued > 64 || queuedBytes > 4_194_304) { void close(); return; }
     chain = chain.then(async () => {
       if (closed) return;
       try {
@@ -162,9 +184,20 @@ export function authenticatedAgentTransport(
         // SDK responses/cancellation remain full duplex; protected requests
         // (including catalogs) always recheck the original credential.
         if (first || ('method' in message && 'id' in message)) {
+          const admission = acquireMcpBodyAdmission(body, info!.url, loopPressure(), ADMISSION_CONTROL_ENABLED);
+          if (admission.response) {
+            const error = await admission.response.json() as { error: { code: number; message: string } };
+            if ('id' in message) await wire.send({ jsonrpc: '2.0', id: message.id, error: error.error });
+            if (first) await close();
+            return;
+          }
+          if (admission.lease && 'id' in message) leases.set(message.id, admission.lease);
           const recovery = 'method' in message && message.method === 'tools/call' &&
             typeof message.params?.name === 'string' && allowStalePlanRecoveryForMcpCall(
-              message.params.name, message.params.arguments,
+              message.params.name,
+              message.params.arguments && typeof message.params.arguments === 'object' &&
+                !Array.isArray(message.params.arguments)
+                ? message.params.arguments as Record<string, unknown> : {},
             );
           const result = await verify(info!, recovery);
           if (closed) return;
@@ -193,15 +226,20 @@ export function authenticatedAgentTransport(
           initialized = true;
         }
         if (!first && !initialized) throw rejected('uds_initialized_required');
+        if ('method' in message && message.method === 'notifications/cancelled') {
+          const id = message.params?.requestId;
+          if (typeof id === 'string' || typeof id === 'number') release(id);
+        }
         let clean = message;
         if (first && 'method' in message) {
           const metadata = { ...(message.params?._meta as Record<string, unknown>) };
           delete metadata[AGENT_MCP_AUTH_META];
           clean = { ...message, params: { ...message.params, _meta: metadata } };
         }
+        const freshInfo = sdkInfo(info!);
         const requestInfo = verifiedCtx && host.pin
-          ? host.pin(info!, verifiedCtx) as RequestInfo
-          : info;
+          ? host.pin(freshInfo, verifiedCtx) as NonNullable<MessageExtraInfo['requestInfo']>
+          : freshInfo;
         adapter.onmessage?.(clean, { requestInfo });
       } catch {
         if ('id' in message && 'method' in message) {
@@ -211,7 +249,7 @@ export function authenticatedAgentTransport(
         }
         await close();
       }
-    }).finally(() => { queued--; });
+    }).finally(() => { queued--; queuedBytes -= bytes; }).catch(() => { void close(); });
   };
   return adapter;
 }

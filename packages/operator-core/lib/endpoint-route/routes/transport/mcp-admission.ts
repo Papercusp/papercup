@@ -824,8 +824,19 @@ export async function acquireAdmission(
   } catch {
     return { response: null, lease: null, classification: 'other' };
   }
-  const classification = classifyMcpRequest(bodyText, req.url);
-  const { sheddable, id } = classifyMcpBody(bodyText, req.url);
+  return acquireMcpBodyAdmission(bodyText, req.url, pressure, enabled);
+}
+
+/** Same operator bulkhead for native protocol transports; no HTTP intermediary. */
+export function acquireMcpBodyAdmission(
+  bodyText: string,
+  requestUrl: string,
+  pressure: LoopPressure,
+  enabled: boolean,
+): McpAdmissionDecision {
+  if (!enabled) return { response: null, lease: null, classification: 'other' };
+  const classification = classifyMcpRequest(bodyText, requestUrl);
+  const { sheddable, id } = classifyMcpBody(bodyText, requestUrl);
   if (sheddable && shouldShedForPressure(pressure, enabled)) {
     return {
       response: admissionShedResponse(id, ADMISSION_RETRY_AFTER_SEC, 'loop_pressure_critical'),

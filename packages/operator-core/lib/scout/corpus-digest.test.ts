@@ -25,6 +25,7 @@ import {
   type DeferralRecord,
   type StructuredObservationRecord,
 } from './corpus-digest';
+import { renderDigest } from './lenses';
 
 const NOW = Date.parse('2026-06-08T12:00:00Z');
 const daysAgo = (d: number): string => new Date(NOW - d * 24 * 60 * 60 * 1000).toISOString();
@@ -225,6 +226,17 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       expect(lock.category).toBe('recurring-friction');
       expect(lock.ref).toMatch(/^wi:EI-[12]$/);
       expect(lock.detail).toContain('recurred 2×');
+    });
+
+    it('marks observation-derived recurrence as an agent reflection, not a bug', async () => {
+      const observed: ImprovementCandidate[] = [
+        { ...friction[0], id: 'EI-WORK-F-1' },
+        { ...friction[1], id: 'EI-OBS-F-2', lane: 'observation' },
+      ];
+      const digest = await synthesizeStateOfHive(fixtureReaders({ friction: async () => observed }), { nowMs: NOW });
+      const pattern = digest.recurringFriction[0]!;
+      expect(pattern.detail).toContain('source: observation lane (agent reflection; not a bug)');
+      expect(renderDigest(digest)).toContain('source: observation lane (agent reflection; not a bug)');
     });
 
     // ── EI-20587312505064997: FLOW vs STOCK ──────────────────────────────────
@@ -450,6 +462,17 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       capabilityGaps.forEach((p) => expect(p.category).toBe('capability-gap'));
       const rename = capabilityGaps.find((p) => p.summary === 'no way to rename a harness')!;
       expect(rename.detail).toContain('asked 2×');
+    });
+
+    it('marks observation-derived capability gaps as agent reflections, not bugs', async () => {
+      const observed: ImprovementCandidate[] = [
+        { ...friction[4], id: 'EI-WORK-C-1' },
+        { ...friction[5], id: 'EI-OBS-C-2', lane: 'observation' },
+      ];
+      const digest = await synthesizeStateOfHive(fixtureReaders({ friction: async () => observed }), { nowMs: NOW });
+      const pattern = digest.capabilityGaps.find((p) => p.summary === 'no way to rename a harness')!;
+      expect(pattern.detail).toContain('source: observation lane (agent reflection; not a bug)');
+      expect(renderDigest(digest)).toContain('source: observation lane (agent reflection; not a bug)');
     });
   });
 

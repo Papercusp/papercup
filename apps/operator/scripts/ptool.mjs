@@ -1053,6 +1053,46 @@ export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 10_000;
 // already owns instead of choosing another independent number here.
 export const PTOOL_CONNECT_TIMEOUT_MS = PSU_REQUEST_TIMEOUT_MS;
 
+// EI-22697016277102033: a direct local operator (:3070/:3170 or a packaged
+// dynamic port) does not own the resilient proxy's 90s upstream-recovery
+// contract. Giving ONE direct initialize attempt the whole 120s total budget
+// means a silent handshake consumes every retry: connectWithLocalRetry reaches
+// its loop, but has no time left to make attempt two. Staging-sync routinely
+// cycles :3170, so keep a direct attempt above the measured ~10-13s hard-down
+// window while preserving several attempts inside the existing total budget.
+// The resilient proxy itself must retain the full budget: it deliberately holds
+// one request through the upstream restart window and returns a typed result.
+export const PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS = 15_000;
+
+/**
+ * Per-attempt handshake budget for one local MCP origin. Pure and exported so
+ * the direct-vs-proxy distinction cannot silently collapse back to one number.
+ */
+export function ptoolConnectAttemptTimeoutMs(operatorUrl, env = process.env) {
+  try {
+    const url = new URL(operatorUrl);
+    const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1';
+    if (!local) return PTOOL_CONNECT_TIMEOUT_MS;
+
+    const configuredProxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+      ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+      : '';
+    if (configuredProxyBase && new URL(configuredProxyBase).origin === url.origin) {
+      return PTOOL_CONNECT_TIMEOUT_MS;
+    }
+    const configuredProxyPort = Number(env.PAPERCUSP_MCP_PROXY_PORT);
+    const proxyPort = Number.isInteger(configuredProxyPort) && configuredProxyPort > 0
+      ? configuredProxyPort
+      : 9071;
+    if (Number(url.port) === proxyPort) return PTOOL_CONNECT_TIMEOUT_MS;
+  } catch {
+    // connectWithLocalRetry/connect() will surface the malformed URL. Do not
+    // turn input validation into an unrelated timeout-policy error here.
+    return PTOOL_CONNECT_TIMEOUT_MS;
+  }
+  return Math.min(PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS, PTOOL_CONNECT_TIMEOUT_MS);
+}
+
 // The proxy's handshake bulkhead returns a retryable HTTP 429 while all
 // handshake slots are occupied. Keep the attempt ceiling aligned with the
 // complete client budget: a fixed 30-attempt ceiling plus a one-second delay
@@ -1230,15 +1270,13 @@ export const PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_
 // outcome while the mutation is still settling (EI-21831468700319864).
 export const PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
-// WI-2944 / EI-21637077415806005: capability:launch-agent uses the tooldef
-// default 60s handler budget. The MCP transport deliberately waits another 5s
-// so the handler can settle, commit, and persist mcp_tool_results. A 60s ptool
-// deadline therefore disconnects before the server's truthful result/receipt
-// window closes — exactly the observed 59.904s refusal with no replay row.
-// Keep the client outside 60s + the 5s transport buffer with real delivery
-// margin. This is separate from the generic foreground cap: widening every
-// foreground tool would spend latency where no longer server contract exists.
-export const PTOOL_AGENT_LAUNCH_TIMEOUT_MS = 75_000;
+// EI-22780156976598155 (building on WI-2944 / EI-21637077415806005):
+// capability:launch-agent declares a 90s handler budget because a fresh
+// headless launch may spend time in boot checks, kickoff-proof polling, and
+// fresh-launch verification. The MCP transport adds a 5s settlement buffer,
+// so keep ptool beyond that 95s response window; otherwise it can report an
+// unknown outcome while the server is still persisting the launch receipt.
+export const PTOOL_AGENT_LAUNCH_TIMEOUT_MS = 100_000;
 
 // EI-21305071238818431: coord:orient declares a 120s server-side dispatch budget.
 // Its handler-local 50s aggregate fence does not cover time spent before/after the
@@ -1314,12 +1352,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
-  // EI-21314560074357302: an exact capability:launch-agent resume resolves
-  // the target session and saved fleet profile before the headless boot/receipt
-  // probe. The ordinary 30s client deadline can expire while that bounded
-  // server-side work is still running, especially through tools:invoke. Keep
-  // the client outside the MCP transport cap so it observes the typed result
-  // instead of returning an ambiguous may-have-executed timeout.
+  // EI-22780156976598155 (building on EI-21314560074357302): capability:launch-agent
+  // resolves the target/profile and may run headless boot, kickoff-proof, and
+  // fresh-launch verification before returning. Keep the client outside the
+  // tool's 90s handler + 5s MCP settlement window so it observes the typed
+  // result instead of returning an ambiguous may-have-executed timeout.
   ['capability:launch-agent', PTOOL_AGENT_LAUNCH_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // Provisioning starts Xvfb, waits for the display, and may launch a window
@@ -1327,6 +1364,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // ambiguous timeout while the lease is still being created; keep the
   // caller outside the transport cap so it receives the structured result.
   ['computer:provision_desktop', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22778035061732249: events:emit waits through the durable fire latch,
+  // await claiming, announcement stamping, and delivery insertion before it
+  // returns. The ordinary 30s ptool cutoff could report an unknown outcome
+  // after the server had already fired the event; keep both direct and
+  // tools:invoke calls outside the MCP transport floor.
+  ['events:emit', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
   ['plans:new', PTOOL_PLANS_NEW_TIMEOUT_MS],
@@ -1931,7 +1974,7 @@ export async function connectWithLocalRetry(
   {
     maxAttempts = PTOOL_CONNECT_MAX_ATTEMPTS,
     retryDelayMs = PTOOL_CONNECT_RETRY_DELAY_MS,
-    attemptTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
+    attemptTimeoutMs,
     totalTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     rand = Math.random,
@@ -1959,8 +2002,10 @@ export async function connectWithLocalRetry(
       const remainingTotalMs = totalTimeoutMs > 0
         ? Math.max(1, totalTimeoutMs - (Date.now() - startedAt))
         : null;
-      const effectiveAttemptTimeoutMs = attemptTimeoutMs > 0
-        ? Math.min(attemptTimeoutMs, remainingTotalMs ?? attemptTimeoutMs)
+      const configuredAttemptTimeoutMs =
+        attemptTimeoutMs ?? ptoolConnectAttemptTimeoutMs(liveOperatorUrl);
+      const effectiveAttemptTimeoutMs = configuredAttemptTimeoutMs > 0
+        ? Math.min(configuredAttemptTimeoutMs, remainingTotalMs ?? configuredAttemptTimeoutMs)
         : remainingTotalMs;
       const connection = connectOnce(
         liveOperatorUrl,

@@ -80,6 +80,10 @@ export default function VersionBadge() {
           right: 10,
           bottom: 8,
           zIndex: 2147483640,
+          // The current-build badge is informational and its no-op click
+          // handler must not intercept controls underneath it. Re-enable hit
+          // testing only when a stale build makes reload actionable.
+          pointerEvents: stale ? 'auto' : 'none',
           display: 'inline-flex',
           alignItems: 'center',
           gap: 6,

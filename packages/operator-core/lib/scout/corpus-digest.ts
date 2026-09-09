@@ -647,6 +647,12 @@ function flowCountOf(cluster: DupCluster, occurrencesById: ReadonlyMap<string, n
   return cluster.ids.reduce((sum, id) => sum + Math.max(1, occurrencesById.get(id) ?? 1), 0);
 }
 
+const OBSERVATION_SOURCE_DETAIL = ' · source: observation lane (agent reflection; not a bug)';
+
+function observationSourceDetail(candidates: readonly ImprovementCandidate[]): string {
+  return candidates.some((candidate) => candidate.lane === 'observation') ? OBSERVATION_SOURCE_DETAIL : '';
+}
+
 /**
  * Read the occurrence ledger for exactly the candidates being mined, never the corpus.
  *
@@ -701,7 +707,7 @@ function buildRecurringFriction(
         category: 'recurring-friction' as MetaPatternCategory,
         summary: newest ? truncate(newest.title) : cluster.signature,
         detail:
-          `recurred ${recurrence}× (${openCount} open), last ${decayDays}d ago${originTag}` +
+          `recurred ${recurrence}× (${openCount} open), last ${decayDays}d ago${originTag}${observationSourceDetail(members)}` +
           // Name the two axes only when they disagree, so an ordinary multi-row
           // cluster's line is unchanged and a ledger-only recurrence is legible
           // rather than looking like a one-row cluster inexplicably ranked first.
@@ -943,6 +949,7 @@ function buildCapabilityGaps(friction: ImprovementCandidate[], nowMs: number, li
   const byId = new Map(gapCandidates.map((c) => [c.id, c] as const));
   const scored: Scored[] = recurrences.map((r) => {
     const exemplar = byId.get(r.ids[0]);
+    const members = r.ids.map((id) => byId.get(id)).filter((c): c is ImprovementCandidate => Boolean(c));
     const isFeature = exemplar?.kind === 'feature';
     const salience = r.count * (isFeature ? 2 : 1) + (r.openCount > 0 ? 1 : 0);
     return {
@@ -950,7 +957,9 @@ function buildCapabilityGaps(friction: ImprovementCandidate[], nowMs: number, li
       pattern: {
         category: 'capability-gap' as MetaPatternCategory,
         summary: exemplar ? truncate(exemplar.title) : r.signature,
-        detail: `${isFeature ? 'net-new ask' : 'named missing capability'}${r.count > 1 ? `, asked ${r.count}×` : ''} (${r.openCount} open)`,
+        detail:
+          `${isFeature ? 'net-new ask' : 'named missing capability'}${r.count > 1 ? `, asked ${r.count}×` : ''} (${r.openCount} open)` +
+          observationSourceDetail(members),
         ref: `wi:${r.ids[0]}`,
       },
     };

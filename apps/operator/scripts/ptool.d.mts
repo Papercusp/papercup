@@ -349,6 +349,11 @@ export function buildCallToolParams(toolName: string, callArgs: any, { outputSch
     };
 };
 /**
+ * Per-attempt handshake budget for one local MCP origin. Pure and exported so
+ * the direct-vs-proxy distinction cannot silently collapse back to one number.
+ */
+export function ptoolConnectAttemptTimeoutMs(operatorUrl: any, env?: NodeJS.ProcessEnv): number;
+/**
  * @param {string} toolName
  * @param {(Record<string, unknown> & {name?: string}) | undefined} [callArgs]
  */
@@ -473,7 +478,6 @@ export function dispatchScriptedToolWithoutCatalog(client: any, toolName: any, c
 export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rand, retryJitterMs, rediscover, onRebase, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
-    attemptTimeoutMs?: number | undefined;
     totalTimeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
     rand?: (() => number) | undefined;
@@ -586,6 +590,7 @@ export function printResult(result: unknown, { raw, deliveryProbe, env }?: unkno
 export const PTOOL_TRUNCATED_RESULT_MESSAGE: string;
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
 export const PTOOL_CONNECT_TIMEOUT_MS: number;
+export const PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS: 15000;
 export const PTOOL_CONNECT_RETRY_DELAY_MS: 1000;
 export const PTOOL_CONNECT_MAX_ATTEMPTS: number;
 export const PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS: 2;

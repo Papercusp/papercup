@@ -9,26 +9,35 @@ export async function startDesktopAgentMcp(
   // Windows/WSL host boundaries and remote clients keep HTTP (plan D-009).
   if (!['linux', 'darwin'].includes(process.platform) ||
       process.env.PAPERCUSP_IPC_TCP === '1' || process.env.WSL_INTEROP || process.env.WSL_DISTRO_NAME) return null;
-  const host = await import('./_mcp-host');
-  const listener = await startAgentMcpServer({
-    port, host: {
-      register: host.registerMcpHost, options: host.mcpHostServerOptions(),
-      verify: host.tryBuildSpawnContext, pin: host.pinVerifiedMcpRequest,
-    },
-  });
-  try {
-    await writeEndpointIpcDiscovery(uiSocketPath, { port, agentMcp: listener.endpoint });
-  } catch (error) {
-    await listener.close();
-    throw error;
-  }
-  const shutdown = () => { void listener.close().catch(() => {}); };
+  let stopping = false;
+  let listener: AgentMcpListener | undefined;
+  const shutdown = () => { stopping = true; void listener?.close().catch(() => {}); };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
-  const close = listener.close;
-  listener.close = async () => {
+  const detach = () => {
     process.off('SIGTERM', shutdown);
     process.off('SIGINT', shutdown);
+  };
+  try {
+    const host = await import('./_mcp-host');
+    if (stopping) { detach(); return null; }
+    listener = await startAgentMcpServer({
+      port, host: {
+        register: host.registerMcpHost, options: host.mcpHostServerOptions(),
+        verify: host.tryBuildSpawnContext, pin: host.pinVerifiedMcpRequest,
+      },
+    });
+    if (stopping) { await listener.close(); detach(); return null; }
+    await writeEndpointIpcDiscovery(uiSocketPath, { port, agentMcp: listener.endpoint });
+    if (stopping) { await listener.close(); detach(); return null; }
+  } catch (error) {
+    detach();
+    await listener?.close();
+    throw error;
+  }
+  const close = listener.close;
+  listener.close = async () => {
+    detach();
     await close();
   };
   // Descriptor remains as a stale generation; readers validate socket+PID.

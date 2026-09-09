@@ -37,6 +37,9 @@ export interface ImprovementCandidate {
   kind: WorkItemKind;
   /** 'operator' | 'harness:<slug>' — per-Hive scope (P-010). */
   scope: string;
+  /** Storage lane provenance. Only the observation lane is surfaced because the
+   * ordinary improvement lane is the historical default and remains omitted. */
+  lane?: 'observation';
   title: string;
   body?: string;
   severity?: ImprovementSeverity;

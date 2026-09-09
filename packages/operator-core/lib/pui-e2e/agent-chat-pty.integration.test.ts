@@ -785,6 +785,9 @@ beforeAll(async () => {
     const backend = scriptedEngine.backend === 'claude' ? 'claude-code' : scriptedEngine.backend;
     await writeAgentConfig({ ...current, tiers: [{ name: 'acceptance', spec: process.env.PUI_REAL_MODEL,
       backend: backend as 'claude-code' | 'codex' | 'omp', when: `installed ${scriptedEngine.backend} acceptance` }] });
+    expect(await readAgentConfig()).toMatchObject({
+      tiers: [{ name: 'acceptance', spec: process.env.PUI_REAL_MODEL, backend }],
+    });
   }
   await putViewState('Plans');
 

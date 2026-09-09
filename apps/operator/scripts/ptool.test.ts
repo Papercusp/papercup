@@ -30,7 +30,9 @@ import {
   PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_CHECKPOINT_RUN_TIMEOUT_MS,
+  PTOOL_CONNECT_TIMEOUT_MS,
   PTOOL_COORD_ORIENT_TIMEOUT_MS,
+  PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
@@ -50,6 +52,7 @@ import {
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
+  ptoolConnectAttemptTimeoutMs,
   resultToText,
   retryWaitMsWithJitter,
   sanitizeJsonText,
@@ -308,18 +311,25 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
-    // WI-2944 / EI-21637077415806005: a 30s client cutoff on a visible
-    // capability:launch-agent left the first handler running, then the stale
-    // Windows ptool replayed the mutation on a fresh MCP session. Pin both
-    // direct and deferred routes above the transport cap; the replay guard
-    // below independently proves mutations cannot reconnect and re-dispatch.
+    // EI-22780156976598155: headless boot/kickoff/fresh-launch verification
+    // can use the tool's 90s handler budget. Keep direct and deferred routes
+    // outside the handler + 5s MCP settlement window.
     expect(timeoutForTool('capability:launch-agent')).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
-    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBeGreaterThan(65_000);
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBe(100_000);
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBeGreaterThan(95_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'capability:launch-agent',
       args: { agent: 'claude', headless: false },
     })).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
+    // EI-22778035061732249: events:emit can complete its durable fire after
+    // the old 30s client cutoff. Cover direct and deferred routes so a fired
+    // event cannot be reported as outcome-unknown before its receipt returns.
+    expect(timeoutForTool('events:emit')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'events:emit',
+      args: { event: 'timeout-mapping-regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     // EI-22774777434821469: completion/activation audits resolve all submitted
@@ -1203,6 +1213,44 @@ describe('ptool JSON input', () => {
 describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
   const shedErr = () =>
     Object.assign(new Error('{"error":"mcp_proxy_handshake_overloaded","retryAfterSec":2}'), { code: 429 });
+
+  it('EI-22697016277102033 caps direct local attempts but preserves the resilient proxy window', async () => {
+    expect(PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS).toBe(15_000);
+    expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:3170', {})).toBe(15_000);
+    expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:3070', {})).toBe(15_000);
+    expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9071', {})).toBe(PTOOL_CONNECT_TIMEOUT_MS);
+    expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9171', {
+      PAPERCUSP_MCP_PROXY_PORT: '9171',
+    })).toBe(PTOOL_CONNECT_TIMEOUT_MS);
+    expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:4567', {
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:4567',
+    })).toBe(PTOOL_CONNECT_TIMEOUT_MS);
+
+    vi.useFakeTimers();
+    try {
+      const client = { close: vi.fn() };
+      const connectOnce = vi
+        .fn()
+        .mockImplementationOnce(() => Promise.withResolvers().promise)
+        .mockResolvedValue(client);
+      const pending = connectWithLocalRetry(connectOnce, 'http://127.0.0.1:3170', {}, {
+        maxAttempts: 2,
+        retryDelayMs: 0,
+        retryJitterMs: 0,
+        totalTimeoutMs: PTOOL_CONNECT_TIMEOUT_MS,
+        sleep: async () => {},
+      });
+
+      await vi.advanceTimersByTimeAsync(PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS);
+      await expect(pending).resolves.toBe(client);
+      expect(connectOnce).toHaveBeenCalledTimes(2);
+      expect(connectOnce.mock.calls[0][2]).toEqual({
+        timeoutMs: PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('honors Retry-After as a minimum and adds positive jitter', async () => {
     const sleeps: number[] = [];

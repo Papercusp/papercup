@@ -82,6 +82,7 @@ export const OBSERVATION_LANE = 'observation';
 
 /** Typed view over the kind-specific payload the improvement loop writes. */
 interface ImprovementPayload {
+  lane?: unknown;
   improvementKind?: string;
   paths?: unknown;
   implementAttempts?: unknown;
@@ -119,6 +120,7 @@ function payloadOf(issue: EngineerIssue): ImprovementPayload {
 export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
   const p = payloadOf(issue);
   const kind: WorkItemKind = p.improvementKind === 'feature' ? 'feature' : (issue.kind as WorkItemKind);
+  const lane = p.lane === 'observation' ? ('observation' as const) : undefined;
   const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === 'string') : undefined;
   const attempts = typeof p.implementAttempts === 'number' ? p.implementAttempts : undefined;
   const decidedReason = typeof p.decidedReason === 'string' && p.decidedReason.trim() ? p.decidedReason : undefined;
@@ -135,6 +137,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     id: issue.id,
     kind,
     scope: issue.scope,
+    ...(lane ? { lane } : {}),
     title: issue.title,
     body: issue.body,
     severity: issue.severity,

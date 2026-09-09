@@ -578,3 +578,16 @@ describe('events:status — await_id/event exclusivity is declared, not only enf
       .rejects.toThrow(/mutually exclusive/i);
   });
 });
+
+describe('events:status — workspace-global scope is explicit', () => {
+  it('documents that harness/workspace are resolved by context, not JSON filters', () => {
+    const shape = (status.args as unknown as {
+      shape: Record<string, unknown>;
+    }).shape;
+
+    expect(shape).not.toHaveProperty('harness');
+    expect(shape).not.toHaveProperty('workspace');
+    expect(status.description).toMatch(/workspace-global/i);
+    expect(status.description).toMatch(/do not pass `harness` or `workspace`/i);
+  });
+});

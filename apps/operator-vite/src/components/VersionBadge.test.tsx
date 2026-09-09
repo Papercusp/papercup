@@ -82,6 +82,7 @@ describe('<VersionBadge>', () => {
     expect(screen.queryByText(/↻ reload/)).toBeNull();
     const btn = screen.getByRole('button');
     expect(btn.style.cursor).toBe('default');
+    expect(btn.style.pointerEvents).toBe('none');
   });
 
   it('the current-build title carries the sha + desktop/browser, not the stale message', async () => {
@@ -112,6 +113,7 @@ describe('<VersionBadge>', () => {
     expect(screen.getByText('↻ reload')).toBeTruthy();
     const btn = screen.getByRole('button');
     expect(btn.style.cursor).toBe('pointer');
+    expect(btn.style.pointerEvents).toBe('auto');
     expect(btn.getAttribute('aria-label')).toContain('A newer build is running on the server');
 
     fireEvent.click(btn);

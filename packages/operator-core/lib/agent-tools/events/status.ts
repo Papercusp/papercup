@@ -26,6 +26,9 @@ import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/comp
 import { payloadMatchesFilter } from '../../events/await/pattern';
 import type { AwaitRow } from '../../events/await/types';
 
+const EVENTS_SCOPE_NOTE =
+  'Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).';
+
 type ExpectedCondition =
   | { kind: 'sha'; sha: string }
   | { kind: 'predicate'; predicate: unknown };
@@ -166,10 +169,10 @@ export async function resolveAnnouncementOwnership(
 export default defineTool({
   name: 'events:status',
   description:
-    'Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter.',
+    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter. ${EVENTS_SCOPE_NOTE}`,
   guidance: {
     when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
-    notWhen: 'Reading your message stream — that is coord:inbox. Following an area — topics:feed.',
+    notWhen: `Reading your message stream — that is coord:inbox. Following an area — topics:feed. ${EVENTS_SCOPE_NOTE}`,
     seeAlso: [
       'events:cancel (cancel an await you found here)',
       'events:unsubscribe (cancel a standing event-key inject subscription you found here)',

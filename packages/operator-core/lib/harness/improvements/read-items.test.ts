@@ -63,6 +63,14 @@ describe('issueToCandidate — native kind column (close-loop D-002, deriveKind 
     expect(c.paths).toEqual(['packages/operator-core/lib/release/deploy.ts']); // non-strings dropped
   });
 
+  it('maps only the observation lane provenance and omits the ordinary lane', () => {
+    const observed = issueToCandidate(
+      issue({ id: 'EI-OBS', title: 'agent reflection', kind: 'change', payload: { lane: 'observation' } }),
+    );
+    expect(observed.lane).toBe('observation');
+    expect(issueToCandidate(issue({ id: 'EI-ORD', title: 'ordinary improvement', kind: 'bug' }))).not.toHaveProperty('lane');
+  });
+
   it('maps payload.implementAttempts + split owner/legacy flags + assignedAt (the close-loop lifecycle)', () => {
     const c = issueToCandidate(
       issue({

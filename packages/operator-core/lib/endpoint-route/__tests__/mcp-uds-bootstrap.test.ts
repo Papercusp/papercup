@@ -1,0 +1,73 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { lstat, readFile, rm, mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
+
+const h = vi.hoisted(() => ({ home: '' }));
+vi.mock('node:os', async original => ({
+  ...await original<typeof import('node:os')>(), homedir: () => h.home,
+}));
+vi.mock('../routes/transport/_mcp-host', () => ({
+  registerMcpHost: () => {},
+  mcpHostServerOptions: () => ({ capabilities: {} }),
+  tryBuildSpawnContext: async () => ({ kind: 'failed', reason: 'test denies all' }),
+  pinVerifiedMcpRequest: (info: object) => info,
+}));
+
+import { startDesktopAgentMcp } from '../routes/transport/_mcp-uds-bootstrap';
+import { readAgentMcpDiscoveryForPort, endpointIpcDiscoveryPathForPort } from '../../endpoint-ipc-discovery';
+
+beforeEach(async () => {
+  h.home = await mkdtemp(join(tmpdir(), 'boot-mcp-'));
+  vi.stubEnv('PAPERCUSP_IPC_TCP', '');
+  vi.stubEnv('WSL_INTEROP', '');
+  vi.stubEnv('WSL_DISTRO_NAME', '');
+});
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await rm(h.home, { recursive: true, force: true });
+});
+
+describe('desktop bootstrap publishes a separately authenticated MCP endpoint', () => {
+  it('publishes only after bind, retains the legacy UI path, and rejects the closed generation', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const listener = await startDesktopAgentMcp('/tmp/ui.sock', 33170);
+    expect(listener).not.toBeNull();
+    try {
+      const descriptor = await readAgentMcpDiscoveryForPort(33170);
+      expect(descriptor?.socketPath).toBe('/tmp/ui.sock');
+      expect(descriptor?.agentMcp).toEqual(listener!.endpoint);
+      const raw = await readFile(endpointIpcDiscoveryPathForPort(33170), 'utf8');
+      expect(raw).not.toContain('authorization');
+      expect(raw).not.toContain('token');
+      expect((await lstat(listener!.endpoint.socketPath)).isSocket()).toBe(true);
+    } finally { await listener!.close(); }
+    expect(await readAgentMcpDiscoveryForPort(33170)).toBeNull();
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+
+  it('does not erase a replacement operator descriptor when the old listener closes', async () => {
+    const a = await startDesktopAgentMcp('/tmp/old-ui.sock', 33170);
+    const b = await startDesktopAgentMcp('/tmp/new-ui.sock', 33170);
+    try {
+      await a!.close();
+      expect((await readAgentMcpDiscoveryForPort(33170))?.agentMcp).toEqual(b!.endpoint);
+    } finally { await a!.close(); await b!.close(); }
+  });
+
+  it.each(['PAPERCUSP_IPC_TCP', 'WSL_INTEROP', 'WSL_DISTRO_NAME'])('retains HTTP across unsupported %s boundaries', async name => {
+    vi.stubEnv(name, '1');
+    expect(await startDesktopAgentMcp('/tmp/ui.sock', 33170)).toBeNull();
+    expect(await readAgentMcpDiscoveryForPort(33170)).toBeNull();
+  });
+
+  it('pins the real bootstrap call to the single primary publisher', () => {
+    // Structural companion, not a substitute for the executed bootstrap above.
+    // Never boot the live operator from a unit test: it starts real DB routines.
+    const source = readFileSync(new URL('../../../../../apps/operator/bin/host-bootstrap.ts', import.meta.url), 'utf8');
+    expect(source).toContain('if (ipcEnabled && cluster.isPrimary)');
+    expect(source).toContain('await startDesktopAgentMcp(');
+    expect(source).toContain('server.socketPath, Number(process.env.PAPERCUSP_HONO_PORT) || 3070');
+  });
+});

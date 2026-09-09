@@ -10832,7 +10832,7 @@
           "POST"
         ]
       },
-      "description": "Read harness_shared.event_awaits and report awaitable event keys whose live real-fire rate is degenerate: a settled-enough key with almost no fired_reason='event' outcomes (mostly 'timeout'). Each finding is CONVICTED (an independent witness confirms the condition occurred while the wake did not — a proven lost-wake bug, EI-10800's class) or a SUSPECT (no witness, or unconfirmed — a review item, not a proven bug). The reader for the await log tool_invocations cannot provide: an await settling by timeout is not a tool call.",
+      "description": "Read harness_shared.event_awaits and report awaitable event keys whose live real-fire rate is degenerate: a settled-enough key with almost no fired_reason='event' outcomes (mostly 'timeout'). Each finding is CONVICTED (an independent witness confirms the condition occurred while the wake did not — a proven lost-wake bug, EI-10800's class) or a SUSPECT (no witness, or unconfirmed — a review item, not a proven bug). The reader for the await log tool_invocations cannot provide: an await settling by timeout is not a tool call. Workspace-global read surface: scope comes from request context; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).",
       "capabilities": [
         "coord:read"
       ],
@@ -10850,7 +10850,7 @@
       ],
       "guidance": {
         "when": "Auditing whether an events:await wake path actually fires on live traffic — especially before trusting an emit call site, since a lost wake fails silently in the safe-looking direction (the awaiter just waits). Also the direct check for the \"0% real-fire rate\" class.",
-        "notWhen": "A key has too few settled awaits (below minSettled) to mean anything. A high timeout rate on a key that legitimately rarely fires (e.g. a failure-path event) is also not by itself a bug — which is why unwitnessed suspects are never reported as convicted.",
+        "notWhen": "A key has too few settled awaits (below minSettled) to mean anything. A high timeout rate on a key that legitimately rarely fires (e.g. a failure-path event) is also not by itself a bug — which is why unwitnessed suspects are never reported as convicted. Workspace-global read surface: scope comes from request context; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).",
         "chaining": "events:lost-wake-check → a CONVICTED finding names its witness evidence: read the emit call site for that key (often a fire-and-forget dynamic import racing process teardown, EI-10800's shape) and make the emit AWAITED. A SUSPECT with no witness: add one to LOST_WAKE_WITNESSES in events/await/lost-wake-detect.ts, or investigate by hand first."
       }
     },
@@ -10862,7 +10862,7 @@
           "POST"
         ]
       },
-      "description": "Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter.",
+      "description": "Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter. Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).",
       "capabilities": [
         "coord:read"
       ],
@@ -10880,7 +10880,7 @@
       ],
       "guidance": {
         "when": "Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).",
-        "notWhen": "Reading your message stream — that is coord:inbox. Following an area — topics:feed."
+        "notWhen": "Reading your message stream — that is coord:inbox. Following an area — topics:feed. Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected)."
       }
     },
     {
