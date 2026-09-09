@@ -17,6 +17,13 @@ describe('rendered assistant reply evidence', () => {
   test('retains literal pipe characters inside the assistant content', () => {
     expect(screenHasAssistantReply(frame(['agent', 'PUI│REPLY'], ['codex active']), /^PUI│REPLY$/)).toBe(true);
   });
+  test('accepts a final reply after an indented reasoning section', () => {
+    const screen = frame(['agent', '  reasoning', '  The requested marker is PUI-REPLY', 'RESUMED: PUI-REPLY']);
+    expect(screenHasAssistantReply(screen, /^RESUMED:\s*PUI-REPLY$/)).toBe(true);
+  });
+  test('rejects a marker that appears only in reasoning detail', () => {
+    expect(screenHasAssistantReply(frame(['agent', '  reasoning', '  PUI-REPLY']), 'PUI-REPLY')).toBe(false);
+  });
   test('rejects an echoed owner request', () => {
     expect(screenHasAssistantReply(frame(['you', 'PUI-REPLY'], []), 'PUI-REPLY')).toBe(false);
   });

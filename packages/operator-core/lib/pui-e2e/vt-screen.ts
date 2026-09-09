@@ -196,7 +196,21 @@ export function screenHasAssistantReply(screen: string, needle: string | RegExp)
   // pipes, and another pane may contain words that resemble an answer.
   const lines = (bottom < 0 ? body : body.slice(0, bottom))
     .filter((row) => row.startsWith('│'))
-    .map((row) => row.slice(1, right).trim());
-  return lines.some((line, index) => line === 'agent' && (typeof needle === 'string'
-    ? lines[index + 1]?.includes(needle) : needle.test(lines[index + 1] ?? '')));
+    .map((row) => row.slice(1, right).trimEnd());
+  const matches = (line: string): boolean => {
+    if (typeof needle === 'string') return line.includes(needle);
+    needle.lastIndex = 0;
+    return needle.test(line);
+  };
+  for (let index = 0; index < lines.length; index++) {
+    if (lines[index] !== 'agent') continue;
+    for (let replyIndex = index + 1; replyIndex < lines.length; replyIndex++) {
+      const line = lines[replyIndex];
+      if (line === 'agent' || line === 'you') break;
+      // Reasoning/tool detail rows are indented; the rendered final answer is
+      // top-level even when it follows those sections in the same bubble.
+      if (line.trim() && !/^\s/.test(line) && matches(line)) return true;
+    }
+  }
+  return false;
 }
