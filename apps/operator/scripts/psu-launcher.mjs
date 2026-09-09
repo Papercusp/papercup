@@ -43,8 +43,24 @@ import {
 } from "node:fs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { homedir, hostname } from "node:os";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { join, dirname, delimiter, basename, relative } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+const nativeMcpBundle = new URL("../../../packages/omp-plugin/dist/native-client.cjs", import.meta.url);
+const nativeMcpExtension = new URL("../../../packages/omp-plugin/dist/native-extension.mjs", import.meta.url);
+const nativeMcpRequire = createRequire(import.meta.url);
+
+/** Explicit owned-OMP path only; stock Claude/Codex never receive this adapter. */
+export function nativeOmpExtensionArgs(backend, env = process.env, platform = process.platform) {
+  const mode = env.PAPERCUSP_MCP_TRANSPORT || "http";
+  if (backend !== "omp" || mode === "http" || !["linux", "darwin"].includes(platform) ||
+      env.WSL_INTEROP || env.WSL_DISTRO_NAME || env.PAPERCUSP_IPC_TCP === "1") return [];
+  if (!["uds", "auto"].includes(mode)) throw new Error("Invalid MCP transport; expected http, uds or auto");
+  if (!existsSync(nativeMcpExtension) || !existsSync(nativeMcpBundle))
+    throw new Error("Native MCP bundle missing; run npm run build:native -w @papercusp/omp");
+  return ["-e", fileURLToPath(nativeMcpExtension)];
+}
 import {
   hostThroughPty,
   fleetOscFromEnv,
@@ -1637,6 +1653,7 @@ export function roleLaunchArgs(
       ...ompTitleMitigationArgs(model),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
+    args.push(...nativeOmpExtensionArgs("omp"));
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
     // context injection, the omp half of what claude gets from its
     // UserPromptSubmit/PostToolBatch hooks. STRICTLY ADDITIVE — one more module
@@ -1762,6 +1779,7 @@ export function suLaunchArgs(
       ...ompTitleMitigationArgs(),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
+    args.push(...nativeOmpExtensionArgs("omp"));
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
     // context injection, the omp half of what claude gets from its
     // UserPromptSubmit/PostToolBatch hooks. STRICTLY ADDITIVE — one more module
@@ -2104,6 +2122,7 @@ export function resumeArgsFor(
     const args = session.ompThreadId ? ["-r", session.ompThreadId] : ["-c"];
     args.push("--approval-mode", "yolo");
     if (coordExtPath) args.push("-e", coordExtPath);
+    args.push(...nativeOmpExtensionArgs("omp"));
     // omp-context-injection-parity P-003. CLI flags do not persist into an omp
     // resume, so the injection hook must be re-passed every resume exactly like
     // the coord extension above — otherwise a resumed session silently loses
@@ -4555,10 +4574,18 @@ export function writeOmpSessionConfigDir(
         model: model || undefined,
         client: clientId || undefined,
       });
+      if (nativeOmpExtensionArgs("omp").length) {
+        const native = nativeMcpRequire(fileURLToPath(nativeMcpBundle));
+        mcpText = native.prepareNativeOmpConfig(mcpText, {
+          mode: native.agentMcpMode(process.env.PAPERCUSP_MCP_TRANSPORT),
+          home, env: { ...process.env, PAPERCUSP_SID: clientId || process.env.PAPERCUSP_SID },
+        });
+      }
       writeFileSync(join(dstAgent, "mcp.json"), mcpText, { mode: 0o600 });
     }
     return rel;
   } catch (e) {
+    if (process.env.PAPERCUSP_MCP_TRANSPORT && process.env.PAPERCUSP_MCP_TRANSPORT !== "http") throw e;
     console.error(
       `psu: omp per-session config setup failed (${e?.message ?? e}); falling back to OMP default.`,
     );

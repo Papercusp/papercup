@@ -39,6 +39,7 @@ export function parseArgs(argv?: any[]): {
     raw: boolean;
     url: null;
     tokenFile: null;
+    transport: null;
     help: boolean;
 };
 /**
@@ -109,7 +110,7 @@ export function resolveContextTier({ contextTier, env }?: {
  *   'inline' — a normal `--json '<...>'` / `--args '<...>'` value.
  *   null     — no JSON source given; caller should prompt interactively.
  */
-export function jsonSourceKind(args: any): "file" | "stdin" | "inline" | null;
+export function jsonSourceKind(args: any): "file" | "inline" | "stdin" | null;
 /**
  * Escape literal JSON control characters that occur inside quoted strings.
  * JSON requires those characters to be represented as escapes, but a heredoc
@@ -142,7 +143,7 @@ export function parseJsonInput(text: any, { emptyAsObject }?: {
  *   'inline' — a normal `--script '<source>'` value.
  *   null     — no direct script source was given.
  */
-export function scriptSourceKind(args: any): "file" | "stdin" | "inline" | null;
+export function scriptSourceKind(args: any): "file" | "inline" | "stdin" | null;
 /**
  * Decide whether the human-readable invocation line belongs on stderr.
  * Scripted JSON mode must leave stdout/stderr suitable for machine capture;
@@ -628,7 +629,7 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS: 60000;
  */
 export const PTOOL_POST_CONNECT_RETRIES: 0;
 export const PTOOL_READ_ONLY_POST_CONNECT_RETRIES: 1;
-export const PTOOL_USAGE: "ptool \u2014 call any Papercusp defineTool endpoint from the terminal.\n\n  ptool                         interactive: pick service \u2192 endpoint \u2192 args\n  ptool <group:verb>            skip the pickers, prompt for that tool's args\n  ptool <group:verb> --json - <<'EOF'  read JSON args from stdin (safe)\n  {\"copy\": \"it's fine now\"}\n  EOF\n  ptool <group:verb> --json-file payload.json   read JSON args from a file (safe)\n  ptool <group:verb> --json '<args>'   inline, quote-free JSON only\n  ptool <group:verb> --projection '<spec>'  bound the result at dispatch time\n  ptool code:run --script-file batch.js   read the script from a file\n  ptool code:run --script - <<'EOF'      read the script from stdin\n  return await tools.dev.build_status({});\n  EOF\n  ptool --list [filter]         print the catalog (optionally name-filtered)\n\nPrefer --json-file or --json - for any payload that is not a trivial,\nquote-free literal \u2014 especially loop:checkpoint checks/walls with recheck text.\nA shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote\nterminates early). For code:run, prefer --script-file or --script - for source\nthat contains nested shell commands or quoted strings.\n\nFlags:\n  --json <json> / --args <json>   args object for a direct (non-interactive) call;\n                                   '-' reads the JSON from stdin instead\n  --json-file <path>              read the args JSON from a file (quoting-free)\n  --projection <json>             dispatch-level result projection (quote-free JSON)\n  --script <source>               direct code:run JavaScript source; '-' reads stdin\n  --script-file <path>            direct code:run JavaScript source (quoting-free)\n  --workspace <ws>                scope the session (needed for harness:*, features:*, \u2026)\n  --harness <slug>                scope the session to a harness\n  --idempotency-key <key>         reuse one logical tools/call receipt after reconciling an unknown outcome\n  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)\n  PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)\n  --raw                           print the raw result text (no JSON pretty-print)\n  --url=<http://host:port>        operator URL (default current PAPERCUSP_HONO_PORT host, then $PAPERCUSP_OPERATOR_URL or :3070)\n  -h, --help                      this help\n";
+export const PTOOL_USAGE: "ptool \u2014 call any Papercusp defineTool endpoint from the terminal.\n\n  ptool                         interactive: pick service \u2192 endpoint \u2192 args\n  ptool <group:verb>            skip the pickers, prompt for that tool's args\n  ptool <group:verb> --json - <<'EOF'  read JSON args from stdin (safe)\n  {\"copy\": \"it's fine now\"}\n  EOF\n  ptool <group:verb> --json-file payload.json   read JSON args from a file (safe)\n  ptool <group:verb> --json '<args>'   inline, quote-free JSON only\n  ptool <group:verb> --projection '<spec>'  bound the result at dispatch time\n  ptool code:run --script-file batch.js   read the script from a file\n  ptool code:run --script - <<'EOF'      read the script from stdin\n  return await tools.dev.build_status({});\n  EOF\n  ptool --list [filter]         print the catalog (optionally name-filtered)\n  ptool <tool> --transport=uds  require direct local MCP (http and auto also accepted)\n\nPrefer --json-file or --json - for any payload that is not a trivial,\nquote-free literal \u2014 especially loop:checkpoint checks/walls with recheck text.\nA shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote\nterminates early). For code:run, prefer --script-file or --script - for source\nthat contains nested shell commands or quoted strings.\n\nFlags:\n  --json <json> / --args <json>   args object for a direct (non-interactive) call;\n                                   '-' reads the JSON from stdin instead\n  --json-file <path>              read the args JSON from a file (quoting-free)\n  --projection <json>             dispatch-level result projection (quote-free JSON)\n  --script <source>               direct code:run JavaScript source; '-' reads stdin\n  --script-file <path>            direct code:run JavaScript source (quoting-free)\n  --workspace <ws>                scope the session (needed for harness:*, features:*, \u2026)\n  --harness <slug>                scope the session to a harness\n  --idempotency-key <key>         reuse one logical tools/call receipt after reconciling an unknown outcome\n  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)\n  PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)\n  --raw                           print the raw result text (no JSON pretty-print)\n  --url=<http://host:port>        operator URL (default current PAPERCUSP_HONO_PORT host, then $PAPERCUSP_OPERATOR_URL or :3070)\n  -h, --help                      this help\n";
 export type EnvironmentMap = Record<string, string | undefined>;
 export type ToolCatalogEntry = {
     name: string;

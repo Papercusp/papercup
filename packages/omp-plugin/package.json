@@ -12,7 +12,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node build-native.mjs",
+    "build:native": "node build-native.mjs",
     "typecheck": "bash ../../scripts/pc-heavy.sh tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
