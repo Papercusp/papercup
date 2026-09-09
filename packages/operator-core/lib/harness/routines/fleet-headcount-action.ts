@@ -404,6 +404,43 @@ function recordCapacitySnapshot(
   ensureGovernorState(transaction).capacity = snapshot;
 }
 
+/**
+ * A bounded launch verifier can miss a healthy member's first turn and observe it on a
+ * later governor tick. Keep the durable recovery ledger aligned with that late positive
+ * observation: `retryOwnerIds` describes identities whose process start is unresolved,
+ * not members whose stricter worker-readiness contract is still incomplete.
+ *
+ * D-016 remains fail-closed for unrelated legacy seats. This helper only settles members
+ * already present in `verifiedMemberIds`; it neither invents typed readiness nor retires an
+ * unprobed/non-ready live member.
+ */
+function reconcileVerifiedGovernorLaunchProgress(
+  transaction: FleetLaunchTransaction,
+): void {
+  const verified = new Set(transaction.verifiedMemberIds);
+  transaction.recovery.retryOwnerIds = transaction.recovery.retryOwnerIds.filter(
+    (ownerId) => !verified.has(ownerId),
+  );
+  transaction.unconfirmedMemberIds = (transaction.unconfirmedMemberIds ?? []).filter(
+    (ownerId) => !verified.has(ownerId),
+  );
+
+  const opened = new Set(transaction.openedMemberIds);
+  for (const wave of transaction.waves) {
+    const verifiedOwnerIds = wave.ownerIds.filter((ownerId) => verified.has(ownerId));
+    if (verifiedOwnerIds.length > 0) wave.verifiedOwnerIds = verifiedOwnerIds;
+    if (
+      wave.ownerIds.length > 0 &&
+      wave.ownerIds.every((ownerId) => opened.has(ownerId) && verified.has(ownerId))
+    ) {
+      wave.state = 'verified';
+    }
+  }
+  if (transaction.waves.length > 0 && transaction.waves.every((wave) => wave.state === 'verified')) {
+    transaction.state = 'verified';
+  }
+}
+
 async function refreshGovernorWorkerAttestation(
   transaction: FleetLaunchTransaction,
   workspaceId: string,
@@ -411,6 +448,10 @@ async function refreshGovernorWorkerAttestation(
   expectedAttestations?: FreshLaunchExpectedAttestation[],
 ): Promise<{ measured: boolean; error: string | null }> {
   const state = ensureGovernorState(transaction);
+  // Repair transactions written before the late-verification reconciliation below. A
+  // ready member is excluded from the probe cohort, so without this pre-pass an already
+  // stale retry row can otherwise survive every future tick indefinitely.
+  reconcileVerifiedGovernorLaunchProgress(transaction);
   const retired = new Set(state.retiredMemberIds);
   const ready = new Set(transaction.workerReadyMemberIds ?? []);
   const probeOwnerIds = state.probeOwnerIds.filter(
@@ -465,6 +506,7 @@ async function refreshGovernorWorkerAttestation(
       else unconfirmed.add(ownerId);
     }
     transaction.unconfirmedMemberIds = [...unconfirmed];
+    reconcileVerifiedGovernorLaunchProgress(transaction);
 
     if (verdict.agentStarted === false) {
       const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';

@@ -529,6 +529,80 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     expect(persisted.governor.terminalVerdict).toMatchObject({
       outcome: 'productive', action: 'none', workerReadyMemberIds: ['su-slow'],
     });
+    expect(persisted).toMatchObject({
+      state: 'verified',
+      verifiedMemberIds: ['su-slow'],
+      unconfirmedMemberIds: [],
+      recovery: { retryOwnerIds: [] },
+      waves: [{ state: 'verified', verifiedOwnerIds: ['su-slow'] }],
+    });
+  });
+
+  it('settles a late verified probe while preserving an unrelated legacy non-ready wait', async () => {
+    const transaction = {
+      version: 1 as const,
+      transactionId: 'tx-late-with-legacy-seat',
+      launcherOwnerId: 'su-leader',
+      state: 'partial' as const,
+      requestedAt: 1,
+      updatedAt: 1,
+      requestedMemberIds: ['su-legacy-unready', 'su-late'],
+      openedMemberIds: ['su-late'],
+      verifiedMemberIds: ['su-legacy-unready'],
+      unconfirmedMemberIds: ['su-late'],
+      workerReadyMemberIds: [],
+      workerAttestations: [readyAttestation('su-legacy-unready', false)],
+      failed: [],
+      waves: [{ index: 0, ownerIds: ['su-late'], state: 'partial' as const }],
+      recovery: { retryOwnerIds: ['su-late'], nextAction: 'retry late member' },
+      governor: {
+        version: 1 as const,
+        probeOwnerIds: ['su-late'],
+        attestationAttempts: { 'su-late': 1 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    };
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: transaction,
+    });
+    mocks.liveMemberIds.mockResolvedValue(['su-legacy-unready', 'su-late']);
+    mocks.executingOwnersSince.mockResolvedValue(new Set(['su-late']));
+    mocks.verify.mockResolvedValue(verifierResult('su-late', true));
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.recordAttempt).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        succeeded: false,
+        error: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+      }),
+    );
+    const persisted = mocks.setTransaction.mock.calls.at(-1)?.[0].transaction;
+    expect(persisted).toMatchObject({
+      state: 'verified',
+      verifiedMemberIds: ['su-legacy-unready', 'su-late'],
+      unconfirmedMemberIds: [],
+      recovery: {
+        retryOwnerIds: [],
+        nextAction: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+      },
+      waves: [{ state: 'verified', verifiedOwnerIds: ['su-late'] }],
+      governor: {
+        terminalVerdict: {
+          outcome: 'unverified',
+          action: 'wait',
+          unreadyMemberIds: ['su-legacy-unready'],
+        },
+      },
+    });
   });
 
   it('kills the exact repeatedly non-working identity before spawning its pre-pinned replacement', async () => {
