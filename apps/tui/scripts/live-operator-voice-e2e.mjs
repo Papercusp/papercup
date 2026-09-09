@@ -28,6 +28,37 @@ import { join } from 'node:path';
 
 const UTTERANCE = process.argv[2] ?? 'hello operator, can you hear me?';
 const VOICE_RELAY_ACK = "On it — I'll come back to you in a moment.";
+const HOST_DEPENDENCIES = Object.freeze([
+  { command: 'espeak-ng', packageName: 'espeak-ng' },
+  { command: 'ffmpeg', packageName: 'ffmpeg' },
+]);
+
+function commandAvailable(command) {
+  try {
+    // command -v is a shell builtin, so use the POSIX shell that is present
+    // in the WSL runtime rather than assuming a separate which package.
+    execFileSync('sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'papercup-live-e2e-preflight', command], {
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function preflightHostDependencies() {
+  const missing = HOST_DEPENDENCIES.filter(({ command }) => !commandAvailable(command));
+  if (missing.length === 0) return;
+
+  const commands = missing.map(({ command }) => command).join(', ');
+  const packages = missing.map(({ packageName }) => packageName).join(' ');
+  throw new Error(
+    'missing required host command(s): ' + commands + '\n' +
+    'Install them on Ubuntu/WSL with:\n' +
+    '  sudo apt-get update && sudo apt-get install -y ' + packages + '\n' +
+    'Then re-run this live voice E2E.',
+  );
+}
 
 // ── minimal opvoice codec (mirror of operator-voice-bus.ts; bytes 0x10–0x1F) ──
 const OPV = { HELLO: 0x10, MIC: 0x11, CONTROL: 0x12, INPUT_T: 0x13, RESP_A: 0x14, RESP_T: 0x15, STATE: 0x17 };
@@ -71,6 +102,8 @@ function synthesizeSpeech(text) {
 }
 
 (async () => {
+  preflightHostDependencies();
+
   // VOICE_SOCK overrides discovery — on a multi-operator dev box the discovery
   // file is last-writer-wins and can point at a dead operator's socket.
   const socketPath =
