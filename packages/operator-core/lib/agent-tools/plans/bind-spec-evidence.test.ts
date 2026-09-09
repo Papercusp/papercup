@@ -15,6 +15,21 @@ const measuredBinding = {
 };
 
 describe('plans:bind-spec-evidence repo-files measurement contract', () => {
+  it('accepts a workspace-registered sibling harness slug without accepting an arbitrary root path', () => {
+    expect(
+      bindingSchema.safeParse({
+        ...measuredBinding,
+        measurement: { ...measuredBinding.measurement, rootHarnessSlug: 'portal' },
+      }).success,
+    ).toBe(true);
+    expect(
+      bindingSchema.safeParse({
+        ...measuredBinding,
+        measurement: { ...measuredBinding.measurement, rootPath: '/tmp/unregistered' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts omitted or explicit-null opaque fingerprint dimensions', () => {
     expect(bindingSchema.safeParse(measuredBinding).success).toBe(true);
     expect(

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { SpecClauseWrite } from './spec-clauses-store';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '' }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '' }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
@@ -20,7 +20,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 vi.mock('../../harness-registry', () => ({
-  loadHarnessRegistry: async () => ({ projects: [{ slug: 'web', path: h.repoRoot }] }),
+  loadHarnessRegistry: async () => ({
+    projects: [
+      { slug: 'web', path: h.repoRoot },
+      { slug: 'portal', path: h.siblingRoot },
+    ],
+  }),
   resolveHarnessContentPath: (registry: { projects: Array<{ slug: string; path: string }> }, slug: string) =>
     registry.projects.find((project) => project.slug === slug)?.path,
 }));
@@ -50,6 +55,7 @@ const MIGRATION_851 = migration('851-first-class-plan-spec-clauses.sql');
 const MIGRATION_852 = migration('852-plan-spec-clause-integrity.sql');
 const MIGRATION_855 = migration('855-work-item-spec-evidence-bindings.sql');
 const MIGRATION_1111 = migration('1111-acceptance-bar-contract-seed.sql');
+const MIGRATION_1150 = migration('1150-test-runs-execution-details.sql');
 // 929/930 add plan_spec_clause_revisions.falsifier and its shape CHECK. Required here
 // even though this suite is about EVIDENCE: it seeds clauses through setSpecClause, which
 // writes the column. A sibling fixture silently falling one column behind a harness_shared
@@ -100,13 +106,18 @@ async function seedExternalEvidence() {
 
 beforeAll(async () => {
   h.repoRoot = await mkdtemp(path.join(tmpdir(), 'spec-evidence-integration-'));
+  h.siblingRoot = await mkdtemp(path.join(tmpdir(), 'spec-evidence-sibling-integration-'));
   await Promise.all([
     mkdir(path.join(h.repoRoot, 'src'), { recursive: true }),
     mkdir(path.join(h.repoRoot, 'test'), { recursive: true }),
+    mkdir(path.join(h.siblingRoot, 'src'), { recursive: true }),
+    mkdir(path.join(h.siblingRoot, 'test'), { recursive: true }),
   ]);
   await Promise.all([
     writeFile(path.join(h.repoRoot, 'src', 'reconnect.ts'), 'export const reconnect = true;\n'),
     writeFile(path.join(h.repoRoot, 'test', 'reconnect.test.ts'), 'expect(reconnect).toBe(true);\n'),
+    writeFile(path.join(h.siblingRoot, 'src', 'portal.ts'), 'export const rendererTrust = true;\n'),
+    writeFile(path.join(h.siblingRoot, 'test', 'portal.test.ts'), 'expect(rendererTrust).toBe(true);\n'),
   ]);
   db = await createFreshPgDb('plan-spec-evidence');
   h.sql = db.sql;
@@ -184,6 +195,8 @@ beforeAll(async () => {
       surface_ref bigint NOT NULL REFERENCES harness_shared.testing_surfaces(id) ON DELETE CASCADE
     );
   `);
+  await applyMigrationForTest(db.sql, MIGRATION_1150);
+  await applyMigrationForTest(db.sql, MIGRATION_1150); // additive and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_851);
   await applyMigrationForTest(db.sql, MIGRATION_852);
   await applyMigrationForTest(db.sql, MIGRATION_1111);
@@ -194,7 +207,11 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
-  await Promise.all([db?.cleanup(), rm(h.repoRoot, { recursive: true, force: true })]);
+  await Promise.all([
+    db?.cleanup(),
+    rm(h.repoRoot, { recursive: true, force: true }),
+    rm(h.siblingRoot, { recursive: true, force: true }),
+  ]);
 }, 30_000);
 
 beforeEach(async () => {
@@ -226,6 +243,52 @@ beforeEach(async () => {
 });
 
 describe('test execution carries mappings into the real evidence ledger', () => {
+  it('recovers detached measured outcomes from the exact scoped PG row after a timeout', async () => {
+    const { prepareTestEvidence, finishTestEvidence, recoverTestEvidence } = await import('../testing/evidence');
+    const { readHarnessTestRunEvidence } = await import('../../testing-run-store');
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const origin = '0b2a4763-5332-455f-a876-c056e9b1cdb1';
+    const detached = '9a08bdac-4a37-4d16-80d5-ebd22d531e8d';
+    const testPath = 'test/reconnect.test.ts';
+    const scope = { workspaceId: WORKSPACE, harnessSlug: HARNESS, actorId: 'su-test', root: h.repoRoot };
+    const deps = { bind: evidenceStore.bindSpecEvidence, measure: evidenceStore.measureRepoFilesEvidenceAtRoot,
+      list: evidenceStore.listSpecEvidence,
+      ledger: (args: Parameters<typeof readHarnessTestRunEvidence>[0]) => readHarnessTestRunEvidence({
+        ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof readHarnessTestRunEvidence>[0]['sql']>,
+      }) };
+    const prepared = await prepareTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan',
+      bindings: [{ specId: 'SPEC-003-01', specRevision: 1, testPath, sourcePaths: ['src/reconnect.ts'],
+        testLayer: 'integration' }] }, origin, [testPath], scope, deps);
+    await finishTestEvidence(prepared, origin, detached, scope,
+      { ok: false, runId: origin, root: h.repoRoot, error: 'timeout' }, deps);
+    const recovery = { workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: origin, runId: detached };
+    const details = { schemaVersion: 1, root: h.repoRoot, filePath: testPath,
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, runGroupId: detached, testNamePattern: null,
+      passed: 3, failed: 0, skipped: 0, collectionFailed: false };
+    // A same-run, same-file row from another tenant must not settle this proof.
+    await db.sql`INSERT INTO harness_shared.test_runs
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,execution_details)
+      VALUES (${OTHER_WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${JSON.stringify(details)}::text::jsonb)`;
+    expect((await recoverTestEvidence(recovery, scope, deps)).rows[0])
+      .toMatchObject({ phase: 'pending', outcome: 'unknown' });
+    const [row] = await db.sql<{ id: number }[]>`INSERT INTO harness_shared.test_runs
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,execution_details)
+      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${JSON.stringify(details)}::text::jsonb)
+      RETURNING id`;
+    const exact = await deps.ledger({ workspaceId: WORKSPACE, harnessSlug: HARNESS, runGroupId: detached });
+    expect(exact).toHaveLength(1);
+    expect(exact![0].execution_details).toEqual(details);
+    const recovered = await recoverTestEvidence(recovery, scope, deps);
+    expect(recovered.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: Number(row.id) });
+    expect(recovered.verificationFingerprint).toBeTruthy();
+    // Two matching receipts are ambiguous, even when both say pass.
+    await db.sql`INSERT INTO harness_shared.test_runs
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,execution_details)
+      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${JSON.stringify(details)}::text::jsonb)`;
+    expect((await recoverTestEvidence(recovery, scope, deps)).rows[0])
+      .toMatchObject({ phase: 'pending', outcome: 'unknown', testRunId: null });
+  });
+
   it('persists pending links, attaches the exact scoped run, and preserves stale source after a change', async () => {
     const { prepareTestEvidence, finishTestEvidence, recoverTestEvidence } = await import('../testing/evidence');
     const { readHarnessTestRunEvidence } = await import('../../testing-run-store');
@@ -607,6 +670,69 @@ describe('exact spec evidence bindings', () => {
       provenance: 'server-measured',
       staleReasons: ['source-stale'],
     });
+  });
+
+  it('recomputes a registered sibling checkout recipe without widening to an arbitrary path', async () => {
+    await specs.setSpecClause(clause());
+    const external = await seedExternalEvidence();
+    const measurement = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      rootHarnessSlug: 'portal',
+      sourcePaths: ['src/portal.ts'],
+      testPaths: ['test/portal.test.ts'],
+    };
+    const created = (await bindTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        binding: {
+          workItemId: 'WI-101',
+          specId: 'SPEC-003-01',
+          evidenceKind: 'test',
+          evidenceRef: 'test/portal.test.ts#registered-sibling',
+          measurement,
+          testRunId: external.testRunId,
+          details: { adequacy: { executed: true, skipped: false, collected: true, outcome: 'passed' } },
+        },
+      } as never,
+      CTX,
+    )) as { data: { results: Array<Record<string, unknown>> } };
+    expect(created.data.results[0]).toMatchObject({ ok: true, status: 'created' });
+
+    const [current] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      evidenceRefs: ['test/portal.test.ts#registered-sibling'],
+    });
+    expect(current).toMatchObject({
+      details: { currentMeasurement: measurement },
+      serverMeasurement: { status: 'measured' },
+      currentness: { overall: 'current', provenance: 'server-measured' },
+    });
+
+    await writeFile(path.join(h.siblingRoot, 'src', 'portal.ts'), 'export const rendererTrust = false;\n');
+    const [stale] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      evidenceRefs: ['test/portal.test.ts#registered-sibling'],
+    });
+    expect(stale.currentness).toMatchObject({
+      overall: 'stale',
+      provenance: 'server-measured',
+      staleReasons: ['source-stale'],
+    });
+  });
+
+  it('refuses a sibling measurement root that is not registered in this workspace', async () => {
+    await expect(
+      evidenceStore.measureRepoFilesEvidence(WORKSPACE, HARNESS, {
+        schemaVersion: 1,
+        kind: 'repo-files',
+        rootHarnessSlug: 'not-registered',
+        sourcePaths: ['src/portal.ts'],
+      }),
+    ).rejects.toThrow('repo_measurement_harness_root_unavailable:not-registered');
   });
 
   it('keeps legacy mixed repo and opaque fingerprints partially measured instead of promoting them', async () => {

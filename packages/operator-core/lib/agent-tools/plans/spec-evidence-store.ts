@@ -45,6 +45,13 @@ export const repoFilesEvidenceMeasurementSchema = z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal('repo-files'),
+    /**
+     * Optional workspace-registry slug for a source/test checkout other than the
+     * plan's owning harness.  Cross-repository plans already resolve citations
+     * through these registered roots; keeping the selector to a slug (never an
+     * absolute path) gives evidence currentness the same bounded admission rule.
+     */
+    rootHarnessSlug: z.string().trim().min(1).max(120).optional(),
     sourcePaths: z.array(repoMeasurementPathSchema).min(1).max(32),
     testPaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
   })
@@ -100,10 +107,15 @@ export async function measureRepoFilesEvidenceAtRoot(
   return { sourceFingerprint, testFingerprint };
 }
 
-async function resolveMeasurementRoot(workspaceId: string, harnessSlug: string): Promise<string> {
+async function resolveMeasurementRoot(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement?: Pick<RepoFilesEvidenceMeasurement, 'rootHarnessSlug'>,
+): Promise<string> {
   const registry = await loadHarnessRegistry(workspaceId);
-  const root = resolveHarnessContentPath(registry, harnessSlug);
-  if (!root) throw new Error(`repo_measurement_harness_root_unavailable:${harnessSlug}`);
+  const rootHarnessSlug = measurement?.rootHarnessSlug ?? harnessSlug;
+  const root = resolveHarnessContentPath(registry, rootHarnessSlug);
+  if (!root) throw new Error(`repo_measurement_harness_root_unavailable:${rootHarnessSlug}`);
   return root;
 }
 
@@ -113,7 +125,7 @@ export async function measureRepoFilesEvidence(
   harnessSlug: string,
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<MeasuredRepoEvidenceFingerprints> {
-  return measureRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug), measurement);
+  return measureRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement), measurement);
 }
 
 function measurementFromDetails(details: Record<string, unknown>): RepoFilesEvidenceMeasurement | null {
@@ -894,16 +906,19 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
 
   const currentByRef = new Map((options.current ?? []).map((c) => [`${c.evidenceKind}\0${c.evidenceRef}`, c]));
-  const measurementRoot = !options.replaySnapshot && rows.some((row) => measurementFromDetails(row.details))
-    ? resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug)
-    : null;
+  const measurementRoots = new Map<string, Promise<string>>();
   const serverMeasurements = await Promise.all(
     rows.map(async (row) => {
       if (options.replaySnapshot) return null;
       const recipe = measurementFromDetails(row.details);
       if (!recipe) return null;
       try {
-        const measured = await measureRepoFilesEvidenceAtRoot(await measurementRoot!, recipe);
+        const rootHarnessSlug = recipe.rootHarnessSlug ?? scope.harnessSlug;
+        const measurementRoot =
+          measurementRoots.get(rootHarnessSlug) ??
+          resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe);
+        measurementRoots.set(rootHarnessSlug, measurementRoot);
+        const measured = await measureRepoFilesEvidenceAtRoot(await measurementRoot, recipe);
         return {
           status: 'measured' as const,
           current: {
