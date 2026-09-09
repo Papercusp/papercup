@@ -100,13 +100,23 @@ const memoryAdmissionOverride = vi.hoisted(() => ({ value: null as MemoryAdmissi
 // an empty result with a numeric `.count` (postgres.js Result shape) so every caller —
 // rows[0]?.gh (→ {}), cleared.count (→ 0, no stall-clear warn), shouldBackOff(null) (→ false,
 // same as the fail-open path) — behaves as the no-prior-state happy path.
-const fakeSql = {
+// postgres.js `sql` is a CALLABLE tagged template that CARRIES `.unsafe`/`.begin` as
+// properties — it is not a plain object holding those two keys. A non-callable double is
+// therefore LOWER FIDELITY than the real client: every production site reaching the
+// template-tag form (`sql`…``) dies with `TypeError: sql is not a function` instead of
+// taking the no-prior-state happy path this stub exists to provide. That is not a corner
+// case — operator-core has ~1.5k template-tag call sites against ~28 `.unsafe` ones on
+// this module alone, so the object-shaped double failed 24 of this file's 235 tests while
+// the other 211 (which happen to reach only `.unsafe`) passed and hid it. Shape the double
+// like the real thing: a tag function with the two members hung off it.
+const fakeSqlTag = vi.fn(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 }));
+const fakeSql = Object.assign(fakeSqlTag, {
   unsafe: vi.fn(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 })),
   // The retire path uses a short transaction so the routine-row lock, liveness sample, and
   // identity CAS are one lifecycle cut. Keep the fake transactional rather than silently
   // falling back to a non-atomic test path.
   begin: vi.fn(),
-};
+});
 fakeSql.begin.mockImplementation(async (callback: (tx: typeof fakeSql) => Promise<unknown>) => callback(fakeSql));
 // The postgres.js Result shape `fakeSql.unsafe` resolves to: the rows PLUS a numeric `.count`.
 // Build mock resolutions through this so a stubbed query keeps the real result's shape — a bare
