@@ -43,31 +43,89 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="quay.io/centos-bootc/centos-bootc:stream9"
 TAG="papercusp/workspace-host:p306-probe"
 FAILURES=0
+PODMAN=(podman)
+PRIVATE_STORAGE_ROOT=""
+PRIVATE_RUN_ROOT=""
 
 pass() { echo "  PASS  $*"; }
 fail() { echo "  FAIL  $*"; FAILURES=$((FAILURES + 1)); }
 sect() { echo; echo "== $* =="; }
+die() { echo "P306_IMAGE_BUILD_PROBE ERROR $*" >&2; exit 2; }
 
-in_image() { podman run --rm --entrypoint /bin/bash "$TAG" -c "$1" 2>/dev/null; }
+# Rootful Podman can report the overlay driver while silently routing every
+# upperdir operation through fuse-overlayfs.  Once that store contains a
+# `.has-mount-program` marker, a build can wedge during teardown in
+# cgroup_writeback_umount even after the overlay has detached.  Never mutate or
+# migrate the shared store here: detect the unsafe shape, then run the whole
+# probe in fresh storage whose graph root is explicitly isolated.  A temporary
+# root also makes the probe's image/build/run lifecycle self-contained.
+cleanup_private_storage() {
+  [ -z "$PRIVATE_STORAGE_ROOT" ] || rm -rf -- "$PRIVATE_STORAGE_ROOT"
+  [ -z "$PRIVATE_RUN_ROOT" ] || rm -rf -- "$PRIVATE_RUN_ROOT"
+}
+trap cleanup_private_storage EXIT
+
+storage_driver="$("${PODMAN[@]}" info --format '{{.Store.GraphDriverName}}' 2>/dev/null | tr -d '[:space:]')"
+graph_root="$("${PODMAN[@]}" info --format '{{.Store.GraphRoot}}' 2>/dev/null | tr -d '\r\n')"
+run_root="$("${PODMAN[@]}" info --format '{{.Store.RunRoot}}' 2>/dev/null | tr -d '\r\n')"
+native_overlay_diff="$("${PODMAN[@]}" info --format '{{index .Store.GraphStatus "Native Overlay Diff"}}' 2>/dev/null | tr -d '[:space:]')"
+[ -n "$storage_driver" ] || die "could not determine rootful Podman graph driver"
+[ -n "$graph_root" ] || die "could not determine rootful Podman graph root"
+[ -n "$run_root" ] || die "could not determine rootful Podman run root"
+
+mount_program_marker=0
+if [ "$storage_driver" = overlay ] && [ -f "${graph_root%/}/overlay/.has-mount-program" ]; then
+  mount_program_marker=1
+fi
+needs_private_storage=0
+if [ "$storage_driver" = overlay ]; then
+  case "$native_overlay_diff" in
+    true|True|TRUE) ;;
+    *) needs_private_storage=1 ;;
+  esac
+  [ "$mount_program_marker" -eq 1 ] && needs_private_storage=1
+fi
+echo "P306_STORAGE_PRECHECK driver=$storage_driver graph_root=$graph_root native_overlay_diff=${native_overlay_diff:-unknown} mount_program_marker=$mount_program_marker"
+
+if [ "$needs_private_storage" -eq 1 ]; then
+  storage_parent="${P306_PRIVATE_STORAGE_PARENT:-$(dirname "$graph_root")}"
+  run_parent="${P306_PRIVATE_RUN_PARENT:-$(dirname "$run_root")}"
+  case "$storage_parent:$run_parent" in
+    /*:/*) ;;
+    *) die "private Podman storage parents must be absolute paths" ;;
+  esac
+  mkdir -p "$storage_parent" "$run_parent" || die "cannot create private Podman storage parents"
+  PRIVATE_STORAGE_ROOT="$(mktemp -d "$storage_parent/p306-probe-storage.XXXXXX")" \
+    || die "cannot create private Podman graph root under $storage_parent"
+  PRIVATE_RUN_ROOT="$(mktemp -d "$run_parent/p306-probe-run.XXXXXX")" \
+    || die "cannot create private Podman run root under $run_parent"
+  PODMAN=(podman --root "$PRIVATE_STORAGE_ROOT" --runroot "$PRIVATE_RUN_ROOT")
+  echo "P306_STORAGE_MODE=private reason=non-native-overlay-or-mount-program-marker graph_root=$PRIVATE_STORAGE_ROOT run_root=$PRIVATE_RUN_ROOT"
+else
+  echo "P306_STORAGE_MODE=shared reason=storage-driver-safe"
+fi
+
+in_image() { "${PODMAN[@]}" run --rm --entrypoint /bin/bash "$TAG" -c "$1" 2>/dev/null; }
+BUILD_LOG="${P306_BUILD_LOG:-${TMPDIR:-/tmp}/p306-build.log}"
 
 echo "P306_IMAGE_BUILD_PROBE start $(date -u +%FT%TZ)"
 
 sect "1. build"
-if podman build -f "$HERE/workspace-host.Containerfile" -t "$TAG" "$HERE" >/tmp/p306-build.log 2>&1; then
-  build_steps="$(grep -Ec '^(\[[0-9]+/[0-9]+\][[:space:]]+)?STEP[[:space:]]' /tmp/p306-build.log || true)"
+if "${PODMAN[@]}" build -f "$HERE/workspace-host.Containerfile" -t "$TAG" "$HERE" >"$BUILD_LOG" 2>&1; then
+  build_steps="$(grep -Ec '^(\[[0-9]+/[0-9]+\][[:space:]]+)?STEP[[:space:]]' "$BUILD_LOG" || true)"
   if (( build_steps > 0 )); then
     pass "image builds ($build_steps steps)"
   else
     fail "image build emitted no recognizable STEP lines — build-progress instrument is blind"
   fi
   if grep -Eq 'scriptlet failed, exit status|Error in (PREIN|POSTIN|PREUN|POSTUN) scriptlet' \
-       /tmp/p306-build.log; then
-    fail "image build hid an RPM scriptlet failure behind exit 0 — see /tmp/p306-build.log"
+       "$BUILD_LOG"; then
+    fail "image build hid an RPM scriptlet failure behind exit 0 — see $BUILD_LOG"
   else
     pass "image build contains no RPM scriptlet failures"
   fi
 else
-  fail "image build FAILED — see /tmp/p306-build.log"
+  fail "image build FAILED — see $BUILD_LOG"
   echo "P306_IMAGE_BUILD_PROBE PROBE_RESULT=FAIL (build)"
   exit 1
 fi
@@ -75,13 +133,13 @@ fi
 sect "2. bootc container lint — against the base as a CONTROL"
 # An absolute warning count is unreadable: the base ships its own. What matters is
 # whether THIS image adds any, so both are measured in the same run.
-base_warn=$(podman run --rm --entrypoint /usr/bin/bootc "$BASE" container lint 2>&1 \
+base_warn=$("${PODMAN[@]}" run --rm --entrypoint /usr/bin/bootc "$BASE" container lint 2>&1 \
               | sed -n 's/^Warnings: *//p' | tail -1)
-ours_warn=$(podman run --rm --entrypoint /usr/bin/bootc "$TAG" container lint 2>&1 \
+ours_warn=$("${PODMAN[@]}" run --rm --entrypoint /usr/bin/bootc "$TAG" container lint 2>&1 \
               | sed -n 's/^Warnings: *//p' | tail -1)
-base_pass=$(podman run --rm --entrypoint /usr/bin/bootc "$BASE" container lint 2>&1 \
+base_pass=$("${PODMAN[@]}" run --rm --entrypoint /usr/bin/bootc "$BASE" container lint 2>&1 \
               | sed -n 's/^Checks passed: *//p' | tail -1)
-ours_pass=$(podman run --rm --entrypoint /usr/bin/bootc "$TAG" container lint 2>&1 \
+ours_pass=$("${PODMAN[@]}" run --rm --entrypoint /usr/bin/bootc "$TAG" container lint 2>&1 \
               | sed -n 's/^Checks passed: *//p' | tail -1)
 if [[ -z "$base_warn" || -z "$ours_warn" ]]; then
   fail "could not read a lint verdict (base='$base_warn' ours='$ours_warn') — instrument broken, NOT a pass"
@@ -315,7 +373,7 @@ sect "6. firewall ruleset parses — WITH a negative control"
 # here. The negative control is the point: a checker that accepts everything would
 # pass the positive case too, and prove nothing.
 nftcheck() {
-  podman run --rm --cap-add=NET_ADMIN -v "$1:/r.nft:ro,Z" \
+  "${PODMAN[@]}" run --rm --cap-add=NET_ADMIN -v "$1:/r.nft:ro,Z" \
     --entrypoint /usr/sbin/nft "$BASE" --check --file /r.nft >/dev/null 2>&1
 }
 if nftcheck "$HERE/papercusp-firewall.nft"; then
@@ -347,7 +405,7 @@ sect "7. host-prepare runs, and its last guard can actually fail"
 # This stage is why the `install -d '/srv': File exists` bug was found at all:
 # /srv is a symlink to machine-local /var/srv, and `install -d` will not descend a
 # dangling one. Without the fix the unit died on EVERY boot.
-prep_out="$(podman run --rm --privileged \
+prep_out="$("${PODMAN[@]}" run --rm --privileged \
   --entrypoint /usr/libexec/papercusp/host-prepare.sh "$TAG" 2>&1)"
 for stage in runtime-root-is-image-content machine-local-roots runtime-group \
              workspace-acl identity-separation; do
@@ -385,7 +443,7 @@ if [[ "$(stat -c '%h' "$RELEASE_PROBE_CONTEXT/hardlink tree/primary file")" == "
 else
   fail "release recurrence source fixture is not hardlinked — committed-image guard is blind"
 fi
-if podman build \
+if "${PODMAN[@]}" build \
      -f "$HERE/workspace-host.Containerfile" \
      -t "$RELEASE_PROBE_TAG" \
      --target workspace-host-release \
@@ -393,16 +451,16 @@ if podman build \
      --build-arg PAPERCUSP_RELEASE_VERSION=p306-hardlink-probe \
      "$HERE" >"$RELEASE_PROBE_LOG" 2>&1; then
   pass "release target builds with named-context hardlinks"
-  release_file_count="$(podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
+  release_file_count="$("${PODMAN[@]}" run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
     "find '/opt/papercusp/releases/p306-hardlink-probe/hardlink tree' -type f -print | wc -l" 2>/dev/null)"
-  release_bad_count="$(podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
+  release_bad_count="$("${PODMAN[@]}" run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
     "find '/opt/papercusp/releases/p306-hardlink-probe/hardlink tree' -type f ! \\( -uid 0 -gid 912 -perm 0640 -links 1 \\) -print | wc -l" 2>/dev/null)"
   if [[ "$release_file_count" == "5" && "$release_bad_count" == "0" ]]; then
     pass "committed release hardlinks are five distinct 0:912/0640 inodes"
   else
     fail "committed release hardlink normalization failed: files=$release_file_count bad=$release_bad_count"
   fi
-  if podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
+  if "${PODMAN[@]}" run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
        "install -d -o papercusp -g papercusp -m 0750 /var/lib/papercusp \
         && stat -c '%U:%G:%a' /var/lib/papercusp | grep -Fx 'papercusp:papercusp:750' >/dev/null \
         && runuser -u papercusp -- cat '/opt/papercusp/current/hardlink tree/primary file' >/dev/null \
@@ -417,7 +475,7 @@ if podman build \
         && ! runuser -u papercusp-workspace -- test -r /var/lib/papercusp \
         && ! runuser -u papercusp-workspace -- test -w /var/lib/papercusp \
         && ! runuser -u papercusp-workspace -- test -x /var/lib/papercusp"; then
-    pass "committed runtime readable by service+agent, hidden from SSH; exact state fixture accessible only to service"
+    pass "committed runtime readable by service+agent, hidden from SSH; state hidden from agent+SSH; exact state fixture accessible only to service"
   else
     fail "committed immutable runtime/state access boundary is inverted"
   fi
