@@ -13449,6 +13449,52 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     expect(trailer(logPath)).not.toContain("decision-pending");
   });
 
+  it.each(["read", "broadcast", "escalate"] as const)(
+    "finishes the known red when the optional deploy-staleness %s never settles",
+    async (stalledLeg) => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      const candidate = await commit("a", "2", "c2");
+      const logPath = join(repo, `red-advisory-${stalledLeg}.log`);
+      const deps = withLog(stubDeps(false).deps, false, logPath);
+      let enter!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      let inStalenessTail = false;
+      deps.deployStaleness = async () => {
+        inStalenessTail = true;
+        vi.useFakeTimers();
+        enter();
+        if (stalledLeg === "read") await pending;
+        return { pinAgeMs: 365 * 24 * 60 * 60_000, commitsBehind: 10_000 };
+      };
+      deps.broadcast = async () => {
+        if (inStalenessTail && stalledLeg === "broadcast") await pending;
+      };
+      deps.escalate = async () => {
+        if (inStalenessTail && stalledLeg === "escalate") await pending;
+      };
+      const logs: string[] = [];
+      deps.log = (message) => { logs.push(message); };
+      let settled = false;
+      const running = runGreenCheckpoint(cfg(), deps, { candidate, noPush: true })
+        .then((result) => { settled = true; return result; });
+      try {
+        await entered;
+        await vi.advanceTimersByTimeAsync(8_001);
+        expect(settled, "optional notification must not own the gate run-lock").toBe(true);
+        expect(await running).toMatchObject({ candidate, green: false, advanced: false, reason: "not-green" });
+        expect(trailer(logPath)).toContain("reason=not-green");
+        expect(logs.some((message) => message.includes("red-tail advisory"))).toBe(true);
+      } finally {
+        release();
+        vi.useRealTimers();
+        await running;
+      }
+    },
+  );
+
   /**
    * The ADVANCE leg — the last window that could throw without stamping a disposition, because
    * the success trailer is written only after BOTH the push and the local fast-forward. A throw

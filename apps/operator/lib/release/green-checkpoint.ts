@@ -2407,6 +2407,7 @@ async function awaitBounded(
   p: Promise<unknown>,
   graceMs: number,
   log: (msg: string) => void,
+  onTimeout?: () => void,
 ): Promise<void> {
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -2417,10 +2418,13 @@ async function awaitBounded(
       ),
       new Promise<void>((resolve) => {
         graceTimer = setTimeout(() => {
-          log(
-            `self-watchdog onFire hook did not settle within ${graceMs}ms — ` +
-              `proceeding to SIGKILL (the red verdict may not have been emitted)`,
-          );
+          if (onTimeout) onTimeout();
+          else {
+            log(
+              `self-watchdog onFire hook did not settle within ${graceMs}ms — ` +
+                `proceeding to SIGKILL (the red verdict may not have been emitted)`,
+            );
+          }
           resolve();
         }, graceMs);
       }),
@@ -12740,26 +12744,39 @@ async function runGreenCheckpointInner(
 
     // Deploy-staleness alarm: a held gate is loud, but a PIN that never moves is silent.
     // Attach the blocking red so the page is actionable, not just an age complaint.
-    const staleness = await deps.deployStaleness?.().catch(() => null);
-    if (staleness) {
-      const verdict = evaluateDeployStaleness(
-        { ...staleness, blockingFailures: failingTests },
-        deployStalenessThresholdsFromEnv(),
-      );
-      if (verdict.alarm) {
-        await deps
-          .broadcast(verdict.message.split("\n")[0], verdict.message)
-          .catch(() => {});
-        if (verdict.urgency === "urgent") {
+    // An ancillary read/notification must not retain the run-lock after a known
+    // red. One shared budget bounds the entire chain, not 8s per network hop.
+    // If an uncancellable read finishes late, do not start further notifications.
+    let redTailExpired = false;
+    await awaitBounded(
+      (async () => {
+        const staleness = await deps.deployStaleness?.().catch(() => null);
+        if (!staleness || redTailExpired) return;
+        const verdict = evaluateDeployStaleness(
+          { ...staleness, blockingFailures: failingTests },
+          deployStalenessThresholdsFromEnv(),
+        );
+        if (verdict.alarm) {
           await deps
-            .escalate?.(
-              "deploy stale: shipped work is not reaching the running app",
-              verdict.message,
-            )
+            .broadcast(verdict.message.split("\n")[0], verdict.message)
             .catch(() => {});
+          if (verdict.urgency === "urgent" && !redTailExpired) {
+            await deps
+              .escalate?.(
+                "deploy stale: shipped work is not reaching the running app",
+                verdict.message,
+              )
+              .catch(() => {});
+          }
         }
-      }
-    }
+      })(),
+      8_000,
+      deps.log,
+      () => {
+        redTailExpired = true;
+        deps.log("red-tail advisory exceeded 8000ms — finalizing the known red without waiting for notifications");
+      },
+    );
 
     stampPromotion(false, "not-green");
     // WI-42350 — the ORDINARY terminal red exit. This is the common path (the frozen-repair
