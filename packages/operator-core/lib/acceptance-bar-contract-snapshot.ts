@@ -920,7 +920,7 @@ export function projectAcceptanceBarContractSnapshot(
       // obligations when grading instead of replacing them with the BAR floor.
       const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);
       const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers: clauseTestLayers },
-        evidence: currentEvidence, classRef });
+        evidence: currentEvidence, classRef, harness: plan.harnessSlug });
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
     });

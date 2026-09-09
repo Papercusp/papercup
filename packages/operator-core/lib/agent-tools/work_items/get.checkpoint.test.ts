@@ -69,6 +69,7 @@ vi.mock('./deployment-position', () => ({
 }));
 
 import get from './get';
+import { shapeWorkItemsGet } from './get-shape';
 import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks, shortCarryHash } from '../../carry-note';
 
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
@@ -144,10 +145,31 @@ it('resume reaches the saved checkpoint and evidence without loading history or 
     payload: { plan_item: { plan_slug: 'resume-plan', item_id: 'P-001' } } });
   getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: '## Did\n' + 'history '.repeat(1500) + '\n\n## Next action\nUse test-run:44 for acceptance.', updatedAtMs: 123 });
   getWorkItemCheckpointFreshness.mockResolvedValue({ verdict: 'fresh' });
-  resumeEvidence.mockResolvedValue([]);
-  const result = await one({ id: 'WI-resume', harness: 'requested', resume: true });
+  resumeEvidence.mockResolvedValue([{ id: 1, specId: 'SPEC-001', specRevision: 1, evidenceKind: 'test',
+    evidenceRef: 'saved-run:44', testRunId: 44, coverageEvidenceRef: null,
+    currentness: { overall: 'current' }, details: { adequacy: { outcome: 'pass' } } }]);
+  const calls: string[] = [];
+  const read = async (resume: boolean, full = false) => {
+    calls.push(resume ? 'resume' : full ? 'full checkpoint recovery' : 'ordinary trimmed read');
+    const output = await env({ id: 'WI-resume', harness: 'requested', ...(resume ? { resume: true } : {}) });
+    // Full recovery returns the public handler's complete body; ordinary reads
+    // cross the real trimmed shaper, including the __resumeOnly delivery handoff.
+    return full ? output : shapeWorkItemsGet(output, 'trimmed') as any;
+  };
+  const legacy = await read(false);
+  expect(JSON.stringify(legacy)).not.toContain('Use test-run:44 for acceptance.');
+  const recovered = await read(false, true);
+  expect(recovered.results[0].checkpoint).toContain('Use test-run:44 for acceptance.');
+  const legacySteps = calls.splice(0);
+  const result = (await read(true)).results[0];
   expect(result.resume.nextAction).toEqual({ status: 'available', text: 'Use test-run:44 for acceptance.' });
   expect(result.resume.claim.assignee).toBe('su-current');
+  expect(result.resume.evidence.rows).toContainEqual(expect.objectContaining({
+    specId: 'SPEC-001', testRunId: 44, evidenceRef: 'saved-run:44', outcome: 'pass', currentness: 'current',
+  }));
+  expect(legacySteps).toEqual(['ordinary trimmed read', 'full checkpoint recovery']);
+  expect(calls).toEqual(['resume']);
+  expect({ legacySteps: legacySteps.length, resumeSteps: calls.length }).toEqual({ legacySteps: 2, resumeSteps: 1 });
   expect(resumeEvidence).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'canonical', workItemIds: ['WI-resume'] }));
   expect(getWorkItemDetail).not.toHaveBeenCalled();
   expect(getWorkItemThreadWindow).not.toHaveBeenCalled();

@@ -354,6 +354,7 @@ export async function specTestAdequacyCompletionGate(
       clause,
       evidence,
       classRef: input.attestation.classRef,
+      harness: harnessSlug,
       workItemKind: input.workItem.kind,
     });
     const label = `${clause.specId}@${clause.revision}`;

@@ -185,12 +185,26 @@ export function evaluatePlanSpecQuality(input: {
       identityFailures.push(`${clause.specId}:missing-acceptance-provenance`);
     }
   }
+  const provenanceBearingClauses = currentSet.filter((clause) => CONTRACT_STATUSES.has(clause.lifecycleStatus));
+  const draftClauses = currentSet.filter((clause) => clause.lifecycleStatus === 'draft');
+  const exemptClauses = currentSet.filter((clause) => clause.lifecycleStatus === 'exempt');
+  const provenanceEvidence = [
+    `${provenanceBearingClauses.length} active/accepted current clause(s) have unique identities, content hashes, and acceptance provenance.`,
+    draftClauses.length
+      ? `${draftClauses.length} draft current clause(s) are present and excluded from the acceptance-provenance count.`
+      : null,
+    exemptClauses.length
+      ? `${exemptClauses.length} exempt current clause(s) are present and do not require acceptance provenance.`
+      : null,
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(' ');
   ratings['stable-revision-identity'] = identityFailures.length
     ? fail(
         `Revision/identity failures: ${identityFailures.join(', ')}.`,
         'Repair duplicate identities, select only current revisions, and record acceptance provenance.',
       )
-    : pass(`${currentSet.length} current clause(s) have unique identities, content hashes, and acceptance provenance.`);
+    : pass(provenanceEvidence);
 
   const coveredItems = new Set([...behavioral, ...validExemptions].map((clause) => clause.planItemId));
   const uncoveredPlanItemIds = planItemIds.filter((itemId) => !coveredItems.has(itemId));

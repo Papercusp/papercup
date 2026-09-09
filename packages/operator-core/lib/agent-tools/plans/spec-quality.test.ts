@@ -68,6 +68,32 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.wouldBlock).toContain('item-contract-coverage');
   });
 
+  it('partitions draft clauses from acceptance-provenance evidence', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause(),
+        clause({
+          specId: 'SPEC-002-01',
+          sourceValId: 'VAL-002-01',
+          lifecycleStatus: 'draft',
+          acceptedBy: null,
+          acceptedAt: null,
+          acceptanceRef: null,
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const evidence = result.ratings['stable-revision-identity'].evidence;
+    expect(result.ratings['stable-revision-identity'].rating).toBe('pass');
+    expect(evidence).toContain('1 active/accepted current clause(s) have unique identities');
+    expect(evidence).toContain('1 draft current clause(s) are present and excluded from the acceptance-provenance count');
+    expect(evidence).not.toContain('2 current clause(s) have unique identities, content hashes, and acceptance provenance');
+  });
+
   it('does not pass empty behavioral evaluations when clauses are only draft', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
