@@ -73,6 +73,33 @@ function normalizeRating(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+/**
+ * The short label a scale entry of the form `label — definition` (or
+ * `label: definition`) leads with.
+ *
+ * A rating scale routinely carries its definition inline, so `unknown` and
+ * `unknown — the evidence did not establish a verdict` are the SAME rating.
+ * `canonicalScorecardRating` resolves the short form at emit time; this is the
+ * one implementation both sides read, so the accepting half and the validating
+ * half cannot drift apart.
+ */
+export function leadingScaleLabel(value: string): string {
+  return value.split(/[—:]/, 1)[0].trim().toLowerCase();
+}
+
+/**
+ * Whether a rating named in procedure prose would be ACCEPTED by scorecards:emit
+ * against this scale: an exact case-insensitive match, or the unambiguous leading
+ * label of exactly one `label — definition` entry. Ambiguity stays a violation —
+ * two entries sharing a leading label cannot resolve to one rating at emit time
+ * either, so the prose really is off-scale.
+ */
+export function ratingResolvesOnScale(rating: string, scale: readonly string[]): boolean {
+  const normalized = normalizeRating(rating);
+  if (scale.some((entry) => normalizeRating(entry) === normalized)) return true;
+  return scale.filter((entry) => leadingScaleLabel(entry) === normalized).length === 1;
+}
+
 function isQuote(value: string): boolean {
   return value === '`' || value === "'" || value === '"' || value === '“' || value === '‘';
 }
@@ -246,8 +273,11 @@ function effectiveScale(criterion: RubricRatingVocabularyCriterion, rubricRating
 /**
  * Validate explicit rating instructions against each criterion's effective scale.
  *
- * The comparison matches scorecard validation: labels are case-insensitive but
- * otherwise literal. A criterion override wins over the rubric-level scale.
+ * The comparison matches scorecard validation, through the shared
+ * `ratingResolvesOnScale`: labels are case-insensitive, and a scale entry
+ * written as `label — definition` is satisfied by its unambiguous leading
+ * label, exactly as `canonicalScorecardRating` resolves it at emit time. A
+ * criterion override wins over the rubric-level scale.
  */
 export function validateRubricRatingVocabulary(
   criteria: ReadonlyArray<RubricRatingVocabularyCriterion>,
@@ -264,9 +294,8 @@ export function validateRubricRatingVocabulary(
     instructions.push(...criterionInstructions);
 
     const allowedRatings = effectiveScale(criterion, rubricRatingScale);
-    const allowed = new Set(allowedRatings.map(normalizeRating));
     for (const instruction of criterionInstructions) {
-      if (!allowed.has(normalizeRating(instruction.rating))) {
+      if (!ratingResolvesOnScale(instruction.rating, allowedRatings)) {
         violations.push({ ...instruction, allowedRatings });
       }
     }

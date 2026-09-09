@@ -1,4 +1,5 @@
 import { continuityProbeShapeSchema, type ContinuityProbe } from '../../continuity-probes';
+import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 
 /**
  * observation-types.ts — the canonical structured-observation v2 shape
@@ -955,8 +956,7 @@ export function canonicalScorecardRating(rating: string, scale: readonly string[
   if (match) return match;
   if (normalized === 'unknown') return 'unknown';
 
-  const leadingLabel = (value: string): string => value.split(/[—:]/, 1)[0].trim().toLowerCase();
-  const shortMatches = candidates.filter((candidate) => leadingLabel(candidate) === normalized);
+  const shortMatches = candidates.filter((candidate) => leadingScaleLabel(candidate) === normalized);
   return shortMatches.length === 1 ? shortMatches[0] : trimmed;
 }
 
