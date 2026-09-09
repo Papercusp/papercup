@@ -218,7 +218,7 @@ function r2ErrorCode(error: unknown): number | null {
 function multipartStorageFailure(
   c: Context<{ Bindings: Env }>,
   error: unknown,
-  phase: 'initiate' | 'part' | 'complete' | 'abort',
+  phase: 'initiate' | 'part' | 'part-intent' | 'part-reconcile' | 'status' | 'complete' | 'abort',
 ): Response {
   const code = r2ErrorCode(error);
   if (code === 10024) return c.json({ error: 'multipart_upload_not_found' }, 404);

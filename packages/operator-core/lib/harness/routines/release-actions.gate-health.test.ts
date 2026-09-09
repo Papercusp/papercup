@@ -1078,8 +1078,11 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
     const frozenCandidate = 'a'.repeat(40);
     const repairHead = 'c'.repeat(40);
     const repairQueue = {
-      schemaVersion: 3,
-      phase: 'awaiting-fixer',
+      schemaVersion: 3 as const,
+      phase: 'awaiting-fixer' as const,
+      signature: [
+        { kind: 'test-file' as const, id: 'pkgA/foo.test.ts', recipe: 'npm run test:file -- pkgA/foo.test.ts' },
+      ],
       candidate: frozenCandidate,
       base: null,
       repairHead,
@@ -1122,8 +1125,11 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
   it('still measures a queue whose repair head is the original tip candidate', async () => {
     const candidate = 'd'.repeat(40);
     const repairQueue = {
-      schemaVersion: 3,
-      phase: 'awaiting-fixer',
+      schemaVersion: 3 as const,
+      phase: 'awaiting-fixer' as const,
+      signature: [
+        { kind: 'test-file' as const, id: 'pkgA/foo.test.ts', recipe: 'npm run test:file -- pkgA/foo.test.ts' },
+      ],
       candidate,
       base: null,
       repairHead: candidate,
