@@ -30,7 +30,6 @@ interface SessionRow {
   id: number | string;
   coord_owner_id: string;
   mode: string;
-  harness_slug: string | null;
   launch_spec: unknown;
   control_state: Record<string, unknown> | null;
 }
@@ -92,18 +91,26 @@ function stringRefs(value: unknown): string[] {
 
 function activationFromControl(value: Record<string, unknown> | null): SessionActivation | null {
   const activation = value?.activation;
-  return activation && typeof activation === 'object' ? activation as SessionActivation : null;
+  return activation && typeof activation === 'object' ? (activation as SessionActivation) : null;
 }
 
-function historyArtifact(record: SuLaunchSpecRecord, revision: { specificationRevision: string; stateRevision: string } | null) {
+function historyArtifact(
+  record: SuLaunchSpecRecord,
+  revision: { specificationRevision: string; stateRevision: string } | null,
+) {
   if (!revision) return null;
   if (
     record.specificationRevision === revision.specificationRevision &&
     record.stateRevision === revision.stateRevision
-  ) return record.specificationArtifact ?? null;
-  return record.identityHistory?.find((entry) =>
-    entry.specificationRevision === revision.specificationRevision &&
-    entry.stateRevision === revision.stateRevision)?.specificationArtifact ?? null;
+  )
+    return record.specificationArtifact ?? null;
+  return (
+    record.identityHistory?.find(
+      (entry) =>
+        entry.specificationRevision === revision.specificationRevision &&
+        entry.stateRevision === revision.stateRevision,
+    )?.specificationArtifact ?? null
+  );
 }
 
 export async function readIdentitySurface(input: {
@@ -116,8 +123,7 @@ export async function readIdentitySurface(input: {
   const rows = ownerId
     ? await sql<SessionRow[]>`
         SELECT a.id, a.coord_owner_id, a.mode,
-               COALESCE(a.launch_spec->>'harnessSlug', a.harness_slug) AS harness_slug,
-               a.launch_spec, b.control_state
+               to_jsonb(a)->'launch_spec' AS launch_spec, b.control_state
           FROM harness_shared.adv_sessions a
           LEFT JOIN harness_shared.session_briefs b
             ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
@@ -154,35 +160,36 @@ export async function readIdentitySurface(input: {
   }));
   const activation = activationFromControl(row?.control_state ?? null);
   const applied = activation?.applied ?? null;
-  const appliedEvent = transitions.find((event) =>
-    event.phase === 'applied' &&
-    (!applied || (
-      event.specificationRevision === applied.specificationRevision &&
-      event.stateRevision === applied.stateRevision
-    )),
+  const appliedEvent = transitions.find(
+    (event) =>
+      event.phase === 'applied' &&
+      (!applied ||
+        (event.specificationRevision === applied.specificationRevision &&
+          event.stateRevision === applied.stateRevision)),
   );
   return {
     workspaceId: input.workspaceId,
     ownerId,
     identities: catalog.identities,
     unreadable: catalog.unreadable,
-    session: row && record
-      ? {
-          ownerId: row.coord_owner_id,
-          agent: record.agent,
-          principalId: record.principalId ?? row.coord_owner_id,
-          harnessSlug: record.harnessSlug,
-          explicitStack: [...(record.stack ?? [])],
-          effectiveStack: stringRefs(row.control_state?.stack),
-          appliedStack: appliedEvent?.stackRefs ?? [],
-          specificationRevision: record.specificationRevision ?? null,
-          stateRevision: record.stateRevision ?? null,
-          activation,
-          artifact: record.specificationArtifact ?? null,
-          appliedArtifact: historyArtifact(record, applied),
-          history: record.identityHistory ?? [],
-        }
-      : null,
+    session:
+      row && record
+        ? {
+            ownerId: row.coord_owner_id,
+            agent: record.agent,
+            principalId: record.principalId ?? row.coord_owner_id,
+            harnessSlug: record.harnessSlug,
+            explicitStack: [...(record.stack ?? [])],
+            effectiveStack: stringRefs(row.control_state?.stack),
+            appliedStack: appliedEvent?.stackRefs ?? [],
+            specificationRevision: record.specificationRevision ?? null,
+            stateRevision: record.stateRevision ?? null,
+            activation,
+            artifact: record.specificationArtifact ?? null,
+            appliedArtifact: historyArtifact(record, applied),
+            history: record.identityHistory ?? [],
+          }
+        : null,
     transitions,
     bindings: {
       available: false,
@@ -208,13 +215,38 @@ export function diffIdentitySpecifications(
   applied: ResolvedAgentSpecification | null | undefined,
   selected: ResolvedAgentSpecification | null | undefined,
 ): IdentityDiffRow[] {
-  const a = flatten(applied ? { configuration: applied.configuration, inputs: applied.inputs.map(({ kind, ...rest }) => ({ kind, ...('bytes' in rest ? { ...rest, bytes: `[${String(rest.bytes).length} bytes]` } : rest) })) } : null);
-  const b = flatten(selected ? { configuration: selected.configuration, inputs: selected.inputs.map(({ kind, ...rest }) => ({ kind, ...('bytes' in rest ? { ...rest, bytes: `[${String(rest.bytes).length} bytes]` } : rest) })) } : null);
+  const a = flatten(
+    applied
+      ? {
+          configuration: applied.configuration,
+          inputs: applied.inputs.map(({ kind, ...rest }) => ({
+            kind,
+            ...('bytes' in rest ? { ...rest, bytes: `[${String(rest.bytes).length} bytes]` } : rest),
+          })),
+        }
+      : null,
+  );
+  const b = flatten(
+    selected
+      ? {
+          configuration: selected.configuration,
+          inputs: selected.inputs.map(({ kind, ...rest }) => ({
+            kind,
+            ...('bytes' in rest ? { ...rest, bytes: `[${String(rest.bytes).length} bytes]` } : rest),
+          })),
+        }
+      : null,
+  );
   const provenance = new Map((selected?.provenance ?? []).map((entry) => [entry.path, entry.sourceRef]));
   return [...new Set([...a.keys(), ...b.keys()])]
     .filter((field) => JSON.stringify(a.get(field)) !== JSON.stringify(b.get(field)))
     .slice(0, 200)
-    .map((field) => ({ field, applied: a.get(field) ?? null, selected: b.get(field) ?? null, origin: provenance.get(field) ?? null }));
+    .map((field) => ({
+      field,
+      applied: a.get(field) ?? null,
+      selected: b.get(field) ?? null,
+      origin: provenance.get(field) ?? null,
+    }));
 }
 
 export type IdentityMutationAction = 'preview' | 'attach' | 'switch' | 'detach' | 'rollback';
@@ -244,22 +276,27 @@ export interface IdentityMutationResult {
 }
 
 function historyWithCurrent(record: SuLaunchSpecRecord): SuLaunchArtifactHistoryEntry[] {
-  const current = record.specificationArtifact && record.specificationRevision && record.stateRevision
-    ? [{
-        stack: [...(record.stack ?? [])],
-        specificationRevision: record.specificationRevision,
-        stateRevision: record.stateRevision,
-        specificationArtifact: record.specificationArtifact,
-        recordedAt: new Date().toISOString(),
-      } satisfies SuLaunchArtifactHistoryEntry]
-    : [];
+  const current =
+    record.specificationArtifact && record.specificationRevision && record.stateRevision
+      ? [
+          {
+            stack: [...(record.stack ?? [])],
+            specificationRevision: record.specificationRevision,
+            stateRevision: record.stateRevision,
+            specificationArtifact: record.specificationArtifact,
+            recordedAt: new Date().toISOString(),
+          } satisfies SuLaunchArtifactHistoryEntry,
+        ]
+      : [];
   const seen = new Set<string>();
-  return [...current, ...(record.identityHistory ?? [])].filter((entry) => {
-    const key = `${entry.specificationRevision}:${entry.stateRevision}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).slice(0, HISTORY_LIMIT);
+  return [...current, ...(record.identityHistory ?? [])]
+    .filter((entry) => {
+      const key = `${entry.specificationRevision}:${entry.stateRevision}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, HISTORY_LIMIT);
 }
 
 export async function resolveIdentityStackMutation(
@@ -278,12 +315,16 @@ export async function resolveIdentityStackMutation(
   const identity = await getIdentitySource(identityId, { ...(repoDir ? { repoDir } : {}) });
   if (!identity.ok) throw new Error(identity.error);
   const declared = identity.identity.slots.find((entry) => !slotRaw || entry.slot === slotRaw);
-  if (!declared) throw new Error(slotRaw ? `${identityId} does not declare slot ${slotRaw}` : `${identityId} declares no selectable slot`);
+  if (!declared)
+    throw new Error(
+      slotRaw ? `${identityId} does not declare slot ${slotRaw}` : `${identityId} declares no selectable slot`,
+    );
   const slot = declared.slot as SlotId;
   const binding = stackBindingFromRefs(record.stack ?? []);
-  const mutation = input.action === 'detach'
-    ? detachLayer(binding, { slot, id: identityId })
-    : attachLayer(binding, { slot, id: identityId });
+  const mutation =
+    input.action === 'detach'
+      ? detachLayer(binding, { slot, id: identityId })
+      : attachLayer(binding, { slot, id: identityId });
   if (input.action === 'switch' && SLOT_SPECS[slot].cardinality !== 'exclusive') {
     throw new Error(`switch requires an exclusive slot; ${slot} is additive`);
   }
@@ -295,27 +336,39 @@ export async function resolveIdentityStackMutation(
   };
 }
 
-async function nudgeOwner(ownerId: string, delivery: MutationDelivery | null): Promise<{ queued: boolean; reason: string | null }> {
+async function nudgeOwner(
+  ownerId: string,
+  delivery: MutationDelivery | null,
+): Promise<{ queued: boolean; reason: string | null }> {
   if (!delivery) return { queued: false, reason: null };
   const host = findLiveHost(ownerId);
-  if (!host) return { queued: false, reason: 'session host is not currently reachable; wake or resume the session, then retry delivery' };
-  const message = delivery === 'relaunch-with-carry'
-    ? 'A domain/client identity change is ready and requires a fresh context. Finish the atomic step in hand, checkpoint current work, then call session:request-compaction at the clean boundary. The successor will rebuild from the new explicit identity stack; do not treat the desired identity as applied before that acknowledgement.'
-    : 'A soft identity stack change is ready. Continue normally; the control transition attached to this turn carries the validated layer and the host acknowledgement records when it becomes applied.';
+  if (!host)
+    return {
+      queued: false,
+      reason: 'session host is not currently reachable; wake or resume the session, then retry delivery',
+    };
+  const message =
+    delivery === 'relaunch-with-carry'
+      ? 'A domain/client identity change is ready and requires a fresh context. Finish the atomic step in hand, checkpoint current work, then call session:request-compaction at the clean boundary. The successor will rebuild from the new explicit identity stack; do not treat the desired identity as applied before that acknowledgement.'
+      : 'A soft identity stack change is ready. Continue normally; the control transition attached to this turn carries the validated layer and the host acknowledgement records when it becomes applied.';
   let data = message;
   try {
     data = tagTurnForInjection({ sid: ownerId, origin: 'coord-inject:identity-management', text: message }).taggedText;
-  } catch { /* a provenance write must not hide the delivery failure */ }
+  } catch {
+    /* a provenance write must not hide the delivery failure */
+  }
   const queued = await injectIntoHost(host.sock, { mode: 'turn', data, ownerId });
-  return { queued, reason: queued ? null : 'the session host refused the delivery nudge; retry after the session is idle' };
+  return {
+    queued,
+    reason: queued ? null : 'the session host refused the delivery nudge; retry after the session is idle',
+  };
 }
 
 export async function mutateIdentityStack(input: IdentityMutationInput): Promise<IdentityMutationResult> {
   const sql = getOrgPg().sql;
   const rows = await sql<SessionRow[]>`
     SELECT a.id, a.coord_owner_id, a.mode,
-           COALESCE(a.launch_spec->>'harnessSlug', a.harness_slug) AS harness_slug,
-           a.launch_spec, b.control_state
+           to_jsonb(a)->'launch_spec' AS launch_spec, b.control_state
       FROM harness_shared.adv_sessions a
       LEFT JOIN harness_shared.session_briefs b
         ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
@@ -337,7 +390,10 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
     stack: mutation.stack,
     modeSection: input.modeSection,
   });
-  const diff = diffIdentitySpecifications(historyArtifact(record, activationFromControl(row.control_state)?.applied ?? null), rebuilt.artifact.specificationArtifact);
+  const diff = diffIdentitySpecifications(
+    historyArtifact(record, activationFromControl(row.control_state)?.applied ?? null),
+    rebuilt.artifact.specificationArtifact,
+  );
   if (input.action === 'preview' || !mutation.changed) {
     return {
       ok: true,
@@ -372,7 +428,8 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
          AND launch_spec = ${JSON.stringify(row.launch_spec)}::jsonb
       RETURNING id
     `;
-    if (updated.length === 0) throw new Error('The session identity changed concurrently; reload and review the new diff.');
+    if (updated.length === 0)
+      throw new Error('The session identity changed concurrently; reload and review the new diff.');
     return requestSessionIdentityActivationInTransaction({
       ownerId: input.ownerId,
       workspaceId: input.workspaceId,
