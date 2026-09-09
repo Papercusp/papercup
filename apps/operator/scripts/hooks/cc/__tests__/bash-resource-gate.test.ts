@@ -6768,3 +6768,40 @@ describe('bytecode cache degrades to SLOW, never to OFF (EI-20226903620041425)',
     }
   });
 });
+
+describe('unbounded symlink-following walk guard (WI-10000836)', () => {
+  // Measured 2026-09-08: `find -L ~/.papercusp -name …` ran 32h, 70 GB RSS +
+  // 1.86 TB swap, thrashed the host. The guard denies `-L`/`-follow` from a
+  // broad root with no `-maxdepth` and no `node_modules … -prune`.
+  //
+  // Family-local deny helper: the shared `expectDeny` above belongs to the
+  // native-scheduler family (it pins the `pot:declare-wake` redirect in the
+  // reason text); this family's reason must instead name its own guard so a
+  // denied agent can find the incident and the safe forms.
+  function expectLwalkDeny(out: GateOut) {
+    expect(out.status, describeGateExit(out)).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
+    const decision = parseDecision(out);
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain(
+      'unbounded symlink-following walk guard (WI-10000836)',
+    );
+    // The reason must carry the safe forms, not just the refusal.
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('-name node_modules -prune');
+  }
+  it('denies `find -L ~/.papercusp` with no bound (the measured incident shape)', () => {
+    expectLwalkDeny(runGate(bashCmd('find -L ~/.papercusp -name additional-states.json -o -name phone-disabled.png')));
+  });
+  it('denies the bfs spelling, the -follow spelling, and the $HOME / workspace roots', () => {
+    expectLwalkDeny(runGate(bashCmd(`bfs -L ${fakeHome}/papercupai-workspace -name x`)));
+    expectLwalkDeny(runGate(bashCmd(`find ${fakeHome}/.papercusp -name x -follow`)));
+    expectLwalkDeny(runGate(bashCmd(`find -L ${fakeHome} -name x`)));
+  });
+  it('allows the same walk once bounded by -maxdepth or a node_modules prune', () => {
+    expectAllow(runGate(bashCmd('find -L ~/.papercusp -maxdepth 4 -name x')));
+    expectAllow(runGate(bashCmd('find -L ~/papercupai-workspace -name node_modules -prune -o -name x -print')));
+  });
+  it('allows -L on a narrow root (one checkout) and a bare find on the broad root (the sibling guard owns that shape)', () => {
+    expectAllow(runGate(bashCmd(`find -L ${fakeHome}/papercupai-workspace/papercusp/scripts -name x`)));
+    expectAllow(runGate(bashCmd('find ~/.papercusp -name x')));
+  });
+});
