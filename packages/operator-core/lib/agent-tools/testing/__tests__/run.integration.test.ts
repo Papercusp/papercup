@@ -34,6 +34,7 @@ import runTool, {
   buildDetachedTestRunRequest,
   buildTestProcessDemand,
   classifyTestProcessOutcome,
+  checkoutRootForTestFiles,
   createTestProcessDemandSampler,
   detachedTestTimeoutHint,
   discoverKnownHiveCheckoutRoots,
@@ -43,6 +44,9 @@ import runTool, {
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
   readTestProcessResourceSnapshot,
+  runTestFilesCore,
+  runWithTestProcessDeadline,
+  resolveAdminTestRunsReporterPath,
   selectTestFileRoot,
   shouldResolveHarnessTestRunIds,
   shouldIngestVitestLedgerInProcess,
@@ -210,7 +214,100 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
   });
 });
 
+describe('mixed-checkout test batches (EI-22733560502709681)', () => {
+  it('does not switch a mixed relative + absolute request wholesale to the absolute checkout', async () => {
+    await mkdir(join(REPO_ROOT, '.papercusp', 'tmp'), { recursive: true });
+    const parent = await mkdtemp(join(REPO_ROOT, '.papercusp', 'tmp', 'testing-run-mixed-select-'));
+    selectorRoots.push(parent);
+    const ambient = join(parent, 'ambient');
+    const sibling = join(parent, 'portal');
+    for (const root of [ambient, sibling]) {
+      await mkdir(join(root, '.git'), { recursive: true });
+      await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+      await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
+    }
+    const siblingFile = join(sibling, 'sibling.test.ts');
+    await writeFile(siblingFile, 'export {};\n');
+
+    expect(checkoutRootForTestFiles(['ambient.test.ts', siblingFile], ambient)).toBe(ambient);
+  });
+
+  it('runs and reports files from both checkouts instead of silently dropping the ambient file', async () => {
+    await mkdir(join(REPO_ROOT, '.papercusp', 'tmp'), { recursive: true });
+    const parent = await mkdtemp(join(REPO_ROOT, '.papercusp', 'tmp', 'testing-run-mixed-core-'));
+    selectorRoots.push(parent);
+    const ambient = join(parent, 'ambient');
+    const sibling = join(parent, 'portal');
+    for (const [root, label] of [
+      [ambient, 'ambient'],
+      [sibling, 'sibling'],
+    ] as const) {
+      await mkdir(join(root, '.git'), { recursive: true });
+      await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+      await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
+      await writeFile(
+        join(root, `${label}.test.ts`),
+        `import { expect, it } from 'vitest'; it('${label}', () => expect(1).toBe(1));\n`,
+      );
+    }
+    const siblingFile = join(sibling, 'sibling.test.ts');
+
+    const out = await runTestFilesCore({
+      root: ambient,
+      files: ['ambient.test.ts', siblingFile],
+      timeoutMs: 60_000,
+    });
+
+    expect(out.error, JSON.stringify(out)).toBeUndefined();
+    if (out.error !== undefined) return;
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.files).toBe(2);
+    expect(out.roots).toEqual([ambient, sibling]);
+    expect(out.byFile['ambient.test.ts']).toMatchObject({ passed: 1, failed: 0 });
+    expect(out.byFile[siblingFile]).toMatchObject({ passed: 1, failed: 0 });
+  }, 120_000);
+});
+
 describe('governed test-process admission (P-003)', () => {
+  it('returns a timed-out outcome and aborts a governed admission that never settles', async () => {
+    let observedSignal: AbortSignal | undefined;
+    const out = await runWithTestProcessDeadline({
+      timeoutMs: 25,
+      run: async ({ signal }) => {
+        observedSignal = signal;
+        await new Promise<never>(() => {
+          /* simulate a durable admission blocked behind the heavy-test gate */
+        });
+      },
+      onAdmissionTimeout: (timeoutMs) => ({ kind: 'timeout', timeoutMs }),
+      onAbort: () => ({ kind: 'aborted' }),
+    });
+
+    expect(out).toEqual({ kind: 'timeout', timeoutMs: 25 });
+    expect(observedSignal?.aborted).toBe(true);
+    expect(observedSignal?.reason).toBeInstanceOf(Error);
+    expect((observedSignal?.reason as Error).message).toContain('admission exceeded');
+  });
+
+  it('gives the child only the budget remaining after admission completes', async () => {
+    const out = await runWithTestProcessDeadline({
+      timeoutMs: 100,
+      run: async ({ markAdmissionComplete, remainingTimeoutMs }) => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const remaining = markAdmissionComplete();
+        return { remaining, readBack: remainingTimeoutMs() };
+      },
+      onAdmissionTimeout: (timeoutMs) => ({ kind: 'timeout', timeoutMs }),
+      onAbort: () => ({ kind: 'aborted' }),
+    });
+
+    expect(out).toMatchObject({ remaining: expect.any(Number), readBack: expect.any(Number) });
+    if (!('remaining' in out) || !('readBack' in out)) return;
+    expect(out.remaining).toBeGreaterThan(0);
+    expect(out.remaining).toBeLessThan(100);
+    expect(out.readBack).toBeLessThanOrEqual(out.remaining);
+  });
+
   it('constructs an explicit CPU/memory/disk/fd reservation', () => {
     expect(buildTestProcessDemand({ fileCount: 3 })).toEqual({
       cpuWeight: 1,
@@ -311,6 +408,27 @@ describe('groupDirectVitestRoutes (EI-21414388102126733)', () => {
 });
 
 describe('shouldIngestVitestLedgerInProcess', () => {
+  it('resolves the reporter through the selected checkout package export', async () => {
+    const externalRoot = await makeScratchTestCheckout('papercusp-testing-run-package-reporter-');
+    const packageRoot = join(externalRoot, 'node_modules/@papercusp/test-config');
+    const reporterPath = join(packageRoot, 'src/admin-test-runs-reporter.ts');
+    await mkdir(dirname(reporterPath), { recursive: true });
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name: '@papercusp/test-config',
+        exports: { './admin-test-runs-reporter': './src/admin-test-runs-reporter.ts' },
+      }),
+    );
+    await writeFile(reporterPath, 'export default class Reporter {}\n');
+
+    expect(resolveAdminTestRunsReporterPath(externalRoot)).toBe(reporterPath);
+    expect(shouldIngestVitestLedgerInProcess(externalRoot)).toBe(false);
+    expect(buildDetachedTestRunRequest({ root: externalRoot, files: ['packages/x/real.test.ts'] }).args).toContain(
+      `--reporter=${reporterPath}`,
+    );
+  });
+
   it('selects operator-side ingestion for an external checkout', async () => {
     const externalRoot = await makeScratchTestCheckout('papercusp-testing-run-external-reporter-');
 

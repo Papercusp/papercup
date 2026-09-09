@@ -61,6 +61,7 @@
 import { z } from 'zod';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, type Dirent } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -102,6 +103,14 @@ import {
   type GovernedExecutionSettlement,
 } from '../../resource-governor/execution';
 import type { ResourceDemand } from '../../resource-governor/admission';
+import { resolveAgentIdentity } from '../coordination/identity';
+import {
+  prepareTestEvidence,
+  finishTestEvidence,
+  recoverTestEvidence,
+  testEvidenceSchema,
+  recoverTestEvidenceSchema,
+} from './evidence';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
@@ -120,7 +129,21 @@ const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
  * both belong to a different checkout.
  */
 export function shouldIngestVitestLedgerInProcess(testRoot: string): boolean {
-  return !existsSync(join(testRoot, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH));
+  return resolveAdminTestRunsReporterPath(testRoot) === undefined;
+}
+
+/** Resolve the reporter from the checkout that will run Vitest, with a source-tree fallback. */
+export function resolveAdminTestRunsReporterPath(testRoot: string): string | undefined {
+  try {
+    const resolved = createRequire(join(testRoot, 'package.json')).resolve(
+      '@papercusp/test-config/admin-test-runs-reporter',
+    );
+    if (existsSync(resolved)) return resolved;
+  } catch {
+    // External checkouts may not install @papercusp/test-config; use their local source tree if present.
+  }
+  const fallback = join(testRoot, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
+  return existsSync(fallback) ? fallback : undefined;
 }
 
 const DETACHED_INSPECT_TEST_HINT =
@@ -193,9 +216,9 @@ export function buildDetachedTestRunRequest(opts: {
   // Detached recovery does not need the foreground JSON report, but it MUST retain the
   // admin ledger reporter so a green recovery still writes durable testRunIds for evidence
   // binding. Mirror the foreground path's existence check for non-standard Papercusp roots.
-  const adminReporterPath = join(opts.root, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
+  const adminReporterPath = resolveAdminTestRunsReporterPath(opts.root);
   const vitestArgs = [
-    ...(existsSync(adminReporterPath) ? [`--reporter=${adminReporterPath}`] : []),
+    ...(adminReporterPath ? [`--reporter=${adminReporterPath}`] : []),
     ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
   ];
   const env: NodeJS.ProcessEnv = {
@@ -209,9 +232,7 @@ export function buildDetachedTestRunRequest(opts: {
     command: process.execPath,
     args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
     cwd: opts.root,
-    ...(opts.timeoutMs && opts.timeoutMs > 0
-      ? { runtimeMaxSec: Math.max(1, Math.ceil(opts.timeoutMs / 1000)) }
-      : {}),
+    ...(opts.timeoutMs && opts.timeoutMs > 0 ? { runtimeMaxSec: Math.max(1, Math.ceil(opts.timeoutMs / 1000)) } : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -357,10 +378,47 @@ export function checkoutRootForPath(file: string): string | undefined {
 export function checkoutRootForTestFiles(files: string[], ambientRoot: string): string {
   const absoluteFiles = files.filter((file) => isAbsolute(file));
   if (absoluteFiles.length === 0) return ambientRoot;
+  // A mixed relative + absolute request still contains files owned by the
+  // ambient checkout. Looking only at the absolute subset used to switch the
+  // WHOLE batch to a sibling checkout, where the relative files were silently
+  // omitted. Mixed roots are partitioned by runTestFilesCore below; this
+  // selector may switch only when every requested file belongs to the same
+  // absolute checkout, matching the contract stated above.
+  if (absoluteFiles.length !== files.length) return ambientRoot;
   const roots = absoluteFiles.map(checkoutRootForPath);
   if (roots.some((root): root is undefined => root === undefined)) return ambientRoot;
   const unique = [...new Set(roots as string[])];
   return unique.length === 1 ? unique[0]! : ambientRoot;
+}
+
+export interface TestFileCheckoutGroup {
+  root: string;
+  files: string[];
+}
+
+/** Partition one normalized request at the checkout boundary. */
+export function groupTestFilesByCheckout(files: string[], ambientRoot: string): TestFileCheckoutGroup[] {
+  const ambient = resolve(ambientRoot);
+  const groups = new Map<string, TestFileCheckoutGroup>();
+  for (const file of files) {
+    const discovered = isAbsolute(file) ? checkoutRootForPath(file) : undefined;
+    const root = resolve(discovered ?? ambient);
+    const group = groups.get(root) ?? { root, files: [] };
+    group.files.push(file);
+    groups.set(root, group);
+  }
+  return [...groups.values()];
+}
+
+/** Rebase sibling-relative evidence before merging it into the ambient result. */
+function rebaseDistilledRunToAmbient(run: DistilledTestRun, groupRoot: string, ambientRoot: string): DistilledTestRun {
+  if (resolve(groupRoot) === resolve(ambientRoot)) return run;
+  const rebase = (file: string) => (isAbsolute(file) ? resolve(file) : resolve(groupRoot, file));
+  return {
+    ...run,
+    failures: run.failures.map((failure) => ({ ...failure, file: rebase(failure.file) })),
+    byFile: Object.fromEntries(Object.entries(run.byFile).map(([file, counts]) => [rebase(file), counts])),
+  };
 }
 
 /**
@@ -854,6 +912,8 @@ export function classifyTestProcessOutcome(outcome: TestProcessOutcome): Governe
  *  typed refusal naming why nothing could be judged. Discriminate on `error`. */
 export type TestFilesCoreResult =
   | ({ ok: boolean; runId: string; root: string; error?: undefined } & DistilledTestRun & {
+        /** Every checkout executed for a partitioned mixed-root request. */
+        roots?: string[];
         /** The router produced a complete verdict after this tool's foreground budget elapsed. */
         budgetExceeded?: boolean;
         /** The foreground budget that elapsed before the complete verdict was surfaced. */
@@ -868,6 +928,8 @@ export type TestFilesCoreResult =
       ok: false;
       runId: string;
       root: string;
+      /** Every checkout selected for a partitioned mixed-root request. */
+      roots?: string[];
       error:
         | 'invalid_root'
         | 'ambiguous_workspace_path'
@@ -902,9 +964,7 @@ export type TestFilesCoreResult =
  * verdict to bind, and an unbounded test_runs query can consume the remaining MCP
  * transport margin under database contention (EI-22687291136362768).
  */
-export function shouldResolveHarnessTestRunIds(
-  result: Pick<TestFilesCoreResult, 'ok' | 'error'>,
-): boolean {
+export function shouldResolveHarnessTestRunIds(result: Pick<TestFilesCoreResult, 'ok' | 'error'>): boolean {
   return !(result.ok === false && result.error === 'timeout');
 }
 
@@ -1028,6 +1088,108 @@ interface RouterOutcome extends TestProcessOutcome {
   actualDemand?: ResourceDemand;
 }
 
+export interface TestProcessDeadlineContext {
+  /** Signal used by the child process; caller cancellation remains visible after admission. */
+  signal: AbortSignal;
+  /** Signal used by durable admission; it is only aborted while admission is pending. */
+  admissionSignal: AbortSignal;
+  /** Mark the durable admission as complete and return the budget left for the child process. */
+  markAdmissionComplete(): number;
+  /** Read the remaining whole-operation budget without changing its phase. */
+  remainingTimeoutMs(): number;
+}
+
+/**
+ * Bound the admission phase of a governed test process.
+ *
+ * `runGovernedOperation` deliberately waits for durable admission before invoking its
+ * callback. A test-run timeout that starts inside that callback therefore leaves a queued
+ * admission unbounded and can outlive the MCP transport. Keep the timer around that wait,
+ * forward caller cancellation through an internal controller, and let the callback spend
+ * only the remainder of the same deadline on the child process.
+ *
+ * The operation promise remains observed after the timeout wins. That matters because a
+ * slow Governor.admit may eventually settle and must not become an unhandled rejection;
+ * its signal is already aborted, so `withGovernedExecution` cancels any late receipt.
+ */
+export function runWithTestProcessDeadline<T>(opts: {
+  timeoutMs: number;
+  parentSignal?: AbortSignal;
+  run: (context: TestProcessDeadlineContext) => Promise<T>;
+  onAdmissionTimeout: (timeoutMs: number) => T;
+  onAbort: () => T;
+}): Promise<T> {
+  const timeoutMs = Math.max(0, Math.floor(opts.timeoutMs));
+  const deadlineAtMs = Date.now() + timeoutMs;
+  const admissionController = new AbortController();
+  const childController = new AbortController();
+  let phase: 'admission' | 'running' | 'timed-out' | 'aborted' = 'admission';
+  let timer: NodeJS.Timeout | null = null;
+  let parentAbort: (() => void) | null = null;
+
+  const remainingTimeoutMs = (): number => Math.max(0, deadlineAtMs - Date.now());
+  const markAdmissionComplete = (): number => {
+    if (phase === 'admission') {
+      phase = 'running';
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+    return remainingTimeoutMs();
+  };
+
+  let timeoutPromise!: Promise<T>;
+  let abortPromise!: Promise<T>;
+  timeoutPromise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      if (phase !== 'admission') return;
+      phase = 'timed-out';
+      const reason = new Error(`test-process admission exceeded its ${timeoutMs}ms budget`);
+      admissionController.abort(reason);
+      childController.abort(reason);
+      resolve(opts.onAdmissionTimeout(timeoutMs));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  abortPromise = new Promise<T>((resolve) => {
+    parentAbort = () => {
+      const reason = opts.parentSignal?.reason ?? new Error('test-process caller aborted');
+      childController.abort(reason);
+      if (phase !== 'admission') return;
+      admissionController.abort(reason);
+      phase = 'aborted';
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      resolve(opts.onAbort());
+    };
+    if (opts.parentSignal?.aborted) parentAbort();
+    else opts.parentSignal?.addEventListener('abort', parentAbort, { once: true });
+  });
+
+  const operation = Promise.resolve().then(() =>
+    opts.run({
+      signal: childController.signal,
+      admissionSignal: admissionController.signal,
+      markAdmissionComplete,
+      remainingTimeoutMs,
+    }),
+  );
+  // Observe late completion/rejection after either bounded fallback wins. In particular,
+  // a Governor.admit that was blocked in the queue must still run its signal cancellation
+  // path when it eventually returns.
+  void operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  return Promise.race([operation, timeoutPromise, abortPromise]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+    if (parentAbort) opts.parentSignal?.removeEventListener('abort', parentAbort);
+  });
+}
+
 /** Spawn a bounded test process, capturing its diagnostics. */
 function runTestProcess(
   command: string,
@@ -1041,142 +1203,182 @@ function runTestProcess(
 ): Promise<RouterOutcome> {
   const runGroup = env.PAPERCUSP_TEST_RUN_GROUP ?? 'unattributed';
   const plannedDemand = buildTestProcessDemand({ fileCount });
-  return runGovernedOperation(
-    {
-      workspaceId: activeWorkspaceId(),
-      namespace: 'testing-run-process',
-      owner: `testing:run:${runGroup}`,
-      admissionClass: 'process',
-      demand: plannedDemand,
-      payloadRef: `testing:run:${runGroup}`,
-      parent: admissionContextFromEnvironment(env.PAPERCUSP_ADMISSION_CONTEXT),
-      leaseTtlMs: governedExecutionLeaseTtlForTimeout(timeoutMs),
-      metadata: { command, timeoutMs, fileCount, processKind: 'test-run' },
-      settle: (outcome) => classifyTestProcessOutcome(outcome),
-    },
-    async (admissionContext) =>
-      new Promise((resolve) => {
-        let output = '';
-        let outputBytes = 0;
-        let timedOut = false;
-        let aborted = false;
-        let spawnError: string | undefined;
-        let settled = false;
-        // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
-        // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
-        // `detached: true` — so that vitest process inherits THIS process's process group
-        // rather than becoming reparented on its own. Killing only `child` (the router) by
-        // its own pid terminates the router but leaves vitest running as an ORPHAN: Unix
-        // never cascade-kills a process's children just because the parent died. That
-        // orphan then keeps executing (and holding forks) for the suite's real duration,
-        // invisible to the caller, who was told `error:'timeout'` and reasonably assumes
-        // nothing is still running. Following the tool's own "re-run it detached" hint then
-        // launches a SECOND concurrent run of the same suite.
-        //
-        // Fix: spawn the router `detached: true` so it becomes the leader of a NEW process
-        // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
-        // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
-        // router and every child/grandchild it spawned — instead of just the router itself.
-        const sampler = createTestProcessDemandSampler(plannedDemand);
-        let timer: NodeJS.Timeout | null = null;
-        let onAbort: (() => void) | null = null;
-        const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
-          if (settled) return;
-          settled = true;
-          if (timer !== null) {
-            clearTimeout(timer);
-            timer = null;
+  return runWithTestProcessDeadline({
+    timeoutMs,
+    parentSignal: signal,
+    onAdmissionTimeout: (budgetMs) => ({
+      code: null,
+      signal: null,
+      timedOut: true,
+      aborted: false,
+      output: `governed test-process admission exceeded its ${budgetMs}ms whole-operation budget before the child started`,
+    }),
+    onAbort: () => ({
+      code: null,
+      signal: null,
+      timedOut: false,
+      aborted: true,
+      output: 'caller aborted while waiting for governed test-process admission',
+    }),
+    run: ({ signal: childSignal, admissionSignal, markAdmissionComplete }) =>
+      runGovernedOperation(
+        {
+          workspaceId: activeWorkspaceId(),
+          namespace: 'testing-run-process',
+          owner: `testing:run:${runGroup}`,
+          admissionClass: 'process',
+          demand: plannedDemand,
+          payloadRef: `testing:run:${runGroup}`,
+          parent: admissionContextFromEnvironment(env.PAPERCUSP_ADMISSION_CONTEXT),
+          leaseTtlMs: governedExecutionLeaseTtlForTimeout(timeoutMs),
+          signal: admissionSignal,
+          metadata: { command, timeoutMs, fileCount, processKind: 'test-run' },
+          settle: (outcome) => classifyTestProcessOutcome(outcome),
+        },
+        async (admissionContext) => {
+          const childTimeoutMs = markAdmissionComplete();
+          if (childTimeoutMs <= 0) {
+            return {
+              code: null,
+              signal: null,
+              timedOut: true,
+              aborted: false,
+              output: 'governed test-process admission consumed the whole-operation budget before the child started',
+            };
           }
-          if (onAbort) signal?.removeEventListener('abort', onAbort);
-          void sampler.stop({ diskBytes: outputBytes }).then(
-            (actualDemand) => resolve({ ...outcome, actualDemand }),
-            () => resolve({ ...outcome, actualDemand: plannedDemand }),
-          );
-        };
-        let child: ChildProcess;
-        try {
-          child = spawn(command, [...commandArgs, ...args], {
-            cwd,
-            env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
-            stdio: ['ignore', 'pipe', 'pipe'],
-            detached: true,
-          });
-        } catch (error) {
-          spawnError = error instanceof Error ? error.message : String(error);
-          resolve({
-            code: null,
-            signal: null,
-            timedOut: false,
-            aborted: false,
-            spawnError,
-            output: `[spawn-error] ${spawnError}`,
-          });
-          return;
-        }
-        sampler.attach(child.pid);
-        const killGroup = (signal: NodeJS.Signals) => {
-          if (!child.pid) return;
-          try {
-            process.kill(-child.pid, signal);
-          } catch {
-            // Group already gone, or (non-POSIX) negative-pid kill unsupported — fall back
-            // to at least killing the router itself so we never silently no-op.
+          if (childSignal.aborted) {
+            return {
+              code: null,
+              signal: null,
+              timedOut: false,
+              aborted: true,
+              output: 'caller aborted before the governed test process started',
+            };
+          }
+          return new Promise((resolve) => {
+            let output = '';
+            let outputBytes = 0;
+            let timedOut = false;
+            let aborted = false;
+            let spawnError: string | undefined;
+            let settled = false;
+            // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
+            // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
+            // `detached: true` — so that vitest process inherits THIS process's process group
+            // rather than becoming reparented on its own. Killing only `child` (the router) by
+            // its own pid terminates the router but leaves vitest running as an ORPHAN: Unix
+            // never cascade-kills a process's children just because the parent died. That
+            // orphan then keeps executing (and holding forks) for the suite's real duration,
+            // invisible to the caller, who was told `error:'timeout'` and reasonably assumes
+            // nothing is still running. Following the tool's own "re-run it detached" hint then
+            // launches a SECOND concurrent run of the same suite.
+            //
+            // Fix: spawn the router `detached: true` so it becomes the leader of a NEW process
+            // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
+            // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
+            // router and every child/grandchild it spawned — instead of just the router itself.
+            const sampler = createTestProcessDemandSampler(plannedDemand);
+            let timer: NodeJS.Timeout | null = null;
+            let onAbort: (() => void) | null = null;
+            const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
+              if (settled) return;
+              settled = true;
+              if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+              }
+              if (onAbort) childSignal.removeEventListener('abort', onAbort);
+              void sampler.stop({ diskBytes: outputBytes }).then(
+                (actualDemand) => resolve({ ...outcome, actualDemand }),
+                () => resolve({ ...outcome, actualDemand: plannedDemand }),
+              );
+            };
+            let child: ChildProcess;
             try {
-              child.kill(signal);
-            } catch {
-              /* already gone */
+              child = spawn(command, [...commandArgs, ...args], {
+                cwd,
+                env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
+                stdio: ['ignore', 'pipe', 'pipe'],
+                detached: true,
+              });
+            } catch (error) {
+              spawnError = error instanceof Error ? error.message : String(error);
+              resolve({
+                code: null,
+                signal: null,
+                timedOut: false,
+                aborted: false,
+                spawnError,
+                output: `[spawn-error] ${spawnError}`,
+              });
+              return;
             }
-          }
-        };
-        const killGroupWithFallback = () => {
-          killGroup('SIGTERM');
-          setTimeout(() => killGroup('SIGKILL'), FOREGROUND_TERMINATION_GRACE_MS).unref();
-        };
-        timer = setTimeout(() => {
-          timedOut = true;
-          killGroupWithFallback();
-        }, timeoutMs);
-        onAbort = () => {
-          if (settled) return;
-          aborted = true;
-          // code:run owns the signal passed to inner dispatches. If its worker deadline
-          // fires while this router is blocked in spawnSync-backed Vitest, the router must
-          // terminate the same process group as its own timeout path; otherwise the inner
-          // suite survives after the outer wrapper has returned (EI-20949515346526475).
-          killGroupWithFallback();
-        };
-        if (signal?.aborted) onAbort();
-        else signal?.addEventListener('abort', onAbort, { once: true });
-        // Cap retained diagnostics — the router's own output is a fallback for the
-        // error paths, never the success path's payload.
-        const append = (b: Buffer) => {
-          outputBytes += b.byteLength;
-          output = (output + b.toString('utf8')).slice(-8192);
-        };
-        child.stdout?.on('data', append);
-        child.stderr?.on('data', append);
-        child.on('error', (e) => {
-          spawnError = e.message;
-          finish({
-            code: null,
-            signal: null,
-            timedOut,
-            aborted,
-            spawnError,
-            output: `${output}\n[spawn-error] ${e.message}`,
+            sampler.attach(child.pid);
+            const killGroup = (signal: NodeJS.Signals) => {
+              if (!child.pid) return;
+              try {
+                process.kill(-child.pid, signal);
+              } catch {
+                // Group already gone, or (non-POSIX) negative-pid kill unsupported — fall back
+                // to at least killing the router itself so we never silently no-op.
+                try {
+                  child.kill(signal);
+                } catch {
+                  /* already gone */
+                }
+              }
+            };
+            const killGroupWithFallback = () => {
+              killGroup('SIGTERM');
+              setTimeout(() => killGroup('SIGKILL'), FOREGROUND_TERMINATION_GRACE_MS).unref();
+            };
+            timer = setTimeout(() => {
+              timedOut = true;
+              killGroupWithFallback();
+            }, childTimeoutMs);
+            onAbort = () => {
+              if (settled) return;
+              aborted = true;
+              // code:run owns the signal passed to inner dispatches. If its worker deadline
+              // fires while this router is blocked in spawnSync-backed Vitest, the router must
+              // terminate the same process group as its own timeout path; otherwise the inner
+              // suite survives after the outer wrapper has returned (EI-20949515346526475).
+              killGroupWithFallback();
+            };
+            if (childSignal.aborted) onAbort();
+            else childSignal.addEventListener('abort', onAbort, { once: true });
+            // Cap retained diagnostics — the router's own output is a fallback for the
+            // error paths, never the success path's payload.
+            const append = (b: Buffer) => {
+              outputBytes += b.byteLength;
+              output = (output + b.toString('utf8')).slice(-8192);
+            };
+            child.stdout?.on('data', append);
+            child.stderr?.on('data', append);
+            child.on('error', (e) => {
+              spawnError = e.message;
+              finish({
+                code: null,
+                signal: null,
+                timedOut,
+                aborted,
+                spawnError,
+                output: `${output}\n[spawn-error] ${e.message}`,
+              });
+            });
+            child.on('close', (code, closeSignal) =>
+              finish({
+                code,
+                signal: closeSignal ?? null,
+                timedOut,
+                aborted,
+                output,
+              }),
+            );
           });
-        });
-        child.on('close', (code, closeSignal) =>
-          finish({
-            code,
-            signal: closeSignal ?? null,
-            timedOut,
-            aborted,
-            output,
-          }),
-        );
-      }),
-  );
+        },
+      ),
+  });
 }
 
 /** Spawn the Papercusp router, preserving its owning-workspace guarantees. */
@@ -1503,6 +1705,7 @@ export async function runTestFilesCore(opts: {
   /** Request scope to stamp on the reporter's durable test-run rows. */
   workspaceId?: string;
   harnessSlug?: string;
+  runId?: string;
 }): Promise<TestFilesCoreResult> {
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
@@ -1510,8 +1713,38 @@ export async function runTestFilesCore(opts: {
   // the sibling checkout's own Vitest config instead of trying to run the path from
   // the ambient Papercusp tree.
   const requestedPaths = normalizeTestFilePaths(opts.files, opts.root);
+  const runId = opts.runId ?? randomUUID();
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  if (requestedPaths.ok) {
+    const groups = groupTestFilesByCheckout(requestedPaths.files, opts.root);
+    if (groups.length > 1) {
+      const roots = groups.map((group) => group.root);
+      const deadline = Date.now() + timeoutMs;
+      const completed: Array<Extract<TestFilesCoreResult, { error?: undefined }>> = [];
+      for (const group of groups) {
+        const result = await runTestFilesCore({
+          ...opts,
+          files: group.files,
+          root: group.root,
+          runId,
+          timeoutMs: Math.max(1000, deadline - Date.now()),
+        });
+        if (result.error !== undefined) return { ...result, runId, roots };
+        completed.push(result);
+      }
+      const merged = mergeDistilledRuns(
+        completed.map((result, index) => rebaseDistilledRunToAmbient(result, groups[index]!.root, opts.root)),
+        { maxFailures: opts.maxFailures },
+      );
+      return boundTestRunPayload(
+        { ok: completed.every((result) => result.ok), runId, root: resolve(opts.root), roots },
+        merged,
+      ) as TestFilesCoreResult;
+    }
+  }
+
   const root = checkoutRootForTestFiles(requestedPaths.ok ? requestedPaths.files : opts.files, opts.root);
-  const runId = randomUUID();
 
   // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
   // a file that happens to exist (with stale content) at the resolved root ran
@@ -1549,7 +1782,6 @@ export async function runTestFilesCore(opts: {
         `workspaces (${pathResolution.matches.join(', ')}). Re-run with a repo-root-relative or absolute path.`,
     };
   }
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const ingestLedgerInProcess =
     Boolean(opts.workspaceId && opts.harnessSlug) && shouldIngestVitestLedgerInProcess(root);
   const ledgerWorktreeBefore = ingestLedgerInProcess ? captureWorktreeSnapshot(root) : null;
@@ -1567,8 +1799,8 @@ export async function runTestFilesCore(opts: {
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
     // the workspace config. Keep the admin ledger reporter in the same invocation, otherwise
     // testing:run returns correct counts but silently records no harness_shared.test_runs rows.
-    const adminReporterPath = join(root, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
-    if (existsSync(adminReporterPath)) vitestArgs.push(`--reporter=${adminReporterPath}`);
+    const adminReporterPath = resolveAdminTestRunsReporterPath(root);
+    if (adminReporterPath) vitestArgs.push(`--reporter=${adminReporterPath}`);
     // WI-39830: the JOINED form, never `['-t', pattern]`. Split across two argv entries,
     // vitest's CAC parser reads any `-`-prefixed pattern as a new OPTION instead of as `-t`'s
     // value and dies with an opaque CACError — which makes every test in this repo whose name
@@ -1893,6 +2125,25 @@ export default defineTool({
   // verdict. The dedicated capability grant stays inert for every other tool.
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
+    recheckReason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1_000)
+      .optional()
+      .describe(
+        'Why a repeat test is needed despite unchanged source/test fingerprints, for example an environment repair; keeps the repetition advisory from treating this as an unexplained rerun.',
+      ),
+    evidence: testEvidenceSchema
+      .optional()
+      .describe(
+        'Declare exact work-item/spec/test/correction mappings once; persisted before execution and returned as ledger-backed evidence for independent review.',
+      ),
+    recoverEvidence: recoverTestEvidenceSchema
+      .optional()
+      .describe(
+        'Use the exact recovery args from an evidenceBundle to recover saved mappings and ledger outcomes; starts no new test process.',
+      ),
     files: z
       .array(z.string().min(1))
       .min(1)
@@ -1940,6 +2191,24 @@ export default defineTool({
     ),
   }),
   async handler(args, ctx) {
+    if (args.recoverEvidence) {
+      if (args.files || args.changedPaths || args.evidence)
+        return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
+      const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (!harnessSlug || !ctx.workspaceId || ctx.workspaceId === '*')
+        return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
+      try {
+        const evidenceBundle = await recoverTestEvidence(args.recoverEvidence, {
+          root: resolveAgentWorkspaceRoot(ctx),
+          harnessSlug,
+          workspaceId: ctx.workspaceId,
+          actorId: resolveAgentIdentity(ctx).ownerId,
+        });
+        return { data: { ok: true, mode: 'evidence-recovery', evidenceBundle } };
+      } catch (error) {
+        return { data: { ok: false, error: 'evidence_recovery_failed', message: String(error) } };
+      }
+    }
     // Exactly one selector. Both branches REFUSE rather than defaulting, because every
     // default here is a silent wrong answer: picking `files` when both were sent would
     // ignore a radius the caller asked to see, and treating neither as "run everything"
@@ -1966,6 +2235,7 @@ export default defineTool({
       };
     }
     if (args.changedPaths !== undefined) {
+      if (args.evidence) return { data: { ok: false, error: 'evidence_requires_executed_files' } };
       // The plan path deliberately does NOT go through selectTestFileRoot: that resolver
       // answers "which checkout owns these TEST files", and changedPaths are source files
       // that need not have a test file anywhere. The agent's own workspace root is the
@@ -2001,8 +2271,30 @@ export default defineTool({
     // the caller name the concrete harness on this call so the child reporter
     // receives the same scope that plans:bind-spec-evidence validates.
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
+    const runId = randomUUID();
+    const evidenceScope =
+      args.evidence && harnessSlug && ctx.workspaceId && ctx.workspaceId !== '*'
+        ? {
+            root: rootSelection.root,
+            harnessSlug,
+            workspaceId: ctx.workspaceId,
+            actorId: resolveAgentIdentity(ctx).ownerId,
+          }
+        : null;
+    if (args.evidence && !evidenceScope) return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
+    let prepared: Awaited<ReturnType<typeof prepareTestEvidence>> | undefined;
+    if (args.evidence) {
+      try {
+        const selected = normalizeTestFilePaths(files, rootSelection.root);
+        if (!selected.ok) throw new Error('evidence_test_selection_unresolved');
+        prepared = await prepareTestEvidence(args.evidence, runId, selected.files, evidenceScope!);
+      } catch (error) {
+        return { data: { ok: false, error: 'evidence_preparation_failed', message: String(error) } };
+      }
+    }
     const result = await runTestFilesCore({
       files,
+      runId,
       root: rootSelection.root,
       timeoutMs,
       signal: ctx.signal,
@@ -2023,6 +2315,33 @@ export default defineTool({
       ...result,
       ...(testRunIds === null ? {} : { testRunIds }),
       rootSource: rootSelection.source,
+      ...(prepared
+        ? {
+            evidenceBundle: await finishTestEvidence(
+              prepared,
+              runId,
+              result.error === 'timeout' && result.detachedRunId ? result.detachedRunId : runId,
+              evidenceScope!,
+              result,
+            ).catch((error) => ({
+              status: 'incomplete',
+              acceptance: 'requires-review',
+              message: String(error),
+              recovery: {
+                tool: 'testing:run',
+                args: {
+                  harness: harnessSlug,
+                  recoverEvidence: {
+                    workItemId: args.evidence!.workItemId,
+                    planSlug: args.evidence!.planSlug,
+                    originRunId: runId,
+                    runId,
+                  },
+                },
+              },
+            })),
+          }
+        : {}),
     };
     if (result.ok === false && result.error === 'timeout') {
       return {
