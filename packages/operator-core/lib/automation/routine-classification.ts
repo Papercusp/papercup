@@ -431,6 +431,27 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     why: 'Weekly kill-a-run fire drill asserting the verdict-liveness alarm chain — subprocess launch/kill + ledger reads, no agent spawn or wake',
   },
   'system:gate-watcher-tick': { spend: 'none', why: 'Reads gate state' },
+  'system:scout-signal-accumulator-sweep': {
+    spend: 'none',
+    // Verified against scout/signal-accumulator.ts before classifying (WI-10000846
+    // extracted it out of routinesTick): scoutSignalAccumulatorSweep reads per-lane
+    // counts, scores them, and INSERTs into harness_shared.scout_signal_accumulator.
+    // Its only outcomes are error|skipped|swept — there is no fire/dispatch path. It
+    // is the volume ACCOUNTING substrate; cadence.ts READS these counts to decide
+    // whether Scout should fire, and the resulting `system:scout-cycle` is what is
+    // classified 'llm'. No spawn, wake or dispatch, so a fire cannot bill turns.
+    why: 'Accumulates per-lane Scout signal counts into a counter table — cadence.ts reads them; system:scout-cycle is what spends',
+  },
+  'system:dead-target-reaper-sweep': {
+    spend: 'none',
+    // Verified against harness/routines/dead-target-sweep.ts before classifying
+    // (also extracted from routinesTick by WI-10000846): it groups ACTIVE routines
+    // by install, probes each install once, and — only on a permanent verdict
+    // confirmed across two spaced sweeps — PARKS that install's routines and files
+    // one debounced observation. Parking removes future fires rather than creating
+    // them; no spawn, wake or dispatch, so a fire cannot bill turns.
+    why: 'Probes installs and parks a dead install’s routines (plus one debounced observation) — strictly reduces future fires, no wake/spawn/dispatch',
+  },
   'system:fleet-transition-sweep': {
     spend: 'none',
     // Verified against fleet-transition-sweep-action.ts before classifying: it

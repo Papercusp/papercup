@@ -150,7 +150,7 @@ describe('release:repair-queue', () => {
   it('makes its workspace-global scope explicit to prevent caller harness arguments', () => {
     expect(tool.description).toContain('Workspace-global');
     expect(tool.description).toContain('omit harness/workspace');
-    expect(tool.guidance?.notWhen).toContain('Do not pass harness or workspace');
+    expect(tool.guidance?.notWhen).toContain('never pass harness/workspace');
   });
 
   it('defaults an empty args object to get while preserving strict branch validation', () => {
