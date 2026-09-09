@@ -16,6 +16,7 @@ import {
   readDesktopVersionAtSource,
   readSourceGitlinks,
   runNightlyCut,
+  NIGHTLY_RELEASE_REUSE_MAX_AGE_SEC,
 } from './nightly-release-cut-action';
 
 describe('nextNightlyVersion', () => {
@@ -80,10 +81,12 @@ describe('buildNightlyCutInvocation', () => {
     expect(invocation.args).toContain('nightly-release-cut');
     expect(invocation.args).toContain('0.0.19-20260901.0304');
     expect(invocation.args.join(' ')).toContain('setup-release-checkout.sh');
+    expect(invocation.args.join(' ')).toContain('--node-modules force --node-modules-copy copy --node-modules-generation required');
     expect(invocation.args.join(' ')).toContain('--source-integrity object-sourced');
     const shell = invocation.args[1];
     expect(shell).toContain('"$2/papercusp-desktop/bin/release-local.sh"');
     expect(shell).toContain('PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1');
+    expect(shell).toContain('PAPERCUSP_RELEASE_CHILD_STARTED_AT_MS');
     expect(shell.indexOf('"$2/papercusp-desktop/bin/release-local.sh"')).toBeLessThan(
       shell.indexOf('"$2/apps/operator/bin/release/setup-release-checkout.sh"'),
     );
@@ -95,6 +98,7 @@ describe('buildNightlyCutInvocation', () => {
       PAPERCUSP_PUBLISH_GITHUB: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: 'a'.repeat(40),
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
+      PAPERCUSP_RELEASE_REUSE_MAX_AGE_SEC: String(NIGHTLY_RELEASE_REUSE_MAX_AGE_SEC),
     });
   });
 });
@@ -184,6 +188,7 @@ describe('nightly cut runtime guards', () => {
     expect(opts.spawnOptions.env.PAPERCUSP_RELEASE_OPERATION_ID).toBe(
       '11111111-1111-4111-8111-111111111111',
     );
+    expect(Number(opts.spawnOptions.env.PAPERCUSP_RELEASE_ENQUEUED_AT_MS)).toBeGreaterThan(0);
     rmSync(root, { recursive: true, force: true });
   });
 });

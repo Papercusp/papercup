@@ -758,6 +758,12 @@ export const TASK_RELEASE_JOURNAL_SCHEMA_VERSION = 1 as const;
 
 export type TaskReleaseReceiptState = 'intent' | 'unknown' | 'committed' | 'refused';
 
+export interface TaskReleaseReuseSource {
+  taskId: string;
+  operationId: string;
+  sequence: number;
+}
+
 export interface TaskReleaseReceiptInput {
   /** Identity of the whole immutable release run. */
   operationId: string;
@@ -767,15 +773,44 @@ export interface TaskReleaseReceiptInput {
   state: TaskReleaseReceiptState;
   /** Digest of every input that makes this stage result reusable. */
   inputHash: string;
+  /** Canonical JSON preimage behind inputHash, retained for review and invalidation diagnosis. */
+  inputIdentity?: unknown;
   evidenceRefs?: readonly string[];
   credentialGeneration?: string | null;
   credentialExpiresAt?: string | null;
+  /** Prior committed receipt that seeded this operation's reconcile intent. */
+  reuseSource?: TaskReleaseReuseSource | null;
+  /** Handler time spent looking for a prior committed receipt (queue wait excluded). */
+  lookupElapsedMs?: number | null;
+  /** Managed-task admission-to-child-start latency, kept separate from preparation. */
+  queueWaitMs?: number | null;
+  /** In-process release preparation time through this receipt (queue wait excluded). */
+  preparationElapsedMs?: number | null;
+  /** Audit/freshness boundary after which this receipt cannot seed another operation. */
+  reuseExpiresAt?: string | null;
   recordedAt?: string;
 }
 
-export interface TaskReleaseReceipt extends Omit<TaskReleaseReceiptInput, 'evidenceRefs'> {
+export interface TaskReleaseReceipt extends Omit<
+  TaskReleaseReceiptInput,
+  | 'evidenceRefs'
+  | 'recordedAt'
+  | 'inputIdentity'
+  | 'reuseSource'
+  | 'lookupElapsedMs'
+  | 'queueWaitMs'
+  | 'preparationElapsedMs'
+  | 'reuseExpiresAt'
+> {
   sequence: number;
   evidenceRefs: string[];
+  inputIdentity?: unknown | null;
+  recordedAt: string;
+  reuseSource?: TaskReleaseReuseSource | null;
+  lookupElapsedMs?: number | null;
+  queueWaitMs?: number | null;
+  preparationElapsedMs?: number | null;
+  reuseExpiresAt?: string | null;
 }
 
 export interface TaskReleaseJournal {
@@ -817,6 +852,7 @@ function boundedReceiptString(value: unknown, field: string, max: number): strin
 function releaseReceiptFromUnknown(value: unknown): TaskReleaseReceipt | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
+  const reuseSource = raw.reuseSource;
   if (
     !Number.isSafeInteger(raw.sequence) ||
     (raw.sequence as number) < 0 ||
@@ -825,9 +861,25 @@ function releaseReceiptFromUnknown(value: unknown): TaskReleaseReceipt | null {
     typeof raw.stage !== 'string' ||
     !['intent', 'unknown', 'committed', 'refused'].includes(String(raw.state)) ||
     typeof raw.inputHash !== 'string' ||
+    (raw.inputIdentity !== undefined && JSON.stringify(raw.inputIdentity).length > 16_000) ||
     typeof raw.recordedAt !== 'string' ||
     !Array.isArray(raw.evidenceRefs) ||
-    !raw.evidenceRefs.every((entry) => typeof entry === 'string')
+    !raw.evidenceRefs.every((entry) => typeof entry === 'string') ||
+    !(
+      reuseSource == null ||
+      (
+        typeof reuseSource === 'object' &&
+        !Array.isArray(reuseSource) &&
+        typeof (reuseSource as Record<string, unknown>).taskId === 'string' &&
+        typeof (reuseSource as Record<string, unknown>).operationId === 'string' &&
+        Number.isSafeInteger((reuseSource as Record<string, unknown>).sequence) &&
+        ((reuseSource as Record<string, unknown>).sequence as number) >= 0
+      )
+    ) ||
+    ![raw.lookupElapsedMs, raw.queueWaitMs, raw.preparationElapsedMs].every(
+      (entry) => entry == null || (typeof entry === 'number' && Number.isFinite(entry) && entry >= 0),
+    ) ||
+    !(raw.reuseExpiresAt == null || (typeof raw.reuseExpiresAt === 'string' && Number.isFinite(Date.parse(raw.reuseExpiresAt))))
   ) return null;
   return raw as unknown as TaskReleaseReceipt;
 }
@@ -877,6 +929,38 @@ function normalizeReleaseReceipt(
   if (!Number.isFinite(Date.parse(recordedAt))) {
     throw new Error('task-manager: release receipt recordedAt must be an ISO timestamp');
   }
+  const elapsedMs = (value: number | null | undefined, field: string): number | null => {
+    if (value == null) return null;
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`task-manager: release receipt ${field} must be a finite non-negative number`);
+    }
+    return Math.round(value * 1000) / 1000;
+  };
+  const reuseExpiresAt = input.reuseExpiresAt == null ? null : new Date(input.reuseExpiresAt);
+  if (reuseExpiresAt && !Number.isFinite(reuseExpiresAt.getTime())) {
+    throw new Error('task-manager: release receipt reuseExpiresAt must be an ISO timestamp');
+  }
+  const reuseSource = input.reuseSource == null
+    ? null
+    : {
+        taskId: boundedReceiptString(input.reuseSource.taskId, 'reuseSource.taskId', 256),
+        operationId: boundedReceiptString(input.reuseSource.operationId, 'reuseSource.operationId', 256),
+        sequence: input.reuseSource.sequence,
+      };
+  if (reuseSource && (!Number.isSafeInteger(reuseSource.sequence) || reuseSource.sequence < 0)) {
+    throw new Error('task-manager: release receipt reuseSource.sequence must be a non-negative safe integer');
+  }
+  let inputIdentity: unknown | null = input.inputIdentity ?? null;
+  let inputIdentityJson: string;
+  try {
+    inputIdentityJson = JSON.stringify(inputIdentity);
+  } catch {
+    throw new Error('task-manager: release receipt inputIdentity must be JSON-serializable');
+  }
+  if (inputIdentityJson.length > 16_000) {
+    throw new Error('task-manager: release receipt inputIdentity must be <= 16000 JSON bytes');
+  }
+  inputIdentity = JSON.parse(inputIdentityJson) as unknown;
   return {
     sequence: expectedCursor,
     operationId: boundedReceiptString(input.operationId, 'operationId', 256),
@@ -884,6 +968,7 @@ function normalizeReleaseReceipt(
     stage: boundedReceiptString(input.stage, 'stage', 160),
     state: input.state,
     inputHash: boundedReceiptString(input.inputHash, 'inputHash', 256),
+    inputIdentity,
     evidenceRefs,
     credentialGeneration:
       input.credentialGeneration == null
@@ -893,8 +978,119 @@ function normalizeReleaseReceipt(
       input.credentialExpiresAt == null
         ? null
         : boundedReceiptString(input.credentialExpiresAt, 'credentialExpiresAt', 128),
+    reuseSource,
+    lookupElapsedMs: elapsedMs(input.lookupElapsedMs, 'lookupElapsedMs'),
+    queueWaitMs: elapsedMs(input.queueWaitMs, 'queueWaitMs'),
+    preparationElapsedMs: elapsedMs(input.preparationElapsedMs, 'preparationElapsedMs'),
+    reuseExpiresAt: reuseExpiresAt?.toISOString() ?? null,
     recordedAt: new Date(recordedAt).toISOString(),
   };
+}
+
+export interface PriorCommittedTaskReleaseReceipt {
+  taskId: string;
+  operationId: string;
+  receipt: TaskReleaseReceipt;
+}
+
+export interface FindPriorCommittedTaskReleaseReceiptInput {
+  currentTaskId: string;
+  currentOperationId: string;
+  stage: string;
+  inputHash: string;
+  credentialGeneration?: string | null;
+  requiredEvidenceRefs?: readonly string[];
+  now?: Date;
+  maxCandidates?: number;
+}
+
+/**
+ * Find one still-fresh committed stage receipt from an earlier terminal deploy.
+ *
+ * This deliberately extends `task_ledger.detail.release` instead of creating a
+ * second cache ledger. The current task row supplies the workspace + harness
+ * boundary, and the SQL returns only a bounded newest-first candidate window.
+ * Every candidate is then parsed through the same complete-journal validator as
+ * ordinary resume; malformed, future-dated, or expired evidence is a miss.
+ */
+export async function findPriorCommittedTaskReleaseReceipt(
+  input: FindPriorCommittedTaskReleaseReceiptInput,
+  inject?: Sql,
+): Promise<PriorCommittedTaskReleaseReceipt | null> {
+  const sql = sqlOf(inject);
+  const currentTaskId = boundedReceiptString(input.currentTaskId, 'currentTaskId', 256);
+  const currentOperationId = boundedReceiptString(input.currentOperationId, 'currentOperationId', 256);
+  const stage = boundedReceiptString(input.stage, 'stage', 160);
+  const inputHash = boundedReceiptString(input.inputHash, 'inputHash', 256);
+  const requiredEvidenceRefs = [...(input.requiredEvidenceRefs ?? [])];
+  if (requiredEvidenceRefs.length > 16) {
+    throw new Error('task-manager: prior receipt lookup accepts at most 16 required evidence references');
+  }
+  for (const ref of requiredEvidenceRefs) boundedReceiptString(ref, 'requiredEvidenceRefs[]', 1000);
+  const now = input.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new Error('task-manager: prior receipt lookup now must be valid');
+  const maxCandidates = Math.min(Math.max(input.maxCandidates ?? 32, 1), 64);
+  const rows = await sql<Array<{ task_id: string; release: unknown; sequence: number }>>`
+    SELECT candidate.task_id,
+           candidate.detail -> 'release' AS release,
+           (prior.ordinality - 1)::integer AS sequence
+      FROM harness_shared.task_ledger current_task
+      JOIN harness_shared.task_ledger candidate
+        ON candidate.workspace_id = current_task.workspace_id
+       AND candidate.harness_slug IS NOT DISTINCT FROM current_task.harness_slug
+       AND candidate.task_id <> current_task.task_id
+       AND candidate.class = 'deploy'
+       AND candidate.launched_by = current_task.launched_by
+       AND candidate.detail #>> '{release,artifactIdentity,kind}'
+             IS NOT DISTINCT FROM current_task.detail #>> '{release,artifactIdentity,kind}'
+       AND candidate.ended_at IS NOT NULL
+       AND candidate.started_at <= current_task.started_at
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+          WHEN jsonb_typeof(candidate.detail #> '{release,receipts}') = 'array'
+            THEN candidate.detail #> '{release,receipts}'
+          ELSE '[]'::jsonb
+        END
+      )
+        WITH ORDINALITY AS prior(receipt, ordinality)
+     WHERE current_task.task_id = ${currentTaskId}
+       AND jsonb_typeof(candidate.detail -> 'release') = 'object'
+       AND jsonb_typeof(candidate.detail #> '{release,receipts}') = 'array'
+       AND candidate.detail #>> '{release,operationId}' <> ${currentOperationId}
+       AND prior.receipt ->> 'stage' = ${stage}
+       AND prior.receipt ->> 'state' = 'committed'
+       AND prior.receipt ->> 'inputHash' = ${inputHash}
+     ORDER BY candidate.started_at DESC, prior.ordinality DESC
+     LIMIT ${maxCandidates}
+  `;
+  for (const row of rows) {
+    const journal = taskReleaseJournalFromDetail({ release: row.release });
+    const receipt = journal?.receipts[row.sequence];
+    if (
+      !journal ||
+      !receipt ||
+      journal.operationId === currentOperationId ||
+      receipt.operationId !== journal.operationId ||
+      receipt.stage !== stage ||
+      receipt.state !== 'committed' ||
+      receipt.inputHash !== inputHash
+    ) continue;
+    const recordedAt = Date.parse(receipt.recordedAt);
+    const reuseExpiresAt = Date.parse(receipt.reuseExpiresAt ?? '');
+    const credentialExpiresAt = Date.parse(receipt.credentialExpiresAt ?? '');
+    if (
+      !Number.isFinite(recordedAt) ||
+      recordedAt > now.getTime() ||
+      !Number.isFinite(reuseExpiresAt) ||
+      reuseExpiresAt <= now.getTime() ||
+      receipt.credentialGeneration !== (input.credentialGeneration ?? null) ||
+      (receipt.credentialExpiresAt != null &&
+        (!Number.isFinite(credentialExpiresAt) || credentialExpiresAt <= now.getTime())) ||
+      requiredEvidenceRefs.some((ref) => !receipt.evidenceRefs.includes(ref))
+    ) continue;
+    return { taskId: row.task_id, operationId: journal.operationId, receipt };
+  }
+  return null;
 }
 
 /**

@@ -2,13 +2,17 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import type {
   AppendTaskReleaseReceiptResult,
+  FindPriorCommittedTaskReleaseReceiptInput,
+  PriorCommittedTaskReleaseReceipt,
   TaskReleaseJournal,
   TaskReleaseReceipt,
   TaskReleaseReceiptInput,
+  TaskReleaseReuseSource,
   TaskReleaseReceiptState,
 } from '@papercusp/operator-core/lib/task-manager/store';
 
@@ -20,6 +24,9 @@ export interface ReleaseTaskLedger {
     expectedCursor: number,
     input: TaskReleaseReceiptInput,
   ): Promise<AppendTaskReleaseReceiptResult>;
+  findPriorCommittedTaskReleaseReceipt?(
+    input: FindPriorCommittedTaskReleaseReceiptInput,
+  ): Promise<PriorCommittedTaskReleaseReceipt | null>;
 }
 
 export interface ReleaseTaskIdentity {
@@ -36,11 +43,20 @@ export interface ReleaseTaskStageContext {
   identity: ReleaseTaskIdentity;
   credentialGeneration?: string | null;
   credentialExpiresAt?: string | null;
+  /** Zero/absent preserves operation-local P-005 behavior. */
+  reuseMaxAgeMs?: number;
+  reuseExpiresAt?: string | null;
+  queueWaitMs?: number | null;
+  now?: () => Date;
+  monotonicNow?: () => number;
 }
 
 export interface ReleaseTaskStageInput {
   stage: string;
-  identity: string;
+  identity: unknown;
+  /** `complete` binds source+gitlinks; `stage` lets a downstream stage key only its actual inputs. */
+  sourceScope?: 'complete' | 'stage';
+  requiredReuseEvidenceRefs?: readonly string[];
 }
 
 export interface ReleaseTaskStageInspection {
@@ -51,6 +67,10 @@ export interface ReleaseTaskStageInspection {
   attempt: number;
   cursor: number;
   journal: TaskReleaseJournal;
+  receipt: TaskReleaseReceipt | null;
+  reuseSource: TaskReleaseReuseSource | null;
+  lookupElapsedMs: number | null;
+  freshness: 'absent' | 'unbounded' | 'fresh' | 'expired';
 }
 
 export type BegunReleaseTaskStage = Omit<ReleaseTaskStageInspection, 'action'> & {
@@ -80,6 +100,39 @@ function canonicalJson(value: unknown): string {
 
 export function releaseStageInputHash(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+}
+
+/** The exact, inspectable preimage used for operation-local and cross-operation reuse. */
+export function releaseTaskStageContentIdentity(
+  context: Pick<ReleaseTaskStageContext, 'identity' | 'reuseMaxAgeMs'>,
+  input: ReleaseTaskStageInput,
+): Record<string, unknown> {
+  const sourceScope = input.sourceScope ?? 'complete';
+  return {
+    schemaVersion: 1,
+    stage: input.stage,
+    sourceScope,
+    release: {
+      version: context.identity.version,
+      channel: context.identity.channel,
+      ...(sourceScope === 'complete'
+        ? {
+            sourceSha: context.identity.sourceSha,
+            gitlinks: sortedRecord(context.identity.gitlinks),
+          }
+        : {}),
+    },
+    reusePolicy: { maxAgeMs: context.reuseMaxAgeMs ?? 0 },
+    requiredReuseEvidenceRefs: [...(input.requiredReuseEvidenceRefs ?? [])].sort(),
+    stageIdentity: input.identity,
+  };
+}
+
+export function releaseTaskStageInputHash(
+  context: Pick<ReleaseTaskStageContext, 'identity' | 'reuseMaxAgeMs'>,
+  input: ReleaseTaskStageInput,
+): string {
+  return releaseStageInputHash(releaseTaskStageContentIdentity(context, input));
 }
 
 /** Stable UUIDv4-shaped identity accepted by provider APIs that expose idempotency keys. */
@@ -207,18 +260,28 @@ function stageReceipts(
 }
 
 function inspectJournal(
+  context: Pick<ReleaseTaskStageContext, 'identity' | 'reuseMaxAgeMs' | 'now'>,
   journal: TaskReleaseJournal,
   input: ReleaseTaskStageInput,
 ): ReleaseTaskStageInspection {
-  const inputHash = releaseStageInputHash({ identity: input.identity });
+  const inputHash = releaseTaskStageInputHash(context, input);
   const receipts = stageReceipts(journal, input.stage, inputHash);
   const identities = [...new Set(receipts.map((receipt) => receipt.requestIdentity))];
   const requestIdentity = identities.at(-1) ?? null;
   const prior = requestIdentity ? latestReceipt(receipts, requestIdentity) : null;
   const state = prior?.state ?? 'absent';
+  const expiry = prior?.reuseExpiresAt ? Date.parse(prior.reuseExpiresAt) : NaN;
+  const nowMs = (context.now?.() ?? new Date()).getTime();
+  const freshness = !prior
+    ? 'absent'
+    : !prior.reuseExpiresAt
+      ? 'unbounded'
+      : Number.isFinite(expiry) && expiry > nowMs
+        ? 'fresh'
+        : 'expired';
   const action =
     state === 'committed'
-      ? 'reuse'
+      ? freshness === 'expired' ? 'refused' : 'reuse'
       : state === 'intent' || state === 'unknown'
         ? 'reconcile'
         : state === 'refused' && !prior?.evidenceRefs.includes('reconcile:confirmed-absent')
@@ -232,6 +295,10 @@ function inspectJournal(
     attempt: identities.length,
     cursor: journal.cursor,
     journal,
+    receipt: prior,
+    reuseSource: prior?.reuseSource ?? null,
+    lookupElapsedMs: prior?.lookupElapsedMs ?? null,
+    freshness,
   };
 }
 
@@ -239,7 +306,7 @@ export async function inspectReleaseTaskStage(
   context: ReleaseTaskStageContext,
   input: ReleaseTaskStageInput,
 ): Promise<ReleaseTaskStageInspection> {
-  return inspectJournal(await readJournal(context), input);
+  return inspectJournal(context, await readJournal(context), input);
 }
 
 export async function beginReleaseTaskStage(
@@ -255,12 +322,38 @@ export async function beginReleaseTaskStage(
     ) {
       return { ...inspection, action: inspection.action };
     }
+    const monotonicNow = context.monotonicNow ?? (() => performance.now());
+    const lookupStarted = monotonicNow();
+    let reuseSource: TaskReleaseReuseSource | null = null;
+    if ((context.reuseMaxAgeMs ?? 0) > 0) {
+      if (!context.ledger.findPriorCommittedTaskReleaseReceipt) {
+        throw new Error('release receipt reuse is enabled but the ledger has no prior-receipt lookup');
+      }
+      const hit = await context.ledger.findPriorCommittedTaskReleaseReceipt({
+        currentTaskId: context.taskId,
+        currentOperationId: context.operationId,
+        stage: input.stage,
+        inputHash: inspection.inputHash,
+        now: context.now?.() ?? new Date(),
+        credentialGeneration: context.credentialGeneration ?? null,
+        requiredEvidenceRefs: input.requiredReuseEvidenceRefs,
+      });
+      if (hit) {
+        reuseSource = {
+          taskId: hit.taskId,
+          operationId: hit.operationId,
+          sequence: hit.receipt.sequence,
+        };
+      }
+    }
+    const lookupElapsedMs = Math.max(0, monotonicNow() - lookupStarted);
     const requestIdentity = releaseStageRequestIdentity(
       context.operationId,
       input.stage,
       inspection.inputHash,
       inspection.attempt,
     );
+    const inputIdentity = releaseTaskStageContentIdentity(context, input);
     const appended = await context.ledger.appendTaskReleaseReceipt(
       context.taskId,
       inspection.cursor,
@@ -270,17 +363,32 @@ export async function beginReleaseTaskStage(
         stage: input.stage,
         state: 'intent',
         inputHash: inspection.inputHash,
-        evidenceRefs: [`stage-input:${inspection.inputHash}`],
+        inputIdentity,
+        evidenceRefs: [
+          `stage-input:${inspection.inputHash}`,
+          ...(reuseSource
+            ? [
+                `reuse-source-task:${reuseSource.taskId}`,
+                `reuse-source-operation:${reuseSource.operationId}`,
+                `reuse-source-receipt:${reuseSource.sequence}`,
+              ]
+            : []),
+        ],
         credentialGeneration: context.credentialGeneration ?? null,
         credentialExpiresAt: context.credentialExpiresAt ?? null,
+        reuseSource,
+        lookupElapsedMs,
+        queueWaitMs: context.queueWaitMs ?? null,
       },
     );
     if (appended.ok) {
       return {
-        ...inspectJournal(appended.journal, input),
-        action: 'run',
+        ...inspectJournal(context, appended.journal, input),
+        action: reuseSource ? 'reconcile' : 'run',
         requestIdentity,
         state: 'intent',
+        reuseSource,
+        lookupElapsedMs,
       };
     }
     if (appended.reason === 'cursor_mismatch' || appended.reason === 'cas_conflict') continue;
@@ -295,6 +403,7 @@ export async function settleReleaseTaskStage(
     requestIdentity: string;
     state: Exclude<TaskReleaseReceiptState, 'intent'>;
     evidenceRefs?: readonly string[];
+    preparationElapsedMs?: number | null;
   },
 ): Promise<ReleaseTaskStageInspection> {
   for (let cursorAttempt = 0; cursorAttempt < 12; cursorAttempt += 1) {
@@ -321,12 +430,29 @@ export async function settleReleaseTaskStage(
         stage: input.stage,
         state: input.state,
         inputHash: inspection.inputHash,
+        inputIdentity: releaseTaskStageContentIdentity(context, input),
         evidenceRefs: [...(input.evidenceRefs ?? [])],
         credentialGeneration: context.credentialGeneration ?? null,
         credentialExpiresAt: context.credentialExpiresAt ?? null,
+        reuseSource: inspection.receipt?.reuseSource ?? null,
+        lookupElapsedMs: inspection.receipt?.lookupElapsedMs ?? null,
+        queueWaitMs: inspection.receipt?.queueWaitMs ?? context.queueWaitMs ?? null,
+        preparationElapsedMs: input.preparationElapsedMs ?? null,
+        reuseExpiresAt:
+          input.state === 'committed' && (context.reuseMaxAgeMs ?? 0) > 0
+            ? (() => {
+                const raw = context.reuseExpiresAt;
+                const expiry = Date.parse(raw ?? '');
+                const nowMs = (context.now?.() ?? new Date()).getTime();
+                if (!Number.isFinite(expiry) || expiry <= nowMs) {
+                  throw new Error('release reuse requires a future expiry derived from fresh audit evidence');
+                }
+                return new Date(expiry).toISOString();
+              })()
+            : null,
       },
     );
-    if (appended.ok) return inspectJournal(appended.journal, input);
+    if (appended.ok) return inspectJournal(context, appended.journal, input);
     if (appended.reason === 'cursor_mismatch' || appended.reason === 'cas_conflict') continue;
     throw new Error(
       `release journal refused ${input.stage}/${input.requestIdentity}/${input.state}: ${appended.reason}`,
@@ -344,9 +470,12 @@ interface CliArgs {
   version: string;
   channel: string;
   stage: string;
-  identity: string;
+  identity: unknown;
+  sourceScope: 'complete' | 'stage';
   requestIdentity?: string;
   evidenceRefs: string[];
+  preparationElapsedMs?: number;
+  reuseExpiresAt?: string;
 }
 
 function cliArgs(argv: readonly string[], env: NodeJS.ProcessEnv): CliArgs {
@@ -376,6 +505,28 @@ function cliArgs(argv: readonly string[], env: NodeJS.ProcessEnv): CliArgs {
   if (command !== 'status' && command !== 'begin' && !requestIdentity) {
     throw new Error(`release journal ${command} requires --request-id`);
   }
+  const sourceScope = values.get('source-scope') ?? 'complete';
+  if (sourceScope !== 'complete' && sourceScope !== 'stage') {
+    throw new Error(`release journal --source-scope must be complete|stage (got ${sourceScope})`);
+  }
+  const identityRaw = required('identity');
+  let identity: unknown = identityRaw;
+  if (identityRaw.startsWith('{') || identityRaw.startsWith('[')) {
+    try {
+      identity = JSON.parse(identityRaw);
+    } catch (error) {
+      throw new Error(`release journal --identity is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const preparationRaw = values.get('preparation-ms');
+  const preparationElapsedMs = preparationRaw === undefined ? undefined : Number(preparationRaw);
+  if (preparationElapsedMs !== undefined && (!Number.isFinite(preparationElapsedMs) || preparationElapsedMs < 0)) {
+    throw new Error('release journal --preparation-ms must be a finite non-negative number');
+  }
+  const reuseExpiresAt = values.get('reuse-expires-at');
+  if (reuseExpiresAt !== undefined && !Number.isFinite(Date.parse(reuseExpiresAt))) {
+    throw new Error('release journal --reuse-expires-at must be an ISO timestamp');
+  }
   return {
     command,
     taskId: required('task-id', env.PAPERCUSP_RELEASE_TASK_ID),
@@ -385,8 +536,11 @@ function cliArgs(argv: readonly string[], env: NodeJS.ProcessEnv): CliArgs {
     version: required('version'),
     channel: required('channel'),
     stage: required('stage'),
-    identity: required('identity'),
+    identity,
+    sourceScope,
     ...(requestIdentity ? { requestIdentity } : {}),
+    ...(preparationElapsedMs === undefined ? {} : { preparationElapsedMs }),
+    ...(reuseExpiresAt === undefined ? {} : { reuseExpiresAt }),
     evidenceRefs,
   };
 }
@@ -397,7 +551,25 @@ async function defaultLedger(): Promise<ReleaseTaskLedger> {
     getTask: store.getTask,
     taskReleaseJournalFromDetail: store.taskReleaseJournalFromDetail,
     appendTaskReleaseReceipt: store.appendTaskReleaseReceipt,
+    findPriorCommittedTaskReleaseReceipt: store.findPriorCommittedTaskReleaseReceipt,
   };
+}
+
+function reuseMaxAgeMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.PAPERCUSP_RELEASE_REUSE_MAX_AGE_SEC?.trim();
+  if (!raw) return 0;
+  const seconds = Number(raw);
+  if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 7 * 24 * 60 * 60) {
+    throw new Error('PAPERCUSP_RELEASE_REUSE_MAX_AGE_SEC must be an integer in 1..604800');
+  }
+  return seconds * 1000;
+}
+
+function queueWaitMs(env: NodeJS.ProcessEnv): number | null {
+  const enqueued = Number(env.PAPERCUSP_RELEASE_ENQUEUED_AT_MS);
+  const started = Number(env.PAPERCUSP_RELEASE_CHILD_STARTED_AT_MS);
+  if (!Number.isFinite(enqueued) || !Number.isFinite(started) || enqueued < 0 || started < enqueued) return null;
+  return started - enqueued;
 }
 
 async function main(): Promise<void> {
@@ -414,8 +586,22 @@ async function main(): Promise<void> {
     },
     credentialGeneration: process.env.PAPERCUSP_RELEASE_CREDENTIAL_GENERATION?.trim() || null,
     credentialExpiresAt: process.env.PAPERCUSP_RELEASE_CREDENTIAL_EXPIRES_AT?.trim() || null,
+    reuseMaxAgeMs: reuseMaxAgeMs(process.env),
+    reuseExpiresAt: args.reuseExpiresAt ?? null,
+    queueWaitMs: queueWaitMs(process.env),
   };
-  const stage = { stage: args.stage, identity: args.identity };
+  const requiredReuseEvidenceRefs =
+    args.stage === 'release.build.linux'
+      ? ['artifact-set:hash-signature-verified']
+      : args.stage === 'release.manifest'
+        ? ['artifact-ledger:exact-set-verified']
+        : [];
+  const stage = {
+    stage: args.stage,
+    identity: args.identity,
+    sourceScope: args.sourceScope,
+    requiredReuseEvidenceRefs,
+  };
   const result =
     args.command === 'status'
       ? await inspectReleaseTaskStage(context, stage)
@@ -429,6 +615,7 @@ async function main(): Promise<void> {
               args.command === 'refuse'
                 ? ['reconcile:confirmed-absent', ...args.evidenceRefs]
                 : args.evidenceRefs,
+            preparationElapsedMs: args.preparationElapsedMs,
           });
   process.stdout.write(`${JSON.stringify({
     action: result.action,
@@ -436,6 +623,9 @@ async function main(): Promise<void> {
     requestIdentity: result.requestIdentity,
     inputHash: result.inputHash,
     attempt: result.attempt,
+    freshness: result.freshness,
+    lookupElapsedMs: result.lookupElapsedMs,
+    reuseSource: result.reuseSource,
   })}\n`);
 }
 

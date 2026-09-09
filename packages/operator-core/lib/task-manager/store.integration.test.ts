@@ -284,6 +284,80 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
       store.appendTaskReleaseReceipt('releasetask01', 1, receipt('intent')),
     ).resolves.toMatchObject({ ok: false, reason: 'journal_missing' });
   });
+
+  it('finds only a fresh, evidenced, same-workspace terminal receipt and bounds the candidate scan', async () => {
+    const priorOperation = 'release-op-prior';
+    const currentOperation = 'release-op-current';
+    const expiresAt = '2026-09-10T00:00:00.000Z';
+    const releaseDetail = (op: string) => ({
+      release: {
+        schemaVersion: 1,
+        operationId: op,
+        source: { sha: 'b'.repeat(40), gitlinks: { desktop: 'c'.repeat(40) } },
+        artifactIdentity: { version: '0.0.19', channel: 'nightly' },
+        cursor: 0,
+        currentStage: null,
+        currentState: null,
+        spentOperationIds: [],
+        receipts: [],
+      },
+    });
+    await store.registerTask(
+      { class: 'deploy', title: 'prior release', argv: ['release'], launchedBy: 'test', detail: releaseDetail(priorOperation) },
+      { taskId: 'prior-release', workspaceId: WS },
+    );
+    await store.appendTaskReleaseReceipt('prior-release', 0, receipt('intent', {
+      operationId: priorOperation,
+      requestIdentity: 'prior-request',
+      stage: 'release.build.linux',
+      evidenceRefs: ['stage-input:' + inputHash],
+    }));
+    await store.appendTaskReleaseReceipt('prior-release', 1, receipt('committed', {
+      operationId: priorOperation,
+      requestIdentity: 'prior-request',
+      stage: 'release.build.linux',
+      evidenceRefs: ['artifact-set:hash-signature-verified'],
+      credentialGeneration: 'generation-7',
+      credentialExpiresAt: expiresAt,
+      reuseExpiresAt: expiresAt,
+      recordedAt: '2026-09-09T10:00:00.000Z',
+      preparationElapsedMs: 1_234,
+    }));
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET state = 'exited', ended_at = '2026-09-09T10:01:00.000Z', started_at = '2026-09-09T09:00:00.000Z'
+       WHERE task_id = 'prior-release'
+    `;
+    await store.registerTask(
+      { class: 'deploy', title: 'current release', argv: ['release'], launchedBy: 'test', detail: releaseDetail(currentOperation) },
+      { taskId: 'current-release', workspaceId: WS },
+    );
+    await db.sql`
+      UPDATE harness_shared.task_ledger SET started_at = '2026-09-09T11:00:00.000Z' WHERE task_id = 'current-release'
+    `;
+
+    const lookup = {
+      currentTaskId: 'current-release',
+      currentOperationId: currentOperation,
+      stage: 'release.build.linux',
+      inputHash,
+      credentialGeneration: 'generation-7',
+      requiredEvidenceRefs: ['artifact-set:hash-signature-verified'],
+      now: new Date('2026-09-09T12:00:00.000Z'),
+      maxCandidates: 4,
+    } as const;
+    await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toMatchObject({
+      taskId: 'prior-release',
+      operationId: priorOperation,
+      receipt: { sequence: 1, preparationElapsedMs: 1_234 },
+    });
+    await expect(store.findPriorCommittedTaskReleaseReceipt({ ...lookup, credentialGeneration: 'generation-8' })).resolves.toBeNull();
+    await expect(store.findPriorCommittedTaskReleaseReceipt({ ...lookup, requiredEvidenceRefs: ['missing-proof'] })).resolves.toBeNull();
+    await expect(store.findPriorCommittedTaskReleaseReceipt({ ...lookup, now: new Date(expiresAt) })).resolves.toBeNull();
+
+    await db.sql`UPDATE harness_shared.task_ledger SET workspace_id = 'other-workspace' WHERE task_id = 'prior-release'`;
+    await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toBeNull();
+  });
 });
 
 describe('P-012 terminal provenance writer', () => {

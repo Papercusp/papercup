@@ -24,6 +24,7 @@ export const NIGHTLY_RELEASE_ACTION = 'nightly-release-cut';
 export const NIGHTLY_RELEASE_LOCK_PATH = path.join(os.tmpdir(), 'papercusp-nightly-release-cut.lock');
 export const NIGHTLY_RELEASE_RUNTIME_MAX_SEC = 3 * 60 * 60;
 export const NIGHTLY_RELEASE_MEMORY_MAX_BYTES = 24 * 1024 ** 3;
+export const NIGHTLY_RELEASE_REUSE_MAX_AGE_SEC = 24 * 60 * 60;
 
 const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9a-z.-]+))?$/;
 
@@ -160,6 +161,7 @@ export function buildNightlyCutInvocation(
   env.PAPERCUSP_ALLOW_DIRTY = '1';
   env.PAPERCUSP_EXPECTED_SOURCE_SHA = sourceSha;
   env.PAPERCUSP_RELEASE_OWNER_NAME = ownerName.trim();
+  env.PAPERCUSP_RELEASE_REUSE_MAX_AGE_SEC = String(NIGHTLY_RELEASE_REUSE_MAX_AGE_SEC);
   return {
     command: 'bash',
     // A local cut requires an exact remote tag so the packaged dogfood clone is
@@ -171,7 +173,7 @@ export function buildNightlyCutInvocation(
     // DBOS recovery/concurrency sees a single flight.
     args: [
       '-c',
-      'PAPERCUSP_RELEASE_PREPARE_TAG_SHA="$PAPERCUSP_EXPECTED_SOURCE_SHA" PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1 "$2/papercusp-desktop/bin/release-local.sh" "$1" nightly && "$2/apps/operator/bin/release/setup-release-checkout.sh" --integration "$2" --release "$3" --ref "$PAPERCUSP_EXPECTED_SOURCE_SHA" --node-modules auto --source-integrity object-sourced && cd "$3/papercusp-desktop" && bin/release-local.sh "$1" nightly',
+      'export PAPERCUSP_RELEASE_CHILD_STARTED_AT_MS="$(date +%s%3N)"; PAPERCUSP_RELEASE_PREPARE_TAG_SHA="$PAPERCUSP_EXPECTED_SOURCE_SHA" PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1 "$2/papercusp-desktop/bin/release-local.sh" "$1" nightly && "$2/apps/operator/bin/release/setup-release-checkout.sh" --integration "$2" --release "$3" --ref "$PAPERCUSP_EXPECTED_SOURCE_SHA" --node-modules force --node-modules-copy copy --node-modules-generation required --source-integrity object-sourced && cd "$3/papercusp-desktop" && bin/release-local.sh "$1" nightly',
       'nightly-release-cut',
       version,
       sourceRoot,
@@ -285,6 +287,7 @@ export async function runNightlyCut(
   const invocation = buildNightlyCutInvocation(root, sourceRoot, version, sourceSha, ownerName, env);
   invocation.env.PAPERCUSP_RELEASE_TASK_ID = taskId;
   invocation.env.PAPERCUSP_RELEASE_OPERATION_ID = operationId;
+  invocation.env.PAPERCUSP_RELEASE_ENQUEUED_AT_MS = String(Date.now());
   const lockPath = opts.lockPath ?? NIGHTLY_RELEASE_LOCK_PATH;
   if (!acquireNightlyLock(lockPath, version)) return { status: 'skipped', reason: 'a nightly release cut is already running' };
 

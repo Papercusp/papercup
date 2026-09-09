@@ -5,6 +5,7 @@ import type {
   TaskReleaseJournal,
   TaskReleaseReceipt,
   TaskReleaseReceiptInput,
+  PriorCommittedTaskReleaseReceipt,
 } from '@papercusp/operator-core/lib/task-manager/store';
 import {
   assertReleaseTaskIdentity,
@@ -12,6 +13,8 @@ import {
   inspectReleaseTaskStage,
   releaseStageInputHash,
   releaseStageRequestIdentity,
+  releaseTaskStageContentIdentity,
+  releaseTaskStageInputHash,
   settleReleaseTaskStage,
   type ReleaseTaskLedger,
   type ReleaseTaskStageContext,
@@ -42,7 +45,10 @@ function journal(overrides: Partial<TaskReleaseJournal> = {}): TaskReleaseJourna
   };
 }
 
-function ledger(initial = journal()): ReleaseTaskLedger & { journal: TaskReleaseJournal } {
+function ledger(
+  initial = journal(),
+  reusable: PriorCommittedTaskReleaseReceipt | null = null,
+): ReleaseTaskLedger & { journal: TaskReleaseJournal } {
   const state = { journal: initial };
   return {
     get journal() {
@@ -53,6 +59,9 @@ function ledger(initial = journal()): ReleaseTaskLedger & { journal: TaskRelease
     },
     taskReleaseJournalFromDetail(detail) {
       return detail?.release === state.journal ? state.journal : null;
+    },
+    async findPriorCommittedTaskReleaseReceipt() {
+      return reusable;
     },
     async appendTaskReleaseReceipt(taskId, expectedCursor, input): Promise<AppendTaskReleaseReceiptResult> {
       if (taskId !== TASK_ID) return { ok: false, reason: 'task_not_found', journal: null };
@@ -77,9 +86,15 @@ function ledger(initial = journal()): ReleaseTaskLedger & { journal: TaskRelease
         stage: input.stage,
         state: input.state,
         inputHash: input.inputHash,
+        inputIdentity: input.inputIdentity ?? null,
         evidenceRefs: [...(input.evidenceRefs ?? [])],
         credentialGeneration: input.credentialGeneration ?? null,
         credentialExpiresAt: input.credentialExpiresAt ?? null,
+        reuseSource: input.reuseSource ?? null,
+        lookupElapsedMs: input.lookupElapsedMs ?? null,
+        queueWaitMs: input.queueWaitMs ?? null,
+        preparationElapsedMs: input.preparationElapsedMs ?? null,
+        reuseExpiresAt: input.reuseExpiresAt ?? null,
         recordedAt: input.recordedAt ?? new Date(0).toISOString(),
       };
       state.journal.receipts.push(receipt);
@@ -129,6 +144,42 @@ describe('release task journal identity', () => {
       /artifact identity/,
     );
   });
+
+  it('content-addresses complete source, dependency/toolchain/profile/policy/signer/audit identity by stage', () => {
+    const base = context();
+    const complete = {
+      stage: 'release.build.linux',
+      identity: {
+        dependencies: 'generation-a',
+        toolchain: 'toolchain-a',
+        profile: 'profile-a',
+        policy: 'policy-a',
+        signing: 'signer-a',
+        audit: 'audit-a',
+      },
+    };
+    const hash = releaseTaskStageInputHash(base, complete);
+    for (const key of ['dependencies', 'toolchain', 'profile', 'policy', 'signing', 'audit']) {
+      expect(releaseTaskStageInputHash(base, {
+        ...complete,
+        identity: { ...complete.identity, [key]: `${key}-b` },
+      })).not.toBe(hash);
+    }
+    expect(releaseTaskStageInputHash({ ...base, identity: { ...base.identity, sourceSha: 'c'.repeat(40) } }, complete)).not.toBe(hash);
+    expect(releaseTaskStageInputHash({ ...base, identity: { ...base.identity, gitlinks: { 'papercusp-desktop': 'd'.repeat(40) } } }, complete)).not.toBe(hash);
+
+    const manifest = { stage: 'release.manifest', identity: { artifacts: 'bytes-a' }, sourceScope: 'stage' as const };
+    expect(releaseTaskStageInputHash(base, manifest)).toBe(
+      releaseTaskStageInputHash({ ...base, identity: { ...base.identity, sourceSha: 'e'.repeat(40) } }, manifest),
+    );
+    expect(releaseTaskStageInputHash(base, { ...manifest, identity: { artifacts: 'bytes-b' } })).not.toBe(
+      releaseTaskStageInputHash(base, manifest),
+    );
+    expect(releaseTaskStageContentIdentity(base, manifest)).toMatchObject({
+      sourceScope: 'stage',
+      release: { version: '0.0.19-nightly', channel: 'nightly' },
+    });
+  });
 });
 
 describe('release task stage transitions', () => {
@@ -158,6 +209,68 @@ describe('release task stage transitions', () => {
     await expect(beginReleaseTaskStage(context(store), stage)).resolves.toMatchObject({
       action: 'reuse',
       state: 'committed',
+    });
+  });
+
+  it('seeds a prior committed hit only as a fresh reconcile intent, then records measured preparation', async () => {
+    const priorReceipt: TaskReleaseReceipt = {
+      sequence: 4,
+      operationId: 'release-operation-prior',
+      requestIdentity: 'prior-request',
+      stage: stage.stage,
+      state: 'committed',
+      inputHash: 'resolved-by-lookup',
+      evidenceRefs: ['artifact-set:hash-signature-verified'],
+      credentialGeneration: 'generation-7',
+      credentialExpiresAt: '2026-09-10T00:00:00.000Z',
+      recordedAt: '2026-09-09T00:00:00.000Z',
+      reuseExpiresAt: '2026-09-10T00:00:00.000Z',
+    };
+    const store = ledger(journal(), {
+      taskId: 'release-task-prior',
+      operationId: priorReceipt.operationId,
+      receipt: priorReceipt,
+    });
+    const ticks = [10, 14];
+    const reusableContext: ReleaseTaskStageContext = {
+      ...context(store),
+      credentialGeneration: 'generation-7',
+      credentialExpiresAt: '2026-09-10T00:00:00.000Z',
+      reuseMaxAgeMs: 86_400_000,
+      reuseExpiresAt: '2026-09-10T12:00:00.000Z',
+      queueWaitMs: 7,
+      now: () => new Date('2026-09-09T12:00:00.000Z'),
+      monotonicNow: () => ticks.shift()!,
+    };
+    const begun = await beginReleaseTaskStage(reusableContext, {
+      ...stage,
+      requiredReuseEvidenceRefs: ['artifact-set:hash-signature-verified'],
+    });
+    expect(begun).toMatchObject({
+      action: 'reconcile',
+      state: 'intent',
+      lookupElapsedMs: 4,
+      reuseSource: { taskId: 'release-task-prior', operationId: 'release-operation-prior', sequence: 4 },
+    });
+    expect(store.journal.receipts).toHaveLength(1);
+    expect(store.journal.receipts[0]).toMatchObject({
+      state: 'intent',
+      queueWaitMs: 7,
+      reuseExpiresAt: null,
+    });
+    const committed = await settleReleaseTaskStage(reusableContext, {
+      ...stage,
+      requiredReuseEvidenceRefs: ['artifact-set:hash-signature-verified'],
+      requestIdentity: begun.requestIdentity!,
+      state: 'committed',
+      evidenceRefs: ['artifact-set:hash-signature-verified'],
+      preparationElapsedMs: 25,
+    });
+    expect(committed).toMatchObject({ action: 'reuse', freshness: 'fresh' });
+    expect(store.journal.receipts.at(-1)).toMatchObject({
+      preparationElapsedMs: 25,
+      reuseExpiresAt: '2026-09-10T12:00:00.000Z',
+      reuseSource: { taskId: 'release-task-prior', sequence: 4 },
     });
   });
 
