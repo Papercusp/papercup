@@ -113,6 +113,12 @@ export type FleetAdmissionBlockLeaderResolver = (
   workspaceId: string,
 ) => Promise<string | null>;
 
+/** Resolves the fleet's CURRENT durable control state, or null when unknown. */
+export type FleetAdmissionBlockControlStateResolver = (
+  fleetSlug: string,
+  workspaceId: string,
+) => Promise<'active' | 'winding-down' | null>;
+
 /**
  * Resolves a dependency work-item's CURRENT assignee ownerId, or null when the
  * item is absent/unassigned. Test seam for `admissionBlockResolvedByLeaderClaim`
@@ -146,6 +152,12 @@ export interface FetchFleetAdmissionBlocksOptions {
    * the documented `leader_claim` route.
    */
   resolveFleetLeader?: FleetAdmissionBlockLeaderResolver;
+  /**
+   * Test seam; production reads the fleet registry's current controlState.
+   * A resolved `active` state retires historical `fleet_winding_down` rows;
+   * null/read failure fails open and keeps them.
+   */
+  resolveFleetControlState?: FleetAdmissionBlockControlStateResolver;
   /**
    * Test seam; production reads the dependency work-item's current assignee via
    * `getWorkItem` (EI-22066839645010639). Paired with `resolveFleetLeader` to
@@ -409,15 +421,23 @@ export function filterCurrentFleetAdmissionBlocks(
   blocks: readonly FleetAdmissionBlock[],
   opts: {
     currentSpec?: FleetAdmissionSpecHead | null;
+    currentControlState?: 'active' | 'winding-down' | null;
     liveMemberIds?: readonly string[] | ReadonlySet<string>;
   } = {},
 ): FleetAdmissionBlock[] {
   const liveMemberIds = opts.liveMemberIds == null ? null : new Set(opts.liveMemberIds);
   const currentSpec = opts.currentSpec ?? null;
+  const currentControlState = opts.currentControlState ?? null;
   const canCompareSpec = currentSpec?.specId != null && currentSpec.specId.length > 0 && currentSpec.revision != null;
 
   return blocks.filter((block) => {
     if (liveMemberIds && !liveMemberIds.has(block.member ?? '')) return false;
+    // A winding-down refusal is actionable only while the fleet remains wound
+    // down. Once the canonical fleet row says active, the prescribed remedy
+    // (`fleet:resume`) has already happened; retaining the append-only refusal
+    // would manufacture a false live block for the rest of the 24h lookback.
+    // Unknown control state deliberately fails open and retains the row.
+    if (block.code === 'fleet_winding_down' && currentControlState === 'active') return false;
     // Older refusal stamps may not carry one or both spec-head fields. Keep those
     // rows rather than guessing that a missing field means "not current".
     if (
@@ -444,6 +464,15 @@ async function claimSpecHeadForFleet(fleetSlug: string, workspaceId: string): Pr
   const specId = asId(record.spec?.specId);
   const revision = typeof record.revision === 'number' && Number.isFinite(record.revision) ? record.revision : null;
   return { specId, revision };
+}
+
+async function currentFleetControlState(
+  fleetSlug: string,
+  workspaceId: string,
+): Promise<'active' | 'winding-down' | null> {
+  const { getFleet } = await import('../../agent-fleets-store');
+  const record = await getFleet(workspaceId, fleetSlug);
+  return record?.controlState ?? null;
 }
 
 /**
@@ -499,9 +528,13 @@ export async function readFleetAdmissionBlocks(
     }
     const deduped = dedupeAdmissionBlocks(parsed, opts.rowCap ?? FLEET_ADMISSION_BLOCK_ROW_CAP);
     if (deduped.length === 0) return { available: true, blocks: [] };
-    const currentSpec = await (opts.resolveFleetSpec ?? claimSpecHeadForFleet)(fleetSlug, ws).catch(() => null);
+    const [currentSpec, currentControlState] = await Promise.all([
+      (opts.resolveFleetSpec ?? claimSpecHeadForFleet)(fleetSlug, ws).catch(() => null),
+      (opts.resolveFleetControlState ?? currentFleetControlState)(fleetSlug, ws).catch(() => null),
+    ]);
     const currentFleetBlocks = filterCurrentFleetAdmissionBlocks(deduped, {
       currentSpec,
+      currentControlState,
       liveMemberIds: opts.liveMemberIds,
     });
     if (currentFleetBlocks.length === 0) return { available: true, blocks: [] };

@@ -440,6 +440,23 @@ describe('filterCurrentFleetAdmissionBlocks', () => {
       }),
     ).toEqual([]);
   });
+
+  it('retires a winding-down refusal after active resume but retains it while paused or unknown', () => {
+    const windingDown = block({ itemId: 'WI-paused', code: 'fleet_winding_down' });
+    const ordinary = block({ itemId: 'WI-scoped', code: 'fleet_scope_violation' });
+
+    expect(
+      filterCurrentFleetAdmissionBlocks([windingDown, ordinary], {
+        currentControlState: 'active',
+      }),
+    ).toEqual([ordinary]);
+    expect(
+      filterCurrentFleetAdmissionBlocks([windingDown, ordinary], {
+        currentControlState: 'winding-down',
+      }),
+    ).toEqual([windingDown, ordinary]);
+    expect(filterCurrentFleetAdmissionBlocks([windingDown, ordinary])).toEqual([windingDown, ordinary]);
+  });
 });
 
 describe('readFleetAdmissionBlocks availability contract (EI-22054599451266989)', () => {
@@ -461,5 +478,25 @@ describe('readFleetAdmissionBlocks availability contract (EI-22054599451266989)'
       readRows: async () => [],
     });
     expect(measuredEmpty).toEqual({ available: true, blocks: [] });
+  });
+
+  it('reconciles a pause refusal against the current fleet control state after resume', async () => {
+    const read = (currentControlState: 'active' | 'winding-down') =>
+      readFleetAdmissionBlocks('fleet-a', {
+        nowMs: META.atMs + 1_000,
+        hasPgFastPath: () => true,
+        readRows: async () => [{ msg_id: 'paused-refusal', ts_ms: META.atMs, stamp: stamp({ code: 'fleet_winding_down' }) }],
+        resolveFleetSpec: async () => ({ specId: 'gui-chat-controls', revision: 3 }),
+        resolveFleetControlState: async () => currentControlState,
+        resolveFleetHarness: async () => 'papercusp',
+        liveMemberIds: ['su-b0971'],
+        isTargetTerminal: async () => false,
+      });
+
+    await expect(read('winding-down')).resolves.toMatchObject({
+      available: true,
+      blocks: [{ itemId: 'WI-5891', member: 'su-b0971', code: 'fleet_winding_down' }],
+    });
+    await expect(read('active')).resolves.toEqual({ available: true, blocks: [] });
   });
 });
