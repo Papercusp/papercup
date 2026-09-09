@@ -1221,6 +1221,26 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     expect(spill).toContain(FULL_SOURCE_CHECKPOINT);
     expect(spill).not.toContain('SHAPED_CHECKPOINT_MARKER');
   });
+
+  it('bounds an implicit nested projection miss without labeling it explicit full', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:full_source_spill',
+        args: { projection: { pick: ['notARealCheckpointField'] } },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultProjection).toMatchObject({
+      applied: true,
+      notes: expect.arrayContaining([expect.stringContaining('pick matched NOTHING')]),
+    });
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+    expect(res._meta?.resultDoor).not.toMatchObject({ reason: 'explicit-full-request-overflow' });
+  });
 });
 
 /* ─── in-process tools:invoke payload-tier forwarding (EI-21584932731440718) ── */
