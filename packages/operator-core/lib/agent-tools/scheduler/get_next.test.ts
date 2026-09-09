@@ -239,6 +239,7 @@ beforeEach(() => {
   }));
   diagnoseFleetScopeIssueFloorMissM.mockResolvedValue(null);
   diagnoseFleetScopePlanTerminalityM.mockResolvedValue(null);
+  diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
   getFlagM.mockResolvedValue(true);
   liveLockedPathsM.mockImplementation(async () => []);
   getPresenceM.mockResolvedValue(null);
@@ -585,7 +586,10 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       allTerminal: true,
     };
     diagnoseFleetScopePlanTerminalityM.mockResolvedValueOnce(planTerminality);
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(false);
+    // The terminal-plan branch must short-circuit before leader-liveness. Keep
+    // this fallback one-shot so the following describes retain their default
+    // unreadable (fail-open) liveness result.
+    diagnoseFleetScopeLeaderLivenessM.mockResolvedValueOnce(false);
     getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim' } });
 
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
