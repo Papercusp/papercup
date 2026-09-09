@@ -235,6 +235,36 @@ describe('events:await wrapper defaults', () => {
     expect(arg).not.toHaveProperty('workspaceId');
   });
 
+  it('retries a transient statement timeout while registering instead of stranding the caller', async () => {
+    vi.useFakeTimers();
+    try {
+      const contention = Object.assign(new Error('canceling statement due to statement timeout'), {
+        code: '57014',
+      });
+      vi.mocked(registerAwait)
+        .mockRejectedValueOnce(contention)
+        .mockResolvedValueOnce({
+          id: 100,
+          eventKey: 'lock:grant:retry-me',
+          expiresTs: '2030-01-01',
+          timeoutBehavior: 'wake',
+        } as AwaitRow);
+
+      const pending = call({ event: 'lock:grant:retry-me' });
+      await vi.advanceTimersByTimeAsync(500);
+      const out = await pending;
+
+      expect(out).toMatchObject({
+        ok: true,
+        await_id: 100,
+        event: 'lock:grant:retry-me',
+      });
+      expect(registerAwait).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('registers an exact work-item:claimed await without binding it to a harness or loop lineage', async () => {
     await call({
       event: 'work-item:claimed:WI-41252',

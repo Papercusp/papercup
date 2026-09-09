@@ -84,6 +84,7 @@ import {
   monitorPredicateDedupRefusal,
   normalizeMonitorPredicateKey,
 } from '../../harness/routines/monitor-policy';
+import { acquireWithContentionRetry } from '../locks/contention-retry';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
@@ -1225,21 +1226,29 @@ export default defineTool({
           : DEFAULT_TIMEOUT_SEC);
     let row: AwaitRow;
     try {
-      row = await registerAwait({
-        subscriberId: identity.ownerId,
-        eventKey,
-        policy: 'wake',
-        note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
-        wakeHandle: handle,
-        timeoutBehavior: args.on_timeout ?? 'wake',
-        timeoutSec: effectiveTimeoutSec,
-        payloadFilter: effectivePayloadFilter,
-        producerHealthCertificate,
-        expectedGeneration: args.after_generation,
-        supersedePending: {
-          excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
-        },
-      });
+      // EI-22727577507367447: one transient 57014/55P03 while renewing an
+      // await must not strand the caller without a wake source. The store's
+      // supersede-and-insert transaction is idempotent across a retry: if an
+      // ambiguous first attempt committed, the next attempt retires that row
+      // before inserting its replacement. Non-contention failures still
+      // surface immediately.
+      row = await acquireWithContentionRetry(() =>
+        registerAwait({
+          subscriberId: identity.ownerId,
+          eventKey,
+          policy: 'wake',
+          note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
+          wakeHandle: handle,
+          timeoutBehavior: args.on_timeout ?? 'wake',
+          timeoutSec: effectiveTimeoutSec,
+          payloadFilter: effectivePayloadFilter,
+          producerHealthCertificate,
+          expectedGeneration: args.after_generation,
+          supersedePending: {
+            excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+          },
+        }),
+      );
     } catch (error) {
       if (!isAwaitGenerationMismatchError(error)) throw error;
 
