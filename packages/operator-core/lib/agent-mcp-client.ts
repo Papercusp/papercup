@@ -4,6 +4,7 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { UdsMcpTransport } from '@papercusp/tooldef-mcp/uds-transport';
 import { AGENT_MCP_AUTH_META, readAgentMcpDiscoveryForPort } from './endpoint-ipc-discovery';
@@ -45,6 +46,37 @@ export interface AgentMcpClientOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/** A lost response is not evidence that a mutation failed or rolled back. */
+export class AgentMcpOutcomeUnknownError extends Error {
+  readonly code = 'uds_outcome_unknown';
+  readonly outcome = 'unknown';
+  readonly automaticRetry = false;
+  constructor() {
+    super('uds_outcome_unknown: connection lost or request cancelled/timed out; mutation outcome UNKNOWN. ' +
+      'No automatic retry, reconnect or HTTP fallback occurred. Read current state before retrying; ' +
+      'recover a committed result with the original transport idempotency key, never a fresh key.');
+    this.name = 'AgentMcpOutcomeUnknownError';
+  }
+}
+
+class UdsAgentMcpClient extends Client {
+  override async callTool(...args: Parameters<Client['callTool']>): ReturnType<Client['callTool']> {
+    try {
+      return await super.callTool(...args);
+    } catch (error) {
+      // The SDK replaces transport.onclose's descriptive error with a generic
+      // ConnectionClosed for pending requests. Translate at the owned client
+      // seam, not by forging a server response in the JSON-RPC transport.
+      // Presend admission, schema and auth errors retain their precise errors.
+      if (error instanceof McpError &&
+          (error.code === ErrorCode.ConnectionClosed || error.code === ErrorCode.RequestTimeout)) {
+        throw new AgentMcpOutcomeUnknownError();
+      }
+      throw error;
+    }
+  }
+}
+
 export async function connectAgentMcp(options: AgentMcpClientOptions): Promise<{
   client: Client;
   transportKind: 'http' | 'uds';
@@ -79,7 +111,8 @@ export async function connectAgentMcp(options: AgentMcpClientOptions): Promise<{
       requestInit: { headers: options.headers },
     });
   }
-  const client = new Client({ name: options.name ?? 'papercusp-native', version: '1' });
+  const ClientClass = endpoint ? UdsAgentMcpClient : Client;
+  const client = new ClientClass({ name: options.name ?? 'papercusp-native', version: '1' });
   try {
     await client.connect(transport, options.timeoutMs ? { timeout: options.timeoutMs } : undefined);
     return {

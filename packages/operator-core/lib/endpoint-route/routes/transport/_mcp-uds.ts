@@ -32,7 +32,7 @@ export interface AgentMcpHost {
   options: ConstructorParameters<typeof McpServer>[1];
   verify(extra: unknown, options?: { allowStalePlanRecovery?: boolean }): Promise<TrySpawnContextResult>;
   /** Carry exactly the just-verified authority to the shared host dispatch. */
-  pin?(info: object, ctx: BuiltSpawnContext): object;
+  pin?(info: object, ctx: BuiltSpawnContext, connection?: 'uds'): object;
 }
 
 export interface AgentMcpListener {
@@ -239,7 +239,7 @@ export function authenticatedAgentTransport(
         }
         const freshInfo = sdkInfo(info!);
         const requestInfo = verifiedCtx && host.pin
-          ? host.pin(freshInfo, verifiedCtx) as NonNullable<MessageExtraInfo['requestInfo']>
+          ? host.pin(freshInfo, verifiedCtx, 'uds') as NonNullable<MessageExtraInfo['requestInfo']>
           : freshInfo;
         adapter.onmessage?.(clean, { requestInfo });
       } catch (error) {

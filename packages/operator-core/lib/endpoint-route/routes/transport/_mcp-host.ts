@@ -291,6 +291,7 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   }
   return {
     transport: 'mcp',
+    connection: 'http',
     path: url.pathname,
     ...(Object.keys(query).length > 0 ? { query } : {}),
     ...(Object.keys(headerMeta).length > 0 ? { headers: headerMeta } : {}),
@@ -1265,9 +1266,15 @@ const verifiedConnectionRequests = new WeakMap<object, BuiltSpawnContext>();
 export function pinVerifiedMcpRequest(
   requestInfo: object,
   ctx: BuiltSpawnContext,
+  connection?: 'uds',
 ): object {
   const pinned = Object.freeze({ ...requestInfo });
-  verifiedConnectionRequests.set(pinned, ctx);
+  verifiedConnectionRequests.set(pinned, connection ? {
+    ...ctx,
+    // Only the in-process listener supplies this value. Never infer the
+    // physical connection from model metadata or credential URL/header text.
+    requestOrigin: { ...ctx.requestOrigin, transport: 'mcp', connection },
+  } : ctx);
   return pinned;
 }
 
@@ -2229,6 +2236,7 @@ async function buildMcpToolContext(
   // Validated `_meta.idempotencyKey`, threaded to ctx so tools with durable
   // side effects can derive stable per-request identifiers across retries.
   idempotencyKey?: string,
+  signal?: AbortSignal,
 ): Promise<UnifiedToolContext> {
   // Unscoped context: workspaceId/harnessSlug may be '*' — the superuser door,
   // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
@@ -2549,7 +2557,7 @@ async function buildMcpToolContext(
       pluginName && pluginName !== 'agent-mcp'
         ? makeSecretResolver({ harnessSlug: spawn.harnessSlug, pluginName })
         : secretImpl,
-    signal: new AbortController().signal,
+    signal: signal ?? new AbortController().signal,
   };
   // Close the ctxRef loop so dispatchTool routes the target through THIS ctx.
   // Native/plugin subprocesses cross a second execution boundary inside the
@@ -3617,7 +3625,11 @@ export function registerMcpHost(server: McpServer): void {
           requestedStructured,
           requestedDelta,
           idempotencyKey ?? undefined,
+          (extra as { signal?: AbortSignal } | undefined)?.signal,
         );
+        // Cancellation may arrive during asynchronous context construction.
+        // Do not dispatch a new mutation after that already-aborted request.
+        baseCtx.signal.throwIfAborted();
         // Replay lookup (P-046 / EI-68) — a call carrying an idempotencyKey whose
         // outcome is already stored is answered from the store WITHOUT re-running
         // the tool. Best-effort: a store outage degrades to normal execution,

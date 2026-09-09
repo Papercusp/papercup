@@ -112,10 +112,12 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
     expect(t2).toBeGreaterThan(t1);
   });
 
-  it('persists sanitized requestOrigin metadata alongside reaction metadata', async () => {
+  it.each(['http', 'uds'] as const)('persists protocol and %s connection metadata alongside reaction metadata', async connection => {
     await record('pot:set-steering', {
+      transport: 'mcp',
       requestOrigin: {
         transport: 'mcp',
+        connection,
         path: '/api/mcp',
         query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
         headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },
@@ -134,6 +136,7 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
     expect(metadata).toMatchObject({
       requestOrigin: {
         transport: 'mcp',
+        connection,
         path: '/api/mcp',
         query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
         headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },

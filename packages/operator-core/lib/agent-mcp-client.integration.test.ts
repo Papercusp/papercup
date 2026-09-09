@@ -89,6 +89,32 @@ async function server() {
 }
 
 describe('owned native MCP client', () => {
+  it('reports a dispatched mutation as unknown after disconnect, without reconnect or retry', async () => {
+    const { witness, fixture } = await server();
+    const connection = await connectAgentMcp({
+      url, mode: 'auto', headers: { Authorization: 'Bearer fixture-token' }, home: h.home,
+    });
+    // The handler changes fixture state first. Kill the actual listener before
+    // its response send; SDK ConnectionClosed must not hide the unknown outcome.
+    witness.mockImplementation((event: string) => {
+      if (event === 'set') void listener!.close();
+    });
+    try {
+      await expect(connection.client.callTool({
+        name: 'fixture_set', arguments: { value: 'committed-before-disconnect' },
+      })).rejects.toMatchObject({
+        code: 'uds_outcome_unknown', outcome: 'unknown', automaticRetry: false,
+      });
+      expect(fixture.writes).toEqual(['committed-before-disconnect']);
+      expect(witness.mock.calls).toEqual([['set', 'committed-before-disconnect']]);
+      // A subsequent call is rejected without dispatch, not silently reconnected.
+      await expect(connection.client.callTool({
+        name: 'fixture_set', arguments: { value: 'must-not-run' },
+      })).rejects.toThrow();
+      expect(fixture.writes).toHaveLength(1);
+    } finally { await connection.client.close(); }
+  });
+
   it('discovers, initializes, lists and calls the actual listener without HTTP', async () => {
     const { witness, verify, fixture } = await server();
     const connection = await connectAgentMcp({

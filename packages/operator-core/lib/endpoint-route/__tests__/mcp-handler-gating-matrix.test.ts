@@ -53,6 +53,7 @@ import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import type { BuiltSpawnContext, McpCallResult } from '../routes/transport/_mcp-handler';
 import { bindAdmissionAuthority, admissionCredentialDigest } from '../../work-item-admission-authority';
 import { configurePrePromptRegistry, clearPrePromptRegistry } from '@papercusp/result-encoding';
+import { _resetBatchNudgeState } from '../../code-run-batch-nudge';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -115,7 +116,9 @@ const h = vi.hoisted(() => {
      */
     txEvents: [] as string[],
     /** Replay receipts the handler asked to persist. */
-    replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
+    replayStores: [] as Array<{ ownerKey: string; idempotencyKey: string; result: unknown }>,
+    replayLookupFromStores: false,
+    afterReplayStore: null as null | (() => Promise<void>),
     /**
      * WI-6792 seam: the stored outcome `lookupStoredMcpResult` finds, or null for
      * "no stored result" (the default — every other case in this file must keep
@@ -259,13 +262,16 @@ vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
     ...actual,
     // WI-6792: `null` unless a case arms h.storedReplay — the real lookup tags
     // the envelope `_meta.replayed`, so mirror that here.
-    lookupStoredMcpResult: async (): Promise<Record<string, unknown> | null> =>
-      h.storedReplay
-        ? { ...h.storedReplay, _meta: { ...(h.storedReplay._meta ?? {}), replayed: true } }
-        : null,
-    storeMcpResult: async (a: { idempotencyKey: string; result: unknown }): Promise<void> => {
+    lookupStoredMcpResult: async (ownerKey: string, idempotencyKey: string): Promise<Record<string, unknown> | null> => {
+      const stored = h.replayLookupFromStores
+        ? [...h.replayStores].reverse().find(row => row.ownerKey === ownerKey && row.idempotencyKey === idempotencyKey)?.result as typeof h.storedReplay
+        : h.storedReplay;
+      return stored ? { ...stored, _meta: { ...(stored._meta ?? {}), replayed: true } } : null;
+    },
+    storeMcpResult: async (a: { ownerKey: string; idempotencyKey: string; result: unknown }): Promise<void> => {
       h.txEvents.push('store');
-      h.replayStores.push({ idempotencyKey: a.idempotencyKey, result: a.result });
+      h.replayStores.push({ ownerKey: a.ownerKey, idempotencyKey: a.idempotencyKey, result: a.result });
+      await h.afterReplayStore?.();
     },
   };
 });
@@ -437,6 +443,30 @@ function probeFn(name: string) {
     return { content: [{ type: 'text' as const, text: `${name}-ok` }] };
   };
 }
+
+let cancellationProbe: null | {
+  started: () => void; aborted: () => void; release: () => void;
+} = null;
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'P007 real dispatcher cancellation witness',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: [], agentRoles: ['scoper'],
+  expose: { mcp: { name: 'gatingtest:cancel' } },
+  fn: async (_input, ctx) => {
+    await new Promise<void>(resolve => {
+      const abort = () => { cancellationProbe!.aborted(); resolve(); };
+      cancellationProbe!.release = () => {
+        ctx.signal.removeEventListener('abort', abort);
+        resolve();
+      };
+      ctx.signal.addEventListener('abort', abort, { once: true });
+      cancellationProbe!.started();
+      if (ctx.signal.aborted) abort();
+    });
+    return { content: [{ type: 'text' as const, text: 'cancelled-fixture' }] };
+  },
+});
 
 function registerLatePluginTool(): void {
   registerProjectedTool({
@@ -1213,6 +1243,83 @@ describe('authenticated admission binding through the real MCP handler', () => {
   });
 });
 
+describe('P007 recovery through the real shared dispatcher', () => {
+  it('replays a committed write after losing its response, isolated by the original caller and key', async () => {
+    h.replayLookupFromStores = true;
+    const extra = (client = 'p007-caller') => extraFor(signedUrl({ client, tools: 'gatingtest:scoped' }));
+    const call = { name: 'gatingtest:scoped', arguments: {}, _meta: { idempotencyKey: 'p007-lost-response' } };
+    await withSdkHost(extra(), async client => {
+      // Drop the ACTUAL socket after the transaction/receipt seam, before the
+      // SDK can send the response. The persistence leaf is fake; dispatch and
+      // authentication adapter, SDK and both socket endpoints are production.
+      h.afterReplayStore = async () => { await client.close(); };
+      await expect(client.callTool(call)).rejects.toThrow();
+    }, 'listener');
+    h.afterReplayStore = null;
+    expect(h.txEvents).toEqual(['commit', 'store']);
+    expect(seen.filter(x => x.tool === call.name)).toHaveLength(1);
+    expect(h.replayStores[0].ownerKey).toBe('p007-caller');
+    const stored = h.replayStores[0].result as McpCallResult;
+    await withSdkHost(extra(), async client => {
+      const result = await client.callTool(call);
+      expect(result.content).toEqual(stored.content);
+      expect(result._meta).toMatchObject({ replayed: true });
+      expect(seen.filter(x => x.tool === call.name)).toHaveLength(1);
+    }, 'listener');
+    // Positive counterexamples: a different caller OR key really executes.
+    await withSdkHost(extra('p007-other'), async client => {
+      await client.callTool(call);
+    }, 'listener');
+    await withSdkHost(extra(), async client => {
+      await client.callTool({ ...call, _meta: { idempotencyKey: 'p007-new-key' } });
+    }, 'listener');
+    expect(seen.filter(x => x.tool === call.name)).toHaveLength(3);
+    expect(h.txEvents).toEqual(['commit', 'store', 'commit', 'store', 'commit', 'store']);
+  });
+
+  it('delivers client cancellation to the running projected tool over authenticated UDS', async () => {
+    let resolveStarted!: () => void;
+    const started = new Promise<void>(resolve => { resolveStarted = resolve; });
+    const aborted = vi.fn();
+    cancellationProbe = { started: resolveStarted, aborted, release: () => {} };
+    try {
+      await withSdkHost(extraFor(signedUrl({ tools: 'gatingtest:cancel' })), async client => {
+        const controller = new AbortController();
+        const pending = client.callTool({ name: 'gatingtest:cancel', arguments: {} }, undefined, {
+          signal: controller.signal, timeout: 5_000,
+        }).catch(error => error);
+        await started;
+        expect(aborted).not.toHaveBeenCalled();
+        controller.abort();
+        await pending;
+        try { await vi.waitFor(() => expect(aborted).toHaveBeenCalledOnce(), { timeout: 1_000 }); }
+        finally { cancellationProbe!.release(); }
+      }, 'listener');
+    } finally { cancellationProbe = null; }
+  });
+
+  it.each(['http', 'listener'] as const)('records protocol=mcp separately from physical connection on %s', async connection => {
+    await withSdkHost(extraFor(signedUrl({ tools: 'gatingtest:scoped', connection: 'spoofed' })), async client => {
+      const result = await client.callTool({
+        name: 'gatingtest:scoped', arguments: {},
+        _meta: { connection: 'spoofed', transport: 'spoofed' },
+      });
+      expect(result.content).toEqual([{ type: 'text', text: 'gatingtest:scoped-ok' }]);
+      const ctx = seen.at(-1)!.ctx;
+      expect(ctx.transport).toBe('mcp');
+      expect(ctx.requestOrigin).toMatchObject({
+        transport: 'mcp', connection: connection === 'listener' ? 'uds' : 'http',
+      });
+      // The dispatcher gives handlers a derived context with its composed
+      // abort signal. Attribution must match; object identity must NOT.
+      expect([...h.invocations].reverse().find(row => row.toolName === 'gatingtest:scoped')?.ctx).toMatchObject({
+        transport: 'mcp', requestOrigin: ctx.requestOrigin,
+        workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug, spawnId: ctx.spawnId,
+      });
+    }, connection);
+  });
+});
+
 describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', () => {
   afterEach(() => clearPrePromptRegistry());
   // Catalogs are role-filtered even when SU dispatch may bypass the role gate.
@@ -1374,6 +1481,9 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
 });
 
 beforeEach(() => {
+  // Each case reuses spawn-1; a prior case's legitimate nudge must not
+  // contaminate another case's literal model-content oracle.
+  _resetBatchNudgeState();
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
   h.getSessionBrief.mockResolvedValue(null);
   seen.length = 0;
@@ -1385,6 +1495,8 @@ beforeEach(() => {
   h.commitFailure = null;
   h.txEvents.length = 0;
   h.replayStores.length = 0;
+  h.replayLookupFromStores = false;
+  h.afterReplayStore = null;
   h.storedReplay = null;
   h.invocations.length = 0;
   resetResultDoorAggregatesForTests();
