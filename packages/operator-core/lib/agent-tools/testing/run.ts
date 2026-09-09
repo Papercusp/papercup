@@ -1075,6 +1075,35 @@ export type TestFilesCoreResult =
     };
 
 /**
+ * An external Vitest invocation can leave a syntactically valid but empty JSON
+ * report behind when the process exits before it produces a verdict. Distilling
+ * that report yields an all-zero `DistilledTestRun`; returning it as the normal
+ * result shape makes `ok:false` look like an ordinary red run while omitting the
+ * only useful fact: no test file was measured. Treat an empty report as the same
+ * conservative refusal used when no report exists. Check each group before
+ * merging so a mixed-root run cannot hide one empty group behind another group's
+ * real results.
+ */
+export function emptyDistilledRunRefusal(opts: {
+  runs: readonly DistilledTestRun[];
+  runId: string;
+  root: string;
+  routerOutput: string;
+}): Extract<TestFilesCoreResult, { error: string }> | null {
+  if (!opts.runs.some((run) => run.files === 0)) return null;
+  return {
+    ok: false,
+    runId: opts.runId,
+    root: opts.root,
+    error: 'no_report',
+    hint:
+      'Vitest exited without reporting any test files, so no test verdict was measured. ' +
+      'Re-run the exact files after fixing the runner or checkout failure; do not read this as a pass or a test failure.',
+    routerOutput: opts.routerOutput.slice(-2000),
+  };
+}
+
+/**
  * A foreground timeout must return its detached recovery handle without waiting on
  * optional execution-ledger readback. The timeout path has no completed foreground
  * verdict to bind, and an unbounded test_runs query can consume the remaining MCP
@@ -2178,10 +2207,17 @@ export async function runTestFilesCore(opts: {
       // The sidecar is optional and fail-soft; JSON reports remain authoritative.
     }
 
-    const run = mergeDistilledRuns(
-      reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures, failureDetails })),
-      { maxFailures: opts.maxFailures },
+    const distilledRuns = reportTexts.map((text) =>
+      distillVitestRun(text, root, { maxFailures: opts.maxFailures, failureDetails }),
     );
+    const emptyReport = emptyDistilledRunRefusal({
+      runs: distilledRuns,
+      runId,
+      root,
+      routerOutput: outcome.output,
+    });
+    if (emptyReport) return emptyReport;
+    const run = mergeDistilledRuns(distilledRuns, { maxFailures: opts.maxFailures });
 
     // External Vitest checkouts have no Papercusp reporter to write the
     // workspace-scoped execution ledger. Reuse the Tests-tab ingestion
