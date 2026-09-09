@@ -1187,7 +1187,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await openComposer(pane);
       const prompt = `saved reconnect ${randomUUID()}`;
       pane.write(prompt); pane.enter();
-      saved = await waitForSavedTurn(prompt);
+      try {
+        saved = await waitForSavedTurn(prompt);
+      } catch (cause) {
+        throw new Error(`Reconnect seed turn did not persist on the rendered screen:\n${pane.screen()}`, { cause });
+      }
       await pane.waitFor(scriptedEngine.successText);
     } finally { await pane.stop(); }
     await stopEngines();
@@ -1197,7 +1201,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     try {
       await reopened.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
       reopened.write('o');
-      await reopened.waitFor(`pot ${HARNESS} · role operator · session new`);
+      // Startup can either restore the just-ended conversation or leave the
+      // fresh-session launcher open. Escape exits either transient surface;
+      // the same conversation picker below is the reconnect authority.
+      await reopened.waitFor('┌ Agent Chat');
       reopened.escape();
       await reopened.waitFor('i type · v speak');
       reopened.write('l');
