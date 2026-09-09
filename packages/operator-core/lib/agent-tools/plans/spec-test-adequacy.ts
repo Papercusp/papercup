@@ -791,7 +791,7 @@ export function evaluateSpecTestAdequacy(input: {
   const fixtureOutsideCurrent = fixtureBindings.filter((row) => !evidence.includes(row));
   const fixtureApplicable =
     clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || fixtureBindings.length > 0;
-  const fixtureRating = fixtureApplicable
+  const fixtureRating: AdequacyRatingEntry = fixtureApplicable
     ? booleanRating(evidence, (d) => d.fixtureCalibrated, {
         pass: 'An applicable binding explicitly attests fixtureCalibrated=true.',
         fail: 'Applicable binding metadata explicitly attests fixtureCalibrated=false.',
