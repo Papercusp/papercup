@@ -1489,6 +1489,7 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
       expect(existsSync(join(home, relDir('isolated')))).toBe(false);
       expect(ompTrackedResumeEnv({ agent: 'omp', id: 'isolated' }, { home })).toEqual({
         PI_CONFIG_DIR: dir, PI_CODING_AGENT_DIR: agentHome,
+        PAPERCUSP_MCP_TRANSPORT: "http",
       });
     } finally { vi.unstubAllEnvs(); }
   });
@@ -1556,6 +1557,8 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
       // A role must never gain the user SU adapter even with a native env.
       expect(resumeArgsFor({ ...session, role: "reviewer" }, { env }).args.join(" "))
         .not.toContain("native-extension.mjs");
+      expect(() => ompTrackedResumeEnv({ ...session, role: "reviewer" }, { home }))
+        .toThrow("role-scoped resume");
     } finally { vi.unstubAllEnvs(); }
   });
 
@@ -1570,11 +1573,36 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
         remote: { type: "http", url: "https://remote.example/api/mcp" },
       } };
       writeFileSync(join(home, ".omp", "agent", "mcp.json"), JSON.stringify(remote));
-      writeOmpSessionConfigDir("remote", { nativeMcp: true }, home);
+      writeOmpSessionConfigDir("remote", {
+        nativeMcp: true, operatorUrl: "https://remote.example",
+      }, home);
       const saved = JSON.parse(readFileSync(agentPath("remote", "mcp.json"), "utf8"));
       expect(saved.papercuspNativeMcp).toBeUndefined();
-      expect(saved.mcpServers.remote.url).toBe(remote.mcpServers.remote.url);
+      expect(new URL(saved.mcpServers.remote.url).origin).toBe("https://remote.example");
     } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("does not adopt a parent native transport when resuming a saved HTTP profile", () => {
+    writeOmpSessionConfigDir("http", {}, home);
+    vi.stubEnv("PAPERCUSP_MCP_TRANSPORT", "uds");
+    try {
+      const session = { agent: "omp", role: "su", id: "http", ompThreadId: "http-thread" };
+      const env = ompTrackedResumeEnv(session, { home });
+      expect(env.PAPERCUSP_MCP_TRANSPORT).toBe("http");
+      expect(resumeArgsFor(session, { env }).args.join(" ")).not.toContain("native-extension.mjs");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([
+    "{",
+    JSON.stringify({ papercuspNativeMcp: { version: 2, mode: "uds", servers: { fixture: {} } } }),
+    JSON.stringify({ papercuspNativeMcp: { version: 1, mode: "stdio", servers: { fixture: {} } } }),
+    JSON.stringify({ papercuspNativeMcp: { version: 1, mode: "uds", servers: {} } }),
+  ])("rejects an unreadable or incompatible saved MCP profile instead of losing its tools: %s", (config) => {
+    writeOmpSessionConfigDir("invalid", {}, home);
+    writeFileSync(agentPath("invalid", "mcp.json"), config);
+    expect(() => ompTrackedResumeEnv({ agent: "omp", role: "su", id: "invalid" }, { home }))
+      .toThrow("refusing an incomplete resume");
   });
 
   // NOT "full mode": discoveryOff accompanies the trimmed SEED and is explicitly not

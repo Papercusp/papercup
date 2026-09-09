@@ -1572,7 +1572,9 @@ export async function resolvePriorAttemptRefs(
   const workItemId =
     opts.workItemId ??
     opts.workItem?.id ??
-    (opts.target ? `${opts.target.kind}:${opts.target.ref}` : null) ??
+    (opts.target
+      ? opts.target.kind === 'work_item' ? opts.target.ref : `${opts.target.kind}:${opts.target.ref}`
+      : null) ??
     (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
   if (!workItemId) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);

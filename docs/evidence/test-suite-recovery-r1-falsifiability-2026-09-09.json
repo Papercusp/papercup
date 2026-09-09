@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "test-suite-recovery-2026-08-27 R-1 (AUTO-BAR-R-1-P-001) falsifiability negative control — cargo-admission-reach",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "scripts/lib/cargo-result.mjs",
+    "--in-tree",
+    "--sweep-lock-held",
+    "--mutate",
+    "s/'debug', 'release'/'release'/",
+    "--test",
+    "npm run test:file -- packages/operator-core/lib/__tests__/report-cargo-tests.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-09T13:22:06Z",
+  "finishedAt": "2026-09-09T13:22:47Z",
+  "summary": "Tier-3 in-tree mutation probe demonstrating that the R-1 guard (packages/operator-core/lib/__tests__/report-cargo-tests.test.ts) genuinely fails when the behaviour it asserts is broken. Dropping the 'debug' profile from CARGO_PROFILE_DIR_NAMES (scripts/lib/cargo-result.mjs:289) took the suite from 57/57 passing to 10 failed / 47 passed, so the mutant was CAUGHT: MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1 mutant_parse=ok. Probe exit 0 means the guard failed on the mutant, which is the success condition for falsifiability. Run under locks:acquire on scripts/lib/cargo-result.mjs (lock 856380aa-304b-42bd-833e-31f90938c601) per the sweep-race rule, and the probe verified the file byte-identical to its pre-probe state afterwards. Tested at HEAD 765418ba63 with the tested path reported clean (TEST_FILE_PROVENANCE uncommitted=0). Recorded via testing:record-run because mutation-probe runs can never reach the Vitest ledger themselves: the probe exports PAPERCUSP_MUTATION_PROBE=1 (scripts/mutation-probe.sh:738) and admin-test-runs-reporter.ts:298 deliberately skips those runs, since a mutant red is falsifiability evidence rather than repository-health evidence.",
+  "assertions": [
+    {
+      "id": "baseline-green",
+      "passed": true,
+      "evidence": "Unmutated baseline run of packages/operator-core/lib/__tests__/report-cargo-tests.test.ts: 'Test Files 1 passed (1)', 'Tests 57 passed (57)', baseline_exit=0. Establishes the guard is green before mutation, so the later red is attributable to the mutation and not a pre-existing failure."
+    },
+    {
+      "id": "mutation-actually-applied",
+      "passed": true,
+      "evidence": "Probe-reported diff at scripts/lib/cargo-result.mjs:289: '-const CARGO_PROFILE_DIR_NAMES = Object.freeze(['debug', 'release']);' / '+const CARGO_PROFILE_DIR_NAMES = Object.freeze(['release']);'. Probe logged 'mutant applied: 9806cbbf -> changed (in-tree:lock-held)', so this was not a no-op mutation."
+    },
+    {
+      "id": "mutant-parses",
+      "passed": true,
+      "evidence": "mutant_parse=ok in MUTATION_PROBE_RESULT. The mutant is a genuine behavioural change that still parses, not a syntax error that would make any suite fail for the wrong reason."
+    },
+    {
+      "id": "mutant-caught",
+      "passed": true,
+      "evidence": "Mutant guard run: 'Test Files 1 failed (1)', 'Tests 10 failed | 47 passed (57)', guard_exit=1. Ten distinct assertions detected the removal of the 'debug' profile, demonstrating the guard's red capability for the cargo-admission-reach criterion."
+    },
+    {
+      "id": "tree-restored",
+      "passed": true,
+      "evidence": "Probe reported 'tree integrity: VERIFIED' for scripts/lib/cargo-result.mjs (repo-relative), stating the file is byte-identical to its pre-probe state. Confirmed independently after the run: line 289 reads Object.freeze(['debug', 'release']) and 'git status --porcelain scripts/lib/cargo-result.mjs' is empty."
+    }
+  ]
+}

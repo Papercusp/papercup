@@ -559,11 +559,12 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
  * and codex via its own config; passing --hook to either is meaningless.
  */
 export function resolveOmpInjectHookPath(agent: any, home?: string): string | undefined;
-export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, }?: {
+export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, env, }?: {
     fork?: boolean | undefined;
     forkSessionId?: null | undefined;
     addDir?: never[] | undefined;
     model?: null | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
 }): {
     bin: string;
     args: any[];
@@ -1325,13 +1326,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
  * keep dropping xai-oauth / other logins even after a fresh-launch fix. */
 export function ompTrackedResumeEnv(session: any, { home }?: {
     home?: string | undefined;
-}): {
-    PI_CONFIG_DIR?: undefined;
-    PI_CODING_AGENT_DIR?: undefined;
-} | {
-    PI_CONFIG_DIR: string;
-    PI_CODING_AGENT_DIR: string;
-};
+}): {};
 export function ompDirectModelForRoute(model: any): any;
 /** Apply a selected OMP route to the exact per-session registry used by resume.
  * Auto/pin replace models.yml with the generated gateway provider; default

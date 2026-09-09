@@ -2068,6 +2068,7 @@ export function resumeArgsFor(
     addDir = [],
     allowSubagents,
     model = null,
+    env = process.env,
   } = {},
 ) {
   // --fork is native for claude and codex; omp has no branch-the-session flag,
@@ -2123,8 +2124,8 @@ export function resumeArgsFor(
     if (coordExtPath) args.push("-e", coordExtPath);
     // Signed role profiles still use their selected HTTP configuration. Never
     // load a user-level SU native profile into a role-scoped resumed agent.
-    if (!session.role || SU_TIER_ROLES.includes(session.role))
-      args.push(...nativeOmpExtensionArgs("omp"));
+    if (!session.role || launchesOnSuTier(session.role))
+      args.push(...nativeOmpExtensionArgs("omp", env));
     // omp-context-injection-parity P-003. CLI flags do not persist into an omp
     // resume, so the injection hook must be re-passed every resume exactly like
     // the coord extension above — otherwise a resumed session silently loses
@@ -4738,9 +4739,28 @@ export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
   if (!existsSync(root)) return {};
   const agentDir = join(root, "agent");
   linkOmpAgentDb(join(home, ".omp", "agent"), agentDir);
+  // The launcher moved eligible servers out of the stock MCP map. A resume
+  // from a new shell must therefore load the adapter from this saved profile,
+  // not from an opt-in env var the shell may no longer export. Conversely a
+  // legacy HTTP profile must not inherit a parent's unrelated UDS opt-in.
+  const configPath = join(agentDir, "mcp.json");
+  let transportEnv = {};
+  if (existsSync(configPath)) {
+    let config;
+    try { config = JSON.parse(readFileSync(configPath, "utf8")); }
+    catch { throw new Error("Saved OMP MCP configuration is unreadable; refusing an incomplete resume"); }
+    const native = config?.papercuspNativeMcp;
+    if (native && (native.version !== 1 || !["uds", "auto"].includes(native.mode) ||
+        !native.servers || !Object.keys(native.servers).length))
+      throw new Error("Saved OMP native MCP configuration is invalid; refusing an incomplete resume");
+    if (native && session.role && !launchesOnSuTier(session.role))
+      throw new Error("Saved SU native MCP configuration cannot be used by a role-scoped resume");
+    transportEnv = { PAPERCUSP_MCP_TRANSPORT: native?.mode ?? "http" };
+  }
   return {
     PI_CONFIG_DIR: rel,
     PI_CODING_AGENT_DIR: agentDir,
+    ...transportEnv,
   };
 }
 
@@ -11095,6 +11115,7 @@ async function launchResume(
     const { bin, args } = resumeArgsFor(session, {
       coordExtPath,
       injectHookPath,
+      env,
       fork,
       addDir,
       allowSubagents,

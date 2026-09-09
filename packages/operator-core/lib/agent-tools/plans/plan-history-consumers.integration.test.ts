@@ -236,6 +236,9 @@ describe('bounded plan history production consumers', () => {
     const raw = await resolvePriorAttemptRefs({
       target: { kind: 'work_item', ref: CHILD, harness: HARNESS }, harness: HARNESS, rawRefs: [rawRef],
     });
+    const direct = await resolvePriorAttemptRefs({ workItemId: CHILD, harness: HARNESS, rawRefs: [rawRef] });
+    expect(direct?.unresolved).toEqual([]);
+    expect(direct?.records[0]?.text).toBe(note);
     expect(raw?.unresolved).toEqual([]);
     expect(raw?.records[0]?.text).toBe(note);
   });

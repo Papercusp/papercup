@@ -180,6 +180,22 @@ describe('scorecards:get evidence-first projection', () => {
     )).resolves.toMatchObject({ data: { ok: false, error: 'invalid_evidence_offset' } });
   });
 
+  it('fails explicitly when even the criterion index cannot fit instead of letting transport silently trim it', async () => {
+    readScorecardEvidenceM.mockResolvedValue({
+      kind: 'found',
+      scorecard: { ...scorecard, criteria: Array.from({ length: 300 }, (_, i) => ({
+        key: `criterion-${i}`, rating: 'pass', evidence: 'x'.repeat(200),
+      })) },
+    });
+    const dispatched = await dispatchProjectedTool(
+      lookupByMcpName('scorecards:get')!, 'scorecards:get',
+      { issueId: scorecard.issueId }, makeDispatchContext(), {},
+    );
+    expect(readJsonResult(dispatched.result!)).toMatchObject({
+      ok: false, error: 'scorecard_index_exceeds_inline_budget',
+    });
+  });
+
   it('preserves typed transient contention failures', async () => {
     readScorecardEvidenceM.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
     await expect(getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext())).resolves.toMatchObject({

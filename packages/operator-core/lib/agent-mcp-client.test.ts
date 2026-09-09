@@ -17,6 +17,9 @@ import { agentMcpMode, connectAgentMcp, localAgentMcpPort, prepareNativeOmpConfi
 import { writeEndpointIpcDiscovery } from './endpoint-ipc-discovery';
 import { startAgentMcpServer, type AgentMcpListener } from './endpoint-route/routes/transport/_mcp-uds';
 import type { BuiltSpawnContext } from './endpoint-route/routes/transport/_mcp-host';
+import {
+  nativeOmpExtensionArgs, ompTrackedResumeEnv, resumeArgsFor, writeOmpSessionConfigDir,
+} from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 let listener: AgentMcpListener | undefined;
 beforeEach(async () => {
@@ -173,13 +176,30 @@ describe('installed clients using the built production adapter', () => {
     expect(witness.mock.calls).toContainEqual(['call', { row: 'cli-row' }]);
   }, 25_000);
 
-  it.skipIf(!omp)('runs installed OMP tools through the packaged native extension and real listener', async () => {
-    const { witness } = await server();
-    const agentDir = join(h.home, 'agent');
-    await mkdir(agentDir);
-    await writeFile(join(agentDir, 'mcp.json'), prepareNativeOmpConfig(JSON.stringify({
-      mcpServers: { papercusp: { type: 'http', url, headers: { Authorization: 'Bearer fixture-token' } } },
-    }), { mode: 'uds', home: h.home }), { mode: 0o600 });
+  it.skipIf(!omp)('runs installed OMP through the launcher profile and resumes the same native session over UDS', async () => {
+    const { witness, verify } = await server();
+    const sourceAgentDir = join(h.home, '.omp', 'agent');
+    await mkdir(sourceAgentDir, { recursive: true });
+    await writeFile(join(sourceAgentDir, 'config.yml'), 'tools:\n  discoveryMode: false\n');
+    await writeFile(join(sourceAgentDir, 'mcp.json'), JSON.stringify({
+      mcpServers: { papercusp: { type: 'http', url, headers: {
+        Authorization: 'Bearer fixture-token',
+        'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
+        'x-papercusp-workspace': '!printf %s "${PAPERCUSP_WORKSPACE:-}"',
+        'x-papercusp-profile': '!printf %s "${PAPERCUSP_PROFILE:-}"',
+      } } },
+    }), { mode: 0o600 });
+    vi.stubEnv('PAPERCUSP_MCP_TRANSPORT', 'uds');
+    const rel = writeOmpSessionConfigDir('p005-runtime', {
+      nativeMcp: true, clientId: 'fixture-agent', operatorUrl: 'http://127.0.0.1:33170',
+      mcpEnv: { PAPERCUSP_WORKSPACE: 'fixture', PAPERCUSP_PROFILE: 'fixture-profile' },
+    }, h.home);
+    expect(rel).toBeTruthy();
+    const freshEnv = {
+      PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: h.home,
+      PI_CONFIG_DIR: rel!, PI_CODING_AGENT_DIR: join(h.home, rel!, 'agent'),
+    };
+    const freshArgs = nativeOmpExtensionArgs('omp');
     const provider = join(h.home, 'offline-provider.mjs');
     // An offline deterministic provider drives OMP's actual agent loop. It
     // cannot implement the tool or its transport; those come from the package.
@@ -204,13 +224,14 @@ export default function(pi) {
  });
 }
 `, { mode: 0o600 });
+    const run = async (args: string[], env: NodeJS.ProcessEnv): Promise<string> => {
     const child = spawn(omp!, [
-      '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-rules', '--no-session',
-      '--extension', join(repo, 'packages/omp-plugin/dist/native-extension.mjs'),
+      '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-rules',
+      ...args,
       '--extension', provider, '--model', 'p005-offline/proof',
     ], {
       cwd: h.home, stdio: 'pipe',
-      env: { PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: h.home, PI_CODING_AGENT_DIR: agentDir },
+      env,
     });
     const closed = once(child, 'close');
     const frames: Array<Record<string, any>> = [];
@@ -236,18 +257,42 @@ export default function(pi) {
     };
     try {
       await wait(() => frames.some(x => x.type === 'ready'));
+      child.stdin.write(JSON.stringify({ id: 'native-state', type: 'get_state' }) + '\n');
+      await wait(() => frames.some(x => x.id === 'native-state'));
+      const state = frames.find(x => x.id === 'native-state');
+      expect(state?.success).toBe(true);
+      expect(state?.data?.sessionId).toEqual(expect.any(String));
       child.stdin.write(JSON.stringify({ id: 'native-call', type: 'prompt', message: 'Invoke the MCP fixture.' }) + '\n');
       await wait(() => frames.some(x => x.type === 'agent_end'));
       const calls = frames.filter(x => x.type === 'tool_execution_end');
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ toolName: 'mcp__papercusp_echo', isError: false });
       expect(calls[0].result.content).toEqual([{ type: 'text', text: 'compact-result' }]);
-      expect(witness.mock.calls).toContainEqual(['call', { row: 'omp-row' }]);
-      expect(witness.mock.calls.filter(x => x[0] === 'call')).toHaveLength(1);
+      return state!.data.sessionId;
     } finally {
       child.stdin.end();
       const timer = setTimeout(() => child.kill('SIGKILL'), 2_000);
       try { await closed; } finally { clearTimeout(timer); }
     }
-  }, 25_000);
+    };
+    const sessionId = await run(freshArgs, freshEnv);
+    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([['call', { row: 'omp-row' }]]);
+    // Fresh process and no ambient opt-in: restore from the launcher-written
+    // config, pass the REAL saved native id, and prove the resumed tool runs.
+    vi.stubEnv('PAPERCUSP_MCP_TRANSPORT', '');
+    const session = { agent: 'omp', role: 'su', id: 'p005-runtime', ompThreadId: sessionId };
+    const restoredEnv = { ...freshEnv, ...ompTrackedResumeEnv(session, { home: h.home }) };
+    const resume = resumeArgsFor(session, { env: restoredEnv });
+    expect(resume.bin).toBe('omp');
+    expect(await run(resume.args, restoredEnv)).toBe(sessionId);
+    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([
+      ['call', { row: 'omp-row' }], ['call', { row: 'omp-row' }],
+    ]);
+    for (const [extra] of verify.mock.calls) {
+      expect(extra).toMatchObject({ requestInfo: { headers: {
+        'x-papercusp-client': 'fixture-agent', 'x-papercusp-workspace': 'fixture',
+        'x-papercusp-profile': 'fixture-profile',
+      } } });
+    }
+  }, 45_000);
 });
