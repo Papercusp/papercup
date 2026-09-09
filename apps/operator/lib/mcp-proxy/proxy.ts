@@ -754,6 +754,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "docs:outline",
   "search:fulltext",
   "search:semantic",
+  // session transcript recall is a read-only search; replaying after a stale-socket
+  // reset cannot double-apply a mutation.
+  "sessions:search",
   // memory recall (search ONLY — remember/forget mutate the store)
   "memory:search",
   // work-item / plan reads

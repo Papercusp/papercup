@@ -629,6 +629,24 @@ describe("postConnectRetryable — write-free requests only", () => {
 // EI-21268234394605529 guard: the curated allowlist must NEVER contain a mutating verb —
 // a write wrongly listed here would be silently double-applied on a post-connect replay.
 describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
+  it("classifies sessions:search as replay-safe", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "sessions:search", arguments: { query: "needle" } },
+      }),
+    );
+
+    expect(
+      prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: () => "00000000-0000-4000-8000-000000000000",
+      }).klass,
+    ).toBe("readonly");
+  });
+
   it("never lists a known-mutating tool", () => {
     const writers = [
       "capability:bash",
@@ -1856,6 +1874,30 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     const r = await request(
       port(proxy),
       '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck","arguments":{}}}',
+    );
+    expect(r.status).toBe(200);
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-21398388520825280: sessions:search retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"total_hits":0,"results":[]}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sessions:search","arguments":{"query":"needle"}}}',
     );
     expect(r.status).toBe(200);
     expect(upstream.hits()).toBe(2);
