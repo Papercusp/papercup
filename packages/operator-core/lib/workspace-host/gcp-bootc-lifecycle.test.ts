@@ -146,6 +146,13 @@ describe('P-305 guest lifecycle contract', () => {
     expect(script).toContain('wrong-signing-key-was-accepted');
     expect(script).toContain('workspace-user-can-read-runtime');
     expect(script).toContain('agent-user-can-read-state');
+    expect(script).toContain('runtime_read_group=papercusp-runtime-read');
+    expect(script).toContain('runtime-read-gid-drift');
+    expect(script).toContain('runtime-release-group-drift');
+    expect(script).toContain('workspace-user-in-runtime-read-group');
+    expect(script).toContain('service-cannot-read-runtime');
+    expect(script).toContain('runtime-still-relies-on-named-user-acl');
+    expect(script).not.toContain('runtime-agent-acl-missing');
     expect(script).toContain("'default:user:papercusp-agent:rwx'");
     expect(script).toContain('/var/lib/papercusp/p305-lifecycle');
     expect(script).not.toContain('rm -rf');

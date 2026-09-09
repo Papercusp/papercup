@@ -147,9 +147,10 @@ state_root=/var/lib/papercusp
 service_user=papercusp
 workspace_user=papercusp-workspace
 agent_user=papercusp-agent
+runtime_read_group=papercusp-runtime-read
 
 fail() { printf 'PAPERCUSP-P305-FAIL phase=%s %s\\n' "$phase" "$*" >&2; exit 1; }
-for command in bootc cut getfacl getent grep journalctl openssl readlink runuser sed sha256sum skopeo systemctl tail; do
+for command in bootc cut find getfacl getent grep journalctl openssl readlink runuser sed sha256sum skopeo stat systemctl tail; do
   command -v "$command" >/dev/null 2>&1 || fail "missing-command=$command"
 done
 
@@ -179,6 +180,28 @@ done
 if id -nG "$workspace_user" | tr ' ' '\\n' | grep -Fx papercusp >/dev/null; then
   fail workspace-user-in-service-group
 fi
+if id -nG "$agent_user" | tr ' ' '\\n' | grep -Fx papercusp >/dev/null; then
+  fail agent-user-in-service-group
+fi
+for account in "$service_user" "$agent_user"; do
+  id -nG "$account" | tr ' ' '\\n' | grep -Fx "$runtime_read_group" >/dev/null \
+    || fail "runtime-read-group-missing=$account"
+done
+if id -nG "$workspace_user" | tr ' ' '\\n' | grep -Fx "$runtime_read_group" >/dev/null; then
+  fail workspace-user-in-runtime-read-group
+fi
+[[ "$(getent group "$runtime_read_group" | cut -d: -f3)" == 912 ]] || fail runtime-read-gid-drift
+runtime_member_count="$(getent group "$runtime_read_group" | cut -d: -f4 | tr ',' '\\n' | sed '/^$/d' | wc -l)"
+[[ "$runtime_member_count" == 2 ]] || fail "runtime-read-member-count=$runtime_member_count"
+runtime_release="$runtime_root/releases/$actual_release"
+for path in "$runtime_root" "$runtime_root/releases" "$runtime_release"; do
+  [[ "$(stat -c '%U:%G:%a' "$path")" == "root:$runtime_read_group:750" ]] \
+    || fail "runtime-metadata=$path:$(stat -c '%U:%G:%a' "$path")"
+done
+[[ -z "$(find "$runtime_release" -xdev ! -group "$runtime_read_group" -print -quit)" ]] \
+  || fail runtime-release-group-drift
+runuser -u "$service_user" -- test -r "$runtime_root/current" || fail service-cannot-read-runtime
+runuser -u "$service_user" -- test -x "$runtime_root/current" || fail service-cannot-traverse-runtime
 runuser -u "$agent_user" -- test -r "$runtime_root/current" || fail agent-cannot-read-runtime
 runuser -u "$agent_user" -- test -x "$runtime_root/current" || fail agent-cannot-traverse-runtime
 if runuser -u "$workspace_user" -- test -r "$runtime_root/current"; then
@@ -188,8 +211,9 @@ runuser -u "$service_user" -- test -r "$state_root" || fail service-cannot-read-
 if runuser -u "$workspace_user" -- test -r "$state_root"; then fail workspace-user-can-read-state; fi
 if runuser -u "$agent_user" -- test -r "$state_root"; then fail agent-user-can-read-state; fi
 
-getfacl -cp "$runtime_root" | grep -Fx 'user:papercusp-agent:r-x' >/dev/null \
-  || fail runtime-agent-acl-missing
+if getfacl -cp "$runtime_root" | grep -q '^user:papercusp-agent:'; then
+  fail runtime-still-relies-on-named-user-acl
+fi
 workspace_acl="$(getfacl -cp "$workspace_root")"
 for entry in \
   'user:papercusp:rwx' \
