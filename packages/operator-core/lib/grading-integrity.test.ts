@@ -507,7 +507,22 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
-  it('retires a deduped auditor whose gateway-5xx turn completed and launches the Codex fallback', async () => {
+  it.each([
+    {
+      screen: 'gateway 5xx',
+      gatewayLog:
+        '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +
+        'issue, usually temporary — try again in a moment. If it persists, check your inference gateway ' +
+        '(127.0.0.1:8788).\r\n' +
+        '\u001b[38;5;246m✻ Cooked for 12m 56s · done 11:27 AM\u001b[0m\r\n❯',
+    },
+    {
+      screen: 'gateway 429',
+      gatewayLog:
+        '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +
+        'throttled; retry after 60s\u001b[0m\r\n\r\n✻ Worked for 13m 45s · done 9:09 AM\r\n❯',
+    },
+  ])('retires a deduped auditor whose $screen turn completed and launches the Codex fallback', async ({ gatewayLog }) => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-gateway-500')]);
     d.launch
@@ -524,12 +539,6 @@ describe('dispatchPendingGradingAudits', () => {
         }),
       );
     const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
-    const gatewayLog =
-      '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +
-      'issue, usually temporary — try again in a moment. If it persists, check your inference gateway ' +
-      '(127.0.0.1:8788).\r\n' +
-      '\u001b[38;5;246m✻ Cooked for 12m 56s · done 11:27 AM\u001b[0m\r\n❯';
-
     const result = await dispatchPendingGradingAudits(
       { targetIds: ['EI-gateway-500'], ctx, harness: 'papercusp' },
       {

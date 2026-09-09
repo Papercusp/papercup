@@ -252,7 +252,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowStandaloneWeeklyLimit?: boolean;
     /**
      * A controlled launch whose prompt cannot quote a terminal gateway screen may
-     * opt into the exact 5xx + completed-turn detector. Keep this false for the
+     * opt into the exact gateway-error + completed-turn detector. Keep this false for the
      * general acceptance prompt because frozen evidence can contain error prose.
      */
     allowInferenceGatewayError?: boolean;
@@ -348,7 +348,7 @@ export function classifyAcceptanceGraderTerminalFailure(
     };
   }
 
-  // EI-22707978312331135: a headless Claude turn can terminate on a gateway 5xx,
+  // EI-22707978312331135 / EI-22785693779266633: a headless Claude turn can terminate on a gateway error,
   // render its completed-turn footer, and return to an idle prompt while the
   // enclosing process stays alive. The process ledger therefore says "running"
   // forever, and an idempotent recovery launch dedupes back to the same dead
@@ -357,7 +357,7 @@ export function classifyAcceptanceGraderTerminalFailure(
   // acceptance prompt cannot retire a healthy grader.
   const gatewayError = allowInferenceGatewayError
     ? normalized.match(
-        /API Error:\s*5\d{2}\s+inference-gateway internal error\.[\s\S]{0,800}?Cooked for [^\n]{1,120}?\s*·\s*done\b/i,
+        /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)\s*·\s*inference-gateway:\s*all accounts\s+throttled;\s*retry after \d+s)[\s\S]{0,800}?(?:Cooked|Worked) for [^\n]{1,120}?\s*·\s*done\b/i,
       )
     : null;
   if (gatewayError) {

@@ -611,6 +611,31 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it('matches the completed gateway pool-exhaustion screen only for a controlled caller', () => {
+    const error =
+      '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +
+      'throttled; retry after 60s\u001b[0m';
+    const raw = error + '\r\n\r\n✻ Worked for 13m 45s · done 9:09 AM\r\n❯';
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(error, { allowInferenceGatewayError: true })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'inference_gateway_error',
+      evidence:
+        'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Worked for 13m 45s · done',
+    });
+    expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace(' · done', ' · retrying'), {
+        allowInferenceGatewayError: true,
+      }),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace('inference-gateway: all accounts', 'another upstream'), {
+        allowInferenceGatewayError: true,
+      }),
+    ).toBeNull();
+  });
+
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),
