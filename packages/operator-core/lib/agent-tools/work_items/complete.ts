@@ -75,7 +75,9 @@ import {
 import {
   CompletionRecordSchema,
   COMPLETION_COVERAGE_CONTRACT,
+  ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
   ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES,
+  missingRootCauseVerificationV2Fields,
   hasMalformedCoverageShape,
   stripNulBytesDeep,
   type CompletionCoverage,
@@ -105,6 +107,26 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 // budget so the MCP transport uses 125s (timeout + its 5s buffer) instead of
 // cutting the idempotent mutation off at the flat 55s boundary.
 export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
+
+/**
+ * One versioned definition for the handler's completion-requirement set. The
+ * validator below keys every result to these entries, and validation-only
+ * responses return the same definition instead of maintaining a second prose
+ * contract that can drift from runtime.
+ */
+export const WORK_ITEMS_COMPLETION_CONTRACT = {
+  version: 'work-items-completion-v2',
+  requirements: [
+    { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
+    { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
+    { key: 'spec-test-adequacy', description: 'Affected first-class specs have current independently audited proof.' },
+    { key: 'design-evidence', description: 'Enforced ratified design cases have current passing evidence.' },
+    { key: 'verification-coverage', description: 'Universal verification claims enumerate a complete population partition.' },
+    { key: 'self-review', description: 'Pilot self-review evidence is present and ledger-visible when applicable.' },
+    { key: 'gate-red-lineage', description: 'A claimed red-gate repair is admitted on the judged lineage.' },
+  ],
+} as const;
+type CompletionContractRequirementKey = (typeof WORK_ITEMS_COMPLETION_CONTRACT.requirements)[number]['key'];
 
 /**
  * EI-22166138797743784: completion settlement is local-only. A proposed close whose
@@ -543,6 +565,8 @@ const itemSpec = z.object({
   outputPayload: z.unknown().optional(),
   /** Current proof attestation for a terminal close covering first-class spec clauses. */
   specAdequacy: specAdequacyCompletionSpec.optional(),
+  /** Evaluate the complete versioned close contract without recording evidence or changing lifecycle. */
+  validateOnly: z.boolean().optional(),
   /**
    * P-017 (b) gate #2 / D-016 / D-050 — REQUIRED for close-intent items.
    *
@@ -2740,13 +2764,34 @@ async function completeOne(
   // complete.*.test.ts assertions — and any agent that learned a message by heart —
   // valid. Keep each gate's message verbatim when editing one.
   const gateRefusals: Array<{ error: string; fields?: Record<string, unknown> }> = [];
+  const completionContractRequirements = WORK_ITEMS_COMPLETION_CONTRACT.requirements.map((requirement) => ({
+    ...requirement,
+    applicable: false,
+    satisfied: null as boolean | null,
+  }));
+  const setContractRequirement = (
+    key: CompletionContractRequirementKey,
+    applicable: boolean,
+    error?: string,
+  ): void => {
+    const requirement = completionContractRequirements.find((candidate) => candidate.key === key);
+    if (!requirement) return;
+    requirement.applicable = applicable;
+    requirement.satisfied = applicable ? !error : null;
+  };
+  const completionContract = () => ({
+    version: WORK_ITEMS_COMPLETION_CONTRACT.version,
+    requirements: completionContractRequirements,
+  });
   const refuseGate = (error: string, fields?: Record<string, unknown>): void => {
     gateRefusals.push(fields ? { error, fields } : { error });
   };
 
-  if (closeIntentRequested && it.assumptions === undefined) {
-    refuseGate(ASSUMPTIONS_REQUIRED_MESSAGE);
-  }
+  const assumptionsContractError = closeIntentRequested && it.assumptions === undefined
+    ? ASSUMPTIONS_REQUIRED_MESSAGE
+    : undefined;
+  setContractRequirement('assumptions', closeIntentRequested, assumptionsContractError);
+  if (assumptionsContractError) refuseGate(assumptionsContractError);
 
   // EI-18793465701838962: successful defect closes need a falsifiable causal
   // record, not a plausible post-hoc explanation. `capability-gap` is not a
@@ -2771,15 +2816,30 @@ async function completeOne(
     );
   const rootCauseVerificationRequired =
     closeIntentRequested && successfulClose && (existing.kind === 'bug' || capabilityGapItem);
+  const missingRootCauseFields = rootCauseVerificationRequired
+    ? missingRootCauseVerificationV2Fields(it.completion.rootCauseVerification)
+    : [];
+  let rootCauseVerificationError: string | undefined;
   if (rootCauseVerificationRequired && !it.completion.rootCauseVerification) {
-    const rootCauseVerificationError =
+    rootCauseVerificationError =
       `REJECTED — ${it.id} is a successful ${existing.kind === 'bug' ? 'bug' : 'capability-gap'} close, but ` +
       'completion.rootCauseVerification is missing. Add { hypothesis, alternativeHypothesis, ' +
-      'distinguishingTest: "if H1 then observable A; if H2 then observable B", testResult } so the ' +
+      'distinguishingTest: "if H1 then observable A; if H2 then observable B", testResult, testProcedure, ' +
+      'predictedObservations:{hypothesis,alternativeHypothesis}, actualObservation, evidenceRefs } so the ' +
       'record preserves what would have looked different if the claimed cause were wrong. No completion ' +
       'record or state transition was written.';
-    refuseGate(rootCauseVerificationError, { rootCauseVerificationError });
+  } else if (rootCauseVerificationRequired && missingRootCauseFields.length > 0) {
+    rootCauseVerificationError =
+      `REJECTED — ${it.id} completion.rootCauseVerification is incomplete for causal-evidence contract ` +
+      `v${ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION}. Missing: ${missingRootCauseFields.join(', ')}. ` +
+      'Supply the exact test procedure, the predicted observation under each hypothesis, the actual observation, ' +
+      'and durable evidenceRefs. No completion record or state transition was written.';
   }
+  setContractRequirement('root-cause-verification', rootCauseVerificationRequired, rootCauseVerificationError);
+  if (rootCauseVerificationError) refuseGate(rootCauseVerificationError, {
+    rootCauseVerificationError,
+    missingRootCauseVerificationFields: missingRootCauseFields,
+  });
 
   // EI-20245220770262027: assigneeMismatchWarning used to be advisory even when this call
   // requested a terminal transition. That let a wrong-id completion apply the state and clear
@@ -2831,7 +2891,7 @@ async function completeOne(
       if (!gate.ok) {
         const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
         const failedGradingAuditTargetIds = gate.failedGradingAuditTargetIds;
-        const gradingAuditDispatch = pendingGradingAuditTargetIds?.length
+        const gradingAuditDispatch = pendingGradingAuditTargetIds?.length && !it.validateOnly
           ? await dispatchPendingGradingAudits({
               targetIds: pendingGradingAuditTargetIds,
               ctx,
@@ -2872,18 +2932,23 @@ async function completeOne(
             },
           },
         );
+        setContractRequirement('spec-test-adequacy', true, gate.reason);
       } else {
         // Only reachable when the gate PASSED, so these success-path values can never be
         // populated from a failed verdict now that the refusal above no longer returns.
         specAdequacyImpactReport = gate.impactReport;
         if (gate.applicable) specAdequacyChecked = gate.checked;
+        setContractRequirement('spec-test-adequacy', true);
       }
     } catch (error) {
-      refuseGate(
+      const specAdequacyError =
         `refusing terminal completion for '${it.id}': spec-test-adequacy gate could not establish a current verdict (${error instanceof Error ? error.message : String(error)}). ` +
-          'This is retryable; no completion record or state transition was written.',
+        'This is retryable; no completion record or state transition was written.';
+      refuseGate(
+        specAdequacyError,
         { specAdequacy: { applicable: true, retryable: true, checked: [] } },
       );
+      setContractRequirement('spec-test-adequacy', true, specAdequacyError);
     }
   }
 
@@ -2929,15 +2994,15 @@ async function completeOne(
       },
     );
 
-    if (outcome.status === 'unsatisfied' && outcome.enforced) {
-      refuseGate(renderDesignEvidenceRefusal(it.id, outcome));
-    }
-    if (outcome.status === 'unavailable' && outcome.enforced) {
-      refuseGate(
-        `refusing terminal completion for '${it.id}': ${outcome.report}. ` +
-          'This is retryable; no completion record or state transition was written.',
-      );
-    }
+    const designEvidenceEnforced = 'enforced' in outcome && outcome.enforced;
+    const designEvidenceError = outcome.status === 'unsatisfied' && designEvidenceEnforced
+      ? renderDesignEvidenceRefusal(it.id, outcome)
+      : outcome.status === 'unavailable' && designEvidenceEnforced
+        ? `refusing terminal completion for '${it.id}': ${outcome.report}. This is retryable; no completion record or state transition was written.`
+        : undefined;
+    const designEvidenceApplicable = designEvidenceEnforced;
+    setContractRequirement('design-evidence', designEvidenceApplicable, designEvidenceError);
+    if (designEvidenceError) refuseGate(designEvidenceError);
     if (outcome.status !== 'not-applicable') designEvidenceReport = outcome.report;
   }
 
@@ -2996,11 +3061,13 @@ async function completeOne(
   // member of a population. Keep the universal-verification gate for ordinary closes,
   // and for malformed self-duplicate claims, but do not make a valid non-self
   // `completion.duplicateOf` carry an unrelated population partition.
-  const verificationCoverageGap =
-    (closeIntentRequested &&
+  const verificationCoverageApplicable =
+    closeIntentRequested &&
       !duplicateCloseCoverageException &&
       isVerificationWorkItem(existing) &&
-      claimsUniversalVerification(it.completion) &&
+      claimsUniversalVerification(it.completion);
+  const verificationCoverageGap =
+    (verificationCoverageApplicable &&
       !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage));
   const misplacedResidueEntries = misplacedResiduePopulationEntries(completionEvidenceForGate?.coverage);
   const verificationCoverageError = verificationCoverageGap
@@ -3025,6 +3092,7 @@ async function completeOne(
   if (verificationCoverageError) {
     refuseGate(verificationCoverageError, { verificationCoverageError });
   }
+  setContractRequirement('verification-coverage', verificationCoverageApplicable, verificationCoverageError);
 
   // ---- Arm-B pilot self-review gate (D-020 / D-021) --------------------------------
   // INERT unless this specific item is assigned to pilot arm B. The default-false in
@@ -3112,6 +3180,11 @@ async function completeOne(
   if (selfReviewError) {
     refuseGate(selfReviewError, { selfReviewError });
   }
+  setContractRequirement(
+    'self-review',
+    closeIntentRequested && itemIsArmB(existing),
+    selfReviewError,
+  );
 
   // ---- P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3) ----
   // A completion that claims a gate red fixed — by its prose, or because the item IS the
@@ -3151,6 +3224,11 @@ async function completeOne(
         },
       });
     }
+    setContractRequirement(
+      'gate-red-lineage',
+      gateRedConditionItem || gateRedVerdict.refuse,
+      gateRedVerdict.refuse ? gateRedVerdict.detail : undefined,
+    );
   }
 
   // ---- ONE refusal naming every unmet gate (EI-20286699547467039) -------------------
@@ -3168,14 +3246,42 @@ async function completeOne(
     // combined shape, and it still carries each gate's verbatim text (numbered, so the
     // caller can see the set is complete rather than guessing whether an N+1 is waiting).
     if (gateRefusals.length === 1) {
-      return { ok: false, id: it.id, error: gateRefusals[0]!.error, ...mergedFields };
+      return {
+        ok: false,
+        id: it.id,
+        error: gateRefusals[0]!.error,
+        ...mergedFields,
+        completionContract: completionContract(),
+      };
     }
     const error =
       `REJECTED — ${gateRefusals.length} completion requirements for ${it.id} are unmet. This is the ` +
       'COMPLETE set as evaluated on this call, not just the first failure: fix all of them and re-send ' +
       'once. No completion record or state transition was written.\n\n' +
       gateRefusals.map((r, i) => `(${i + 1}/${gateRefusals.length}) ${r.error}`).join('\n\n');
-    return { ok: false, id: it.id, error, ...mergedFields, unmetGateCount: gateRefusals.length };
+    return {
+      ok: false,
+      id: it.id,
+      error,
+      ...mergedFields,
+      unmetGateCount: gateRefusals.length,
+      completionContract: completionContract(),
+    };
+  }
+
+  if (rootCauseVerificationRequired && it.completion.rootCauseVerification) {
+    it.completion.rootCauseVerification = {
+      ...it.completion.rootCauseVerification,
+      contractVersion: ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
+    };
+  }
+  if (it.validateOnly) {
+    return {
+      ok: true,
+      id: it.id,
+      validationOnly: true,
+      completionContract: completionContract(),
+    };
   }
   // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning
   // `undefined` (no evidence fields supplied at all) and returning a PARTIAL object
@@ -4428,6 +4534,7 @@ async function completeOne(
       : {}),
     ...(completionFleetSlug ? { fleetSlug: completionFleetSlug } : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
+    completionContractVersion: WORK_ITEMS_COMPLETION_CONTRACT.version,
     ...(fleetRepullNudge ? { fleetRepullNudge } : {}),
     workItem,
     completion,
@@ -4633,6 +4740,8 @@ export default defineTool({
             outputPayload: z.unknown().optional(),
             /** Current per-clause proof attestation for spec-covered terminal closes. */
             specAdequacy: specAdequacyCompletionSpec.optional(),
+            /** Read-only preflight: evaluate every applicable completion requirement without writing. */
+            validateOnly: z.boolean().optional(),
             /** Required only when this single item requests a terminal close. */
             assumptions: z
               .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
@@ -4668,6 +4777,8 @@ export default defineTool({
             /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
             completion: completionSpec.optional(),
             outputPayload: z.unknown().optional(),
+            /** Read-only preflight for every item in this envelope unless an item overrides it. */
+            validateOnly: z.boolean().optional(),
             assumptions: z
               .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
               .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.'),
@@ -4719,7 +4830,12 @@ export default defineTool({
     // single list-construction site, so every downstream `it.state` reader (the remote-authored
     // refusal, the test-completion gate, the inference/close-intent logic) sees the same value.
     const list: CompleteItem[] = isBulkForm
-      ? args.items!.map((it) => ({ ...it, harness: it.harness ?? args.harness, state: it.state ?? args.state }))
+      ? args.items!.map((it) => ({
+          ...it,
+          harness: it.harness ?? args.harness,
+          state: it.state ?? args.state,
+          validateOnly: it.validateOnly ?? args.validateOnly,
+        }))
       : [
           {
             id: args.id as string,
@@ -4729,6 +4845,7 @@ export default defineTool({
             outputPayload: args.outputPayload,
             specAdequacy: 'specAdequacy' in args ? args.specAdequacy : undefined,
             assumptions: args.assumptions,
+            validateOnly: args.validateOnly,
           },
         ];
     const env = await runBulk(list, (it) => completeOne(it, completionIdent, ctx), { keyOf: (it) => ({ id: it.id }) });

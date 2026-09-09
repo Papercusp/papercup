@@ -125,6 +125,7 @@ vi.mock('../../grading-integrity', () => ({
 import { z } from 'zod';
 import complete, {
   WORK_ITEMS_COMPLETE_TIMEOUT_SEC,
+  WORK_ITEMS_COMPLETION_CONTRACT,
   claimsUniversalVerification,
   contentIdentityAdviceForOrigin,
   hasEnumeratedVerificationCoverage,
@@ -173,11 +174,19 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
  * this helper.
  */
 const ROOT_CAUSE_VERIFICATION_FIXTURE = {
+  contractVersion: 2 as const,
   hypothesis: 'the stale cache supplied the wrong value',
   alternativeHypothesis: 'the database writer persisted the wrong value',
   distinguishingTest:
     'if the stale-cache hypothesis is true then a direct database read is correct; if the writer hypothesis is true then the direct database read is wrong',
   testResult: 'before the fix, the direct database read was correct while the cached read was stale',
+  testProcedure: 'Read the value directly from the database, then through the cache, before applying the fix.',
+  predictedObservations: {
+    hypothesis: 'the direct database read is correct while the cached read is stale',
+    alternativeHypothesis: 'both the direct database read and the cached read are wrong',
+  },
+  actualObservation: 'the direct database read was correct while the cached read was stale',
+  evidenceRefs: ['test:complete.test.ts#root-cause-fixture'],
 };
 
 const withAssumptions = (x: unknown): unknown => {
@@ -422,6 +431,13 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
           distinguishingTest:
             'If the missing callback brace is the cause, the parser reports a syntax error; if the writer supplied the invalid handler, the parser invokes the callback successfully',
           testResult: 'the parser reported a syntax error before the fix',
+          testProcedure: 'Parse the same callback once with the missing brace and once with a known-valid handler.',
+          predictedObservations: {
+            hypothesis: 'the parser reports a syntax error for the missing-brace callback',
+            alternativeHypothesis: 'the parser invokes the known-valid callback successfully',
+          },
+          actualObservation: 'the missing-brace callback produced the syntax error and the control callback ran',
+          evidenceRefs: ['test:complete.test.ts#conditional-prose'],
         },
       },
     });
@@ -461,6 +477,70 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
         }),
       }),
     );
+  });
+
+  it('returns every missing causal-evidence v2 field together without writing', async () => {
+    const r = await oneRaw({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the cache',
+        tests: '5 green',
+        rootCauseVerification: {
+          hypothesis: 'the cache was stale',
+          alternativeHypothesis: 'the writer stored a bad value',
+          distinguishingTest: 'if H1 then direct read is correct; if H2 then direct read is wrong',
+          testResult: 'the direct read was correct',
+        },
+      },
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.missingRootCauseVerificationFields).toEqual([
+      'testProcedure',
+      'predictedObservations.hypothesis',
+      'predictedObservations.alternativeHypothesis',
+      'actualObservation',
+      'evidenceRefs',
+    ]);
+    expect(r.error).toMatch(/causal-evidence contract v2/);
+    expect(r.completionContract.version).toBe(WORK_ITEMS_COMPLETION_CONTRACT.version);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('validates the full versioned contract without mutating or emitting a completion', async () => {
+    const r = await oneRaw({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      validateOnly: true,
+      completion: {
+        summary: 'fixed the cache',
+        verifiedHow: 'automated-test',
+        testsRun: 'vitest complete.test.ts',
+        testResult: '5 green',
+        rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE,
+      },
+    });
+
+    expect(r).toMatchObject({
+      ok: true,
+      id: 'WI-root',
+      validationOnly: true,
+      completionContract: { version: WORK_ITEMS_COMPLETION_CONTRACT.version },
+    });
+    expect(r.completionContract.requirements).toHaveLength(WORK_ITEMS_COMPLETION_CONTRACT.requirements.length);
+    expect(r.completionContract.requirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'assumptions', applicable: true, satisfied: true }),
+        expect.objectContaining({ key: 'root-cause-verification', applicable: true, satisfied: true }),
+      ]),
+    );
+    expect(r).not.toHaveProperty('completion');
+    expect(r).not.toHaveProperty('workItem');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
   });
 
   it('keeps discard/wontfix bug closes drainable without inventing a causal record', async () => {
