@@ -979,6 +979,7 @@ describe('release:repair-queue', () => {
       mocks.ledger.mockRejectedValueOnce(new Error('ledger unavailable'));
       const result = body(await tool.handler({ ...patchArgs, confirm } as never, ctx));
       expect(result).toMatchObject({ ok: true, admitted: confirm, mode: 'committed-patch', patch });
+      expect(result.source).toEqual({ ref: HX_SOURCE, root: '/repo' });
       expect(mocks.hunkExact).not.toHaveBeenCalled();
       expect(mocks.committedPatch).toHaveBeenCalledWith(expect.objectContaining({
         root: '/repo', repairHead: queue.repairHead, integrationRef: 'staging', patchCommit: patch.commit, paths: patchArgs.paths,
