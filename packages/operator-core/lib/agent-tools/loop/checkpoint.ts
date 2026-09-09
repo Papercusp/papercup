@@ -23,6 +23,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { withPgContentionRetry } from '@papercusp/coordination/event-log';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
@@ -104,6 +105,12 @@ import {
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
 export const CONTINUATION_READ_BUDGET_MS = 5_000;
+
+// A bounded carry write can spend up to its 8s lock/acquisition budget plus the
+// best-effort contention diagnosis. One 100ms retry stays well inside the MCP
+// transport budget while covering the common brief lock race; longer contention
+// still returns the existing structured retryable timeout.
+export const LOOP_CHECKPOINT_CONTENTION_BACKOFFS_MS = [100] as const;
 
 /**
  * EI-21503907176334936 — a `rowsMode:'replace'` write computed, INSIDE the locked
@@ -1419,10 +1426,12 @@ export default defineTool({
     const legacyOverCapNormalization = { checks: 0 };
     let stored: string | null;
     try {
-      const writeResult = await setLoopCarryNoteWithPrior(
-        { harness, ownerId, workspaceId: workspaceId ?? undefined },
-        enforcedBaseNote,
-        {
+      const writeResult = await withPgContentionRetry(
+        () =>
+          setLoopCarryNoteWithPrior(
+            { harness, ownerId, workspaceId: workspaceId ?? undefined },
+            enforcedBaseNote,
+            {
           ...(args.expectedHash !== undefined ? { expectedHash: args.expectedHash } : {}),
           // EI-19470389781357111: tri-state, so the key is present ONLY when the
           // caller actually passed it — omitting it preserves the prior declaration
@@ -1514,8 +1523,10 @@ export default defineTool({
               }
             }
             return enforceFrozenLoopCarry(merged.note);
-          },
-        },
+              },
+            },
+          ),
+        { backoffsMs: LOOP_CHECKPOINT_CONTENTION_BACKOFFS_MS },
       );
       ({ stored } = writeResult);
       if (writeResult.conflict) {

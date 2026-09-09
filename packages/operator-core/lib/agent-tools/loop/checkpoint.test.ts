@@ -470,12 +470,25 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it('returns a retryable structured result when the carry write hits transient PostgreSQL contention', async () => {
-    setLoopCarryNoteWithPrior.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
+    const timeout = new OrgTxnTimeoutError('55P03', new Error('lock timeout'));
+    setLoopCarryNoteWithPrior.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout);
 
     const b = body(await call({ did: 'checkpoint before the next cold wake' }));
 
     expect(b).toMatchObject({ ok: false, error: 'timeout', retryable: true, pgCode: '55P03' });
     expect(b.message).toContain('No carry-note was committed');
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a transient carry-write contention timeout before returning success', async () => {
+    setLoopCarryNoteWithPrior.mockRejectedValueOnce(
+      new OrgTxnTimeoutError('57014', new Error('statement timeout')),
+    );
+
+    const b = body(await call({ did: 'retry the checkpoint before the next cold wake' }));
+
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledTimes(2);
+    expect(b).toMatchObject({ ok: true, verified: true });
   });
 
   it('opts out of the ambient workspace transaction because the handler owns independent DB scopes', () => {
