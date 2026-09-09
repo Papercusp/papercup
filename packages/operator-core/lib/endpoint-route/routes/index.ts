@@ -214,6 +214,7 @@ import agentMcp_sessionRecoveryBrief from './agent-mcp/session-recovery-brief';
 import agentMcp_turnStartMemory from './agent-mcp/turn-start-memory';
 import agentMcp_midTurnContext from './agent-mcp/mid-turn-context';
 import agentMcp_rebindIdentity from './agent-mcp/rebind-identity';
+import agentMcp_identityManagement from './agent-mcp/identity-management';
 import agentMcp_decisions from './agent-mcp/decisions';
 import agentMcp_delegateChat from './agent-mcp/delegate-chat';
 import agentMcp_operatorHindsight from './agent-mcp/operator-hindsight';
@@ -590,6 +591,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_p2pGrantSet as AnyRoute),
   ...flatten(agentMcp_p2pAllotmentSet as AnyRoute),
   ...flatten(agentMcp_potOverrideSet as AnyRoute),
+  ...flatten(agentMcp_identityManagement as AnyRoute),
   ...flatten(agentMcp_spawnPi as AnyRoute),
   ...flatten(agentMcp_voiceDebug as AnyRoute[]),
   ...flatten(agentMcp_voiceUtteranceLog as AnyRoute),

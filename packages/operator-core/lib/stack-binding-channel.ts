@@ -30,7 +30,7 @@
  * layer render must never block the prompt, exactly like the control anchor itself.
  */
 import type { ControlAnchorState, ControlTransition } from './agent-tools/coordination/control-anchor';
-import type { StackMutationActivation, StackActivationContext } from '@papercusp/orchestrator/blueprint';
+import type { StackMutationActivation, StackActivationContext, StackDocument } from '@papercusp/orchestrator/blueprint';
 
 /**
  * The su posture layer refs. Inlined here (see the lazy-import note above) and PINNED
@@ -106,8 +106,10 @@ type Blueprint = typeof import('@papercusp/orchestrator/blueprint');
 export interface StackTransitionContextOptions {
   /** The harness install dir (default: `harnessRoot()`). */
   harnessDir?: string;
+  /** Selected session cwd, so a harness-local identity override resolves first. */
+  repoDir?: string;
   /** DI seam: the orchestrator blueprint module (tests pass the real one loaded eagerly). */
-  blueprint?: Pick<Blueprint, 'stackBindingFromRefs' | 'emptyStackBinding' | 'diffStackBindings' | 'composeSuStackMutation'>;
+  blueprint?: Pick<Blueprint, 'stackBindingFromRefs' | 'emptyStackBinding' | 'diffStackBindings' | 'composeSuStackMutation' | 'slotSpec'>;
   /** Optional desired revision to stamp on a prepared mutation payload. */
   activation?: {
     specificationRevision: string;
@@ -150,6 +152,34 @@ export async function renderStackTransitionContextResult(
     const harnessDir = opts.harnessDir ?? (await import('@papercusp/harness/paths')).harnessRoot();
     const from = before == null ? bp.emptyStackBinding() : bp.stackBindingFromRefs(before);
     const to = bp.stackBindingFromRefs(after);
+    // composeSuStackMutation is synchronous after its documents are resolved. Prime
+    // arbitrary installed/local identity documents through the canonical source
+    // catalog so the live channel is not limited to SU's built-in mode/posture set.
+    const resolvedLayers = new Map<string, StackDocument>();
+    const [{ getIdentitySource }, path, fs] = await Promise.all([
+      import('./agent-identities/source'),
+      import('node:path'),
+      import('node:fs/promises'),
+    ]);
+    await Promise.all(to.layers.map(async (layer) => {
+      const identity = await getIdentitySource(layer.id, { ...(opts.repoDir ? { repoDir: opts.repoDir } : {}) });
+      if (!identity.ok || !identity.sourcePath) return;
+      if (!identity.identity.slots.some((entry) => entry.slot === layer.slot)) return;
+      const sourcePath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
+      try {
+        const spec = bp.slotSpec(layer.slot);
+        if (!spec) return;
+        resolvedLayers.set(`${layer.slot}:${layer.id}`, {
+          id: layer.id,
+          layer: spec.layer,
+          slot: layer.slot,
+          text: await fs.readFile(sourcePath, 'utf8'),
+          sourcePath,
+        });
+      } catch {
+        /* built-in documents still resolve inside composeSuStackMutation */
+      }
+    }));
     const parts: string[] = [];
     let preparedActivation: StackMutationActivation | undefined;
     let requiresFreshContext = false;
@@ -160,6 +190,7 @@ export async function renderStackTransitionContextResult(
         binding: cursor,
         op: m.op,
         layer: { slot: m.slot, id: m.id },
+        resolveLayer: (layer) => resolvedLayers.get(`${layer.slot}:${layer.id}`) ?? null,
         activation: opts.activation,
       });
       if (applied.injection) parts.push(applied.injection);
