@@ -25,7 +25,9 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
   ompCoreToolNames: () => ['tools:invoke'], ompResponsesCompatibilityEnv: () => ({}), recordSessionOwner: vi.fn(),
   resolveOmpInjectHookPath: () => '/configured/inject.ts', writeOmpSessionConfigDir: () => '.papercusp/su-omp-homes/session-71',
-  suLaunchArgs: (backend: string) => ({ args: backend === 'codex' ? ['--dangerously-bypass-hook-trust'] : ['--system-prompt', '/sealed/su.md'] }),
+  suLaunchArgs: (backend: string) => ({ args: backend === 'codex'
+    ? ['--dangerously-bypass-hook-trust']
+    : ['--approval-mode', 'yolo', '--system-prompt', '/sealed/su.md'] }),
 }));
 import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
 
@@ -46,6 +48,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   missingTranscript?: boolean;
   deliveryTimeoutMs?: number;
   beforeReady?: () => Promise<void>;
+  toolApproval?: 'prompt';
 } = {}) {
   let nativePath = `/configured/${backend}/session.jsonl`;
   if (overrides.resume) {
@@ -97,6 +100,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     startupTimeoutMs: 500,
     deliveryTimeoutMs: overrides.deliveryTimeoutMs,
     beforeReady: overrides.beforeReady,
+    toolApproval: overrides.toolApproval,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
@@ -112,6 +116,22 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) => {
+  it.each([
+    { toolApproval: undefined, codexApproval: 'never', codexSandbox: 'danger-full-access', ompApproval: 'yolo' },
+    { toolApproval: 'prompt' as const, codexApproval: 'on-request', codexSandbox: 'workspace-write', ompApproval: 'always-ask' },
+  ])('maps tool approval $toolApproval to the native policy', async ({ toolApproval, codexApproval, codexSandbox, ompApproval }) => {
+    const f = fixture(backend, toolApproval ? { toolApproval } : {});
+    await f.engine.ready;
+    if (backend === 'codex') {
+      expect(f.sent).toContainEqual(expect.objectContaining({ method: 'thread/start', params: expect.objectContaining({
+        approvalPolicy: codexApproval, sandbox: codexSandbox,
+      }) }));
+    } else {
+      const approvalMode = f.transport().args.indexOf('--approval-mode');
+      expect(f.transport().args[approvalMode + 1]).toBe(ompApproval);
+    }
+  });
+
   it('keeps restored history in startup until the new executor is ready', async () => {
     const history = backend === 'codex' ? [
       { type: 'event_msg', payload: { type: 'user_message', message: 'Saved greeting' } },

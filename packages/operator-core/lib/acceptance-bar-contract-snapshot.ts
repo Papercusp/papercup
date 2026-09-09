@@ -19,7 +19,7 @@ import {
 } from './rubrics';
 import { listSpecClauses, type SpecBehaviorClass, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
-import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
+import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { listScorecardPage, type ScorecardRow } from './scorecards';
 import { activeWorkspaceId } from './workspace-registry';
 import { lineagePartyKeys } from './acceptance-author-identity';
@@ -241,9 +241,11 @@ export interface AcceptanceBarTrace {
       'id' | 'workItemId' | 'specId' | 'specRevision' | 'specFingerprint' | 'evidenceKind' |
       'evidenceRef' | 'testRunId' | 'observedAt' | 'createdBy' | 'details' | 'currentness'> & {
         matchesCurrentSpec: boolean;
+        activeAttempt?: boolean;
       }>;
     currentEvidence: number;
     staleEvidence: number;
+    supersededEvidence?: number;
     kinds: string[];
     evidenceRefs: string[];
     /** Evidence rows whose currentness could not be established. */
@@ -895,7 +897,8 @@ export function projectAcceptanceBarContractSnapshot(
     const evidence = clauses.flatMap((clause) =>
       input.evidence.rows.filter((row) => row.planSlug === clause.planSlug && row.specId === clause.specId),
     );
-    const currentEvidence = evidence.filter((row) =>
+    const activeEvidence = activeSpecEvidence(evidence);
+    const currentEvidence = activeEvidence.filter((row) =>
       clauses.some(
         (clause) =>
           clause.specId === row.specId &&
@@ -905,7 +908,7 @@ export function projectAcceptanceBarContractSnapshot(
           row.currentness.overall !== 'stale',
       ),
     );
-    const staleEvidence = evidence.filter((row) => !currentEvidence.includes(row));
+    const staleEvidence = activeEvidence.filter((row) => !currentEvidence.includes(row));
     const requiredTestLayers = normalized(criterion.requiredTestLayers);
     // The declared evidence plane is a separate lifecycle obligation. Adequacy
     // must inspect every current exact-cohort row because a BAR can require
@@ -1022,11 +1025,13 @@ export function projectAcceptanceBarContractSnapshot(
           specFingerprint: row.specFingerprint, evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef,
           testRunId: row.testRunId, observedAt: row.observedAt, createdBy: row.createdBy,
           details: row.details, currentness: row.currentness,
+          activeAttempt: activeEvidence.includes(row),
           matchesCurrentSpec: clauses.some((clause) => clause.specId === row.specId &&
             clause.revision === row.specRevision && clause.contentHash === row.specFingerprint),
         })),
         currentEvidence: currentEvidence.length,
         staleEvidence: staleEvidence.length,
+        supersededEvidence: evidence.length - activeEvidence.length,
         kinds: normalized(evidence.map((row) => row.evidenceKind)),
         evidenceRefs: normalized(evidence.map((row) => row.evidenceRef)),
         adequacy: { state: adequacyState, checks: adequacyChecks },

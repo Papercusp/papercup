@@ -30,6 +30,8 @@ export interface SuRpcEngineOptions {
   agentChatId: string;
   model?: string | null;
   accountRoute?: string | null;
+  /** Acceptance-only opt-in to the native permission request/card path. */
+  toolApproval?: 'prompt';
   carry?: 'warm' | 'cold';
   modes?: readonly string[];
   runtimeGeneration?: number;
@@ -108,6 +110,13 @@ export function startSuRpcEngine(
       // rpc-ui keeps structured stdio and installs OMP's native question
       // callbacks. Plain rpc deliberately omits that interactive capability.
       ...modelArgsFor('omp', selectedModel), '--mode', 'rpc-ui'];
+    if (options.toolApproval === 'prompt') {
+      const approvalMode = args.indexOf('--approval-mode');
+      if (approvalMode < 0 || args[approvalMode + 1] !== 'yolo') {
+        throw new Error('OMP structured launch is missing its managed approval mode');
+      }
+      args[approvalMode + 1] = 'always-ask';
+    }
     if (native.backend === 'omp' && native.ompThreadId) args.push('--resume', native.ompThreadId);
   }
   if (!options.peerFactory) applyGithubTokenEnv(env);
@@ -354,7 +363,9 @@ export function startSuRpcEngine(
     if (backend === 'codex') {
       await peer.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_pui', title: 'Papercusp PUI', version: '1' } } });
       peer.send({ method: 'initialized', params: {} });
-      const params = { cwd: boot.cwd, approvalPolicy: 'never', sandbox: 'danger-full-access',
+      const params = { cwd: boot.cwd,
+        approvalPolicy: options.toolApproval === 'prompt' ? 'on-request' : 'never',
+        sandbox: options.toolApproval === 'prompt' ? 'workspace-write' : 'danger-full-access',
         ...(nativeId() ? { threadId: nativeId() } : {}) };
       const result = await peer.request({ method: nativeId() ? 'thread/resume' : 'thread/start', params });
       const thread = object(result.thread), id = string(thread.id);
