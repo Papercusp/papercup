@@ -423,15 +423,36 @@ export interface ClearClaimSpecResult {
  * partition as setClaimSpec/getClaimSpec (WI-1564).
  */
 export async function clearClaimSpec(
-  args: { cupId: string; workspaceId?: string },
+  args: {
+    cupId: string;
+    workspaceId?: string;
+    /**
+     * Optional compare-and-delete guard for automatic lifecycle cleanup. A caller
+     * that first READ a stale spec must never erase a concurrent re-steer that
+     * landed before its DELETE. Interactive `scheduler:set_claim_spec { clear:true }`
+     * intentionally omits this guard and keeps its explicit unconditional semantics.
+     */
+    expectedHead?: { specId: string; revision: number };
+  },
   sqlOverride?: OrgSql,
 ): Promise<ClearClaimSpecResult> {
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
-  const rows = (await sql`
-    DELETE FROM harness_shared.cup_claim_specs
-     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}
-    RETURNING bee_id`) as { bee_id: string }[];
+  const expectedHead = args.expectedHead;
+  // Keep these as two complete statements. The org SQL tag executes a tagged
+  // template; invoking it to build an interpolated "fragment" would issue a
+  // separate query before this DELETE rather than compose one atomic guard.
+  const rows = (expectedHead
+    ? await sql`
+        DELETE FROM harness_shared.cup_claim_specs
+         WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}
+           AND spec->>'specId' = ${expectedHead.specId}
+           AND revision = ${expectedHead.revision}
+        RETURNING bee_id`
+    : await sql`
+        DELETE FROM harness_shared.cup_claim_specs
+         WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}
+        RETURNING bee_id`) as { bee_id: string }[];
   return { ok: true, errors: [], cleared: rows.length > 0 };
 }
 
