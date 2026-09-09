@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   assertRubricRatingVocabulary,
@@ -65,6 +66,30 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     );
 
     expect(instructions).toEqual([]);
+  });
+
+  it('ignores numbered GRADE headings and rate-of noun phrases without hiding a real directive', () => {
+    const instructions = extractRubricRatingInstructions(
+      'procedure-prose',
+      'method',
+      '(5) GRADE: JUDGED, anchored to the recorded seed locations. ' +
+        "Compare the polling cadence with the signal's rate of change. Grade fail if the probe disagrees.",
+    );
+
+    expect(instructions.map((instruction) => instruction.rating)).toEqual(['fail']);
+  });
+
+  it('accepts the complete shipped su-agent-behavior rubric vocabulary', () => {
+    const rubric = JSON.parse(
+      readFileSync(new URL('../../../rubrics/su-agent-behavior/rubric.json', import.meta.url), 'utf8'),
+    ) as {
+      criteria: ProposeRubricCriterion[];
+      ratingScale: string[];
+    };
+
+    const result = validateRubricRatingVocabulary(rubric.criteria, rubric.ratingScale);
+    expect(result.ok).toBe(true);
+    expect(result.violations).toEqual([]);
   });
 
   it('ignores directive words inside SQL/code literals without hiding real rating instructions', () => {

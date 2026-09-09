@@ -117,10 +117,25 @@ function skipDirectiveConnector(input: string): string {
       rest = rest.slice(1).trimStart();
       continue;
     }
-    const connector = /^(?:as|is|of)\b/i.exec(rest);
+    const connector = /^(?:as|is)\b/i.exec(rest);
     if (!connector) return rest;
     rest = rest.slice(connector[0].length).trimStart();
   }
+}
+
+/**
+ * Numbered drill procedures use `(<n>) GRADE:` as a section label.  The word
+ * after that label describes the assessment method (`JUDGED`, `SELECT`, ...),
+ * not the scorecard value to emit.  Keep this structural instead of adding
+ * today's descriptor to a stop-word list: a rubric may legitimately define a
+ * rating named `judged`, while the numbered heading remains a heading for every
+ * vocabulary.
+ */
+function isNumberedProcedureHeading(text: string, start: number, end: number): boolean {
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+  const prefix = text.slice(lineStart, start);
+  const suffix = text.slice(end);
+  return /^\s*(?:\(\d+\)|\d+[.)])\s*$/.test(prefix) && /^\s*:/.test(suffix);
 }
 
 /**
@@ -131,6 +146,12 @@ function skipDirectiveConnector(input: string): string {
  * avoids treating "rate limit" or "grade based on evidence" as rating values.
  */
 function parseDirectiveTarget(input: string, directive: string): ParsedDirective | null {
+  const trimmed = input.trimStart();
+  // `grade/rate/rating of X` is a noun phrase ("rate of change", "grade of
+  // service"), not an instruction to emit X. Explicit directives already have
+  // unambiguous spellings: `Grade fail`, `rate as fail`, or a quoted value.
+  if (/^of\b/i.test(trimmed)) return null;
+
   const rest = skipDirectiveConnector(input);
   if (!rest) return null;
 
@@ -199,6 +220,8 @@ export function extractRubricRatingInstructions(
     // mode`) is a noun/heading, not an instruction to emit `mode`.
     const preceding = text[directiveStart - 1];
     if (preceding === '+' || preceding === '-' || preceding === '/') continue;
+    const directiveEnd = directiveStart + match[0].length;
+    if (isNumberedProcedureHeading(text, directiveStart, directiveEnd)) continue;
     const target = parseDirectiveTarget(text.slice(directiveStart + match[0].length), directive);
     if (!target) continue;
     const end = directiveStart + match[0].length + target.end;
