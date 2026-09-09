@@ -494,6 +494,29 @@ describe('launch-su', () => {
     );
   });
 
+  it('round-trips a canonical [1m] full model id through the deferred launch boundary', async () => {
+    const model = 'claude-fable-5-1[1m]';
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', model, defer_spawn: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('ok');
+    const recorded = recordAdvSessionMock.mock.calls[0]![0] as { launchArgv?: string[] };
+    expect(recorded.launchArgv).toContain(`--model=${model}`);
+  });
+
+  it('rejects non-canonical bracket markers instead of widening the model grammar', async () => {
+    const res = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      model: 'claude-fable-5-1[200k]',
+      defer_spawn: true,
+    });
+
+    expect(res.status).toBe(400);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
+  });
+
   it('refuses a delegated seat without its fleet before recording or spawning', async () => {
     const res = await callPost({
       agent: 'codex',

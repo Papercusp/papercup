@@ -53,10 +53,11 @@ const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 // never be stored that this launch door will later refuse. Same value as the
 // private const it replaces.
 const SLUG_RE = HARNESS_SLUG_RE;
-// model fuzzy-match (e.g. `anthropic/claude-opus-4-7`, `gpt-5.5`) + recorded
-// session ids — broader than SLUG_RE (slash/colon allowed), still no shell
-// metacharacters (shellEscape is the real guard; this rejects the absurd).
-const MODEL_RE = /^[A-Za-z0-9._:/-]{1,80}$/;
+// Model fuzzy-match (e.g. `anthropic/claude-opus-4-7`, `gpt-5.5`) + psu's
+// canonical trailing `[1m]` context marker. Keep the marker in its one valid
+// position (before an optional effort suffix) rather than admitting arbitrary
+// brackets; shellEscape remains the real command-injection guard.
+const MODEL_RE = /^(?=.{1,80}$)[A-Za-z0-9._:/-]+(?:\[1m\](?::[A-Za-z0-9._-]+)?)?$/i;
 const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
 function json(body: unknown, status = 200): Response {
