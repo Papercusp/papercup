@@ -12,6 +12,8 @@ const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const getIssue = vi.fn();
 const recordGradingAudit = vi.fn();
+const closeSourceAuditConsults = vi.hoisted(() => vi.fn());
+vi.mock('../../grading-audit-routing', () => ({ closeSourceAuditConsults }));
 const gateEnabled = vi.fn();
 const dispatchPendingGradingAudits = vi.fn();
 const readRunningGeneration = vi.fn();
@@ -187,6 +189,7 @@ const replayAuditRubric = () => ({
 });
 
 beforeEach(() => {
+  closeSourceAuditConsults.mockReset().mockResolvedValue(undefined);
   getRubric.mockReset().mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-AUDIT-1' } });
@@ -231,6 +234,7 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     // THIS card, plus the two traps (self-audit refused, re-emit files a duplicate).
     const nextStep = (res as { gradingAuditNextStep?: string }).gradingAuditNextStep ?? '';
     expect(nextStep).toContain('NON-AUTHOR');
+    expect(nextStep).toContain('existing router automatically selects');
     expect(nextStep).toContain('grading-integrity');
     expect(nextStep).toContain("subject:{ kind:'scorecard'");
     expect(nextStep).toMatch(/self-audits are refused/i);
@@ -312,6 +316,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   it('a NON-AUTHOR audit files, settles the subject, and is itself never stamped pending (one level)', async () => {
     const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(res.ok).toBe(true);
+    expect(closeSourceAuditConsults).toHaveBeenCalledWith(expect.any(String), 'EI-CARD');
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({
       auditIssueId: 'EI-AUDIT-1',
       auditor: 'su-auditor',

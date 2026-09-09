@@ -59,6 +59,7 @@ import {
 } from './grader-eligibility';
 import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../acceptance-grader';
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
+import { closeSourceAuditConsults } from '../../grading-audit-routing';
 import {
   dispatchPendingGradingAudits,
   GRADING_INTEGRITY_RUBRIC_REF,
@@ -766,6 +767,7 @@ export async function emitScorecard(
     resolveAuthorSessionState?: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>;
     /** Test seam for the bounded post-write pending-audit dispatcher. */
     dispatchPendingGradingAudits?: typeof dispatchPendingGradingAudits;
+    closeSourceAuditConsults?: typeof closeSourceAuditConsults;
     /** Tri-state git ancestry seam for replay-based grading-integrity audits. */
     generationAncestry?: GenerationAncestryProbe;
   } = {},
@@ -1952,6 +1954,7 @@ export async function emitScorecard(
     // settlement failure is surfaced loudly, never swallowed — the auditor must know
     // the subject is still pending.
     let auditSettlement: Awaited<ReturnType<typeof recordGradingAudit>> | undefined;
+    let auditCleanupError: string | undefined;
     if (auditContext && result.created && result.issue?.id) {
       auditSettlement = await recordGradingAudit(auditContext.subjectIssueId, {
         auditIssueId: result.issue.id,
@@ -1961,6 +1964,15 @@ export async function emitScorecard(
         ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
         ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
       });
+      if (auditSettlement.ok) {
+        try {
+          await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
+            input.workspaceId || activeWorkspaceId(), auditContext.subjectIssueId,
+          );
+        } catch (error) {
+          auditCleanupError = error instanceof Error ? error.message : String(error);
+        }
+      }
     }
     const acceptanceGraderCleanup =
       rubric.kind === 'acceptance' && input.role === 'judge'
@@ -2039,6 +2051,7 @@ export async function emitScorecard(
         ? {
             gradingAuditPending: true,
             gradingAuditNextStep:
+              'The existing router automatically selects an independent auditor; declines and expiry advance its cascade, with a bounded fresh-judge fallback when no candidate is available. ' +
               'This card does not satisfy a gate until a NON-AUTHOR audits it. A DIFFERENT agent must emit ' +
               `{ rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ` +
               `ref:'${result.issue?.id ?? '<this card id>'}' }, ratings:{...} }. Self-audits are refused, and ` +
@@ -2048,6 +2061,7 @@ export async function emitScorecard(
       ...(auditSettlement
         ? {
             gradingAuditRecorded: auditSettlement.ok,
+            ...(auditCleanupError ? { gradingAuditCleanupError: auditCleanupError } : {}),
             ...(auditSettlement.gradingAudit ? { gradingAudit: auditSettlement.gradingAudit } : {}),
             ...(auditSettlement.error ? { gradingAuditError: auditSettlement.error } : {}),
           }
