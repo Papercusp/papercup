@@ -4063,6 +4063,12 @@ async function persistAdmissionPlanInTransaction(
       continue;
     }
     if (disposition.action === 'promote') {
+      // Bulk stages adjudicate an already-admitted corpus and deliberately make
+      // every unmerged promotion disposition a no-op. Do not protection-check a
+      // mutation this call has explicitly disabled: admitted historical rows are
+      // valid bulk endpoints, while the ordinary promoter path below still fails
+      // closed on an ineligible promote.
+      if (input.promoteUnmerged === false) continue;
       const problem = snapshotIdentityProblem(
         capturedById.get(disposition.itemId),
         liveById.get(disposition.itemId),
