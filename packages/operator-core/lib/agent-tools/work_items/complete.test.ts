@@ -1753,6 +1753,7 @@ describe('work_items:complete (keyed-array)', () => {
         },
       ],
     };
+    const behaviorChangePath = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
 
     it('publishes a strict single and per-item bulk attestation shape', () => {
       expect(
@@ -1839,6 +1840,65 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    it.each([
+      {
+        label: 'a zero-path successful close',
+        state: 'resolved',
+        landedState: 'resolved',
+        completion: { summary: 'no behavior change was needed' },
+      },
+      {
+        label: 'a discard close',
+        state: 'dropped',
+        landedState: 'dropped',
+        completion: { summary: 'wontfix; no behavior change', filesChanged: [behaviorChangePath] },
+      },
+      {
+        label: 'a duplicate close',
+        state: 'resolved',
+        landedState: 'resolved',
+        completion: { summary: 'superseded by the canonical item', duplicateOf: 'EI-survivor' },
+      },
+    ])('does not pass $label through the behavior gate', async ({ state, landedState, completion }) => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedIssue, state: landedState }));
+
+      const r = await one({ id: 'WI-101', state, completion });
+
+      expect(r.ok).toBe(true);
+      expect(specTestAdequacyCompletionGate).not.toHaveBeenCalled();
+      expect(r.specAdequacy).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        label: 'a changed path',
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
+      },
+      {
+        label: 'a deleted path',
+        completion: { summary: 'removed the obsolete behavior', filesDeleted: [behaviorChangePath] },
+      },
+    ])('keeps the behavior gate for an ordinary resolved close with $label', async ({ completion }) => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedIssue, state: 'resolved' }));
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: true,
+        applicable: true,
+        checked: ['SPEC-003-01@1'],
+      });
+
+      const r = await one({ id: 'WI-101', state: 'resolved', completion, specAdequacy });
+
+      expect(r.ok).toBe(true);
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
+        workItem: linkedIssue,
+        attestation: specAdequacy,
+      });
+      expect(r.specAdequacy).toEqual({ applicable: true, checked: ['SPEC-003-01@1'] });
+    });
+
     it('passes the exact caller attestation and reports every checked clause on success', async () => {
       getWorkItem.mockResolvedValue(linkedIssue);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedIssue, state: 'resolved' }));
@@ -1851,7 +1911,7 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'WI-101',
         state: 'resolved',
-        completion: { summary: 'fixed' },
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
         specAdequacy,
       });
 
@@ -1880,7 +1940,7 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'WI-101',
         state: 'resolved',
-        completion: { summary: 'fixed' },
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
         specAdequacy,
       });
 
@@ -1908,7 +1968,7 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'WI-101',
         state: 'resolved',
-        completion: { summary: 'fixed' },
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
         specAdequacy,
       });
 
@@ -1933,7 +1993,7 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'WI-101',
         state: 'resolved',
-        completion: { summary: 'fixed' },
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
         specAdequacy,
       });
 
@@ -1968,7 +2028,7 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'WI-101',
         state: 'resolved',
-        completion: { summary: 'fixed' },
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
         specAdequacy,
       });
 
@@ -2005,7 +2065,7 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'WI-101',
         state: 'resolved',
-        completion: { summary: 'fixed' },
+        completion: { summary: 'fixed', filesChanged: [behaviorChangePath] },
         specAdequacy,
       });
 

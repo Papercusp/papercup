@@ -96,7 +96,7 @@ export type {
   CompletionTreeStampProbe,
   CompletionTreeStampForEvidenceProbe,
 } from './completion-freshness';
-import { evaluateCloseTerminalCriteria } from './terminal-criteria';
+import { claimsRemediation, evaluateCloseTerminalCriteria } from './terminal-criteria';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 
 // EI-22361433147291495: completion validation + convergence legitimately took
@@ -2622,6 +2622,32 @@ async function completeOne(
   const closeIntentRequested =
     Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
 
+  // EI-22410970761779199: the behavior-contract resolver correctly classifies a
+  // `kind:'change'` item, but a completion close also knows whether this particular
+  // disposition actually claims remediation. Discard/duplicate closes and closes with
+  // no changed or deleted path are administrative/no-op outcomes, so passing them into
+  // the behavior gate creates a false D-012 impact report (and would become a false hard
+  // refusal if that report is enforced). Keep the resolver unchanged and gate only the
+  // completion boundary; ordinary remediating done/resolved closes still receive the
+  // exact gate and report behavior.
+  const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
+  const duplicateCloseCoverageException =
+    typeof it.completion.duplicateOf === 'string' &&
+    it.completion.duplicateOf.trim().length > 0 &&
+    it.completion.duplicateOf.trim() !== it.id;
+  const completionHasChangedOrDeletedPaths =
+    (completionEvidenceForGate?.filesChanged?.length ?? 0) > 0 ||
+    (completionEvidenceForGate?.filesDeleted?.length ?? 0) > 0;
+  const completionClaimsRemediation =
+    closeIntentRequested &&
+    claimsRemediation({
+      itemKind: existing.kind,
+      status: String(effectiveState ?? ''),
+      terminalReason: duplicateCloseCoverageException ? 'duplicate' : String(effectiveState ?? ''),
+    });
+  const shouldEvaluateSpecAdequacyAtCompletion =
+    closeIntentRequested && completionClaimsRemediation && completionHasChangedOrDeletedPaths;
+
   // ---- CONTRACT-GATE ACCUMULATION (EI-20286699547467039) ---------------------------
   // Every gate from here to the self-review gate below answers the SAME question — "is
   // this completion record complete enough to close on?" — and each is computed from
@@ -2732,7 +2758,7 @@ async function completeOne(
   // that P-013, not P-016, will turn into a refusal. Reporting it here is what makes it
   // a report at all: a report no caller receives is indistinguishable from none.
   let specAdequacyImpactReport: string | undefined;
-  if (closeIntentRequested) {
+  if (shouldEvaluateSpecAdequacyAtCompletion) {
     try {
       const gate = await specTestAdequacyCompletionGate({
         workItem: existing,
@@ -2901,16 +2927,11 @@ async function completeOne(
   // still built + returned below (EI-24: the narrative is never lost), it just
   // cannot land the CLOSE. This is a deliberate, narrow exception to this file's
   // usual record-and-warn discipline — see isBackedLiveDroveUiClaim's doc comment.
-  const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
   // A structured duplicate close is an administrative disposition: its claim is that
   // this item is superseded by the named survivor, not that the verifier covered every
   // member of a population. Keep the universal-verification gate for ordinary closes,
   // and for malformed self-duplicate claims, but do not make a valid non-self
   // `completion.duplicateOf` carry an unrelated population partition.
-  const duplicateCloseCoverageException =
-    typeof it.completion.duplicateOf === 'string' &&
-    it.completion.duplicateOf.trim().length > 0 &&
-    it.completion.duplicateOf.trim() !== it.id;
   const verificationCoverageGap =
     (closeIntentRequested &&
       !duplicateCloseCoverageException &&
