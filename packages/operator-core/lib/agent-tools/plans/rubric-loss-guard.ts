@@ -297,6 +297,7 @@ export const ACCEPTANCE_BAR_MEANING_FIELDS = [
   'requiredScope',
   'evidencePlane',
   'requiredTestLayers',
+  'check',
   'passRatings',
   'coversBarKeys',
 ] as const;

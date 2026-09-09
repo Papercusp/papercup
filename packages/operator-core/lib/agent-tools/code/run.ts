@@ -1000,6 +1000,58 @@ function isCodeRunSummaryScalar(value: unknown): boolean {
   return value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string';
 }
 
+// EI-22796173621053064: bounded evidence/result arrays must retain the lines that explain a
+// failure. Their usual shape is a long PASS prefix followed by a FAIL/result/verdict suffix, so
+// a plain prefix slice can make a failed run look healthy. Keep this selector path-scoped: other
+// arrays remain byte-for-byte prefix projections, while diagnostic arrays get a few high-signal
+// entries and then fill the remaining slots from the original prefix.
+const CODE_RUN_SUMMARY_SIGNAL_ARRAY_PATH = /(?:^|\.)evidence(?:\.|$)|(?:^|\.)(?:result|results|failure|failures|verdict|diagnostic|diagnostics)(?:\.|$)/i;
+const CODE_RUN_SUMMARY_FAILURE_MARKER =
+  /(?:^|[^a-z0-9])(?:fail(?:ed|ure)?|error|exception|fatal|blocked|timeout|timed[-_ ]?out|non[-_ ]?zero)(?:$|[^a-z0-9])|(?:^|[^a-z0-9])(?:ok|success)\s*[:=]\s*false\b/i;
+const CODE_RUN_SUMMARY_RESULT_MARKER =
+  /(?:^|[^a-z0-9])(?:verdict|result|overall|outcome)(?:$|[^a-z0-9])|(?:^|[^a-z0-9])(?:exit(?:ed)?|status)\s*[:=]\s*(?:[1-9]|fail|error)\b/i;
+
+function codeRunSummaryEntryText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!isCodeRunSummaryRecord(value)) return '';
+
+  const signalFields = ['text', 'message', 'error', 'failure', 'result', 'verdict', 'status', 'state', 'output'];
+  return signalFields
+    .map((key) => value[key])
+    .filter((entry): entry is string => typeof entry === 'string')
+    .join(' ');
+}
+
+function codeRunSummaryEntryPriority(value: unknown): number {
+  const text = codeRunSummaryEntryText(value);
+  if (!text) return 0;
+
+  let priority = 0;
+  if (CODE_RUN_SUMMARY_FAILURE_MARKER.test(text)) priority += 3;
+  if (CODE_RUN_SUMMARY_RESULT_MARKER.test(text)) priority += 4;
+  return priority;
+}
+
+function codeRunSummaryArrayIndices(value: unknown[], path: string, limit: number): number[] {
+  const prefix = Array.from({ length: Math.min(value.length, limit) }, (_, index) => index);
+  if (value.length <= limit || !CODE_RUN_SUMMARY_SIGNAL_ARRAY_PATH.test(path)) return prefix;
+
+  const prioritized = value
+    .map((entry, index) => ({ index, priority: codeRunSummaryEntryPriority(entry) }))
+    .filter(({ priority }) => priority > 0)
+    .sort((left, right) => right.priority - left.priority || left.index - right.index)
+    .slice(0, limit)
+    .map(({ index }) => index);
+  if (prioritized.length === 0) return prefix;
+
+  const selected = new Set(prioritized);
+  for (const index of prefix) {
+    if (selected.size >= limit) break;
+    selected.add(index);
+  }
+  return [...selected].sort((left, right) => left - right);
+}
+
 function noteCodeRunSummaryPath(stats: CodeRunSummaryProjectionStats, path: string): void {
   if (stats.paths.length < CODE_RUN_SUMMARY_PATH_LIMIT && !stats.paths.includes(path)) {
     stats.paths.push(path);
@@ -1061,10 +1113,10 @@ function projectCodeRunSummaryTextContent(
 ): unknown[] | undefined {
   if (!Array.isArray(value)) return undefined;
 
-  const limit = Math.min(value.length, options.arrayLimit);
+  const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
   const projected: unknown[] = [];
   let hasText = false;
-  for (let index = 0; index < limit; index += 1) {
+  for (const index of indices) {
     const entry = value[index];
     if (!isCodeRunSummaryRecord(entry) || typeof entry.text !== 'string') continue;
     hasText = true;
@@ -1154,8 +1206,8 @@ function projectCodeRunSummaryBoundaryArray(
   if (value.length === 0) return [];
 
   const projected: unknown[] = [];
-  const limit = Math.min(value.length, options.arrayLimit);
-  for (let index = 0; index < limit; index += 1) {
+  const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
+  for (const index of indices) {
     const entry = value[index];
     const entryPath = `${path}[${index}]`;
     if (isCodeRunSummaryScalar(entry)) {
@@ -1209,9 +1261,9 @@ function projectCodeRunSummaryValue(
   }
 
   if (Array.isArray(value)) {
-    const shown = value
-      .slice(0, options.arrayLimit)
-      .map((entry, index) => projectCodeRunSummaryValue(entry, `${path}[${index}]`, depth + 1, options, stats));
+    const shown = codeRunSummaryArrayIndices(value, path, options.arrayLimit).map((index) =>
+      projectCodeRunSummaryValue(value[index], `${path}[${index}]`, depth + 1, options, stats),
+    );
     if (value.length > options.arrayLimit) {
       stats.arraysTruncated++;
       stats.omittedItems += value.length - options.arrayLimit;

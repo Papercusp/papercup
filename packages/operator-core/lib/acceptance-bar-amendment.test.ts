@@ -85,7 +85,9 @@ describe('acceptance BAR amendment transaction contract', () => {
   it('keeps the BAR meaning field set explicit and excludes METHOD-only fields', () => {
     expect(ACCEPTANCE_BAR_MEANING_FIELDS).toContain('model');
     expect(ACCEPTANCE_BAR_MEANING_FIELDS).toContain('driftMarkers');
+    expect(ACCEPTANCE_BAR_MEANING_FIELDS).toContain('check');
     expect(acceptanceBarMeaningField('model')).toBe(true);
+    expect(acceptanceBarMeaningField('check')).toBe(true);
     expect(acceptanceBarMeaningField('method')).toBe(false);
     expect(acceptanceBarMeaningField('replication')).toBe(false);
   });

@@ -254,6 +254,27 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     ).toThrow(/cannot change outside rubrics:amend/);
   });
 
+  it('approval-gates a check-only change through the shared BAR meaning fields', () => {
+    const stored = started({ check: { kind: 'tests', files: ['packages/x/a.test.ts'] } });
+    const next = started({ check: { kind: 'tests', files: ['packages/x/b.test.ts'] } });
+    expect(() => guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: stored,
+      nextTemplateData: next,
+    })).toThrow(/cannot change outside rubrics:amend/);
+
+    const amended = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: stored,
+      nextTemplateData: next,
+      actorId: 'amend-author',
+      amendment: { actorId: 'amend-author', reason: 'Update the deterministic test coverage.' },
+    });
+    expect(amended.changes).toEqual([
+      expect.objectContaining({ barKey: 'R-1', kind: 'meaning', fields: ['check'] }),
+    ]);
+  });
+
   it('allows METHOD edits but overwrites spoofed provenance from the stored contract', () => {
     const result = guardAcceptanceBarTemplateDataWrite({
       slug: 'acceptance-subject-plan',

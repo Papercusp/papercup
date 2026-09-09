@@ -877,6 +877,74 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(shaped.summary.invocations.rows[0]?.args).toBeUndefined();
     expect(shaped.summaryNotice.paths).toContain('summary.invocations.rows');
   });
+
+  // EI-22796173621053064: a committed-image check emits a PASS prefix followed by the decisive
+  // FAIL/result/verdict lines. A prefix-only projection made the failed run look successful.
+  describe('failure/result-prioritized evidence arrays', () => {
+    const evidence = () => [
+      ...Array.from({ length: 12 }, (_, index) => `P305_PASS check=${index}`),
+      'P305_FAIL phase=updated reason=sentinel-mismatch',
+      'P305_RESULT result=failed exit=1',
+      'P305_VERDICT verdict=fail',
+      ...Array.from({ length: 9 }, (_, index) => `P305_DIAGNOSTIC detail=${index}`),
+    ];
+
+    it('keeps decisive suffix lines in an oversized evidence array', () => {
+      const lines = evidence();
+      const shaped = shapeCodeRunSummary({
+        summary: {
+          evidence: lines,
+          duplicatedArgs: { input: 'x'.repeat(9_000), error: 'y'.repeat(9_000) },
+        },
+      }) as {
+        summary: { evidence: string[] };
+        summaryNotice: { paths: string[] };
+      };
+
+      expect(shaped.summary.evidence).toEqual(
+        expect.arrayContaining([
+          'P305_FAIL phase=updated reason=sentinel-mismatch',
+          'P305_RESULT result=failed exit=1',
+          'P305_VERDICT verdict=fail',
+        ]),
+      );
+      expect(shaped.summary.evidence.length).toBeLessThan(lines.length);
+      expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+      expect(shaped.summaryNotice.paths).toContain('summary.evidence');
+    });
+
+    it('also prioritizes decisive lines when evidence is projected at a depth boundary', () => {
+      const lines = evidence();
+      const shaped = shapeCodeRunSummary({
+        summary: {
+          envelope: {
+            envelope: {
+              evidence: lines,
+              noise: 'z'.repeat(9_000),
+            },
+          },
+        },
+      }) as {
+        summary: { envelope: { envelope: { evidence: string[] } } };
+      };
+
+      expect(shaped.summary.envelope.envelope.evidence).toEqual(
+        expect.arrayContaining([
+          'P305_FAIL phase=updated reason=sentinel-mismatch',
+          'P305_RESULT result=failed exit=1',
+          'P305_VERDICT verdict=fail',
+        ]),
+      );
+    });
+
+    it('CONTROL: the old prefix projection omits the decisive suffix', () => {
+      const prefix = evidence().slice(0, 8);
+
+      expect(prefix).not.toContain('P305_FAIL phase=updated reason=sentinel-mismatch');
+      expect(prefix).not.toContain('P305_RESULT result=failed exit=1');
+      expect(prefix).not.toContain('P305_VERDICT verdict=fail');
+    });
+  });
 });
 
 // EI-21163938645109933 / EI-21164455886001541 (P-007). Both were filed as "false field-miss

@@ -432,6 +432,24 @@ describe('canonical acceptance BAR metadata (requirements-with-teeth P-001)', ()
     }
   });
 
+  it('binds structured check content, including a changed tests-check file', () => {
+    const checked = {
+      ...bar,
+      check: { kind: 'tests' as const, files: ['packages/x/a.test.ts'] },
+    };
+    const reorderedKeys = {
+      ...bar,
+      check: { files: ['packages/x/a.test.ts'], kind: 'tests' as const },
+    };
+    expect(computeAcceptanceBarHash(checked)).toBe(computeAcceptanceBarHash(reorderedKeys));
+    expect(
+      computeAcceptanceBarHash({
+        ...checked,
+        check: { kind: 'tests', files: ['packages/x/b.test.ts'] },
+      }),
+    ).not.toBe(computeAcceptanceBarHash(checked));
+  });
+
   it('refuses two competing BAR texts instead of choosing a hidden winner', () => {
     expect(() =>
       normalizeAcceptanceBarCriterion({
