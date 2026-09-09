@@ -115,6 +115,106 @@ export function defaultRollupSource(
   return source ?? (rollup ? 'ci' : null);
 }
 
+/**
+ * Keep testing:runs' row identity intact when a model-facing payload is
+ * bounded. The generic payload projection can omit workspaceId/harnessSlug or
+ * replace the numeric id while walking a large output tail, after which the
+ * declared result schema rejects an otherwise valid CI response.
+ *
+ * This shaper preserves every row key, clips only verbose output tails, and
+ * reports row cuts at the envelope (never as a fake row whose id would violate
+ * the output schema).
+ */
+export const TESTING_RUNS_TIER_CAPS = {
+  trimmed: { targetChars: 4_800, outputTailChars: 180 },
+  standard: { targetChars: 5_200, outputTailChars: 800 },
+} as const;
+
+type TestingRunsTier = keyof typeof TESTING_RUNS_TIER_CAPS;
+
+function clipOutputTail(value: unknown, maxChars: number): { value: unknown; clipped: boolean } {
+  if (typeof value !== 'string' || value.length <= maxChars) return { value, clipped: false };
+  const marker = `…[TRUNCATED +${value.length} chars — pass payloadTier:"full" for complete output]`;
+  if (marker.length >= maxChars) return { value: marker.slice(0, maxChars), clipped: true };
+  const keep = maxChars - marker.length;
+  return { value: `${value.slice(0, keep)}${marker}`, clipped: true };
+}
+
+function projectTestingRun(row: unknown, outputTailChars: number): { row: Record<string, unknown>; clipped: boolean } {
+  const r = (row ?? {}) as Record<string, unknown>;
+  const outputTail = clipOutputTail(r.outputTail, outputTailChars);
+  return {
+    row: {
+      ...r,
+      id: r.id ?? null,
+      workspaceId: r.workspaceId ?? null,
+      harnessSlug: r.harnessSlug ?? null,
+      outputTail: outputTail.value,
+      ...(outputTail.clipped ? { outputTailTruncated: true } : {}),
+    },
+    clipped: outputTail.clipped,
+  };
+}
+
+export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const d = data as Record<string, unknown>;
+  const caps = TESTING_RUNS_TIER_CAPS[tier];
+
+  if (Array.isArray(d.runs)) {
+    const base = { ...d, runs: [] as Record<string, unknown>[] };
+    const kept: Record<string, unknown>[] = [];
+    let clippedRows = 0;
+    for (const rawRow of d.runs) {
+      const projected = projectTestingRun(rawRow, caps.outputTailChars);
+      const candidate = { ...base, runs: [...kept, projected.row] };
+      // Keep the first valid row even if an unusual envelope is larger than the
+      // target; never return an empty row list that looks like no test ran.
+      if (JSON.stringify(candidate).length > caps.targetChars && kept.length > 0) break;
+      kept.push(projected.row);
+      if (projected.clipped) clippedRows += 1;
+    }
+    const rowsDropped = d.runs.length - kept.length;
+    if (rowsDropped === 0 && clippedRows === 0) return { ...d, runs: kept };
+    return {
+      ...base,
+      runs: kept,
+      payloadBounded: {
+        tier,
+        showingRuns: kept.length,
+        totalRuns: d.runs.length,
+        droppedRuns: rowsDropped,
+        clippedOutputTails: clippedRows,
+        outputTailChars: caps.outputTailChars,
+      },
+    };
+  }
+
+  if (Array.isArray(d.groups)) {
+    const base = { ...d, groups: [] as Record<string, unknown>[] };
+    const kept: Record<string, unknown>[] = [];
+    for (const rawGroup of d.groups) {
+      const group = { ...(rawGroup as Record<string, unknown>) };
+      if (JSON.stringify({ ...base, groups: [...kept, group] }).length > caps.targetChars && kept.length > 0) break;
+      kept.push(group);
+    }
+    const groupsDropped = d.groups.length - kept.length;
+    if (groupsDropped === 0) return { ...d, groups: kept };
+    return {
+      ...base,
+      groups: kept,
+      payloadBounded: {
+        tier,
+        showingGroups: kept.length,
+        totalGroups: d.groups.length,
+        droppedGroups: groupsDropped,
+      },
+    };
+  }
+
+  return data;
+}
+
 export default defineTool({
   name: 'testing:runs',
   description:
@@ -129,7 +229,8 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` rows are { id, workspaceId, harnessSlug, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. outputTail is populated only for fail/error rows and is truncated.',
+      'Each row: { id, workspaceId, harnessSlug, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. outputTail is populated only for fail/error rows and is truncated.',
+      '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
@@ -225,6 +326,14 @@ export default defineTool({
       groups: z.array(z.unknown()).optional(),
     })
     .passthrough(),
+  shape: {
+    contract: {
+      rows: 'runs',
+      preserve: ['count', 'total', 'truncatedByLimit', 'latestPerFile'],
+    },
+    standard: (data) => shapeTestingRuns(data, 'standard'),
+    trimmed: (data) => shapeTestingRuns(data, 'trimmed'),
+  },
   async handler(args: {
     filePath?: string;
     commitSha?: string;

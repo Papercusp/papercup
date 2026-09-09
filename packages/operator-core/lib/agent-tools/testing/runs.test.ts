@@ -8,7 +8,20 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { defaultRollupSource, isSaturationSuspect, toPathPattern, toShaPattern } from './runs';
+import {
+  dispatchProjectedTool,
+  lookupByMcpName,
+  readJsonResult,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
+import {
+  defaultRollupSource,
+  isSaturationSuspect,
+  shapeTestingRuns,
+  toPathPattern,
+  toShaPattern,
+} from './runs';
 import runsTool from './runs';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 
@@ -263,6 +276,127 @@ describe('testing:runs empty results', () => {
       notRecorded: true,
       reason: 'no_runs_recorded',
     });
+  });
+});
+
+describe('testing:runs payload-tier shape', () => {
+  const dbRows = Array.from({ length: 19 }, (_, i) => ({
+    id: String(17692431 + i),
+    workspace_id: i % 2 === 0 ? 'workspace-a' : null,
+    harness_slug: i % 2 === 0 ? 'papercusp' : null,
+    file_path: `packages/example/test-${i}.test.ts`,
+    status: 'error',
+    framework: 'vitest',
+    started_at: `2026-09-08T09:43:${String(i).padStart(2, '0')}Z`,
+    finished_at: `2026-09-08T09:44:${String(i).padStart(2, '0')}Z`,
+    duration_ms: '1000',
+    output_tail: `failure-${i} ${'x'.repeat(800)}`,
+    run_group_id: 'gate-run',
+    source: 'ci',
+    branch: 'staging',
+    commit_sha: 'abc123',
+    loop_lag_p95_ms: null,
+    rss_mb: null,
+    worktree_dirty: false,
+    is_scratch_config: false,
+    total: '19',
+  }));
+
+  const dispatchContext = (contextTier: 'trimmed' | 'standard'): UnifiedToolContext => ({
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    workspaceId: 'default',
+    runId: `testing-runs-shape-${contextTier}`,
+    isSuperuser: true,
+    uiClientId: 'testing-runs-shape-test',
+    role: 'su',
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+    contextTier,
+    tx: {},
+  });
+
+  beforeEach(() => {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      if (call.strings.some((part) => part.includes('WITH filtered'))) return Promise.resolve(dbRows);
+      return call;
+    });
+  });
+
+  it.each(['trimmed', 'standard'] as const)('keeps schema-required row identity in %s projected output', async (contextTier) => {
+    const raw = (await runsTool.handler({ limit: 19 } as never, {} as never)) as { data: unknown };
+    expect(JSON.stringify(raw).length).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
+
+    const projected = lookupByMcpName('testing:runs');
+    expect(projected).toBeDefined();
+
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'testing:runs',
+      { limit: 19 },
+      dispatchContext(contextTier),
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{
+      count: number;
+      total: number;
+      truncatedByLimit: boolean;
+      runs: Array<{ id: number; workspaceId: string | null; harnessSlug: string | null; outputTail?: string }>;
+      _projection?: unknown;
+    }>(dispatched.result!);
+    expect(payload?._projection).toBeUndefined();
+    expect(payload?.count).toBe(19);
+    expect(payload?.total).toBe(19);
+    expect(payload?.runs.length).toBeGreaterThan(0);
+    expect(payload?.runs.every((row) => Number.isInteger(row.id))).toBe(true);
+    expect(payload?.runs.every((row) => 'workspaceId' in row && 'harnessSlug' in row)).toBe(true);
+    expect(payload?.runs[0]).toMatchObject({ id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'papercusp' });
+  });
+
+  it('preserves the required fields and announces row/tail bounds in the shaper output', () => {
+    const shaped = shapeTestingRuns(
+      {
+        count: 19,
+        total: 19,
+        truncatedByLimit: false,
+        latestPerFile: true,
+        runs: dbRows.map((row) => ({
+          id: Number(row.id),
+          workspaceId: row.workspace_id,
+          harnessSlug: row.harness_slug,
+          filePath: row.file_path,
+          status: row.status,
+          framework: row.framework,
+          startedAt: row.started_at,
+          finishedAt: row.finished_at,
+          durationMs: 1000,
+          commitSha: row.commit_sha,
+          runGroupId: row.run_group_id,
+          source: row.source,
+          branch: row.branch,
+          outputTail: row.output_tail,
+          loopLagP95Ms: null,
+          rssMb: null,
+          saturationSuspect: null,
+          worktreeDirty: false,
+          isScratchConfig: false,
+        })),
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+    const runs = shaped.runs as Array<Record<string, unknown>>;
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.length).toBeLessThan(19);
+    expect(runs[0]).toMatchObject({ id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'papercusp' });
+    expect(runs[0]).toHaveProperty('outputTailTruncated', true);
+    expect(shaped.payloadBounded).toMatchObject({ totalRuns: 19, showingRuns: runs.length });
   });
 });
 
