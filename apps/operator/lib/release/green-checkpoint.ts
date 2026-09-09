@@ -355,6 +355,12 @@ export interface CheckpointExecutionContext {
   candidate: string;
   headAtStart?: string;
   setup?: CheckpointSetupIdentity;
+  /**
+   * True only when this execution is re-verifying a frozen repair head. Repair
+   * rounds overlap the independent lint/check bundle with the affected suite;
+   * initial candidate and prefix-confirm runs preserve the historical barrier.
+   */
+  repairVerification?: boolean;
   /** Original affected-task proof identity for a frozen repair chain. Distinct from runId. */
   affectedTestProofGroup?: string;
 }
@@ -11265,6 +11271,7 @@ async function runGreenCheckpointInner(
       candidate,
       headAtStart: candidate,
       ...(setupIdentity ? { setup: setupIdentity } : {}),
+      repairVerification,
       ...(repairVerification && repairQueue?.affectedTestProofGroup
         ? { affectedTestProofGroup: repairQueue.affectedTestProofGroup }
         : {}),
@@ -17651,13 +17658,26 @@ export function realCheckpointDeps(
       }
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
-      const r = await exec(cmd, args, {
+      const suitePromise = exec(cmd, args, {
         cwd: treeDir,
         env,
         allowNonZero: true,
         heavy: true,
         relayAffectedProgress: true,
       });
+      // P-004 (green-gate-zero-wait-convergence-2026-09-08): a frozen repair
+      // already paid for the initial serial verdict. On its re-verification run,
+      // start the independent lint/check bundle while the affected suite is still
+      // in flight. The explicit execution flag keeps initial candidate and prefix
+      // confirmation runs on their historical suite-first barrier.
+      const repairLegsPromise = execution?.repairVerification
+        ? runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace, {
+            identity: postSuiteIdentity,
+          })
+        : null;
+      const [r, concurrentRepairLegs] = repairLegsPromise
+        ? await Promise.all([suitePromise, repairLegsPromise] as const)
+        : ([await suitePromise, null] as const);
       const suiteCompleted = commandCompletedSuccessfully(r);
       const signalNote = r.signal
         ? `\n\n=== CHECKPOINT CHILD TERMINATED BY SIGNAL (${r.signal}) — the suite did not produce a zero-exit verdict ===\n`
@@ -17676,15 +17696,20 @@ export function realCheckpointDeps(
       // `*Ok` flag defaulting to `true`, so a red suite skipped every one and they all still
       // read as "passed"; absorption then set green without ever running them. See
       // runPostSuiteLegs' doc for the incident this cost us.
-      let legs = suiteCompleted
-        ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace, {
-            identity: postSuiteIdentity,
-          })
-        : legsNotRun(
-            "suite red — post-suite legs deferred until the suite is considered passing",
-          );
+      let legs = concurrentRepairLegs ??
+        (suiteCompleted
+          ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace, {
+              identity: postSuiteIdentity,
+            })
+          : legsNotRun(
+              "suite red — post-suite legs deferred until the suite is considered passing",
+            ));
       let green = suiteCompleted && legs.ok;
-      let fullOutput = r.stdout + r.stderr + signalNote + legs.output;
+      // Concurrent repair legs may themselves print FAIL-shaped diagnostics.
+      // Flake classification belongs to the affected suite alone; keep its
+      // immutable output separate while the durable run log still records both.
+      const suiteOutput = r.stdout + r.stderr + signalNote;
+      let fullOutput = suiteOutput + legs.output;
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
       // SUITE is what failed (r.code !== 0) — a build break is deterministic, never a
@@ -17734,7 +17759,7 @@ export function realCheckpointDeps(
         // same failures from scratch — see emergencyRedFailingTests, which reads this.
         writeFailingFilesMarker(_phaseLockDir, {
           runId,
-          files: parseFailingFilesByWorkspace(fullOutput).map(
+          files: parseFailingFilesByWorkspace(suiteOutput).map(
             (f) => `${f.workspace}::${f.file}`,
           ),
         });
@@ -17742,7 +17767,7 @@ export function realCheckpointDeps(
         // (the real-deps tests' injection seam) still wins; absent it, the real confirming
         // runner above is what gates absorption.
         const outcome = await attemptFlakeAbsorption(
-          fullOutput,
+          suiteOutput,
           isolationRun,
           log,
           {
@@ -17765,8 +17790,8 @@ export function realCheckpointDeps(
           suiteAbsorbed = true;
           flakeSuspects = outcome.flakeSuspects;
         } else if (
-          isWorkerPoolCrash(fullOutput) &&
-          parseFailingFilesByWorkspace(fullOutput).length === 0
+          isWorkerPoolCrash(suiteOutput) &&
+          parseFailingFilesByWorkspace(suiteOutput).length === 0
         ) {
           // WI-806: a vitest WORKER-POOL crash (a fork OOM/terminate under fleet load) emits
           // NO per-file `FAIL` lines, so the per-file isolation absorber above found zero
@@ -17776,7 +17801,7 @@ export function realCheckpointDeps(
           // PASSING re-run flips to green (surfaced as a flake suspect); a re-crash or any
           // real failure stays red. Fail-safe — proof required, never a blanket green.
           const crash = await attemptWorkerCrashAbsorption(
-            fullOutput,
+            suiteOutput,
             workspaceRerun,
             log,
           );
@@ -17810,14 +17835,20 @@ export function realCheckpointDeps(
           // `true` defaults. Note `green` is ASSIGNED FROM the legs' verdict — the old code
           // set it to a bare `true` right here, which is precisely how five checks that
           // never ran became five assumed passes and rode a fast-forward into `main`.
-          legs = await runPostSuiteLegs(
-            treeDir,
-            env,
-            exec,
-            cfg.spaBuildWorkspace,
-            { identity: postSuiteIdentity },
-          );
-          fullOutput += legs.output;
+          // A repair verification already ran these legs concurrently with the
+          // original suite. Reuse that measured result after absorption; running
+          // them again would double the gate cost and could turn one repair round
+          // into two different lint/build observations.
+          if (!concurrentRepairLegs) {
+            legs = await runPostSuiteLegs(
+              treeDir,
+              env,
+              exec,
+              cfg.spaBuildWorkspace,
+              { identity: postSuiteIdentity },
+            );
+            fullOutput += legs.output;
+          }
           green = legs.ok;
           if (!legs.ok) {
             // EI-20203883939710354: name the RESOLVED workspace, not a hardcoded one — this

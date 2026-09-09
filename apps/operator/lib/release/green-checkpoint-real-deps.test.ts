@@ -1926,6 +1926,98 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(calls[2].opts?.cwd).toBe(cpTree);
   });
 
+  it("P-004: starts repair-round post-suite legs before the affected suite finishes", async () => {
+    const events: string[] = [];
+    let finishSuite!: (result: ExecResp) => void;
+    const suiteResult = new Promise<ExecResp>((resolve) => {
+      finishSuite = resolve;
+    });
+    const exec: CheckpointExec = async (cmd, args) => {
+      const isSuite =
+        cmd === GREEN_CMD0 &&
+        args.length === GREEN_ARGS.length &&
+        args.every((arg, index) => arg === GREEN_ARGS[index]);
+      if (isSuite) {
+        events.push("suite:start");
+        const result = await suiteResult;
+        events.push("suite:end");
+        return { ...result, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+      }
+      if (cmd === "git") {
+        events.push("legs:git:start");
+        return { code: 1, stdout: "", stderr: "" };
+      }
+      if (cmd === "npm" && args.includes("build")) {
+        events.push("legs:build:start");
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`unexpected command: ${cmd} ${args.join(" ")}`);
+    };
+
+    const running = realCheckpointDeps(cfg, exec).runGreen(cpTree, "base-sha", {
+      candidate: "c".repeat(40),
+      repairVerification: true,
+      affectedTestProofGroup: "repair-proof-group",
+    });
+
+    await vi.waitFor(() => expect(events).toContain("legs:git:start"));
+    expect(events).toContain("suite:start");
+    expect(events).not.toContain("suite:end");
+    finishSuite({ code: 0 });
+    const result = await running;
+
+    expect(result.green).toBe(true);
+    expect(events.indexOf("legs:git:start")).toBeLessThan(
+      events.indexOf("suite:end"),
+    );
+    expect(events.filter((event) => event === "legs:git:start")).toHaveLength(1);
+    expect(events.filter((event) => event === "legs:build:start")).toHaveLength(1);
+  });
+
+  it("P-004: preserves the suite-first barrier for an initial candidate run", async () => {
+    const events: string[] = [];
+    let finishSuite!: (result: ExecResp) => void;
+    const suiteResult = new Promise<ExecResp>((resolve) => {
+      finishSuite = resolve;
+    });
+    const exec: CheckpointExec = async (cmd, args) => {
+      const isSuite =
+        cmd === GREEN_CMD0 &&
+        args.length === GREEN_ARGS.length &&
+        args.every((arg, index) => arg === GREEN_ARGS[index]);
+      if (isSuite) {
+        events.push("suite:start");
+        const result = await suiteResult;
+        events.push("suite:end");
+        return { ...result, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+      }
+      if (cmd === "git") {
+        events.push("legs:git:start");
+        return { code: 1, stdout: "", stderr: "" };
+      }
+      if (cmd === "npm" && args.includes("build")) {
+        events.push("legs:build:start");
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`unexpected command: ${cmd} ${args.join(" ")}`);
+    };
+
+    const running = realCheckpointDeps(cfg, exec).runGreen(cpTree, "base-sha", {
+      candidate: "c".repeat(40),
+      repairVerification: false,
+    });
+
+    await vi.waitFor(() => expect(events).toContain("suite:start"));
+    expect(events).toEqual(["suite:start"]);
+    finishSuite({ code: 0 });
+    const result = await running;
+
+    expect(result.green).toBe(true);
+    expect(events.indexOf("suite:end")).toBeLessThan(
+      events.indexOf("legs:git:start"),
+    );
+  });
+
   it("P-005: green suite but FAILED SPA build → NOT green, build break in the failure signature", async () => {
     // suite green → marker grep clean (code 1) → SPA build fails (code 1).
     const { exec, calls } = makeExec([
@@ -2000,6 +2092,66 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     " FAIL  lib/llm-testing/__tests__/runner-aggregate.test.ts > aggregates\n" +
     " ❯ lib/scout/scheduler-workspace-scope.test.ts (12 tests | 1 failed) 21034ms\n" +
     "2 non-quarantined task(s) failed.";
+
+  it("P-004: reuses concurrent repair legs after flake absorption instead of running them twice", async () => {
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    const exec: CheckpointExec = async (cmd, args) => {
+      calls.push({ cmd, args });
+      const isSuite =
+        cmd === GREEN_CMD0 &&
+        args.length === GREEN_ARGS.length &&
+        args.every((arg, index) => arg === GREEN_ARGS[index]);
+      if (isSuite) return { code: 1, stdout: RED_OUTPUT, stderr: "" };
+      if (cmd === "git") return { code: 1, stdout: "", stderr: "" };
+      if (cmd === "npm" && args.includes("build")) {
+        return {
+          code: 0,
+          stdout:
+            ">>> @example/fixture-post-suite :: npm run test\n" +
+            " FAIL lib/post-suite-noise.test.ts > diagnostic-only\n",
+          stderr: "",
+        };
+      }
+      if (cmd === "npm" && args.includes("test")) {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`unexpected command: ${cmd} ${args.join(" ")}`);
+    };
+
+    const result = await realCheckpointDeps(cfg, exec).runGreen(
+      cpTree,
+      "base-sha",
+      {
+        candidate: "c".repeat(40),
+        repairVerification: true,
+        affectedTestProofGroup: "repair-proof-group",
+      },
+    );
+
+    expect(result.green).toBe(true);
+    expect(calls.filter((call) => call.cmd === "git")).toHaveLength(1);
+    expect(
+      calls.filter(
+        (call) => call.cmd === "npm" && call.args.includes("build"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      calls.findIndex((call) => call.cmd === "git"),
+    ).toBeLessThan(
+      calls.findIndex(
+        (call) => call.cmd === "npm" && call.args.includes("test"),
+      ),
+    );
+    const suiteRetries = calls.filter(
+      (call) => call.cmd === "npm" && call.args.includes("test"),
+    );
+    expect(suiteRetries).toHaveLength(3);
+    expect(
+      suiteRetries.every(
+        (call) => !call.args.includes("lib/post-suite-noise.test.ts"),
+      ),
+    ).toBe(true);
+  });
 
   it("load-flake: red suite, both failing files PASS in isolation → green + flakeSuspects, single-fork env", async () => {
     // call 0: green command (red suite). call 1: isolation re-run of file #1 (pass).
