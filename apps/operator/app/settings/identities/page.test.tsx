@@ -231,7 +231,7 @@ describe("IdentitySettingsPage", () => {
     expect(
       screen.getByRole("button", { name: "Inspect identity research-steward" }),
     ).toBeTruthy();
-    expect(screen.getByText("Applied")).toBeTruthy();
+    expect(screen.getAllByText("Applied")).toHaveLength(2);
     expect(H.queryKeys).toEqual(
       new Set([
         "identityTab",
@@ -261,15 +261,21 @@ describe("IdentitySettingsPage", () => {
     );
     expect(screen.getByText("configuration.domain")).toBeTruthy();
     expect(
-      screen.getByLabelText("Fresh context — relaunch with carried work."),
-    ).toBeChecked();
+      (
+        screen.getByLabelText(
+          "Fresh context — relaunch with carried work.",
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
   });
 
   it("applies an exclusive slot as switch only after the review is present", async () => {
     render(<IdentitySettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Review switch" }));
     const apply = await screen.findByRole("button", { name: "Apply identity" });
-    await waitFor(() => expect(apply).not.toBeDisabled());
+    await waitFor(() =>
+      expect((apply as HTMLButtonElement).disabled).toBe(false),
+    );
     fireEvent.click(apply);
 
     await waitFor(() =>

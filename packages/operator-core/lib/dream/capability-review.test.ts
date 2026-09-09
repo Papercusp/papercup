@@ -336,6 +336,142 @@ describe('independent capability source and skeptical review', () => {
     expect(result.usage.costUsd).toBe(0.02);
   });
 
+  it.each(['missing-ref', 'quote-not-found'] as const)(
+    'retains the invalid judgment and exact %s evidence without admitting it',
+    async (reason) => {
+      const f = await fixture();
+      const review = judgment(f.priors);
+      if (reason === 'missing-ref') review.feasibility.evidence[0]!.ref = 'B:missing';
+      else review.feasibility.evidence[0]!.quote = 'imaginary source text';
+      f.setJudgment(review);
+      const result = await runCapabilityDreamReview(f.options, f.deps);
+      expect(result).toMatchObject({ verdict: 'unverified', reason: 'review-unavailable', judgment: null });
+      const failure = result.failures!.review!;
+      expect(failure.stage).toBe('grounding');
+      expect(failure.invalidEvidence).toEqual({
+        total: 1,
+        entries: [{ path: 'feasibility.evidence[0]', ...review.feasibility.evidence[0], reason }],
+      });
+      expect(failure.response).toMatchObject({
+        chars: JSON.stringify(review).length,
+        sha256: capabilityHash(JSON.stringify(review)),
+        truncated: false,
+      });
+      expect(JSON.parse(failure.response!.preview)).toEqual(review);
+      // The diagnostic survives the same JSON serialization used by the run ledger.
+      expect(JSON.parse(JSON.stringify(result)).failures.review).toEqual(failure);
+      expect(result.usage.costUsd).toBe(0.03);
+      expect(f.calls).toHaveLength(3);
+    },
+  );
+
+  it('retains both invalid controls, schema paths, and the offending withheld-unit citation', async () => {
+    const f = await fixture();
+    f.controlA.note = 'x'.repeat(601);
+    f.controlB.evidence[0]!.ref = 'A:code';
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'unverified', controls: { aOnly: null, bOnly: null }, judgment: null });
+    expect(result.failures!['control-a']).toMatchObject({
+      stage: 'schema',
+      issues: [{ path: 'note', code: 'too_big' }],
+    });
+    expect(result.failures!['control-b']).toMatchObject({
+      stage: 'grounding',
+      invalidEvidence: { total: 1, entries: [{ ref: 'A:code', reason: 'missing-ref' }] },
+    });
+    expect(result.usage.costUsd).toBe(0.02);
+    expect(f.calls).toHaveLength(2);
+  });
+
+  it.each(['malformed', 'oversized'] as const)(
+    'bounds %s response diagnostics and retains their identity',
+    async (mode) => {
+      const f = await fixture();
+      const original = f.options.llmCall;
+      const raw = mode === 'malformed' ? '{"verdict":' : 'x'.repeat(32_001);
+      f.options.llmCall = async (input) => {
+        const response = await original(input);
+        return f.calls.length === 3 ? { ...response, json: undefined, text: raw } : response;
+      };
+      const result = await runCapabilityDreamReview(f.options, f.deps);
+      expect(result).toMatchObject({ verdict: 'unverified', judgment: null });
+      expect(result.failures!.review).toMatchObject({
+        stage: 'response',
+        response: {
+          preview: raw.slice(0, 6_000),
+          chars: raw.length,
+          sha256: capabilityHash(raw),
+          truncated: raw.length > 6_000,
+        },
+      });
+      expect(result.usage.costUsd).toBe(0.03);
+      expect(f.calls).toHaveLength(3);
+    },
+  );
+
+  it('retains structurally valid but incomplete adjudication separately from trusted judgment', async () => {
+    const f = await fixture();
+    const review = judgment(f.priors);
+    review.observations.pop();
+    f.setJudgment(review);
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'unverified', judgment: null });
+    expect(result.failures!.review!.stage).toBe('coverage');
+    expect(JSON.parse(result.failures!.review!.response!.preview)).toEqual(review);
+  });
+
+  it('does not attach failure diagnostics to a valid accepted review', async () => {
+    const f = await fixture();
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result.verdict).toBe('accept');
+    expect(result.judgment).not.toBeNull();
+    expect(result.failures).toBeUndefined();
+  });
+
+  it('bounds diagnostic samples without hiding their total or silently truncating the adjudication', async () => {
+    const f = await fixture();
+    const review = judgment(f.priors);
+    review.observations = Array.from({ length: 12 }, (_, index) => ({
+      index,
+      status: 'supported',
+      note: 'Observed claim ' + index,
+      evidence: [{ ref: 'A:missing-' + index, quote: 'x'.repeat(600) }],
+    }));
+    f.setJudgment(review);
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'unverified', judgment: null });
+    expect(result.failures!.review!.invalidEvidence!.total).toBe(12);
+    expect(result.failures!.review!.invalidEvidence!.entries).toHaveLength(8);
+    expect(result.failures!.review!.response).toMatchObject({
+      preview: JSON.stringify(review).slice(0, 6_000),
+      chars: JSON.stringify(review).length,
+      sha256: capabilityHash(JSON.stringify(review)),
+      truncated: true,
+    });
+    expect(f.calls).toHaveLength(3);
+  });
+
+  it('retains bounded schema diagnostics for the final judgment, not only controls', async () => {
+    const f = await fixture();
+    const review = judgment(f.priors);
+    review.observations = Array.from({ length: 12 }, (_, index) => ({
+      index,
+      status: 'supported',
+      note: 'x'.repeat(601),
+      evidence: [quote('A')],
+    }));
+    f.setJudgment(review);
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'unverified', judgment: null });
+    expect(result.failures!.review).toMatchObject({
+      stage: 'schema',
+      issueCount: 12,
+    });
+    expect(result.failures!.review!.issues![0]).toMatchObject({ path: 'observations.0.note', code: 'too_big' });
+    expect(result.failures!.review!.issues).toHaveLength(8);
+    expect(f.calls).toHaveLength(3);
+  });
+
   it('checks actual files, retrieves all facets, preserves scopes and uses three isolated different-model contexts', async () => {
     const f = await fixture();
     const result = await runCapabilityDreamReview(f.options, f.deps);

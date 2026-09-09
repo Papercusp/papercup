@@ -109,6 +109,20 @@ const ReviewSchema = z
   .strict();
 export type CapabilityReviewControl = z.infer<typeof ControlSchema>;
 export type CapabilityReviewJudgment = z.infer<typeof ReviewSchema>;
+type ReviewPhase = 'control-a' | 'control-b' | 'review';
+/** Diagnostic only: never eligible for admission. Older ledger rows lack this field.
+ * Response previews and issue samples explicitly report omitted data, not full recovery. */
+export interface CapabilityReviewFailure {
+  stage: 'response' | 'schema' | 'grounding' | 'coverage' | 'freshness';
+  message: string;
+  response?: { preview: string; chars: number; sha256: string; truncated: boolean };
+  issues?: Array<{ path: string; code: string; message: string }>;
+  issueCount?: number;
+  invalidEvidence?: {
+    total: number;
+    entries: Array<{ path: string; ref: string; quote: string; reason: 'missing-ref' | 'quote-not-found' }>;
+  };
+}
 export interface CapabilityReviewCoverage {
   scope: Scope;
   globalNovelty: 'not-established';
@@ -128,6 +142,7 @@ export interface CapabilityReviewResult {
   priorMatches: CapabilityReviewPrior[];
   controls: { aOnly: CapabilityReviewControl | null; bOnly: CapabilityReviewControl | null };
   judgment: CapabilityReviewJudgment | null;
+  failures?: Partial<Record<ReviewPhase, CapabilityReviewFailure>>;
   usage: DreamReviewUsage;
 }
 export interface RunCapabilityReviewOptions {
@@ -162,7 +177,11 @@ const defaultDeps: CapabilityReviewDeps = {
 };
 
 /** Dream uses the shared local cross-encoder; a configured hosted key cannot add unmetered spend. */
-export async function rerankCapabilityPriors(query: string, priors: CapabilityReviewPrior[], options?: { timeoutMs: number }) {
+export async function rerankCapabilityPriors(
+  query: string,
+  priors: CapabilityReviewPrior[],
+  options?: { timeoutMs: number },
+) {
   const timeoutMs = options?.timeoutMs ?? 5_000;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError('Rerank requires a remaining review budget');
   let outcome: RerankStageOutcome = { attempted: false, reason: 'no-outcome' };
@@ -307,6 +326,25 @@ function sourceTexts(packets: Record<'A' | 'B' | 'C', CapabilityPacket | null>, 
 function grounded(evidence: z.infer<typeof grounding>, texts: Map<string, string>): boolean {
   return evidence.every((e) => texts.get(e.ref)?.includes(e.quote) === true);
 }
+function invalidGrounding(
+  findings: Array<{ path: string; evidence: z.infer<typeof grounding> }>,
+  texts: Map<string, string>,
+): NonNullable<CapabilityReviewFailure['invalidEvidence']> {
+  const entries = findings.flatMap(({ path, evidence }) =>
+    evidence.flatMap((e, index) =>
+      grounded([e], texts)
+        ? []
+        : [
+            {
+              path: path + '.evidence[' + index + ']',
+              ...e,
+              reason: texts.has(e.ref) ? ('quote-not-found' as const) : ('missing-ref' as const),
+            },
+          ],
+    ),
+  );
+  return { total: entries.length, entries: entries.slice(0, 8) };
+}
 function packetPrompt(label: string, packet: CapabilityPacket) {
   return {
     label,
@@ -369,6 +407,27 @@ export async function runCapabilityDreamReview(
     controls: { aOnly: null, bOnly: null },
     judgment: null,
     usage: { model: config.model, costUsd: 0, inputTokens: 0, outputTokens: 0 },
+  };
+  // At most one bounded diagnostic per paid phase. Concurrent controls own distinct slots.
+  const diagnostics: Record<ReviewPhase, Omit<CapabilityReviewFailure, 'message'>> = {
+    'control-a': { stage: 'response' },
+    'control-b': { stage: 'response' },
+    review: { stage: 'response' },
+  };
+  const retainFailure = (phase: ReviewPhase, error: unknown) => {
+    const diagnostic: CapabilityReviewFailure = {
+      ...diagnostics[phase],
+      message: (error instanceof Error ? error.message : String(error)).slice(0, 600),
+    };
+    if (error instanceof z.ZodError) {
+      diagnostic.issueCount = error.issues.length;
+      diagnostic.issues = error.issues.slice(0, 8).map((issue) => ({
+        path: issue.path.map(String).join('.').slice(0, 180),
+        code: issue.code,
+        message: issue.message.slice(0, 600),
+      }));
+    }
+    (result.failures ??= {})[phase] = diagnostic;
   };
   const finish = (verdict: CapabilityReviewResult['verdict'], reason: string, message: string) => ({
     ...result,
@@ -470,8 +529,11 @@ export async function runCapabilityDreamReview(
     if (!priors.length)
       return unavailable('empty-search', 'No supporting prior sources were retrieved; global novelty remains unknown.');
     const remainingMs = sourceDeadline - Date.now();
-    if (remainingMs <= 0) return unavailable('rerank-unavailable', 'The review source deadline elapsed before reranking.');
-    const ranked = await deps.rerank(candidate.behavior + '\n' + candidate.priorArt.proposedDelta, priors, { timeoutMs: remainingMs });
+    if (remainingMs <= 0)
+      return unavailable('rerank-unavailable', 'The review source deadline elapsed before reranking.');
+    const ranked = await deps.rerank(candidate.behavior + '\n' + candidate.priorArt.proposedDelta, priors, {
+      timeoutMs: remainingMs,
+    });
     coverage.rerank = ranked.outcome;
     if (
       !ranked.priors.length ||
@@ -488,7 +550,7 @@ export async function runCapabilityDreamReview(
     return unavailable('search-unavailable', error instanceof Error ? error.message : String(error));
   }
 
-  async function call(phase: 'control-a' | 'control-b' | 'review', user: string): Promise<unknown> {
+  async function call(phase: ReviewPhase, user: string): Promise<unknown> {
     // Publish the same contract that validates the response, including field and
     // array bounds. Free-text examples alone omitted note.max(600), causing paid
     // controls to fail solely because the reviewer could not see that limit.
@@ -513,34 +575,54 @@ export async function runCapabilityDreamReview(
     result.usage.costUsd += response.costUsd;
     result.usage.inputTokens += response.inputTokens;
     result.usage.outputTokens += response.outputTokens;
-    if (response.text.length > 32_000 || (response.json != null && JSON.stringify(response.json).length > 32_000))
+    const json = response.json != null ? JSON.stringify(response.json) : null;
+    const raw = response.text.length > 32_000 ? response.text : (json ?? response.text);
+    diagnostics[phase].response = {
+      preview: raw.slice(0, 6_000),
+      chars: raw.length,
+      sha256: capabilityHash(raw),
+      truncated: raw.length > 6_000,
+    };
+    if (response.text.length > 32_000 || (json != null && json.length > 32_000))
       throw new Error('Reviewer response exceeds the bounded JSON budget.');
     return response.json ?? JSON.parse(response.text);
   }
   const texts = sourceTexts(packets, priors);
+  let reviewAttempted = false;
   try {
     const controls = await Promise.allSettled(
       (['A', 'B'] as const).map(async (label) => {
-        const payload = await call(
-          label === 'A' ? 'control-a' : 'control-b',
-          JSON.stringify({
-            task:
-              'Can the retained unit alone deliver the target behavior materially unchanged? The other primary is withheld. ' +
-              'True means this is a one-unit proposal; false requires evidence of what this unit cannot provide; null means unknown.',
-            targetBehavior: candidate.behavior,
-            retained: packetPrompt(label, packets[label]!),
-            output: {
-              unchanged: 'boolean|null',
-              note: 'reason',
-              evidence: [{ ref: label + ':evidence-id', quote: 'literal source quote' }],
-            },
-          }),
-        );
-        const control = ControlSchema.parse(payload);
-        const only = new Map([...texts].filter(([key]) => key.startsWith(label + ':')));
-        if (!grounded(control.evidence, only))
-          throw new Error(label + '-only control lacks supporting retained-unit evidence.');
-        return control;
+        const phase = label === 'A' ? 'control-a' : 'control-b';
+        try {
+          const payload = await call(
+            phase,
+            JSON.stringify({
+              task:
+                'Can the retained unit alone deliver the target behavior materially unchanged? The other primary is withheld. ' +
+                'True means this is a one-unit proposal; false requires evidence of what this unit cannot provide; null means unknown.',
+              targetBehavior: candidate.behavior,
+              retained: packetPrompt(label, packets[label]!),
+              output: {
+                unchanged: 'boolean|null',
+                note: 'reason',
+                evidence: [{ ref: label + ':evidence-id', quote: 'literal source quote' }],
+              },
+            }),
+          );
+          diagnostics[phase].stage = 'schema';
+          const control = ControlSchema.parse(payload);
+          const only = new Map([...texts].filter(([key]) => key.startsWith(label + ':')));
+          diagnostics[phase].stage = 'grounding';
+          const invalid = invalidGrounding([{ path: 'control', evidence: control.evidence }], only);
+          if (invalid.total) {
+            diagnostics[phase].invalidEvidence = invalid;
+            throw new Error(label + '-only control lacks supporting retained-unit evidence.');
+          }
+          return control;
+        } catch (error) {
+          retainFailure(phase, error);
+          throw error;
+        }
       }),
     );
     result.controls.aOnly = controls[0].status === 'fulfilled' ? controls[0].value : null;
@@ -560,71 +642,78 @@ export async function runCapabilityDreamReview(
     if (result.controls.aOnly!.unchanged === null || result.controls.bOnly!.unchanged === null)
       return unavailable('counterfactual-unknown', 'At least one held-out primary comparison remains unknown.');
 
-    const judgment = ReviewSchema.parse(
-      await call(
-        'review',
-        JSON.stringify({
-          task:
-            'Check each observed claim against code/tests; compare every closest prior by behavior, not naming or a similarity threshold. ' +
-            'Distinguish a renamed existing integration from a supported delta. Verify the relational mapping, preconditions, transfer risks, ' +
-            'constraints and feasibility. Demand an executable, bounded falsifier with a baseline. Do not repair the candidate. ' +
-            'A proposal is not an implemented result. Unknown evidence is unverified, not disproven or duplicate.',
-          candidate,
-          units: (['A', 'B', 'C'] as const).flatMap((label) =>
-            packets[label] ? [packetPrompt(label, packets[label]!)] : [],
-          ),
-          priors: priors.map((p) => ({ ...p, evidenceRef: 'prior:' + p.ref })),
-          controls: result.controls,
-          coverage,
-          output: {
-            verdict: 'accept|reject|unverified',
-            note: 'grounded explanation',
-            observations: [
-              {
-                index: 0,
-                status: 'supported|disproven|unknown',
-                note: 'reason',
-                evidence: [{ ref: 'A:evidence-id', quote: 'literal quote' }],
-              },
-            ],
-            comparisons: [
-              {
-                ref: 'each prior ref',
-                disposition: 'duplicate|distinct|unknown',
-                note: 'behavioral overlap or delta',
-                evidence: [{ ref: 'prior:ref', quote: 'literal quote' }],
-              },
-            ],
-            relation: {
+    reviewAttempted = true;
+    const payload = await call(
+      'review',
+      JSON.stringify({
+        task:
+          'Check each observed claim against code/tests; compare every closest prior by behavior, not naming or a similarity threshold. ' +
+          'Distinguish a renamed existing integration from a supported delta. Verify the relational mapping, preconditions, transfer risks, ' +
+          'constraints and feasibility. Demand an executable, bounded falsifier with a baseline. Do not repair the candidate. ' +
+          'A proposal is not an implemented result. Unknown evidence is unverified, not disproven or duplicate.',
+        candidate,
+        units: (['A', 'B', 'C'] as const).flatMap((label) =>
+          packets[label] ? [packetPrompt(label, packets[label]!)] : [],
+        ),
+        priors: priors.map((p) => ({ ...p, evidenceRef: 'prior:' + p.ref })),
+        controls: result.controls,
+        coverage,
+        output: {
+          verdict: 'accept|reject|unverified',
+          note: 'grounded explanation',
+          observations: [
+            {
+              index: 0,
               status: 'supported|disproven|unknown',
-              note: 'mapping, preconditions and transfer risks',
+              note: 'reason',
               evidence: [{ ref: 'A:evidence-id', quote: 'literal quote' }],
             },
-            feasibility: {
-              status: 'supported|disproven|unknown',
-              note: 'constraints',
-              evidence: [{ ref: 'B:evidence-id', quote: 'literal quote' }],
+          ],
+          comparisons: [
+            {
+              ref: 'each prior ref',
+              disposition: 'duplicate|distinct|unknown',
+              note: 'behavioral overlap or delta',
+              evidence: [{ ref: 'prior:ref', quote: 'literal quote' }],
             },
-            experiment: {
-              executable: 'boolean|null',
-              probe: 'concrete executable probe and measurement',
-              baseline: 'control',
-              falsifier: 'failure condition',
-              evidence: [{ ref: 'B:evidence-id', quote: 'literal quote' }],
-            },
+          ],
+          relation: {
+            status: 'supported|disproven|unknown',
+            note: 'mapping, preconditions and transfer risks',
+            evidence: [{ ref: 'A:evidence-id', quote: 'literal quote' }],
           },
-        }),
-      ),
+          feasibility: {
+            status: 'supported|disproven|unknown',
+            note: 'constraints',
+            evidence: [{ ref: 'B:evidence-id', quote: 'literal quote' }],
+          },
+          experiment: {
+            executable: 'boolean|null',
+            probe: 'concrete executable probe and measurement',
+            baseline: 'control',
+            falsifier: 'failure condition',
+            evidence: [{ ref: 'B:evidence-id', quote: 'literal quote' }],
+          },
+        },
+      }),
     );
+    diagnostics.review.stage = 'schema';
+    const judgment = ReviewSchema.parse(payload);
+    diagnostics.review.stage = 'grounding';
     const findings = [
-      ...judgment.observations,
-      ...judgment.comparisons,
-      judgment.relation,
-      judgment.feasibility,
-      judgment.experiment,
+      ...judgment.observations.map((f, i) => ({ path: 'observations[' + i + ']', evidence: f.evidence })),
+      ...judgment.comparisons.map((f, i) => ({ path: 'comparisons[' + i + ']', evidence: f.evidence })),
+      ...(['relation', 'feasibility', 'experiment'] as const).map((path) => ({
+        path,
+        evidence: judgment[path].evidence,
+      })),
     ];
-    if (findings.some((f) => !grounded(f.evidence, texts)))
+    const invalid = invalidGrounding(findings, texts);
+    if (invalid.total) {
+      diagnostics.review.invalidEvidence = invalid;
       throw new Error('Skeptical review cites missing or unsupported evidence.');
+    }
+    diagnostics.review.stage = 'coverage';
     if (
       judgment.observations.length !== candidate.observed.length ||
       new Set(judgment.observations.map((o) => o.index)).size !== candidate.observed.length ||
@@ -659,6 +748,7 @@ export async function runCapabilityDreamReview(
       throw new Error('Skeptical review must compare every closest prior with its own source evidence.');
     result.judgment = judgment;
     // The reviewer may take minutes. Revalidate sources before certifying its result.
+    diagnostics.review.stage = 'freshness';
     const changed = await freshPackets();
     const currentPriors = await Promise.all(priors.map((p) => options.sources.readCurrent(p, options.signal)));
     if (changed.length || currentPriors.some((p, i) => !samePrior(p, priors[i]!)))
@@ -683,6 +773,7 @@ export async function runCapabilityDreamReview(
       judgment.note,
     );
   } catch (error) {
+    if (reviewAttempted) retainFailure('review', error);
     return unavailable('review-unavailable', error instanceof Error ? error.message : String(error));
   }
 }

@@ -1303,6 +1303,12 @@ export default defineTool({
           reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
         }
       | {
+          /** A completed plan takes precedence over dead-leader recovery. */
+          kind: 'plan-complete';
+          reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
+          planTerminality: import('../../scheduler/fleet-scope-admission').FleetScopePlanTerminality;
+        }
+      | {
           kind: 'plan-scope-missing';
           planSlug: string;
         }
@@ -1405,6 +1411,14 @@ export default defineTool({
         if (reconciliation.scope) {
           const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
           if (pause.windingDown) return { kind: 'paused', reconciliation, pause };
+          // EI-22422975002985083: terminal plan work is already a successful
+          // wind-down, even when the registered leader is no longer live. Check
+          // this before routing the caller into fleet:take-leadership; a terminal
+          // lane has nothing left for a replacement leader to drive.
+          const planTerminality = await diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope });
+          if (planTerminality?.allTerminal) {
+            return { kind: 'plan-complete', reconciliation, planTerminality };
+          }
           // EI-21079515303301272: member self-pulls are leader-owned work. If the
           // registry/roster read proves there is no live leader, refuse BEFORE the
           // atomic claim instead of allowing members to continue into a lane whose
@@ -1556,6 +1570,22 @@ export default defineTool({
           {
             type: 'text' as const,
             text: JSON.stringify(fleetLeaderUnavailableRefusal(preflightState.reconciliation.scope!)),
+          },
+        ],
+      };
+    }
+    if (preflightState.kind === 'plan-complete') {
+      const { reconciliation, planTerminality } = preflightState;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              fleetScopedMiss(reconciliation.scope!, reconciliation.quarantinedIds, {
+                planTerminality,
+                harness: args.harness,
+              }),
+            ),
           },
         ],
       };

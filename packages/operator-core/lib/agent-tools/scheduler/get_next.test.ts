@@ -63,6 +63,7 @@ const getFlagM = vi.hoisted(() => vi.fn(async () => true));
 const reconcileFleetScopeClaimsM = vi.hoisted(() => vi.fn());
 const readFleetPauseStateM = vi.hoisted(() => vi.fn());
 const diagnoseFleetScopeIssueFloorMissM = vi.hoisted(() => vi.fn(async () => null));
+const diagnoseFleetScopePlanTerminalityM = vi.hoisted(() => vi.fn(async () => null));
 const diagnoseFleetScopeLeaderLivenessM = vi.hoisted(() => vi.fn(async () => null as boolean | null));
 const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
 const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
@@ -162,7 +163,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
   // EI-20260781488788952: the zero-match enrichment reads these diagnostics alongside the
   // existing family/exhaustion seams; keep this mock's module shape aligned with production.
-  diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
+  diagnoseFleetScopePlanTerminality: diagnoseFleetScopePlanTerminalityM,
   diagnoseFleetScopeLeaderLiveness: diagnoseFleetScopeLeaderLivenessM,
   fleetLeaderUnavailableRefusal: (scope: any) => ({
     ok: false,
@@ -183,6 +184,8 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
       cooldownDiag?: { cooldownExcluded: number; earliestExpiryMs: number | null } | null;
       claimableAwaitsCancelled?: number;
       issueBreakdown?: unknown;
+      planTerminality?: { allTerminal?: boolean; planSlugs?: string[]; terminalPlanSlugs?: string[] } | null;
+      harness?: string;
     },
   ) => ({
     ok: false,
@@ -191,12 +194,17 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
         ? `paused: ${opts.pausedReason ?? ''}`
         : opts?.cooldownDiag
           ? `cooldown-only miss; ${opts.cooldownDiag.cooldownExcluded} excluded`
+          : opts?.planTerminality?.allTerminal
+            ? 'plan complete; stand down'
           : opts?.issueBreakdown
             ? 'floor-gated miss (WI-5561); see excludedBreakdownSummary'
             : 'scoped miss; no generic fallback',
     fleetScope: { fleet: scope.fleetSlug, source: scope.record.source },
     quarantinedIds,
     windDown: true,
+    ...(opts?.planTerminality?.allTerminal
+      ? { reason: 'plan_complete', planTerminality: opts.planTerminality }
+      : {}),
     ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
     ...(opts?.pausedReason !== undefined ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(opts?.cooldownDiag ? { cooldownOnly: true } : {}),
@@ -230,6 +238,7 @@ beforeEach(() => {
     reason: scopeState.pauseReason,
   }));
   diagnoseFleetScopeIssueFloorMissM.mockResolvedValue(null);
+  diagnoseFleetScopePlanTerminalityM.mockResolvedValue(null);
   getFlagM.mockResolvedValue(true);
   liveLockedPathsM.mockImplementation(async () => []);
   getPresenceM.mockResolvedValue(null);
@@ -519,7 +528,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       fleetRole: 'member',
       record: { source: 'fleet', spec: { specId: 'leaderless-rev4', revision: 4 } },
     };
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(false);
+    diagnoseFleetScopeLeaderLivenessM.mockResolvedValueOnce(false);
     getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim' } });
 
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
@@ -554,6 +563,45 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
 
     expect(getNextM).toHaveBeenCalledOnce();
+  });
+
+  it('winds down a terminal plan before routing a dead leader into a takeover', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'finished-fleet',
+      fleetRole: 'member',
+      record: {
+        source: 'fleet',
+        spec: {
+          specId: 'finished-plan-rev4',
+          revision: 4,
+          view: { filter: { field: 'plan', op: '=', value: 'finished-plan' } },
+        },
+      },
+    };
+    const planTerminality = {
+      planSlugs: ['finished-plan'],
+      terminalPlanSlugs: ['finished-plan'],
+      allTerminal: true,
+    };
+    diagnoseFleetScopePlanTerminalityM.mockResolvedValueOnce(planTerminality);
+    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(false);
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim' } });
+
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({
+      ok: false,
+      reason: 'plan_complete',
+      windDown: true,
+      planTerminality,
+    });
+    expect(diagnoseFleetScopePlanTerminalityM).toHaveBeenCalledWith({ scope: scopeState.scope });
+    expect(diagnoseFleetScopeLeaderLivenessM).not.toHaveBeenCalled();
+    expect(getNextM).not.toHaveBeenCalled();
   });
 });
 

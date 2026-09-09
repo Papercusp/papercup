@@ -23,8 +23,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { filterPlanListRows } from './plans-api';
+import { describe, expect, it, vi } from 'vitest';
+import { filterPlanListRows, mergePlanListResults } from './plans-api';
 import type { PlanListRow } from './plans-api';
 
 const row = (slug: string, archived: boolean, isLegacy: boolean): PlanListRow =>
@@ -107,5 +107,24 @@ describe('server default parity (the drift guard)', () => {
       includeLegacy: params.includeLegacy !== false,
     });
     expect(slugsOf(out)).toEqual(['legacy', 'live']);
+  });
+});
+
+describe('mergePlanListResults', () => {
+  const result = (plans: PlanListRow[], over: Partial<{ loading: boolean; error: string | null }> = {}) => ({
+    data: { plans },
+    loading: over.loading ?? false,
+    error: over.error ?? null,
+    refresh: vi.fn(),
+  });
+
+  it('unions lazy terminal slices with the base and de-duplicates by harness+slug', () => {
+    const base = result([row('live', false, false)]);
+    const shipped = result([row('live', false, false), row('shipped', false, false)]);
+    const merged = mergePlanListResults([base, shipped]);
+    expect(slugsOf(merged.data?.plans ?? [])).toEqual(['live', 'shipped']);
+    merged.refresh();
+    expect(base.refresh).toHaveBeenCalledOnce();
+    expect(shipped.refresh).toHaveBeenCalledOnce();
   });
 });

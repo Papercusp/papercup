@@ -5045,9 +5045,11 @@ async fn stream_su_session_events(
     // descriptor. Bound retries also cover a reconnect during host startup.
     let mut stream = None;
     let mut last_error = None;
+    let mut startup_snapshot = None;
     for _ in 0..15 {
         match client.su_session_snapshot(&harness, &chat_id).await {
             Ok(snapshot) => {
+                startup_snapshot = Some(snapshot.clone());
                 let _ = tx.send(Event::SuSessionSnapshot(snapshot));
             }
             Err(error) => last_error = Some(error.to_string()),
@@ -5076,6 +5078,33 @@ async fn stream_su_session_events(
         });
         return;
     };
+
+    // The host can become ready between launch-su returning and this stream
+    // subscription opening. In that ordering the ready event is already in the
+    // snapshot and there may be no later lifecycle transition to wake the
+    // event-driven first-turn path below. Use the snapshot we already read,
+    // after the stream is attached, and keep the authoritative re-read inside
+    // send_su_turn_with_client as the final dispatch gate.
+    if let (Some(snapshot), Some(pending)) = (startup_snapshot.as_ref(), initial_turn.as_ref()) {
+        let identity_matches =
+            su_turn_target_matches(&binding, &snapshot.descriptor.identity, &harness, &chat_id);
+        if identity_matches
+            && snapshot.executor_attached
+            && snapshot.stream_ready
+            && !snapshot.terminal
+        {
+            let pending = initial_turn.take().expect("checked pending first turn");
+            send_su_turn_with_client(&client, &harness, &chat_id, &binding, pending, &tx).await;
+        } else if snapshot.terminal || !identity_matches {
+            let command_id = pending.command_id.clone();
+            initial_turn = None;
+            let _ = tx.send(Event::SuTurnFailed {
+                command_id,
+                message: "Session executor/stream is not ready for this project. Draft retained; reconnect to retry.".into(),
+                uncertain: false,
+            });
+        }
+    }
 
     let mut terminal_seen = false;
     let mut startup_error: Option<String> = None;

@@ -444,7 +444,11 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     try {
       const key = { workspaceId: WS, runId: 'capability-invalid-review-diagnostics' };
       await beginDreamRun(db.adminSql, {
-        ...key, cycleId: 'diagnostic-cycle', potSlug: POT, mode: 'manual', capability: f.header,
+        ...key,
+        cycleId: 'diagnostic-cycle',
+        potSlug: POT,
+        mode: 'manual',
+        capability: f.header,
       });
       await recordDreamRunSelection(db.adminSql, { ...key, capability: f.sampling });
       for (const call of f.provenance.calls) {
@@ -456,10 +460,14 @@ describe('migration 862 + dream run accounting (real PG)', () => {
       }
       const failures = {
         review: {
-          stage: 'grounding', message: 'Skeptical review cites missing or unsupported evidence.',
+          stage: 'grounding',
+          message: 'Skeptical review cites missing or unsupported evidence.',
           response: { preview: '{"verdict":"accept"}', chars: 20, sha256: 'a'.repeat(64), truncated: false },
           invalidEvidence: {
-            total: 1, entries: [{ path: 'feasibility.evidence[0]', ref: 'B:missing', quote: 'unsupported', reason: 'missing-ref' }],
+            total: 1,
+            entries: [
+              { path: 'feasibility.evidence[0]', ref: 'B:missing', quote: 'unsupported', reason: 'missing-ref' },
+            ],
           },
         },
       };
@@ -471,8 +479,9 @@ describe('migration 862 + dream run accounting (real PG)', () => {
       await finalizeDreamRun(db.adminSql, { ...key, status: 'rejected', outcome, review });
       const saved = await getDreamRun(db.adminSql, key);
       expect(saved).toMatchObject({ status: 'rejected', review: { verdict: 'unverified', judgment: null, failures } });
-      await expect(recordDreamRunReview(db.adminSql, { ...key, outcome, review: { ...review, failures: {} } }))
-        .rejects.toThrow('already frozen');
+      await expect(
+        recordDreamRunReview(db.adminSql, { ...key, outcome, review: { ...review, failures: {} } }),
+      ).rejects.toThrow('already frozen');
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }

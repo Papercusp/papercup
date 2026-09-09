@@ -835,6 +835,21 @@ async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T
   }
 }
 
+function assertCatalogParity(native: { tools: { name: string }[] }, http: unknown) {
+  expect(native).toEqual(http);
+  expect(native.tools.some((tool) => tool.name === 'gatingtest:scoped')).toBe(true);
+  expect(native.tools.some((tool) => tool.name === 'gatingtest:engineer')).toBe(false);
+}
+
+function assertPolicyResultParity(
+  native: { content?: unknown; _meta?: Record<string, unknown> },
+  http: { content?: unknown; _meta?: Record<string, unknown> },
+) {
+  expect(native.content).toEqual(http.content);
+  expect(native._meta?.resultProjection).toEqual(http._meta?.resultProjection);
+  expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
+}
+
 describe.each(['memory', 'uds'] as const)('shared MCP host — %s SDK parity with the HTTP assembly', (connection) => {
   it('negotiates existing capabilities and exposes the same allowed catalog', async () => {
     const extra = extraFor(signedUrl({ tools: 'gatingtest:scoped,gatingtest:engineer' }));
@@ -842,9 +857,7 @@ describe.each(['memory', 'uds'] as const)('shared MCP host — %s SDK parity wit
     await withSdkHost(extra, async (client) => {
       expect(client.getServerCapabilities()).toEqual(MCP_SERVER_CAPABILITIES);
       const native = await client.listTools();
-      expect(native).toEqual(http);
-      expect(native.tools.some((tool) => tool.name === 'gatingtest:scoped')).toBe(true);
-      expect(native.tools.some((tool) => tool.name === 'gatingtest:engineer')).toBe(false);
+      assertCatalogParity(native, http);
       expect(await client.listResources()).toEqual(await h.handlers.get('resources/list')!({}, extra));
       expect(await client.listPrompts()).toEqual(await h.handlers.get('prompts/list')!({}, extra));
     }, connection);
@@ -856,12 +869,33 @@ describe.each(['memory', 'uds'] as const)('shared MCP host — %s SDK parity wit
     const http = await callTool('gatingtest:scoped', args, extra);
     await withSdkHost(extra, async (client) => {
       const native = await client.callTool({ name: 'gatingtest:scoped', arguments: args });
-      expect(native.content).toEqual(http.content);
-      expect(native._meta?.resultProjection).toEqual(http._meta?.resultProjection);
-      expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
+      assertPolicyResultParity(native, http);
       expect(seen.at(-1)?.ctx.workspaceId).toBe('ws-test');
       expect(seen.at(-1)?.ctx.transport).toBe('mcp');
       expect(seen.at(-1)?.args).toEqual({});
+    }, connection);
+  });
+
+  it('calibrates the catalog oracle by rejecting a UDS-only unauthorized tool', async () => {
+    const extra = extraFor(signedUrl({ tools: 'gatingtest:scoped,gatingtest:engineer' }));
+    const http = await listTools(extra);
+    await withSdkHost(extra, async (client) => {
+      const native = await client.listTools();
+      assertCatalogParity(native, http);
+      const bad = { ...native, tools: [...native.tools, { ...native.tools[0], name: 'gatingtest:engineer' }] };
+      expect(() => assertCatalogParity(bad, http)).toThrow();
+    }, connection);
+  });
+
+  it('calibrates the result oracle by rejecting lost policy metadata and changed content', async () => {
+    const extra = superuserExtra('&workspace=ws-test');
+    const args = { projection: { pipe: [{ op: 'count' }] } };
+    const http = await callTool('gatingtest:scoped', args, extra);
+    await withSdkHost(extra, async (client) => {
+      const native = await client.callTool({ name: 'gatingtest:scoped', arguments: args });
+      assertPolicyResultParity(native, http);
+      expect(() => assertPolicyResultParity({ ...native, _meta: {} }, http)).toThrow();
+      expect(() => assertPolicyResultParity({ ...native, content: [] }, http)).toThrow();
     }, connection);
   });
 

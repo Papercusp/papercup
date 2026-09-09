@@ -13,6 +13,18 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { UdsMcpTransport, type UdsMcpTransportOptions } from "./uds-transport";
 
+// The positive journeys and deliberate bad observations use the SAME oracles.
+function assertDecodedMessages(actual: JSONRPCMessage[], expected: JSONRPCMessage[]) {
+  expect(actual).toEqual(expected);
+}
+function assertFrameRejected(errors: Error[], messages: JSONRPCMessage[]) {
+  expect(errors[0]).toMatchObject({ code: "uds_frame_limit" });
+  expect(messages).toEqual([]);
+}
+function assertToolContent(actual: unknown, name: string) {
+  expect(actual).toEqual([{ type: "text", text: name }]);
+}
+
 const cleanup: Array<() => Promise<unknown> | void> = [];
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
@@ -87,7 +99,7 @@ describe("UDS MCP framing and lifecycle", () => {
     for (const byte of bytes.subarray(0, bytes.length - 40))
       socket.emit("data", Buffer.from([byte]));
     socket.emit("data", bytes.subarray(bytes.length - 40));
-    expect(messages).toEqual(values);
+    assertDecodedMessages(messages, values);
   });
 
   it.each([false, true])(
@@ -100,10 +112,28 @@ describe("UDS MCP framing and lifecycle", () => {
       transport.onclose = closed;
       peer.write("x".repeat(33) + (newline ? "\n" : ""));
       await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce());
-      expect(errors[0]).toMatchObject({ code: "uds_frame_limit" });
-      expect(messages).toEqual([]);
+      assertFrameRejected(errors, messages);
     },
   );
+
+  it("rejects an oversized fragmented input at the receive callback boundary", async () => {
+    const { socket, errors, messages } = await rawConnection({ maxFrameBytes: 32 });
+    socket.emit("data", Buffer.from("x".repeat(32)));
+    expect(errors).toEqual([]);
+    socket.emit("data", Buffer.from("x"));
+    assertFrameRejected(errors, messages);
+    expect(socket.destroyed).toBe(true);
+  });
+
+  it("preserves distinct string and numeric IDs in reversed response frames", async () => {
+    const { socket, messages } = await rawConnection();
+    const responses: JSONRPCMessage[] = [
+      { jsonrpc: "2.0", id: "1", result: { name: "fast" } },
+      { jsonrpc: "2.0", id: 1, result: { name: "slow" } },
+    ];
+    socket.emit("data", Buffer.from(responses.map((message) => JSON.stringify(message)).join("\n") + "\n"));
+    assertDecodedMessages(messages, responses);
+  });
 
   it.each(["{bad json}\n", '{"jsonrpc":"2.0","id":1}\n'])(
     "rejects malformed JSON-RPC before dispatch",
@@ -172,6 +202,37 @@ describe("UDS MCP framing and lifecycle", () => {
     await expect(transport.start()).rejects.toMatchObject({
       code: "uds_lifecycle",
     });
+  });
+});
+
+describe("UDS contract oracle calibration", () => {
+  it("rejects a corrupted character and a duplicate decoded frame", () => {
+    const expected: JSONRPCMessage[] = [
+      { jsonrpc: "2.0", id: "α", result: { text: "🦉\nvalue" } },
+    ];
+    assertDecodedMessages(expected, expected);
+    expect(() => assertDecodedMessages([
+      { jsonrpc: "2.0", id: "α", result: { text: "�\nvalue" } },
+    ], expected)).toThrow();
+    expect(() => assertDecodedMessages([...expected, ...expected], expected)).toThrow();
+  });
+
+  it("rejects an oversized-frame observation that forwarded work or lacked refusal", () => {
+    const error = Object.assign(new Error("bounded refusal"), { code: "uds_frame_limit" });
+    assertFrameRejected([error], []);
+    expect(() => assertFrameRejected([], [])).toThrow();
+    expect(() => assertFrameRejected([error], [
+      { jsonrpc: "2.0", id: 1, method: "ping" },
+    ])).toThrow();
+  });
+
+  it("rejects a fast result delivered to the slow caller and vice versa", () => {
+    const fast = [{ type: "text", text: "fast" }];
+    const slow = [{ type: "text", text: "slow" }];
+    assertToolContent(fast, "fast");
+    assertToolContent(slow, "slow");
+    expect(() => assertToolContent(fast, "slow")).toThrow();
+    expect(() => assertToolContent(slow, "fast")).toThrow();
   });
 });
 
@@ -298,9 +359,9 @@ describe("installed SDK over actual UDS", () => {
       arguments: {},
       _meta: { progressToken: "fast-progress" },
     });
-    expect(second.content).toEqual([{ type: "text", text: "fast" }]);
+    assertToolContent(second.content, "fast");
     releaseSlow();
-    expect((await first).content).toEqual([{ type: "text", text: "slow" }]);
+    assertToolContent((await first).content, "slow");
     await vi.waitFor(() => expect(progress).toHaveBeenCalledOnce());
     const abort = new AbortController();
     const request = client.callTool(
