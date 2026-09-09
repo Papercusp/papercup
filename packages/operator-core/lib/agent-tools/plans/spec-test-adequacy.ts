@@ -1,5 +1,6 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
+import { repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
 import { SPEC_PROOF_OBLIGATION_ID_RE, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
 import type {
   EvidenceCurrentInput,
@@ -73,8 +74,8 @@ export interface SpecEvidenceForAdequacy {
  * logical evidence reference. A corrected re-bind must not remain poisoned by
  * an older incomplete row with the same work item/spec/kind/ref.
  */
-export function latestLogicalEvidence(rows: readonly SpecEvidenceForAdequacy[]): SpecEvidenceForAdequacy[] {
-  const selected = new Map<string, { row: SpecEvidenceForAdequacy; index: number }>();
+export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: readonly T[]): T[] {
+  const selected = new Map<string, { row: T; index: number }>();
   // A logical correction is a newer APPEND, not a later claimed observation.
   // `observedAt` is caller-authored evidence metadata and may be skewed or even
   // future-dated; letting it order versions makes an old row permanently poison
@@ -102,6 +103,84 @@ export function latestLogicalEvidence(rows: readonly SpecEvidenceForAdequacy[]):
     }
   });
   return [...selected.values()].sort((a, b) => a.index - b.index).map(({ row }) => row);
+}
+
+/**
+ * Different run ids are attempts, not obligations that remain relied on forever.
+ * Only the existing prepare/finish protocol can identify equivalent attempts:
+ * require its original pending append, exact proof identity, and equal-or-wider
+ * source scope. Order by that server-assigned registration id, NEVER outcome,
+ * observedAt, ledger completion order, or a late adequacy annotation.
+ *
+ * This is a read projection: no historical binding is modified or deleted.
+ * Legacy/unstructured proof and changed layer/scenario/causal/filter obligations
+ * stay separate. A newer pending/unknown/failing attempt wins just like a pass.
+ */
+export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: readonly T[]): T[] {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown> : null;
+  const identity = (row: T) => {
+    const execution = object(row.details.testExecution);
+    const binding = object(execution?.binding);
+    const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+    if (execution?.schemaVersion !== 1 || !binding || !measurement.success
+      || typeof execution.originRunId !== 'string'
+      || !row.evidenceRef.startsWith(`test-run-group:${execution.originRunId}:`)
+      || binding.specId !== row.specId || binding.specRevision !== row.specRevision
+      || measurement.data.testPaths?.length !== 1
+      || binding.testPath !== measurement.data.testPaths[0]
+      || !['unit', 'integration', 'e2e'].includes(String(binding.testLayer))) return null;
+    const strings = (value: unknown): string[] | null =>
+      Array.isArray(value) && value.every(v => typeof v === 'string' && v.length > 0)
+        ? [...new Set(value as string[])].sort() : null;
+    const sources = strings(binding.sourcePaths);
+    if (!sources || JSON.stringify(sources) !== JSON.stringify([...new Set(measurement.data.sourcePaths)].sort())) return null;
+    const details = detailsOf(row);
+    if (details.contractMetadataIssues?.length || details.testLayer !== binding.testLayer) return null;
+    const scenarios = binding.scenarioIds === undefined ? [] : strings(binding.scenarioIds);
+    const pairs = binding.causalPairId === undefined ? [] : [binding.causalPairId];
+    if (!scenarios || JSON.stringify(scenarios) !== JSON.stringify(details.scenarioIds ?? [])
+      || JSON.stringify(pairs) !== JSON.stringify(details.causalPairIds ?? [])) return null;
+    const counterexample = object(binding.counterexample);
+    if (binding.counterexample !== undefined && (!counterexample
+      || typeof counterexample.test !== 'string' || typeof counterexample.messageIncludes !== 'string')) return null;
+    const key = JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.specFingerprint,
+      row.evidenceKind, measurement.data.rootHarnessSlug ?? null, binding.testPath, binding.testLayer,
+      row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane ?? null,
+      execution.testNamePattern ?? null, scenarios, pairs,
+      counterexample ? [counterexample.test, counterexample.messageIncludes] : null,
+      row.fingerprints.fixtureFingerprint, row.fingerprints.rubricFingerprint, row.fingerprints.environmentFingerprint]);
+    return { key, sources, execution };
+  };
+  const logicalKey = (row: T) =>
+    JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+  const anchors = new Map<string, { id: number; scope: NonNullable<ReturnType<typeof identity>> }>();
+  for (const row of rows) {
+    const scope = identity(row);
+    if (!scope || scope.execution.phase !== 'pending' || row.testRunId !== null
+      || !Number.isSafeInteger(row.id) || row.id! <= 0) continue;
+    const key = logicalKey(row);
+    const previous = anchors.get(key);
+    if (!previous || row.id! < previous.id) anchors.set(key, { id: row.id!, scope });
+  }
+  const latest = latestLogicalEvidence(rows);
+  const candidates = latest.map(row => {
+    const scope = identity(row);
+    const anchor = anchors.get(logicalKey(row));
+    // An annotation cannot change the registered proof's identity or source scope.
+    return scope && anchor && scope.key === anchor.scope.key
+      && JSON.stringify(scope.sources) === JSON.stringify(anchor.scope.sources)
+      ? { row, scope, order: anchor.id } : null;
+  });
+  const superseded = new Set<T>();
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (candidates.some(newer => newer && newer.order > candidate.order
+      && newer.scope.key === candidate.scope.key
+      && candidate.scope.sources.every(path => newer.scope.sources.includes(path)))) superseded.add(candidate.row);
+  }
+  return latest.filter(row => !superseded.has(row));
 }
 
 export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
@@ -719,7 +798,7 @@ export function evaluateSpecTestAdequacy(input: {
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
-  const exactEvidence = latestLogicalEvidence(
+  const exactEvidence = activeSpecEvidence(
     input.evidence.filter(
       (row) =>
         row.planSlug === clause.planSlug &&
@@ -1005,6 +1084,12 @@ export function evaluateSpecTestAdequacy(input: {
       SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
     );
   });
+  const incompleteMeasuredExecution = executable.filter(row => {
+    if (!row.details.testExecution) return false;
+    const d = detailsOf(row);
+    return d.collected !== true || d.skipped !== false || d.executed !== true
+      || !SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '');
+  });
   const executionRating: AdequacyRatingEntry = explicitBadExecution
     ? {
         rating: 'fail',
@@ -1031,6 +1116,14 @@ export function evaluateSpecTestAdequacy(input: {
           suggestion:
             'Bind a recorded testRunId or coverageEvidenceRef; details.adequacy booleans alone are insufficient.',
         }
+      : incompleteMeasuredExecution.length > 0
+        ? {
+            rating: 'unknown',
+            evidence: evidenceWithBindings(
+              `Active measured test attempts have incomplete execution proof for ${clauseIdentity(clause)}.`,
+              incompleteMeasuredExecution,
+            ),
+          }
       : successfulExecution
         ? {
             rating: 'pass',
