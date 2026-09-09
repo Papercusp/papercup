@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
@@ -7,9 +7,21 @@ import { Checkbox } from '@/app/harness/Checkbox';
 import type { DreamControlSnapshot } from '@papercusp/operator-core/lib/dream/dream-control';
 import { runAgentTool } from './run-tool';
 
-function DreamControlBody({ potSlug }: { potSlug: string }) {
-  const query = useSyncQuery<DreamControlSnapshot>({ queryName: 'learning.dream', args: { potSlug }, enabled: Boolean(potSlug) });
-  const snapshot = query.error ? undefined : query.data?.[0];
+type DreamControlProps = {
+  potSlug: string;
+  compact?: boolean;
+  potLabel?: string;
+  learningPaused?: boolean;
+  onWrote?: () => void;
+};
+
+function DreamControlBody({ potSlug, compact, potLabel = potSlug, learningPaused, onWrote }: DreamControlProps) {
+  const query = useSyncQuery<DreamControlSnapshot>({
+    queryName: 'learning.dream', args: { potSlug, ...(compact ? { mode: 'auto' } : {}) }, enabled: Boolean(potSlug),
+  });
+  const row = query.data?.[0];
+  const snapshot = query.error || row?.potSlug !== potSlug ? undefined : row;
+  const hintId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const change = async (mode: 'manual' | 'auto', enabled: boolean) => {
@@ -18,6 +30,7 @@ function DreamControlBody({ potSlug }: { potSlug: string }) {
     try {
       await runAgentTool('dream:control', { pot: potSlug, mode, enabled });
       query.invalidate();
+      onWrote?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -25,6 +38,37 @@ function DreamControlBody({ potSlug }: { potSlug: string }) {
     }
   };
   const last = snapshot?.lastCycle;
+  if (compact) {
+    const enabled = snapshot?.automatic.enabled === true;
+    const hint = error ?? (!snapshot
+      ? query.loading ? 'Loading…' : 'Unavailable'
+      : learningPaused ? 'Learning paused'
+      : snapshot.blocker ?? (enabled ? 'On when idle' : 'Off'));
+    return (
+      <div className="pc-lloop__potdream">
+        <span className="pc-lloop__togglelabel">Dreaming</span>
+        {snapshot ? (
+          <span className="pc-lloop__sw">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={enabled}
+              disabled={busy || !snapshot.automatic.available || (!enabled && (Boolean(snapshot.blocker) || learningPaused))}
+              aria-label={`${enabled ? 'Switch off' : 'Switch on'} dreaming for ${potLabel}`}
+              aria-describedby={hintId}
+              onChange={() => void change('auto', !enabled)}
+            />
+            <span className="pc-lloop__swtrack" aria-hidden />
+            <span className="pc-lloop__swthumb" aria-hidden />
+          </span>
+        ) : (
+          <button type="button" className="pc-lloop__potfix" disabled={query.loading}
+            aria-label={`Retry Dreaming controls for ${potLabel}`} onClick={() => query.invalidate()}>Retry</button>
+        )}
+        <span id={hintId} className="pc-lloop__togglehint" role={error ? 'alert' : 'status'}>{hint}</span>
+      </div>
+    );
+  }
   return (
     <section aria-label="Dream" className="pc-dream-control" data-testid="dream-control">
       <h3>Dream</h3>
@@ -78,7 +122,7 @@ function DreamControlBody({ potSlug }: { potSlug: string }) {
   );
 }
 
-export default function DreamControl({ potSlug }: { potSlug: string }) {
+export default function DreamControl(props: DreamControlProps) {
   const enabled = useFlag(FLAGS.DREAM_CYCLE);
-  return enabled && potSlug ? <DreamControlBody key={potSlug} potSlug={potSlug} /> : null;
+  return enabled && props.potSlug ? <DreamControlBody key={props.potSlug} {...props} /> : null;
 }

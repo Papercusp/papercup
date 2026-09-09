@@ -16,6 +16,53 @@ beforeEach(() => { vi.clearAllMocks(); h.flag = true; h.snapshot = snapshot(); h
 afterEach(cleanup);
 
 describe('Learning Dream controls', () => {
+  it('compact Dreaming writes auto on/off and reflects saved state without starting manual work', async () => {
+    const onWrote = vi.fn();
+    const view = render(<DreamControl compact potSlug="pot-a" onWrote={onWrote} />);
+    expect(h.query).toHaveBeenCalledWith(expect.objectContaining({ args: { potSlug: 'pot-a', mode: 'auto' } }));
+    expect(h.write).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('switch', { name: 'Switch on dreaming for pot-a' }));
+    await waitFor(() => expect(h.write).toHaveBeenCalledWith('dream:control', { pot: 'pot-a', mode: 'auto', enabled: true }));
+    await waitFor(() => expect(onWrote).toHaveBeenCalledOnce());
+    h.snapshot!.automatic.enabled = true;
+    view.rerender(<DreamControl compact potSlug="pot-a" onWrote={onWrote} />);
+    expect(screen.getByRole('switch')).toHaveProperty('checked', true);
+    fireEvent.click(screen.getByRole('switch', { name: 'Switch off dreaming for pot-a' }));
+    await waitFor(() => expect(h.write).toHaveBeenLastCalledWith('dream:control', { pot: 'pot-a', mode: 'auto', enabled: false }));
+  });
+
+  it('compact view explains a pause, blocks enabling and still permits switching off', async () => {
+    const view = render(<DreamControl compact potSlug="pot-a" learningPaused />);
+    expect(screen.getByRole('switch')).toHaveProperty('disabled', true);
+    expect(screen.getByText('Learning paused')).toBeTruthy();
+    h.snapshot!.automatic.enabled = true;
+    h.snapshot!.blocker = 'The budget is exhausted.';
+    view.rerender(<DreamControl compact potSlug="pot-a" learningPaused />);
+    expect(screen.getByRole('switch')).toHaveProperty('disabled', false);
+    fireEvent.click(screen.getByRole('switch'));
+    await waitFor(() => expect(h.write).toHaveBeenCalledWith('dream:control', { pot: 'pot-a', mode: 'auto', enabled: false }));
+  });
+
+  it('compact view keeps a refused write off and exposes the error', async () => {
+    h.write.mockRejectedValueOnce(new Error('Budget exhausted'));
+    render(<DreamControl compact potSlug="pot-a" />);
+    fireEvent.click(screen.getByRole('switch'));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Budget exhausted');
+    expect(screen.getByRole('switch')).toHaveProperty('checked', false);
+    expect(h.invalidate).not.toHaveBeenCalled();
+  });
+
+  it('compact view retries a failed read and never uses another pot snapshot', () => {
+    h.error = new Error('offline');
+    const view = render(<DreamControl compact potSlug="pot-a" />);
+    expect(screen.queryByRole('switch')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Dreaming controls for pot-a' }));
+    expect(h.invalidate).toHaveBeenCalledOnce();
+    h.error = null;
+    view.rerender(<DreamControl compact potSlug="pot-b" />);
+    expect(screen.queryByRole('switch')).toBeNull();
+  });
+
   it('opens paused with Auto-dream off and performs no write', () => {
     render(<DreamControl potSlug="pot-a" />);
     expect(screen.getByRole('checkbox', { name: 'Auto-dream' }).getAttribute('aria-checked')).toBe('false');

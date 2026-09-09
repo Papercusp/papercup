@@ -23,6 +23,7 @@ const H = vi.hoisted(() => ({
   enabled: true,
   snap: undefined as unknown,
   arming: undefined as unknown,
+  dreams: {} as Record<string, unknown>,
   invalidate: { fn: (() => {}) as () => void },
   catalogInvalidate: { fn: (() => {}) as () => void },
   runTool: { fn: (async () => {}) as (...args: unknown[]) => Promise<unknown> },
@@ -35,7 +36,11 @@ const H = vi.hoisted(() => ({
 // loopControl snapshot. A single undiscriminated mock would hand the loop
 // snapshot to the pot list and quietly render nothing.
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: (opts: { queryName?: string }) => {
+  useSyncQuery: (opts: { queryName?: string; args?: { potSlug?: string } }) => {
+    if (opts?.queryName === 'learning.dream') {
+      const snapshot = H.dreams[opts.args?.potSlug ?? ''];
+      return { data: snapshot ? [snapshot] : [], invalidate: H.catalogInvalidate.fn };
+    }
     if (opts?.queryName === 'automation.catalog') {
       return {
         data: H.arming ? [{ arming: H.arming }] : undefined,
@@ -151,6 +156,7 @@ beforeEach(() => {
   // Default: no catalog row, so no verdict and no pot list — the pre-fold
   // shape, which keeps the loop-control contract tests about the loop control.
   H.arming = undefined;
+  H.dreams = {};
   H.invalidate.fn = vi.fn();
   H.catalogInvalidate.fn = vi.fn();
   H.runTool.fn = vi.fn(async () => ({}));
@@ -262,6 +268,19 @@ describe('<LearningLoopControl>', () => {
   // fact that mattered was invisible. These pin that it is now stated in WORDS,
   // and that folding the rail in did not lose a control.
   describe('the pot verdict and list', () => {
+    it('places Dreaming beside Learning and writes only the selected pot automatic setting', async () => {
+      H.arming = makeArming({ gymPots: [gym('alpha', true), gym('beta', true)], potScope: scope([]) });
+      for (const potSlug of ['alpha', 'beta']) H.dreams[potSlug] = {
+        potSlug, automatic: { available: true, enabled: false }, blocker: null,
+      };
+      render(<LearningLoopControl />);
+      openDropdown();
+      expect(screen.getByRole('switch', { name: 'Switch off learning for alpha' })).toBeTruthy();
+      fireEvent.click(screen.getByRole('switch', { name: 'Switch on dreaming for beta' }));
+      await waitFor(() => expect(H.runTool.fn).toHaveBeenCalledWith('dream:control', { pot: 'beta', mode: 'auto', enabled: true }));
+      expect(H.runTool.fn).toHaveBeenCalledTimes(1);
+    });
+
     it('says nothing is learning, in words, when every pot scope is off', () => {
       H.arming = makeArming({
         gymPots: [gym('alpha', true), gym('beta', true)],

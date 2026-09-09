@@ -37,6 +37,7 @@ import { useLexicon } from "@/lib/useLexicon";
 import { runAgentTool } from "./run-tool";
 import { useOpenPotDrawer } from "./LearningPotDrawer";
 import { useOpenPotPicker } from "./LearningPotPicker";
+import DreamControl from "./DreamControl";
 import {
   buildLearningPotRail,
   partitionLearningPotRail,
@@ -117,11 +118,12 @@ function potSubline(chip: LearningPotChip): string {
  * absorbed it, and putting a pot first would invite "the pot says on, so it is
  * running" — false whenever the group is paused.
  *
- * WHY A ROW'S SWITCH IS THE POT SCOPE AND NOTHING ELSE. A segment's state is
+ * The Learning switch is the pot scope. A segment's state is
  * its OWN arming, never the effective outcome (learning-pot-rail.ts rule 3):
  * switching a pot off deliberately leaves each lane's arming untouched so
  * switching it back on restores exactly what was armed. This row preserves that
- * — it writes `learning:set-pot-scope` only.
+ * — it writes `learning:set-pot-scope` only. The adjacent Dreaming switch
+ * reuses DreamControl's explicit automatic-Dream setting for this pot.
  *
  * WHY THE NAME OPENS THE DRAWER INSTEAD OF A NESTED POPOVER. The drawer is a
  * strict SUPERSET of the chip popover this replaces: it already writes
@@ -132,9 +134,11 @@ function potSubline(chip: LearningPotChip): string {
 function PotScopeList({
   arming,
   onWrote,
+  groupPaused,
 }: {
   arming: AutomationArming | null;
   onWrote: () => void;
+  groupPaused: boolean;
 }) {
   const t = useLexicon();
   const openDrawer = useOpenPotDrawer();
@@ -245,7 +249,9 @@ function PotScopeList({
                   <span className="pc-lloop__potzero">—</span>
                 )}
               </span>
-              {chip.learning === "unknown" ? (
+              <div className="pc-lloop__potlearning">
+                <span className="pc-lloop__togglelabel">Learning</span>
+                {chip.learning === "unknown" ? (
                 // An unreadable scope cannot be drawn as a two-state switch
                 // without asserting a position we never read. The WRITE is
                 // still well-defined, so offer it rather than disabling the
@@ -271,7 +277,10 @@ function PotScopeList({
                   <span className="pc-lloop__swtrack" aria-hidden />
                   <span className="pc-lloop__swthumb" aria-hidden />
                 </span>
-              )}
+                )}
+              </div>
+              <DreamControl compact potSlug={chip.potSlug} potLabel={label}
+                learningPaused={groupPaused || chip.learning !== "on"} onWrote={onWrote} />
             </div>
           );
         })}
@@ -539,7 +548,7 @@ export default function LearningLoopControl() {
           ) : null}
           {/* The pots, between the master switch they are ANDed with and the
               spend they produce. This is what replaced LearningPotRail. */}
-          <PotScopeList arming={arming} onWrote={onPotWrote} />
+          <PotScopeList arming={arming} onWrote={onPotWrote} groupPaused={paused} />
           <hr className="pc-lloop__hr" />
           <div className="pc-lloop__srow">
             <span>Today</span>
@@ -642,9 +651,8 @@ export default function LearningLoopControl() {
           border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
         }
         .pc-lloop__pop {
-          /* 256px → 340px: it now carries a pot list whose rows are a name
-             over a sub-line plus a spend and a switch. */
-          position: absolute; right: 0; top: 30px; z-index: 30; width: 340px;
+          position: absolute; right: 0; top: 30px; z-index: 30; width: min(440px, calc(100vw - 32px));
+          box-sizing: border-box;
           /* Floating controls must be opaque: --bg-2 is intentionally a
              translucent in-panel wash, so content behind this menu otherwise
              bleeds through and competes with the pause/resume copy. */
@@ -668,6 +676,8 @@ export default function LearningLoopControl() {
         .pc-lloop__sw input:checked + .pc-lloop__swtrack { background: var(--accent); }
         .pc-lloop__sw input:checked ~ .pc-lloop__swthumb { transform: translateX(12px); }
         .pc-lloop__sw input:focus-visible + .pc-lloop__swtrack { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .pc-lloop__sw input:disabled { cursor: default; }
+        .pc-lloop__sw input:disabled ~ span { opacity: .5; }
         .pc-lloop__fine { margin: 0 0 6px; font-size: 11px; line-height: 1.45; color: var(--fg-mute); }
         .pc-lloop__err { margin: 0 0 6px; font-size: 11px; line-height: 1.45; color: var(--bad, #fb7185); }
         .pc-lloop__hr { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
@@ -700,11 +710,15 @@ export default function LearningLoopControl() {
            run off the bottom of the screen. */
         .pc-lloop__potlist { max-height: 168px; overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
         .pc-lloop__potrow {
-          display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+          display: grid; grid-template-columns: minmax(0, 1fr) auto 52px 70px;
           gap: 9px; align-items: center; padding: 5px 0;
           border-bottom: 1px solid var(--border-muted, rgba(125, 211, 252, 0.08));
         }
         .pc-lloop__potrow:last-child { border-bottom: 0; }
+        .pc-lloop__potlearning, .pc-lloop__potdream { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; align-self: start; }
+        .pc-lloop__togglelabel { font-size: 10px; color: var(--fg-dim); }
+        .pc-lloop__togglehint { font-size: 9px; line-height: 1.3; text-align: center; color: var(--fg-mute); overflow-wrap: anywhere; }
+        .pc-lloop__togglehint[role=alert] { color: var(--bad); }
         .pc-lloop__potname {
           all: unset; cursor: pointer; min-width: 0;
           display: flex; flex-direction: column; gap: 1px;
