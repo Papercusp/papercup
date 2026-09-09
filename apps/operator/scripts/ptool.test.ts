@@ -127,6 +127,12 @@ describe('ptool MCP identity binding', () => {
       .toBe('receipt-2');
   });
 
+  it('accepts an explicit operator URL in both CLI flag forms', () => {
+    const operatorUrl = 'http://127.0.0.1:3170';
+    expect(parseArgs(['rubrics:get', '--url', operatorUrl]).url).toBe(operatorUrl);
+    expect(parseArgs(['rubrics:get', `--url=${operatorUrl}`]).url).toBe(operatorUrl);
+  });
+
   it('carries the live PAPERCUSP_SID as the MCP client query parameter', () => {
     const url = buildMcpUrl('http://127.0.0.1:3170', {
       workspace: 'papercusp-workspace',
