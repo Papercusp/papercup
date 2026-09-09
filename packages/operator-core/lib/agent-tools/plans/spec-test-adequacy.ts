@@ -145,13 +145,16 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     const counterexample = object(binding.counterexample);
     if (binding.counterexample !== undefined && (!counterexample
       || typeof counterexample.test !== 'string' || typeof counterexample.messageIncludes !== 'string')) return null;
-    const key = JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.specFingerprint,
+    const registrationKey = JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.specFingerprint,
       row.evidenceKind, measurement.data.rootHarnessSlug ?? null, binding.testPath, binding.testLayer,
-      row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane ?? null,
-      execution.testNamePattern ?? null, scenarios, pairs,
+      scenarios, pairs,
       counterexample ? [counterexample.test, counterexample.messageIncludes] : null,
       row.fingerprints.fixtureFingerprint, row.fingerprints.rubricFingerprint, row.fingerprints.environmentFingerprint]);
-    return { key, sources, execution };
+    // Plane review and the executed filter are recorded at finish/review, not at
+    // prepare. They distinguish attempts, but cannot change registration order.
+    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane ?? null;
+    const key = JSON.stringify([registrationKey, execution.testNamePattern ?? null]);
+    return { key, registrationKey, plane, sources, execution };
   };
   const logicalKey = (row: T) =>
     JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
@@ -169,7 +172,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     const scope = identity(row);
     const anchor = anchors.get(logicalKey(row));
     // An annotation cannot change the registered proof's identity or source scope.
-    return scope && anchor && scope.key === anchor.scope.key
+    return scope && anchor && scope.registrationKey === anchor.scope.registrationKey
       && JSON.stringify(scope.sources) === JSON.stringify(anchor.scope.sources)
       ? { row, scope, order: anchor.id } : null;
   });
@@ -178,6 +181,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     if (!candidate) continue;
     if (candidates.some(newer => newer && newer.order > candidate.order
       && newer.scope.key === candidate.scope.key
+      && (candidate.scope.plane === null || candidate.scope.plane === newer.scope.plane)
       && candidate.scope.sources.every(path => newer.scope.sources.includes(path)))) superseded.add(candidate.row);
   }
   return latest.filter(row => !superseded.has(row));
@@ -817,8 +821,12 @@ export function evaluateSpecTestAdequacy(input: {
   // visible as unknown instead of silently disappearing from the graded population. The
   // historical current-cohort behavior is retained only for internally/server-classified
   // evidence when no caller comparison input was supplied.
-  const evidence =
-    input.current !== undefined ? exactEvidence : currentEvidence.length > 0 ? currentEvidence : exactEvidence;
+  const evidence = input.current !== undefined ? exactEvidence : currentEvidence.length > 0
+    ? exactEvidence.filter(row => currentEvidence.includes(row)
+      // An active registered attempt whose freshness is unknown/stale cannot disappear
+      // merely because another test in this clause is current and passing.
+      || (row.details.testExecution as { schemaVersion?: unknown } | undefined)?.schemaVersion === 1)
+    : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 
   const lineageAssessments = evidence.map((row) => ({ row, assessment: classifySpecEvidenceLineage(row) }));
