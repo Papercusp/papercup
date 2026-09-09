@@ -102,7 +102,7 @@ export const gatewayStatusTool = defineTool({
   guidance: {
     when: "Agents/turns are SLOW, QUEUED, or stalling — or you are about to conclude 'the pool is capacity-crunched'. Also: confirming what pool + concurrency the running gateway uses, or verifying a hot-reload took effect (version bump).",
     returns:
-      "`admissionState` is the CANONICAL model (P-013) — read it first; every other admission field is a legacy per-provider read kept for compatibility. Per lane it carries: the adaptive `desiredWindow`/`effectiveWindow`, `inFlight`, `queued`, `availableStarts`, and `binding` — the ONE term actually holding the lane back (`pause` | `physical-contract` | `effective-window` | null for nothing) together with the exact writer that produced it, so a number you distrust leads straight to its source file. Every value is a {value, writer:{writer, unit, disposition}} pair; `generation` and `freshness` (fresh|aging|stale|unknown) date the snapshot, and `freshness:'unknown'` means a broken/skewed instrument, NOT a healthy zero. `fleet:capacity`, the health panels and the alert feed project from this same snapshot, so if two surfaces ever disagree about a binding writer, that is a bug in the projection, not a real difference. Also returns the pool config version + live account ids (confirming a gateway:reload landed).",
+      "`admissionState` is the CANONICAL model (P-013) — read it first; every other admission field is a legacy per-provider read kept for compatibility. Per lane it carries: the adaptive `desiredWindow`/`effectiveWindow`, `inFlight`, `queued`, `availableStarts`, and `binding` — the ONE term actually holding the lane back (`pause` | `physical-contract` | `effective-window` | null for nothing) together with the exact writer that produced it, so a number you distrust leads straight to its source file. Every measurement is a `value` paired with its `writer` (writer, unit, disposition); `generation` and `freshness` (fresh|aging|stale|unknown) date the snapshot, and `freshness:'unknown'` means a broken/skewed instrument, NOT a healthy zero. `fleet:capacity`, the health panels and the alert feed project from this same snapshot, so if two surfaces ever disagree about a binding writer, that is a bug in the projection, not a real difference. Also returns the pool config version + live account ids (confirming a gateway:reload landed).",
     notWhen: 'Editing the pool itself — accounts:register / accounts:remove (then gateway:reload to apply live). For per-AGENT outcomes (which account did MY session get, did it 429/shed/stall) use gateway:owner_report.',
     chaining:
       "Slowness triage: dev:why (walks every stage incl. admission) → gateway:status (per-tier detail) → gateway:owner_report (per-agent outcomes) → accounts:status / dev:rate_governor_status (only once admission is RULED OUT). Pool edits: accounts:register/remove → gateway:reload → gateway:status.",
@@ -122,6 +122,13 @@ export const gatewayStatusTool = defineTool({
   // canonical admission values are nested under `admissionState`; `value` and
   // `writer` are properties of those nested measurements, not gateway:status's
   // top-level response.
+  //
+  // For the same reason `guidance.returns` above describes that nested pair in
+  // prose and NOT as a `{value, writer}` clause: guidance-output-schema-live-guard
+  // parses the FIRST brace clause in `returns` as this tool's TOP-LEVEL shape, so a
+  // nested pseudo-type there reads as a promise of top-level `value`/`writer` and
+  // fails the guard. Adding them to the schema below would be the wrong repair —
+  // it would advertise a structuredContent shape this handler never emits.
   result: z
     .object({
       ok: z.boolean(),

@@ -29,7 +29,7 @@ export default defineTool({
     notWhen:
       'Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.',
     returns:
-      "A valid result includes `scorecardDraft`, but that draft is not the final start prerequisite by itself. Complete this sequence: (1) repair every returned blocker and re-run this evaluator, (2) pass the exact draft to `scorecards:emit` with `terminal:true`, (3) have a different non-author session settle the returned card's `gradingAudit` with one terminal `scorecards:emit { rubricRef:'grading-integrity', subject:{ kind:'scorecard', ref:'<scorecardId>' }, ratings:{...} }`, then (4) call `plans:start`. Reusable reviewer dispatch recipe: `capability:launch-agent { agent:'codex', role:'judge', independent:true, headless:true, brief:'Inspect scorecards:list for <scorecardId>; emit exactly one complete terminal grading-integrity scorecard for that subject; do not edit implementation files or emit another card.' }`. `independent:true` keeps a fresh launch outside the caller's fleet; the reviewer must still be a different author/lineage, and the caller should verify the audit is settled before starting.",
+      "{ok, slug, harnessSlug, blockers, wouldBlock, verdict, scorecardDraft} — a prerequisite failure returns `ok:false` with the full `blockers` set and no draft; a graded call returns `ok:true` with the spec-quality result spread in. A valid result includes `scorecardDraft`, but that draft is not the final start prerequisite by itself. Complete this sequence: (1) repair every returned blocker and re-run this evaluator, (2) pass the exact draft to `scorecards:emit` with `terminal:true`, (3) have a different non-author session settle the returned card's `gradingAudit` with one terminal `scorecards:emit { rubricRef:'grading-integrity', subject:{ kind:'scorecard', ref:'<scorecardId>' }, ratings:{...} }`, then (4) call `plans:start`. Reusable reviewer dispatch recipe: `capability:launch-agent { agent:'codex', role:'judge', independent:true, headless:true, brief:'Inspect scorecards:list for <scorecardId>; emit exactly one complete terminal grading-integrity scorecard for that subject; do not edit implementation files or emit another card.' }`. `independent:true` keeps a fresh launch outside the caller's fleet; the reviewer must still be a different author/lineage, and the caller should verify the audit is settled before starting.",
     chaining:
       "plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft with terminal:true → dispatch or await the NON-AUTHOR grading-integrity reviewer → scorecards:list { rubricRef:'spec-quality', subjectRef:'<scorecardId>' } and confirm gradingAudit is settled → plans:start { slug }. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence.",
     seeAlso: ['plans:get-specs', 'scorecards:emit', 'rubrics:get spec-quality'],
@@ -40,6 +40,35 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,
+  // EI-21111131926207175: this tool authors `guidance.returns`, so it owes a
+  // registered output schema — prose must not be the only statement of the
+  // response shape. Both handler branches are declared here: the
+  // prerequisite-failure branch (`ok:false`, `error`, `readiness`, `blockers`,
+  // `unknownChecks`, `wouldBlock`) and the graded branch (`ok:true` plus the
+  // spread `PlanSpecQualityResult`). Deep payloads stay `unknown` on purpose —
+  // their shape is owned by evaluatePlanSpecQuality / evaluatePlanStartReadiness,
+  // and restating it here would be a second copy that drifts.
+  result: z
+    .object({
+      ok: z.boolean(),
+      slug: z.string(),
+      harnessSlug: z.string(),
+      error: z.string().optional(),
+      readiness: z.unknown().optional(),
+      blockers: z.array(z.unknown()).optional(),
+      unknownChecks: z.array(z.string()).optional(),
+      wouldBlock: z.array(z.string()).optional(),
+      planSlug: z.string().optional(),
+      classRef: z.string().optional(),
+      specSetHash: z.string().optional(),
+      clauseCount: z.number().optional(),
+      planItemCount: z.number().optional(),
+      ratings: z.unknown().optional(),
+      verdict: z.string().optional(),
+      details: z.unknown().optional(),
+      scorecardDraft: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
