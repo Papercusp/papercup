@@ -29,12 +29,15 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, createConnection } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -49,6 +52,7 @@ import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
 import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import type { BuiltSpawnContext, McpCallResult } from '../routes/transport/_mcp-handler';
 import { bindAdmissionAuthority, admissionCredentialDigest } from '../../work-item-admission-authority';
+import { configurePrePromptRegistry, clearPrePromptRegistry } from '@papercusp/result-encoding';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -523,6 +527,54 @@ registerProjectedTool({
 });
 
 const deltaRequested: Array<string | undefined> = [];
+// P006 uses the existing real dispatcher + mocked persistence/auth fixture,
+// rather than maintaining a second copy of the host's dependency mocks.
+const parityCalls: Array<{ args: unknown; ctx: UnifiedToolContext }> = [];
+const PARITY_ROWS = [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'done' }];
+defineTool({
+  name: 'gatingtest:parity_rows',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({ page: z.string().optional() }),
+  result: z.array(z.object({ id: z.string(), state: z.string() })),
+  agentRoles: ['scoper'],
+  handler: async (args, ctx) => {
+    parityCalls.push({ args, ctx });
+    return args.page === 'second'
+      ? { data: PARITY_ROWS.slice(1) }
+      : { data: PARITY_ROWS.slice(0, 1), nextCursor: 'second', degraded: true, degradedReasons: ['fixture'] };
+  },
+});
+defineTool({
+  name: 'gatingtest:parity_structured',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  result: z.object({ rows: z.array(z.object({ id: z.string(), state: z.string() })) }),
+  agentRoles: ['scoper'],
+  handler: async (_args, ctx) => {
+    parityCalls.push({ args: {}, ctx });
+    return { data: { rows: PARITY_ROWS } };
+  },
+});
+defineTool({
+  name: 'gatingtest:parity_args',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({
+    id: z.string().optional(),
+    state: z.enum(['todo', 'done']).optional(),
+    count: z.number().int().optional(),
+    enabled: z.boolean().optional(),
+    body: z.string().optional(),
+    items: z.array(z.object({ id: z.string(), state: z.enum(['todo', 'done']) })).optional(),
+  }),
+  agentRoles: ['scoper'],
+  handler: async (args, ctx) => {
+    parityCalls.push({ args, ctx });
+    return { data: { ok: true, accepted: args } };
+  },
+});
 defineTool({
   name: 'gatingtest:delta_list',
   requirePrincipal: false,
@@ -797,7 +849,50 @@ async function callTool(
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
 
 /** Exercise the SDK lifecycle independently of the HTTP adapter's handler capture. */
-async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T>, connection: 'memory' | 'uds' | 'listener'): Promise<T> {
+async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T>, connection: 'memory' | 'uds' | 'listener' | 'http'): Promise<T> {
+  if (connection === 'http') {
+    // This arm is a REAL loopback HTTP socket, unlike h.handlers' HTTP-factory
+    // capture. Use the same production registration/dispatch as the UDS arm.
+    const hosts: Array<{ server: McpServer; transport: StreamableHTTPServerTransport }> = [];
+    const errors: unknown[] = [];
+    const http = createHttpServer(async (req, res) => {
+      const server = new McpServer({ name: 'shared-host-parity', version: '1' }, mcpHostServerOptions());
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      hosts.push({ server, transport });
+      try {
+        registerMcpHost(server);
+        await server.connect(transport);
+        await transport.handleRequest(req, res);
+      } catch (error) {
+        errors.push(error);
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      }
+    });
+    const client = new Client({ name: 'http-host-contract', version: '1' });
+    try {
+      http.listen(0, '127.0.0.1');
+      await once(http, 'listening');
+      const address = http.address();
+      if (!address || typeof address === 'string') throw new Error('missing_http_fixture_address');
+      const info = (extra as { requestInfo: { url: string; headers: Record<string, string> } }).requestInfo;
+      const url = new URL(info.url);
+      url.host = `127.0.0.1:${address.port}`;
+      const { host: _host, ...headers } = info.headers;
+      await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }));
+      const result = await run(client);
+      expect(errors).toEqual([]);
+      return result;
+    } finally {
+      await client.close();
+      await Promise.all(hosts.map(async ({ server, transport }) => {
+        await transport.close();
+        await server.close();
+      }));
+      http.closeAllConnections();
+      await new Promise<void>(resolve => http.close(() => resolve()));
+    }
+  }
   if (connection === 'listener') {
     const listener = await startAgentMcpServer({ port: 3070, host: {
       register: registerMcpHost, options: mcpHostServerOptions(),
@@ -1115,6 +1210,166 @@ describe('authenticated admission binding through the real MCP handler', () => {
     expect(result.isError).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(bindAdmissionAuthority(seen[0]!.ctx)?.context?.profile).toBe('power');
+  });
+});
+
+describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', () => {
+  afterEach(() => clearPrePromptRegistry());
+  // Catalogs are role-filtered even when SU dispatch may bypass the role gate.
+  // Use the same signed scoper identity as these probes' advertised role.
+  const parityExtra = (format?: string) => extraFor(signedUrl({
+    tools: 'gatingtest:parity_rows,gatingtest:parity_args,gatingtest:parity_structured,gatingtest:delta_list',
+    ...(format ? { format } : {}),
+  }));
+
+  function configureColumns() {
+    configurePrePromptRegistry([
+      { name: 'gatingtest:parity_rows', read: 'csv' },
+      {
+        name: 'gatingtest:parity_args', write: 'positional',
+        writeColumnNames: ['id', 'state', 'count', 'enabled', 'body'],
+        writeRequiredColumnNames: ['id', 'state'],
+        writeKeyedFallback: true,
+      },
+    ]);
+  }
+
+  // Compare literal payload and all semantic metadata, not JSON byte size or
+  // a "format" label alone. Controlled corruptions below calibrate this oracle.
+  function assertSameResult(actual: CallResult, expected: CallResult) {
+    expect(actual.content).toEqual(expected.content);
+    expect(actual._meta).toEqual(expected._meta);
+    expect(actual.structuredContent).toEqual(expected.structuredContent);
+    expect(actual.isError).toEqual(expected.isError);
+  }
+
+  it('reconstructs positional scalars/free text and preserves keyed bulk arguments', async () => {
+    configureColumns();
+    const cases = [
+      { wire: { row: 'WI-7, done,3,true,fixed it, added tests' },
+        expected: { id: 'WI-7', state: 'done', count: 3, enabled: true, body: 'fixed it, added tests' } },
+      { wire: { row: 'WI-8,todo' }, expected: { id: 'WI-8', state: 'todo' } },
+      { wire: { id: 'WI-9', state: 'done', count: 0, enabled: false }, expected: { id: 'WI-9', state: 'done', count: 0, enabled: false } },
+      { wire: { items: [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'done' }] },
+        expected: { items: [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'done' }] } },
+    ];
+    const arms: CallResult[][] = [];
+    for (const connection of ['http', 'listener'] as const) {
+      const results = await withSdkHost(parityExtra(), async client => {
+        const listings = await client.listTools();
+        const argsSchema = listings.tools.find(tool => tool.name === 'gatingtest:parity_args')?.inputSchema;
+        expect(argsSchema).toBeDefined();
+        expect(argsSchema?.oneOf).toHaveLength(2);
+        const output: CallResult[] = [];
+        for (const testCase of cases) {
+          parityCalls.length = 0;
+          const result = await client.callTool({ name: 'gatingtest:parity_args', arguments: testCase.wire }) as CallResult;
+          expect(result.isError).toBeUndefined();
+          expect(parityCalls).toHaveLength(1);
+          expect(parityCalls[0]?.args).toEqual(testCase.expected);
+          expect(parityCalls[0]?.ctx).toMatchObject({ transport: 'mcp', workspaceId: 'ws-test' });
+          output.push(result);
+        }
+        return output;
+      }, connection);
+      arms.push(results);
+    }
+    arms[0]!.forEach((http, i) => assertSameResult(arms[1]![i]!, http));
+  });
+
+  it('negotiates compact/JSON/CSV, headerless columns, pagination and projection through dispatch', async () => {
+    const arms: CallResult[][] = [];
+    for (const connection of ['http', 'listener'] as const) {
+      clearPrePromptRegistry();
+      const results = await withSdkHost(parityExtra('json'), async client => {
+        const call = async (args: Record<string, unknown>, meta?: Record<string, unknown>) =>
+          await client.callTool({ name: 'gatingtest:parity_rows', arguments: args, _meta: meta }) as CallResult;
+        // Per-call compact overrides the connection's requested JSON.
+        const compact = await call({}, { format: 'compact' });
+        expect(textOf(compact)).toMatch(/^format: toon\n/);
+        const json = await call({});
+        expect(JSON.parse(textOf(json))).toEqual(PARITY_ROWS.slice(0, 1));
+        const csv = await call({}, { format: 'csv' });
+        expect(textOf(csv)).toBe('format: csv\nid,state\nWI-1,todo');
+        expect(compact._meta).toMatchObject({ nextCursor: 'second', degraded: true, degradedReasons: ['fixture'] });
+        const page = await call({ page: compact._meta!.nextCursor });
+        expect(JSON.parse(textOf(page))).toEqual(PARITY_ROWS.slice(1));
+        expect(page._meta?.nextCursor).toBeUndefined();
+        const projected = await call({ page: 'second', projection: { pick: ['[].id'] } });
+        expect(JSON.parse(projected.content[0]!.text!)).toEqual([{ id: 'WI-2' }]);
+        expect(projected._meta?.resultProjection).toMatchObject({ applied: true });
+        expect(parityCalls.at(-1)?.args).toEqual({ page: 'second' });
+        configureColumns();
+        const headerless = await call({}, { format: 'compact' });
+        expect(textOf(headerless)).toBe('format: csv\n[1]\nWI-1,todo');
+        return [compact, json, csv, page, projected, headerless];
+      }, connection);
+      arms.push(results);
+    }
+    arms[0]!.forEach((http, i) => assertSameResult(arms[1]![i]!, http));
+    const good = arms[1]![0]!;
+    expect(() => assertSameResult({ ...good, content: [{ type: 'text', text: JSON.stringify(PARITY_ROWS) }] }, good)).toThrow();
+    expect(() => assertSameResult({ ...good, _meta: {} }, good)).toThrow();
+  });
+
+  it.each(['http', 'listener'] as const)('%s rejects bad rows before execution and honors explicit delta cursors', async connection => {
+    configureColumns();
+    await withSdkHost(parityExtra(), async client => {
+      await client.listTools();
+      for (const row of ['WI-7,unknown', 'WI-7,done,not-a-number,true', 'WI-7,done,2,not-a-boolean']) {
+        parityCalls.length = 0;
+        const result = await client.callTool({ name: 'gatingtest:parity_args', arguments: { row } });
+        expect(result.isError).toBe(true);
+        expect(parityCalls).toEqual([]);
+      }
+      deltaRequested.length = 0;
+      const first = await client.callTool({ name: 'gatingtest:delta_list', arguments: {}, _meta: { delta: 'full' } }) as CallResult;
+      expect(first.isError).toBeUndefined();
+      expect(deltaRequested).toEqual(['full']);
+      const delta = first._meta?.delta as { cursor?: string; mode?: string };
+      expect(delta).toMatchObject({ mode: 'full', cursor: expect.any(String) });
+      const request = `not_modified~${delta.cursor}`;
+      const second = await client.callTool({ name: 'gatingtest:delta_list', arguments: {}, _meta: { delta: request } }) as CallResult;
+      expect(second.isError).toBeUndefined();
+      expect(deltaRequested).toEqual(['full', request]);
+      expect(second._meta?.delta).toMatchObject({ mode: 'not_modified', cursor: expect.any(String) });
+      expect(textOf(second)).toContain('not_modified');
+      const invalidBase = await client.callTool({
+        name: 'gatingtest:delta_list', arguments: {}, _meta: { delta: 'not_modified~invalid-cursor' },
+      }) as CallResult;
+      expect(invalidBase._meta?.delta).toMatchObject({ mode: 'full' });
+      expect(textOf(first)).toMatch(/^format: toon\n/);
+      expect(textOf(first)).toContain('[12]');
+      expect(invalidBase.content).toEqual(first.content);
+    }, connection);
+  });
+
+  it('preserves explicitly negotiated structured content and the SDK missing-content rejection', async () => {
+    const arms: CallResult[] = [];
+    for (const connection of ['http', 'listener'] as const) {
+      arms.push(await withSdkHost(parityExtra(), async client => {
+        const catalog = await client.listTools();
+        expect(catalog.tools.find(tool => tool.name === 'gatingtest:parity_structured')?.outputSchema)
+          .toMatchObject({ type: 'object', required: ['rows'] });
+        const result = await client.callTool({
+          name: 'gatingtest:parity_structured', arguments: {},
+          _meta: { format: 'json', structured: true },
+        }) as CallResult;
+        expect(result.structuredContent).toEqual({ rows: PARITY_ROWS });
+        expect(JSON.parse(textOf(result))).toEqual({ rows: PARITY_ROWS });
+        expect(parityCalls.at(-1)?.ctx).toMatchObject({
+          transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        });
+        // Negative calibration exercises the REAL client validator after the
+        // REAL dispatcher omits unrequested structured content.
+        await expect(client.callTool({
+          name: 'gatingtest:parity_structured', arguments: {}, _meta: { format: 'json' },
+        })).rejects.toThrow(/structured content/i);
+        return result;
+      }, connection));
+    }
+    assertSameResult(arms[1]!, arms[0]!);
+    expect(() => assertSameResult({ ...arms[1]!, structuredContent: { rows: [] } }, arms[0]!)).toThrow();
   });
 });
 
