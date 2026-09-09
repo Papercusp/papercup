@@ -602,27 +602,33 @@ export async function markControlTransitionPrepared(
   sql: Sql = getOrgPg().sql,
 ): Promise<boolean> {
   const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
-  const rows = await sql<Array<{ control_generation: number | string }>>`
-    UPDATE harness_shared.session_briefs
-       SET control_state = jsonb_set(
-         jsonb_set(
-           jsonb_set(control_state, '{activation,prepared}', ${rev}::jsonb, true),
-           '{activation,status}', '"prepared"'::jsonb, true
-         ),
-         '{activation,failure}', 'null'::jsonb, true
-       )
-     WHERE owner_id = ${ownerId}
-       AND workspace_id = ${workspaceId}
-       AND control_generation = ${generation}
-       AND control_delivered_generation < ${generation}
-       AND control_state->'activation'->'desired' = ${rev}::jsonb
-    RETURNING control_generation
-  `;
-  if (rows.length === 0) return false;
-  const recorded = await recordCurrentSessionIdentityActivation({
-    ownerId, workspaceId, generation, phase: 'prepared', source: 'control', revision, sql,
+  return await sql.begin(async (tx) => {
+    const rows = await tx<Array<{ control_generation: number | string }>>`
+      UPDATE harness_shared.session_briefs
+         SET control_state = jsonb_set(
+           jsonb_set(
+             jsonb_set(control_state, '{activation,prepared}', ${rev}::text::jsonb, true),
+             '{activation,status}', '"prepared"'::jsonb, true
+           ),
+           '{activation,failure}', 'null'::jsonb, true
+         )
+       WHERE owner_id = ${ownerId}
+         AND workspace_id = ${workspaceId}
+         AND control_generation = ${generation}
+         AND control_delivered_generation < ${generation}
+         AND control_state->'activation'->'desired' = ${rev}::text::jsonb
+      RETURNING control_generation
+    `;
+    if (rows.length === 0) return false;
+    const recorded = await recordCurrentSessionIdentityActivation({
+      ownerId, workspaceId, generation, phase: 'prepared', source: 'control', revision,
+      sql: tx as unknown as Sql,
+    });
+    if (recorded === 'missing') {
+      throw new Error('session_identity_activation_prepared_not_recorded');
+    }
+    return true;
   });
-  return recorded !== 'missing';
 }
 
 /** Persist a render/delivery failure while retaining the previous applied revision. */
@@ -637,28 +643,33 @@ export async function failControlTransitionActivation(
   if (!failure.trim()) return false;
   const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
   const reason = JSON.stringify(failure.trim());
-  const rows = await sql<Array<{ control_generation: number | string }>>`
-    UPDATE harness_shared.session_briefs
-       SET control_state = jsonb_set(
-         jsonb_set(
-           jsonb_set(control_state, '{activation,prepared}', 'null'::jsonb, true),
-           '{activation,status}', '"failed"'::jsonb, true
-         ),
-         '{activation,failure}', ${reason}::jsonb, true
-       )
-     WHERE owner_id = ${ownerId}
-       AND workspace_id = ${workspaceId}
-       AND control_generation = ${generation}
-       AND control_delivered_generation < ${generation}
-       AND control_state->'activation'->'desired' = ${rev}::jsonb
-    RETURNING control_generation
-  `;
-  if (rows.length === 0) return false;
-  const recorded = await recordCurrentSessionIdentityActivation({
-    ownerId, workspaceId, generation, phase: 'failed', source: 'control', revision,
-    failure: failure.trim(), sql,
+  return await sql.begin(async (tx) => {
+    const rows = await tx<Array<{ control_generation: number | string }>>`
+      UPDATE harness_shared.session_briefs
+         SET control_state = jsonb_set(
+           jsonb_set(
+             jsonb_set(control_state, '{activation,prepared}', 'null'::jsonb, true),
+             '{activation,status}', '"failed"'::jsonb, true
+           ),
+           '{activation,failure}', ${reason}::text::jsonb, true
+         )
+       WHERE owner_id = ${ownerId}
+         AND workspace_id = ${workspaceId}
+         AND control_generation = ${generation}
+         AND control_delivered_generation < ${generation}
+         AND control_state->'activation'->'desired' = ${rev}::text::jsonb
+      RETURNING control_generation
+    `;
+    if (rows.length === 0) return false;
+    const recorded = await recordCurrentSessionIdentityActivation({
+      ownerId, workspaceId, generation, phase: 'failed', source: 'control', revision,
+      failure: failure.trim(), sql: tx as unknown as Sql,
+    });
+    if (recorded === 'missing') {
+      throw new Error('session_identity_activation_failed_not_recorded');
+    }
+    return true;
   });
-  return recorded !== 'missing';
 }
 
 /**
@@ -688,13 +699,14 @@ export async function acknowledgeControlTransition(
   activationRevision?: SessionActivation['desired'],
 ): Promise<boolean> {
   if (!Number.isSafeInteger(generation) || generation < 0) return false;
-  const rows = activationRevision
-    ? await sql<Array<{ control_delivered_generation: number | string }>>`
+  if (activationRevision) {
+    return await sql.begin(async (tx) => {
+      const rows = await tx<Array<{ control_delivered_generation: number | string }>>`
         UPDATE harness_shared.session_briefs
            SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation}),
                control_state = jsonb_set(
                  jsonb_set(
-                   jsonb_set(control_state, '{activation,applied}', ${JSON.stringify(activationRevision)}::jsonb, true),
+                  jsonb_set(control_state, '{activation,applied}', ${JSON.stringify(activationRevision)}::text::jsonb, true),
                    '{activation,prepared}', 'null'::jsonb, true
                  ),
                  '{activation,status}', '"applied"'::jsonb, true
@@ -703,28 +715,31 @@ export async function acknowledgeControlTransition(
            AND workspace_id = ${workspaceId}
            AND control_generation >= ${generation}
            AND control_delivered_generation < ${generation}
-           AND control_state->'activation'->'desired' = ${JSON.stringify(activationRevision)}::jsonb
-           AND control_state->'activation'->'prepared' = ${JSON.stringify(activationRevision)}::jsonb
-        RETURNING control_delivered_generation
-      `
-    : await sql<Array<{ control_delivered_generation: number | string }>>`
-        UPDATE harness_shared.session_briefs
-           SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation})
-         WHERE owner_id = ${ownerId}
-           AND workspace_id = ${workspaceId}
-           AND control_generation >= ${generation}
-           AND control_delivered_generation < ${generation}
+           AND control_state->'activation'->'desired' = ${JSON.stringify(activationRevision)}::text::jsonb
+           AND control_state->'activation'->'prepared' = ${JSON.stringify(activationRevision)}::text::jsonb
         RETURNING control_delivered_generation
       `;
-  if (rows.length === 0) return false;
-  if (activationRevision) {
-    const recorded = await recordCurrentSessionIdentityActivation({
-      ownerId, workspaceId, generation, phase: 'applied', source: 'control',
-      revision: activationRevision, sql,
+      if (rows.length === 0) return false;
+      const recorded = await recordCurrentSessionIdentityActivation({
+        ownerId, workspaceId, generation, phase: 'applied', source: 'control',
+        revision: activationRevision, sql: tx as unknown as Sql,
+      });
+      if (recorded === 'missing') {
+        throw new Error('session_identity_activation_applied_not_recorded');
+      }
+      return true;
     });
-    return recorded !== 'missing';
   }
-  return true;
+  const rows = await sql<Array<{ control_delivered_generation: number | string }>>`
+    UPDATE harness_shared.session_briefs
+       SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation})
+     WHERE owner_id = ${ownerId}
+       AND workspace_id = ${workspaceId}
+       AND control_generation >= ${generation}
+       AND control_delivered_generation < ${generation}
+    RETURNING control_delivered_generation
+  `;
+  return rows.length > 0;
 }
 
 export function renderControlTransitionContext(delivery: ControlTransitionDelivery): string {
@@ -893,21 +908,22 @@ export async function requestSessionIdentityActivation(input: {
   sql?: Sql;
 }): Promise<ControlAnchor> {
   const sql = input.sql ?? getOrgPg().sql;
-  const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql });
-  const activation = state.activation
-    ? input.restart
-      ? restartActivation(state.activation, input.revision)
-      : requestActivation(state.activation, input.revision)
-    : desiredActivation(
-        input.attribution ?? {
-          actorId: input.ownerId,
-          principalId: input.ownerId,
-          sessionId: input.ownerId,
-        },
-        input.revision,
-      );
-  const persisted = await persistControlAnchor(
-    {
+  return await sql.begin(async (tx) => {
+    const transaction = tx as unknown as Sql;
+    const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql: transaction });
+    const activation = state.activation
+      ? input.restart
+        ? restartActivation(state.activation, input.revision)
+        : requestActivation(state.activation, input.revision)
+      : desiredActivation(
+          input.attribution ?? {
+            actorId: input.ownerId,
+            principalId: input.ownerId,
+            sessionId: input.ownerId,
+          },
+          input.revision,
+        );
+    const persisted = await persistControlAnchor({
       ownerId: input.ownerId,
       workspaceId: input.workspaceId,
       state: { ...state, activation },
@@ -917,20 +933,19 @@ export async function requestSessionIdentityActivation(input: {
         source: 'session:activation',
         ownerDirected: false,
       },
-    },
-    sql,
-  );
-  const recorded = await recordCurrentSessionIdentityActivation({
-    ownerId: input.ownerId,
-    workspaceId: input.workspaceId,
-    generation: persisted.generation,
-    phase: 'desired',
-    source: input.source,
-    revision: input.revision,
-    sql,
+    }, transaction);
+    const recorded = await recordCurrentSessionIdentityActivation({
+      ownerId: input.ownerId,
+      workspaceId: input.workspaceId,
+      generation: persisted.generation,
+      phase: 'desired',
+      source: input.source,
+      revision: input.revision,
+      sql: transaction,
+    });
+    if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
+    return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
   });
-  if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
-  return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
 }
 
 /** Refresh after a canonical mutation. The projection is safety context, but
@@ -946,40 +961,44 @@ export async function refreshControlAnchorAfterMutation(input: {
 }): Promise<ControlAnchor | null> {
   try {
     const sql = input.sql ?? getOrgPg().sql;
-    const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql });
-    const identityMoved = input.source === 'mode:set' || input.source === 'fleet:membership';
-    const nextState = identityMoved && state.activation
-      ? {
-          ...state,
-          activation: requestActivation(state.activation, {
-            specificationRevision: state.activation.desired.specificationRevision,
-            stateRevision: sessionIdentityStateRevision(state),
-          }),
-        }
-      : state;
-    const persisted = await persistControlAnchor({
-      ownerId: input.ownerId,
-      workspaceId: input.workspaceId,
-      state: nextState,
-      transition: {
-        origin: input.origin,
-        actorId: input.actorId,
-        source: input.source,
-        ownerDirected: Boolean(input.ownerDirected),
-      },
-    }, sql);
-    if (identityMoved && persisted.state.activation?.status === 'desired') {
-      await recordCurrentSessionIdentityActivation({
+    return await sql.begin(async (tx) => {
+      const transaction = tx as unknown as Sql;
+      const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql: transaction });
+      const identityMoved = input.source === 'mode:set' || input.source === 'fleet:membership';
+      const nextState = identityMoved && state.activation
+        ? {
+            ...state,
+            activation: requestActivation(state.activation, {
+              specificationRevision: state.activation.desired.specificationRevision,
+              stateRevision: sessionIdentityStateRevision(state),
+            }),
+          }
+        : state;
+      const persisted = await persistControlAnchor({
         ownerId: input.ownerId,
         workspaceId: input.workspaceId,
-        generation: persisted.generation,
-        phase: 'desired',
-        source: 'control',
-        revision: persisted.state.activation.desired,
-        sql,
-      });
-    }
-    return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
+        state: nextState,
+        transition: {
+          origin: input.origin,
+          actorId: input.actorId,
+          source: input.source,
+          ownerDirected: Boolean(input.ownerDirected),
+        },
+      }, transaction);
+      if (identityMoved && persisted.state.activation?.status === 'desired') {
+        const recorded = await recordCurrentSessionIdentityActivation({
+          ownerId: input.ownerId,
+          workspaceId: input.workspaceId,
+          generation: persisted.generation,
+          phase: 'desired',
+          source: 'control',
+          revision: persisted.state.activation.desired,
+          sql: transaction,
+        });
+        if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
+      }
+      return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
+    });
   } catch {
     return null;
   }

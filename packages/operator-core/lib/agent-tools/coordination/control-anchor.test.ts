@@ -62,7 +62,34 @@ function sqlReturning<T>(rows: T[]) {
     calls.push({ statement: strings.join(' '), values });
     return rows;
   }) as unknown as Sql;
+  Object.assign(sql as object, {
+    begin: async (callback: (tx: Sql) => Promise<unknown>) => callback(sql),
+  });
   return { sql, calls };
+}
+
+function transactionalSqlSequence(results: unknown[][]) {
+  const calls: Array<{ statement: string; values: unknown[] }> = [];
+  let committed = false;
+  let rolledBack = false;
+  const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ statement: strings.join(' '), values });
+    return results.shift() ?? [];
+  }) as unknown as Sql;
+  const sql = tx;
+  Object.assign(sql as object, {
+    begin: async (callback: (transaction: Sql) => Promise<unknown>) => {
+      try {
+        const value = await callback(tx);
+        committed = true;
+        return value;
+      } catch (error) {
+        rolledBack = true;
+        throw error;
+      }
+    },
+  });
+  return { sql, calls, committed: () => committed, rolledBack: () => rolledBack };
 }
 
 describe('CTRL anchor wakeSource (WI-7302 part 2)', () => {
@@ -299,6 +326,34 @@ describe('compact durable CTRL anchor', () => {
     const legacyAck = sqlReturning([{ control_delivered_generation: 6 }]);
     await expect(acknowledgeControlTransition('su-x', 'ws-test', 6, legacyAck.sql)).resolves.toBe(true);
     expect(legacyAck.calls[0]!.statement).not.toMatch(/activation/);
+  });
+
+  it('rolls back the applied watermark when the append-only activation event cannot be recorded', async () => {
+    const revision = { specificationRevision: 'c'.repeat(64), stateRevision: '3' };
+    const db = transactionalSqlSequence([
+      [{ control_delivered_generation: 7 }],
+      [],
+      [],
+    ]);
+    await expect(
+      acknowledgeControlTransition('su-x', 'ws-test', 7, db.sql, revision),
+    ).rejects.toThrow('session_identity_activation_applied_not_recorded');
+    expect(db.rolledBack()).toBe(true);
+    expect(db.committed()).toBe(false);
+    expect(db.calls).toHaveLength(3);
+  });
+
+  it.each([
+    ['prepared', (db: ReturnType<typeof transactionalSqlSequence>, revision: { specificationRevision: string; stateRevision: string }) =>
+      markControlTransitionPrepared('su-x', 'ws-test', 8, revision, db.sql)],
+    ['failed', (db: ReturnType<typeof transactionalSqlSequence>, revision: { specificationRevision: string; stateRevision: string }) =>
+      failControlTransitionActivation('su-x', 'ws-test', 8, revision, 'render failed', db.sql)],
+  ])('rolls back %s state when its append-only event cannot be recorded', async (phase, run) => {
+    const revision = { specificationRevision: 'd'.repeat(64), stateRevision: '4' };
+    const db = transactionalSqlSequence([{ control_generation: 8 }, [], []]);
+    await expect(run(db, revision)).rejects.toThrow(`session_identity_activation_${phase}_not_recorded`);
+    expect(db.rolledBack()).toBe(true);
+    expect(db.committed()).toBe(false);
   });
 
   it('rejects generation-behind payloads and full-resyncs from current anchor state', () => {

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { acknowledgeControlTransition } from './agent-tools/coordination/control-anchor';
 import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +24,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.session_briefs (
       owner_id text PRIMARY KEY, workspace_id text NOT NULL,
       native_session_id text, control_generation bigint NOT NULL,
+      control_delivered_generation bigint NOT NULL DEFAULT 0,
       control_state jsonb
     );
     CREATE TABLE harness_shared.tool_invocations (
@@ -122,5 +124,53 @@ describe('P-009 activation span views', () => {
       source: 'control' as const, revision, sql: db.sql };
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('inserted');
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('replayed');
+  });
+
+  it('rolls back applied state and watermark when the event insert fails', async () => {
+    const owner = `${OWNER}-atomic`;
+    const previous = { specificationRevision: SPEC_A, stateRevision: 'previous' };
+    const revision = { specificationRevision: SPEC_B, stateRevision: 'next' };
+    const activation = {
+      schemaVersion: 1,
+      attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },
+      desired: revision,
+      prepared: revision,
+      applied: previous,
+      status: 'prepared',
+    };
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id,workspace_id,native_session_id,control_generation,control_delivered_generation,control_state)
+      VALUES (${owner},${WS},'native-atomic',123,122,
+        ${JSON.stringify({ activation, stack: ['domain:researcher'] })}::text::jsonb)`;
+    await db.sql.unsafe(`
+      CREATE OR REPLACE FUNCTION harness_shared.fail_atomic_activation_event()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.owner_id = '${owner}' THEN
+          RAISE EXCEPTION 'forced activation event failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER fail_atomic_activation_event
+      BEFORE INSERT ON harness_shared.session_identity_activation_events
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.fail_atomic_activation_event();
+    `);
+
+    await expect(
+      acknowledgeControlTransition(owner, WS, 123, db.sql, revision),
+    ).rejects.toThrow('forced activation event failure');
+
+    const [row] = await db.sql<Array<{
+      delivered: string;
+      applied: unknown;
+      status: string;
+    }>>`
+      SELECT control_delivered_generation::text AS delivered,
+             control_state->'activation'->'applied' AS applied,
+             control_state #>> '{activation,status}' AS status
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${owner}`;
+    expect(row).toEqual({ delivered: '122', applied: previous, status: 'prepared' });
   });
 });
