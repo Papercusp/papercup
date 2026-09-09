@@ -1109,6 +1109,27 @@ const retainFeedArgsSchema = z
   .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  // identities.surface — P-011's one bounded, flat-row settings read over the
+  // existing identity source catalog, launch receipt, control activation, and
+  // append-only transition ledger. Provider bindings remain an explicit M3 state.
+  'identities.surface': {
+    backingTables: [
+      'harness_shared.adv_sessions',
+      'harness_shared.session_briefs',
+      'harness_shared.session_identity_activation_events',
+    ],
+    argsSchema: z.object({ ownerId: z.string().trim().min(1).max(200).optional() }).optional(),
+    resolve: async (rawArgs) => {
+      const [{ activeWorkspaceId }, { readIdentitySurface }] = await Promise.all([
+        import('../workspace-registry'),
+        import('../identity-management'),
+      ]);
+      return [await readIdentitySurface({
+        workspaceId: activeWorkspaceId(),
+        ownerId: (rawArgs as { ownerId?: string } | undefined)?.ownerId ?? null,
+      })];
+    },
+  },
   // workspaceHosts.control — the provider-neutral BYOC control plane. One flat
   // projection carries connection catalogs plus each host's latest durable
   // operation, resource identities, attestation/drift/tunnel/cost signals, and
