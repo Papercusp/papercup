@@ -17,6 +17,7 @@ vi.mock('../../workspace-registry', async (orig) => ({
 vi.mock('../../gateway-control/control-harness', () => ({ runControlMutation: controlMock }));
 
 const tool = (await import('./revert')).default;
+const { reconcileRoutineRestore } = await import('./revert');
 
 const previous = {
   triggerConfig: { cron: '0 */30 * * * *', throttle_min: 2 },
@@ -66,6 +67,31 @@ beforeEach(() => {
 });
 
 describe('routines:revert MCP boundary', () => {
+  it('finishes a partial safety restore and keeps the completed trial metadata', () => {
+    const before = { ...previous, active: false, payloadTemplate: { mode: 'manual' }, metadata: {} };
+    const configured = { ...next, active: true, payloadTemplate: { mode: 'manual', pilot: { pin: 'frozen' } }, metadata: {} };
+    const current = { ...configured, active: false, metadata: { dreamLastCycle: { cycleId: 'completed' }, pause: { reason: 'safety' } } };
+    const expected = { ...before, metadata: current.metadata };
+    expect(reconcileRoutineRestore(current, before, configured)).toEqual(expected);
+    // A lost response must be safely reconcilable without erasing newer metadata.
+    expect(reconcileRoutineRestore(expected, before, configured)).toEqual(expected);
+    expect(current.payloadTemplate).toEqual(configured.payloadTemplate);
+  });
+
+  it('refuses later edits on an owned nested setting even after a safety pause', () => {
+    const before = { ...previous, active: false };
+    const current = { ...next, active: false, payloadTemplate: { payload: { budget: { maxIdeators: 9 } } } };
+    expect(() => reconcileRoutineRestore(current, before, next)).toThrow(/refusing.*newer state/);
+  });
+
+  it('removes study-owned nested fields while retaining a later sibling', () => {
+    const before = { ...previous, payloadTemplate: { mode: 'manual' } };
+    const configured = { ...before, payloadTemplate: { ...before.payloadTemplate, cycle: { maxCostUsd: 10 } } };
+    const current = { ...configured, payloadTemplate: { ...configured.payloadTemplate, cycle: { maxCostUsd: 10, maxDreamsPerCycle: 2 } } };
+    expect(reconcileRoutineRestore(current, before, configured).payloadTemplate)
+      .toEqual({ mode: 'manual', cycle: { maxDreamsPerCycle: 2 } });
+  });
+
   it('loads audited snapshots, restores the exact prior state, and tags the new audit with source id', async () => {
     sqlMock
       .mockResolvedValueOnce([

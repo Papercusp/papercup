@@ -46,6 +46,16 @@ describe('forwardToolsInvokePayloadTier', () => {
     expect(out.args).toEqual({ payloadTier: 'full' });
   });
 
+  it('forwards into JSON-stringified target args at the pre-validation boundary', () => {
+    const out = forwardToolsInvokePayloadTier('tools:invoke', {
+      name: 'work_items:get',
+      args: JSON.stringify({ id: 'EI-1', harness: 'papercusp' }),
+      payloadTier: 'full',
+    }) as Record<string, unknown>;
+
+    expect(out.args).toEqual({ id: 'EI-1', harness: 'papercusp', payloadTier: 'full' });
+  });
+
   it('does NOT overwrite an explicitly nested payloadTier — the caller was specific about the target', () => {
     const input = {
       name: 'work_items:get',

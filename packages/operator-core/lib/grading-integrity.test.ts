@@ -193,6 +193,23 @@ describe('dispatchPendingGradingAudits', () => {
     );
   });
 
+  it('gives concurrent auditors scorecard-scoped scratch isolation for the MCP recovery fallback', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-audit-a'), card('EI-audit-b')]);
+
+    await dispatchPendingGradingAudits({ targetIds: ['EI-audit-a', 'EI-audit-b'], ctx }, d);
+
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    const firstBrief = (d.launch.mock.calls[0]?.[0] as { brief: string }).brief;
+    const secondBrief = (d.launch.mock.calls[1]?.[0] as { brief: string }).brief;
+    expect(firstBrief).toContain('scripts/mcp-call.mjs');
+    expect(firstBrief).toContain('--json -');
+    expect(firstBrief).toContain('mktemp -d /tmp/grading-integrity-EI-audit-a.XXXXXX');
+    expect(firstBrief).toContain('Never read or write shared fixed names such as /tmp/eval-args.json');
+    expect(secondBrief).toContain('mktemp -d /tmp/grading-integrity-EI-audit-b.XXXXXX');
+    expect(secondBrief).not.toContain('/tmp/grading-integrity-EI-audit-a.XXXXXX');
+  });
+
   it('selects a settled card whose audit identity is stale and forwards currentness for atomic reopening', async () => {
     const d = deps();
     const currentness = {

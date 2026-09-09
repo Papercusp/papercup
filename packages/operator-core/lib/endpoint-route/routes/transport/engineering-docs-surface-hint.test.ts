@@ -87,7 +87,7 @@ describe('engineeringDocsSurfaceHint wiring', () => {
   // tree (scripts/mutation-probe.sh), never by mutating this shared checkout — a git-sync
   // sweep commits the working tree on a timer and would commit the mutant.
   const source = readFileSync(
-    process.env.ENGINEERING_DOCS_SURFACE_HINT_SOURCE ?? join(__dirname, '_mcp-handler.ts'),
+    process.env.ENGINEERING_DOCS_SURFACE_HINT_SOURCE ?? join(__dirname, '_mcp-host.ts'),
     'utf8',
   );
 

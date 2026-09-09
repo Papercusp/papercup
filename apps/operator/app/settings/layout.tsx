@@ -65,6 +65,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: 'Assistants',
     links: [
       { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
+      { href: '/settings/identities', label: 'Identities', keywords: ['identity', 'identities', 'persona', 'profession', 'role', 'stack', 'behavior', 'agent', 'switch', 'facet', 'practice', 'provider binding'] },
       { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'mug', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
       { href: '/settings/pot-customization', label: 'Pot customization', keywords: ['pot', 'hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'brain', 'bee', 'cup', 'overwatch', 'su', 'tuning', 'per-hive', 'per-pot', 'domain'] },
       { href: '/settings/trust', label: 'Trusted users', keywords: ['trust', 'trusted', 'github', 'author', 'admission', 'auto-run', 'shared hive', 'security', 'grant', 'verified', 'remote'] },

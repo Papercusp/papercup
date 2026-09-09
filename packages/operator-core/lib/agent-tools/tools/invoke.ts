@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
+import { decodeToolsInvokeArgs } from './invoke-args';
 
 type NestedOutcome = {
   effectiveStatus: 'ok' | 'partial' | 'error' | 'vacuous';
@@ -325,17 +326,7 @@ export default defineTool({
     // naturally (parse throws → the last string reaches the record check).
     /** The target tool's arguments object (its own schema). Defaults to {}. */
     args: z
-      .preprocess((v) => {
-        let cur = v;
-        for (let i = 0; i < 5 && typeof cur === 'string'; i++) {
-          try {
-            cur = JSON.parse(cur);
-          } catch {
-            break;
-          }
-        }
-        return cur;
-      }, z.record(z.string(), z.unknown()))
+      .preprocess(decodeToolsInvokeArgs, z.record(z.string(), z.unknown()))
       .optional(),
   }),
   async handler(args, ctx) {

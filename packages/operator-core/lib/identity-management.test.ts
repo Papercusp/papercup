@@ -6,6 +6,7 @@ import {
   diffIdentitySpecifications,
   resolveIdentityStackMutation,
 } from './identity-management';
+import { listIdentitySources } from './agent-identities/source';
 import type { SuLaunchSpecRecord } from './su-persona-render';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +46,15 @@ function record(over: Partial<SuLaunchSpecRecord> = {}): SuLaunchSpecRecord {
 }
 
 describe('identity management service', () => {
+  it('projects authoritative slot cardinality for the UI instead of making the client restate the registry', async () => {
+    const catalog = await listIdentitySources({ repoDir, limit: 100 });
+    const engineer = catalog.identities.find((identity) => identity.id === 'papercusp-engineer');
+    const practice = catalog.identities.find((identity) => identity.slots.some((slot) => slot.slot === 'practice'));
+
+    expect(engineer?.slots).toContainEqual({ slot: 'domain', cardinality: 'exclusive' });
+    expect(practice?.slots).toContainEqual({ slot: 'practice', cardinality: 'additive' });
+  });
+
   it('diffs effective configuration without shipping prompt bytes to the table', () => {
     const rows = diffIdentitySpecifications(
       artifact({ roles: [{ id: 'su', stack: [] }] }),

@@ -5,6 +5,7 @@ import {
   parseBlueprintSourceDocument,
   resolveBlueprintSource,
   RunnableBlueprintSchema,
+  slotSpec,
 } from '@papercusp/orchestrator/blueprint';
 import { parseBlueprintSource, resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 import {
@@ -110,7 +111,24 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
       const parsed = parseBlueprintSourceDocument(parseBlueprintSource(await readFile(entry.file, 'utf8')));
       if (parsed.kind !== 'identity') return { kind: 'blueprint' as const };
       const doc = parsed.document;
-      return { kind: 'identity' as const, value: { id: entry.id, sourceId: doc.id, tier: entry.tier, version: doc.version, description: doc.description, slots: doc.slots, sourcePath: entry.file } };
+      return {
+        kind: 'identity' as const,
+        value: {
+          id: entry.id,
+          sourceId: doc.id,
+          tier: entry.tier,
+          version: doc.version,
+          description: doc.description,
+          // The slot registry is authoritative for cardinality. Identity files
+          // may omit the optional restatement, but the UI still has to choose
+          // attach versus switch without carrying a second slot registry.
+          slots: doc.slots.map(({ slot }) => ({
+            slot,
+            cardinality: slotSpec(slot)?.cardinality ?? null,
+          })),
+          sourcePath: entry.file,
+        },
+      };
     } catch (error) {
       return { kind: 'unreadable' as const, value: { id: entry.id, tier: entry.tier, sourcePath: entry.file, error: error instanceof Error ? error.message : String(error) } };
     }

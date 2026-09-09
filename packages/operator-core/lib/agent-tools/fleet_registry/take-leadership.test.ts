@@ -30,6 +30,7 @@ const h = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   resolveAgentIdentity: vi.fn(),
   recolorViaPty: vi.fn(),
+  getClaimSpecRecord: vi.fn(),
 }));
 
 vi.mock('../../agent-fleets-store', () => ({

@@ -121,7 +121,7 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/deployment/frame-installer.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/deployment/headless-peer.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts:fallback#1:console.log(`[plugin-tool/http][${ctx.harnessSlug ?? '-'}/${ctx.role ?? '-'}/${ctx.spawnId ?? '-'}] ${line}`);",
-  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts:predicate#1:spawnRes.ctx.harnessSlug === '*' &&",
+  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:predicate#1:spawnRes.ctx.harnessSlug === '*' &&",
   "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-slash-prompts.ts:identity-field#1:harness: ctx.harnessSlug,",
   "packages/operator-core/lib/events/reaction-id.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/events/rules.ts:fallback#1:harness_slug: e.ctx.harnessSlug ?? undefined,",

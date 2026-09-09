@@ -33,6 +33,7 @@ export const SETTINGS_SURFACE_PAGES = {
   autonomy: lazy(() => import('./autonomy/page')),
   backups: lazy(() => import('./backups/page')),
   'deploy-accounts': lazy(() => import('./deploy-accounts/page')),
+  identities: lazy(() => import('./identities/page')),
   mobile: lazy(() => import('./mobile/page')),
   omp: lazy(() => import('./omp/page')),
   operator: lazy(() => import('./operator/page')),

@@ -923,7 +923,9 @@ export function projectAcceptanceBarContractSnapshot(
       // obligations when grading instead of replacing them with the BAR floor.
       const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);
       const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers: clauseTestLayers },
-        evidence: currentEvidence, classRef, harness: plan.harnessSlug });
+        // Selection precedes freshness: a newer stale/unknown registered attempt
+        // must not vanish and leave a passing counterexample to stand in for it.
+        evidence, classRef, harness: plan.harnessSlug });
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
     });

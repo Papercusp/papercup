@@ -199,7 +199,7 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
  *  ever stops measuring: it proves it read a plausible handler before asserting anything about it. */
 describe('WI-40720 gap 3 — the post-door backfill call site is door-general, not code:run-only', () => {
   const handlerSource = readFileSync(
-    fileURLToPath(new URL('./endpoint-route/routes/transport/_mcp-handler.ts', import.meta.url)),
+    fileURLToPath(new URL('./endpoint-route/routes/transport/_mcp-host.ts', import.meta.url)),
     'utf8',
   );
 

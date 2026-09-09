@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import {
@@ -187,6 +188,64 @@ function mergeOwnedFields(
   return merged;
 }
 
+/** Reconcile a possibly completed/partially restored mutation without reverting
+ * unrelated writes. A third value on any owned path remains a real conflict. */
+export function reconcileRoutineRestore(current: RoutineSnap, restore: RoutineSnap, auditedNext: RoutineSnap): RoutineSnap {
+  const paths = ownedPathsBetween(restore, auditedNext);
+  for (const path of paths) {
+    const value = valueAtPath(current, path);
+    if (!pathValuesEqual(value, valueAtPath(auditedNext, path)) &&
+        !pathValuesEqual(value, valueAtPath(restore, path))) {
+      throw new Error(`routine changed after audit at ${path.join('.')}; refusing to overwrite the newer state`);
+    }
+  }
+  return mergeOwnedFields(current, restore, paths);
+}
+
+/** Shared audited operation for the tool and a standalone driver's cleanup.
+ * The driver must be able to restore even while the operator HTTP host is down. */
+export async function revertRoutineAudit(
+  args: { auditId: string; dryRun?: boolean },
+  deps: { sql: Sql; workspaceId: string; actor: string },
+) {
+  const { sql, workspaceId } = deps;
+  const rows = await sql<AuditRow[]>`
+    SELECT action, subject, details FROM harness_shared.audit_log
+     WHERE workspace_id = ${workspaceId} AND id = ${args.auditId} LIMIT 1`;
+  const row = rows[0];
+  if (!row) throw new Error(`routines:set audit not found: ${args.auditId}`);
+  if (row.action !== ROUTINES_SET_AUDIT_ACTION) throw new Error(`audit ${args.auditId} is not a routines:set mutation`);
+  const subject = splitRoutineSubject(row.subject);
+  if (!subject) throw new Error(`routines:set audit ${args.auditId} has an invalid subject`);
+  const details = asRecord(row.details);
+  const restore = parseRoutineSnap(details?.prev);
+  const auditedNext = parseRoutineSnap(details?.next);
+  if (!restore || !auditedNext) throw new Error(`routines:set audit ${args.auditId} has no valid complete routine snapshot`);
+  const ownedPaths = ownedPathsBetween(restore, auditedNext);
+  const readSnap = () => readRoutineSnap(sql, workspaceId, subject.installSlug, subject.name);
+  const writeSnap = (snap: RoutineSnap) => writeRoutineSnap(sql, workspaceId, subject.installSlug, subject.name, snap);
+  const outcome = await runControlMutation<RoutineSnap>({
+    action: 'routines:set:revert', subject: row.subject, actor: deps.actor, revertOf: args.auditId,
+    capturePrev: readSnap,
+    apply: async () => {
+      const merged = reconcileRoutineRestore(await readSnap(), restore, auditedNext);
+      await writeSnap(merged);
+      return merged;
+    },
+    revertTo: async (prev) => { await writeSnap(mergeOwnedFields(await readSnap(), prev, ownedPaths)); },
+    verify: async (next) => {
+      const ok = ownedFieldsEqual(await readSnap(), next, ownedPaths);
+      return { ok, detail: ok ? undefined : 'routine row did not reflect the restored snapshot' };
+    },
+    describe: (current) => ({ auditId: args.auditId, current, restore, proposed: reconcileRoutineRestore(current, restore, auditedNext) }),
+  }, { dryRun: args.dryRun });
+  return {
+    ok: true, routine: row.subject, sourceAuditId: args.auditId, dryRun: outcome.dryRun,
+    applied: outcome.applied, reverted: outcome.reverted, preview: outcome.preview,
+    verify: outcome.verify, auditId: outcome.auditId,
+  };
+}
+
 function splitRoutineSubject(subject: string): { installSlug: string; name: string } | null {
   const slash = subject.indexOf('/');
   if (slash <= 0 || slash === subject.length - 1) return null;
@@ -221,81 +280,8 @@ export default defineTool({
       throw new Error('routines:revert requires operator, architect, or mug role');
     }
 
-    const { sql } = getOrgPg();
-    const workspaceId = activeWorkspaceId();
-    const rows = await sql<AuditRow[]>`
-      SELECT action, subject, details
-        FROM harness_shared.audit_log
-       WHERE workspace_id = ${workspaceId} AND id = ${args.auditId}
-       LIMIT 1`;
-    const row = rows[0];
-    if (!row) throw new Error(`routines:set audit not found: ${args.auditId}`);
-    if (row.action !== ROUTINES_SET_AUDIT_ACTION) {
-      throw new Error(`audit ${args.auditId} is not a routines:set mutation`);
-    }
-
-    const subject = splitRoutineSubject(row.subject);
-    if (!subject) throw new Error(`routines:set audit ${args.auditId} has an invalid subject`);
-    const details = asRecord(row.details);
-    const restore = parseRoutineSnap(details?.prev);
-    const auditedNext = parseRoutineSnap(details?.next);
-    if (!restore || !auditedNext) {
-      throw new Error(`routines:set audit ${args.auditId} has no valid complete routine snapshot`);
-    }
-    const ownedPaths = ownedPathsBetween(restore, auditedNext);
-
-    const readSnap = (): Promise<RoutineSnap> =>
-      readRoutineSnap(sql, workspaceId, subject.installSlug, subject.name);
-    const writeSnap = (snap: RoutineSnap): Promise<void> =>
-      writeRoutineSnap(sql, workspaceId, subject.installSlug, subject.name, snap);
-
-    const outcome = await runControlMutation<RoutineSnap>(
-      {
-        action: 'routines:set:revert',
-        subject: row.subject,
-        actor: `role:${ctx.role}`,
-        revertOf: args.auditId,
-        capturePrev: readSnap,
-        apply: async () => {
-          const current = await readSnap();
-          if (!ownedFieldsEqual(current, auditedNext, ownedPaths)) {
-            throw new Error(
-              `routine ${row.subject} changed after audit ${args.auditId}; refusing to overwrite the newer state`,
-            );
-          }
-          const merged = mergeOwnedFields(current, restore, ownedPaths);
-          await writeSnap(merged);
-          return merged;
-        },
-        revertTo: async (prev) => {
-          const current = await readSnap();
-          await writeSnap(mergeOwnedFields(current, prev, ownedPaths));
-        },
-        verify: async (next) => {
-          const current = await readSnap();
-          const ok = ownedFieldsEqual(current, next, ownedPaths);
-          return { ok, detail: ok ? undefined : 'routine row did not reflect the restored snapshot' };
-        },
-        describe: (current) => ({
-          auditId: args.auditId,
-          current,
-          restore,
-          proposed: mergeOwnedFields(current, restore, ownedPaths),
-        }),
-      },
-      { dryRun: args.dryRun },
-    );
-
-    return json({
-      ok: true,
-      routine: row.subject,
-      sourceAuditId: args.auditId,
-      dryRun: outcome.dryRun,
-      applied: outcome.applied,
-      reverted: outcome.reverted,
-      preview: outcome.preview,
-      verify: outcome.verify,
-      auditId: outcome.auditId,
-    });
+    return json(await revertRoutineAudit(args, {
+      sql: getOrgPg().sql, workspaceId: activeWorkspaceId(), actor: `role:${ctx.role}`,
+    }));
   },
 });

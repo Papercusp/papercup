@@ -1,5 +1,4 @@
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -20,6 +19,7 @@ import { buildCapabilityPacket } from '../../packages/operator-core/lib/dream/ca
 import { buildCapabilitySamplingSnapshot } from '../../packages/operator-core/lib/dream/capability-sampler.ts';
 import { STUDY_BLOCKS, validateStudyBlocks, readStudyTotals, requireStudyRoom } from './accounting.mts';
 import { createBlenderAdmission } from './blender-guard.mts';
+import { enableStudyMaster, restoreStudyControls, studyRestorationPorts } from './controls.mts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -29,28 +29,15 @@ const sidecar = process.env.PAPERCUSP_EMBED_SIDECAR_URL;
 if (!sidecar || !/^http:\/\/(127\.0\.0\.1|localhost):[0-9]+\/?$/.test(sidecar)) throw new Error('Blender study requires the configured local sidecar');
 installFlagOverrideStore();
 const { sql } = getOrgPg();
+const ownerId = process.env.PAPERCUSP_SID;
+if (!ownerId) throw new Error('Study cleanup requires the attributed PAPERCUSP_SID');
+const restoration = studyRestorationPorts(sql, workspaceId, 'papercusp', ownerId);
 const log = async (entry: unknown) => {
   const line = JSON.stringify({ at: new Date().toISOString(), entry });
   await appendFile(resolve(here, 'cycle-events.jsonl'), line + '\n');
   console.log(line);
 };
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-async function setMaster(enabled: boolean) {
-  const raw = await new Promise<string>((done, fail) => {
-    const child = spawn('ptool', ['learning:set-pot-scope', '--url=http://127.0.0.1:3170', '--workspace=' + workspaceId, '--harness=papercusp', '--json', '-'], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'], timeout: 90_000 });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', d => { stdout += d; }); child.stderr.on('data', d => { stderr += d; });
-    child.on('error', fail); child.on('close', code => code === 0 ? done(stdout) : fail(new Error(stderr.slice(-1000))));
-    child.stdin.end(JSON.stringify({ pots: ['papercusp'], enabled }));
-  });
-  let result = JSON.parse(raw);
-  if (Array.isArray(result.content)) {
-    const item = result.content.find((c: any) => c.type === 'text' && c.text?.trim().startsWith('{'));
-    if (item) result = JSON.parse(item.text);
-  }
-  await log({ phase: 'blender-master', enabled, result });
-  if (result.ok !== true || result.applied === false) throw new Error('Learning master mutation was not confirmed');
-}
 
 let masterAttempted = false;
 try {
@@ -97,7 +84,7 @@ try {
     let finalRecorded = false;
     let configFault: Error | undefined;
     masterAttempted = true;
-    await setMaster(true);
+    await log({ phase: 'blender-master', enabled: true, result: await enableStudyMaster(sql, workspaceId, 'papercusp', ownerId) });
     const result = await runScoutCycleTick({ workspaceId, installSlug, admissionQueueScope: coordinated ? { kind: 'workspace' } : { kind: 'harness', harnessSlug: 'papercusp' }, payloadTemplate: payload }, {
       recordGovernor: recordScoutTickToGovernor,
       hiveRunnerGate: ({ workspaceId: ws, installSlug: slug }) => checkHiveSingleRunner(ws, slug),
@@ -142,8 +129,7 @@ try {
     }
   }
 } finally {
-  if (masterAttempted) await setMaster(false);
-  await log({ phase: 'blender-restoration', masterChanged: masterAttempted, success: true });
-  await sql.end();
+  try { await restoreStudyControls({ masterAttempted }, restoration, log); }
+  finally { await sql.end(); }
 }
 process.exit(0);

@@ -292,7 +292,7 @@ describe('maybeBatchNudge — turn-aware fan-out trigger (P-012)', () => {
 
   it('the production handler stamps the nudge with dispatch time, not completion time', () => {
     const source = readFileSync(
-      new URL('./endpoint-route/routes/transport/_mcp-handler.ts', import.meta.url),
+      new URL('./endpoint-route/routes/transport/_mcp-host.ts', import.meta.url),
       'utf8',
     );
     expect(source).toMatch(/maybeBatchNudge\(\{[\s\S]*?now:\s*callStartedAt,[\s\S]*?durationMs:/);
@@ -530,7 +530,7 @@ describe('maybeBatchNudge — isolation', () => {
 
   it('uses the transport-scoped key at the production advisory seam', () => {
     const source = readFileSync(
-      new URL('./endpoint-route/routes/transport/_mcp-handler.ts', import.meta.url),
+      new URL('./endpoint-route/routes/transport/_mcp-host.ts', import.meta.url),
       'utf8',
     );
     expect(source).toMatch(/const nudgeSessionKey = advisorySessionKey\(replayOwnerKey, transportSessionId\)/);
