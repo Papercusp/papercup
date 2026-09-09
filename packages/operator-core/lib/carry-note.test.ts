@@ -383,6 +383,29 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     }
   });
 
+  it('keeps negated uncovered-lockfile measurements VERIFIED while flagging affirmative uncovered evidence', () => {
+    const cleanEvidence = [
+      'All exit 0; zero new Rust advisory offenders; no uncovered lockfiles; Cargo warnings only.',
+      'All exit 0; none uncovered lockfiles; Cargo warnings only.',
+      'All exit 0; zero uncovered lockfiles; Cargo warnings only.',
+    ];
+    const claim = 'the Rust advisory and lockfile checks are clean';
+
+    for (const evidence of cleanEvidence) {
+      expect(findVerificationConflict(evidence, claim), evidence).toBeNull();
+      const [row] = normalizeCheckEntries(
+        [{ claim, recheck: 'rerun the Rust advisory and lockfile checks', verified: evidence }],
+        [],
+        Date.parse('2026-09-05T17:00:00.000Z'),
+      );
+      expect(row, evidence).toMatchObject({ claim, verified: expect.stringContaining(evidence) });
+      expect(row, evidence).not.toHaveProperty('contested');
+    }
+
+    const affirmative = 'one uncovered lockfile remains and needs remediation';
+    expect(findVerificationConflict(affirmative, claim)).toMatch(/uncovered/i);
+  });
+
   it('still detects affirmative unresolved status phrases', () => {
     const unresolvedEvidence = [
       'the service is still running',

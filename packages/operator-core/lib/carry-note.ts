@@ -286,7 +286,11 @@ function findVerificationCoverageDisclaimer(
   if (typeof claim === 'string' && CLAIM_EXPLICIT_COVERAGE_LIMIT_RE.test(claim)) return null;
   for (const pattern of VERIFICATION_COVERAGE_DISCLAIMER_PATTERNS) {
     const match = pattern.exec(evidence);
-    if (match?.[0]) return match[0];
+    // `uncovered` is a disclaimer only when it is asserted affirmatively. A
+    // completed negative measurement such as `no uncovered lockfiles` (or
+    // `zero/none uncovered lockfiles`) proves the opposite and must remain a
+    // VERIFIED row; the generic disclaimer matcher cannot infer that itself.
+    if (match?.[0] && !isNegatedVerificationConflict(evidence, match)) return match[0];
   }
   return null;
 }
@@ -523,7 +527,7 @@ function isNegatedVerificationConflict(text: string, match: RegExpExecArray): bo
   const before = text.slice(Math.max(0, match.index - 120), match.index);
   const boundary = Math.max(...['.', '!', '?', ';', '\n'].map((mark) => before.lastIndexOf(mark)));
   const clause = before.slice(boundary + 1).trim();
-  if (/\b(?:no|not|never|without|none|neither|zero|no\s+longer)\s+(?:[\w./:=()-]+\s+){0,6}$/i.test(clause)) {
+  if (/\b(?:no|not|never|without|none|neither|zero)(?:\s+[\w./:=()-]+){0,6}$/i.test(clause)) {
     return true;
   }
 

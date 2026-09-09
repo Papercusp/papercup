@@ -1155,10 +1155,13 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
       baseSource: fileURLToPath(blueprintBase),
     });
 
-    expect(text).toContain('`coord:orient` is coordination bootstrap, not');
-    expect(text).toContain('read the relevant live\n  docs/source after orient');
-    expect(text).toContain('before stating procedural details');
-    expect(text).toContain('Never treat injected prompt');
+    // The canonical clause is prose and may be hard-wrapped differently as it evolves;
+    // pin its evidence contract, not one historical line break.
+    expect(text).toMatch(/verify a current\s+procedure/);
+    expect(text).toMatch(/content-bearing read of the relevant current\s+docs, source, or status surface/);
+    expect(text).toMatch(/`coord:orient` is\s+coordination bootstrap, not documentation verification/);
+    expect(text).toMatch(/injected prompt text or a bare\s+`\{ ok: true \}` result does not satisfy the gate/);
+    expect(text).toMatch(/first call returns no procedure\s+evidence, keep reading until one does/);
   });
 
   it('renders all five shared notes, and leaks no marker', async () => {
