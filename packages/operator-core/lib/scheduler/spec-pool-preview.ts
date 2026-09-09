@@ -58,7 +58,7 @@ export interface SpecPoolEffect {
   matched: number;
   /** The claimable pool under neutral floors (see module doc — slight overcount vs per-bee reality). */
   pool: number;
-  /** The states the count ran under (spec.states ?? ['todo']). */
+  /** The states the count ran under (spec.states ?? ['open']), after claim-path normalization. */
   states: string[];
   /** Harness the count was scoped to; null = whole workspace. */
   harness: string | null;
@@ -101,7 +101,17 @@ export async function previewSpecPoolEffect(
          OR wi.harness_slug = ${harness}
          OR wi.harness_slug = ${operatorScopeSlug}
        )
-       AND wi.status = ANY(${states}::text[])
+       -- Keep the storage-boundary compatibility fold identical to claimFloorsWhereSql:
+       -- legacy feature rows at "todo" are admitted when callers request the unified
+       -- claimable token "open", so a plan-scoped recovery preview cannot report 0 for
+       -- work the real claim path would offer. Restrict the fold to the feature family:
+       -- issue-family claims still compare their stored status directly.
+       AND (
+         CASE
+           WHEN wi.item_kind NOT IN ('bug', 'change', 'task') AND wi.status = 'todo' THEN 'open'
+           ELSE wi.status
+         END
+       ) = ANY(${states}::text[])
        AND wi.taken_by IS NULL
        -- D-005: observation-lane rows are never claimable — the same NULL-safe floor
        -- the claim path applies (a raw count without this overstates the pool ~7x).
