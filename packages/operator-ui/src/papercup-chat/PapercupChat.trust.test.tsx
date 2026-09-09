@@ -15,7 +15,7 @@
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CardPresentation, ChatTurn, OpenCardSnapshot } from '@papercusp/chat-protocol';
+import type { CardPresentation, ChatTurn, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
 import { ChatMarkdown, PapercupChat, askTranscriptPlaceholder, lookedAtTools, papercupChatUrlTransform } from './PapercupChat';
 import type { PapercupChatController } from './use-papercup-chat';
 
@@ -227,6 +227,43 @@ describe('PapercupChat — the view over a controller', () => {
       provenance: { engine: 'loop', model: 'claude-sonnet-5' },
     },
   ];
+
+  const report: ReportBlock = {
+    title: 'Fleet update',
+    plans: [
+      {
+        slug: 'report-renderer-regression',
+        title: 'Renderer regression',
+        status: 'active',
+        items: [{ id: 'P-001', status: 'done', text: '**Escalation** resolved in WI-4321' }],
+      },
+    ],
+  };
+
+  it.each(['owner', 'public'] as const)(
+    'the default report renderer preserves markdown and applies %s work-ref trust without a host override',
+    (hostTrust) => {
+      const reportTurn: ChatTurn = {
+        id: `report-${hostTrust}`,
+        role: 'assistant',
+        text: '',
+        createdAt: Date.now(),
+        report,
+      };
+
+      render(<PapercupChat chat={controller({ turns: [reportTurn] })} hostTrust={hostTrust} harnessSlug="papercusp" />);
+
+      const card = screen.getByRole('group', { name: 'Fleet update' });
+      expect(card.querySelector('strong')?.textContent).toBe('Escalation');
+      expect(card.querySelector('.report-block-item-text')?.textContent).toContain('resolved in WI-4321');
+      expect(card.querySelector('.report-block-item-text')?.tagName).toBe('SPAN');
+      if (hostTrust === 'owner') {
+        expect(card.querySelector('[data-ref-kind="work-item"]')?.textContent).toBe('WI-4321');
+      } else {
+        expect(card.querySelector('[data-ref-kind]')).toBeNull();
+      }
+    },
+  );
 
   it('public host: shows the capability notice, the transcript, provenance and the Looked at line', () => {
     const chat = controller({ turns });

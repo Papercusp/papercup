@@ -297,9 +297,7 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     details: {
       evidencePlane: 'tree',
       adequacy: {
-        testLayer: 'integration', pathReachable: true, oracleIndependent: true,
-        collected: true, skipped: false, executed: true, targeted: true,
-        outcome: 'killed', coverageRungs: { l3: true },
+        collected: true, skipped: false, executed: true, targeted: true, outcome: 'killed',
       },
     },
   })));
@@ -494,7 +492,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
         adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e' },
       },
     };
-    input.evidence.rows = [treeUnit, liveE2e];
+    input.evidence.rows = [treeUnit, liveE2e, ...input.evidence.rows.slice(1)];
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.proof.adequacy).toMatchObject({
@@ -519,6 +517,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   it('does not treat absent freshness comparisons as current proof', () => {
     const input = provedFixture(1);
     input.evidence.rows[0]!.currentness = fixture(1).evidence.rows[0]!.currentness;
+    input.evidence.rows[1]!.currentness = fixture(1).evidence.rows[0]!.currentness;
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('freshness');
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
