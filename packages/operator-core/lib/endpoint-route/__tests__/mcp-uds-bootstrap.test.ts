@@ -56,6 +56,32 @@ describe('desktop bootstrap publishes a separately authenticated MCP endpoint', 
     } finally { await a!.close(); await b!.close(); }
   });
 
+  it('selects the requested port after two operators restart in reverse order', async () => {
+    const a = await startDesktopAgentMcp('/tmp/staging.sock', 33170);
+    const b = await startDesktopAgentMcp('/tmp/release.sock', 33070);
+    let a2: Awaited<ReturnType<typeof startDesktopAgentMcp>>;
+    let b2: Awaited<ReturnType<typeof startDesktopAgentMcp>>;
+    try {
+      await b!.close();
+      b2 = await startDesktopAgentMcp('/tmp/release-new.sock', 33070);
+      await a!.close();
+      a2 = await startDesktopAgentMcp('/tmp/staging-new.sock', 33170);
+      const chosen = (await readAgentMcpDiscoveryForPort(33170))!;
+      expect(chosen.agentMcp).toEqual(a2!.endpoint);
+      expect(chosen.agentMcp!.generation).not.toBe(a!.endpoint.generation);
+      expect(chosen.agentMcp!.operatorId).toBe(a!.endpoint.operatorId);
+      const assertSelected = (candidate: typeof chosen) => {
+        expect(candidate.port).toBe(33170);
+        expect(candidate.agentMcp).toEqual(a2!.endpoint);
+      };
+      assertSelected(chosen);
+      expect(() => assertSelected({ ...chosen, agentMcp: b2!.endpoint })).toThrow();
+      expect((await readAgentMcpDiscoveryForPort(33070))!.agentMcp).toEqual(b2!.endpoint);
+    } finally {
+      await Promise.allSettled([a, b, a2!, b2!].filter(Boolean).map(listener => listener!.close()));
+    }
+  });
+
   it.each(['PAPERCUSP_IPC_TCP', 'WSL_INTEROP', 'WSL_DISTRO_NAME'])('retains HTTP across unsupported %s boundaries', async name => {
     vi.stubEnv(name, '1');
     expect(await startDesktopAgentMcp('/tmp/ui.sock', 33170)).toBeNull();

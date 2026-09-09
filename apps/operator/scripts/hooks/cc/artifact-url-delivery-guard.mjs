@@ -173,6 +173,21 @@ export function collectStrings(value, out = [], depth = 0) {
   return out;
 }
 
+/**
+ * Strings that a durable write will actually persist. Most durable tools expose
+ * their written content directly, so scanning every string is appropriate. A
+ * targeted plans:edit is different: old_string is the content being removed,
+ * while only new_string becomes part of the resulting plan. Scanning old_string
+ * makes the guard deny the prescribed remedy of deleting an unverifiable URL.
+ */
+export function durableWriteStrings(toolName, toolInput) {
+  if (normalizeToolName(toolName) === 'plans_edit') {
+    if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return [];
+    return typeof toolInput.new_string === 'string' ? [toolInput.new_string] : [];
+  }
+  return collectStrings(toolInput);
+}
+
 /** True when the tool response reports failure (never harvest from these). */
 export function isErrorResponse(response) {
   if (!response) return false;
@@ -285,7 +300,7 @@ export function formatDurableBlockReason(unverified, toolName) {
  */
 export function evaluatePreToolUse({ toolName, toolInput, ledger }) {
   if (!isDurableWriteTool(toolName)) return null;
-  const text = collectStrings(toolInput).join('\n');
+  const text = durableWriteStrings(toolName, toolInput).join('\n');
   const cited = extractArtifactIds(stripQuotedForScanning(text));
   if (!cited.length) return null;
   const unverified = cited.filter((id) => !ledger.has(id));

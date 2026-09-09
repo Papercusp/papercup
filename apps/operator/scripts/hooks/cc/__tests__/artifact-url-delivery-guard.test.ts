@@ -14,6 +14,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   collectStrings,
+  durableWriteStrings,
   evaluatePreToolUse,
   evaluateStop,
   extractArtifactIds,
@@ -197,6 +198,37 @@ describe('durable surfaces are guarded', () => {
     });
     expect(verdict).not.toBeNull();
     expect(verdict!.unverified).toEqual([PHANTOM]);
+  });
+
+  it('plans:edit scans only new_string, so removing or quoting an old URL is allowed', () => {
+    const oldUrl = `https://claude.ai/code/artifact/${PHANTOM}`;
+
+    expect(
+      evaluatePreToolUse({
+        toolName: 'mcp__papercusp-su__plans_edit',
+        toolInput: { slug: 'plan', old_string: `Dead URL: ${oldUrl}`, new_string: 'Durable source: /repo/report.md' },
+        ledger: new Set(),
+      }),
+    ).toBeNull();
+
+    expect(
+      evaluatePreToolUse({
+        toolName: 'mcp__papercusp-su__plans_edit',
+        toolInput: { slug: 'plan', old_string: 'old text', new_string: `Post-mortem: \`${oldUrl}\`` },
+        ledger: new Set(),
+      }),
+    ).toBeNull();
+
+    const introduced = evaluatePreToolUse({
+      toolName: 'mcp__papercusp-su__plans_edit',
+      toolInput: { slug: 'plan', old_string: 'old text', new_string: `Delivered: ${oldUrl}` },
+      ledger: new Set(),
+    });
+    expect(introduced).not.toBeNull();
+    expect(introduced!.unverified).toEqual([PHANTOM]);
+    expect(durableWriteStrings('mcp__papercusp-su__plans_edit', { old_string: oldUrl, new_string: 'replacement' })).toEqual([
+      'replacement',
+    ]);
   });
 
   it('CONTROL: a top-level-only scanner misses that nested case — the assertion above has teeth', () => {

@@ -47,7 +47,9 @@ async function fixture(authTimeoutMs?: number, runtimeDir?: string) {
       });
       server.server.setRequestHandler(CallToolRequestSchema, async request => {
         dispatched('call');
-        return { content: [{ type: 'text' as const, text: String(request.params.arguments?.text) }] };
+        const text = request.params.arguments?.text === 'oversized'
+          ? 'x'.repeat(1_048_577) : String(request.params.arguments?.text);
+        return { content: [{ type: 'text' as const, text }] };
       });
     },
   };
@@ -205,4 +207,14 @@ describe('private MCP listener lifecycle and connection authority', () => {
     expect(f.verify).not.toHaveBeenCalled();
     await wire.close();
   });
+
+  it('closes on an oversized SDK response instead of silently abandoning the pending caller', async () => {
+    const f = await fixture();
+    const { client, wire } = connection(f.listener);
+    await client.connect(wire);
+    await expect(client.callTool({ name: 'echo', arguments: { text: 'oversized' } }))
+      .rejects.toThrow('closed');
+    expect(f.dispatched.mock.calls).toEqual([['call']]);
+    expect(getMcpAdmissionSnapshot().inFlight).toBe(0);
+  }, 5_000);
 });

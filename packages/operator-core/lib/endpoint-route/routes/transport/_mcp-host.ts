@@ -23,6 +23,7 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createRequire } from 'node:module';
 import {
   getCatalog,
   toArgsJsonSchema,
@@ -2830,8 +2831,7 @@ export function mcpHostServerOptions() {
 
 /** Register the complete operator protocol on a transport-independent SDK server. */
 export function registerMcpHost(server: McpServer): void {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const sdk = require('@modelcontextprotocol/sdk/types.js');
+  const sdk = createRequire(import.meta.url)('@modelcontextprotocol/sdk/types.js');
 
   server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) => {
     // Shared visibility walk — see resolveVisibleToolListings above
