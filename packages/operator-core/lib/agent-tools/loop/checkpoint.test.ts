@@ -939,6 +939,19 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       expect(b.absenceLint.note).toMatch(/reverse-grep/i);
     });
 
+    it('uses observation guidance instead of echoing transient state as a grep target', async () => {
+      const b = body(
+        await call({
+          left: 'The pending edit is comment-only, tests-green and tsc-clean, so there is no broken intermediate to bank.',
+          next: 'ship the summary',
+        }),
+      );
+      expect(b.ok).toBe(true);
+      expect(b.absenceLint?.claims[0]?.recheck).toMatch(/what would falsify/i);
+      expect(b.absenceLint?.claims[0]?.recheck).toMatch(/observe/i);
+      expect(b.absenceLint?.claims[0]?.recheck).not.toMatch(/search|grep|broken intermediate to bank/i);
+    });
+
     it('is ADVISORY — the checkpoint is still written', async () => {
       await call({ did: INCIDENT_CLAIM, next: 'ship it' });
       expect(setLoopCarryNote).toHaveBeenCalled();
