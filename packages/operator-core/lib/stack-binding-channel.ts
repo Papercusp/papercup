@@ -124,6 +124,8 @@ export interface StackTransitionContextResult {
   text: string;
   /** False only when rendering threw and the caller should retain the transition. */
   rendered: boolean;
+  /** True when the changed slot requires a successor host before acknowledgement. */
+  requiresFreshContext: boolean;
   /** Prepared activation, acknowledged separately after host acceptance. */
   activation?: StackMutationActivation;
 }
@@ -141,8 +143,8 @@ export async function renderStackTransitionContextResult(
   // carry no `state` at all — that is "nothing bound", never a throw past the CTRL line.
   const after = Array.isArray(delivery?.state?.stack) ? delivery!.state!.stack!.map(String) : [];
   const before = Array.isArray(delivery?.stackBefore) ? delivery!.stackBefore!.map(String) : undefined;
-  if (before == null && after.length === 0) return { text: '', rendered: true };
-  if (before != null && sameRefs(before, after)) return { text: '', rendered: true };
+  if (before == null && after.length === 0) return { text: '', rendered: true, requiresFreshContext: false };
+  if (before != null && sameRefs(before, after)) return { text: '', rendered: true, requiresFreshContext: false };
   try {
     const bp = opts.blueprint ?? (await import('@papercusp/orchestrator/blueprint'));
     const harnessDir = opts.harnessDir ?? (await import('@papercusp/harness/paths')).harnessRoot();
@@ -150,6 +152,7 @@ export async function renderStackTransitionContextResult(
     const to = bp.stackBindingFromRefs(after);
     const parts: string[] = [];
     let preparedActivation: StackMutationActivation | undefined;
+    let requiresFreshContext = false;
     let cursor = from;
     for (const m of bp.diffStackBindings(from, to)) {
       const applied = bp.composeSuStackMutation({
@@ -161,12 +164,20 @@ export async function renderStackTransitionContextResult(
       });
       if (applied.injection) parts.push(applied.injection);
       if (applied.activation) preparedActivation = applied.activation;
+      if (applied.mutation.changed && applied.mutation.delivery === 'relaunch-with-carry') {
+        requiresFreshContext = true;
+      }
       cursor = applied.runtimeBinding;
     }
-    return { text: parts.join('\n\n'), rendered: true, ...(preparedActivation ? { activation: preparedActivation } : {}) };
+    return {
+      text: parts.join('\n\n'),
+      rendered: true,
+      requiresFreshContext,
+      ...(preparedActivation ? { activation: preparedActivation } : {}),
+    };
   } catch (e) {
     warn(`[stack-binding-channel] stack transition not delivered (${JSON.stringify(before ?? null)} → ${JSON.stringify(after)}): ${e instanceof Error ? e.message : String(e)}`);
-    return { text: '', rendered: false };
+    return { text: '', rendered: false, requiresFreshContext: false };
   }
 }
 
