@@ -15,11 +15,18 @@ import { RichGrid, type ColumnDef } from "@papercusp/grid-core";
 import type { RosterAgent } from "@papercusp/agent-roster";
 import { toast } from "sonner";
 import { Button } from "@/app/harness/Button";
+import { RadioGroup } from "@/app/harness/RadioGroup";
 import { Select } from "@/app/harness/Select";
 import { advRosterArgs } from "@/lib/adv-roster-args";
 
 type Tab = "library" | "agent" | "bindings";
 type Delivery = "inject-now" | "relaunch-with-carry";
+/** Read-only indicator options for the shared RadioGroup: delivery is derived
+ * from the slot policy, so every option stays disabled. */
+const DELIVERY_OPTIONS: ReadonlyArray<{ value: Delivery; disabled: true }> = [
+  { value: "inject-now", disabled: true },
+  { value: "relaunch-with-carry", disabled: true },
+];
 type ActivationStatus = "desired" | "prepared" | "applied" | "failed";
 type MutationAction = "preview" | "attach" | "switch" | "detach" | "rollback";
 
@@ -796,31 +803,29 @@ export default function IdentitySettingsPage() {
                     Selected <strong>{selected.id}</strong> for the{" "}
                     <code>{selectedSlot.slot}</code> slot.
                   </p>
-                  <div className="pc-identities__delivery">
-                    <label>
-                      <input
-                        type="radio"
-                        checked={delivery === "inject-now"}
-                        readOnly
-                        disabled
-                      />
-                      <span>
-                        <strong>Soft update</strong> — keep this context.
-                      </span>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        checked={delivery === "relaunch-with-carry"}
-                        readOnly
-                        disabled
-                      />
-                      <span>
-                        <strong>Fresh context</strong> — relaunch with carried
-                        work.
-                      </span>
-                    </label>
-                  </div>
+                  <RadioGroup
+                    label="Delivery"
+                    className="pc-identities__delivery"
+                    value={delivery}
+                    options={DELIVERY_OPTIONS}
+                    // Delivery is derived from the slot policy (see the effect
+                    // above), so every option is disabled and the group is a
+                    // read-only indicator — never a user choice.
+                    onChange={() => undefined}
+                  >
+                    {(option) =>
+                      option.value === "inject-now" ? (
+                        <span>
+                          <strong>Soft update</strong> — keep this context.
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>Fresh context</strong> — relaunch with carried
+                          work.
+                        </span>
+                      )
+                    }
+                  </RadioGroup>
                   <p className="pc-identities__muted">
                     Delivery is derived from the slot policy. Domain and client
                     changes start a fresh context. Work state may carry; prior
