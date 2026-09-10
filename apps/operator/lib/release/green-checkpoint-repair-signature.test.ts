@@ -4,6 +4,7 @@ import {
   NON_TEST_GATE_SCRIPTS,
   parseRepairHeadRadius,
   partitionRepairSignatureEntries,
+  makeTestWorkspaceResolver,
   repairSignatureFromVerdict,
   verifyRepairHead,
   type FailingFile,
@@ -150,6 +151,75 @@ describe("P-003/P-006 partitionRepairSignatureEntries — the kind picks a bound
     expect(out.gateIds).toEqual([`${WEB} :: test`, `${CORE} :: test`]);
     expect(out.fullRun).toEqual([]);
     expect(out.unavailable).toEqual(["lib/a.test.ts"]);
+  });
+
+  it("WI-10000288: workspace-less test-files beside SEVERAL bare workspaces are paired by the disk resolver, never held as unroutable", () => {
+    const DESKTOP = "@papercusp/desktop";
+    const UI = "@papercusp/operator-ui";
+    const resolver = makeTestWorkspaceResolver("/repo", {
+      dirs: ["apps/operator", "packages/operator-core", "packages/operator-ui", "papercusp-desktop"],
+      exists: (p) =>
+        [
+          "/repo/apps/operator/app/_components/chat/SessionChatModal.test.tsx",
+          "/repo/packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts",
+          "/repo/packages/operator-ui/src/papercup-chat/parity-matrix.test.ts",
+          "/repo/papercusp-desktop/test/verify-tauri-headless-assertion-integrity.test.js",
+        ].includes(p),
+      readFile: (p) =>
+        JSON.stringify({
+          name: p.includes("apps/operator/")
+            ? WEB
+            : p.includes("operator-core/")
+              ? CORE
+              : p.includes("operator-ui/")
+                ? UI
+                : DESKTOP,
+        }),
+    });
+    const out = partitionRepairSignatureEntries(
+      [
+        entry({ kind: "workspace-task", id: DESKTOP, workspace: DESKTOP }),
+        entry({ kind: "workspace-task", id: CORE, workspace: CORE }),
+        entry({ kind: "workspace-task", id: UI, workspace: UI }),
+        entry({ kind: "workspace-task", id: WEB, workspace: WEB }),
+        entry({ kind: "test-file", id: "app/_components/chat/SessionChatModal.test.tsx" }),
+        entry({ kind: "test-file", id: "lib/desktop-install/__tests__/papercusp-files.test.ts" }),
+        entry({ kind: "test-file", id: "src/papercup-chat/parity-matrix.test.ts" }),
+        entry({ kind: "test-file", id: "test/verify-tauri-headless-assertion-integrity.test.js" }),
+      ],
+      resolver,
+    );
+    expect(out.unavailable).toEqual([]);
+    expect(out.files).toEqual([
+      { workspace: WEB, file: "app/_components/chat/SessionChatModal.test.tsx" },
+      { workspace: CORE, file: "lib/desktop-install/__tests__/papercusp-files.test.ts" },
+      { workspace: UI, file: "src/papercup-chat/parity-matrix.test.ts" },
+      { workspace: DESKTOP, file: "test/verify-tauri-headless-assertion-integrity.test.js" },
+    ]);
+    // Each workspace's bare `test` task is covered by its own file's re-run.
+    expect(out.gateIds).toEqual([]);
+    expect(out.fullRun).toEqual([]);
+  });
+
+  it("the disk resolver answers null — and the entry stays unroutable — when zero or several workspace dirs contain the file", () => {
+    const resolver = makeTestWorkspaceResolver("/repo", {
+      dirs: ["apps/operator", "packages/operator-core"],
+      exists: (p) => p.endsWith("/lib/shared.test.ts"),
+      readFile: () => JSON.stringify({ name: WEB }),
+    });
+    expect(resolver("lib/shared.test.ts")).toBeNull();
+    expect(resolver("lib/nowhere.test.ts")).toBeNull();
+    expect(resolver("../escape.test.ts")).toBeNull();
+    const out = partitionRepairSignatureEntries(
+      [
+        entry({ kind: "test-file", id: "lib/shared.test.ts" }),
+        entry({ kind: "workspace-task", id: WEB, workspace: WEB }),
+        entry({ kind: "workspace-task", id: CORE, workspace: CORE }),
+      ],
+      resolver,
+    );
+    expect(out.files).toEqual([]);
+    expect(out.unavailable).toEqual(["lib/shared.test.ts"]);
   });
 });
 

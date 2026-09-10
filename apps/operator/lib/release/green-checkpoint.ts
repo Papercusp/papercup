@@ -4796,7 +4796,13 @@ export type RepairHeadVerification =
 export type RepairHeadVerificationDeps = Pick<
   CheckpointDeps,
   "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef"
->;
+> & {
+  /** WI-10000288: pairs a workspace-less `test-file` signature entry with the one workspace
+   *  directory that contains it (`makeTestWorkspaceResolver(cfg.integrationRoot)` in
+   *  production). Without it a multi-workspace signature's test files are unroutable and
+   *  the ready-to-verify queue holds forever. */
+  resolveTestWorkspace?: TestWorkspaceResolver;
+};
 
 /** The paths every admission put on the frozen lineage (the ledger's PROVED diff-tree name
  *  sets, see `repair-head-admission.ts`), deduplicated and sorted. A legacy row with no
@@ -5117,6 +5123,94 @@ function failingFileKey(f: FailingFile): string {
   return `${f.workspace} :: ${f.file}`;
 }
 
+/** Pairs a WORKSPACE-RELATIVE test path (`lib/x.test.ts`, `app/y.test.tsx`) with the npm
+ *  workspace name that owns it, or `null` when zero or several workspace directories contain
+ *  it — never a guess. */
+export type TestWorkspaceResolver = (file: string) => string | null;
+
+/** The candidate workspace DIRECTORIES of a checkout: every root `package.json` workspace
+ *  glob expanded one level (`apps/*` → `apps/<each>`), literal entries as-is, plus the
+ *  standalone packages the lockfile links outside the root workspaces. Relative to `root`. */
+export function listWorkspaceDirs(
+  root: string,
+  io: {
+    exists?: (p: string) => boolean;
+    readdir?: (p: string) => string[];
+    readFile?: (p: string) => string;
+  } = {},
+): string[] {
+  const exists = io.exists ?? existsSync;
+  const readdir = io.readdir ?? ((p: string) => readdirSync(p));
+  const readFile = io.readFile ?? ((p: string) => readFileSync(p, "utf8"));
+  const out = new Set<string>();
+  let globs: string[] = [];
+  try {
+    const pkg = JSON.parse(readFile(path.join(root, "package.json"))) as {
+      workspaces?: string[] | { packages?: string[] };
+    };
+    const ws = pkg.workspaces;
+    globs = Array.isArray(ws) ? ws : (ws?.packages ?? []);
+  } catch {
+    globs = [];
+  }
+  for (const glob of globs) {
+    if (glob.endsWith("/*")) {
+      const parent = glob.slice(0, -2);
+      let children: string[] = [];
+      try {
+        children = readdir(path.join(root, parent));
+      } catch {
+        children = [];
+      }
+      for (const child of children) out.add(`${parent}/${child}`);
+    } else if (!glob.includes("*")) {
+      out.add(glob);
+    }
+  }
+  for (const dir of STANDALONE_PACKAGE_DIRS as readonly string[]) out.add(dir);
+  return [...out].filter((dir) => exists(path.join(root, dir, "package.json")));
+}
+
+/** A `TestWorkspaceResolver` over a checkout on disk. The directory list is computed once
+ *  (lazily) per resolver; each lookup is one `exists` per candidate directory plus one
+ *  `package.json` read for the single hit. Every seam is injectable for tests. */
+export function makeTestWorkspaceResolver(
+  root: string,
+  io: {
+    dirs?: readonly string[];
+    exists?: (p: string) => boolean;
+    readdir?: (p: string) => string[];
+    readFile?: (p: string) => string;
+  } = {},
+): TestWorkspaceResolver {
+  const exists = io.exists ?? existsSync;
+  const readFile = io.readFile ?? ((p: string) => readFileSync(p, "utf8"));
+  let dirs: readonly string[] | null = io.dirs ?? null;
+  const names = new Map<string, string | null>();
+  const nameOf = (dir: string): string | null => {
+    if (names.has(dir)) return names.get(dir) ?? null;
+    let name: string | null = null;
+    try {
+      const pkg = JSON.parse(readFile(path.join(root, dir, "package.json"))) as {
+        name?: unknown;
+      };
+      name = typeof pkg.name === "string" && pkg.name.length > 0 ? pkg.name : null;
+    } catch {
+      name = null;
+    }
+    names.set(dir, name);
+    return name;
+  };
+  return (file) => {
+    const rel = file.trim();
+    if (rel.length === 0 || path.isAbsolute(rel) || rel.startsWith("..")) return null;
+    dirs ??= listWorkspaceDirs(root, io);
+    const hits = dirs.filter((dir) => exists(path.join(root, dir, rel)));
+    if (hits.length !== 1) return null;
+    return nameOf(hits[0] as string);
+  };
+}
+
 /** P-006: partition the queue's TYPED signature by the runner that re-measures each kind —
  *  `test-file` → `runTestsAtRef`, re-runnable `workspace-task` / `lint-leg` / `seed` →
  *  `runGateAtRef`, and everything else (`post-suite-leg`, an unregistered leg, a bare
@@ -5126,6 +5220,7 @@ function failingFileKey(f: FailingFile): string {
  *  signature names — `inferFailingFilesFromEntries`' own rule. Pure + exported for tests. */
 export function partitionRepairSignatureEntries(
   entries: readonly RepairSignatureEntry[],
+  resolveTestWorkspace?: TestWorkspaceResolver,
 ): {
   files: FailingFile[];
   gateIds: string[];
@@ -5137,7 +5232,7 @@ export function partitionRepairSignatureEntries(
   const fullRun: string[] = [];
   const unavailable: string[] = [];
   const testWorkspaces = new Set<string>();
-  const unpaired: string[] = [];
+  let unpaired: string[] = [];
   for (const entry of entries) {
     if (entry.kind !== "test-file") continue;
     if (entry.workspace) {
@@ -5147,6 +5242,28 @@ export function partitionRepairSignatureEntries(
     } else {
       unpaired.push(entry.id);
     }
+  }
+  // WI-10000288 (2026-09-10): a signature that names SEVERAL bare workspaces persists its
+  // test-file entries with NO workspace (`classifyRepairSignature` only pairs against exactly
+  // one), and the `lib/`-only single-workspace inference below cannot repair that either — so
+  // every such entry landed in `unavailable`, and under P-003 (no full-gate fallthrough) the
+  // ready-to-verify queue HELD FOREVER: 25 consecutive reds with the verdict 28h stale. The
+  // disk probe pairs a workspace-relative test path with the ONE workspace directory that
+  // actually contains it — the same contract `testing:run` applies to workspace-relative
+  // files — before the inference fallback gets its turn.
+  if (unpaired.length > 0 && resolveTestWorkspace) {
+    const stillUnpaired: string[] = [];
+    for (const file of unpaired) {
+      const workspace = resolveTestWorkspace(file);
+      if (workspace) {
+        const f = { workspace, file };
+        files.set(failingFileKey(f), f);
+        testWorkspaces.add(workspace);
+      } else {
+        stillUnpaired.push(file);
+      }
+    }
+    unpaired = stillUnpaired;
   }
   if (unpaired.length > 0) {
     const inferred = inferFailingFilesFromEntries(
@@ -5404,7 +5521,7 @@ export async function verifyRepairHead(
     gateIds,
     fullRun,
     unavailable,
-  } = partitionRepairSignatureEntries(signature);
+  } = partitionRepairSignatureEntries(signature, deps.resolveTestWorkspace);
   if (fullRun.length > 0) {
     return {
       kind: "full-run-required",
@@ -10452,7 +10569,13 @@ async function runGreenCheckpointInner(
       // freeze-and-converge (D-007) exists to prevent. Its "not observable on staging" re-queue
       // (`repair-staging-mismatch`) is gone with it: the lineage is not required to be on
       // staging to be judged; P-008 folds a promoted lineage back INTO staging afterwards.
-      const verification = await verifyRepairHead(deps, repairQueue);
+      const verification = await verifyRepairHead(
+        {
+          ...deps,
+          resolveTestWorkspace: makeTestWorkspaceResolver(cfg.integrationRoot),
+        },
+        repairQueue,
+      );
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
       if (verification.kind === "red") {
         const canRequeue = Boolean(deps.writeFrozenRepairQueue);
