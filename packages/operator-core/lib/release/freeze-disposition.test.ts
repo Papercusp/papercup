@@ -111,6 +111,7 @@ describe('buildFreezeAndConvergeGateHealth', () => {
     );
     expect(fragment.freezeAndConverge).toEqual({
       enabled: true,
+      repairLatency: null,
       state: 'retired',
       reason: 'provider wall, attempts=0',
       candidate: null,

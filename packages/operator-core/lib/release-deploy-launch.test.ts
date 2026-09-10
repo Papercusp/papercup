@@ -11,6 +11,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { frozenRepairLatency } from './release/frozen-candidate-repair-queue';
 
 const gitPipelineSnapshotM = vi.hoisted(() => vi.fn());
 vi.mock('./git-pipeline-stats', async (importOriginal) => ({
@@ -127,6 +128,7 @@ describe('computeDeployStatus — decision tree', () => {
       updatedAtMs: 2,
       ageMs: 3,
       ageEscalationRung: 0,
+      repairLatency: frozenRepairLatency({ openedAtMs: 1, phase: 'awaiting-fixer' }, 60_001),
       ageEscalationIntervalMs: 8 * 60 * 60_000,
       zeroAttemptStalled: false,
       zeroAttemptStallMs: 15 * 60_000,

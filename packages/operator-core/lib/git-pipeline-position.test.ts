@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { frozenRepairLatency } from './release/frozen-candidate-repair-queue';
 import { readFileSync } from 'node:fs';
 
 /**
@@ -3293,6 +3294,7 @@ describe('computeStages: position x health', () => {
             updatedAtMs: 2,
             ageMs: 60_000,
             ageEscalationRung: 0,
+            repairLatency: frozenRepairLatency({ openedAtMs: 1, phase: 'awaiting-fixer' }, 60_001),
             ageEscalationIntervalMs: 8 * 60 * 60_000,
             zeroAttemptStalled: false,
             zeroAttemptStallMs: 15 * 60_000,
@@ -5703,6 +5705,7 @@ describe('stage levers (P-005)', () => {
     updatedAtMs: 2,
     ageMs: 60_000,
     ageEscalationRung: 0,
+    repairLatency: frozenRepairLatency({ openedAtMs: 1, phase: 'awaiting-fixer' }, 60_001),
     ageEscalationIntervalMs: 8 * 60 * 60_000,
     zeroAttemptStalled: false,
     zeroAttemptStallMs: 15 * 60_000,
