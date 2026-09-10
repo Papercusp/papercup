@@ -449,6 +449,17 @@ export interface FrozenCandidateRepairQueue {
    * remain readable; the classifier falls back to `updatedAtMs` when it is absent.
    */
   fixerStateChangedAtMs?: number;
+  /**
+   * green-gate-zero-wait P-007 (R-7): the three clocks the latency projection reads, so idle
+   * time on the repair path is MEASURED rather than anecdotal. Each is optional + additive
+   * (legacy rows stay readable) and is stamped only by the transition that owns the event:
+   * `fixerSpawnedAtMs` by fixer dispatch, `lastAdmittedAtMs` by admission onto the head,
+   * `lastVerdictAtMs` by every verdict (candidate red, repair-head red, repair-head green).
+   * Derive latencies with `frozenRepairLatency`; never hand-compute from `updatedAtMs`.
+   */
+  fixerSpawnedAtMs?: number;
+  lastAdmittedAtMs?: number;
+  lastVerdictAtMs?: number;
   /** Current/last spawn. A completion from any other spawn is stale and rejected. */
   fixerSpawnId: string | null;
   /** Automation may stop, but the queue head remains immutable until it is green. */
@@ -956,6 +967,8 @@ export interface FrozenRepairQueueDiagnostic {
   zeroAttemptStallMs: number;
   fixerSpawnId: string | null;
   fixerAlive: boolean | null;
+  /** P-007 (R-7): red→fixer-spawn, fix→admit and admit→verdict latencies derived from the row. */
+  repairLatency: FrozenRepairLatency;
   dispatchReservation: {
     token: string;
     claimedAtMs: number;
@@ -1455,6 +1468,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     openedAtMs: row.openedAtMs,
     updatedAtMs: row.updatedAtMs,
     ...(fixerStateChangedAtMs !== undefined ? { fixerStateChangedAtMs } : {}),
+    ...parseRepairLatencyStamps(row as Record<string, unknown>),
     fixerSpawnId: row.fixerSpawnId as string | null,
     ...(blockedReason ? { blockedReason } : {}),
     ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
@@ -1851,6 +1865,7 @@ export function diagnoseFrozenCandidateRepairQueue(
     zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
     fixerSpawnId: queue.fixerSpawnId,
     fixerAlive,
+    repairLatency: frozenRepairLatency(queue, observation.nowMs),
     dispatchReservation: reservation,
     decision: decision.kind,
     retireAllowed,
@@ -1888,6 +1903,7 @@ export function markFrozenCandidateVerificationRed(
     phase: 'awaiting-fixer',
     updatedAtMs: input.nowMs,
     fixerStateChangedAtMs: input.nowMs,
+    lastVerdictAtMs: input.nowMs,
     convergenceRounds: appendConvergenceRound(queue, {
       head: queue.repairHead,
       failingTests,
@@ -1947,6 +1963,7 @@ export function markFrozenRepairFixerDispatched(
     attempts: queue.attempts + 1,
     updatedAtMs: input.nowMs,
     fixerStateChangedAtMs: input.nowMs,
+    fixerSpawnedAtMs: input.nowMs,
     fixerSpawnId: input.spawnId,
   };
 }
@@ -2053,6 +2070,7 @@ export function markFrozenRepairAdmitted(
       requestedAtMs: entry.atMs,
     },
     updatedAtMs: Math.max(queue.updatedAtMs, entry.atMs),
+    lastAdmittedAtMs: entry.atMs,
   };
 }
 
@@ -2136,6 +2154,7 @@ export function markFrozenRepairVerificationRed(
     phase: 'awaiting-fixer',
     updatedAtMs: input.nowMs,
     fixerStateChangedAtMs: input.nowMs,
+    lastVerdictAtMs: input.nowMs,
     fixerSpawnId: null,
     convergenceRounds: appendConvergenceRound(queue, {
       head: input.repairHead,
@@ -2267,6 +2286,7 @@ export function markFrozenRepairVerificationGreen(
     ...queue,
     phase: 'ready-to-promote',
     updatedAtMs: input.nowMs,
+    lastVerdictAtMs: input.nowMs,
     failingTests: [],
     signature: [],
   };
