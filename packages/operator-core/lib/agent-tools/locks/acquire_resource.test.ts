@@ -147,10 +147,10 @@ describe('locks:acquire_resource exclusive', () => {
     });
 
     const b = body(
-      await tool.handler(
+      await (tool.handler(
         { resource: 'dev-server', mode: 'exclusive', wait: { max_drain_sec: 5 } } as never,
         { progress } as never,
-      ),
+      ) as Promise<Out>),
     );
 
     expect(b).toMatchObject({ ok: true, status: 'held', mode: 'exclusive', fence_seq: 7 });
