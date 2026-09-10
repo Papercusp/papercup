@@ -165,6 +165,11 @@ import {
 } from "./desktop-perf-gate";
 import { runDeltaGate, deltaGatePolicyFromEnv } from "./delta-gate";
 import { heldGateAlert } from "./held-gate-alarm";
+import {
+  applyLockfileConvergence,
+  convergeLockfileDrift,
+  describeLockfileConvergence,
+} from "./green-checkpoint-lockfile-convergence";
 import { longestCleanPrefix } from "./longest-clean-prefix";
 import {
   createSetupStretchStamps,
@@ -10558,6 +10563,31 @@ async function runGreenCheckpointInner(
     } else if (decision.kind === "verify-repair") {
       candidate = await revParse(cfg.integrationRoot, decision.candidate);
       repairVerification = true;
+      // P-008 (green-gate-zero-wait-convergence-2026-09-08): converge LOCKFILE drift before
+      // spending anything at the repair head. The exact-input dependency generation is keyed on
+      // lockfile blobs and `dependency-generation.sh --ensure-ref` publishes from the LIVE tree,
+      // then re-opens by the ref's own fingerprint — so a repairHead whose lockfiles differ from
+      // staging's is a PERMANENT `dependency-prewarm-missing` (exit 74) and the queue could never
+      // be judged (EI-22752586902645795). When the only delta is lockfile blobs the live tree
+      // already holds (== the integration ref's committed ones), admit them whole-blob onto
+      // repairHead under actor=gate through the ordinary ledgered door and verify the advanced
+      // head; any other delta stays a typed miss, logged LOUDLY here rather than parking silent.
+      if (repairQueue.repairHead === candidate && deps.writeFrozenRepairQueue) {
+        const convergence = convergeLockfileDrift({
+          root: cfg.integrationRoot,
+          queue: repairQueue,
+          integrationRef: cfg.integrationBranch,
+          nowMs: Date.now(),
+        });
+        deps.log(
+          `repair head ${candidate.slice(0, 8)}: lockfile-drift convergence — ${describeLockfileConvergence(convergence)}`,
+        );
+        if (convergence.kind === "converged") {
+          repairQueue = applyLockfileConvergence(repairQueue, convergence);
+          await deps.writeFrozenRepairQueue(repairQueue);
+          candidate = repairQueue.repairHead;
+        }
+      }
       // P-005 / D-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the repair
       // head is verified AT ITS OWN SHA — the frozen candidate plus the admitted fix blobs —
       // never at the integration tip. `verifyRepairHead` re-runs the signature (and the admitted
