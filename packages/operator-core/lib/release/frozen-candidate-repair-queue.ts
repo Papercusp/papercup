@@ -1791,6 +1791,94 @@ export function detectFrozenRepairSharedTreeCollision(
   };
 }
 
+/**
+ * green-gate-zero-wait P-007 (R-7): the repair path's latencies, DERIVED from the row's
+ * own clocks so idle time is measurable instead of anecdotal. Every figure is `null` when
+ * its interval has not closed yet; the `*AwaitingMs` figures are the LIVE waits (how long
+ * the newest red has sat with no fixer / the newest admission has sat with no verdict),
+ * which is what a watchdog reads. `stamps` carries the sources so a reader can re-derive.
+ */
+export interface FrozenRepairLatency {
+  /** Newest red (`openedAtMs`, or the newest round recorded before the dispatch) → newest fixer dispatch. */
+  redToFixerSpawnMs: number | null;
+  /** Newest fixer dispatch → the admission that followed it. An admission with NO fixer since the
+   *  newest red (an auto-convergence such as P-008 / P-005) reports 0: the admission IS the fix. */
+  fixToAdmitMs: number | null;
+  /** Newest admission → the verdict that judged it; null while that verdict is still pending. */
+  admitToVerdictMs: number | null;
+  /** Live wait: ms the newest red has waited for a fixer dispatch; null once one was dispatched. */
+  redAwaitingFixerMs: number | null;
+  /** Live wait: ms the newest admission has waited for its verdict; null once judged. */
+  admitAwaitingVerdictMs: number | null;
+  stamps: {
+    openedAtMs: number;
+    lastRedAtMs: number;
+    fixerSpawnedAtMs: number | null;
+    lastAdmittedAtMs: number | null;
+    lastVerdictAtMs: number | null;
+  };
+}
+
+export type FrozenRepairLatencySource = Pick<FrozenCandidateRepairQueue, 'openedAtMs' | 'phase'> &
+  Partial<
+    Pick<
+      FrozenCandidateRepairQueue,
+      'convergenceRounds' | 'fixerSpawnedAtMs' | 'lastAdmittedAtMs' | 'lastVerdictAtMs'
+    >
+  >;
+
+export function frozenRepairLatency(queue: FrozenRepairLatencySource, nowMs: number): FrozenRepairLatency {
+  const rounds = queue.convergenceRounds ?? [];
+  const redAt = (upTo: number | null): number =>
+    rounds.reduce(
+      (max, round) => (round.atMs > max && (upTo === null || round.atMs <= upTo) ? round.atMs : max),
+      queue.openedAtMs,
+    );
+  const lastRedAtMs = redAt(null);
+  const fixerSpawnedAtMs = queue.fixerSpawnedAtMs ?? null;
+  const lastAdmittedAtMs = queue.lastAdmittedAtMs ?? null;
+  const lastVerdictAtMs = queue.lastVerdictAtMs ?? null;
+  const redToFixerSpawnMs =
+    fixerSpawnedAtMs === null ? null : Math.max(0, fixerSpawnedAtMs - redAt(fixerSpawnedAtMs));
+  const fixerSinceLastRed = fixerSpawnedAtMs !== null && fixerSpawnedAtMs >= lastRedAtMs;
+  const fixToAdmitMs =
+    lastAdmittedAtMs === null
+      ? null
+      : fixerSpawnedAtMs === null
+        ? 0
+        : fixerSpawnedAtMs <= lastAdmittedAtMs
+          ? lastAdmittedAtMs - fixerSpawnedAtMs
+          : null;
+  const admissionJudged =
+    lastAdmittedAtMs !== null && lastVerdictAtMs !== null && lastVerdictAtMs >= lastAdmittedAtMs;
+  const admitToVerdictMs = admissionJudged ? (lastVerdictAtMs as number) - (lastAdmittedAtMs as number) : null;
+  const redAwaitingFixerMs =
+    queue.phase === 'awaiting-fixer' && !fixerSinceLastRed ? Math.max(0, nowMs - lastRedAtMs) : null;
+  const admitAwaitingVerdictMs =
+    lastAdmittedAtMs !== null && !admissionJudged ? Math.max(0, nowMs - lastAdmittedAtMs) : null;
+  return {
+    redToFixerSpawnMs,
+    fixToAdmitMs,
+    admitToVerdictMs,
+    redAwaitingFixerMs,
+    admitAwaitingVerdictMs,
+    stamps: { openedAtMs: queue.openedAtMs, lastRedAtMs, fixerSpawnedAtMs, lastAdmittedAtMs, lastVerdictAtMs },
+  };
+}
+
+/** P-007: the three optional latency clocks, each read only when it is a timestamp no newer
+ *  than the row clock — the same admissibility rule as `fixerStateChangedAtMs`. */
+function parseRepairLatencyStamps(
+  row: Record<string, unknown>,
+): Pick<FrozenCandidateRepairQueue, 'fixerSpawnedAtMs' | 'lastAdmittedAtMs' | 'lastVerdictAtMs'> {
+  const out: Record<string, number> = {};
+  for (const key of ['fixerSpawnedAtMs', 'lastAdmittedAtMs', 'lastVerdictAtMs'] as const) {
+    const value = row[key];
+    if (validTimestamp(value) && value <= (row.updatedAtMs as number)) out[key] = value;
+  }
+  return out;
+}
+
 export function diagnoseFrozenCandidateRepairQueue(
   queue: FrozenCandidateRepairQueue | null,
   observation: FrozenRepairQueueObservation,

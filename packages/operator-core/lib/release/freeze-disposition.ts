@@ -27,6 +27,9 @@
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueueRead,
+  type FrozenRepairLatency,
+  type FrozenRepairLatencySource,
+  frozenRepairLatency,
 } from './frozen-candidate-repair-queue';
 
 /**
@@ -55,6 +58,8 @@ export type FreezeAndConvergeState =
 export interface FreezeAndConvergeDisposition {
   /** Is the mechanism switched on at all? False ONLY for state 'off'. */
   enabled: boolean;
+  /** P-007 (R-7): the repair path's latencies, derived from the queue the tick ended holding. */
+  repairLatency?: FrozenRepairLatency | null;
   state: FreezeAndConvergeState;
   /**
    * One line answering "why is it in that state". This is the sentence that previously
@@ -86,6 +91,8 @@ export interface FreezeAndConvergeGateHealth {
      * class (WI-6228) applied to the freeze.
      */
     observedAtMs: number;
+    /** P-007 (R-7): `gate_health.freezeAndConverge.repairLatency` — null when the tick held no readable queue. */
+    repairLatency?: FrozenRepairLatency | null;
   };
 }
 
@@ -113,6 +120,7 @@ export function buildFreezeAndConvergeGateHealth(
       holdUntilMs: disposition.holdUntilMs ?? null,
       capacityRetryAtMs: disposition.capacityRetryAtMs ?? null,
       observedAtMs: nowMs,
+      repairLatency: disposition.repairLatency ?? null,
     },
   };
 }
@@ -127,13 +135,45 @@ export interface TickFreezeObservation {
   /** FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT as the run actually read it. */
   flagEnabled: boolean;
   /** The frozen repair queue the tick ended holding, when there was one. */
-  repairQueue?: { candidate?: string | null } | null;
+  repairQueue?: ({ candidate?: string | null } & Partial<FrozenRepairLatencySource>) | null;
   /** P-025: typed queue-read health. `unreadable` outranks any absence-shaped fallback. */
   repairQueueRead?: FrozenCandidateRepairQueueRead;
   /** The run's own one-line summary — the honest reason when no branch recorded a richer one. */
   summary?: string | null;
   /** Did the tick reach a green verdict? */
   green?: boolean | null;
+  /** P-007: the clock the latency projection reads; defaults to `Date.now()`. */
+  nowMs?: number;
+}
+
+/** P-007 (R-7): the tick's repair latencies, when it ended holding a readable queue row. */
+function tickRepairLatency(observation: TickFreezeObservation): FrozenRepairLatency | null {
+  const q = observation.repairQueue;
+  if (!q || typeof q.openedAtMs !== 'number' || typeof q.phase !== 'string') return null;
+  return frozenRepairLatency(q as FrozenRepairLatencySource, observation.nowMs ?? Date.now());
+}
+
+/** Read-side guard for `gate_health.freezeAndConverge.repairLatency`: every figure numeric-or-null. */
+function readRepairLatency(value: unknown): FrozenRepairLatency | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const stamps = r['stamps'] && typeof r['stamps'] === 'object' ? (r['stamps'] as Record<string, unknown>) : null;
+  if (!stamps || typeof stamps['openedAtMs'] !== 'number' || typeof stamps['lastRedAtMs'] !== 'number') return null;
+  return {
+    redToFixerSpawnMs: numOrNull(r['redToFixerSpawnMs']),
+    fixToAdmitMs: numOrNull(r['fixToAdmitMs']),
+    admitToVerdictMs: numOrNull(r['admitToVerdictMs']),
+    redAwaitingFixerMs: numOrNull(r['redAwaitingFixerMs']),
+    admitAwaitingVerdictMs: numOrNull(r['admitAwaitingVerdictMs']),
+    stamps: {
+      openedAtMs: stamps['openedAtMs'],
+      lastRedAtMs: stamps['lastRedAtMs'],
+      fixerSpawnedAtMs: numOrNull(stamps['fixerSpawnedAtMs']),
+      lastAdmittedAtMs: numOrNull(stamps['lastAdmittedAtMs']),
+      lastVerdictAtMs: numOrNull(stamps['lastVerdictAtMs']),
+    },
+  };
 }
 
 /**
@@ -158,6 +198,16 @@ export interface TickFreezeObservation {
  * wall, a retirement rationale) that this projection cannot reconstruct.
  */
 export function deriveTickFreezeDisposition(
+  observation: TickFreezeObservation,
+): FreezeAndConvergeDisposition {
+  // P-007 (R-7): the latency projection rides on WHATEVER disposition the tick derives —
+  // it is a property of the queue row, not of the branch that described it.
+  const repairLatency = tickRepairLatency(observation);
+  const core = deriveTickFreezeDispositionCore(observation);
+  return repairLatency ? { ...core, repairLatency } : core;
+}
+
+function deriveTickFreezeDispositionCore(
   observation: TickFreezeObservation,
 ): FreezeAndConvergeDisposition {
   const candidate = observation.repairQueue?.candidate ?? null;
@@ -272,6 +322,7 @@ export function readFreezeAndConverge(
     reason: r['reason'],
     candidate: typeof r['candidate'] === 'string' ? r['candidate'] : null,
     holdUntilMs: num(r['holdUntilMs']),
+    repairLatency: readRepairLatency(r['repairLatency']),
     capacityRetryAtMs: num(r['capacityRetryAtMs']),
     observedAtMs: r['observedAtMs'],
   };
