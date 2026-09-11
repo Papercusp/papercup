@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "papercusp-evidence-v1",
+  "title": "P-006 / AUTO-BAR-R-10-P-006 — targeted L4 mutation proof (plan-class-risk-floor)",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItems": ["WI-10000428"],
+  "recordedAt": "2026-09-11T10:08:00Z",
+
+  "whyL4IsRequired": {
+    "specId": "AUTO-BAR-R-10-P-006",
+    "specRevision": 6,
+    "mechanism": "spec-test-adequacy.ts requiredProofFloor() returns 'l4' for this clause's behaviorClass. A PASSING journey does not by itself show the journey CAN fail; this mutation establishes red capability.",
+    "distinctFromR03": "Binding 3428's mutation targets R-03's journey ('restores the same native conversation after the operator OS process exits'). It executes NONE of R-10's assertions, so it cannot evidence R-10. This is a separate probe against R-10's own journey."
+  },
+
+  "mutation": {
+    "semanticChange": "tool-completion loses its turn correlation",
+    "sites": [
+      {
+        "file": "packages/operator-core/lib/su-session-rpc-engine.ts",
+        "line": 328,
+        "before": "emit({ type: 'tool', phase: 'completed', turnId: ownerTurnId, callId, name, output: frame.result as SuSessionJsonValue, isError: frame.isError === true })",
+        "after": "... turnId: 'mutant-turn' ..."
+      },
+      {
+        "file": "packages/operator-core/lib/su-session-omp-adapter.ts",
+        "line": 501,
+        "before": "this.host.emit({ type: 'tool', phase: 'completed', turnId, callId, name, output: asJsonValue(entry.text ?? ''), isError })",
+        "after": "... turnId: 'mutant-turn' ..."
+      }
+    ],
+    "whyTwoSites": "An OMP tool event can reach the host via the live RPC frame path OR via transcript-snapshot replay. Mutating only one could be MASKED by the other, producing a 'survived' verdict against a sound test. Both live emission points carry the same single semantic change.",
+    "deadCodeTrapAvoided": "su-session-rpc-engine.ts:300 is the visually similar emit inside `if (backend === 'codex')`. For an OMP run that branch is DEAD CODE: mutating :300 would have run, passed, and recorded 'survived' — a FALSE WEAKNESS about a sound test. OMP falls through to the `else` at :327-328, which is what was mutated. A dead-code mutation and a genuinely weak test produce byte-identical evidence, so the branch was read before choosing the site.",
+    "targets": "The exact property R-10's journey asserts: that a real tool result returns within the same turn it was started in."
+  },
+
+  "probe": {
+    "tier": "tier-3 in-tree with sweep-lock held (the test reaches both modules through the import graph, so copy-out cannot work)",
+    "tool": "hand-rolled — scripts/mutation-probe.sh takes a SCALAR --file (FILE=\"$2\", one file only) and cannot express this two-site mutation. Its baseline leg was also unnecessary here: a measured baseline already existed (run 17771170).",
+    "sweepLock": {
+      "lockId": "157dd5b9-0c6d-4884-a425-8ec8056b74f6",
+      "paths": [
+        "packages/operator-core/lib/su-session-rpc-engine.ts",
+        "packages/operator-core/lib/su-session-omp-adapter.ts"
+      ],
+      "acquired": "2026-09-11T10:00:48Z",
+      "released": "2026-09-11T10:08Z, after byte-exact restore was verified",
+      "empiricallyConfirmedWorking": "git-sync emitted 'skipped 2 locked dirty paths on papercusp (su-session-omp-adapter.ts +1 more)' DURING the probe — direct evidence the lock excluded the mutants from the sweep rather than an assumption that it would."
+    },
+    "guardCommand": "REPO=\"$(git rev-parse --show-toplevel)\"; PUI_REAL_ENGINE=1 PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$REPO/.papercusp/scratch/p006/account-catalog.json\" PUI_BIN=\"$HOME/.cargo/bin/pui\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'greeting, real file tool, interrupt and continued reply stay in one first-party session'",
+    "guardCommandIsComplete": "All FIVE variables are required and each omission fails in the false-negative ('survived') direction. This is recorded in full deliberately: the R-03 artifact's guardCommand omits PUI_REAL_ENGINE and PUI_NATIVE_ACCOUNT_CATALOG and therefore cannot reproduce its own recorded result — filed as EI-22959184107034728.",
+    "launchGuards": [
+      "asserted both mutants PRESENT in-file before the suite started (a no-op mutation makes any guard look weak)",
+      "asserted PUI_BIN executable and the account catalog non-empty",
+      "required a NON-ZERO executed-test count before reading any verdict"
+    ],
+    "falseSurvivedModesRuledOut": {
+      "zeroTestsRun": "PUI_REAL_ENGINE unset => describe.skipIf skips the block => -t matches nothing => exit 0, which reads exactly like a survive. OBSERVED FIRST-HAND at 10:01:54Z on a first attempt that omitted PUI_NATIVE_ACCOUNT_CATALOG: 'Tests 16 skipped (16)', zero executed. The harness refused to issue a verdict (TEST_FILE_NAME_FILTER_NO_MATCH ... refusing to report a verdict for a run that executed no tests). The verdict below comes from the SECOND run, which executed 1 test.",
+      "wrongFailure": "A kill requires the failure to be the turnId assertion specifically. An account wall, PTY flake or timeout would NOT be a kill. The observed failure is the intended assertion verbatim.",
+      "deadCode": "see mutation.deadCodeTrapAvoided"
+    }
+  },
+
+  "result": {
+    "verdict": "caught",
+    "expected": "caught",
+    "testsExecuted": 1,
+    "testsSkipped": 15,
+    "mutantOutcome": "FAIL — journey red on mutated source (35291ms)",
+    "raw": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=622e442443 provenance=stamped startedAt=2026-09-11T10:04:53.159Z skippedTests=15",
+    "failingAssertion": "AssertionError: the real tool result must return in the same turn: expected { type: 'tool', …(12) } to match object { Object (turnId) }",
+    "failingTest": "installed PUI with the real omp engine > greeting, real file tool, interrupt and continued reply stay in one first-party session",
+    "puiBinarySha256": "6ab60f79258e87d510778958f4a9a02de04dbbf381b2c5565b5e91d7da666dd4",
+    "meaning": "The R-10 journey is FALSIFIABLE: it passes on correct source (run 17771170) and fails, on the exact assertion it claims to make, against a targeted break of the property it asserts. The oracle is sensitive to real turn correlation, not to incidental output.",
+    "logPath": ".papercusp/scratch/p006/r10-l4-mutation.log (gitignored scratch — not durable; this artifact is the record)"
+  },
+
+  "baseline": {
+    "testRunId": 17771170,
+    "status": "pass",
+    "reused": true,
+    "whyNotRerun": "Run 17771170 is a measured PASS of THIS EXACT test at THIS EXACT sourceFingerprint (29ecd9d6…), ~30 minutes before the mutant run, produced by .papercusp/scratch/p006/r10-rebind.sh under the identical five-variable invocation. Re-running it would have re-measured an unchanged quantity at the cost of another real-engine run.",
+    "source": "local",
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp"
+  },
+
+  "restoreProof": {
+    "method": "sha256 of each tracked file compared against the pre-mutation value captured immediately BEFORE mutating. Strictly stronger than an empty `git diff`, which on this swept tree only proves the sweep ran.",
+    "files": [
+      {
+        "path": "packages/operator-core/lib/su-session-rpc-engine.ts",
+        "expectedSha256": "cd63a8987fd156887bc4d34a3cb3e4b5142f3ca219b1c0e15180cf3048b391b8",
+        "actualSha256": "cd63a8987fd156887bc4d34a3cb3e4b5142f3ca219b1c0e15180cf3048b391b8",
+        "match": true
+      },
+      {
+        "path": "packages/operator-core/lib/su-session-omp-adapter.ts",
+        "expectedSha256": "5a9071e56a5acdbbe4a4e67a3aa77608daa19f3137e3e35d5a8b273bae1c122a",
+        "actualSha256": "5a9071e56a5acdbbe4a4e67a3aa77608daa19f3137e3e35d5a8b273bae1c122a",
+        "match": true
+      }
+    ],
+    "residualMutantMarkers": 0,
+    "gitDiff": "empty",
+    "baselinesWereVerifiedPreMutation": "Both hashes were confirmed to equal the values recorded on WI-10000428 BEFORE the first edit, so they are true pre-mutation baselines rather than hashes of whatever happened to be on disk afterwards."
+  },
+
+  "fingerprints": {
+    "algorithm": "sha256-file-set-v1",
+    "sourceFingerprint": "sha256-file-set-v1:29ecd9d6b5e041713a81299d20d6dbd0e06e3275ee649afe017c781e0da51286",
+    "testFingerprint": "sha256-file-set-v1:f2487e4ae748919516255c537a9da78909c1f29919c8074091fc28db36b2fd65",
+    "bothMutatedFilesAreInTheSourceSet": "Yes — su-session-rpc-engine.ts and su-session-omp-adapter.ts are both members of the 7-file P-006 source fingerprint set, so the mutation is covered by the bound fingerprint."
+  },
+
+  "provenanceCaveat": "The run's TEST_FILE_PROVENANCE banner reports the TEST file as [clean] with uncommittedPaths=0/1. That is accurate and NOT in tension with this probe: the banner's scope is the NAMED test path only, and it says so explicitly ('an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here'). The mutation was deliberately in that unmeasured import graph. Recorded so a later reader does not mistake the clean banner for evidence that nothing was mutated.",
+
+  "engineCoverageCaveat": "THIS DOES NOT MAKE P-006 SATISFIED. requiredEvidence names Claude + Codex + OMP as prose with no machine-readable engine list, so the evaluator structurally cannot enforce per-engine coverage and a passing verdict does not imply it. ALL current P-006 evidence, including this probe, is OMP-only. Codex is credit-walled until 2026-09-14T21:26Z; Claude real-engine evidence is measured-unavailable (engine defect EI-22955086564095453). P-006 must not be reported satisfied on a passing evaluator verdict."
+}
