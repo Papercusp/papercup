@@ -1874,13 +1874,35 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
 
       // "Enter multiple prompts" — two, so that stepping back twice proves the
       // ring walks rather than pinning one entry.
-      for (const prompt of [promptA, promptB]) {
+      //
+      // EACH TURN GETS ITS OWN REPLY TEXT, and that is load-bearing, not tidiness.
+      // Waiting on a FIXED `successText` for the second turn is VACUOUS: the first
+      // turn's reply is still in the transcript, so the wait returns instantly
+      // without the second turn having been dispatched at all, and the test then
+      // races ahead to assert against a composer that never accepted it. That is
+      // the same transcript-vacuity trap this case guards against in its recall
+      // assertions below — it just bites one scope earlier, in the SETUP. Giving
+      // each turn a distinct reply makes the wait provably about THIS turn.
+      // (Measured: with a shared successText this failed `toHaveLength(2) but got
+      // 1` — the second Enter arrived while the first turn still owned the
+      // composer, which refuses input until the turn completes.)
+      const turns = [
+        { prompt: promptA, reply: 'PUI history alpha turn completed' },
+        { prompt: promptB, reply: 'PUI history bravo turn completed' },
+      ];
+      for (const [index, { prompt, reply }] of turns.entries()) {
+        scriptedEngine.successText = reply;
         pane.write(prompt);
         pane.enter();
-        await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+        await pane.waitFor(reply, { timeoutMs: 60_000 });
         await pane.waitFor('Message — Enter send');
+        // Assert per ITERATION, not once at the end: a dispatch that silently
+        // never happened is then attributed to the turn that dropped it.
+        expect(commandPosts, pane.screen()).toHaveLength(index + 1);
       }
-      expect(commandPosts, pane.screen()).toHaveLength(2);
+      // Both prompts genuinely reached the engine, in order — the precondition
+      // for anything below to be a statement about history at all.
+      expect(scriptedEngine.requests, pane.screen()).toEqual([promptA, promptB]);
 
       // "Begin a new draft" — typed, never submitted. This is the text the
       // clause says history navigation must not destroy.
