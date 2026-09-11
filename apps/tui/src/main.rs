@@ -33,6 +33,7 @@ mod http;
 mod identity;
 mod install;
 mod ipc;
+mod keyboard;
 mod layout;
 mod lexicon;
 mod markdown;
@@ -437,10 +438,17 @@ async fn main() -> Result<()> {
     // instead of replaying it as keystrokes. Without it every newline in a
     // pasted snippet arrives as `Enter` and submits, so pasting three lines sent
     // three separate half-messages. Disabled again on teardown below.
+    // Focus-change reporting (P-007): hold-to-talk stops on a key RELEASE, and a
+    // release can only be delivered to whoever holds focus. Without this, moving
+    // focus away mid-hold — alt-tabbing, or hopping zellij panes in the dock —
+    // leaves the microphone open indefinitely with nothing on screen to explain
+    // it. `FocusLost` is the one signal that says the keys we believe are held
+    // can never be released to us. Disabled again on teardown below.
     execute!(
         out,
         EnterAlternateScreen,
-        crossterm::event::EnableBracketedPaste
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableFocusChange
     )?;
     // Voice hold-to-talk (voice-mode-tui-port-2026-06-05 D-007): request key
     // RELEASE events when the terminal speaks the kitty keyboard protocol, so
@@ -481,10 +489,12 @@ async fn main() -> Result<()> {
         );
     }
     disable_raw_mode().ok();
-    // Paired with the EnableBracketedPaste above: leaving it armed would outlive
-    // the TUI and corrupt pastes in the user's shell after pui exits.
+    // Paired with the EnableBracketedPaste / EnableFocusChange above: leaving
+    // either armed would outlive the TUI — corrupting pastes in the user's shell
+    // after pui exits, and spraying focus escape sequences into it.
     execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableFocusChange,
         crossterm::event::DisableBracketedPaste,
         LeaveAlternateScreen
     )
