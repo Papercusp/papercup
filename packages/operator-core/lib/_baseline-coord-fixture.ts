@@ -72,42 +72,20 @@ function withUser(dsn: string, user: string, password: string): string {
  * acquire is budget-bounded (not an unbounded blocking `pg_advisory_lock`)
  * so a genuinely-stuck holder surfaces as a clear timeout instead of hanging
  * the fleet's test run forever.
+ *
+ * ⚠ THE LOCK ITSELF NOW LIVES IN `@papercusp/test-config/baseline-schema-mutex`,
+ * not here. It protects the reused CONTAINER's global tables, not this module, and
+ * consumers outside this fixture (apps/operator's psu-launcher/psu-resume suites hit
+ * the same `harness_shared.adv_sessions` from a separate process) must be able to take
+ * the SAME lock. Publishing it at the level of the shared resource is what closes that
+ * hole; `libs/test-config/src/baseline-schema-mutex-coverage.test.ts` is the guard.
  */
-const FIXTURE_MUTEX_NAME = 'papercusp-baseline-coord-fixture-mutex';
-const FIXTURE_MUTEX_BUDGET_MS = 120_000;
-const FIXTURE_MUTEX_POLL_MS = 250;
-
 async function acquireFixtureMutex(dsn: string): Promise<postgres.Sql> {
-  // A dedicated max:1 connection: postgres.js guarantees every query on this
-  // instance reuses the SAME underlying connection, which is required for a
-  // session-scoped advisory lock to mean anything (it is held by the
-  // connection, not the logical client).
-  const lockClient = postgres(dsn, { max: 1, onnotice: () => {} });
-  const startedAt = Date.now();
-  try {
-    for (;;) {
-      const [{ locked }] = await lockClient<{ locked: boolean }[]>`
-        SELECT pg_try_advisory_lock(hashtext(${FIXTURE_MUTEX_NAME})) AS locked
-      `;
-      if (locked) return lockClient;
-      if (Date.now() - startedAt >= FIXTURE_MUTEX_BUDGET_MS) {
-        throw new Error(
-          `setupBaselineCoordFixture: timed out after ${FIXTURE_MUTEX_BUDGET_MS}ms waiting for the ` +
-            `shared-fixture mutex (another integration-test file is holding it — see ` +
-            `EI-18683737202696167 for why this lock exists).`,
-        );
-      }
-      await new Promise((r) => setTimeout(r, FIXTURE_MUTEX_POLL_MS));
-    }
-  } catch (e) {
-    await lockClient.end({ timeout: 5 }).catch(() => {});
-    throw e;
-  }
+  return acquireBaselineSchemaMutex(dsn, { label: 'setupBaselineCoordFixture' });
 }
 
 async function releaseFixtureMutex(lockClient: postgres.Sql): Promise<void> {
-  await lockClient`SELECT pg_advisory_unlock(hashtext(${FIXTURE_MUTEX_NAME}))`.catch(() => {});
-  await lockClient.end({ timeout: 5 }).catch(() => {});
+  await releaseBaselineSchemaMutex(lockClient);
 }
 
 /**
