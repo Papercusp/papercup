@@ -245,7 +245,7 @@ beforeEach(async () => {
 describe('test execution carries mappings into the real evidence ledger', () => {
   it('recovers detached measured outcomes from the exact scoped PG row after a timeout', async () => {
     const { prepareTestEvidence, finishTestEvidence, recoverTestEvidence } = await import('../testing/evidence');
-    const { readHarnessTestRunEvidence } = await import('../../testing-run-store');
+    const { readHarnessTestRunEvidence, countUnattributedTestRunRows } = await import('../../testing-run-store');
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const origin = '0b2a4763-5332-455f-a876-c056e9b1cdb1';
     const detached = '9a08bdac-4a37-4d16-80d5-ebd22d531e8d';
@@ -255,7 +255,8 @@ describe('test execution carries mappings into the real evidence ledger', () => 
       list: evidenceStore.listSpecEvidence,
       ledger: (args: Parameters<typeof readHarnessTestRunEvidence>[0]) => readHarnessTestRunEvidence({
         ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof readHarnessTestRunEvidence>[0]['sql']>,
-      }) };
+      }),
+      unattributed: countUnattributedTestRunRows };
     const prepared = await prepareTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan',
       bindings: [{ specId: 'SPEC-003-01', specRevision: 1, testPath, sourcePaths: ['src/reconnect.ts'],
         testLayer: 'integration' }] }, origin, [testPath], scope, deps);
@@ -291,7 +292,7 @@ describe('test execution carries mappings into the real evidence ledger', () => 
 
   it('persists pending links, attaches the exact scoped run, and preserves stale source after a change', async () => {
     const { prepareTestEvidence, finishTestEvidence, recoverTestEvidence } = await import('../testing/evidence');
-    const { readHarnessTestRunEvidence } = await import('../../testing-run-store');
+    const { readHarnessTestRunEvidence, countUnattributedTestRunRows } = await import('../../testing-run-store');
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const runId = '65878e5c-0326-4899-9fa4-6e387d30fef4';
     const testPath = 'test/reconnect.test.ts';
@@ -303,7 +304,8 @@ describe('test execution carries mappings into the real evidence ledger', () => 
       list: evidenceStore.listSpecEvidence,
       ledger: (args: Parameters<typeof readHarnessTestRunEvidence>[0]) => readHarnessTestRunEvidence({
         ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof readHarnessTestRunEvidence>[0]['sql']>,
-      }) };
+      }),
+      unattributed: countUnattributedTestRunRows };
     const prepared = await prepareTestEvidence(request, runId, [testPath], scope, deps);
     const pending = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
     expect(pending).toHaveLength(1);

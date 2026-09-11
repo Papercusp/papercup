@@ -7,7 +7,7 @@ import {
   ADHOC_WORK_ITEM_SPEC_SCOPE, repoFilesEvidenceMeasurementSchema,
   type BindSpecEvidenceInput, type RepoFilesEvidenceMeasurement,
 } from '../plans/spec-evidence-store';
-import { readHarnessTestRunEvidence, type HarnessTestRunEvidence } from '../../testing-run-store';
+import { readHarnessTestRunEvidence, countUnattributedTestRunRows, type HarnessTestRunEvidence } from '../../testing-run-store';
 import type { TestFilesCoreResult } from './run';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from '../plans/spec-clauses-store';
 
@@ -36,9 +36,20 @@ type Prepared = { input: BindSpecEvidenceInput; binding: Request['bindings'][num
 type Deps = {
   bind: typeof bindSpecEvidence; measure: typeof measureRepoFilesEvidenceAtRoot;
   ledger: typeof readHarnessTestRunEvidence; list: typeof listSpecEvidence;
+  unattributed: typeof countUnattributedTestRunRows;
 };
 const defaults: Deps = { bind: bindSpecEvidence, measure: measureRepoFilesEvidenceAtRoot,
-  ledger: readHarnessTestRunEvidence, list: listSpecEvidence };
+  ledger: readHarnessTestRunEvidence, list: listSpecEvidence,
+  unattributed: countUnattributedTestRunRows };
+
+/**
+ * Why a scoped ledger read found no row. An absent run and an unattributed one
+ * are opposite diagnoses — the first says re-run the test, the second says the
+ * test already ran and the ledger write lost its tenant columns — so they must
+ * never collapse into the same bare `pending`. 'unknown' is in-band: the probe
+ * itself failed, which is not evidence that nothing ran.
+ */
+type LedgerAttribution = 'attributed' | 'unattributed' | 'absent' | 'ambiguous' | 'unknown';
 const refFor = (runId: string, index: number) => `test-run-group:${runId}:${index}`;
 const succeeded = (status: string) => status === 'created' || status === 'unchanged';
 
@@ -153,15 +164,38 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     const measuredResult = result ?? recoveredFileResult(run, row.binding, runId, scope);
     const outcome = testEvidenceOutcome(row.binding, measuredResult);
     const testNamePattern = measuredResult && !measuredResult.error ? measuredResult.testNamePattern : undefined;
+    // A scoped read that found nothing cannot say WHY on its own. Probe the run
+    // group WITHOUT the tenant predicate to tell a genuinely absent run apart
+    // from one whose ledger write lost workspace_id/harness_slug — an
+    // infrastructure fault, not a product one (R-8). Miss path only: the happy
+    // path pays no extra query.
+    let attribution: LedgerAttribution = 'attributed';
+    let unattributedRows: number | null = null;
+    if (matches.length > 1) attribution = 'ambiguous';
+    else if (matches.length === 0) {
+      unattributedRows = await deps
+        .unattributed({ runGroupId: runId, filePath: row.binding.testPath })
+        .catch(() => null);
+      attribution = unattributedRows === null ? 'unknown'
+        : unattributedRows > 0 ? 'unattributed' : 'absent';
+    }
     // Legacy status-only rows remain unknown. Measured details are usable only
     // after exact scope/file attribution and the existing before/after hash check.
-    const phase = !run ? 'pending' : !sourceStable ? 'source-changed'
-      : !measuredResult || measuredResult.error ? 'review-required' : 'settled';
+    // `ledger-unattributed` is a DIAGNOSTIC phase, never a proof phase: it is not
+    // `settled`, so it cannot contribute a verificationFingerprint, and the
+    // adequacy clamp below still forces outcome:'unknown'/executed:false.
+    const phase = !run
+      ? attribution === 'unattributed' ? 'ledger-unattributed' : 'pending'
+      : !sourceStable ? 'source-changed'
+        : !measuredResult || measuredResult.error ? 'review-required' : 'settled';
     const details = {
       ...row.input.details,
         testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
           ...(testNamePattern ? { testNamePattern } : {}),
-          sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length, measuredOutcome: outcome.outcome,
+          sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length,
+          ledgerAttribution: attribution,
+          ...(unattributedRows !== null ? { ledgerUnattributedRows: unattributedRows } : {}),
+          measuredOutcome: outcome.outcome,
         ...(result?.error ? { resultError: result.error } : {}),
       },
       adequacy: { ...(row.input.details?.adequacy as object), ...outcome,

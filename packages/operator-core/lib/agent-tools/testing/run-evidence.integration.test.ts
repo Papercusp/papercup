@@ -65,6 +65,7 @@ it('the public run handler prepares mappings before real execution and returns t
       { id: 77, file_path: 'feature.test.ts', status: 'pass', finished_at: '2026-09-09T00:00:00Z' },
     ]),
     list: vi.fn().mockResolvedValue([]),
+    unattributed: vi.fn().mockResolvedValue(0),
   };
   phases.prepare.mockImplementation((request, runId, files, scope) =>
     actual.prepareTestEvidence(request, runId, files, scope, deps));

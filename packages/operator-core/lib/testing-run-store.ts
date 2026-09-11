@@ -1674,6 +1674,54 @@ function positiveSafeInteger(value: unknown): number | null {
 }
 
 /**
+ * Count rows of ONE run group that exist but carry no usable tenant attribution.
+ *
+ * WHY THIS IS DELIBERATELY UNSCOPED. Every other read here is scoped by
+ * workspace_id + harness_slug, and correctly so. That predicate is exactly what
+ * makes this question unanswerable: both writers that lose attribution
+ * ({@link startRunDurable} and the admin-test-runs-reporter) derive the columns
+ * from env vars that most real runs never set, so the row they wrote is
+ * INVISIBLE to a scoped read. The caller then cannot tell "this test never ran"
+ * from "it ran, passed, and was written unattributed" — the two have opposite
+ * remedies, and the second is an infrastructure fault being reported as an
+ * indeterminate product outcome. Measured 2026-09-11: 1,374 of 1,396 test_runs
+ * rows written in the preceding 6h had workspace_id/harness_slug NULL.
+ *
+ * Disclosure is minimal by construction: the caller must already hold the
+ * run-group UUID it generated, and this returns only a COUNT — never row
+ * contents, paths or statuses — so it cannot be used to enumerate another
+ * tenant's ledger.
+ *
+ * Returns null when the ledger is unreadable. Null means UNKNOWN, not zero:
+ * a probe failure must never be rendered as a confident "no row exists".
+ */
+export async function countUnattributedTestRunRows(params: {
+  runGroupId: string;
+  filePath?: string;
+  sql?: SqlLike;
+}): Promise<number | null> {
+  try {
+    let sql = params.sql;
+    if (!sql) {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      sql = getOrgPg().sql as unknown as SqlLike;
+    }
+    const rows = await sql`
+      SELECT count(*)::int AS unattributed
+        FROM harness_shared.test_runs
+       WHERE run_group_id = ${params.runGroupId}
+         AND (workspace_id IS NULL OR harness_slug IS NULL)
+         AND finished_at IS NOT NULL
+         AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})`;
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const value = Number((rows[0] as { unattributed?: unknown }).unattributed);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the numeric execution-ledger rows for one exact, tenant-scoped run
  * group. This is the shared readback seam for testing:run and the operational
  * recorder; callers never have to hand-query test_runs to obtain bindable IDs.
