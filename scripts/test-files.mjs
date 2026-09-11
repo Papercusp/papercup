@@ -24,6 +24,8 @@ import {
   parseSummaryFailedCounts,
   parseTransformFailure,
   stripVitestAnsi,
+  testsExecutedFrom,
+  testsSkippedFrom,
 } from './lib/vitest-summary.mjs';
 import { killSpawnedProcessTree, parseBatchProgress } from './lib/batch-watchdog.mjs';
 import { formatTaskOutcomeFields } from './lib/task-progress-line.mjs';
@@ -52,6 +54,10 @@ export { reapPreemptMarkerDebris };
 // lib/vitest-summary.mjs (WI-37607) so `test:affected` can share the one detector instead of
 // having none — see that function's header for why the split existed and what it cost.
 export { parseTransformFailure };
+// P-006 / R-8 sub-req 5: both MOVED to lib/vitest-summary.mjs when affected-tests.mjs — the path
+// the release promise runs on — became their second consumer. Re-exported so this router stays
+// their public name for every existing caller, exactly as parseTransformFailure is above.
+export { testsExecutedFrom, testsSkippedFrom };
 
 /**
  * A governed child that never starts has no test verdict. Keep the reason for
@@ -968,39 +974,6 @@ function positionalsAfter(args, from) {
 }
 
 /**
- * How many tests actually EXECUTED, read from vitest's `Tests` summary row. Skipped is not
- * executed — that distinction IS the bug: `Tests  20 skipped (20)` is a run that measured nothing.
- *
- * Returns null when there is no readable summary row (e.g. `--reporter=json`), which the caller
- * must treat as UNVERIFIED rather than as a measured zero: fabricating a red on an unreadable
- * count is the opposite, equally expensive mistake.
- *
- * ANSI is stripped FIRST. vitest colourises this row, and EI-18819483316574031 is the same file's
- * previous instance of exactly this trap — a matcher that skipped the strip passed every
- * hand-written test and never once fired on real coloured output.
- *
- * @param {string} output combined stdout+stderr of a `vitest run` invocation
- * @returns {number | null} tests executed, or null when unreadable
- */
-export function testsExecutedFrom(output) {
-  const plain = stripVitestAnsi(output ?? '');
-  // `Test Files` cannot match: it is `Test` + space, never `Tests` + whitespace. Take the LAST
-  // row so appended output can never leave us reading a superseded summary.
-  const rows = [...plain.matchAll(/^[ \t]*Tests[ \t]+(.*)$/gm)];
-  if (rows.length === 0) return null;
-  const body = rows[rows.length - 1][1];
-  if (/^\s*no tests\b/i.test(body)) return 0;
-  let ran = null;
-  for (const seg of body.matchAll(/(\d+)\s+(passed|failed)\b/g)) {
-    ran = (ran ?? 0) + Number(seg[1]);
-  }
-  if (ran !== null) return ran;
-  // Only skipped/todo segments — collected, deliberately not run.
-  if (/\d+\s+(skipped|todo)\b/.test(body)) return 0;
-  return null;
-}
-
-/**
  * EI-19451028801041450 — the machine-reporter half of the guard above.
  *
  * `testsExecutedFrom` parses vitest's HUMAN summary row, so it is inert for any caller that
@@ -1103,24 +1076,6 @@ export function outputFilePathFrom(vitestArgs) {
  * @param {string} output combined stdout+stderr of a `vitest run` invocation
  * @returns {number | null} tests collected-but-not-run, or null when unreadable
  */
-export function testsSkippedFrom(output) {
-  const plain = stripVitestAnsi(output ?? '');
-  const rows = [...plain.matchAll(/^[ \t]*Tests[ \t]+(.*)$/gm)];
-  if (rows.length === 0) return null;
-  const body = rows[rows.length - 1][1];
-  if (/^\s*no tests\b/i.test(body)) return 0;
-  let skipped = null;
-  for (const seg of body.matchAll(/(\d+)\s+(skipped|todo)\b/g)) {
-    skipped = (skipped ?? 0) + Number(seg[1]);
-  }
-  if (skipped !== null) return skipped;
-  // A row carrying only passed/failed segments genuinely skipped nothing — vitest omits a
-  // zero-valued segment rather than printing `0 skipped`. That is a MEASURED zero, not an
-  // unreadable row, and reporting it as unreadable would make the common case permanently mute.
-  if (/\d+\s+(passed|failed)\b/.test(body)) return 0;
-  return null;
-}
-
 /** Report statuses that mean COLLECTED BUT NOT RUN. Vitest has used all three spellings. */
 const NOT_EXECUTED_STATUSES = new Set(['skipped', 'pending', 'todo', 'disabled']);
 
