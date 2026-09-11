@@ -47,8 +47,16 @@
       "released": "2026-09-11T10:08Z, after byte-exact restore was verified",
       "empiricallyConfirmedWorking": "git-sync emitted 'skipped 2 locked dirty paths on papercusp (su-session-omp-adapter.ts +1 more)' DURING the probe — direct evidence the lock excluded the mutants from the sweep rather than an assumption that it would."
     },
-    "guardCommand": "REPO=\"$(git rev-parse --show-toplevel)\"; PUI_REAL_ENGINE=1 PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$REPO/.papercusp/scratch/p006/account-catalog.json\" PUI_BIN=\"$HOME/.cargo/bin/pui\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'greeting, real file tool, interrupt and continued reply stay in one first-party session'",
+    "guardCommand": "REPO=\"$(git rev-parse --show-toplevel)\"; PUI_REAL_ENGINE=1 PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$REPO/docs/evidence/pui-p006-account-catalog.json\" PUI_BIN=\"$HOME/.cargo/bin/pui\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'greeting, real file tool, interrupt and continued reply stay in one first-party session'",
     "guardCommandIsComplete": "All FIVE variables are required and each omission fails in the false-negative ('survived') direction. This is recorded in full deliberately: the R-03 artifact's guardCommand omits PUI_REAL_ENGINE and PUI_NATIVE_ACCOUNT_CATALOG and therefore cannot reproduce its own recorded result — filed as EI-22959184107034728.",
+    "guardCommandCatalogRepoint": {
+      "changedAt": "2026-09-11T12:40Z, while closing EI-22959184107034728",
+      "was": "$REPO/.papercusp/scratch/p006/account-catalog.json",
+      "now": "$REPO/docs/evidence/pui-p006-account-catalog.json",
+      "why": "The original path is GITIGNORED (.gitignore:187, **/.papercusp/scratch/). A committed evidence artifact whose replay command points into gitignored scratch cannot be replayed by any successor or independent grader — the same durability defect EI-22959184107034728 fixed in the R-03 artifact, present here too. Only the PATH changed; the run this artifact records is untouched.",
+      "contentEquivalenceVerified": "Both catalogs were compared before the repoint: 10 accounts each, IDENTICAL id/provider set (the only metadata agent-chat-pty.integration.test.ts:684 requires). The committed copy differs only by an added `_comment` key. The committed copy was additionally exercised end-to-end at 2026-09-11T12:19:18Z against this same test FILE on the same OMP backend (R-03 selector): executed=1 matched=1 status=passed, head=ee41f91769.",
+      "notRerun": "This artifact's own recorded verdicts were NOT re-measured against the repointed path. The repoint rests on the content-equivalence check plus the same-file R-03 run above, not on a fresh R-10 execution."
+    },
     "launchGuards": [
       "asserted both mutants PRESENT in-file before the suite started (a no-op mutation makes any guard look weak)",
       "asserted PUI_BIN executable and the account catalog non-empty",
