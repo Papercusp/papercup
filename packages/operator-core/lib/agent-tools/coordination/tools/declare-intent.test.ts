@@ -555,3 +555,73 @@ describe('ambient_excluded_refs pass-through (EI-21096338043071922)', () => {
     expect(ambientExcludedRefsArg()).toEqual(['WI-40293', 'EI-21096338043071922']);
   });
 });
+
+describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is gated on cheap, WARM local embedding', () => {
+  // The bug: on a COLD process the lazy pivot embedder pays an in-process model
+  // load per text, so the 1500ms pivot deadline fired on every first call and
+  // logged a [bounded-timeout] warning that vitest-fail-on-console turned into an
+  // independent acceptance-test failure. Two gates now precede the embedding
+  // race: (1) local acquisition must be cheap, (2) this process must already
+  // have completed one embed. A cold call answers lexically (no deadline, no
+  // warning) and warms the embedder in the background; only later calls race it.
+  const LONG_A = 'investigate the release gate promotion push failure on the frozen candidate lineage';
+  const LONG_B = 'refactor the desktop webview bridge to stream tauri agent tool captures over ipc';
+
+  async function runWith(cheap: boolean, embedImpl: (t: string) => Promise<number[]>) {
+    vi.resetModules();
+    const embed = vi.fn(embedImpl);
+    vi.doMock('../../../memory/embed-sidecar-wiring', () => ({ isLocalEmbedAcquisitionCheap: () => cheap }));
+    vi.doMock('../../../search/embed-backfill', () => ({
+      resolveBackfillEmbedder: async () => ({ mode: 'local', embed }),
+    }));
+    const detect = vi.fn();
+    vi.doMock('../../../intent-pivot', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../../intent-pivot')>();
+      detect.mockImplementation(real.detectIntentPivot);
+      return { ...real, detectIntentPivot: detect };
+    });
+    const mod = await import('./declare-intent');
+    mod.__resetPivotEmbedWarmForTest();
+    const t = mod.default as unknown as Tool;
+    getPresence.mockResolvedValue({ ownerId: 'su-test', intent: LONG_A });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const first = parse(await t.handler({ intent: LONG_B }, ctx));
+      // Let the background warm-up settle before the second call.
+      await new Promise((r) => setTimeout(r, 0));
+      const second = parse(await t.handler({ intent: LONG_B }, ctx));
+      return { first, second, embed, detect, warnings: warnSpy.mock.calls.map((c) => String(c[0])) };
+    } finally {
+      warnSpy.mockRestore();
+      vi.doUnmock('../../../memory/embed-sidecar-wiring');
+      vi.doUnmock('../../../search/embed-backfill');
+      vi.doUnmock('../../../intent-pivot');
+    }
+  }
+
+  it('NOT cheap (cold sidecar): every call is lexical, the embedder is never resolved, no deadline warning', async () => {
+    const r = await runWith(false, async () => [1, 0]);
+    expect(r.first.ok).toBe(true);
+    expect(r.second.ok).toBe(true);
+    expect(r.embed).not.toHaveBeenCalled();
+    expect(r.detect).toHaveBeenCalledTimes(2);
+    for (const call of r.detect.mock.calls) expect(call[2]).toEqual({});
+    expect(r.warnings.filter((w) => w.includes('intent-pivot-embed'))).toEqual([]);
+  });
+
+  it('cheap but COLD process: the first call answers lexically and warms in the background; the next call races the warm embedder', async () => {
+    const r = await runWith(true, async () => [1, 0]);
+    expect(r.detect.mock.calls[0]?.[2]).toEqual({}); // first: lexical, no race
+    expect(r.embed).toHaveBeenCalled(); // background warm-up ran
+    expect(r.detect.mock.calls[1]?.[2]).toHaveProperty('embed'); // second: embedding race offered
+    expect(r.warnings.filter((w) => w.includes('intent-pivot-embed'))).toEqual([]);
+  });
+
+  it('a warm-up that FAILS leaves the process cold — later calls stay lexical rather than racing a broken embedder', async () => {
+    const r = await runWith(true, async () => {
+      throw new Error('model load failed');
+    });
+    expect(r.detect.mock.calls[0]?.[2]).toEqual({});
+    expect(r.detect.mock.calls[1]?.[2]).toEqual({});
+  });
+});
