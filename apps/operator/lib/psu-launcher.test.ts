@@ -182,6 +182,7 @@ import {
   launchPuiWorkbench,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
+  NATIVE_TOOL_SEARCH_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
   subagentGatewayRiskNotice,
   OWNER_DESKTOP_NOTIFY_DENY_FLAG,
@@ -258,6 +259,7 @@ import {
   spawnInherit,
 } from "../scripts/psu-launcher.mjs";
 import { nativeSchedulerDenyFlag } from "@papercusp/orchestrator/native-scheduler-deny";
+import { nativeToolSearchDenyFlag } from "@papercusp/orchestrator/native-tool-search-deny";
 import { noSubagentToolsDenyFlag } from "@papercusp/orchestrator/no-subagent-deny";
 import { ownerDesktopNotifyDenyFlag } from "@papercusp/orchestrator/owner-desktop-notify-deny";
 import {
@@ -3133,6 +3135,7 @@ describe("psu-launcher arg parsing", () => {
         "--permission-mode",
         "bypassPermissions",
         NO_SUBAGENTS_DENY_FLAG,
+        NATIVE_TOOL_SEARCH_DENY_FLAG,
         OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       ],
     });
@@ -3266,6 +3269,7 @@ describe("psu-launcher arg parsing", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
     expect(resumeArgsFor(
@@ -3300,6 +3304,7 @@ describe("psu-launcher arg parsing", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       "--fork-session",
     ]);
@@ -3310,6 +3315,7 @@ describe("psu-launcher arg parsing", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       "--fork-session",
     ]);
@@ -3380,6 +3386,7 @@ describe("psu-launcher arg parsing", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       "--fork-session",
       "--session-id",
@@ -3398,6 +3405,7 @@ describe("psu-launcher arg parsing", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
@@ -3425,6 +3433,7 @@ describe("psu-launcher arg parsing", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       "--add-dir=/d",
     ]);
@@ -3441,6 +3450,7 @@ describe("psu-launcher arg parsing", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       "--fork-session",
       "--session-id",
@@ -5524,6 +5534,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "--permission-mode",
       "bypassPermissions",
       NATIVE_SCHEDULER_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
@@ -5581,6 +5592,36 @@ describe("roleLaunchArgs (interactive role session)", () => {
     // Workflow: the separate multi-agent orchestration tool that slipped the deny
     // (a subagents-denied psu --resume session still fanned out through it).
     expect(NO_SUBAGENTS_DENY_FLAG).toContain("Workflow");
+  });
+
+  it("the native tool-search deny carries ToolSearch (native-tool-search-deny.ts)", () => {
+    // psu-launcher.mjs duplicates the rendered flag from the canonical TS source
+    // (same lockstep pattern as the two deny flags above).
+    expect(NATIVE_TOOL_SEARCH_DENY_FLAG).toBe(nativeToolSearchDenyFlag());
+    expect(NATIVE_TOOL_SEARCH_DENY_FLAG.startsWith("--disallowedTools=")).toBe(
+      true,
+    );
+    expect(/\s/.test(NATIVE_TOOL_SEARCH_DENY_FLAG)).toBe(false);
+    expect(NATIVE_TOOL_SEARCH_DENY_FLAG).toContain("ToolSearch");
+    // It must NOT deny the papercusp replacements it exists to route onto —
+    // denying either would strand every session.
+    expect(NATIVE_TOOL_SEARCH_DENY_FLAG).not.toContain("tools_invoke");
+    expect(NATIVE_TOOL_SEARCH_DENY_FLAG).not.toContain("tools_find");
+  });
+
+  it("every psu launch surface denies the native tool search UNCONDITIONALLY (no opt-in)", () => {
+    // Unlike subagents there is no opt-in: tools:find/tools:invoke fully cover
+    // the capability, so allowSubagents must NOT re-enable ToolSearch either.
+    expect(suLaunchArgs("claude", { promptFile: "/p.md" }).args).toContain(
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
+    );
+    expect(
+      suLaunchArgs("claude", { promptFile: "/p.md", allowSubagents: true })
+        .args,
+    ).toContain(NATIVE_TOOL_SEARCH_DENY_FLAG);
+    expect(roleLaunchArgs("claude", files).args).toContain(
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
+    );
   });
 
   it("role sessions DENY subagent fanout by DEFAULT; allowSubagents:true opts in (owner mandate 2026-07-02)", () => {
@@ -5774,6 +5815,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "--permission-mode",
       "bypassPermissions",
       NATIVE_SCHEDULER_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
@@ -5844,6 +5886,9 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "bypassPermissions",
       // Subagent deny is DEFAULT-ON as of the 2026-07-02 owner mandate.
       NO_SUBAGENTS_DENY_FLAG,
+      // Native tool-search deny is unconditional with NO opt-in (2026-09-11):
+      // papercusp's tools:find/tools:invoke fully cover the capability.
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       // notify-send lockout is unconditional — su sessions included (2026-07-14).
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
@@ -5925,6 +5970,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
@@ -5963,6 +6009,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
     expect(args).not.toContain("--append-system-prompt-file");
@@ -6005,6 +6052,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
@@ -9435,6 +9483,7 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       "--permission-mode",
       "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
+      NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       "--model",
       "fable",
