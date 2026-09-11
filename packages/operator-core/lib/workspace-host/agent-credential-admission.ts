@@ -66,10 +66,30 @@ export interface WorkspaceHostAgentCredentialAdmissionEvidence {
   readonly verification: {
     readonly contractVersion: typeof WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION;
     readonly observedAt: string;
+    /**
+     * READINESS: every credentialed agent probe returned ready. This is what the canary/readiness
+     * layer asks — "can these agents actually do work" — and it is deliberately NOT the admission
+     * predicate. Do not widen it.
+     */
     readonly allReady: boolean;
     readonly agents: Readonly<Partial<Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>>>;
     /** Agents whose bundle member is intentionally null and therefore has no credential to authenticate. */
     readonly credentialFreeAgents: readonly WorkspaceHostCanaryAgent[];
+    /**
+     * Agents that authenticated but whose provider reports the account out of quota. A
+     * `provider-usage-limit` refusal is only reportable for an ACCEPTED identity — the classifier
+     * that produces it separates it from `credential-revoked` / `credential-malformed` /
+     * `credential-unauthorized` precisely because those describe a credential and this one does
+     * not. It is therefore positive evidence the bytes authenticated and resolved to a real
+     * account, which is exactly what admission is asking.
+     */
+    readonly unfundedAgents: readonly WorkspaceHostCanaryAgent[];
+    /**
+     * ADMISSION: every agent is credential-free, ready, or authenticated-but-unfunded. Admission
+     * answers authenticity only; conflating it with funding made a transient provider state
+     * hard-fail a durable install.
+     */
+    readonly admissible: boolean;
   };
 }
 
@@ -101,6 +121,50 @@ function isWorkspaceHostCanaryAgent(value: unknown): value is WorkspaceHostCanar
 function isAgentCredentialFamily(value: unknown): value is WorkspaceHostCredentialFamily {
   return Object.values(WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS).some(
     (spec) => spec.family === value && spec.channel === 'agent',
+  );
+}
+
+/**
+ * The ONE probe failure reason that is compatible with an authentic credential.
+ *
+ * The probe classifier reports quota only for an identity the provider ACCEPTED — an unauthenticated
+ * call cannot be attributed to an account, so it cannot be told it has run out of one. Every other
+ * reason (`credential-revoked`, `credential-malformed`, `credential-unauthorized`, and the shape
+ * codes) either describes the credential or fails to establish anything about it, and none of them
+ * may be admitted.
+ */
+const WORKSPACE_HOST_UNFUNDED_PROBE_FAILURE = 'provider-usage-limit';
+
+/**
+ * A refusal that PROVES authentication: same evidence contract as a ready probe, but a non-zero
+ * exit carrying the quota reason and no proof digest. Validated as strictly as the ready case so a
+ * forged receipt cannot buy admission by simply claiming to be unfunded.
+ */
+function isUnfundedAgentVerificationEvidence(
+  expectedAgent: WorkspaceHostCanaryAgent,
+  value: unknown,
+  reportObservedAt: number,
+): value is WorkspaceHostAgentVerificationEvidence {
+  if (!isRecord(value)) return false;
+  const observedAt = isTimestamp(value.observedAt) ? Date.parse(value.observedAt) : Number.NaN;
+  const verificationKindIsValid =
+    value.verificationKind === 'authenticated-account' ||
+    (expectedAgent !== 'omp' && value.verificationKind === 'live-inference');
+  return (
+    value.contractVersion === WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION &&
+    value.agent === expectedAgent &&
+    value.ready === false &&
+    value.failure === WORKSPACE_HOST_UNFUNDED_PROBE_FAILURE &&
+    verificationKindIsValid &&
+    typeof value.endpoint === 'string' &&
+    value.endpoint.length > 0 &&
+    Number.isFinite(observedAt) &&
+    observedAt <= reportObservedAt &&
+    // A quota refusal never parsed a proof, so it must not carry one, and it must not disclose a
+    // subject: both would mean this evidence came from somewhere other than a failed probe.
+    value.proofDigest === undefined &&
+    value.subject === undefined &&
+    (value.subjectDisclosure === 'redacted' || value.subjectDisclosure === 'digest')
   );
 }
 
@@ -160,19 +224,30 @@ export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
     !isTimestamp(evidence.observedAt) ||
     verification.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION ||
     verification.observedAt !== evidence.observedAt ||
-    verification.allReady !== true ||
+    typeof verification.allReady !== 'boolean' ||
+    verification.admissible !== true ||
     !isRecord(verification.agents) ||
-    !Array.isArray(verification.credentialFreeAgents)
+    !Array.isArray(verification.credentialFreeAgents) ||
+    !Array.isArray(verification.unfundedAgents)
   ) {
     throw new Error('workspace-host agent credential admission evidence is incomplete or not ready');
   }
 
   const credentialFreeAgents = verification.credentialFreeAgents;
   const credentialFreeSet = new Set(credentialFreeAgents);
+  const unfundedAgents = verification.unfundedAgents as readonly unknown[];
+  const unfundedSet = new Set(unfundedAgents);
   if (
     credentialFreeSet.size !== credentialFreeAgents.length ||
     credentialFreeAgents.some((agent) => !isWorkspaceHostCanaryAgent(agent) || agent !== 'omp') ||
-    Object.keys(verification.agents).some((agent) => !isWorkspaceHostCanaryAgent(agent))
+    Object.keys(verification.agents).some((agent) => !isWorkspaceHostCanaryAgent(agent)) ||
+    unfundedSet.size !== unfundedAgents.length ||
+    unfundedAgents.some((agent) => !isWorkspaceHostCanaryAgent(agent)) ||
+    // An agent cannot be both "has no credential to authenticate" and "authenticated but unfunded".
+    unfundedAgents.some((agent) => credentialFreeSet.has(agent as WorkspaceHostCanaryAgent)) ||
+    // `allReady` is a readiness claim, so an unfunded agent must falsify it. A receipt asserting
+    // both is internally incoherent and must not be trusted by the layers that read allReady.
+    (unfundedAgents.length > 0 && verification.allReady !== false)
   ) {
     throw new Error('workspace-host agent credential admission evidence has invalid agent coverage');
   }
@@ -188,7 +263,12 @@ export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
       }
       continue;
     }
-    if (!isReadyAgentVerificationEvidence(agent, agentEvidence, reportObservedAt)) {
+    // Admission accepts exactly two shapes: a ready probe, or a quota refusal that proves the
+    // credential authenticated. Every identity refusal still lands in the `else` and throws.
+    const admissibleEvidence = unfundedSet.has(agent)
+      ? isUnfundedAgentVerificationEvidence(agent, agentEvidence, reportObservedAt)
+      : isReadyAgentVerificationEvidence(agent, agentEvidence, reportObservedAt);
+    if (!admissibleEvidence) {
       throw new Error(`workspace-host agent credential admission evidence has invalid '${agent}' verification`);
     }
   }
@@ -322,6 +402,12 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
       }
     }
     const observedAt = now().toISOString();
+    const unfundedAgents = WORKSPACE_HOST_CANARY_AGENTS.filter(
+      (agent) =>
+        !credentialFreeAgents.includes(agent) &&
+        agents[agent]?.ready !== true &&
+        agents[agent]?.failure === WORKSPACE_HOST_UNFUNDED_PROBE_FAILURE,
+    );
     const verification = {
       contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
       observedAt,
@@ -330,6 +416,11 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
       ),
       agents,
       credentialFreeAgents,
+      unfundedAgents,
+      admissible: WORKSPACE_HOST_CANARY_AGENTS.every(
+        (agent) =>
+          credentialFreeAgents.includes(agent) || agents[agent]?.ready === true || unfundedAgents.includes(agent),
+      ),
     } as const;
     const evidence: WorkspaceHostAgentCredentialAdmissionEvidence = {
       contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
@@ -343,7 +434,10 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
       observedAt,
       verification,
     };
-    if (!verification.allReady) throw new WorkspaceHostAgentCredentialAdmissionError(evidence);
+    // Admission asks authenticity, not funding: an authenticated-but-out-of-quota account is
+    // admitted and recorded in `unfundedAgents`. "Can this agent do work" is `allReady`, which the
+    // readiness/canary layer still requires and which an unfunded agent still falsifies.
+    if (!verification.admissible) throw new WorkspaceHostAgentCredentialAdmissionError(evidence);
     assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, input);
     return evidence;
   } finally {
