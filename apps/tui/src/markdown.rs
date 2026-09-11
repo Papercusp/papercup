@@ -158,26 +158,36 @@ fn parse_inline(src: &str, base: Style, open_ok: bool) -> Vec<Seg> {
         let c = chars[i];
 
         // `code` — highest precedence: markup inside a code span is literal.
+        //
+        // A RUN of n backticks opens a span that closes at the next run of
+        // EXACTLY n (CommonMark). Matching a single backtick instead would
+        // make ``a ` b`` unrepresentable, and — the reason this is written
+        // out rather than assumed — would treat a bare `` as an empty span
+        // and DELETE both characters the model wrote.
         if c == '`' {
-            if let Some(end) = find_char(&chars, i + 1, '`') {
+            let open = run_len(&chars, i, '`');
+            if let Some(close) = find_run_of(&chars, i + open, '`', open) {
                 flush_lit!();
                 out.push(Seg::new(
-                    chars[i + 1..end].iter().collect::<String>(),
+                    chars[i + open..close].iter().collect::<String>(),
                     code_style(),
                 ));
-                i = end + 1;
+                i = close + open;
                 continue;
             }
             if open_ok {
                 flush_lit!();
-                let inner: String = chars[i + 1..].iter().collect();
+                let inner: String = chars[i + open..].iter().collect();
                 if !inner.is_empty() {
                     out.push(Seg::new(inner, code_style()));
                 }
                 break;
             }
-            lit.push(c);
-            i += 1;
+            // Unmatched in settled text: every backtick of the run is literal.
+            for _ in 0..open {
+                lit.push('`');
+            }
+            i += open;
             continue;
         }
 
@@ -242,8 +252,33 @@ fn parse_inline(src: &str, base: Style, open_ok: bool) -> Vec<Seg> {
     out
 }
 
-fn find_char(chars: &[char], from: usize, needle: char) -> Option<usize> {
-    (from..chars.len()).find(|&k| chars[k] == needle)
+/// Length of the run of `needle` starting at `from` (0 if none starts there).
+fn run_len(chars: &[char], from: usize, needle: char) -> usize {
+    let mut k = from;
+    while k < chars.len() && chars[k] == needle {
+        k += 1;
+    }
+    k - from
+}
+
+/// Start index of a run of EXACTLY `n` consecutive `needle` at or after `from`.
+///
+/// Deliberately not [`find_run`], which matches a run of AT LEAST `n` — correct
+/// for `**`, wrong for a code span, where a ``` run must not close a `` one.
+fn find_run_of(chars: &[char], from: usize, needle: char, n: usize) -> Option<usize> {
+    let mut k = from;
+    while k < chars.len() {
+        if chars[k] == needle {
+            let len = run_len(chars, k, needle);
+            if len == n {
+                return Some(k);
+            }
+            k += len;
+        } else {
+            k += 1;
+        }
+    }
+    None
 }
 
 /// Start index of a run of `n` consecutive `needle` at or after `from`.
@@ -589,5 +624,69 @@ mod tests {
     fn blank_lines_and_ordered_items_survive_a_round_trip() {
         let out = render("intro\n\n1. first\n2. second", 80, false);
         assert_eq!(flat(&out), vec!["intro", "", "1. first", "2. second"]);
+    }
+
+    #[test]
+    fn a_partial_fence_opener_never_flickers_stray_backticks() {
+        // A fence arrives one char at a time: ` → `` → ``` → ```rust. The
+        // intermediate states must not paint literal backticks that vanish a
+        // keystroke later — the eye catches the flicker, not the content.
+        // Rendering NOTHING for the partial opener is the smooth path, and it
+        // is what the completed fence does too (an opener is never shown).
+        for partial in ["`", "``"] {
+            let out = render(partial, 40, true);
+            let txt = flat(&out);
+            assert!(
+                txt.iter().all(|l| !l.contains('`')),
+                "partial fence opener {partial:?} leaked a backtick: {txt:?}"
+            );
+        }
+        // Calibration: the SETTLED forms of the same input are not governed by
+        // the streaming rule, so this test cannot pass by rendering everything
+        // empty always.
+        let settled = flat(&render("a ` b", 40, false));
+        assert_eq!(settled, vec!["a ` b"], "settled text must stay literal");
+    }
+
+    #[test]
+    fn an_opening_backtick_mid_stream_keeps_the_prose_before_it() {
+        // The common streaming shape: prose, then a code span the model has
+        // only just opened. The prose is already written and must not blink
+        // out while the span fills in. (The trailing space is dropped by the
+        // wrapper, as it is for any line — that is wrapping, not loss.)
+        let out = render("call the `", 40, true);
+        assert_eq!(flat(&out), vec!["call the"]);
+    }
+
+    #[test]
+    fn a_double_backtick_span_can_hold_a_literal_backtick() {
+        // The reason the parser matches RUNS rather than single backticks:
+        // ``a ` b`` is the only way to show a backtick inside code, and the
+        // single-backtick parser rendered it as two broken spans.
+        let out = render("write ``a ` b`` here", 80, false);
+        assert_eq!(flat(&out), vec!["write a ` b here"]);
+        // The inner text is genuinely CODE-styled, not literal prose that
+        // happens to read the same once the delimiters are stripped.
+        assert!(
+            out[0]
+                .spans
+                .iter()
+                .any(|s| s.content.contains('`') && s.style == code_style()),
+            "expected the backtick-bearing run to be code-styled"
+        );
+    }
+
+    #[test]
+    fn an_empty_code_span_does_not_swallow_the_backticks_it_is_made_of() {
+        // `` with nothing between is NOT a code span (CommonMark: a span needs
+        // content); the backticks are literal text. Rendering it as an empty
+        // span deletes two characters the model deliberately wrote — the same
+        // disappearing-content failure the transcript rules forbid, one layer
+        // down. Settled text is shown as written.
+        let out = render("escape it with `` in prose", 80, false);
+        assert_eq!(flat(&out), vec!["escape it with `` in prose"]);
+
+        let alone = render("``", 80, false);
+        assert_eq!(flat(&alone), vec!["``"]);
     }
 }
