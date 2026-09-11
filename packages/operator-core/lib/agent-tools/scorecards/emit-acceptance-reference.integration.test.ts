@@ -1,0 +1,261 @@
+/**
+ * emit-acceptance-reference.integration.test.ts — P-003 author acceptance by EXACT
+ * independent scorecard reference, against real migrated Postgres.
+ *
+ * Clause SPEC-P003-SCORECARD-REFERENCE@1 requires BOTH an integration and a unit
+ * layer, and names three pieces of evidence: an authorized reference acceptance,
+ * a PERSISTENCE READBACK, and wrong-subject + prohibited-lineage negative controls.
+ * The sibling unit suite (emit-evaluate.test.ts) mocks `listScorecards` and
+ * `captureImprovement`, so it can only assert what emit *tried* to write. That is
+ * precisely what cannot answer the readback requirement: a mocked capture proves
+ * the call shape, never that the adopted ratings and their provenance survived the
+ * round trip through `engineer_issues.payload->'observation'` and read back as a
+ * complete card. Everything here therefore runs against a real database:
+ *   - the rubric resolves through the live `getRubric` store (harness_plans),
+ *   - the independent grading is a real ledger row read back by the real
+ *     `listScorecards` (which recomputes rubricResolved/missingKeys itself, so an
+ *     ineligible fixture cannot be faked into eligibility),
+ *   - the author's verdict is persisted by the real capture path and then SELECTed
+ *     back out of Postgres and asserted on.
+ *
+ * Docker-gated, like every `*.integration.test.ts` here.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
+import type { OrgTestDb } from '../../../test/_org-test-db';
+
+const h = vi.hoisted(() => ({ sql: null as unknown }));
+
+// Re-point reads AND writes at the migrated throwaway DB. Spread the ACTUAL module
+// rather than hand-listing exports: this import graph transitively reaches other
+// db-org consumers that touch exports at module load, and vitest throws on any
+// access to an export missing from a partial mock.
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    withWorkspace: async <T>(ws: string, cb: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>
+      (h.sql as postgres.Sql).begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+        return cb(tx as unknown as postgres.Sql);
+      }) as Promise<T>,
+  };
+});
+
+const { emitScorecard } = await import('./emit');
+const { createIssue, issuesScopeWorkspace } = await import('../../issues-engineer');
+const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
+const { createOrgTestDb } = await import('../../../test/_org-test-db');
+const { activeWorkspaceId } = await import('../../workspace-registry');
+
+/** The acceptance-rubric AUTHOR — the implementer, the only party who may record a verdict. */
+const AUTHOR = 'su-p003-author';
+/** A genuinely independent grader: outside the author's lineage. */
+const GRADER = 'su-p003-grader';
+const RUBRIC = 'p003-acceptance-rubric';
+const SUBJECT_PLAN = 'p003-subject-plan';
+/** The rubric's harness_plans.version — the card's rubricRevision must equal it or
+ *  the stale-revision rail fires before adoption. */
+const REVISION = 3;
+
+const CRITERIA = [
+  {
+    key: 'reference-fidelity',
+    title: 'Reference fidelity',
+    model: 'The verdict cites the exact independent card whose ratings it adopts.',
+    method: 'Read the persisted acceptance card and compare adoptedRatingsFrom to the cited card.',
+    driftMarkers: 'A verdict whose ratings match no independent card.',
+    ratingScale: ['pass', 'partial', 'fail', 'unknown', 'n/a'],
+  },
+  {
+    key: 'no-transcription',
+    title: 'No ratings transcription',
+    model: 'The author records a verdict without re-typing a grading they did not perform.',
+    method: 'Emit an acceptance with ratings omitted and assert the persisted card is still complete.',
+    driftMarkers: 'Authors hand-copying grader evidence strings.',
+    ratingScale: ['pass', 'partial', 'fail', 'unknown', 'n/a'],
+  },
+];
+
+/** What the INDEPENDENT grader wrote. Deliberately distinctive prose: the author
+ *  never types these strings, so finding them on the persisted card can only mean
+ *  adoption actually ran — the assertion cannot pass by coincidence. */
+const GRADER_RATINGS = {
+  'reference-fidelity': { rating: 'pass', evidence: 'grader re-derived reference fidelity from source' },
+  'no-transcription': { rating: 'pass', evidence: 'grader re-derived the no-transcription property from source' },
+};
+
+const ACCEPT = { verdict: 'accept' as const, reasoning: 'The independent grading meets this plan.' };
+
+/** Seed the acceptance rubric directly as a rubric-template plan row. This is the
+ *  READ leg's input: `proposeRubric`'s authoring floors (citation-path resolution,
+ *  the structured-check floor) are a different subsystem with their own coverage,
+ *  and going around them here keeps this suite about the acceptance-by-reference
+ *  path. `owner` is the column `getRubric` projects as the rubric's createdBy —
+ *  i.e. the implementer this test authorizes against. */
+async function insertAcceptanceRubric(db: OrgTestDb): Promise<void> {
+  await db.adminSql`
+    INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+       created, updated, owner, archived, template, template_data, template_slug, origin)
+    VALUES (${activeWorkspaceId()}, 'papercusp', ${RUBRIC}, '', md5(${RUBRIC}), ${REVISION},
+            'P-003 acceptance rubric', 'active', '2026-09-10', '2026-09-10', ${AUTHOR}, false,
+            'rubric',
+            ${JSON.stringify({
+              kind: 'acceptance',
+              subjectPlan: SUBJECT_PLAN,
+              characteristic: 'plan-acceptance',
+              criteria: CRITERIA,
+              ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+              methodRef: 'acceptance-rubrics-on-every-plan-runbook',
+              description: 'Acceptance of the P-003 reference path.',
+            })}::text::jsonb,
+            null, 'local')`;
+}
+
+/** File a real independent grading into the observation ledger. Returns its issue id —
+ *  the exact reference the author's verdict will cite. */
+async function fileIndependentGrading(opts: {
+  createdBy: string;
+  subjectRef?: string;
+  ratings?: Record<string, { rating: string; evidence: string }>;
+  rubricRevision?: number;
+}): Promise<string> {
+  const issue = await createIssue({
+    title: 'independent grading',
+    kind: 'change',
+    topics: [OBSERVATION_TOPIC],
+    createdBy: opts.createdBy,
+    payload: {
+      observation: {
+        rubricRef: RUBRIC,
+        sourceHive: 'papercusp',
+        rubricRevision: opts.rubricRevision ?? REVISION,
+        subject: { kind: 'plan', ref: opts.subjectRef ?? SUBJECT_PLAN },
+        ratings: opts.ratings ?? GRADER_RATINGS,
+      },
+    },
+  });
+  return issue.id;
+}
+
+/** The author's verdict citing an exact card, carrying NO ratings of its own. */
+const acceptanceArgs = (acceptanceOf: string, over: Record<string, unknown> = {}) => ({
+  rubricRef: RUBRIC,
+  subject: { kind: 'plan', ref: SUBJECT_PLAN },
+  acceptance: ACCEPT,
+  acceptanceOf,
+  ...over,
+});
+
+const asAuthor = { createdBy: AUTHOR, workspaceId: activeWorkspaceId() };
+
+/** Read the author's persisted acceptance card straight back out of Postgres.
+ *  This is the readback the clause requires: it asserts what actually LANDED,
+ *  not what the writer was asked to write. */
+async function readBackAcceptanceCard(
+  db: OrgTestDb,
+): Promise<{ issue_id: string; created_by: string; observation: Record<string, unknown> } | null> {
+  const rows = await db.adminSql<Array<{ issue_id: string; created_by: string; observation: Record<string, unknown> }>>`
+    SELECT issue_id, created_by, payload -> 'observation' AS observation
+      FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${issuesScopeWorkspace()}
+       AND payload -> 'observation' ->> 'rubricRef' = ${RUBRIC}
+       AND payload -> 'observation' -> 'acceptance' IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`;
+  return rows[0] ?? null;
+}
+
+describe('scorecards:emit — author acceptance by exact reference (P-003), real PG', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  }, 180_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  beforeEach(async () => {
+    // Each case seeds its own rubric + cards. CASCADE because plan_items/plan_decisions
+    // hold FKs into harness_plans and a bare TRUNCATE of a referenced table is refused.
+    await db.adminSql`TRUNCATE harness_shared.harness_plans CASCADE`;
+    // engineer_issues is an issue-family VIEW over harness_shared.work_items, not a
+    // table: TRUNCATE is refused on it ("engineer_issues is not a table"). The view is
+    // insertable (that is how the sibling scorecard suites file cards), so clear through
+    // it with a scoped DELETE rather than reaching past it to the base relation.
+    await db.adminSql`DELETE FROM harness_shared.engineer_issues WHERE workspace_id = ${issuesScopeWorkspace()}`;
+    await insertAcceptanceRubric(db);
+  });
+
+  it('adopts the cited card ratings and PERSISTS them — readback proves the round trip', async () => {
+    const independentId = await fileIndependentGrading({ createdBy: GRADER });
+
+    const r = await emitScorecard(acceptanceArgs(independentId) as never, asAuthor as never);
+
+    expect(r).toMatchObject({ ok: true, created: true });
+
+    // THE READBACK. Everything above this line could be satisfied by a writer that
+    // returned ok:true and persisted nothing; only a real SELECT can tell.
+    const persisted = await readBackAcceptanceCard(db);
+    expect(persisted).not.toBeNull();
+    expect(persisted!.created_by).toBe(AUTHOR);
+
+    // The grader's evidence prose landed on the AUTHOR's card. The author never
+    // typed these strings, so their presence can only mean adoption ran and survived.
+    expect(persisted!.observation).toMatchObject({
+      ratings: {
+        'reference-fidelity': { evidence: expect.stringContaining('grader re-derived reference fidelity') },
+        'no-transcription': { evidence: expect.stringContaining('grader re-derived the no-transcription property') },
+      },
+      // Provenance names the exact card and its grader, so a later reader can trace
+      // whose judgment the verdict rests on.
+      acceptance: {
+        verdict: 'accept',
+        adoptedRatingsFrom: { scorecardId: independentId, gradedBy: GRADER },
+      },
+    });
+  });
+
+  it('refuses a card that graded a DIFFERENT SUBJECT — wrong-subject negative control', async () => {
+    // Eligible in every other respect (complete, live, current revision, independent)
+    // and differing ONLY in what it graded. Adopting it would file a verdict whose
+    // evidence describes someone else's work.
+    const otherSubjectId = await fileIndependentGrading({
+      createdBy: GRADER,
+      subjectRef: 'a-completely-different-plan',
+    });
+
+    const r = await emitScorecard(acceptanceArgs(otherSubjectId) as never, asAuthor as never);
+
+    // Pin the EXACT code. A bare ok:false cannot distinguish the subject rail from
+    // any unrelated refusal, so it would keep passing with the rail removed — a
+    // negative control that cannot fail for the right reason is not evidence.
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_wrong_subject' });
+    // And nothing was written: a refusal must not leave a verdict behind.
+    expect(await readBackAcceptanceCard(db)).toBeNull();
+  });
+
+  it('refuses a grading from the author’s OWN LINEAGE — prohibited-lineage negative control', async () => {
+    // The ancestry WALK itself (spawn/rebind edges) is `areAcceptanceLineageRelated`,
+    // covered by its own suite. What this control must prove is emit's response to a
+    // prohibited verdict: that a lineage-related grading is refused with the precise
+    // code and adopts nothing. Injected through emit's own declared `deps` seam so
+    // the answer is deterministic rather than dependent on seeded session ancestry.
+    const kinId = await fileIndependentGrading({ createdBy: 'su-p003-kin' });
+
+    const r = await emitScorecard(acceptanceArgs(kinId) as never, asAuthor as never, {
+      lineageRelated: async (first, second) =>
+        // The kin grader is inside the author's lineage; everyone else is not.
+        (first === AUTHOR && second === 'su-p003-kin') || (first === 'su-p003-kin' && second === AUTHOR),
+    } as never);
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_not_independent' });
+    expect(await readBackAcceptanceCard(db)).toBeNull();
+  });
+});
