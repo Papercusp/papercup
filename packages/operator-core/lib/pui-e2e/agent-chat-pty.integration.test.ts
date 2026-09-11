@@ -1831,6 +1831,111 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       }));
     } finally { await pane.stop().catch(() => {}); }
   });
+
+  // PUI-EDITOR-HISTORY — Falsifier: "History navigation destroys the draft being
+  // edited." Probe (the clause's own requiredEvidence): "Enter multiple prompts,
+  // begin a new draft, navigate history and return to the saved draft."
+  //
+  // The behaviour under test ships and is deliberate: `App::chat_history_prev`
+  // stashes `chat_input` into `chat_draft` on the FIRST Up (the `None` arm), and
+  // `chat_history_next` restores it with `mem::take` when walking forward past
+  // the newest entry. This case exercises that whole path through a real PTY.
+  //
+  // NON-VACUITY IS THE WHOLE DIFFICULTY HERE, in two separate ways.
+  //
+  //   1. An implementation where Up is simply INERT would "preserve the draft"
+  //      perfectly and pass a naive draft-survives assertion. So this case must
+  //      also prove history was genuinely REACHED — that the composer really did
+  //      show the recalled prompts — or it proves nothing about navigation.
+  //
+  //   2. Asserting that with a bare `screen.toContain(promptB)` would be
+  //      VACUOUSLY TRUE: both prompts were submitted, so they are already on
+  //      screen in the TRANSCRIPT, forever, regardless of what the composer
+  //      holds. That is a false GREEN, the opposite-direction sibling of the
+  //      false RED the COPY case above documents. Every recall assertion here is
+  //      therefore anchored to the COMPOSER LINE (`> ` + text), which is the only
+  //      place that distinguishes "recalled into the composer" from "scrolled by
+  //      in the transcript".
+  //
+  // The draft is deliberately ASCII. Byte-exactness under combining marks and
+  // astral emoji belongs to PUI-EDITOR-UNDO (and its Rust unit complement); this
+  // clause is about the draft SURVIVING, so a render-stable draft keeps a failure
+  // here meaning "history navigation lost the draft" and never "this terminal
+  // renders wide glyphs differently than expected".
+  test('PUI-EDITOR-HISTORY: navigating history preserves and restores the in-progress draft', async () => {
+    // Neither prompt is a substring of the other, so a composer-line assertion
+    // for one can never be satisfied by the other.
+    const promptA = 'PUI history clause alpha probe';
+    const promptB = 'PUI history clause bravo probe';
+    const draft = 'DRAFT-THAT-MUST-SURVIVE-HISTORY';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+
+      // "Enter multiple prompts" — two, so that stepping back twice proves the
+      // ring walks rather than pinning one entry.
+      for (const prompt of [promptA, promptB]) {
+        pane.write(prompt);
+        pane.enter();
+        await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+        await pane.waitFor('Message — Enter send');
+      }
+      expect(commandPosts, pane.screen()).toHaveLength(2);
+
+      // "Begin a new draft" — typed, never submitted. This is the text the
+      // clause says history navigation must not destroy.
+      pane.write(draft);
+      await pane.waitFor(`> ${draft}`);
+
+      // Up (ANSI CUU). The composer runs the terminal in raw mode and crossterm
+      // decodes this as KeyCode::Up, which `App` routes to `chat_history_prev`.
+      pane.write('\x1b[A');
+      // Recall half, step 1: the NEWEST entry must land on the composer line...
+      await pane.waitFor(`> ${promptB}`, { timeoutMs: 10_000 });
+      // ...and the draft must have LEFT the composer (it is stashed, not shown).
+      // Waiting on the disappearance rather than asserting it after a positive
+      // wait keeps this from racing; the draft is ASCII and appears nowhere else
+      // on screen, so its absence is unambiguous.
+      await pane.waitForGone(draft, { timeoutMs: 10_000 });
+
+      // Step 2: the OLDER entry, proving the ring actually walks.
+      pane.write('\x1b[A');
+      await pane.waitFor(`> ${promptA}`, { timeoutMs: 10_000 });
+
+      // Walk forward again: newest entry, then past it.
+      pane.write('\x1b[B');
+      await pane.waitFor(`> ${promptB}`, { timeoutMs: 10_000 });
+
+      // THE CLAUSE'S CENTRAL ASSERTION — walking forward past the newest entry
+      // must give the stashed draft back rather than clearing the line. A
+      // positive wait is sound here (unlike the undo case): the draft is not a
+      // prefix of the prompt currently displayed, so this cannot be satisfied by
+      // the pre-restore state.
+      pane.write('\x1b[B');
+      await pane.waitFor(`> ${draft}`, { timeoutMs: 10_000 });
+
+      const screen = pane.screen();
+      // Restored EXACTLY: not truncated, and not concatenated onto a recalled
+      // entry (the plausible wrong implementation appends instead of replacing).
+      expect(screen, screen).toContain(`> ${draft}`);
+      expect(screen, screen).not.toContain(`> ${promptB}${draft}`);
+      expect(screen, screen).not.toContain(`> ${draft}${promptB}`);
+
+      // History navigation must never dispatch a turn: recalling a previous
+      // prompt and silently re-sending it is the worst failure these keys have.
+      expect(commandPosts, screen).toHaveLength(2);
+      expect(screen, screen).not.toContain('Sending — awaiting acceptance');
+
+      console.info('PUI_EDITOR_HISTORY_ACCEPTANCE', JSON.stringify({
+        binary: bin,
+        binarySha256,
+        draftRestored: screen.includes(`> ${draft}`),
+        recalledNewest: true,
+        recalledOlder: true,
+        submittedDuringNavigation: commandPosts.length - 2,
+      }));
+    } finally { await pane.stop().catch(() => {}); }
+  });
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
