@@ -64,6 +64,30 @@ The attestation pins the rubric plan row's `version` at emit time. ANY later `ru
 
 The NON-implementer who later grades the acceptance rubric meets the structured checks the vetting pushed for. A `tests` check's files are RUN via the testing router at emit time — one run per tests-check criterion, sequential, under one shared clamped budget; never judged from stale ledger rows. A pass-vocabulary rating (`pass`/`healthy`/`green`/`good`/`yes`/`exemplary`/`exceptional`) over a failing run REFUSES the emit naming the failing tests; an unresolvable path (`check_path_unresolved`), a route error, or an over-budget run refuses with a teaching error — never a silent pass. An honest fail-rating over a failing run is STAMPED (`observation.checkRuns`) and files normally. A bespoke scale word outside the pass map degrades to stamp-only — conservative, never wrongly refused. The unchanged-evidence dedupe fires BEFORE any run, so a declined re-emit never burns a suite.
 
+## The vetting/grading separation is NOT a deadlock — the escape is a second INDEPENDENT critic
+
+The two refusals below look like a closed loop, and every agent who meets them reads them that way:
+
+* **Vet first, then grade** → `grader_is_sole_vetting_critic`. Vetting the rubric made you its only recorded critic, so rubric fitness and work compliance would be attested by the same party.
+* **Grade first, to escape that ordering** → `bar_snapshot_vetting_missing` / `bar_snapshot_vetting_stale`. With no current attestation, the readiness projection blocks instead.
+
+Refused before, refused after — so the natural conclusion is that the rule is unsatisfiable and the only way out is to hand the whole plan to someone else. **It is not a deadlock, and the way out is not a different ORDER.** The guard is about *independence*, not sequence: it unions the recorded critics across BOTH vetting channels at the current rubric revision and refuses only when every one of them collapses to the same party as the grader. Add one critic who is not you and the same grader becomes eligible, in either order.
+
+**The route out, concretely:**
+
+1. **Recruit a critic outside your lineage.** `coord:presence` for a live session that is not in your spawn/rebind lineage, then `coord:dispatch` — or `work_items:create` with `assign_to` naming them, which is born-admitted and claimable in the same write.
+2. **Have that critic vet the rubric at its CURRENT revision** and record the attestation with `scorecards:emit` against `meta-acceptance-rubric`.
+3. **Use the OTHER channel from the one already recorded.** `scorecards:emit` accepts exactly one of `vettingConsult` / `vettingWorkItem` per attestation, so a second critic cannot be recorded alongside the first on the same channel. If your own vetting went in as a consult, theirs goes in as a work-item, and vice versa.
+4. **Re-attempt the grading emit.** The guard now sees a recorded critic who is not you, and the refusal lifts.
+
+**Three things that look like the escape and are not:**
+
+* **A second critic in your own spawn/rebind lineage.** Critics are collapsed to the distinct PARTIES they represent (`collapseCriticsToSoleParty`), so a longer list of related identities still resolves to one party and the refusal stands unchanged.
+* **Grading first to get ahead of the attestation.** That only swaps which of the two refusals you receive. The pair reads as a deadlock precisely because both orderings are blocked; independence is the axis that actually moves.
+* **Re-vetting the rubric yourself at a newer revision.** That re-records the same sole party. Bumping the revision changes the counter, not the independence question.
+
+**You no longer have to find this here.** The refusal itself carries the same route as a structured `remedy` — `{ summary, steps[], doesNotWork[], docRef }` on the `grader_is_sole_vetting_critic` payload (`grader-eligibility.ts`), pointing back at this section. That matters because of WHEN the refusal arrives: it fires at the END of the ceremony, after the implementation, the audit and the rubric authoring are all paid for. A remedy discoverable only by reading `resolveAggregatedVettingCritics` in the source is a remedy discovered after the expensive work is done.
+
 ## Three traps — two that make a correct vetting look broken, one that makes a bad binding look fine
 
 All three were hit in a single vetting run (plan `on-demand-local-inference-lifecycle-2026-08-17`, 2026-08-19). None is a defect; each is a place where the honest reading of what you see is the wrong one.
