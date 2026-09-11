@@ -1998,3 +1998,209 @@ describe('scorecards:evaluate input ownership is explicit', () => {
     expect(emitTargetHive).toContain('does not change sourceHive');
   });
 });
+
+/**
+ * P-003 (review-verification-efficiency-2026-09-09): the acceptance-rubric AUTHOR
+ * records accept/reject by EXACT independent scorecard reference, and the server
+ * adopts that card's ratings verbatim instead of making the author re-transcribe a
+ * grading they did not perform.
+ *
+ * What is removed is the TRANSCRIPTION, never the PERSISTENCE. That distinction is
+ * the whole design and it is load-bearing downstream: plan-acceptance-gate reads
+ * RATINGS from the independent card and only the VERDICT from the author's, but it
+ * finds the author's card at all only while that card passes its `complete` filter
+ * (rubricResolved && no missingKeys). A card persisted without ratings is dropped
+ * there and its verdict then reads as `acceptance_not_recorded` — so these tests
+ * assert the persisted card still carries complete ratings, not merely that the
+ * call was accepted.
+ *
+ * Unit-level against the real handler (the mocks above are collaborators, not the
+ * subject): a doc-string guard cannot tell whether adoption actually happened, and
+ * P-003 asks for verified handler behavior.
+ */
+describe('scorecards:emit — author acceptance by exact reference (P-003)', () => {
+  /** What the independent grader actually wrote — deliberately DIFFERENT text from
+   *  RATINGS so an assertion cannot pass by coincidence when nothing was adopted. */
+  const GRADER_RATINGS = {
+    'crit-a': { rating: 'pass', evidence: 'grader re-derived A from source' },
+    'crit-b': { rating: 'pass', evidence: 'grader re-derived B from source' },
+  };
+
+  /** A complete, live, independent grading at the CURRENT rubric revision (7 —
+   *  getRubricPlanRevisionM's default in beforeEach, so the two cannot drift). */
+  const independentCard = (over: Record<string, unknown> = {}) =>
+    ({
+      issueId: 'EI-independent',
+      createdAt: '2026-09-10T01:00:00Z',
+      createdBy: 'su-grader',
+      rubricRef: 'acceptance-rubric',
+      ratings: GRADER_RATINGS,
+      rubricRevision: 7,
+      nKeys: 2,
+      missingKeys: [],
+      extraKeys: [],
+      rubricResolved: true,
+      synthesized: false,
+      score10: 10,
+      linkedItems: [],
+      ...over,
+    }) as unknown as ScorecardRow;
+
+  const ACCEPT = { verdict: 'accept' as const, reasoning: 'The independent grading meets this plan.' };
+
+  /** The author's verdict citing the exact card, with NO ratings of their own. */
+  const acceptanceOfArgs = (over: Record<string, unknown> = {}) => ({
+    rubricRef: 'acceptance-rubric',
+    acceptance: ACCEPT,
+    acceptanceOf: 'EI-independent',
+    ...over,
+  });
+
+  const asAuthor = { createdBy: 'su-implementer' };
+
+  beforeEach(() => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+  });
+
+  it('adopts the named card ratings verbatim, so the persisted card is still schema-complete', async () => {
+    listM.mockResolvedValue([independentCard()]);
+
+    const r = await emitScorecard(acceptanceOfArgs() as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: true, created: true, acceptance: expect.objectContaining(ACCEPT) });
+    // The PERSISTED card is what the acceptance gate reads. Assert the grader's
+    // evidence actually landed in it — the author never typed these strings, so
+    // their presence can only mean adoption ran. (Completeness itself is already
+    // proven by ok:true: validateScorecardCompleteness runs before the write and
+    // refuses a card missing any declared criterion.)
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          ratings: {
+            'crit-a': { evidence: expect.stringContaining('grader re-derived A') },
+            'crit-b': { evidence: expect.stringContaining('grader re-derived B') },
+          },
+        },
+      },
+    });
+  });
+
+  it('stamps adoption provenance naming the exact card, its grader and the graded revision', async () => {
+    listM.mockResolvedValue([independentCard()]);
+
+    await emitScorecard(acceptanceOfArgs() as never, asAuthor);
+
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          acceptance: {
+            adoptedRatingsFrom: { scorecardId: 'EI-independent', gradedBy: 'su-grader', rubricRevision: 7 },
+          },
+        },
+      },
+    });
+  });
+
+  it('does NOT stamp adoption when the author supplied their own ratings', async () => {
+    // An author who transcribed the ratings made their own record of them;
+    // marking that as adopted would misreport whose judgment the card carries.
+    listM.mockResolvedValue([independentCard()]);
+
+    const r = await emitScorecard(acceptanceOfArgs({ ratings: RATINGS }) as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          acceptance: expect.not.objectContaining({ adoptedRatingsFrom: expect.anything() }),
+        },
+      },
+    });
+  });
+
+  it('refuses acceptanceOf without a verdict — a reference with nothing to attach it to', async () => {
+    listM.mockResolvedValue([independentCard()]);
+
+    const r = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS, acceptanceOf: 'EI-independent' } as never,
+      asAuthor,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining('acceptance:{ verdict, reasoning }') });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses acceptance_of_not_found when the named id is not a card for this rubric', async () => {
+    listM.mockResolvedValue([independentCard()]);
+
+    const r = await emitScorecard(acceptanceOfArgs({ acceptanceOf: 'EI-nope' }) as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_not_found' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses acceptance_of_retracted — a verdict must accept a live grading, not a withdrawn one', async () => {
+    listM.mockResolvedValue([independentCard({ retracted: true })]);
+
+    const r = await emitScorecard(acceptanceOfArgs() as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_retracted' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses acceptance_of_not_independent for a card inside the author lineage', async () => {
+    // Naming a card must never become a way to accept evidence the independence
+    // scan would have refused — that would be an authorization bypass wearing the
+    // costume of a convenience argument.
+    lineageRelatedM.mockImplementation(
+      async (author, candidate) =>
+        author === candidate || (author === 'su-implementer' && candidate === 'su-grader'),
+    );
+    listM.mockResolvedValue([independentCard()]);
+
+    const r = await emitScorecard(acceptanceOfArgs() as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_not_independent' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses acceptance_of_not_independent for an incomplete card', async () => {
+    listM.mockResolvedValue([independentCard({ missingKeys: ['crit-b'] })]);
+
+    const r = await emitScorecard(acceptanceOfArgs() as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_not_independent' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses acceptance_of_stale_revision — adopted ratings must cover criteria still in force', async () => {
+    // The independence scan never needed this rail because it only GATED. Adoption
+    // does: copying ratings from a card that graded an older revision would persist
+    // a grading of criteria that have since changed, under the current revision's
+    // identity.
+    listM.mockResolvedValue([independentCard({ rubricRevision: 6 })]);
+
+    const r = await emitScorecard(acceptanceOfArgs() as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_stale_revision' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('never adopts from the independence SCAN — omitting ratings without an exact reference refuses', async () => {
+    // REGRESSION GUARD. Both paths set `acceptedIndependent`, so it is tempting to
+    // let either one feed adoption. They are not interchangeable: the scan is a
+    // pure gate and deliberately carries no revision rail, so scan-fed adoption
+    // would route around acceptance_of_stale_revision by simply OMITTING the
+    // argument that triggers it. The card below is scan-eligible but graded a
+    // stale revision — exactly the case that must not be silently adopted.
+    listM.mockResolvedValue([independentCard({ rubricRevision: 6 })]);
+
+    const r = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', acceptance: ACCEPT } as never,
+      asAuthor,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining('acceptanceOf') });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+});

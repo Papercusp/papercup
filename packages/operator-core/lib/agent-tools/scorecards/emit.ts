@@ -866,11 +866,17 @@ export async function emitScorecard(
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
     const criteriaHash = await getRubricCriteriaHash(args.rubricRef);
     const acceptance = args.acceptance as ScorecardAcceptance | undefined;
+    const acceptanceOf = typeof args.acceptanceOf === 'string' ? args.acceptanceOf.trim() : undefined;
     // WI-2141007: set when this verdict is recorded by a SUCCESSOR to a dead
     // rubric author rather than by the author themselves. Declared out here
     // because it is stamped onto the persisted card below, outside the
     // acceptance-kind guard block that resolves it.
     let seatSuccession: AcceptanceSeatSuccession | undefined;
+    // P-003: the independent card this verdict responds to, once validated.
+    // Declared out here for the same reason as `seatSuccession` — the ratings
+    // adoption and the persisted provenance stamp both happen below, outside
+    // the acceptance-kind guard block that resolves and validates it.
+    let acceptedIndependent: Awaited<ReturnType<typeof listScorecards>>[number] | undefined;
     // Acceptance authority belongs to the rubric author of record. A later
     // repair/re-propose records its actor in proposedBy, but must not transfer
     // the right to issue the plan verdict away from createdBy. Keep proposedBy
@@ -881,6 +887,16 @@ export async function emitScorecard(
         ok: false as const,
         error:
           "acceptance is valid only for kind:'acceptance' rubrics — a standard scorecard records ratings, not a plan ship verdict",
+      };
+    }
+    // P-003: `acceptanceOf` exists to let a VERDICT cite the grading it answers.
+    // Alone it would silently do nothing — the caller would believe they had
+    // recorded an acceptance and filed an ordinary scorecard instead.
+    if (acceptanceOf && !acceptance) {
+      return {
+        ok: false as const,
+        error:
+          "acceptanceOf names the independent card an acceptance verdict responds to — pass acceptance:{ verdict, reasoning } with it, or omit both (an independent grader emits ratings and neither field)",
       };
     }
     if (rubric.kind === 'acceptance') {
@@ -972,13 +988,17 @@ export async function emitScorecard(
       }
       if (callerIsImplementer) {
         const prior = await listScorecards({ rubricRef: args.rubricRef, limit: 50 });
-        let independent = undefined;
-        for (const card of prior) {
+        // P-003: ONE predicate, two callers. The scan below and the exact
+        // `acceptanceOf` reference must agree on what "a complete independent
+        // grading" is, or naming a card would become a way to accept evidence
+        // the scan would have refused — an authorization bypass wearing the
+        // costume of a convenience argument.
+        const isEligibleIndependent = async (card: (typeof prior)[number]): Promise<boolean> => {
           if (!card.rubricResolved || card.missingKeys.length !== 0 || card.synthesized || card.createdBy == null)
-            continue;
+            return false;
           // Independence against the ORIGINAL author is unchanged — a seat
           // succession must never launder a related grader into an independent one.
-          if (await lineageRelated(implementer, card.createdBy, { workspaceId: identityWorkspace })) continue;
+          if (await lineageRelated(implementer, card.createdBy, { workspaceId: identityWorkspace })) return false;
           // WI-2141007: a SUCCESSOR now holds author authority, so they may not
           // accept a grading from their OWN lineage either. Without this the
           // three-party chain (author -> critic -> grader) collapses into one
@@ -988,11 +1008,65 @@ export async function emitScorecard(
             seatSuccession &&
             (await lineageRelated(input.createdBy, card.createdBy, { workspaceId: identityWorkspace }))
           )
-            continue;
-          independent = card;
-          break;
+            return false;
+          return true;
+        };
+        if (acceptanceOf) {
+          const named = prior.find((card) => card.issueId === acceptanceOf);
+          if (!named) {
+            return {
+              ok: false as const,
+              code: 'acceptance_of_not_found' as const,
+              error:
+                `acceptanceOf '${acceptanceOf}' is not a scorecard for rubric '${args.rubricRef}' — pass the issue ` +
+                `id of the independent card you actually read (scorecards:list { rubricRef:'${args.rubricRef}' } ` +
+                'lists them with their issueIds)',
+            };
+          }
+          if (named.retracted) {
+            return {
+              ok: false as const,
+              code: 'acceptance_of_retracted' as const,
+              error:
+                `acceptanceOf '${acceptanceOf}' was RETRACTED — a verdict must accept a live independent grading, ` +
+                'not a withdrawn one. Accept a current card, or have the grading re-emitted first',
+            };
+          }
+          if (!(await isEligibleIndependent(named))) {
+            return {
+              ok: false as const,
+              code: 'acceptance_of_not_independent' as const,
+              error:
+                `acceptanceOf '${acceptanceOf}' is not a complete independent grading: it must be schema-complete, ` +
+                `non-synthesized, and authored outside '${implementer}'s lineage` +
+                (seatSuccession ? ', and outside YOUR lineage because you inherited this seat' : '') +
+                ' — so it cannot supply the ratings your verdict would adopt',
+            };
+          }
+          // The scan never needed this rail (it only gated, it never ADOPTED).
+          // Adoption does: copying ratings from a card that graded a different
+          // revision would persist a grading of criteria no longer in force,
+          // under the current revision's identity.
+          if ((named.rubricRevision ?? null) !== (rubricRevision ?? null)) {
+            return {
+              ok: false as const,
+              code: 'acceptance_of_stale_revision' as const,
+              error:
+                `acceptanceOf '${acceptanceOf}' graded rubric revision ${named.rubricRevision ?? 'unversioned'}, ` +
+                `but '${args.rubricRef}' is now at revision ${rubricRevision ?? 'unversioned'} — its ratings cover ` +
+                'criteria that have since changed. Have it re-graded against the current revision, then accept that card',
+            };
+          }
+          acceptedIndependent = named;
+        } else {
+          for (const card of prior) {
+            if (await isEligibleIndependent(card)) {
+              acceptedIndependent = card;
+              break;
+            }
+          }
         }
-        if (!independent) {
+        if (!acceptedIndependent) {
           return {
             ok: false as const,
             error:
@@ -1044,7 +1118,36 @@ export async function emitScorecard(
         }
       }
     }
-    const ratings = normalizeScorecardRatings(args.ratings as ObservationRatings, rubric);
+    // P-003: an acceptance author who named the exact card they read adopts its
+    // ratings instead of re-typing a grading they did not perform. What is
+    // removed is the TRANSCRIPTION, never the PERSISTENCE: the card filed below
+    // still carries complete ratings, which is precisely what keeps it inside
+    // plan-acceptance-gate's `complete` filter — an incomplete card is dropped
+    // there and its verdict then reads as `acceptance_not_recorded`.
+    //
+    // Adoption requires the EXACT reference (`acceptanceOf`), never the scan's
+    // pick. The two paths are not interchangeable here even though both set
+    // `acceptedIndependent`: the scan is a pure GATE ("does a complete
+    // independent grading exist?") and deliberately carries no revision rail,
+    // because gating on a card is safe at any revision. ADOPTION is not — it
+    // copies that card's ratings out under the CURRENT revision's identity, so
+    // a stale-revision card would persist a grading of criteria no longer in
+    // force. Letting the scan adopt would route around the
+    // `acceptance_of_stale_revision` check by simply omitting the argument that
+    // triggers it. So: no exact reference, no adoption — the refusal below then
+    // names `acceptanceOf` as the way to get it.
+    const adoptedRatings =
+      args.ratings === undefined && acceptanceOf && acceptedIndependent ? acceptedIndependent.ratings : undefined;
+    const suppliedRatings = (args.ratings ?? adoptedRatings) as ObservationRatings | undefined;
+    if (suppliedRatings === undefined) {
+      return {
+        ok: false as const,
+        error:
+          "ratings is required: supply the complete per-criterion ratings, or — when recording an acceptance " +
+          "verdict — pass acceptanceOf:'<the independent card's issue id>' to adopt that card's ratings verbatim",
+      };
+    }
+    const ratings = normalizeScorecardRatings(suppliedRatings, rubric);
     const observationForValidation = { rubricRef: args.rubricRef, ratings };
     // `validateScorecardCompleteness` intentionally permits an empty ratings map
     // for generic/free-text observations. scorecards:emit is different: it has
@@ -1075,9 +1178,24 @@ export async function emitScorecard(
     // carries a `succeededAt` timestamp, and folding a clock into the dedup
     // fingerprint would make every re-emit look like new content.
     const acceptanceRecord: ScorecardAcceptance | undefined = acceptance
-      ? seatSuccession
-        ? { ...acceptance, seat: seatSuccession }
-        : acceptance
+      ? {
+          ...acceptance,
+          ...(seatSuccession ? { seat: seatSuccession } : {}),
+          // P-003: stamp the adoption, and ONLY a real adoption — an author who
+          // transcribed the ratings made their own record of them, and marking
+          // that as adopted would misreport whose judgment the card carries.
+          ...(adoptedRatings && acceptedIndependent?.createdBy
+            ? {
+                adoptedRatingsFrom: {
+                  scorecardId: acceptedIndependent.issueId,
+                  gradedBy: acceptedIndependent.createdBy,
+                  ...(acceptedIndependent.rubricRevision != null
+                    ? { rubricRevision: acceptedIndependent.rubricRevision }
+                    : {}),
+                },
+              }
+            : {}),
+        }
       : undefined;
     const instrumentSnapshots = args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined;
     const instrumentContract = evaluateScorecardInstrumentContract({
@@ -2106,7 +2224,7 @@ export default defineTool({
   // stamping, the existing_independent_scorecards retry) were being paid for in counted
   // prose. Moved verbatim below — nothing deleted (EI-22083648545226771).
   description:
-    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit, including the author acceptance call, still requires schema-complete ratings; acceptance does not replace ratings.",
+    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit persists complete ratings; the author's acceptance adopts them from the card it cites in acceptanceOf.",
   guidance: {
     when: 'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',
     notWhen:
@@ -2114,7 +2232,7 @@ export default defineTool({
     returns:
       'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
     chaining:
-      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance.',
+      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
   },
   capability: 'coord:write',
