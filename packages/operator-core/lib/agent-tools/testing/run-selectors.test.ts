@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import runTool, { emptyDistilledRunRefusal } from './run';
+import runTool, { emptyDistilledRunRefusal, nameFilterNoMatchRefusal } from './run';
 
 /**
  * `files` became OPTIONAL when `changedPaths` was added, which made `testing:run {}`
@@ -78,6 +78,61 @@ describe('testing:run selector arbitration', () => {
     const data = await callHandler({ files: ['a.test.ts'], changedPaths: ['src/a.ts'] });
     expect(data.ok).toBe(false);
     expect(data.error).toBe('mutually_exclusive_selectors');
+  });
+
+  /**
+   * `testNamePattern` is the ONLY failed-scenario rerun surface (R-8), and the tool's own
+   * description tells the caller to paste a previous result's `failures[].test` into it.
+   * That value reaches vitest as `--testNamePattern=<verbatim>`, which is a REGEX — so a
+   * pasted literal containing regex metacharacters does not match itself.
+   *
+   * Measured 2026-09-11, same file, one variable changed:
+   *   'flags ≤1-tool recipes (thin wrappers over the primitive)'   -> name_filter_no_match, 0 run
+   *   'flags ≤1-tool recipes \\(thin wrappers over the primitive\\)' -> passed:1, the intended test
+   * Population: 25,606 of 86,056 unique test names in operator-core carry such a character
+   * (19,915 of them parentheses).
+   *
+   * The REFUSAL is correct and must stay — it is what stops a vacuous run reading as green.
+   * The defect is the DIAGNOSIS: blaming "a typo or a stale name" is wrong for a name that is
+   * exact and current, and sending the caller to re-run without the filter prescribes the
+   * whole-file rerun R-8 exists to prevent. Recovery must cost one precise call, not a matrix.
+   */
+  describe('name_filter_no_match diagnosis', () => {
+    const base = { skipped: 3, files: 1, runId: 'run-name-filter', root: '/papercusp' };
+    const literal = 'flags ≤1-tool recipes (thin wrappers over the primitive)';
+
+    it('hands back an escaped pattern that actually matches the pasted literal', () => {
+      const refusal = nameFilterNoMatchRefusal({ ...base, pattern: literal });
+      expect(refusal).toMatchObject({ ok: false, error: 'name_filter_no_match', skipped: 3 });
+      // The property that matters is not the wording — it is that the suggestion WORKS.
+      expect(refusal.literalPattern).toBeDefined();
+      expect(new RegExp(refusal.literalPattern!).test(literal)).toBe(true);
+      // ...and that the original genuinely did not, or there would be nothing to fix.
+      expect(new RegExp(literal).test(literal)).toBe(false);
+      expect(refusal.hint).toContain(refusal.literalPattern!);
+    });
+
+    it('does not prescribe an unfiltered whole-file rerun as the remedy for a pasted literal', () => {
+      const { hint } = nameFilterNoMatchRefusal({ ...base, pattern: literal });
+      expect(hint).not.toMatch(/Re-run without testNamePattern/i);
+      expect(hint).toMatch(/metacharacter|literal/i);
+    });
+
+    it('names a pattern that is not even a valid regex as certainly a pasted literal', () => {
+      // An unclosed class cannot have been intended as a regex, so this is not a judgement call.
+      const broken = 'handles [DIRTY paths';
+      const refusal = nameFilterNoMatchRefusal({ ...base, pattern: broken });
+      expect(refusal.patternIsValidRegex).toBe(false);
+      expect(new RegExp(refusal.literalPattern!).test(broken)).toBe(true);
+    });
+
+    it('keeps the typo/stale-name guidance when the pattern has no metacharacters to blame', () => {
+      // Here a zero match really does mean a wrong name, and inventing an escaping story
+      // would be a confident wrong diagnosis in the opposite direction.
+      const refusal = nameFilterNoMatchRefusal({ ...base, pattern: 'a plain name that is gone' });
+      expect(refusal.literalPattern).toBeUndefined();
+      expect(refusal.hint).toMatch(/typo or a stale name/i);
+    });
   });
 
   it('still accepts each selector on its own at the schema level', () => {

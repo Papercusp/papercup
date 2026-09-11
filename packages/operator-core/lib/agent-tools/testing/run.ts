@@ -1074,6 +1074,80 @@ export type TestFilesCoreResult =
       measuredFiles?: 0;
     };
 
+/** Characters whose presence makes a string mean something different as a regex than as itself. */
+const REGEX_METACHARACTERS = /[.*+?^${}()|[\]\\]/g;
+
+/**
+ * `testNamePattern` reaches vitest as `--testNamePattern=<verbatim>`, which is a REGEX, while
+ * this tool's own description tells the caller to paste a previous result's `failures[].test`
+ * — a LITERAL. A literal carrying regex metacharacters does not match itself, so the exact,
+ * current name of a test selects zero tests. Measured 2026-09-11: 25,606 of 86,056 unique test
+ * names in operator-core carry such a character, 19,915 of them parentheses.
+ *
+ * The refusal itself is load-bearing and stays (EI-19425177453558152: a zero-match run measured
+ * nothing yet exited 0). What was wrong was the DIAGNOSIS — "a typo or a stale name" is a
+ * confident misreading when the name is exact, and "re-run without testNamePattern" prescribes
+ * the whole-file rerun R-8 exists to avoid. Recovery should cost one precise call.
+ *
+ * Certainty is tiered, because only one tier is provable from the pattern alone: a pattern that
+ * is not a valid regex CANNOT have been meant as one, so the literal reading is a fact; a valid
+ * regex carrying metacharacters may be a deliberate selector, so the escaped form is offered
+ * conditionally rather than asserted. Where there is no metacharacter to blame, a zero match
+ * really does mean a wrong name — inventing an escaping story there would be the same
+ * confident-wrong-diagnosis defect pointing the other way, so the original guidance stands.
+ */
+export function nameFilterNoMatchRefusal(opts: {
+  pattern: string;
+  skipped: number;
+  files: number;
+  runId: string;
+  root: string;
+}): {
+  ok: false;
+  runId: string;
+  root: string;
+  error: 'name_filter_no_match';
+  skipped: number;
+  files: number;
+  hint: string;
+  literalPattern?: string;
+  patternIsValidRegex: boolean;
+} {
+  const { pattern, skipped, files, runId, root } = opts;
+  const escaped = pattern.replace(REGEX_METACHARACTERS, '\\$&');
+  let patternIsValidRegex = true;
+  try {
+    new RegExp(pattern);
+  } catch {
+    patternIsValidRegex = false;
+  }
+  const base =
+    `testNamePattern ${JSON.stringify(pattern)} matched ZERO tests, so NOTHING was ` +
+    `verified — this is NOT a pass (${skipped} test(s) were collected and skipped). The pattern ` +
+    "matches a test's FULL name — every enclosing `describe` joined to the `it` text — as a " +
+    'REGEX, not as literal text.';
+  const common = { ok: false as const, runId, root, error: 'name_filter_no_match' as const, skipped, files, patternIsValidRegex };
+  if (escaped === pattern) {
+    return {
+      ...common,
+      hint:
+        `${base} It contains no regex metacharacter, so a fragment of either matches and a typo ` +
+        'or a stale name matches nothing. Re-run without testNamePattern to see the real test names.',
+    };
+  }
+  return {
+    ...common,
+    literalPattern: escaped,
+    hint:
+      `${base} ${
+        patternIsValidRegex
+          ? 'It contains regex metacharacters, so if you pasted a literal test name it cannot match itself.'
+          : 'It is not even a valid regex, so it was certainly pasted as a literal test name.'
+      } To select that exact name, re-run with this escaped pattern — one precise call, ` +
+      `no need to re-run the whole file: ${escaped}`,
+  };
+}
+
 /**
  * An external Vitest invocation can leave a syntactically valid but empty JSON
  * report behind when the process exits before it produces a verdict. Distilling
@@ -2251,20 +2325,13 @@ export async function runTestFilesCore(opts: {
     //
     // `skipped` is deliberately not required to be > 0 — the point is that nothing RAN.
     if (opts.testNamePattern && run.passed + run.failed === 0) {
-      return {
-        ok: false,
-        runId,
-        root,
-        error: 'name_filter_no_match',
+      return nameFilterNoMatchRefusal({
+        pattern: opts.testNamePattern,
         skipped: run.skipped,
         files: run.files,
-        hint:
-          `testNamePattern ${JSON.stringify(opts.testNamePattern)} matched ZERO tests, so NOTHING was ` +
-          `verified — this is NOT a pass (${run.skipped} test(s) were collected and skipped). The pattern ` +
-          "matches a test's FULL name — every enclosing `describe` joined to the `it` text — so a fragment " +
-          'of either matches, but a typo or a stale name matches nothing. Re-run without testNamePattern to ' +
-          'see the real test names.',
-      };
+        runId,
+        root,
+      });
     }
     // The same vacuous-run class as the refusal above, arrived at WITHOUT a name filter:
     // every collected test was skipped (an env-gated suite whose variable is unset), so this
