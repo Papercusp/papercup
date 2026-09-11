@@ -23,18 +23,21 @@ describe('dedicated acceptance judge lifecycle', () => {
     expect(COORD_ROLES).not.toContain('judge');
   });
 
-  it('documents that author acceptance calls still require schema-complete ratings', () => {
+  it('documents that the persisted acceptance card still carries complete ratings, adopted by reference', () => {
+    // P-003 (review-verification-efficiency-2026-09-09) removed the
+    // TRANSCRIPTION, not the PERSISTENCE. The card filed for an acceptance
+    // verdict must still be schema-complete: plan-acceptance-gate drops
+    // incomplete cards from its `complete` filter, and the verdict then reads as
+    // `acceptance_not_recorded`. The old wording ("ratings field remains
+    // schema-required") is gone; the property it protected is not, so this
+    // guard follows the property instead of being deleted with the wording.
     const args = scorecardEmitTool.args as {
-      shape?: { acceptance?: { description?: string } };
+      shape?: { acceptance?: { description?: string }; acceptanceOf?: { description?: string } };
     };
-    const acceptanceDescription = args.shape?.acceptance?.description ?? '';
-    expect(acceptanceDescription).toMatch(/ratings field remains schema-required/i);
-    expect(String(scorecardEmitTool.description)).toMatch(
-      /Every emit, including the author acceptance call, still requires schema-complete ratings/i,
-    );
-    expect(JSON.stringify(scorecardEmitTool.guidance)).toMatch(
-      /author acceptance still supplies schema-complete ratings/i,
-    );
+    expect(args.shape?.acceptance?.description ?? '').toMatch(/always carries complete ratings/i);
+    expect(args.shape?.acceptanceOf?.description ?? '').toMatch(/adopts its ratings verbatim/i);
+    expect(String(scorecardEmitTool.description)).toMatch(/Every emit persists complete ratings/i);
+    expect(JSON.stringify(scorecardEmitTool.guidance)).toMatch(/acceptance adopts ratings via acceptanceOf/i);
   });
 
   it('kills every live headless task for the exact acceptance-rubric label prefix', async () => {
