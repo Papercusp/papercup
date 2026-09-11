@@ -25,6 +25,7 @@ mod chat_tags;
 mod client;
 mod companion;
 mod event;
+mod file_picker;
 mod fleet;
 mod framing;
 mod glyph;
