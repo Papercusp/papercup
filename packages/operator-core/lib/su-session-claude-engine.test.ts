@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
@@ -114,6 +114,11 @@ function openCards(engine: ClaudeSuEngine) {
   const events = engine.adapter.host.recent.map(({ event }) => event);
   const closed = new Set(events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
   return events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
+}
+
+function stalledReports(engine: ClaudeSuEngine) {
+  return engine.adapter.host.recent.map(({ event }) => event)
+    .filter((event) => event.type === 'error' && event.code === 'claude_turn_stalled');
 }
 
 describe('structured Claude SU engine', () => {
@@ -240,6 +245,65 @@ describe('structured Claude SU engine', () => {
     await engine.adapter.host.startCommand(command(engine)).terminal;
     await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
     expect(engine.adapter.host.recent.map(({ event }) => event).filter((event) => event.type === 'error')).toEqual([]);
+  });
+
+  // A turn that NEVER ENDS emits no result frame, and both claude_turn_failed and
+  // claude_empty_turn are nested under one — so neither can report it, and the owner
+  // sees a silent hang. These guard the third detector that covers that case.
+  describe('owner-turn stall watchdog', () => {
+    // The scheduled registry keeps its default timer backend INERT under Vitest, so the
+    // watchdog's managedSetInterval silently never arms on real timers and every
+    // assertion below passes vacuously (measured: 2 red, 0 emitted). Fake timers restore
+    // a seam the registry recognises (`timersAreFaked()`), and `shouldAdvanceTime` keeps
+    // the clock moving with real time so the peer's stream I/O still makes progress.
+    // Deliberately NOT fixed with `allowInTest` at the production call site: the tick
+    // re-enters the adapter's host emission, which is the hazard that guard exists for.
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('reports an owner turn that stops producing frames without ever ending', async () => {
+      const p = peer({ holdResult: true }); const engine = open(p, { turnStallTimeoutMs: 150 }); await engine.ready;
+      await engine.adapter.host.startCommand(command(engine)).terminal;
+      await vi.waitFor(() => expect(stalledReports(engine)).toHaveLength(1), { timeout: 2_000 });
+      expect(stalledReports(engine)[0]).toEqual(expect.objectContaining({
+        type: 'error', scope: 'transport', code: 'claude_turn_stalled', recoverable: true,
+      }));
+      // Observability only: the stall never fails the turn or ends the session.
+      expect(engine.adapter.host.descriptor().lifecycle).not.toBe('failed');
+      // Reported once per turn — a stall does not resolve on its own, so repeating
+      // would bury the transcript without adding an observation.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(stalledReports(engine)).toHaveLength(1);
+    });
+
+    it('treats any stream frame as progress and reports only the silence that follows', async () => {
+      const p = peer({ holdResult: true }); const engine = open(p, { turnStallTimeoutMs: 200 }); await engine.ready;
+      await engine.adapter.host.startCommand(command(engine)).terminal;
+      // A long tool call streams frames for far longer than the stall window without
+      // producing a reply. That is progress, not a stall.
+      for (let index = 0; index < 8; index += 1) {
+        p.output.write({ type: 'system', subtype: 'status', status: 'requesting', session_id: nativeId, uuid: `keepalive-${index}` });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }
+      expect(stalledReports(engine)).toEqual([]);
+      await vi.waitFor(() => expect(stalledReports(engine)).toHaveLength(1), { timeout: 2_000 });
+    });
+
+    it('does not report a stall on a turn that produced frames and ended', async () => {
+      const p = peer(); const engine = open(p, { turnStallTimeoutMs: 60 }); await engine.ready;
+      await engine.adapter.host.startCommand(command(engine)).terminal;
+      await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(stalledReports(engine)).toEqual([]);
+    });
+
+    it('stops watching a stalled turn once the engine is closed', async () => {
+      const p = peer({ holdResult: true }); const engine = open(p, { turnStallTimeoutMs: 150 }); await engine.ready;
+      await engine.adapter.host.startCommand(command(engine)).terminal;
+      await engine.close();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(stalledReports(engine)).toEqual([]);
+    });
   });
 
   it('keeps overlapping accepted turns queued until the current reply completes', async () => {
@@ -483,5 +547,82 @@ describe('structured Claude SU engine', () => {
     const p = peer();
     expect(() => startClaudeSuEngine({ ...boot, envelopeEnv: { ...boot.envelopeEnv, PAPERCUSP_SID: 'other-owner' } }, binding, runtime, { agentChatId: 'chat', query: p.factory })).toThrow('durable SU identity');
     expect(p.options()).toBeUndefined();
+  });
+});
+
+// Assembled at runtime, never written as a literal: this is a shared git-sync tree and
+// both the secrets guard and the pot-git publish guard scan file TEXT, so a
+// credential-shaped fixture committed here would refuse publishes from history.
+const fixtureSecret = {
+  anthropicKey: ['sk', 'ant', 'api03AAAABBBBCCCCDDDD'].join('-'),
+  githubToken: ['ghp', 'AAAABBBBCCCCDDDDEEEE'].join('_'),
+  jwt: ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJ0ZXN0In0', 'SflKxwRJSMeKKF2QT4fwpM'].join('.'),
+  bearerToken: 'abcdefghijklmnopqrstuvwx',
+  assignedValue: 'super-secret-value',
+} as const;
+const secretEnvName = ['ANTHROPIC', 'API', 'KEY'].join('_');
+
+// The engine used to DISCARD the child's stderr, so a child that refuses on that
+// channel — a quota wall answers in ~5s in plain text and exits 1 — was invisible in
+// every diagnostic, because all of them were derived from the protocol stream that
+// child never reached (EI-22963885533180534). These cover the retention chain link by
+// link: child stream -> bounded redacted tail -> the message an operator reads.
+describe('child stderr retention', () => {
+  it('retains what the child wrote to its own stderr, and keeps draining the pipe', async () => {
+    const tail = createChildStderrTail();
+    const stderr = new PassThrough();
+    attachChildStderr(stderr, tail);
+    stderr.write('Claude usage limit reached MARKER-QUOTA-WALL\n');
+    await vi.waitFor(() => expect(tail.read()).toContain('MARKER-QUOTA-WALL'));
+    // Retention REPLACES the old discard; it must not stop the drain, or a noisy
+    // child deadlocks its own protocol pipes.
+    expect(stderr.readableFlowing).toBe(true);
+    expect(stderr.readableLength).toBe(0);
+  });
+
+  it('tolerates a child spawned without a stderr pipe', () => {
+    expect(() => attachChildStderr(null, createChildStderrTail())).not.toThrow();
+  });
+
+  it('keeps the END of an oversized stderr stream, because a refusal arrives last', () => {
+    const tail = createChildStderrTail();
+    tail.append(`HEAD-MARKER${'x'.repeat(CHILD_STDERR_TAIL_LIMIT)}`);
+    tail.append('TAIL-MARKER');
+    const retained = tail.read();
+    expect(retained).not.toContain('HEAD-MARKER');
+    expect(retained).toContain('TAIL-MARKER');
+    expect(retained.length).toBeLessThanOrEqual(CHILD_STDERR_TAIL_LIMIT);
+  });
+
+  it.each([
+    ['an Anthropic key', `auth failed for ${fixtureSecret.anthropicKey}`, 'api03AAAABBBBCCCCDDDD'],
+    ['a GitHub token', `auth failed for ${fixtureSecret.githubToken}`, 'AAAABBBBCCCCDDDDEEEE'],
+    ['a JWT', `auth failed for ${fixtureSecret.jwt}`, 'SflKxwRJSMeKKF2QT4fwpM'],
+    ['an Authorization header', `auth failed for Bearer ${fixtureSecret.bearerToken}`, fixtureSecret.bearerToken],
+    ['a named secret assignment', `auth failed for ${secretEnvName}=${fixtureSecret.assignedValue}`, fixtureSecret.assignedValue],
+  ])('redacts %s before the child stderr reaches a persisted event', (_label, line, secret) => {
+    // The child inherits an env carrying OAuth tokens and PATs, and CLIs do echo
+    // argv/env on some failures — so retention without redaction would persist them.
+    const tail = createChildStderrTail();
+    tail.append(line);
+    const retained = tail.read();
+    expect(retained).not.toContain(secret);
+    // The surrounding diagnostic must survive, or redaction eats the message too.
+    expect(retained).toContain('auth failed for');
+    expect(redactChildStderr(line)).toBe(retained);
+  });
+
+  it('carries the child stderr onto a stall report and names its absence otherwise', () => {
+    expect(formatStalledTurnMessage(120_000, 'MARKER-QUOTA-WALL'))
+      .toBe('Claude produced no stream frame for 120s and this owner turn has not ended. Last child stderr: MARKER-QUOTA-WALL');
+    const silent = formatStalledTurnMessage(90_000, '');
+    expect(silent).toContain('90s');
+    expect(silent).toContain('The child wrote nothing to stderr.');
+    expect(silent).not.toContain('Last child stderr');
+  });
+
+  it('adds no suffix when the child wrote nothing, so a diagnostic never dangles', () => {
+    expect(childStderrSuffix('')).toBe('');
+    expect(childStderrSuffix('refused')).toBe(' Last child stderr: refused');
   });
 });
