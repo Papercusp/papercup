@@ -1489,8 +1489,24 @@ export function defaultAccountEnv(): {
  */
 export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
 /**
- * Build the owner-facing warning for a known all-walled Codex auto-route pool.
- * Missing/deploy-skewed stats fail open: this guard warns only from affirmative live data.
+ * Verdict for a Codex auto-route launch, from a live gateway `/stats` snapshot.
+ *
+ * THREE outcomes, deliberately not two:
+ *  - `proceed` — nothing affirmative says the pool is walled. Missing, legacy and
+ *    deploy-skewed stats all land here: a down or older gateway must never block psu.
+ *  - `warn` — the pool reads fully walled, but the snapshot CONTRADICTS ITSELF: its
+ *    own earliest-recovery horizon has already passed, so capacity may well be back
+ *    and the reading merely stale. Say so and launch anyway.
+ *  - `refuse` — fully walled with no recovery yet due. Every model call this launch
+ *    makes would 429 immediately, so the spawn can only burn capacity, a task slot
+ *    and a log file.
+ *
+ * Why `refuse` exists at all: this function's ancestor COMPUTED the futility and
+ * launched regardless ("the launch will continue"). Measured 2026-09-11 over 3h of
+ * grading-audit judges — 342 launches into this exact state, 336 dying quota-terminal,
+ * and ZERO emitting a card — while the same walled pool starved every other agent
+ * (EI-22976924584016603). Fail-open is right for an UNCERTAIN snapshot; it is how one
+ * walled pool becomes hundreds of futile spawns when the snapshot is certain.
  *
  * @param {{
  *   agent?: string | null,
@@ -1499,9 +1515,9 @@ export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
  *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null } | null,
  *   now?: number
  * }} input
- * @returns {string | null}
+ * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
  */
-export function codexAutoPoolWarning({ agent, model, account, stats, now, }?: {
+export function codexAutoPoolVerdict({ agent, model, account, stats, now, }?: {
     agent?: string | null;
     model?: string | null;
     account?: string | null | {
@@ -1514,10 +1530,18 @@ export function codexAutoPoolWarning({ agent, model, account, stats, now, }?: {
         codexEarliestRecoveryAt?: number | null;
     } | null;
     now?: number;
-}): string | null;
+}): {
+    kind: "proceed" | "warn" | "refuse";
+    message: string | null;
+    recoveryAt: number | null;
+};
 /**
- * Best-effort launch preflight. A down or older gateway never blocks psu; only a live,
- * self-describing all-walled snapshot emits a warning.
+ * Launch preflight against the live gateway. Returns TRUE when the launch may proceed.
+ *
+ * FAIL-OPEN EVERYWHERE EXCEPT ONE CASE: a down, slow, unreachable or older gateway
+ * never blocks psu (every failure path below returns true). Only a live,
+ * self-describing, internally-consistent all-walled snapshot refuses — see
+ * `codexAutoPoolVerdict` for why that one case stops being advisory.
  *
  * @param {{
  *   agent?: string | null,
@@ -1526,10 +1550,12 @@ export function codexAutoPoolWarning({ agent, model, account, stats, now, }?: {
  *   fetchImpl?: typeof fetch,
  *   log?: (message: string) => void,
  *   port?: number,
- *   timeoutMs?: number
+ *   timeoutMs?: number,
+ *   env?: Record<string, string | undefined>
  * }} input
+ * @returns {Promise<boolean>} false ⇒ the caller MUST abort the launch.
  */
-export function warnIfCodexAutoPoolWalled({ agent, model, account, fetchImpl, log, port, timeoutMs, }?: {
+export function preflightCodexAutoPool({ agent, model, account, fetchImpl, log, port, timeoutMs, env, }?: {
     agent?: string | null;
     model?: string | null;
     account?: string | null | {
@@ -1540,7 +1566,8 @@ export function warnIfCodexAutoPoolWalled({ agent, model, account, fetchImpl, lo
     log?: (message: string) => void;
     port?: number;
     timeoutMs?: number;
-}): Promise<string | null>;
+    env?: Record<string, string | undefined>;
+}): Promise<boolean>;
 /**
  * Strip ONLY the managed ROOT block (`model_provider = "papercusp-codex-gateway"`),
  * leaving the `[model_providers.papercusp-codex-gateway]` TABLE in place. With no
@@ -3616,6 +3643,14 @@ export const GATEWAY_CLIENT_AUTH_TOKEN: "papercusp-gateway";
  * machine's default login. */
 export const ACCOUNT_ROUTING_MODE_ENV: "PAPERCUSP_ACCOUNT_ROUTING_MODE";
 export function CACHE_PROXY_URL(): string;
+/** Env escape hatch: launch anyway despite a provably-walled auto-route pool. */
+export const ALLOW_WALLED_LAUNCH_ENV: "PAPERCUSP_ALLOW_WALLED_LAUNCH";
+/**
+ * Exit code for a launch REFUSED because its account pool is provably walled.
+ * Distinct from 1 on purpose: a dispatcher can tell "this launch is futile until
+ * capacity returns, do not re-dispatch" apart from "the launch crashed, retry".
+ */
+export const WALLED_POOL_REFUSAL_EXIT: 78;
 /** Claude settings/env selectors that can redirect a launch away from the
  * machine's first-party `/login`. Keep this list aligned with
  * enforceDefaultClaudeAccount and the command-line settings override below.

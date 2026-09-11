@@ -5267,9 +5267,35 @@ function isCodexAutoRoute(agent, model, account) {
   return provider === "codex";
 }
 
+/** Env escape hatch: launch anyway despite a provably-walled auto-route pool. */
+export const ALLOW_WALLED_LAUNCH_ENV = "PAPERCUSP_ALLOW_WALLED_LAUNCH";
+
 /**
- * Build the owner-facing warning for a known all-walled Codex auto-route pool.
- * Missing/deploy-skewed stats fail open: this guard warns only from affirmative live data.
+ * Exit code for a launch REFUSED because its account pool is provably walled.
+ * Distinct from 1 on purpose: a dispatcher can tell "this launch is futile until
+ * capacity returns, do not re-dispatch" apart from "the launch crashed, retry".
+ */
+export const WALLED_POOL_REFUSAL_EXIT = 78;
+
+/**
+ * Verdict for a Codex auto-route launch, from a live gateway `/stats` snapshot.
+ *
+ * THREE outcomes, deliberately not two:
+ *  - `proceed` — nothing affirmative says the pool is walled. Missing, legacy and
+ *    deploy-skewed stats all land here: a down or older gateway must never block psu.
+ *  - `warn` — the pool reads fully walled, but the snapshot CONTRADICTS ITSELF: its
+ *    own earliest-recovery horizon has already passed, so capacity may well be back
+ *    and the reading merely stale. Say so and launch anyway.
+ *  - `refuse` — fully walled with no recovery yet due. Every model call this launch
+ *    makes would 429 immediately, so the spawn can only burn capacity, a task slot
+ *    and a log file.
+ *
+ * Why `refuse` exists at all: this function's ancestor COMPUTED the futility and
+ * launched regardless ("the launch will continue"). Measured 2026-09-11 over 3h of
+ * grading-audit judges — 342 launches into this exact state, 336 dying quota-terminal,
+ * and ZERO emitting a card — while the same walled pool starved every other agent
+ * (EI-22976924584016603). Fail-open is right for an UNCERTAIN snapshot; it is how one
+ * walled pool becomes hundreds of futile spawns when the snapshot is certain.
  *
  * @param {{
  *   agent?: string | null,
@@ -5278,17 +5304,18 @@ function isCodexAutoRoute(agent, model, account) {
  *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null } | null,
  *   now?: number
  * }} input
- * @returns {string | null}
+ * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
  */
-export function codexAutoPoolWarning({
+export function codexAutoPoolVerdict({
   agent,
   model,
   account,
   stats,
   now = Date.now(),
 } = {}) {
-  if (!isCodexAutoRoute(agent, model, account)) return null;
-  if (!stats || typeof stats !== "object") return null;
+  const proceed = { kind: "proceed", message: null, recoveryAt: null };
+  if (!isCodexAutoRoute(agent, model, account)) return proceed;
+  if (!stats || typeof stats !== "object") return proceed;
   const healthy = stats.codexHealthyAccounts;
   const total = stats.codexTotalAccounts;
   const hasRecovery = Object.prototype.hasOwnProperty.call(
@@ -5296,11 +5323,13 @@ export function codexAutoPoolWarning({
     "codexEarliestRecoveryAt",
   );
   const rawRecovery = stats.codexEarliestRecoveryAt;
-  // Warn only from the complete stats contract introduced with this guard.
+  // Speak only from the complete stats contract introduced with this guard.
   // Number(null) and Number("") are both zero; coercing either would turn an
-  // unknown/legacy snapshot into a false all-walled warning. The pre-P-006
-  // gateway also exposed codexHealthyAccounts without the denominator/horizon,
-  // so require all three fields before speaking with certainty.
+  // unknown/legacy snapshot into a false all-walled verdict — and now that the
+  // certain case REFUSES, a false positive strands a launch instead of merely
+  // printing a wrong line. The pre-P-006 gateway also exposed
+  // codexHealthyAccounts without the denominator/horizon, so require all three
+  // fields before speaking with certainty.
   if (
     healthy !== 0 ||
     !Number.isInteger(total) ||
@@ -5309,22 +5338,48 @@ export function codexAutoPoolWarning({
     (rawRecovery !== null &&
       (typeof rawRecovery !== "number" || !Number.isFinite(rawRecovery)))
   )
-    return null;
+    return proceed;
   const count = `0 of ${total}`;
-  const recovery = rawRecovery ?? Number.NaN;
+  const recovery =
+    typeof rawRecovery === "number" && Number.isFinite(rawRecovery)
+      ? rawRecovery
+      : null;
+  // A horizon already in the PAST is the one all-walled snapshot we decline to act
+  // on: the gateway itself predicted capacity back by now, so `healthy: 0` may be a
+  // stale read rather than a live wall. Warn and launch — never refuse on a
+  // self-contradicting snapshot.
+  if (recovery !== null && recovery <= now)
+    return {
+      kind: "warn",
+      recoveryAt: recovery,
+      message:
+        `psu: WARNING — Codex auto-route pool reads fully walled (${count} ChatGPT accounts serviceable), ` +
+        `but its own earliest recovery ${new Date(recovery).toISOString()} has already passed, so the snapshot may be stale. ` +
+        "Launching anyway; the first model call will fail fast with 429 if capacity has not in fact returned.",
+    };
   const horizon =
-    Number.isFinite(recovery) && recovery > now
-      ? `; earliest known recovery ${new Date(recovery).toISOString()}`
-      : "; earliest recovery unknown";
-  return (
-    `psu: WARNING — Codex auto-route pool is fully walled: ${count} ChatGPT accounts serviceable${horizon}. ` +
-    "The launch will continue, but its first model call will fail fast with 429 until capacity returns."
-  );
+    recovery === null
+      ? "; earliest recovery unknown"
+      : `; earliest known recovery ${new Date(recovery).toISOString()}`;
+  return {
+    kind: "refuse",
+    recoveryAt: recovery,
+    message:
+      `psu: REFUSING TO LAUNCH — Codex auto-route pool is fully walled: ${count} ChatGPT accounts serviceable${horizon}. ` +
+      "Every model call would fail fast with 429, so this launch can only burn a spawn, a task slot and a log file. " +
+      "Re-route instead: --agent claude (auto-routing is PROVIDER-SCOPED, so no --account value can cross providers), " +
+      "or --account default to skip the gateway, or wait for the recovery above. " +
+      `Override with ${ALLOW_WALLED_LAUNCH_ENV}=1 if you know this snapshot is wrong.`,
+  };
 }
 
 /**
- * Best-effort launch preflight. A down or older gateway never blocks psu; only a live,
- * self-describing all-walled snapshot emits a warning.
+ * Launch preflight against the live gateway. Returns TRUE when the launch may proceed.
+ *
+ * FAIL-OPEN EVERYWHERE EXCEPT ONE CASE: a down, slow, unreachable or older gateway
+ * never blocks psu (every failure path below returns true). Only a live,
+ * self-describing, internally-consistent all-walled snapshot refuses — see
+ * `codexAutoPoolVerdict` for why that one case stops being advisory.
  *
  * @param {{
  *   agent?: string | null,
@@ -5333,10 +5388,12 @@ export function codexAutoPoolWarning({
  *   fetchImpl?: typeof fetch,
  *   log?: (message: string) => void,
  *   port?: number,
- *   timeoutMs?: number
+ *   timeoutMs?: number,
+ *   env?: Record<string, string | undefined>
  * }} input
+ * @returns {Promise<boolean>} false ⇒ the caller MUST abort the launch.
  */
-export async function warnIfCodexAutoPoolWalled({
+export async function preflightCodexAutoPool({
   agent,
   model,
   account,
@@ -5344,9 +5401,10 @@ export async function warnIfCodexAutoPoolWalled({
   log = console.error,
   port,
   timeoutMs = 1_200,
+  env = process.env,
 } = {}) {
-  if (!isCodexAutoRoute(agent, model, account)) return null;
-  const envPort = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  if (!isCodexAutoRoute(agent, model, account)) return true;
+  const envPort = Number(env.PAPERCUSP_GATEWAY_PORT);
   const gatewayPort =
     Number.isFinite(port) && port > 0
       ? port
@@ -5359,13 +5417,20 @@ export async function warnIfCodexAutoPoolWalled({
     const response = await fetchImpl(`http://127.0.0.1:${gatewayPort}/stats`, {
       signal: controller.signal,
     });
-    if (!response?.ok) return null;
+    if (!response?.ok) return true;
     const stats = await response.json();
-    const warning = codexAutoPoolWarning({ agent, model, account, stats });
-    if (warning) log(warning);
-    return warning;
+    const verdict = codexAutoPoolVerdict({ agent, model, account, stats });
+    if (verdict.kind === "proceed") return true;
+    const refused = verdict.kind === "refuse";
+    const overridden = refused && env[ALLOW_WALLED_LAUNCH_ENV] === "1";
+    log(
+      overridden
+        ? `${verdict.message}\npsu: ${ALLOW_WALLED_LAUNCH_ENV}=1 is set — launching anyway.`
+        : String(verdict.message),
+    );
+    return !refused || overridden;
   } catch {
-    return null;
+    return true;
   } finally {
     clearTimeout(timer);
   }
@@ -12746,11 +12811,16 @@ async function launchResolvedResume(source, args, { tracked }) {
     await launchSessionPort(source, target, account, args);
     return;
   }
-  await warnIfCodexAutoPoolWalled({
-    agent: target.targetAgent,
-    model: target.modelSpec,
-    account,
-  });
+  if (
+    !(await preflightCodexAutoPool({
+      agent: target.targetAgent,
+      model: target.modelSpec,
+      account,
+    }))
+  ) {
+    process.exitCode = WALLED_POOL_REFUSAL_EXIT;
+    return;
+  }
   const resumeModel = reconcileResumeModelForAccountRoute({
     agent: target.targetAgent,
     model: target.modelSpec,
@@ -13066,7 +13136,8 @@ async function roleFlow(args, role, rolesMeta) {
   // Backend-not-installed → offer to install it before we spawn (owner req
   // 2026-07-06), same as the SU flow. Aborts if the user declines / it doesn't land.
   if (!(await ensureBackendInstalled(agent))) process.exit(1);
-  await warnIfCodexAutoPoolWalled({ agent, model: args.model, account });
+  if (!(await preflightCodexAutoPool({ agent, model: args.model, account })))
+    process.exit(WALLED_POOL_REFUSAL_EXIT);
 
   const res = await api("/api/agent-mcp/console/bootstrap-role", {
     method: "POST",
@@ -13728,11 +13799,14 @@ async function fetchSetupStageSoft({
  * it reaches this launcher.
  */
 async function launchFreshSu(selections, args, { brain = false } = {}) {
-  await warnIfCodexAutoPoolWalled({
-    agent: selections.agent,
-    model: args.model,
-    account: args.account,
-  });
+  if (
+    !(await preflightCodexAutoPool({
+      agent: selections.agent,
+      model: args.model,
+      account: args.account,
+    }))
+  )
+    process.exit(WALLED_POOL_REFUSAL_EXIT);
   const bootstrapIdempotencyKey = randomUUID();
   if (
     selections.agent === "codex" &&
