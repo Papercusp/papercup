@@ -2217,7 +2217,12 @@ describe('scorecards:emit — author acceptance by exact reference (P-003)', () 
       asAuthor,
     );
 
-    expect(r).toMatchObject({ ok: false });
+    // Pin the exact code, like every sibling control here. A bare `ok: false`
+    // cannot tell the subject rail from an unrelated refusal, so it would keep
+    // passing if the rail were removed and the fixture later went ineligible for
+    // some other reason — a negative control that cannot fail for the right
+    // reason is not evidence.
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_wrong_subject' });
     expect(captureM).not.toHaveBeenCalled();
   });
 });
