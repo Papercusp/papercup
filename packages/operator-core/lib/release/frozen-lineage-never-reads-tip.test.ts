@@ -172,7 +172,12 @@ describe('the ready-to-verify path verifies the repair head at its own sha, neve
     const end = rest.indexOf('// QUIET CUT');
     expect(end, 'the quiet-cut block must follow the branch').toBeGreaterThan(-1);
     const branch = rest.slice(0, end);
-    expect(branch).toContain('await verifyRepairHead(deps, repairQueue)');
+    // The deps OBJECT handed to verifyRepairHead is an incidental local (`deps` before
+    // 2026-09-11T00:00Z, `verifyDeps` after it); what this guard pins is the SECOND
+    // argument — the frozen queue row, never the tip. Match either spelling of the
+    // first arg, exactly as the `(?:repairQueue|fresh)` assertion below does, so a
+    // rename cannot red-pin the whole pure lane while the invariant still holds.
+    expect(branch).toMatch(/await verifyRepairHead\((?:deps|verifyDeps), repairQueue\)/);
     expect(branch).not.toMatch(/resolveTip|integrationBranch|transportedCandidate|stagingContainsFrozenRepair/);
     // A red re-queues from the repair head that was just tested; nothing on this path retires
     // the queue (`writeFrozenRepairQueue(null)`) or steps the candidate anywhere else.
