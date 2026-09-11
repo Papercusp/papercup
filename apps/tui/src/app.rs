@@ -3071,6 +3071,17 @@ impl App {
         // Queued lines were composed FOR the conversation being unbound. Firing
         // them at whatever is bound next would deliver the owner's message to a
         // different agent, which is strictly worse than dropping it.
+        //
+        // But dropping is not free either — no state may accept a message that
+        // simply disappears. The composer is the owner's own scratch buffer and
+        // is NOT conversation-bound (nothing here clears it), so an unsent line
+        // goes back there when it is free: recoverable, and still unsent. That
+        // is a state change rather than a `session_note`, deliberately — this
+        // helper has ten callers and several set their own note straight after,
+        // so a note here would be overwritten exactly when it mattered.
+        if self.chat_input.is_empty() && !self.chat_queued.is_empty() {
+            self.chat_input = self.chat_queued.remove(0);
+        }
         self.chat_queued.clear();
         self.chat_scroll = 0;
     }
@@ -3863,20 +3874,48 @@ impl App {
         }
         // Not dispatched — the conversation refuses writes. Do NOT re-queue it:
         // the refusal is a property of the conversation, so retrying every tick
-        // would spin forever and bury the note explaining why. Hand the line
-        // back to the composer and stop.
-        if self.chat_input.is_empty() {
-            self.chat_input = text;
+        // would spin forever and bury the note explaining why.
+        //
+        // Every stranded line still has to SURVIVE: the plan's product-flow
+        // contract is that no state accepts a message that will simply
+        // disappear. The composer holds at most one, so the head goes back
+        // there when it is free and the remainder is preserved in the
+        // transcript as `undelivered`, where it stays visible and copyable.
+        //
+        // Before this, a NON-EMPTY composer silently discarded the head as well
+        // as the tail — and the note still read "The first is back in the
+        // composer", reporting a lost message as a recovered one. That second
+        // half is the worse defect: a truthful "discarded" at least tells the
+        // owner to retype.
+        let mut stranded = vec![text];
+        stranded.append(&mut self.chat_queued);
+        let to_composer = self.chat_input.is_empty();
+        if to_composer {
+            self.chat_input = stranded.remove(0);
         }
-        let dropped = self.chat_queued.len();
-        self.chat_queued.clear();
-        self.session_note = Some(if dropped == 0 {
-            "Queued message not sent — this conversation is read-only. It is back in the composer."
-                .into()
-        } else {
-            format!(
-                "Queued messages not sent — this conversation is read-only. The first is back in the composer; {dropped} more discarded."
-            )
+        let kept = stranded.len();
+        for line in stranded {
+            self.chat_messages.push(ChatMessage::undelivered(&line));
+        }
+        self.session_note = Some(match (to_composer, kept) {
+            (true, 0) => {
+                "Queued message not sent — this conversation is read-only. It is back in the composer."
+                    .into()
+            }
+            (true, 1) => {
+                "Queued messages not sent — this conversation is read-only. The first is back in the composer; 1 more kept in the transcript."
+                    .into()
+            }
+            (true, n) => format!(
+                "Queued messages not sent — this conversation is read-only. The first is back in the composer; {n} more kept in the transcript."
+            ),
+            (false, 1) => {
+                "Queued message not sent — this conversation is read-only. It is kept in the transcript; your draft was left alone."
+                    .into()
+            }
+            (false, n) => format!(
+                "{n} queued messages not sent — this conversation is read-only. They are kept in the transcript; your draft was left alone."
+            ),
         });
         Some(Action::Render)
     }
@@ -17539,6 +17578,138 @@ mod tests {
         );
         let action = app.update(Event::Tick);
         assert_eq!(dispatched_text(&action), None);
+    }
+
+    /// Make the bound conversation refuse writes, the same way the pre-cutover
+    /// fixture does — a legacy class is the one state where a composed line can
+    /// be accepted into the queue and then turn out to be undeliverable.
+    fn make_read_only(app: &mut App) {
+        app.agent_chat_id = Some("chat-legacy".into());
+        app.pui_runtime_class = Some(crate::su_session::PuiRuntimeClass::LegacyOwnedLoop);
+    }
+
+    fn undelivered_lines(app: &App) -> Vec<&str> {
+        app.chat_messages
+            .iter()
+            .filter(|m| m.role == "undelivered")
+            .map(|m| m.content.as_str())
+            .collect()
+    }
+
+    /// The plan's product-flow contract is that no state "accepts a message
+    /// that will simply disappear". A queued line whose conversation turns out
+    /// to refuse writes is precisely that state, and the composer holds only
+    /// ONE line — so everything past the first needs a home, not a count.
+    #[test]
+    fn a_refused_queue_returns_the_head_and_keeps_every_other_line() {
+        let mut app = running_turn("first");
+        for line in ["second", "third", "fourth"] {
+            app.chat_input = line.into();
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        assert_eq!(app.chat_queued.len(), 3, "fixture: three lines queued");
+        make_read_only(&mut app);
+
+        app.finish_chat_turn();
+        app.update(Event::Tick);
+
+        assert_eq!(
+            app.chat_input, "second",
+            "the head goes back to the composer, which was free"
+        );
+        assert_eq!(
+            undelivered_lines(&app),
+            ["third", "fourth"],
+            "and the tail is PRESERVED in the transcript — it used to be \
+             discarded with nothing but a count to show for it"
+        );
+        assert!(
+            app.chat_queued.is_empty(),
+            "the queue still stops: a refusal is a property of the conversation, \
+             so retrying every tick would spin forever"
+        );
+    }
+
+    /// The worse half of the same defect: when the composer was OCCUPIED the
+    /// head was dropped outright, and the note still read "The first is back in
+    /// the composer" — a lost message reported as a recovered one. A truthful
+    /// "discarded" would at least have told the owner to retype.
+    #[test]
+    fn a_refused_queue_never_overwrites_a_draft_nor_lies_about_where_it_went() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        // The owner started composing again while the turn was still running.
+        app.chat_input = "a draft I am still editing".into();
+        make_read_only(&mut app);
+
+        app.finish_chat_turn();
+        app.update(Event::Tick);
+
+        assert_eq!(
+            app.chat_input, "a draft I am still editing",
+            "a live draft is never overwritten by a stranded line"
+        );
+        assert_eq!(
+            undelivered_lines(&app),
+            ["second"],
+            "and the stranded line survives instead of vanishing"
+        );
+        let note = app.session_note.as_deref().unwrap_or_default();
+        assert!(
+            note.contains("kept in the transcript"),
+            "the note must say where the line actually went: {note}"
+        );
+        assert!(
+            !note.contains("back in the composer"),
+            "and must NOT claim a recovery that did not happen: {note}"
+        );
+    }
+
+    /// Calibration for the two tests above. They assert over a queue that was
+    /// REFUSED; if the fixture ever stopped refusing, the queue would simply
+    /// drain and both would keep passing while measuring nothing. This is the
+    /// same fixture MINUS the read-only class, and it must behave oppositely.
+    #[test]
+    fn the_stranded_queue_tests_are_measuring_a_real_refusal() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        app.finish_chat_turn();
+        let action = app.update(Event::Tick);
+
+        assert_eq!(
+            dispatched_text(&action),
+            Some("second"),
+            "without the read-only class the queue DRAINS"
+        );
+        assert!(
+            undelivered_lines(&app).is_empty(),
+            "and a delivered line is never marked undelivered"
+        );
+    }
+
+    /// An unsent line must not vanish just because the conversation was
+    /// unbound. It is not re-aimed at whatever binds next — that would deliver
+    /// the owner's message to a different agent — but the composer is their own
+    /// scratch buffer and survives the switch, so it is recoverable there.
+    #[test]
+    fn rebinding_recovers_the_unsent_line_into_a_free_composer() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.chat_input.is_empty(), "fixture: queuing frees the composer");
+
+        app.reset_agent_chat_binding();
+
+        assert_eq!(app.chat_input, "second", "recoverable, and still unsent");
+        let action = app.update(Event::Tick);
+        assert_eq!(
+            dispatched_text(&action),
+            None,
+            "recovering it must not also SEND it at the new binding"
+        );
     }
 
     #[test]
