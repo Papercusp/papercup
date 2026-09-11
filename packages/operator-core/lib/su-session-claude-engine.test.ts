@@ -200,6 +200,44 @@ describe('structured Claude SU engine', () => {
     }));
   });
 
+  it('reports a turn that ended with no assistant content instead of completing it silently', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    await vi.waitFor(() => expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'error', scope: 'transport', code: 'claude_empty_turn',
+    })));
+  });
+
+  it('reports a failing native result subtype with the reason the turn stopped', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId,
+      is_error: true, stop_reason: 'api_error', errors: ['no available account'] });
+    await vi.waitFor(() => expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'error', scope: 'transport', code: 'claude_turn_failed',
+      message: expect.stringContaining('no available account'),
+    })));
+  });
+
+  it('reports an API error carried on a success result instead of reading it as a reply', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId,
+      is_error: true, stop_reason: null, result: 'Credit balance is too low' });
+    await vi.waitFor(() => expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'error', scope: 'transport', code: 'claude_turn_failed',
+      message: expect.stringContaining('Credit balance is too low'),
+    })));
+  });
+
+  it('does not report an answered turn as empty or failed', async () => {
+    const p = peer(); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    expect(engine.adapter.host.recent.map(({ event }) => event).filter((event) => event.type === 'error')).toEqual([]);
+  });
+
   it('keeps overlapping accepted turns queued until the current reply completes', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;

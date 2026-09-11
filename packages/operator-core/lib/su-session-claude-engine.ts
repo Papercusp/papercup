@@ -82,6 +82,9 @@ export function startClaudeSuEngine(
   let inputTail = Promise.resolve();
   let activeInputUuid: string | undefined;
   let activeOwnerTurnId: string | undefined;
+  // Whether the active owner turn has produced any assistant frame. A turn that
+  // ends having produced none is reported, never left to read as an answer.
+  let activeTurnSawAssistant = false;
   let finishActiveTurn: (() => void) | undefined;
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
   const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
@@ -104,6 +107,7 @@ export function startClaudeSuEngine(
           adapter.correlateOwnerTurn(turnId);
           activeOwnerTurnId = turnId;
           activeInputUuid = uuid;
+          activeTurnSawAssistant = false;
           try {
             timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
             input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null,
@@ -279,8 +283,39 @@ export function startClaudeSuEngine(
             // The adapter projects partial text immediately and reconciles
             // each canonical block without duplicating the streamed content.
           }
+          // Any assistant frame — a canonical message or the start of a streamed
+          // one — is content for this turn. A turn with neither is empty.
+          if ((event.type === 'assistant' && event.session_id === nativeId)
+            || (event.type === 'stream_event' && event.session_id === nativeId
+              && event.parent_tool_use_id === null
+              && event.event.type === 'message_start' && event.event.message.role === 'assistant')) {
+            activeTurnSawAssistant = true;
+          }
           adapter.ingestNativeLine(JSON.stringify(event));
-          if (event.type === 'result') finishActiveTurn?.();
+          if (event.type === 'result') {
+            // The result is the turn's own verdict and it can report failure:
+            // an error subtype, or `is_error` on a success frame whose `result`
+            // carries the API error text instead of a reply. Dropping that
+            // leaves a failed turn indistinguishable from an answered one — an
+            // unavailable account pool ends the turn here with no assistant
+            // frame and nothing else to observe. Report it as an error; a turn
+            // that produced nothing at all is reported rather than inferred.
+            if (activeInputUuid) {
+              if (event.is_error || event.subtype !== 'success') {
+                const detail = event.subtype === 'success' ? event.result : event.errors.join('; ');
+                adapter.host.emit({
+                  type: 'error', scope: 'transport', code: 'claude_turn_failed', recoverable: true,
+                  message: `Claude ended this turn without a usable reply (${event.subtype}${event.stop_reason ? `, stop reason ${event.stop_reason}` : ''})${detail ? `: ${detail}` : ''}`,
+                });
+              } else if (!activeTurnSawAssistant) {
+                adapter.host.emit({
+                  type: 'error', scope: 'transport', code: 'claude_empty_turn', recoverable: true,
+                  message: 'Claude completed this turn without sending any assistant content; the turn produced no reply.',
+                });
+              }
+            }
+            finishActiveTurn?.();
+          }
         }
         if (!closed) throw new Error('Claude event stream closed unexpectedly');
       } catch (error) {
