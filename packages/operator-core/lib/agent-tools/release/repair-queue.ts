@@ -42,6 +42,7 @@ import {
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
   precheckPopulation,
+  resolveCanonicalIntegrationRoot,
   type FixPrecheckPopulation,
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
@@ -894,7 +895,10 @@ export default defineTool({
       let precheck: FixPrecheckVerdict | null = null;
       if (precheckApplies && outcome.ok) {
         const builtCommit = outcome.commit;
-        const runner = createCheckpointTreeFixPrecheckRunner({ integrationRoot: root, checkpointRoot: checkpointRootMirror(root) });
+        // The serving host's root may be a LINKED worktree (`:3170` runs from papercusp-staging);
+        // the checkpoint tree, its run-lock and setup-release-checkout all key off the MAIN one.
+        const precheckRoot = resolveCanonicalIntegrationRoot(root);
+        const runner = createCheckpointTreeFixPrecheckRunner({ integrationRoot: precheckRoot, checkpointRoot: checkpointRootMirror(precheckRoot) });
         let run: Awaited<ReturnType<typeof runner>>;
         try {
           run = await runner({ commit: builtCommit, files: population.files });

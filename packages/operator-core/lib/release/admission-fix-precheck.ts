@@ -25,7 +25,7 @@
  * the real runner (setup-release-checkout into the checkpoint tree, `scripts/test-files.mjs`
  * per file), guarded by the gate's run-lock probe.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
@@ -205,6 +205,41 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
 }
 
 // ─── the real runner ─────────────────────────────────────────────────────────────────────────
+
+/** `git rev-parse --git-common-dir` for `root`, absolute; null when git cannot answer. */
+export const defaultGitCommonDir = (root: string): string | null => {
+  try {
+    const out = execFileSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10_000,
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The MAIN worktree of the repository `root` belongs to — the root whose `.git` is a directory.
+ *
+ * The admit door's `integrationRoot()` is whatever tree the serving host runs from, and on the
+ * `:3170` staging host that is `…/papercusp-staging`, a LINKED worktree whose `.git` is a
+ * gitdir FILE. Handing that root to the checkpoint-tree runner breaks all three of its legs at
+ * once (measured 2026-09-11 on the d5c9f96b admission): `setup-release-checkout.sh` refuses it
+ * (`-d "$INTEGRATION_ROOT/.git"`, exit 1 → `runner-failed` → the door fails OPEN and publishes
+ * unmeasured), `checkpointRootMirror` of it names a `…-staging-checkpoint` tree that does not
+ * exist, and the run-lock probe looks beside the wrong root so a live gate run reads as idle.
+ * Every linked worktree shares the main worktree's object store, so the unpublished admission
+ * commit is reachable from the canonical root by construction. A root git cannot classify is
+ * returned unchanged (the runner then reports the failure loudly rather than guessing).
+ */
+export function resolveCanonicalIntegrationRoot(root: string, gitCommonDir: (root: string) => string | null = defaultGitCommonDir): string {
+  const common = gitCommonDir(root);
+  if (!common) return root;
+  const abs = path.resolve(root, common);
+  return path.basename(abs) === '.git' ? path.dirname(abs) : root;
+}
 
 export interface CheckpointTreeRunnerOptions {
   /** The canonical integration checkout (where the unpublished commit object lives). */

@@ -5,6 +5,7 @@ import {
   evaluateFixPrecheck,
   isTestFilePath,
   precheckPopulation,
+  resolveCanonicalIntegrationRoot,
   type ExecResult,
   type FixPrecheckRunResult,
 } from './admission-fix-precheck';
@@ -158,5 +159,26 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     const out = await runner({ commit: C, files: ['lib/red.test.ts'] });
     expect(out).toMatchObject({ ran: false, reason: 'runner-failed' });
     expect(exec).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resolveCanonicalIntegrationRoot (P-006 / R6)', () => {
+  it('a main worktree (its common dir is its own .git) resolves to itself', () => {
+    expect(resolveCanonicalIntegrationRoot('/w/papercusp', () => '/w/papercusp/.git')).toBe('/w/papercusp');
+  });
+
+  it('a LINKED worktree (papercusp-staging on :3170) resolves to the main worktree that owns the object store', () => {
+    // Measured 2026-09-11: the door handed the runner the linked worktree, setup-release-checkout
+    // refused it (`-d .git` is false for a gitdir FILE), and the admission published unmeasured.
+    expect(resolveCanonicalIntegrationRoot('/w/papercusp-staging', () => '/w/papercusp/.git')).toBe('/w/papercusp');
+  });
+
+  it('a relative common dir is resolved against the root', () => {
+    expect(resolveCanonicalIntegrationRoot('/w/papercusp', () => '.git')).toBe('/w/papercusp');
+  });
+
+  it('a root git cannot classify is returned unchanged — the runner then fails loudly instead of guessing', () => {
+    expect(resolveCanonicalIntegrationRoot('/not-a-repo', () => null)).toBe('/not-a-repo');
+    expect(resolveCanonicalIntegrationRoot('/bare.git', () => '/bare.git')).toBe('/bare.git');
   });
 });
