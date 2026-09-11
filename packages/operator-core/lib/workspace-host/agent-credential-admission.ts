@@ -435,8 +435,17 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
       verification,
     };
     // Admission asks authenticity, not funding: an authenticated-but-out-of-quota account is
-    // admitted and recorded in `unfundedAgents`. "Can this agent do work" is `allReady`, which the
-    // readiness/canary layer still requires and which an unfunded agent still falsifies.
+    // admitted and recorded in `unfundedAgents`. "Can this agent do work" is `allReady`, which an
+    // unfunded agent still falsifies.
+    //
+    // `allReady` is a COHERENCE field, not a flag another layer polls: no source file outside this
+    // one reads `.allReady` (the only other hits are dist bundles of this file). The readiness
+    // requirement is real but is enforced by RE-DERIVING readiness per agent — canary-runner.ts's
+    // validateAgentEvidence (:195) independently demands `ready === true` plus a non-empty
+    // proofDigest, both of which an unfunded agent fails — which is why canary-runner.ts:280 can
+    // hardcode `allReady: true` as a justified post-validation constant. Do not restate this as
+    // "the canary layer requires allReady"; that reading sends the next editor looking for a
+    // consumer that does not exist.
     if (!verification.admissible) throw new WorkspaceHostAgentCredentialAdmissionError(evidence);
     assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, input);
     return evidence;
