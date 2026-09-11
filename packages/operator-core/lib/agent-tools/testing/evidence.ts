@@ -8,6 +8,7 @@ import {
   type BindSpecEvidenceInput, type RepoFilesEvidenceMeasurement,
 } from '../plans/spec-evidence-store';
 import { readHarnessTestRunEvidence, countUnattributedTestRunRows, type HarnessTestRunEvidence } from '../../testing-run-store';
+import { resolveScenarioRerunScope } from './scenario-rerun-scope';
 import type { TestFilesCoreResult } from './run';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from '../plans/spec-clauses-store';
 
@@ -143,6 +144,33 @@ export function testEvidenceOutcome(binding: Request['bindings'][number], result
   return { outcome, collected: !counts.collectionFailed, executed, skipped: counts.skipped > 0 };
 }
 
+/**
+ * The evidence a PREVIOUS run left for this binding's scenario matrix, or null. Read only on
+ * the name-filtered path — an unfiltered run re-measures the matrix and carries nothing, so
+ * the happy path pays no extra query (same miss-path-only shape as the attribution probe).
+ *
+ * A failed probe returns null, which resolves to `no-sibling-evidence`: evidence you could
+ * not read is not evidence you may carry. Pinned to the same spec REVISION on purpose — a
+ * row proving an older contract is not proof of this one.
+ */
+async function readSiblingEvidence(row: Prepared, scope: Scope, deps: Deps) {
+  const rows = await deps.list({
+    harnessSlug: scope.harnessSlug,
+    planSlugs: [row.input.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE],
+    workItemIds: [row.input.workItemId], specIds: [row.input.specId],
+    evidenceKinds: ['test'], limit: 50,
+  }).catch(() => null);
+  if (!rows) return null;
+  const settled = rows.filter(candidate => {
+    if (candidate.evidenceRef === row.input.evidenceRef) return false; // never itself
+    if (candidate.specRevision !== row.input.specRevision) return false;
+    const execution = candidate.details?.testExecution as { phase?: string; binding?: { testPath?: string } } | undefined;
+    return execution?.phase === 'settled' && execution.binding?.testPath === row.binding.testPath;
+  });
+  const latest = [...settled].sort((a, b) => b.id - a.id)[0];
+  return latest ? { evidenceRef: latest.evidenceRef, ...latest.fingerprints } : null;
+}
+
 export async function finishTestEvidence(prepared: Prepared[], originRunId: string, runId: string, scope: Scope,
   result?: TestFilesCoreResult, deps: Deps = defaults) {
   const ledger = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: runId });
@@ -184,10 +212,26 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     // `ledger-unattributed` is a DIAGNOSTIC phase, never a proof phase: it is not
     // `settled`, so it cannot contribute a verificationFingerprint, and the
     // adequacy clamp below still forces outcome:'unknown'/executed:false.
+    // SPEC-P006-FAILED-SCENARIO-RERUN: a name-filtered rerun executes ONE scenario but
+    // settles a binding that claims the whole `scenarioIds` matrix, carrying the rest from
+    // whatever a previous run recorded. Sound only while that record still matches disk.
+    // The cheap pre-gate below mirrors the resolver's own null cases purely to avoid the
+    // ledger read on the unfiltered path; `resolveScenarioRerunScope` stays the authority.
+    const scenarioIds = (row.input.details?.adequacy as { scenarioIds?: string[] } | undefined)?.scenarioIds;
+    const carriesSiblings = typeof testNamePattern === 'string' && testNamePattern.trim().length > 0
+      && (scenarioIds?.length ?? 0) >= 2;
+    const siblingEvidence = carriesSiblings ? await readSiblingEvidence(row, scope, deps) : null;
+    const rerunScope = resolveScenarioRerunScope({ scenarioIds, testNamePattern,
+      priorEvidence: siblingEvidence,
+      current: { sourceFingerprint: row.input.sourceFingerprint, testFingerprint: row.input.testFingerprint } });
+    // The carry was refused: this run measured strictly less than the binding claims, so it
+    // is not proof — and, not being `settled`, it cannot contribute a verificationFingerprint.
+    const carryRefused = rerunScope?.scope === 'full-matrix';
     const phase = !run
       ? attribution === 'unattributed' ? 'ledger-unattributed' : 'pending'
       : !sourceStable ? 'source-changed'
-        : !measuredResult || measuredResult.error ? 'review-required' : 'settled';
+        : carryRefused ? 'stale-sibling-evidence'
+          : !measuredResult || measuredResult.error ? 'review-required' : 'settled';
     const details = {
       ...row.input.details,
         testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
@@ -196,12 +240,17 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
           ledgerAttribution: attribution,
           ...(unattributedRows !== null ? { ledgerUnattributedRows: unattributedRows } : {}),
           measuredOutcome: outcome.outcome,
+          ...(rerunScope ? { rerunScope } : {}),
+          ...(siblingEvidence?.evidenceRef ? { siblingEvidenceRef: siblingEvidence.evidenceRef } : {}),
         ...(result?.error ? { resultError: result.error } : {}),
       },
       adequacy: { ...(row.input.details?.adequacy as object), ...outcome,
         // Missing/ambiguous or contradictory ledger attribution cannot establish execution.
         ...(!run || (outcome.outcome === 'pass' && run.status !== 'pass') || (outcome.outcome === 'killed' && run.status !== 'fail')
           ? { outcome: 'unknown', executed: false } : {}),
+        // A refused carry is the same clamp for a different reason: the remaining matrix
+        // was neither measured here nor currently proven elsewhere.
+        ...(carryRefused ? { outcome: 'unknown', executed: false } : {}),
       },
     };
     const receipt = await deps.bind({ ...row.input, testRunId: run?.id ?? null, details });

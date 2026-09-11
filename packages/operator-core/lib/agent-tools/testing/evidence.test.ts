@@ -203,3 +203,103 @@ describe('test-time evidence continuity', () => {
     expect(bundle.verificationFingerprint).toBeNull();
   });
 });
+
+/**
+ * SPEC-P006-FAILED-SCENARIO-RERUN@1 — the stale-evidence full-coverage control.
+ *
+ *   behavior:  "A failed scenario rerun starts only the failed scenario when applicable
+ *               evidence for the remaining matrix is still current."
+ *   falsifier: "A recoverable single-scenario failure reruns the full matrix OR stale
+ *               remaining evidence is reused."
+ *   probe:     "Create one failed scenario with current sibling evidence, then repeat with
+ *               a stale sibling fingerprint."
+ *
+ * The hazard is specific to a name-filtered rerun. `testNamePattern` narrows execution to
+ * the ONE failed scenario, but the binding's proof covers every id in `scenarioIds`, and
+ * vitest reports the unmatched siblings as `skipped`. `testEvidenceOutcome` deliberately
+ * refuses to read those exclusions as a `skip` — correct, they are not evidence either way
+ * — so the narrowed run settles `pass` for the WHOLE matrix having measured one member of
+ * it. That carry is sound only while the evidence already recorded for the remaining
+ * scenarios is still current. After a source or test edit it is the falsifier's second arm
+ * verbatim: stale remaining evidence reused.
+ *
+ * Both arms below are the SAME call with ONE variable changed — the prior row's
+ * fingerprint — which is what makes this a control rather than two separate assertions.
+ */
+describe('failed-scenario rerun scope (SPEC-P006-FAILED-SCENARIO-RERUN)', () => {
+  const matrix = { ...binding, scenarioIds: ['boot', 'retry', 'teardown', 'recover'] };
+  const matrixRequest = { ...request, bindings: [matrix] };
+
+  /** The rerun of one failed scenario: 1 executed, the 3 siblings excluded by the filter. */
+  const narrowed = (): TestFilesCoreResult => ({ ...result(), passed: 1, failed: 0, skipped: 3,
+    byFile: { [matrix.testPath]: { passed: 1, failed: 0, skipped: 3, collectionFailed: false } },
+    testNamePattern: 'recover' });
+
+  /** What a PRIOR full-matrix run left behind as evidence for the remaining scenarios. */
+  const priorMatrixEvidence = (fingerprints: { sourceFingerprint: string; testFingerprint: string }) => ([{
+    id: 7, specId: matrix.specId, specRevision: matrix.specRevision,
+    evidenceKind: 'test', evidenceRef: 'test-run-group:00000000-0000-4000-8000-00000000prio:0',
+    testRunId: 41, coverageEvidenceRef: null, fingerprints,
+    details: {
+      testExecution: { schemaVersion: 1, phase: 'settled', binding: matrix },
+      adequacy: { outcome: 'pass', executed: true, scenarioIds: matrix.scenarioIds },
+    },
+  }]);
+
+  const CURRENT = { sourceFingerprint: 'source-before', testFingerprint: 'test-before' };
+  const STALE_SOURCE = { sourceFingerprint: 'source-after-an-edit', testFingerprint: 'test-before' };
+
+  async function rerun(prior: unknown[], run: TestFilesCoreResult = narrowed(),
+    req: typeof matrixRequest = matrixRequest) {
+    const d = deps();
+    d.list.mockResolvedValue(prior);
+    const prepared = await prepareTestEvidence(req, runId, [matrix.testPath], scope, d);
+    return { d, bundle: await finishTestEvidence(prepared, runId, runId, scope, run, d) };
+  }
+
+  // ARM 1 — current sibling evidence. The narrowing is sound, so the binding settles.
+  it('settles a narrowed rerun while the remaining matrix evidence is still current', async () => {
+    const { d, bundle } = await rerun(priorMatrixEvidence(CURRENT));
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+    expect(bundle.verificationFingerprint).not.toBeNull();
+    expect(d.bind.mock.calls.at(-1)![0].details.testExecution.rerunScope)
+      .toMatchObject({ scope: 'failed-scenario', reason: 'sibling-evidence-current' });
+  });
+
+  // ARM 2 — the identical rerun with ONE variable changed: a stale sibling fingerprint.
+  it('refuses to carry the remaining matrix from a stale sibling fingerprint', async () => {
+    const { d, bundle } = await rerun(priorMatrixEvidence(STALE_SOURCE));
+    expect(bundle.rows[0]).toMatchObject({ phase: 'stale-sibling-evidence', outcome: 'unknown' });
+    expect(bundle.verificationFingerprint).toBeNull();
+    const settled = d.bind.mock.calls.at(-1)![0];
+    expect(settled.details.adequacy).toMatchObject({ outcome: 'unknown', executed: false });
+    expect(settled.details.testExecution.rerunScope).toMatchObject({
+      scope: 'full-matrix', reason: 'stale-sibling-evidence', stale: ['source'] });
+  });
+
+  // Absence is not currency. A matrix whose siblings were NEVER recorded has nothing to
+  // carry, so a narrowed run over it measures strictly less than the binding claims.
+  it('does not read absent sibling evidence as current', async () => {
+    const { bundle } = await rerun([]);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'stale-sibling-evidence', outcome: 'unknown' });
+    expect(bundle.verificationFingerprint).toBeNull();
+  });
+
+  // CALIBRATION. The guard must fire on the NARROWING, not on stale prior evidence alone.
+  // An unfiltered run measures the whole matrix itself and therefore carries nothing, so it
+  // must still settle against the same stale row. Without this, an implementation that
+  // simply rejected any binding with a stale prior row would pass both arms above.
+  it('still settles an UNFILTERED full-matrix run against the same stale prior row', async () => {
+    const { bundle } = await rerun(priorMatrixEvidence(STALE_SOURCE), { ...result(), skipped: 0 });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+    expect(bundle.verificationFingerprint).not.toBeNull();
+  });
+
+  // CALIBRATION. A single-scenario binding has no remaining matrix, so a narrowed run over
+  // it is not this hazard — guarding it would block the ordinary one-test rerun R-8 exists
+  // to make cheap.
+  it('leaves a single-scenario binding alone under the same stale prior row', async () => {
+    const { bundle } = await rerun(priorMatrixEvidence(STALE_SOURCE), narrowed(), request);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+  });
+});
