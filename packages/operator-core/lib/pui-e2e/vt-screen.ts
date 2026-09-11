@@ -174,13 +174,49 @@ export class VtScreen {
   }
 }
 
+/**
+ * Codepoints a terminal lays out across TWO columns — East Asian Wide and
+ * Fullwidth forms, plus the emoji planes.
+ *
+ * `put` above models every character as ONE cell, because the grid is a cell
+ * array and not a shaped line. Ratatui positions the glyph following a wide one
+ * past its continuation column, and this parser honours that cursor move, so
+ * the continuation column replays as the blank it was initialised to. A typed
+ * `日本語` therefore reads back off the grid as `日 本 語`.
+ *
+ * That padding is the CAPTURE's geometry, never the product's buffer, and the
+ * screen dump proves which: the narrow characters beside it (`δ`, `ü`) are
+ * unpadded, and a composer inserting literal spaces would have no reason to pad
+ * exactly and only the double-width codepoints.
+ */
+const WIDE_CELL =
+  /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︐-︙︰-﹯＀-｠￠-￦]|[\u{1F300}-\u{1F9FF}]|[\u{20000}-\u{3FFFD}]/u;
+
+/** Drop the blank continuation column that follows each double-width glyph. */
+function collapseWideCells(line: string): string {
+  const chars = [...line];
+  let out = '';
+  for (let index = 0; index < chars.length; index++) {
+    out += chars[index];
+    if (WIDE_CELL.test(chars[index]) && chars[index + 1] === ' ') index++;
+  }
+  return out;
+}
+
 /** Normalize column padding while retaining row boundaries. */
 export function screenContains(screen: string, needle: string): boolean {
-  const normalized = screen
-    .split('\n')
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .join('\n');
-  return normalized.includes(needle.replace(/\s+/g, ' ').trim());
+  const lines = screen.split('\n').map((line) => line.replace(/\s+/g, ' ').trim());
+  const want = needle.replace(/\s+/g, ' ').trim();
+  if (lines.join('\n').includes(want)) return true;
+  // Continuation padding can only ever hide a needle that itself carries a
+  // double-width glyph, so this second attempt is gated on one: an ASCII needle
+  // has already returned, and no existing assertion's verdict can change.
+  // Deliberately one-directional — the SCREEN is collapsed and the needle never
+  // is, so this recovers a match the padding hid and cannot make two distinct
+  // strings compare equal. A needle whose own spacing is meaningful (a real
+  // space immediately after a wide glyph) is served by the first attempt.
+  if (!WIDE_CELL.test(want)) return false;
+  return lines.map(collapseWideCells).join('\n').includes(want);
 }
 
 /** Match an assistant bubble, never an echoed owner prompt. */

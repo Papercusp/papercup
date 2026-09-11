@@ -1775,7 +1775,12 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // that merely appended the draft again.
       await pane.waitFor(`> ${draft}`, { timeoutMs: 10_000 });
       const screen = pane.screen();
-      expect(screen, screen).toContain(`> ${draft}`);
+      // `screenContains`, not `toContain`: this draft's CJK glyphs each occupy
+      // TWO terminal columns, so the captured grid carries a blank continuation
+      // column between them (`日 本 語`) that a raw substring test cannot see
+      // past. `pasted` is ASCII and unaffected, so it stays a raw assertion —
+      // and it must stay one, being half of this clause's falsifier.
+      expect(screenContains(screen, `> ${draft}`), screen).toBe(true);
       expect(screen, screen).not.toContain(pasted);
 
       // Undo must not submit: a turn dispatched here would send the very text
@@ -1786,7 +1791,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       console.info('PUI_EDITOR_UNDO_ACCEPTANCE', JSON.stringify({
         binary: bin,
         binarySha256,
-        draftRestored: screen.includes(`> ${draft}`),
+        draftRestored: screenContains(screen, `> ${draft}`),
         pastedTextGone: !screen.includes(pasted),
         submitted: commandPosts.length,
       }));
