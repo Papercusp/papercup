@@ -1383,7 +1383,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('PUI tool is still running', { timeoutMs: 60_000 });
-      await pane.waitFor('Running — input locked');
+      // The running-state bar read " Running — input locked " until P-007 draft
+      // queuing made Enter QUEUE the next message instead of being swallowed
+      // (ui.rs:3126, pinned there by `assert!(!text.contains("input locked"))`).
+      // This waits for the running state; the assertion that input is not
+      // send-ready is the `not.toContain('Message — Enter send')` below.
+      await pane.waitFor('Running — Enter queues your next message');
       await pane.waitFor('Bash');
       expect(pane.screen()).not.toContain('Message — Enter send');
       await waitForSavedTurn(prompt);
@@ -2091,7 +2096,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         expect.objectContaining({ type: 'command_result', commandId: longCommand.commandId,
           commandType: 'owner_turn', status: 'completed', session: longCommand.target }),
       ])), { timeout: 120_000, interval: 100 });
-      await pane.waitFor('Running — input locked');
+      // The running-state bar read " Running — input locked " until P-007 draft
+      // queuing made Enter QUEUE the next message instead of being swallowed
+      // (ui.rs:3126, pinned there by `assert!(!text.contains("input locked"))`).
+      // This waits for the running state; the assertion that input is not
+      // send-ready is the `not.toContain('Message — Enter send')` below.
+      await pane.waitFor('Running — Enter queues your next message');
       await vi.waitFor(() => {
         const partialText = scriptedEngine.events.flatMap((event) => event.type === 'transcript'
           && event.role === 'assistant' && event.phase === 'delta' && event.turnId === longCommand.turnId
