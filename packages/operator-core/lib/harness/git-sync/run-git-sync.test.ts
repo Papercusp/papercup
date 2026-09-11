@@ -1561,17 +1561,51 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
         statMtimeMs: async () => null,
+        hasLiveHolder: async () => false,
       }),
     ).toBe(true);
     // stale but unlink throws (permissions) — do NOT claim healed
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
         statMtimeMs: async () => Date.now() - 10 * 60_000,
+        hasLiveHolder: async () => false,
         unlinkFile: async () => {
           throw new Error('EACCES');
         },
       }),
     ).toBe(false);
+  });
+
+  it('clearStaleIndexLock LIVE-HOLDER guard (EI-22703121889295786): an mtime-stale index.lock still held open by a live process is NEVER unlinked', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const logs: string[] = [];
+    const unlinked: string[] = [];
+    // mtime says stale (staleMs:0 makes ANY age stale), but a live writer holds the fd —
+    // this is the exact shape that truncated the canonical index to 0 bytes.
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        staleMs: 0,
+        hasLiveHolder: async () => true,
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
+      }),
+    ).toBe(false);
+    expect(unlinked).toEqual([]);
+    expect(logs.some((m) => m.includes('FRESH-BY-HOLDER'))).toBe(true);
+    // same lock, same age, but no live holder ⇒ the stale-orphan path unlinks as before
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        staleMs: 0,
+        hasLiveHolder: async () => false,
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
+      }),
+    ).toBe(true);
+    expect(unlinked).toEqual(['/fake/.git/index.lock']);
   });
 
   it('clearStaleConfigLock removes only an old empty holderless lock', async () => {
