@@ -39,8 +39,14 @@ import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
-  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit',
+  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question',
   successText: 'PUI structured engine replied',
+  // Inline-question fixture (mode:'question'). questionCallId doubles as the
+  // card's correlationId, which is how a test proves an answer reached the
+  // MATCHING waiting turn instead of some other one.
+  questionCallId: 'pui-question-tool',
+  questionPrompt: 'Keep or change the draft title?',
+  questionOptions: ['Keep', 'Change'] as string[],
   requests: [] as string[],
   engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
@@ -108,6 +114,28 @@ vi.mock('../su-session-claude-engine', async (original) => {
                 is_error: true, errors: ['PUI-E2E engine failed visibly'] });
               continue;
             }
+            if (scriptedEngine.mode === 'question') {
+              // An inline question, left OPEN: the turn must park until the owner
+              // answers, which is the state PUI-QUESTION is about. The adapter
+              // turns an `AskUserQuestion` tool_use into a card
+              // (su-session-claude-adapter.ts:630 -> cardFromClaudeQuestion:349)
+              // and stamps the card's correlationId with THIS callId, so the id
+              // below is what later proves the answer reached the matching turn
+              // rather than some other one. The input shape is load-bearing:
+              // `questions` must be a non-empty array and questions[0].question a
+              // non-empty string, or cardFromClaudeQuestion returns null and NO
+              // card is emitted at all — a silent nothing, not an error.
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'tool_use', id: scriptedEngine.questionCallId, name: 'AskUserQuestion', input: {
+                  questions: [{
+                    question: scriptedEngine.questionPrompt,
+                    options: scriptedEngine.questionOptions.map((label) => ({ label })),
+                    multiSelect: false, // -> presentation.kind 'radio' (true would give 'checkbox')
+                  }],
+                } },
+              ] } });
+              continue;
+            }
             output.write({ type: 'assistant', session_id: nativeId, message: { content: [
               { type: 'tool_use', id: 'pui-e2e-tool', name: 'Read', input: { file_path: 'README.md' } },
             ] } });
@@ -137,6 +165,16 @@ vi.mock('../su-session-claude-engine', async (original) => {
       };
       const engine = actual.startClaudeSuEngine(args[0], args[1], args[2], { ...args[3], query });
       scriptedEngine.engines.push(engine);
+      // Observe host events for the SCRIPTED engine too. Without this,
+      // `scriptedEngine.events` stays empty off the real-engine path, so
+      // `pendingNativeCards()` can only ever return [] and every card-mediated
+      // behaviour looks unsupported when it is merely UNOBSERVED — the adapter
+      // emits those cards perfectly well (su-session-claude-adapter.ts:630).
+      // The rpc mock below has always subscribed unconditionally; this is the
+      // same line, and the asymmetry was an oversight rather than a design.
+      void (async () => {
+        for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
+      })();
       return engine;
     },
   };
@@ -1152,6 +1190,9 @@ beforeEach(async () => {
   transportFault = 'none';
   scriptedEngine.mode = 'success';
   scriptedEngine.successText = 'PUI structured engine replied';
+  scriptedEngine.questionCallId = 'pui-question-tool';
+  scriptedEngine.questionPrompt = 'Keep or change the draft title?';
+  scriptedEngine.questionOptions = ['Keep', 'Change'];
   scriptedEngine.requests = [];
   scriptedEngine.events = [];
   scriptedEngine.initialization = Promise.resolve();
