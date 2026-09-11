@@ -993,9 +993,23 @@ export async function emitScorecard(
         // grading" is, or naming a card would become a way to accept evidence
         // the scan would have refused — an authorization bypass wearing the
         // costume of a convenience argument.
+        // WRONG-SUBJECT RAIL (SPEC-P003-SCORECARD-REFERENCE@1 names it as required
+        // evidence). `prior` is scoped by rubricRef ALONE, and one acceptance rubric
+        // legitimately carries cards for different subjects — the duplicate path below
+        // proves it, passing `subjectRef` and filtering `sameSubject`. Without this rail
+        // BOTH selection paths could pick a grading of someone else's subject, and the
+        // ratings the ship gate reads would describe other work entirely. Comparison
+        // mirrors the duplicate path exactly, so the two cannot drift: an emit that
+        // declares no subject constrains nothing, exactly as before.
+        const sameAcceptanceSubject = (card: (typeof prior)[number]): boolean =>
+          !args.subject ||
+          (card.subject?.ref === args.subject.ref && (card.subject?.kind ?? null) === (args.subject.kind ?? null));
         const isEligibleIndependent = async (card: (typeof prior)[number]): Promise<boolean> => {
           if (!card.rubricResolved || card.missingKeys.length !== 0 || card.synthesized || card.createdBy == null)
             return false;
+          // Applied HERE, inside the shared predicate, so the SCAN is rail-ed too —
+          // the acceptanceOf branch below only re-checks it to return a precise code.
+          if (!sameAcceptanceSubject(card)) return false;
           // Independence against the ORIGINAL author is unchanged — a seat
           // succession must never launder a related grader into an independent one.
           if (await lineageRelated(implementer, card.createdBy, { workspaceId: identityWorkspace })) return false;
@@ -1030,6 +1044,17 @@ export async function emitScorecard(
               error:
                 `acceptanceOf '${acceptanceOf}' was RETRACTED — a verdict must accept a live independent grading, ` +
                 'not a withdrawn one. Accept a current card, or have the grading re-emitted first',
+            };
+          }
+          if (!sameAcceptanceSubject(named)) {
+            return {
+              ok: false as const,
+              code: 'acceptance_of_wrong_subject' as const,
+              error:
+                `acceptanceOf '${acceptanceOf}' graded subject ` +
+                `'${named.subject?.ref ?? '(none)'}', not '${args.subject?.ref}' — its ratings describe other ` +
+                'work, so adopting them would file a verdict whose evidence is not about this subject. Accept ' +
+                'the independent card that graded THIS subject',
             };
           }
           if (!(await isEligibleIndependent(named))) {

@@ -2203,4 +2203,21 @@ describe('scorecards:emit — author acceptance by exact reference (P-003)', () 
     expect(r).toMatchObject({ ok: false, error: expect.stringContaining('acceptanceOf') });
     expect(captureM).not.toHaveBeenCalled();
   });
+
+  it('refuses a card that graded a DIFFERENT SUBJECT — the wrong-subject negative control', async () => {
+    // SPEC-P003-SCORECARD-REFERENCE@1 names wrong-subject as required evidence.
+    // The card below is eligible in EVERY other respect (complete, live, current
+    // revision, outside the author's lineage) and differs only in what it graded.
+    // Adopting it would let an author's verdict rest on a grading of someone
+    // else's subject — the ratings the ship gate reads would describe other work.
+    listM.mockResolvedValue([independentCard({ subject: { kind: 'plan', ref: 'a-completely-different-plan' } })]);
+
+    const r = await emitScorecard(
+      acceptanceOfArgs({ subject: { kind: 'plan', ref: 'the-plan-under-acceptance' } }) as never,
+      asAuthor,
+    );
+
+    expect(r).toMatchObject({ ok: false });
+    expect(captureM).not.toHaveBeenCalled();
+  });
 });
