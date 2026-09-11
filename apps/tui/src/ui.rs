@@ -925,9 +925,10 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 format!(
-                    "{} sessions · {} shown · Tab facet · h/l value · j/k move",
+                    "{} sessions · {} shown · {} facet · h/l value · j/k move",
                     browser.rows.len(),
-                    rows.len()
+                    rows.len(),
+                    app.cycle_key()
                 ),
                 Theme::dim(),
             )),
@@ -4612,7 +4613,11 @@ fn draw_session_switcher(f: &mut Frame, app: &App) {
         );
     }
     f.render_widget(
-        Paragraph::new("j/k move · Tab MRU · Enter route · Esc close").style(Theme::dim()),
+        Paragraph::new(format!(
+            "j/k move · {} MRU · Enter route · Esc close",
+            app.cycle_key()
+        ))
+        .style(Theme::dim()),
         chunks[2],
     );
 }

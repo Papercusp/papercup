@@ -51,6 +51,22 @@ pub enum Event {
     /// three separate half-messages. The paste must therefore reach the reducer
     /// as data, never as input to the key bindings.
     Paste(String),
+    /// The terminal (or multiplexer pane) lost keyboard focus.
+    ///
+    /// This exists for the same reason `Paste` does — because of what happens
+    /// WITHOUT it. Hold-to-talk starts recording on a key press and stops on
+    /// that key's RELEASE. Move focus away mid-hold and the release is delivered
+    /// to whoever has focus now, never to us, so the microphone stays open with
+    /// nothing on screen explaining why. Focus loss is the only signal that the
+    /// keys we believe are held cannot be released to us any more, so it is
+    /// treated as releasing all of them (`App::release_held`).
+    ///
+    /// Only arrives while focus-change reporting is enabled (main pushes it
+    /// alongside bracketed paste). A terminal or multiplexer that does not
+    /// report focus simply never sends it — the pre-existing behaviour, not a
+    /// regression. `FocusGained` is deliberately NOT forwarded: nothing is
+    /// re-armed by regaining focus, and a held key cannot resume.
+    FocusLost,
     /// Idle tick (emitted when no input arrives within the poll window).
     Tick,
     /// Fresh plans list from the backend poller.
@@ -552,6 +568,10 @@ pub fn spawn_input_listener(tx: UnboundedSender<Event>) {
                     // it alongside the alternate screen). Forwarded as DATA so a
                     // pasted newline can never be mistaken for a submit.
                     Ok(CtEvent::Paste(text)) => Some(Event::Paste(text)),
+                    // Only arrives while focus-change reporting is enabled (main
+                    // pushes it alongside bracketed paste). Releases every key
+                    // we believe is held — see Event::FocusLost.
+                    Ok(CtEvent::FocusLost) => Some(Event::FocusLost),
                     _ => None,
                 };
                 if let Some(ev) = ev {

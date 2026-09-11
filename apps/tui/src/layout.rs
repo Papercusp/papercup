@@ -145,6 +145,70 @@ layout {
 /// `:dock`/`:layout` (D-008). The first entry is the default arrangement.
 pub const SWAP_PRESETS: &[&str] = &["stacked", "stacked-left", "split", "grid"];
 
+/// One key the DOCK layout binds at the MULTIPLEXER level.
+///
+/// This slice is the single source for both halves of that fact: the dock's KDL
+/// `keybinds` block is GENERATED from it by [`dock_keybinds_kdl`], and
+/// [`crate::keyboard::Host::swallows`] reads it to decide whether a key can
+/// reach this program at all. Hand-maintaining the second copy is how a hint
+/// ends up naming a key the multiplexer ate (P-007).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DockBind {
+    /// The key name as zellij's KDL spells it.
+    pub kdl: &'static str,
+    /// The KDL action body, without the surrounding braces.
+    pub action: &'static str,
+    /// The crossterm code this key arrives as, when it arrives at all.
+    pub code: Option<crossterm::event::KeyCode>,
+    /// Does the pane's PROGRAM still see the keystroke?
+    ///
+    /// Binding a key and stealing it are different: `Write`-ing the key's own
+    /// escape sequence straight back to the focused pane rebinds it at the
+    /// zellij level while leaving it fully available to us.
+    pub reaches_pane: bool,
+}
+
+/// The dock's multiplexer-level binds (owner asks 2026-06-11 + 2026-06-17).
+///
+/// `Tab` is a genuine steal — it becomes zellij's native zoom toggle, so no
+/// `Tab` keystroke reaches a dock pane's program. `up`/`down` are rebinds that
+/// hand the key straight back: zellij 0.44 reserves plain ↑/↓ to move focus
+/// between the panes of a vertical stack, so without these two the arrows never
+/// reached the focused pane at all.
+pub const DOCK_BINDS: &[DockBind] = &[
+    DockBind {
+        kdl: "Tab",
+        action: "ToggleFocusFullscreen;",
+        code: Some(crossterm::event::KeyCode::Tab),
+        reaches_pane: false,
+    },
+    DockBind {
+        kdl: "up",
+        action: "Write 27 91 65;",
+        code: Some(crossterm::event::KeyCode::Up),
+        reaches_pane: true,
+    },
+    DockBind {
+        kdl: "down",
+        action: "Write 27 91 66;",
+        code: Some(crossterm::event::KeyCode::Down),
+        reaches_pane: true,
+    },
+];
+
+/// Render [`DOCK_BINDS`] as the dock layout's KDL `keybinds` block.
+///
+/// Bound at the LAYOUT level so it MERGES with the user's own zellij config and
+/// applies only inside this dock session.
+pub fn dock_keybinds_kdl() -> String {
+    let mut s = String::from("keybinds {\n    normal {\n");
+    for b in DOCK_BINDS {
+        s.push_str(&format!("        bind \"{}\" {{ {} }}\n", b.kdl, b.action));
+    }
+    s.push_str("    }\n}");
+    s
+}
+
 /// Name for an app-managed zellij session: STABLE `pui-<kind>` (kind = `wb` |
 /// `dock`) — P-001, own-tui-full-divorce-2026-08-24. One well-known session per
 /// kind: a relaunch ATTACHES to a live survivor (crash recovery) instead of
@@ -425,6 +489,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     }}"#
         )
     };
+    let keybinds = dock_keybinds_kdl();
     format!(
         r#"// Papercusp chat dock (owner directive 2026-06-11): every agent chat is a
 // LIVE TUI. The QUEEN is the shared read-only `pui brain-view --queen` pane with
@@ -463,13 +528,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
 // cursor-up/down sequences (ESC[A / ESC[B) straight to the focused pane. This
 // also makes ↑/↓ reach the psu/claude chat panes for history/scroll. ←/→ already
 // reach the pane (no vertical-stack meaning), so they're left alone.
-keybinds {{
-    normal {{
-        bind "Tab" {{ ToggleFocusFullscreen; }}
-        bind "up" {{ Write 27 91 65; }}
-        bind "down" {{ Write 27 91 66; }}
-    }}
-}}
+{keybinds}
 layout {{
     default_tab_template {{
         pane size=1 borderless=true {{
@@ -769,6 +828,57 @@ fn materialize_chat_dock_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DRIFT GUARD (P-007). The dock's KDL binds and
+    /// `crate::keyboard::Host::swallows` are two readings of one fact, so they
+    /// are generated from one slice. This asserts the KDL carries EXACTLY the
+    /// binds `DOCK_BINDS` declares — no more (a hand-added bind would steal a key
+    /// `swallows` still reports as arriving) and no fewer.
+    #[test]
+    fn the_dock_kdl_binds_exactly_what_dock_binds_declares() {
+        let kdl = chat_dock_kdl(&[], &crate::lexicon::Lexicon::default());
+        let bound: Vec<&str> = kdl
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("bind \""))
+            .collect();
+        assert_eq!(
+            bound.len(),
+            DOCK_BINDS.len(),
+            "dock KDL has {} bind lines but DOCK_BINDS declares {}: {bound:?}",
+            bound.len(),
+            DOCK_BINDS.len()
+        );
+        for b in DOCK_BINDS {
+            let expected = format!("bind \"{}\" {{ {} }}", b.kdl, b.action);
+            assert!(
+                bound.contains(&expected.as_str()),
+                "DOCK_BINDS declares {expected:?} but the dock KDL has {bound:?}"
+            );
+        }
+    }
+
+    /// CALIBRATION for the guard above: it must be able to FAIL. An empty slice
+    /// would make the equality trivially true against a KDL with no binds, and a
+    /// `Tab` entry marked `reaches_pane` would make `swallows` answer false for
+    /// the one key the dock genuinely steals — the whole reason the slice exists.
+    #[test]
+    fn dock_binds_is_non_empty_and_tab_is_marked_stolen() {
+        assert!(!DOCK_BINDS.is_empty());
+        let tab = DOCK_BINDS
+            .iter()
+            .find(|b| b.code == Some(crossterm::event::KeyCode::Tab))
+            .expect("the dock binds Tab");
+        assert!(
+            !tab.reaches_pane,
+            "Tab is bound to zellij's zoom toggle, so it never reaches the pane"
+        );
+        assert!(
+            DOCK_BINDS.iter().any(|b| b.reaches_pane),
+            "the ↑/↓ rebinds DO reach the pane — if none does, `swallows` has \
+             collapsed into `is bound`"
+        );
+    }
 
     #[test]
     fn kdl_defines_pui_and_work_panes() {
