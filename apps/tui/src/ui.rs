@@ -8227,6 +8227,68 @@ mod tests {
         assert!(!text.contains("input locked"), "{text}");
     }
 
+    /// A line preserved as `undelivered` has to actually REACH THE SCREEN, and
+    /// has to be readable as not-sent. Keeping it in `chat_messages` and never
+    /// painting it would be the same disappearance the state exists to prevent,
+    /// only harder to notice — the data would be right and the owner would
+    /// still have lost their message.
+    ///
+    /// The negative is the load-bearing half: rendering it under the `you`
+    /// header would assert the message WAS sent, which is worse than dropping
+    /// it, because the owner would never think to retype.
+    #[test]
+    fn an_undelivered_line_renders_and_is_not_dressed_up_as_a_sent_message() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.chat_messages.push(crate::models::ChatMessage::user("a sent turn"));
+        app.chat_messages
+            .push(crate::models::ChatMessage::undelivered("this never went"));
+
+        let text = render(&app, 100, 24);
+
+        assert!(text.contains("this never went"), "the text must survive: {text}");
+        assert!(
+            text.contains("undelivered"),
+            "and must be labelled as not-sent: {text}"
+        );
+        // Ordering, not bare presence: each label must precede the text it
+        // qualifies, and the sent turn must keep its own `you` header. Offsets
+        // into the flat render — `render` returns the whole screen as one
+        // string, so a line-based search sees a single line and compares 0 < 0.
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("missing {needle} in: {text}"))
+        };
+        assert!(
+            at("you") < at("a sent turn")
+                && at("a sent turn") < at("undelivered")
+                && at("undelivered") < at("this never went"),
+            "each block must be headed by its OWN label: {text}"
+        );
+    }
+
+    /// CALIBRATION for the test above: a `user` message renders under `you`, so
+    /// the header gutter really is what distinguishes the two. Without this, a
+    /// renderer that stopped emitting headers entirely would still satisfy the
+    /// negative assertion there.
+    #[test]
+    fn a_sent_message_still_renders_under_the_you_header() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.chat_messages
+            .push(crate::models::ChatMessage::user("a sent turn"));
+
+        let text = render(&app, 100, 24);
+
+        let header = text.find("you").expect("a delivered line is headed `you`");
+        let body = text.find("a sent turn").expect("above its text");
+        assert!(header < body, "in that order: {text}");
+        assert!(
+            !text.contains("undelivered"),
+            "and is never labelled undelivered: {text}"
+        );
+    }
+
     #[test]
     fn the_running_bar_counts_queued_lines_in_both_in_flight_states() {
         // Post-acknowledgement: `su_pending_turn` is clear, so the plain Running

@@ -2815,12 +2815,23 @@ impl App {
     }
 
     /// The transcript to send as the converse `messages` array (role, content)
-    /// pairs — every committed turn, excluding the in-flight streaming bubble and
-    /// any empty assistant placeholder.
+    /// pairs — every committed turn, excluding the in-flight streaming bubble,
+    /// any empty assistant placeholder, and any `undelivered` line.
+    ///
+    /// `undelivered` is the one that is easy to get wrong. Those lines are
+    /// preserved in the transcript so the owner can still read and copy a
+    /// message that was never sent — but that is a LOCAL record, and this
+    /// function feeds the model's `messages` array. Including them would put
+    /// text the owner never sent into the model's context, under a role no
+    /// engine defines. Never delivered has to mean never delivered.
     pub fn chat_history_for_send(&self) -> Vec<(String, String)> {
         self.chat_messages
             .iter()
-            .filter(|m| !(m.streaming || m.role == "assistant" && m.content.trim().is_empty()))
+            .filter(|m| {
+                !(m.streaming
+                    || m.role == "undelivered"
+                    || m.role == "assistant" && m.content.trim().is_empty())
+            })
             .map(|m| (m.role.clone(), m.content.clone()))
             .collect()
     }
@@ -17709,6 +17720,33 @@ mod tests {
             dispatched_text(&action),
             None,
             "recovering it must not also SEND it at the new binding"
+        );
+    }
+
+    /// Preserving an unsent line in the transcript must not smuggle it into the
+    /// MODEL's context. The transcript is a local record the owner can read and
+    /// copy; `chat_history_for_send` is the converse `messages` array. Never
+    /// delivered has to mean never delivered — and the positive control is what
+    /// keeps this from passing by filtering everything.
+    #[test]
+    fn an_undelivered_line_is_never_sent_to_the_model_as_history() {
+        let mut app = App::new();
+        app.chat_messages.push(ChatMessage::user("a real turn"));
+        app.chat_messages
+            .push(ChatMessage::assistant("a real reply"));
+        app.chat_messages
+            .push(ChatMessage::undelivered("never left the composer"));
+
+        let sent = app.chat_history_for_send();
+
+        assert_eq!(
+            sent,
+            vec![
+                ("user".to_string(), "a real turn".to_string()),
+                ("assistant".to_string(), "a real reply".to_string()),
+            ],
+            "committed turns still go (the positive control), the unsent line \
+             does not"
         );
     }
 
