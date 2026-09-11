@@ -26,6 +26,10 @@
 import { inject } from 'vitest';
 import postgres from 'postgres';
 import { assertPgReachable } from '@papercusp/test-config/pg';
+import {
+  acquireBaselineSchemaMutex,
+  releaseBaselineSchemaMutex,
+} from '@papercusp/test-config/baseline-schema-mutex';
 import { _resetForTests } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes (not re-exported from the index)
 import { _resetUrlCacheForTests } from '../../../libs/papercusp/libs/db/src/connection';

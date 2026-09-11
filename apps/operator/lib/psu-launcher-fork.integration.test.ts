@@ -22,6 +22,10 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it, vi } from 'vitest';
 import postgres from 'postgres';
+import {
+  acquireBaselineSchemaMutex,
+  releaseBaselineSchemaMutex,
+} from '@papercusp/test-config/baseline-schema-mutex';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 // Mock the org PG accessor so the real adv-sessions store writes to the baseline
@@ -52,7 +56,18 @@ const { recordAdvSession, listResumableSessions, markAdvSessionEnded } =
 // baseline DB. Cleaned up in afterEach.
 const WS = `fork-it-${randomBytes(6).toString('hex')}`;
 
-beforeAll(() => {
+// Namespacing our own rows by workspace is NOT sufficient isolation on its own:
+// operator-core's adv-sessions integration files wipe this same shared table
+// UNQUALIFIED (`TRUNCATE harness_shared.adv_sessions`) from a separate Vitest
+// process against the same `.withReuse()`d container, which annihilates our
+// workspace-scoped rows mid-test. Hold the shared baseline-schema mutex for the
+// lifetime of this file so we are serialized against those writers.
+let lockClient: postgres.Sql | undefined;
+
+beforeAll(async () => {
+  lockClient = await acquireBaselineSchemaMutex(inject('baselineSchemaDsn'), {
+    label: 'psu-launcher-fork.integration.test.ts',
+  });
   h.sql = postgres(inject('baselineSchemaDsn'), { max: 2, onnotice: () => {} });
 });
 afterEach(async () => {
@@ -60,6 +75,7 @@ afterEach(async () => {
 });
 afterAll(async () => {
   if (h.sql) await h.sql.end({ timeout: 5 });
+  if (lockClient) await releaseBaselineSchemaMutex(lockClient);
 });
 
 /**
