@@ -177,6 +177,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // below every modal overlay drawn after it, which is where `on_key` puts
     // it — the switcher/question surfaces own their keys ahead of the card.
     draw_change_card(f, app);
+    draw_file_picker(f, app);
 
     // A transient toast for the latest notification sits above the body but
     // below the modal overlays (it shouldn't fight the help/palette/tutorial).
@@ -4387,8 +4388,13 @@ fn draw_file_picker(f: &mut Frame, app: &App) {
         )));
     }
 
+    let attached_note = if app.attachments.is_empty() {
+        String::new()
+    } else {
+        format!("· {} attached ", app.attachments.len())
+    };
     let head = format!(
-        " Attach a file · {} match{} ",
+        " Attach a file · {} match{} {attached_note}",
         matches.len(),
         if matches.len() == 1 { "" } else { "es" }
     );
