@@ -67,7 +67,19 @@
       }
     },
     "claude": {
-      "status": "in-progress",
+      "status": "reached-engine-but-failing",
+      "summary": "BOTH claude journeys were re-run over the gateway pool (PUI_REAL_ACCOUNT=auto) and BOTH failed with zero usage-wall hits. r10 exit=1 at 08:34:21Z (FABLE_LIMIT_HITS=0); r03 exit=1 at 08:37:32Z (FABLE_LIMIT_HITS=0). The engine is reached and accepts turns in both, so this is not the account wall and not an instrument problem in the way the earlier reds were. Two independent journeys failing the same way makes a genuine P-006 parity gap more likely than a flake, but the root cause is NOT yet established and no claim is recorded here beyond what was observed.",
+      "r03": {
+        "clause": "AUTO-BAR-R-03-P-006",
+        "outcome": "failed",
+        "startedAt": "2026-09-11T08:34:22.580Z",
+        "endedAt": "2026-09-11T08:37:32Z",
+        "runnerBannerHead": "72dc2e36a6",
+        "provenance": "stamped",
+        "account": "auto",
+        "fableLimitHits": 0,
+        "note": "Not yet diagnosed. Log: .papercusp/scratch/p006/ts2-claude-r03.log"
+      },
       "r10": {
         "clause": "AUTO-BAR-R-10-P-006",
         "outcome": "failed",
@@ -119,5 +131,23 @@
     "sourceFingerprint": "sha256-file-set-v1:0b82624bdf78368d8df0d2629b55b614fa1acdb3ba26e7c4d2ac2633aacc8c29",
     "testFingerprint": "sha256-file-set-v1:f2487e4ae748919516255c537a9da78909c1f29919c8074091fc28db36b2fd65",
     "measuredAt": "2026-09-11T08:40:00Z"
+  },
+  "bindings": {
+    "AUTO-BAR-R-10-P-006": [3420, 3422],
+    "AUTO-BAR-R-03-P-006": [3421, 3423],
+    "note": "3420/3421 were bound with adequacy metadata at details.* TOP LEVEL, which the evaluator reads as {} (it reads details.adequacy.* — spec-test-adequacy.ts:317). 3422/3423 re-bind the IDENTICAL facts correctly nested. Bindings are append-only, so the malformed rows remain on the ledger and are superseded, not replaced. Filed as EI-22953893504383574."
+  },
+  "adequacyVerdicts": {
+    "evaluatedAt": "2026-09-11T08:41Z",
+    "classRef": "plan-class-feature-ship",
+    "AUTO-BAR-R-10-P-006": { "verdict": "pass", "wouldBlock": [] },
+    "AUTO-BAR-R-03-P-006": { "verdict": "unknown", "wouldBlock": ["plan-class-risk-floor"] },
+    "freshnessNote": "Both rows evaluate as current ONLY when the evaluator is called with current[] carrying the same source/test fingerprints; omitting current[] yields currentness=unknown and blocks freshness. current[] is an EVALUATOR argument, not a binding property."
+  },
+  "integrityCaveat": {
+    "claim": "AUTO-BAR-R-10-P-006 reaching verdict:'pass' DOES NOT mean the clause's stated requirement is satisfied.",
+    "why": "The clause's requiredEvidence reads 'Run the shared installed-PUI greeting/tool/approval/resume scenario separately for each engine', and both P-006 clauses name Claude, Codex AND OMP. That requirement is PROSE; there is no machine-readable engine list, so the adequacy evaluator does not enforce per-engine coverage. Demonstrated empirically: binding OMP rows alone moved the clause to verdict:'pass' with wouldBlock:[] while Claude is failing and Codex is unevidenced.",
+    "consequence": "The automated gate is satisfied; the clause is NOT. Do not report P-006 R-10 as met on the strength of this verdict. A grader reading requiredEvidence will and should reject single-engine coverage. The honest status of P-006 is: OMP evidenced, Claude reached-but-failing, Codex blocked.",
+    "recordedBy": "su-f17bc46a-13e6-4b29-8bbb-c2ea8aeae961"
   }
 }
