@@ -655,12 +655,84 @@ describe("provider-cause classification (WI-2144034)", () => {
   it("leaves genuine credential and transport failures unclassified", () => {
     for (const text of [
       "Not logged in. Run `codex login` to authenticate.",
-      "401 Unauthorized: invalid api key",
+      // A credential fault WITHOUT the provider's explicit 401 status stays unclassified: the
+      // classifier names a refusal only when the provider says so (see the test below).
+      "Incorrect API key provided: sk-live-…",
+      "403 Forbidden: invalid api key",
       "error: connection refused",
       "Logged in using ChatGPT",
       "",
     ]) {
       expect(classifyWorkspaceHostAgentProbeFailure(text)).toBeUndefined();
+    }
+  });
+
+  /**
+   * RECURRENCE GUARD for the P-305 G6 root cause (plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22
+   * D-320): a delivered auth.json that dropped `refresh_token` made codex-cli's serde reader exit 1
+   * with `missing field`, and the probe recorded a bare `non-zero-exit` that pointed every reader at
+   * the account instead of the projection. These two reasons were pinned by NO test when they landed
+   * (WI-10001023, found by the independent D-319 verification) — a regression back to `non-zero-exit`
+   * would have failed nothing. Each reason is asserted twice: at the classifier and through a real
+   * child whose stderr carries the measured text, so neither the pattern nor the probe plumbing can
+   * silently lose it.
+   */
+  describe("malformed and refused credentials (P-305 D-320 recurrence guard)", () => {
+    it("names a credential file the CLI cannot deserialize as credential-malformed", () => {
+      // Measured codex-cli 0.153.4 / 0.154.0 output, verbatim shape (WI-10001017 contrastive arm h2).
+      expect(
+        classifyWorkspaceHostAgentProbeFailure(
+          "Error checking login status: missing field `refresh_token` at line 1 column 238",
+        ),
+      ).toBe("credential-malformed");
+      expect(classifyWorkspaceHostAgentProbeFailure("missing field `id_token`")).toBe(
+        "credential-malformed",
+      );
+    });
+
+    it("names an explicit provider 401 as credential-unauthorized", () => {
+      expect(classifyWorkspaceHostAgentProbeFailure("401 Unauthorized: invalid api key")).toBe(
+        "credential-unauthorized",
+      );
+      expect(classifyWorkspaceHostAgentProbeFailure("HTTP 401 Unauthorized")).toBe(
+        "credential-unauthorized",
+      );
+    });
+
+    it("keeps the two reasons distinct from each other and from quota", () => {
+      expect(classifyWorkspaceHostAgentProbeFailure("missing field `refresh_token`")).not.toBe(
+        "credential-unauthorized",
+      );
+      expect(classifyWorkspaceHostAgentProbeFailure("401 Unauthorized")).not.toBe(
+        "credential-malformed",
+      );
+      expect(classifyWorkspaceHostAgentProbeFailure("401 Unauthorized")).not.toBe(
+        "provider-usage-limit",
+      );
+    });
+
+    for (const [reason, stderrText] of [
+      [
+        "credential-malformed",
+        "Error checking login status: missing field `refresh_token` at line 1 column 238",
+      ],
+      ["credential-unauthorized", "401 Unauthorized: invalid api key"],
+    ] as const) {
+      it(`reports ${reason} — not non-zero-exit — from a real child's stderr without publishing its text`, async () => {
+        const evidence = await probeWorkspaceHostAgentVerification({
+          spec: {
+            ...DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[1],
+            command: "/bin/sh",
+            args: ["-c", `printf '%s' '${stderrText}' >&2; exit 1`],
+          },
+          runner: new NodeWorkspaceHostAgentProbeRunner(),
+          now: NOW,
+        });
+        expect(evidence).toMatchObject({ ready: false, exitStatus: 1, failure: reason });
+        expect(evidence.failure).not.toBe("non-zero-exit");
+        expect(JSON.stringify(evidence)).not.toContain("refresh_token");
+        expect(JSON.stringify(evidence)).not.toContain("invalid api key");
+      });
     }
   });
 
