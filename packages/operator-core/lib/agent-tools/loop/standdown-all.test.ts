@@ -66,8 +66,8 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce(ACTIVE_ROWS) // apply's re-read
       .mockResolvedValueOnce([]) // the bulk pause UPDATE
       .mockResolvedValueOnce([
-        { target_owner_id: 'su-alice', active: false, standdown: true },
-        { target_owner_id: 'su-bob', active: false, standdown: true },
+        { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true },
+        { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', active: false, standdown: true },
       ]); // verify SELECT
 
     const b = body(
@@ -98,7 +98,7 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce([ACTIVE_ROWS[0]]) // capturePrev, fleet-scoped
       .mockResolvedValueOnce([ACTIVE_ROWS[0]]) // apply's re-read
       .mockResolvedValueOnce([]) // UPDATE
-      .mockResolvedValueOnce([{ target_owner_id: 'su-alice', active: false, standdown: true }]); // verify
+      .mockResolvedValueOnce([{ install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true }]); // verify
 
     const b = body(
       await standdownAllTool.handler(
@@ -124,8 +124,8 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce(ACTIVE_ROWS)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
-        { target_owner_id: 'su-alice', active: false, standdown: true },
-        { target_owner_id: 'su-bob', active: false, standdown: true },
+        { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true },
+        { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', active: false, standdown: true },
       ]);
     await standdownAllTool.handler({ reason: 'short hold', pauseTtlHours: 0.5 } as never, { role: 'operator' } as never);
     const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
@@ -157,10 +157,51 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce([])
       // one of the two rows raced back to active — verify must catch it, not just trust the UPDATE
       .mockResolvedValueOnce([
-        { target_owner_id: 'su-alice', active: false, standdown: true },
-        { target_owner_id: 'su-bob', active: true, standdown: null },
+        { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true },
+        { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', active: true, standdown: null },
       ]);
     const b = body(await standdownAllTool.handler({ reason: 'race check' } as never, { role: 'operator' } as never));
     expect(b.verify).toMatchObject({ ok: false, detail: expect.stringContaining('not every targeted loop') });
   });
+// EI-22818006456104074: the workspace-wide scan used to admit NULL-owner system reschedule routines
+  // (service-health, stale-claim-sweep, …) into prev; the owner-keyed UPDATE/verify could never match
+  // them (`= ANY()` never matches NULL), verify failed, runControlMutation auto-reverted, and the tool
+  // returned ok:true applied:false pausedCount:0 — the system-wide pause lever silently no-oped.
+  it("EI-22818006456104074: every scan confines itself to loop-su-% rows with a NON-NULL owner", async () => {
+    sqlMock
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { install_slug: "papercusp", name: "loop-su-alice", target_owner_id: "su-alice", active: false, standdown: true },
+        { install_slug: "papercusp", name: "loop-su-bob", target_owner_id: "su-bob", active: false, standdown: true },
+      ]);
+    const b = body(await standdownAllTool.handler({ reason: "scope check" } as never, { role: "operator" } as never));
+    expect(b).toMatchObject({ ok: true, applied: true, pausedCount: 2 });
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(" "));
+    const scanCalls = calls.filter((c) => c.includes("FROM harness_shared.routines") && c.includes("active = true"));
+    expect(scanCalls.length).toBeGreaterThan(0);
+    for (const c of scanCalls) {
+      expect(c).toContain("name LIKE 'loop-su-%'");
+      expect(c).toContain("target_owner_id IS NOT NULL");
+    }
+    const update = calls.find((c) => c.includes("UPDATE harness_shared.routines") && c.includes("SET active = false"));
+    expect(update).toContain("name LIKE 'loop-su-%'");
+  });
+
+  it("EI-22818006456104074: verify is keyed by (install_slug,name), so an unrelated active row for the same owner does not fail it", async () => {
+    sqlMock
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { install_slug: "papercusp", name: "loop-su-alice", target_owner_id: "su-alice", active: false, standdown: true },
+        // a stale sibling row for the same owner, NOT a target — an owner-keyed verify would pick this one up and revert
+        { install_slug: "papercusp", name: "loop-su-alice-old", target_owner_id: "su-alice", active: true, standdown: null },
+        { install_slug: "papercusp", name: "loop-su-bob", target_owner_id: "su-bob", active: false, standdown: true },
+      ]);
+    const b = body(await standdownAllTool.handler({ reason: "row-key check" } as never, { role: "operator" } as never));
+    expect(b).toMatchObject({ ok: true, applied: true, pausedCount: 2, verify: { ok: true } });
+  });
 });
+

@@ -119,6 +119,8 @@ export default defineTool({
              WHERE r.workspace_id = ${ws}
                AND r.reschedule_interval_sec IS NOT NULL
                AND r.active = true
+               AND r.name LIKE 'loop-su-%'
+               AND r.target_owner_id IS NOT NULL
                AND r.target_owner_id IN (
                      SELECT p.owner_id FROM harness_shared.coord_presence p
                       WHERE p.workspace_id = ${ws} AND p.fleet_slug = ${args.fleetSlug}
@@ -132,6 +134,14 @@ export default defineTool({
              WHERE r.workspace_id = ${ws}
                AND r.reschedule_interval_sec IS NOT NULL
                AND r.active = true
+               -- EI-22818006456104074: the workspace scan MUST be confined to su engine
+               -- loops with a real owner. Without these two predicates the 17 NULL-owner
+               -- system routines (service-health, stale-claim-sweep, …) entered prev,
+               -- the owner-keyed UPDATE/verify below could never match them (ANY() never
+               -- matches NULL), verify() failed, and runControlMutation auto-reverted —
+               -- ok:true with applied:false / pausedCount:0. The lever silently no-op'd.
+               AND r.name LIKE 'loop-su-%'
+               AND r.target_owner_id IS NOT NULL
              LIMIT ${MAX_TARGETS_FOR_REVERT_CAPTURE}`;
       return rows.map((r) => ({
         installSlug: r.install_slug,
@@ -177,6 +187,7 @@ export default defineTool({
              WHERE workspace_id = ${ws}
                AND reschedule_interval_sec IS NOT NULL
                AND active = true
+               AND name LIKE 'loop-su-%'
                AND target_owner_id = ANY(${ownerIds}::text[])`;
           return prev;
         },
@@ -196,16 +207,24 @@ export default defineTool({
         },
         verify: async (touched) => {
           if (touched.length === 0) return { ok: true };
+          // Verify by ROW identity (install_slug, name), not by owner: an owner can have
+          // an older inactive sibling loop row, and a NULL owner can never be looked up
+          // in an owner-keyed map (EI-22818006456104074).
           const ownerIds = touched.map((t) => t.targetOwnerId);
-          const cur = await sql<Array<{ target_owner_id: string; active: boolean; standdown: boolean | null }>>`
-            SELECT target_owner_id, active, (metadata -> 'pause' ->> ${LOOP_STANDDOWN_MARKER})::boolean AS standdown
+          const cur = await sql<
+            Array<{ install_slug: string; name: string; target_owner_id: string; active: boolean; standdown: boolean | null }>
+          >`
+            SELECT install_slug, name, target_owner_id, active,
+                   (metadata -> 'pause' ->> ${LOOP_STANDDOWN_MARKER})::boolean AS standdown
               FROM harness_shared.routines
              WHERE workspace_id = ${ws}
                AND reschedule_interval_sec IS NOT NULL
+               AND name LIKE 'loop-su-%'
                AND target_owner_id = ANY(${ownerIds}::text[])`;
-          const byOwner = new Map(cur.map((r) => [r.target_owner_id, r]));
+          const rowKey = (installSlug: string, name: string) => `${installSlug}/${name}`;
+          const byRow = new Map(cur.map((r) => [rowKey(r.install_slug, r.name), r]));
           const ok = touched.every((t) => {
-            const row = byOwner.get(t.targetOwnerId);
+            const row = byRow.get(rowKey(t.installSlug, t.name));
             return row?.active === false && row?.standdown === true;
           });
           return { ok, detail: ok ? undefined : 'not every targeted loop is paused + stamped standdownAll' };

@@ -257,7 +257,13 @@ function defaultControls(): CodexSuSessionControls {
   };
 }
 
-function codexCapabilities(): SuSessionCapabilities {
+/**
+ * The Codex engine's published capability table. Exported so the cross-engine
+ * parity pin can assert it directly: it is already part of the public contract
+ * (it ships inside every descriptor the PUI reads), and P-006 requires that
+ * every non-`supported` entry carry an explanation the PUI can actually show.
+ */
+export function codexCapabilities(): SuSessionCapabilities {
   return {
     commands: {
       owner_turn: { state: 'supported', implementation: 'native' },
