@@ -410,6 +410,8 @@ export type WorkspaceHostAgentProbeFailureReason =
   | "no-verification-proof"
   | "probe-error"
   | "credential-revoked"
+  | "credential-malformed"
+  | "credential-unauthorized"
   | "provider-usage-limit";
 
 /**
@@ -437,6 +439,14 @@ const PROBE_FAILURE_CLASSIFIERS: readonly {
 }[] = [
   // Measured r7 failure: retain the cause while discarding all credential text.
   { pattern: /\brefresh token was revoked\b/i, reason: "credential-revoked" },
+  // Measured 2026-09-11 (P-305 G6 root cause): a delivered auth.json the CLI cannot deserialize
+  // prints serde's `missing field \`<name>\`` and exits 1 — a MALFORMED generation, not a
+  // revoked or exhausted one. Name it, so the reader is sent to the projection, not the account.
+  { pattern: /\bmissing field\b/i, reason: "credential-malformed" },
+  // The provider refused the identity outright (codex exec sends no bearer when auth.json did
+  // not parse; an expired/foreign access token lands here too). Distinct from quota, which
+  // requires an ACCEPTED identity to be reported at all.
+  { pattern: /\b401 unauthorized\b/i, reason: "credential-unauthorized" },
   { pattern: /\bhit your usage limit\b/i, reason: "provider-usage-limit" },
   { pattern: /\busage limit reached\b/i, reason: "provider-usage-limit" },
   { pattern: /\bquota exceeded\b/i, reason: "provider-usage-limit" },

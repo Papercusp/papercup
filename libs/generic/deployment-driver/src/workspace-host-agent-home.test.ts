@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, rm, symlink } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +12,8 @@ import {
   WorkspaceHostAgentHomeConsumer,
   assertWorkspaceHostAgentHomeBundleAdmissionEligible,
   assertWorkspaceHostCodexAccessTokenProjection,
+  assertWorkspaceHostCodexProjectionCliReadable,
+  projectWorkspaceHostCodexAccessToken,
   encodeWorkspaceHostAgentHomeState,
   encodeWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostAgentHomeBundle,
@@ -29,7 +32,8 @@ const files = {
   codex: Buffer.from(
     JSON.stringify({
       auth_mode: "chatgpt",
-      tokens: { access_token: "codex-secret" },
+      // Already in projected shape (neutralized refresh_token) so the round-trip is byte-exact.
+      tokens: { access_token: "codex-secret", id_token: "codex-identity", refresh_token: "" },
     }),
   ),
   omp: Buffer.from(
@@ -45,7 +49,7 @@ const rotated = {
   codex: Buffer.from(
     JSON.stringify({
       auth_mode: "chatgpt",
-      tokens: { access_token: "codex-rotated" },
+      tokens: { access_token: "codex-rotated", id_token: "codex-identity", refresh_token: "" },
     }),
   ),
   omp: Buffer.from(
@@ -216,6 +220,8 @@ describe("workspace-host sealed agent-home bundle", () => {
       auth_mode: "chatgpt",
       tokens: {
         access_token: "codex-access",
+        // NEUTRALIZED, not deleted: the Codex CLI's deserializer requires the field (P-305 G6).
+        refresh_token: "",
         account_id: "account-1",
         id_token: "identity-1",
       },
@@ -228,6 +234,107 @@ describe("workspace-host sealed agent-home bundle", () => {
       assertWorkspaceHostAgentHomeBundleAdmissionEligible(bundle),
     ).not.toThrow();
   });
+
+  it("keeps a pre-fix v3 member (refresh_token key deleted) readable but refuses it at admission", () => {
+    // Exactly the shape generation G6 carried: every codex probe against it exits 1 because the
+    // CLI cannot deserialize the file. Admission must refuse it CLOSED, before any probe is spent.
+    const encoded = JSON.parse(
+      encodeWorkspaceHostAgentHomeBundle(files).toString("utf8"),
+    );
+    const codex = JSON.parse(
+      Buffer.from(encoded.files.codex, "base64").toString("utf8"),
+    );
+    delete codex.tokens.refresh_token;
+    encoded.files.codex = Buffer.from(JSON.stringify(codex)).toString("base64");
+
+    const bundle = parseWorkspaceHostAgentHomeBundle(
+      Buffer.from(JSON.stringify(encoded)),
+    );
+    expect(() =>
+      assertWorkspaceHostAgentHomeBundleAdmissionEligible(bundle),
+    ).toThrow(/must retain an empty refresh_token field .* re-minted/);
+
+    const noIdentity = JSON.parse(JSON.stringify(codex));
+    noIdentity.tokens.refresh_token = "";
+    delete noIdentity.tokens.id_token;
+    expect(() =>
+      assertWorkspaceHostCodexProjectionCliReadable(
+        Buffer.from(JSON.stringify(noIdentity)),
+      ),
+    ).toThrow(/non-empty id_token/);
+  });
+
+  it("rejects a refresh-token-shaped key anywhere other than the neutralized tokens.refresh_token", () => {
+    for (const member of [
+      { auth_mode: "chatgpt", tokens: { access_token: "a", id_token: "i", refresh_token: "x" } },
+      { auth_mode: "chatgpt", tokens: { access_token: "a", id_token: "i", refresh_token: "" }, refreshToken: "" },
+      { auth_mode: "chatgpt", tokens: { access_token: "a", id_token: "i", refresh_token: "", nested: { "refresh-token": "" } } },
+    ]) {
+      expect(() =>
+        assertWorkspaceHostCodexAccessTokenProjection(
+          Buffer.from(JSON.stringify(member)),
+        ),
+      ).toThrow(/must not contain a refresh token/);
+    }
+  });
+
+  // The guard the G6 failure lacked: the projection's OUTPUT must be deserializable by the real
+  // Codex CLI. Fully synthetic JWTs (no credential), a private HOME, offline (`login status`
+  // reads only the file — measured). Contrastive: the pre-fix shape must FAIL the same probe, so
+  // a projection regression that re-deletes the key turns this red instead of a paid canary.
+  const codexOnPath = (() => {
+    const found = spawnSync("codex", ["--version"], { stdio: "ignore" });
+    return found.status === 0;
+  })();
+  it.skipIf(!codexOnPath)(
+    "produces a Codex member the installed codex CLI deserializes (and the pre-fix shape does not)",
+    async () => {
+      const b64 = (value: unknown) =>
+        Buffer.from(JSON.stringify(value)).toString("base64url");
+      const jwt = (claims: Record<string, unknown>) =>
+        `${b64({ alg: "RS256", typ: "JWT" })}.${b64(claims)}.${b64({ sig: "synthetic" })}`;
+      const exp = Math.floor(Date.now() / 1000) + 3600;
+      const canonical = Buffer.from(
+        JSON.stringify({
+          OPENAI_API_KEY: null,
+          auth_mode: "chatgpt",
+          last_refresh: new Date().toISOString(),
+          tokens: {
+            id_token: jwt({ exp, email: "synthetic@example.invalid" }),
+            access_token: jwt({ exp, sub: "synthetic" }),
+            refresh_token: "synthetic-refresh-must-not-cross",
+            account_id: "acct-synthetic",
+          },
+        }),
+      );
+      const projected = projectWorkspaceHostCodexAccessToken(canonical);
+      expect(projected.toString("utf8")).not.toContain("must-not-cross");
+      const preFix = JSON.parse(projected.toString("utf8"));
+      delete preFix.tokens.refresh_token;
+
+      const loginStatus = async (member: Buffer) => {
+        const home = await mkdtemp(join(tmpdir(), "codex-projection-cli-"));
+        try {
+          const path = workspaceHostAgentHomePaths(home).codex;
+          await mkdir(join(home, ".codex"), { recursive: true, mode: 0o700 });
+          await writeFile(path, member, { mode: 0o600 });
+          const run = spawnSync("codex", ["login", "status"], {
+            env: { PATH: process.env.PATH ?? "", HOME: home, LANG: "C.UTF-8" },
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: 30_000,
+          });
+          return { status: run.status, stderr: String(run.stderr) };
+        } finally {
+          await rm(home, { recursive: true, force: true });
+        }
+      };
+
+      await expect(loginStatus(projected)).resolves.toMatchObject({ status: 0 });
+      const broken = await loginStatus(Buffer.from(JSON.stringify(preFix)));
+      expect(broken.status).toBe(1);
+      expect(broken.stderr).toMatch(/missing field `refresh_token`/);
+    },
+  );
 
   it("keeps v2 mutable-cache bundles readable but admission-ineligible", () => {
     const material = Buffer.from(

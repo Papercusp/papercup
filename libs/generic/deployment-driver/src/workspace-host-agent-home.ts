@@ -207,17 +207,44 @@ function parseJsonObjectBytes(
   return record(parsed, label);
 }
 
-function hasRefreshTokenKey(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasRefreshTokenKey);
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value).some(
-    ([key, nested]) =>
-      key.replace(/[_-]/g, "").toLowerCase() === "refreshtoken" ||
-      hasRefreshTokenKey(nested),
-  );
+/**
+ * The Codex CLI's `auth.json` deserializer REQUIRES `tokens.refresh_token` and `tokens.id_token`
+ * to be present (serde `missing field` otherwise). MEASURED 2026-09-11 on codex-cli 0.154.0 (the
+ * G6 failure ran 0.153.4): a member whose `refresh_token` KEY was deleted makes `codex login
+ * status` exit 1 with `missing field \`refresh_token\`` and `codex exec` send no bearer at all
+ * (HTTP 401) — so every projection that DELETED the key was unauthenticatable by construction,
+ * and admission recorded only the generic `non-zero-exit`. The same file with `refresh_token: ""`
+ * parses and authenticates. The refresh credential is therefore NEUTRALIZED (empty string), never
+ * removed: the key the CLI needs stays, and no rotating refresh secret can cross (D-311).
+ */
+export const WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN = "";
+
+function refreshTokenKeyPaths(value: unknown, path: readonly string[] = []): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((nested, index) =>
+      refreshTokenKeyPaths(nested, [...path, String(index)]),
+    );
+  }
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, nested]) => {
+    const here = [...path, key];
+    const named =
+      key.replace(/[_-]/g, "").toLowerCase() === "refreshtoken"
+        ? [here.join(".")]
+        : [];
+    return [...named, ...refreshTokenKeyPaths(nested, here)];
+  });
 }
 
-/** Validate the immutable Codex member without ever returning or naming a token value. */
+/**
+ * Validate the immutable Codex member without ever returning or naming a token value.
+ *
+ * Secret isolation (every v3 parse, including read/revoke of an older generation): the only
+ * refresh-token-shaped key allowed anywhere is `tokens.refresh_token`, and only when it is the
+ * neutralized empty string. A member that simply LACKS the key is still readable here — it is a
+ * pre-fix v3 projection that `assertWorkspaceHostCodexProjectionCliReadable` refuses at
+ * admission, so it can be revoked but never spends a probe.
+ */
 export function assertWorkspaceHostCodexAccessTokenProjection(
   codex: Buffer,
 ): void {
@@ -231,9 +258,40 @@ export function assertWorkspaceHostCodexAccessTokenProjection(
       "files.codex must contain a non-empty access token",
     );
   }
-  if (hasRefreshTokenKey(body)) {
+  const refreshKeys = refreshTokenKeyPaths(body);
+  const onlyNeutralized =
+    refreshKeys.every((path) => path === "tokens.refresh_token") &&
+    (!("refresh_token" in tokens) ||
+      tokens.refresh_token === WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN);
+  if (!onlyNeutralized) {
     throw new WorkspaceHostAgentHomeBundleError(
       "files.codex access-token projection must not contain a refresh token",
+    );
+  }
+}
+
+/**
+ * Admission-time contract: the bytes must be what the Codex CLI can actually deserialize.
+ *
+ * Closed failure, no probe spent: a generation whose Codex member lacks the neutralized
+ * `refresh_token` key or an `id_token` is refused HERE with a reason that names the repair
+ * (re-mint under the current projection), instead of exiting a paid probe as `non-zero-exit`.
+ */
+export function assertWorkspaceHostCodexProjectionCliReadable(
+  codex: Buffer,
+): void {
+  assertWorkspaceHostCodexAccessTokenProjection(codex);
+  const body = parseJsonObjectBytes(codex, "files.codex JSON");
+  const tokens = record(body.tokens, "files.codex JSON.tokens");
+  if (tokens.refresh_token !== WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.codex must retain an empty refresh_token field for the Codex CLI to deserialize it; " +
+        "this generation was projected before that fix and must be re-minted",
+    );
+  }
+  if (typeof tokens.id_token !== "string" || tokens.id_token.length === 0) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.codex must contain a non-empty id_token for the Codex CLI to deserialize it",
     );
   }
 }
@@ -242,8 +300,9 @@ export function assertWorkspaceHostCodexAccessTokenProjection(
  * Project one canonical Codex OAuth home into immutable, access-token-only generation bytes.
  *
  * The caller remains responsible for resolving/refreshing the canonical home first. This pure
- * boundary removes the rotating single-use refresh credential while retaining the access token
- * and all account/id metadata Codex needs for direct guest-to-provider inference (D-311).
+ * boundary neutralizes the rotating single-use refresh credential (empty string — the CLI
+ * requires the field to exist) while retaining the access token and all account/id metadata
+ * Codex needs for direct guest-to-provider inference (D-311).
  */
 export function projectWorkspaceHostCodexAccessToken(
   codex: Buffer,
@@ -258,13 +317,15 @@ export function projectWorkspaceHostCodexAccessToken(
       "files.codex must contain a non-empty access token",
     );
   }
-  const projectedTokens: Record<string, unknown> = { ...tokens };
-  delete projectedTokens.refresh_token;
+  const projectedTokens: Record<string, unknown> = {
+    ...tokens,
+    refresh_token: WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN,
+  };
   const projected = Buffer.from(
     JSON.stringify({ ...body, tokens: projectedTokens }),
     "utf8",
   );
-  assertWorkspaceHostCodexAccessTokenProjection(projected);
+  assertWorkspaceHostCodexProjectionCliReadable(projected);
   return projected;
 }
 
@@ -351,7 +412,7 @@ export function assertWorkspaceHostAgentHomeBundleAdmissionEligible(
       `agent-home authentication admission requires ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}; legacy mutable-cache bundles are read/revoke-only`,
     );
   }
-  assertWorkspaceHostCodexAccessTokenProjection(bundle.files.codex);
+  assertWorkspaceHostCodexProjectionCliReadable(bundle.files.codex);
 }
 
 export function workspaceHostAgentHomePaths(

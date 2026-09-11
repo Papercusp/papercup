@@ -727,7 +727,7 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
     const bundle = encodeWorkspaceHostAgentHomeBundle({
       claude: Buffer.from('{"account":"claude-canary"}'),
       codex: Buffer.from(
-        '{"account":"codex-canary","auth_mode":"chatgpt","tokens":{"access_token":"codex-canary-access","refresh_token":"canonical-writer-only"}}',
+        '{"account":"codex-canary","auth_mode":"chatgpt","tokens":{"access_token":"codex-canary-access","refresh_token":"canonical-writer-only","id_token":"codex-canary-id"}}',
       ),
       omp: Buffer.from('{"account":"omp-canary"}'),
     });
@@ -760,7 +760,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
     );
     expect(system.files.get(paths.codex)).toEqual(
       Buffer.from(
-        '{"account":"codex-canary","auth_mode":"chatgpt","tokens":{"access_token":"codex-canary-access"}}',
+        // The refresh credential is NEUTRALIZED (empty), never removed: the Codex CLI requires
+        // the field to deserialize auth.json at all (P-305 G6 root cause, measured 2026-09-11).
+        '{"account":"codex-canary","auth_mode":"chatgpt","tokens":{"access_token":"codex-canary-access","refresh_token":"","id_token":"codex-canary-id"}}',
       ),
     );
     expect(system.files.get(paths.omp)).toEqual(

@@ -68,6 +68,7 @@ function bundle(codex: 'healthy' | 'revoked'): Buffer {
               tokens: {
                 access_token: `codex-${status}-access`,
                 refresh_token: 'canonical-writer-only',
+                id_token: 'codex-identity',
                 account_id: 'account-1',
               },
             }
@@ -170,7 +171,10 @@ describe('workspace-host exact-generation agent credential admission', () => {
       access_token: 'codex-healthy-access',
       account_id: 'account-1',
     });
-    expect(runner.observedBodies.codex?.tokens).not.toHaveProperty('refresh_token');
+    // Neutralized, not deleted: the Codex CLI requires the field to deserialize auth.json at all
+    // (P-305 G6 root cause). The rotating secret itself must never reach the probe home.
+    expect(runner.observedBodies.codex?.tokens).toHaveProperty('refresh_token', '');
+    expect(JSON.stringify(runner.observedBodies.codex)).not.toContain('canonical-writer-only');
     expect(runner.environments.every((env) => !('OPENAI_API_KEY' in env))).toBe(true);
     expect(JSON.stringify(evidence)).not.toContain('ambient-must-not-cross');
     await expect(access(runner.homes[0]!)).rejects.toThrow();
@@ -314,7 +318,7 @@ describe('workspace-host exact-generation agent credential admission', () => {
     const material = encodeWorkspaceHostAgentHomeBundle({
       claude: Buffer.from('{"agent":"claude","status":"healthy"}', 'utf8'),
       codex: Buffer.from(
-        '{"agent":"codex","status":"healthy","auth_mode":"chatgpt","tokens":{"access_token":"codex-healthy-access","refresh_token":"canonical-writer-only"}}',
+        '{"agent":"codex","status":"healthy","auth_mode":"chatgpt","tokens":{"access_token":"codex-healthy-access","refresh_token":"canonical-writer-only","id_token":"codex-identity"}}',
         'utf8',
       ),
       omp: null,

@@ -605,6 +605,8 @@ export {
   encodeWorkspaceHostAgentHomeBundle,
   projectWorkspaceHostCodexAccessToken,
   assertWorkspaceHostCodexAccessTokenProjection,
+  assertWorkspaceHostCodexProjectionCliReadable,
+  WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN,
   assertWorkspaceHostAgentHomeBundleAdmissionEligible,
   workspaceHostAgentHomePaths,
   workspaceHostAgentHomeOmpModelsPath,
