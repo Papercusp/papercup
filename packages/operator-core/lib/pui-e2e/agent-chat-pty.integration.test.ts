@@ -1631,27 +1631,72 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       pane.escape();
       await pane.waitFor('i type · v speak');
 
-      // Walk focus back through the newest blocks with `{`, copying each with
-      // `y`. The transcript may render the tool result as its own block or fold
-      // it into the assistant turn, so walking keeps the probe faithful to the
-      // behavior under test without pinning it to one block layout.
-      for (let step = 0; step < 6; step += 1) {
-        pane.write('y');
-        await new Promise((resolve) => setTimeout(resolve, 250));
+      // Walk focus back through the newest blocks with `{`, copying each block
+      // in BOTH forms — `y` is the rendered block, `Shift-Y` its raw payload.
+      //
+      // Pressing only `y` cannot decide this clause. A tool call's RENDERED
+      // form is deliberately the summary line `tool <name> → <outcome>`
+      // (`chat_copy.rs::block_at`); the result body lives only in the raw
+      // form, which is why the contract has two keys at all. A `y`-only probe
+      // therefore reports "selected result content omitted" against an
+      // implementation that is behaving exactly as contracted — a false red
+      // this case is written to avoid.
+      //
+      // Walking rather than pinning one index keeps the probe faithful to the
+      // behavior under test: the transcript may fold the tool into the
+      // assistant turn or stand it up as its own block, and this clause is
+      // about the copy, not about one block layout.
+      const press = async (key: 'y' | 'Y'): Promise<string[]> => {
+        const before = pane.clipboardWrites().length;
+        pane.write(key);
+        // Either an OSC 52 payload lands, or this block has no such form — a
+        // plain user message has no raw payload, and `Shift-Y` must then
+        // acknowledge rather than silently copy the rendered form. Both settle
+        // well inside this window, so a press contributing no payload is the
+        // `Unavailable` branch doing its job, not a failure.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return pane.clipboardWrites().slice(before);
+      };
+      const renderedCopies: string[] = [];
+      const rawCopies: string[] = [];
+      for (let step = 0; step < 4; step += 1) {
+        // COPY FIRST, then step. `effective_chat_focus()` resolves an unset
+        // focus to the NEWEST block, so the assistant turn — the only block
+        // carrying the tool result this clause is about — is already focused
+        // before any motion. Stepping first walks straight off it onto the
+        // user message, and `step_chat_focus`'s saturating clamp at index 0
+        // then pins focus there for every later iteration: a user message has
+        // no raw payload, so every `Shift-Y` would land on `Unavailable` and
+        // the probe would read "the raw form copies nothing" against a
+        // perfectly healthy implementation.
+        renderedCopies.push(...(await press('y')));
+        rawCopies.push(...(await press('Y')));
         pane.write('{');
-        await new Promise((resolve) => setTimeout(resolve, 120));
+        await new Promise((resolve) => setTimeout(resolve, 150));
       }
-      await vi.waitFor(() => {
-        expect(pane.clipboardWrites().length).toBeGreaterThan(0);
-      }, { timeout: 10_000, interval: 100 });
-      const copied = pane.clipboardWrites();
+      const copied = [...renderedCopies, ...rawCopies];
+      expect(renderedCopies.length, pane.screen()).toBeGreaterThan(0);
+      expect(rawCopies.length, pane.screen()).toBeGreaterThan(0);
 
-      // Falsifier half 1 — the selected result content must not be omitted.
-      expect(copied.join('\n--- block ---\n')).toContain('scripted engine tool result');
+      // Falsifier half 1 — the selected content must not be omitted, in either
+      // form: the rendered copy carries the assistant's visible reply, and the
+      // raw copy carries the tool result body itself.
+      expect(renderedCopies.join('\n--- block ---\n')).toContain(scriptedEngine.successText);
+      expect(rawCopies.join('\n--- block ---\n')).toContain('scripted engine tool result');
 
       // Falsifier half 2 — no terminal escape sequence may survive into the
       // clipboard. ESC (and the 8-bit CSI introducer) can never occur in the
       // plain text this clause promises.
+      //
+      // This is decided against the DECODED OSC 52 payload — the bytes the
+      // terminal would actually put on the clipboard — because the rendered
+      // screen cannot decide it: the screen is escape-formatted by
+      // construction, so it cannot tell "the copy carries plain text" from
+      // "the copy carries the escapes that drew it". It is genuinely
+      // falsifiable rather than vacuous: the obvious wrong implementation of
+      // this feature is to copy the focused block's screen region, and the
+      // focus highlight guarantees such a payload arrives wrapped in SGR
+      // codes, which these assertions catch.
       for (const payload of copied) {
         expect(payload).not.toMatch(/\x1b/);
         // ...and the 8-bit CSI introducer, U+009B. It appears here as a literal
@@ -1669,7 +1714,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
         binary: bin,
         binarySha256,
         copiedBlocks: copied.length,
-        carriedSelectedResult: copied.some((payload) => payload.includes('scripted engine tool result')),
+        renderedBlocks: renderedCopies.length,
+        rawBlocks: rawCopies.length,
+        carriedSelectedResult: rawCopies.some((payload) => payload.includes('scripted engine tool result')),
+        carriedRenderedReply: renderedCopies.some((payload) => payload.includes(scriptedEngine.successText)),
       }));
     } finally { await pane.stop().catch(() => {}); }
   });
