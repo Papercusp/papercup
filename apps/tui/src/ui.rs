@@ -64,7 +64,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             // overlay that never drew (owner report 2026-06-11).
             draw_notifs(f, app);
         } else if app.show_help {
-            draw_help(f);
+            draw_help(f, app);
         } else if app.notify_enabled {
             if let Some(t) = &app.toast {
                 draw_toast(f, t);
@@ -201,7 +201,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else if app.show_notifs {
         draw_notifs(f, app);
     } else if app.show_help {
-        draw_help(f);
+        draw_help(f, app);
     } else if app.palette_open {
         draw_palette(f, app);
     } else if app.pot_picker_open {
@@ -4313,9 +4313,14 @@ fn draw_change_card(f: &mut Frame, app: &App) {
     );
 }
 
-fn draw_help(f: &mut Frame) {
+fn draw_help(f: &mut Frame, app: &App) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..8 / h s m c a n  switch the 14 destinations (Overview · Agent Chat · Inbox · Plans · Fleet · Sessions · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  l/m/e/a/u   conversation · model · effort · account · mode · Sessions n new SU (psu)\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share <pot> [invite|public|private] · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..8 / h s m c a n  switch the 14 destinations (Overview · Agent Chat · Inbox · Plans · Fleet · Sessions · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  l/m/e/a/u   conversation · model · effort · account · mode · Sessions n new SU (psu)\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share <pot> [invite|public|private] · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)"
+        // The dock session binds plain Tab to zellij's zoom toggle
+        // (layout::DOCK_BINDS), so there the subview cycle must be advertised as
+        // the key that actually arrives — BackTab, which is an alias on every
+        // host. A targeted replace keeps the 30-line literal un-escaped.
+        .replace("· Tab changes", &format!("· {} changes", app.cycle_key()));
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -7540,6 +7545,41 @@ mod tests {
             "help text: {text:?}"
         );
         assert!(text.contains("toggle presence sidebar"));
+    }
+
+    /// P-007. The help overlay must advertise the key that will actually ARRIVE.
+    /// Inside the dock, zellij binds plain Tab to its zoom toggle, so a "press
+    /// Tab" hint there is a promise the binary cannot keep — the same defect
+    /// class as a hint naming the wrong key (slice 2) or a bar naming a
+    /// behaviour that no longer happens (slice 3), and just as unreachable from
+    /// the code that changed. Only a rendered-buffer assertion catches it.
+    #[test]
+    fn help_overlay_names_the_key_the_host_delivers() {
+        let mut plain = App::new();
+        plain.show_help = true;
+        plain.keyboard_host = crate::keyboard::Host::Plain;
+        let text = render(&plain, 140, 28);
+        assert!(
+            text.contains("Tab changes the focused subview"),
+            "a bare terminal delivers Tab: {text:?}"
+        );
+
+        let mut dock = App::new();
+        dock.show_help = true;
+        dock.keyboard_host = crate::keyboard::Host::ZellijDock;
+        let text = render(&dock, 140, 28);
+        assert!(
+            text.contains("Shift+Tab changes the focused subview"),
+            "the dock eats plain Tab: {text:?}"
+        );
+        // NEGATIVE, and it must be anchored: "Shift+Tab changes" CONTAINS
+        // "Tab changes", so the positive assertion above passes either way. The
+        // separator is what distinguishes advertising Tab from advertising
+        // Shift+Tab.
+        assert!(
+            !text.contains("· Tab changes"),
+            "the dock must not still advertise plain Tab: {text:?}"
+        );
     }
 
     #[tokio::test]

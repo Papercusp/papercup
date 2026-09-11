@@ -14791,6 +14791,101 @@ mod tests {
         assert_eq!(b.update(rel), Action::None);
     }
 
+    // ─── Focus loss releases held keys (P-007) ───────────────────────────────
+    //
+    // Hold-to-talk stops on a key RELEASE, and a release is delivered to
+    // whoever holds focus. Move focus away mid-hold — alt-tab, or hop zellij
+    // panes in the dock — and the release never reaches us, so before this the
+    // microphone stayed open indefinitely with nothing on screen saying why.
+
+    #[test]
+    fn focus_loss_stops_hold_to_talk_recording() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('v', KeyModifiers::NONE)); // recording
+        assert_eq!(a.voice_phase, VoicePhase::Recording);
+        assert_eq!(a.update(Event::FocusLost), Action::Voice(VoiceCmd::Stop));
+    }
+
+    #[test]
+    fn focus_loss_stops_convai_push_to_talk() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.convai_phase = ConvAiPhase::Live;
+        a.convai_mode = "push-to-talk".into();
+        a.convai_ptt_active = true;
+        assert_eq!(
+            a.update(Event::FocusLost),
+            Action::VoiceSessionControl(crate::voice_convai::ConvAiControl::Ptt(false))
+        );
+        assert!(!a.convai_ptt_active);
+    }
+
+    /// CALIBRATION. Focus loss must release only what is actually HELD — a
+    /// blanket "stop everything" would fire on every alt-tab and read as the
+    /// same green as a correct implementation.
+    #[test]
+    fn focus_loss_with_nothing_held_is_inert() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        assert_eq!(a.update(Event::FocusLost), Action::None);
+        assert_eq!(a.voice_phase, VoicePhase::Idle);
+    }
+
+    /// The Voice tab's PTT key is CONFIGURABLE (`voicePttKey`), so focus loss
+    /// asks `voice_ui` which key is held rather than assuming `v`. Assuming it
+    /// would fail only for someone who rebound it, and fail in the one
+    /// direction that leaves the microphone open.
+    #[test]
+    fn focus_loss_stops_voice_tab_transmit() {
+        use crate::voice_ui::{VoiceCmd as VC, VoiceUiEvent as VE};
+        let mut a = voice_tab_in_channel();
+        assert_eq!(
+            a.update(key('v', KeyModifiers::NONE)),
+            Action::VoiceChan(VC::MicOn)
+        );
+        a.update(Event::VoiceUi(VE::MicState(true)));
+        assert_eq!(a.update(Event::FocusLost), Action::VoiceChan(VC::MicOff));
+    }
+
+    // ─── BackTab aliases Tab so the dock cannot eat a subview cycle (P-007) ──
+
+    #[test]
+    fn backtab_cycles_the_inbox_subview_like_tab() {
+        // The Inbox arm is the load-bearing one: app.rs records that Tab is the
+        // ONLY keystroke reaching the absorbed Convos browser, so inside the
+        // dock (which binds Tab to zellij's zoom) the capability was unreachable.
+        let mut tabbed = App::new();
+        tabbed.tab = Tab::Inbox;
+        let start = tabbed.inbox_focus;
+        tabbed.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        let after_tab = tabbed.inbox_focus;
+        assert_ne!(after_tab, start, "Tab must still cycle the Inbox subview");
+
+        let mut shifted = App::new();
+        shifted.tab = Tab::Inbox;
+        shifted.update(Event::Key(KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(
+            shifted.inbox_focus, after_tab,
+            "BackTab must reach the same subview cycle Tab does"
+        );
+    }
+
+    /// CALIBRATION for the alias: it is only worth anything if the host the
+    /// alias exists for actually reports Tab as unreachable, and if a plain
+    /// terminal is still told to press Tab.
+    #[test]
+    fn the_cycle_hint_names_the_key_that_will_arrive() {
+        let mut a = App::new();
+        a.keyboard_host = crate::keyboard::Host::Plain;
+        assert_eq!(a.cycle_key(), "Tab");
+        a.keyboard_host = crate::keyboard::Host::ZellijDock;
+        assert_eq!(a.cycle_key(), "Shift+Tab");
+    }
+
     // ─── Voice TAB channel hold-to-talk (holepunch-voice-channels P-009) ───
 
     fn voice_tab_in_channel() -> App {

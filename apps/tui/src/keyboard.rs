@@ -117,7 +117,9 @@ impl Host {
 mod tests {
     use super::*;
 
-    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<'_> {
+    /// The closure OWNS its pairs (`use<>` = captures no lifetime), so a caller
+    /// can build it from temporaries inline.
+    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
         let owned: Vec<(String, String)> = pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
