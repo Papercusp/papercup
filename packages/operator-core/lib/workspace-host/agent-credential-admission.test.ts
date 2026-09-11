@@ -8,6 +8,7 @@ import {
   encodeWorkspaceHostAgentHomeBundle,
   workspaceHostAgentHomePaths,
   workspaceHostCredentialReferenceDigest,
+  type WorkspaceHostAgentProbeFailureReason,
   type WorkspaceHostAgentProbeInvocation,
   type WorkspaceHostAgentProbeOutcome,
   type WorkspaceHostAgentProbeRunner,
@@ -62,7 +63,10 @@ type CodexProbeStatus = 'healthy' | 'revoked' | 'unfunded' | 'malformed' | 'unau
  * The failure reason the classifier would produce for each simulated state. Only `unfunded` is
  * compatible with an authentic credential; the other three describe the credential itself.
  */
-const FAILURE_HINTS: Record<Exclude<CodexProbeStatus, 'healthy'>, string> = {
+const FAILURE_HINTS: Record<
+  Exclude<CodexProbeStatus, 'healthy'>,
+  WorkspaceHostAgentProbeFailureReason
+> = {
   revoked: 'credential-revoked',
   unfunded: 'provider-usage-limit',
   malformed: 'credential-malformed',

@@ -348,6 +348,8 @@ function agentAdmission(): WorkspaceHostAgentCredentialAdmissionEvidence {
       allReady: true,
       agents: agents as WorkspaceHostAgentCredentialAdmissionEvidence['verification']['agents'],
       credentialFreeAgents: [],
+      unfundedAgents: [],
+      admissible: true,
     },
   };
 }
