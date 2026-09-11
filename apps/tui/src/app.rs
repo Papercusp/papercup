@@ -2257,6 +2257,16 @@ pub struct App {
     /// The half-typed line stashed when recall STARTS, so walking back past the
     /// newest entry restores it instead of destroying unsent work.
     pub chat_draft: String,
+    /// Undo snapshots of `chat_input`, oldest first — the other half of
+    /// PUBLIC_RELEASE_UX.md's "undo/history" composer promise.
+    ///
+    /// A snapshot is the WHOLE input string, taken BEFORE a bulk edit replaces
+    /// or extends it. Storing the whole string rather than a diff/offset is
+    /// deliberate: restoring is then a move, never index arithmetic, so undo
+    /// cannot land mid-grapheme and corrupt the Unicode it restores. That is
+    /// one half of this behaviour's falsifier, and this representation is what
+    /// makes it unfalsifiable-by-construction rather than merely untested.
+    pub chat_undo: Vec<String>,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
     /// Turns composed WHILE one was already in flight, oldest first (P-007 draft
@@ -2636,6 +2646,7 @@ impl App {
             chat_history: Vec::new(),
             chat_history_idx: None,
             chat_draft: String::new(),
+            chat_undo: Vec::new(),
             chat_scroll: 0,
             chat_streaming: false,
             chat_queued: Vec::new(),
@@ -3722,7 +3733,40 @@ impl App {
     /// decorate at render, never rewrite the model).
     fn chat_paste(&mut self, text: &str) {
         self.chat_history_idx = None; // a paste is an edit — leave recall mode
+        // A paste is the bulk edit undo exists for: it can replace a carefully
+        // typed line with an arbitrary amount of text in one keystroke, and it
+        // is the one composer edit a human cannot walk back with Backspace.
+        self.chat_snapshot_for_undo();
         self.chat_input.push_str(text);
+    }
+
+    /// Stash the current composer contents so the next `Ctrl-Z` can restore it.
+    ///
+    /// Bounded like the recall ring: a long-lived pane must not retain every
+    /// intermediate line typed all session.
+    fn chat_snapshot_for_undo(&mut self) {
+        const MAX_UNDO: usize = 50;
+        self.chat_undo.push(self.chat_input.clone());
+        if self.chat_undo.len() > MAX_UNDO {
+            let excess = self.chat_undo.len() - MAX_UNDO;
+            self.chat_undo.drain(0..excess);
+        }
+    }
+
+    /// `Ctrl-Z` — restore the composer to its state before the last bulk edit.
+    ///
+    /// Returns `Action::Render` either way: with nothing to undo this is INERT,
+    /// never destructive. An undo that cleared the line when the stack was
+    /// empty would be the exact data-loss this feature exists to prevent.
+    fn chat_undo(&mut self) -> Action {
+        let Some(previous) = self.chat_undo.pop() else {
+            return Action::Render;
+        };
+        // Undoing is an edit, so it leaves recall mode for the same reason a
+        // paste does: otherwise a later Down could overwrite what we restored.
+        self.chat_history_idx = None;
+        self.chat_input = previous;
+        Action::Render
     }
 
     fn resolve_approval(&mut self, call_id: &str) {
@@ -10222,6 +10266,14 @@ impl App {
             if ctrl_c {
                 self.should_quit = true;
                 return Action::Quit;
+            }
+            // Ctrl-Z — the "undo" half of PUBLIC_RELEASE_UX.md's "undo/history"
+            // composer contract. It MUST be intercepted here, ahead of the
+            // `match code` below: that match ignores modifiers, so a bare
+            // `KeyCode::Char('z')` arm would fall through to the typing arm and
+            // insert a literal "z" into the message instead.
+            if code == KeyCode::Char('z') && mods.contains(KeyModifiers::CONTROL) {
+                return self.chat_undo();
             }
             return match code {
                 KeyCode::Esc => {
@@ -20160,6 +20212,67 @@ mod tests {
             a.chat_history,
             vec!["first".to_string(), "second".to_string()]
         );
+    }
+
+    /// `Ctrl-Z` — the "undo" half of PUBLIC_RELEASE_UX.md:372's composer
+    /// promise ("Unicode bracketed paste, undo/history, and draft
+    /// preservation"). History and draft preservation shipped; undo did not,
+    /// and a green suite could never reveal that because a missing feature has
+    /// no failing test.
+    ///
+    /// Written to PUI-EDITOR-UNDO's own falsifier — "Undo corrupts Unicode or
+    /// loses the pre-paste draft" — so both halves genuinely fail the case.
+    #[test]
+    fn composer_undo_restores_the_pre_paste_draft_without_corrupting_unicode() {
+        fn ctrl_z() -> Event {
+            Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL))
+        }
+
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('i', KeyModifiers::NONE)); // enter compose
+        assert!(a.chat_composing);
+
+        // Deliberately hostile to a byte-indexed undo: multi-byte scalars,
+        // a COMBINING acute (so one grapheme spans two scalars), an astral
+        // emoji, a regional-indicator flag pair, and RTL text. A restore that
+        // does index arithmetic lands mid-grapheme on any of these.
+        let draft = "δraft ünsent — e\u{0301}te\u{0301} 🧪🇯🇵 عربى";
+        a.chat_input = draft.to_string();
+
+        a.update(Event::Paste("alpha\nbeta\ngamma".into()));
+        assert_eq!(
+            a.chat_input,
+            format!("{draft}alpha\nbeta\ngamma"),
+            "the paste must land as one edit with its newlines intact"
+        );
+
+        a.update(ctrl_z());
+        assert_eq!(
+            a.chat_input, draft,
+            "undo must restore the pre-paste draft BYTE-EXACTLY"
+        );
+        assert!(!a.chat_streaming, "undo must never submit the turn");
+        // Ctrl-Z must not reach the typing arm: that `match code` ignores
+        // modifiers, so an un-intercepted chord appends a literal "z".
+        assert!(
+            !a.chat_input.ends_with('z'),
+            "Ctrl-Z must not type a literal z into the message"
+        );
+
+        // An empty undo stack is INERT, never a clear — an undo that wiped the
+        // line here would BE the data loss the feature exists to prevent.
+        a.update(ctrl_z());
+        assert_eq!(a.chat_input, draft, "undo with nothing to undo must not clear");
+
+        // Successive pastes unwind one at a time, newest first.
+        a.update(Event::Paste("one".into()));
+        a.update(Event::Paste("two".into()));
+        assert_eq!(a.chat_input, format!("{draft}onetwo"));
+        a.update(ctrl_z());
+        assert_eq!(a.chat_input, format!("{draft}one"));
+        a.update(ctrl_z());
+        assert_eq!(a.chat_input, draft);
     }
 
     #[test]

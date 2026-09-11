@@ -1721,6 +1721,77 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       }));
     } finally { await pane.stop().catch(() => {}); }
   });
+
+  // PUI-EDITOR-UNDO — "Undo restores the pre-paste draft." Falsifier: "Undo
+  // corrupts Unicode or loses the pre-paste draft."
+  //
+  // Undo did not exist when this clause was written: PUBLIC_RELEASE_UX.md:372
+  // promises the composer supports "Unicode bracketed paste, undo/history, and
+  // draft preservation", and only history and draft preservation had shipped.
+  // A green suite could not reveal that, because absent code has no failing
+  // test — which is exactly why the clause, not the suite, is the completeness
+  // oracle here. `Ctrl-Z` + `App::chat_undo` were added with it.
+  //
+  // LAYERING, stated deliberately. The two falsifier halves are decided at the
+  // layer that can actually decide them:
+  //   * "corrupts Unicode" is a BYTE-EXACTNESS claim, and the rendered screen
+  //     is a lossy oracle for it — a terminal may normalise a combining mark
+  //     into one cell, and emoji cell-width varies by emulator, so a screen
+  //     comparison could fail (or PASS) for reasons having nothing to do with
+  //     undo. It is asserted against the model in the unit test
+  //     `composer_undo_restores_the_pre_paste_draft_without_corrupting_unicode`,
+  //     whose draft carries a combining acute, an astral emoji and RTL text.
+  //   * THIS case decides the half only an e2e run can: that the whole path —
+  //     real PTY bracketed paste, real key decoding, real composer — restores
+  //     the draft at all. Its draft is multi-byte (Greek, umlaut, CJK) but
+  //     render-stable, so a failure here means the PATH is broken, never that
+  //     the terminal renders combining marks differently than expected.
+  test('PUI-EDITOR-UNDO: undo restores the exact pre-paste draft', async () => {
+    const draft = 'δraft ünsent 日本語';
+    const pasted = 'PASTED-LINE-THAT-MUST-VANISH';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      // `openComposer` already leaves the pane IN compose mode — every sibling
+      // case types its prompt directly after it and only presses Esc later to
+      // LEAVE. An extra `i` here does not open the composer, it types a literal
+      // "i" as the first character of the draft.
+      await openComposer(pane);
+      pane.write(draft);
+      await pane.waitFor(`> ${draft}`);
+
+      // A REAL bracketed paste, not replayed keystrokes. The clause is about
+      // the paste path specifically: bracketed content is ONE edit the user
+      // cannot walk back with Backspace, which is why undo exists for it.
+      pane.write(`\x1b[200~${pasted}\x1b[201~`);
+      await pane.waitFor(`> ${draft}${pasted}`);
+
+      // Ctrl-Z is the byte 0x1a. The composer runs the terminal in raw mode, so
+      // ISIG is off and this arrives as Char('z')+CONTROL rather than raising
+      // SIGTSTP and suspending the process.
+      pane.write('\x1a');
+
+      // Falsifier half — the pre-paste draft must come back, and the pasted
+      // text must be GONE. Asserting only the first would pass against an undo
+      // that merely appended the draft again.
+      await pane.waitFor(`> ${draft}`, { timeoutMs: 10_000 });
+      const screen = pane.screen();
+      expect(screen, screen).toContain(`> ${draft}`);
+      expect(screen, screen).not.toContain(pasted);
+
+      // Undo must not submit: a turn dispatched here would send the very text
+      // the owner just took back — the worst possible failure for this key.
+      expect(screen).not.toContain('Sending — awaiting acceptance');
+      expect(commandPosts).toHaveLength(0);
+
+      console.info('PUI_EDITOR_UNDO_ACCEPTANCE', JSON.stringify({
+        binary: bin,
+        binarySha256,
+        draftRestored: screen.includes(`> ${draft}`),
+        pastedTextGone: !screen.includes(pasted),
+        submitted: commandPosts.length,
+      }));
+    } finally { await pane.stop().catch(() => {}); }
+  });
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
