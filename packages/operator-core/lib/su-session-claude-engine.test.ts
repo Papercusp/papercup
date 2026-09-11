@@ -7,7 +7,11 @@ import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-a
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
-import { startClaudeSuEngine, type ClaudeEngineOptions, type ClaudeSuEngine } from './su-session-claude-engine';
+import {
+  CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, createChildStderrTail,
+  formatStalledTurnMessage, redactChildStderr, startClaudeSuEngine,
+  type ClaudeEngineOptions, type ClaudeSuEngine,
+} from './su-session-claude-engine';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 
 vi.mock('./su-session-persistence', () => ({
