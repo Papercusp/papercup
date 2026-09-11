@@ -395,6 +395,30 @@ class PuiPane {
     );
   }
 
+  /**
+   * Wait for a needle to LEAVE the rendered screen.
+   *
+   * The positive `waitFor` is the WRONG instrument for an undo or a clear,
+   * because the text left behind is normally a PREFIX of the text being undone:
+   * waiting for the restored draft is satisfied by the un-undone line that
+   * still contains it, returns instantly, and samples the screen before the app
+   * has even processed the key. The assertion that follows then passes or fails
+   * for reasons having nothing to do with the feature. Wait for the DISAPPEARANCE
+   * instead — that is the condition the behaviour actually claims.
+   */
+  async waitForGone(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? 25_000;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!screenContains(this.screen(), needle)) return;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    throw new Error(
+      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} to LEAVE the rendered screen:\n` + this.screen(),
+      { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
+    );
+  }
+
   async waitForReply(needle: string | RegExp): Promise<void> {
     try {
       await vi.waitFor(() => {
@@ -1773,7 +1797,12 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // Falsifier half — the pre-paste draft must come back, and the pasted
       // text must be GONE. Asserting only the first would pass against an undo
       // that merely appended the draft again.
-      await pane.waitFor(`> ${draft}`, { timeoutMs: 10_000 });
+      // Wait for the pasted text to LEAVE, never for the draft to reappear: the
+      // draft is a PREFIX of the un-undone line, so a positive wait is satisfied
+      // by the very state undo is supposed to end and returns before the app has
+      // processed the key at all. This waits on the falsifier condition itself,
+      // so a genuinely broken undo times out here instead of racing through.
+      await pane.waitForGone(pasted, { timeoutMs: 10_000 });
       const screen = pane.screen();
       // `screenContains`, not `toContain`: this draft's CJK glyphs each occupy
       // TWO terminal columns, so the captured grid carries a blank continuation
