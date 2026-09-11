@@ -58,6 +58,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         // layout does — the same omission that once left 'N' opening a
         // notifications overlay that never drew.
         draw_change_card(f, app);
+        draw_file_picker(f, app);
         if app.show_notifs {
             // The history overlay must render in pinned dock panes too — the
             // toast flashes here, and without this branch 'N' opened an
@@ -4320,6 +4321,83 @@ fn draw_change_card(f: &mut Frame, app: &App) {
         Paragraph::new(rows).style(Theme::popup()).block(
             Theme::popup_block(Line::from(trunc(&head, inner_w))).title_bottom(Line::from(
                 Span::styled(trunc(foot, inner_w), Theme::dim()),
+            )),
+        ),
+        area,
+    );
+}
+
+/// The composer's `@` picker: the project-scoped listing, its filter, and the
+/// reason the last choice was refused.
+///
+/// # Why the refusal row leads
+///
+/// The contract's hard requirement is that a cross-project or unreadable path
+/// is refused WITH the reason, and that the PUI never falls back to a similarly
+/// named file. A refusal the owner cannot SEE is indistinguishable from a
+/// picker that quietly did nothing — which is exactly the reading that would
+/// make a silent wrong-file attachment look like success. So the notice is
+/// painted first and is never the row that scrolls away.
+fn draw_file_picker(f: &mut Frame, app: &App) {
+    let Some(picker) = app.open_file_picker.as_ref() else {
+        return;
+    };
+    let area = centered_rect(72, 70, f.area());
+    // A frame needs two columns/rows of border before it can hold anything.
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+
+    let matches = picker.matches();
+    let mut rows: Vec<Line> = Vec::new();
+    if let Some(notice) = picker.notice.as_deref() {
+        rows.push(Line::from(Span::styled(
+            trunc(notice, inner_w),
+            Theme::warn(),
+        )));
+    }
+
+    // Keep the highlighted row on screen once the listing is taller than the
+    // frame, or selection walks off the bottom invisibly.
+    let list_h = inner_h.saturating_sub(rows.len()).max(1);
+    let start = picker.selected.saturating_sub(list_h.saturating_sub(1));
+    if matches.is_empty() {
+        rows.push(Line::from(Span::styled(
+            trunc("No file in this project matches the filter.", inner_w),
+            Theme::dim(),
+        )));
+    }
+    for (i, path) in matches.iter().enumerate().skip(start).take(list_h) {
+        // A tick marks what is already attached, so Enter's toggle is legible
+        // as attach-or-remove rather than looking like a no-op on a re-press.
+        let attached = app.attachments.contains(&format!("@{path}"));
+        let marker = if attached { "✓ " } else { "  " };
+        let style = if i == picker.selected {
+            Theme::selected()
+        } else if attached {
+            Theme::notify()
+        } else {
+            Theme::popup()
+        };
+        rows.push(Line::from(Span::styled(
+            trunc(&format!("{marker}{path}"), inner_w),
+            style,
+        )));
+    }
+
+    let head = format!(
+        " Attach a file · {} match{} ",
+        matches.len(),
+        if matches.len() == 1 { "" } else { "es" }
+    );
+    let foot = format!(" @{} · Enter attaches/removes · Esc closes ", picker.query);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(rows).style(Theme::popup()).block(
+            Theme::popup_block(Line::from(trunc(&head, inner_w))).title_bottom(Line::from(
+                Span::styled(trunc(&foot, inner_w), Theme::dim()),
             )),
         ),
         area,
