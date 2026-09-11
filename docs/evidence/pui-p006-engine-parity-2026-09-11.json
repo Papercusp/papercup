@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItems": ["WI-10000428"],
+  "recordedAt": "2026-09-11T08:40:00.000000+00:00",
+  "title": "P-006 installed-PUI engine parity — per-engine real-engine e2e evidence (Claude / Codex / OMP)",
+  "scope": {
+    "subject": "Installed PUI binary driving the two shared engine journeys behind the same host and PUI commands, one engine per run.",
+    "testFile": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+    "selection": "One journey selected per run by -t filter; the other 15 cases in the file are COLLECTED-NOT-RUN and carry no evidence in that run.",
+    "harness": "papercusp",
+    "workspaceId": "papercusp-workspace",
+    "notCovered": [
+      "Deployed-main verdict: every run below is a local installed-PUI run against the working tree, not :3070.",
+      "Public publication (P-015) — owner-walled to Avi.",
+      "OS matrix beyond local Linux."
+    ]
+  },
+  "clauses": {
+    "AUTO-BAR-R-10-P-006": {
+      "revision": 6,
+      "requiredEvidence": "Run the shared installed-PUI greeting/tool/approval/resume scenario separately for each engine.",
+      "journeyTest": "installed PUI with the real <engine> engine > greeting, real file tool, interrupt and continued reply stay in one first-party session"
+    },
+    "AUTO-BAR-R-03-P-006": {
+      "revision": 6,
+      "requiredEvidence": "Run the same scope/tool/mode/carry resume scenario through installed PUI for Claude, Codex and OMP.",
+      "journeyTest": "installed PUI with the real <engine> engine > restores the same native conversation after the operator OS process exits"
+    }
+  },
+  "engines": {
+    "omp": {
+      "status": "evidenced",
+      "binarySha256": "6ab60f79258e87d510778958f4a9a02de04dbbf381b2c5565b5e91d7da666dd4",
+      "binaryPath": "~/.cargo/bin/pui",
+      "r10": {
+        "clause": "AUTO-BAR-R-10-P-006",
+        "testRunId": 17770711,
+        "outcome": "passed",
+        "testName": "greeting, real file tool, interrupt and continued reply stay in one first-party session",
+        "durationMs": 94149,
+        "startedAt": "2026-09-11T08:25:50.426Z",
+        "endedAt": "2026-09-11T08:28:22Z",
+        "runnerBannerHead": "5adef9f8e7",
+        "ledgerCommitSha": "72dc2e36a6",
+        "headNote": "The shared tree was swept by git-sync mid-run: the runner banner captured HEAD at run START (5adef9f8e7) while the ledger row records the commit at run END (72dc2e36a6). This is why the runner reported provenance=unknown for this leg. Freshness for the binding is computed from FILE FINGERPRINTS, not commit_sha, so this divergence does not weaken the row.",
+        "provenance": "unknown",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "skippedTests": 15
+      },
+      "r03": {
+        "clause": "AUTO-BAR-R-03-P-006",
+        "testRunId": 17770712,
+        "outcome": "passed",
+        "testName": "restores the same native conversation after the operator OS process exits",
+        "durationMs": 85356,
+        "startedAt": "2026-09-11T08:28:24.307Z",
+        "endedAt": "2026-09-11T08:30:45Z",
+        "runnerBannerHead": "72dc2e36a6",
+        "ledgerCommitSha": "72dc2e36a6",
+        "provenance": "stamped",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "skippedTests": 15
+      }
+    },
+    "claude": {
+      "status": "in-progress",
+      "r10": {
+        "clause": "AUTO-BAR-R-10-P-006",
+        "outcome": "failed",
+        "startedAt": "2026-09-11T08:30:47.251Z",
+        "endedAt": "2026-09-11T08:34:21Z",
+        "runnerBannerHead": "72dc2e36a6",
+        "provenance": "stamped",
+        "account": "auto",
+        "engineReached": true,
+        "engineEvidence": "Engine process pid 700840 attached; lifecycle starting->ready with reason 'Claude structured stream, SU tools and command executor attached'; owner_turn accepted at 08:31:43.336Z and reported completed at 08:31:44.550Z; nativeSessionId cbc348c5-fc2f-4d38-b0bd-87bcdbe5ca8d.",
+        "failureMode": "The diagnostics ArrayContaining assertion failed: the session produced 8 frames (lifecycle + command_result only) and NO assistant reply frames. The captured screen shows the owner prompt rendered with an empty reply pane. The owner turn reported 'completed' 1.2s after acceptance without emitting assistant text.",
+        "classification": "UNRESOLVED — not yet attributed. This is NOT the usage wall (see accountWall below). Candidate causes not yet distinguished: (a) a genuine P-006 parity gap in the Claude engine's assistant-frame emission, (b) the pool account resolved by PUI_REAL_ACCOUNT=auto failing fast in a way the engine swallows into a 'completed' turn. Requires a contrastive probe before any claim is recorded."
+      }
+    },
+    "codex": {
+      "status": "blocked-unevidenced",
+      "blocker": "Account out of credits until 2026-09-14T21:26Z (19x HTTP 429). No failover route: PUI_REAL_ACCOUNT accepts only auto|default, and codex identity is a per-session CODEX_HOME rather than an Anthropic-style pooled account, so the gateway pool cannot re-route it.",
+      "ownerGated": true,
+      "note": "Both P-006 clauses name Claude, Codex AND OMP in requiredEvidence, so codex cannot be silently omitted. Recorded here as explicitly unevidenced rather than absent."
+    }
+  },
+  "accountWall": {
+    "claim": "The 'You've reached your Fable limit' wall observed on earlier claude legs is specific to the `default` credential and is BYPASSED by routing through the gateway pool.",
+    "evidence": "Earlier leg ts-claude-r03 (account=default) recorded 7 occurrences of 'reached your Fable limit'. Re-run ts2-claude-r10 with PUI_REAL_ACCOUNT=auto over pool accounts recorded FABLE_LIMIT_HITS = 0, and the engine reached lifecycle 'ready' and accepted an owner turn.",
+    "verifiedAt": "2026-09-11T08:34:21Z",
+    "consequence": "Claude real-engine evidence is NOT owner-gated. Only codex remains owner-walled."
+  },
+  "instrumentCorrections": {
+    "retracted": [
+      "An earlier hypothesis attributed four red legs to a code regression in the range 0db177f606..cff17128f4. WITHDRAWN. The omp reds were caused by the probe script itself passing PUI_REAL_MODEL=papercusp-gateway/claude-sonnet-4-6, a model spec the Agent Chat loop cannot execute; removing that override turned both omp legs green at the same commit. The claude reds were the `default`-account Fable wall. No code regression is implicated.",
+      "An earlier note claimed P-006's R-03 clause requires one-to-one causal-pair bindings. WITHDRAWN: that gate is guarded by clause.falsifier.causalPairing === 'one-to-one', and neither P-006 falsifier carries that field (both carry only observation + probeMethod)."
+    ],
+    "tenantStamping": "Local test_runs rows carry NULL workspace_id/harness_slug unless PAPERCUSP_TEST_RUN_HARNESS and PAPERCUSP_WORKSPACE_ID are set in the environment BEFORE the run; the binder resolves testRunId tenant-scoped and refuses an unstamped row with test_run_not_found. Both omp rows above were produced with those variables set and carry workspace_id='papercusp-workspace', harness_slug='papercusp'. Filed as EI-22952438885573520."
+  },
+  "sources": {
+    "packages/operator-core/lib/su-session-claude-adapter.ts": "85ff0d2dfd3fc215af8eea1232387c7ad0961cedf9dd687473d7284bcdb74292",
+    "packages/operator-core/lib/su-session-claude-engine.ts": "df4a4f3b1f2f50ad7aaa8a7ba4e74058136fb255f5185e2521b96dc13ffe7859",
+    "packages/operator-core/lib/su-session-codex-adapter.ts": "5f1afe31ddf6c77e7e556be4aa9e8dae011aec5615f5c32551765581a31fd3cc",
+    "packages/operator-core/lib/su-session-host.ts": "336afce1fb403e1dc824578d83fcda4c85b9815ead09f3b58ecef6df482db65a",
+    "packages/operator-core/lib/su-session-omp-adapter.ts": "5a9071e56a5acdbbe4a4e67a3aa77608daa19f3137e3e35d5a8b273bae1c122a",
+    "packages/operator-core/lib/su-session-resume.ts": "585082c9c49ba102750fa35af490ee87d26837fa136a09b9efb67e229e26aa37",
+    "packages/operator-core/lib/su-session-rpc-engine.ts": "cd63a8987fd156887bc4d34a3cb3e4b5142f3ca219b1c0e15180cf3048b391b8"
+  },
+  "tests": {
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "f2487e4ae748919516255c537a9da78909c1f29919c8074091fc28db36b2fd65"
+  },
+  "fingerprints": {
+    "algorithm": "sha256-file-set-v1 — sha256 over JSON.stringify of the deduped, lexically sorted [{path, sha256-of-content}] entry list.",
+    "sourceFingerprint": "sha256-file-set-v1:0b82624bdf78368d8df0d2629b55b614fa1acdb3ba26e7c4d2ac2633aacc8c29",
+    "testFingerprint": "sha256-file-set-v1:f2487e4ae748919516255c537a9da78909c1f29919c8074091fc28db36b2fd65",
+    "measuredAt": "2026-09-11T08:40:00Z"
+  }
+}
