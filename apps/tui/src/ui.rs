@@ -2759,7 +2759,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         .saturating_sub(turn_error.len() as u16 + 5)
         .max(1) as usize;
     selection_rows.truncate(selection_limit);
-    let composer_h = 3 + selection_rows.len() as u16 + turn_error.len() as u16;
+    // Attachments occupy one row each ABOVE the draft, so the composer has to
+    // grow by exactly that many or the draft line is pushed out of its own box.
+    let composer_h = 3
+        + selection_rows.len() as u16
+        + app.attachments.len() as u16
+        + turn_error.len() as u16;
     let constraints = if card_h > 0 {
         vec![
             Constraint::Min(1),
@@ -3226,6 +3231,14 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         .into_iter()
         .map(|row| Line::from(Span::styled(row, Theme::dim())))
         .collect();
+    // Every selected attachment is shown ABOVE the draft by project-relative
+    // path, kind, and stable reference (PUBLIC_RELEASE_UX.md:315-317). Rendered
+    // from `Attachments::rows()` — the same single source the picker and any
+    // copy path read — so what is displayed before send cannot drift from what
+    // is attached.
+    for row in app.attachments.rows() {
+        composer_lines.push(Line::from(Span::styled(row, Theme::selected())));
+    }
     composer_lines.push(Line::from(Span::styled(ctext, cstyle)));
     composer_lines.extend(
         turn_error
