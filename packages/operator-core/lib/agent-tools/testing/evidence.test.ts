@@ -17,6 +17,7 @@ const deps = () => ({
   measure: vi.fn().mockResolvedValue({ sourceFingerprint: 'source-before', testFingerprint: 'test-before' }),
   ledger: vi.fn().mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass', finished_at: '2026-09-08T00:00:00Z' }]),
   list: vi.fn().mockResolvedValue([]),
+  unattributed: vi.fn().mockResolvedValue(0),
 });
 
 describe('test-time evidence continuity', () => {
@@ -33,6 +34,33 @@ describe('test-time evidence continuity', () => {
       details: { currentMeasurement: { sourcePaths: ['src/feature.ts'], testPaths: [binding.testPath] },
         adequacy: { collected: true, executed: true, skipped: false, outcome: 'pass' } } });
     expect(d.bind.mock.calls[1][0].details.adequacy).not.toHaveProperty('oracleIndependent');
+  });
+
+  // R-8: an infrastructure/attribution failure must not be reported as a missing run.
+  // A test_runs row written without workspace_id/harness_slug is invisible to the
+  // tenant-scoped ledger read, so the binding used to settle as a bare `pending` with
+  // ledgerMatches:0 — indistinguishable from "the test never executed". The run DID
+  // happen; only its attribution is absent. Say so, without promoting it to proof.
+  it('separates an unattributed ledger row from a genuinely absent run', async () => {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(1);
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const bundle = await finishTestEvidence(prepared, runId, runId, scope, undefined, d);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'ledger-unattributed', testRunId: null });
+    expect(d.bind.mock.calls[1][0].details.testExecution).toMatchObject({
+      ledgerAttribution: 'unattributed', ledgerUnattributedRows: 1, ledgerMatches: 0 });
+    // Attribution is not execution: an unattributed row is still never passing proof.
+    expect(d.bind.mock.calls[1][0].details.adequacy).toMatchObject({ outcome: 'unknown', executed: false });
+  });
+
+  it('keeps a genuinely absent run pending rather than calling it unattributed', async () => {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const bundle = await finishTestEvidence(prepared, runId, runId, scope, undefined, d);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'pending' });
+    expect(d.bind.mock.calls[1][0].details.testExecution).toMatchObject({ ledgerAttribution: 'absent' });
   });
 
   it('refuses an unselected test before registering any mapping', async () => {
