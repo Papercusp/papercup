@@ -1785,6 +1785,18 @@ pub struct TestRunState {
 }
 
 /// Root application state. Grows as more panels are ported.
+/// A change card opened over the transcript, plus where the reader is in it.
+///
+/// The card is a SNAPSHOT, not a live index into `chat_messages`: a transcript
+/// that streams, reloads or prepends history underneath an open diff would
+/// otherwise re-resolve to a different tool call while the reader scrolls it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenChangeCard {
+    pub card: crate::change_card::ChangeCard,
+    /// First visible line of `card.render_lines()`.
+    pub scroll: usize,
+}
+
 pub struct App {
     pub should_quit: bool,
     pub status: String,
@@ -2229,6 +2241,12 @@ pub struct App {
     /// recomputing that mapping in the reducer would make the transcript's
     /// layout true in two places.
     pub chat_focus: Option<usize>,
+    /// The change card opened over the transcript, if any
+    /// (PUBLIC_RELEASE_UX.md:375 — "Change cards open an in-PUI scrollable
+    /// diff"). An overlay rather than an inline expansion because a diff is
+    /// unbounded and the transcript is not: expanding one in place moves every
+    /// block below it and loses the reader's place.
+    pub open_change_card: Option<OpenChangeCard>,
     pub chat_input: String,
     pub chat_composing: bool,
     /// Submitted composer lines, oldest last — the Up/Down recall ring.
@@ -2597,6 +2615,7 @@ impl App {
             lexicon: crate::lexicon::Lexicon::default(),
             chat_messages: Vec::new(),
             chat_focus: None,
+            open_change_card: None,
             chat_input: String::new(),
             chat_composing: false,
             chat_history: Vec::new(),
@@ -2838,6 +2857,141 @@ impl App {
         Action::Render
     }
 
+    /// The change cards hanging off the block the cursor is on.
+    pub fn focused_change_cards(&self) -> Vec<crate::change_card::ChangeCard> {
+        let Some(i) = self.effective_chat_focus() else {
+            return Vec::new();
+        };
+        match self.chat_messages.get(i) {
+            Some(m) => crate::change_card::cards_for_message(m, i),
+            None => Vec::new(),
+        }
+    }
+
+    /// Enter on a block the cursor is EXPLICITLY on: open its change card.
+    ///
+    /// Returns `false` when there is nothing to open, and the caller then falls
+    /// through to Enter's existing meaning. The gate is `self.chat_focus`, the
+    /// RAW field — never `effective_chat_focus()`, which resolves to the newest
+    /// block whether or not the reader ever moved a cursor there. Reading the
+    /// resolved focus here would silently repurpose Enter on the Operator tab
+    /// from "open the composer" to "open a diff" for every user who has an edit
+    /// in their last turn, which is most of them.
+    pub fn open_focused_change_card(&mut self) -> bool {
+        if self.chat_focus.is_none() {
+            return false;
+        }
+        let cards = self.focused_change_cards();
+        let Some(card) = cards.into_iter().next() else {
+            return false;
+        };
+        self.open_change_card = Some(OpenChangeCard { card, scroll: 0 });
+        true
+    }
+
+    /// Keys while a change card is open. `None` means the card did not claim
+    /// the key and the caller should keep dispatching it.
+    ///
+    /// The card is a modal surface (PUBLIC_RELEASE_UX.md § Keyboard precedence
+    /// rank 3), so it OWNS scroll and copy while open — which is what makes
+    /// `y`/`Shift-Y` here mean "this diff" rather than "the transcript block
+    /// behind it".
+    pub fn change_card_key(&mut self, code: KeyCode) -> Option<Action> {
+        let open = self.open_change_card.as_ref()?;
+        let height = open.card.render_lines().len();
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.open_change_card = None;
+                Some(Action::Render)
+            }
+            KeyCode::Char('y') => Some(self.copy_open_change_card(crate::chat_copy::CopyForm::Rendered)),
+            KeyCode::Char('Y') => {
+                Some(self.copy_open_change_card(crate::chat_copy::CopyForm::Raw))
+            }
+            KeyCode::Char('j') | KeyCode::Down => Some(self.scroll_change_card(1, height)),
+            KeyCode::Char('k') | KeyCode::Up => Some(self.scroll_change_card(-1, height)),
+            KeyCode::PageDown => Some(self.scroll_change_card(10, height)),
+            KeyCode::PageUp => Some(self.scroll_change_card(-10, height)),
+            KeyCode::Char('g') | KeyCode::Home => {
+                if let Some(o) = self.open_change_card.as_mut() {
+                    o.scroll = 0;
+                }
+                Some(Action::Render)
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                if let Some(o) = self.open_change_card.as_mut() {
+                    o.scroll = height.saturating_sub(1);
+                }
+                Some(Action::Render)
+            }
+            // `n`/`p` walk the other cards on the SAME message — a turn that
+            // edited four files is one block, and reaching the other three
+            // otherwise means closing and re-opening with no way to say which.
+            KeyCode::Char('n') => Some(self.step_open_change_card(1)),
+            KeyCode::Char('p') => Some(self.step_open_change_card(-1)),
+            _ => None,
+        }
+    }
+
+    fn scroll_change_card(&mut self, delta: isize, height: usize) -> Action {
+        if let Some(o) = self.open_change_card.as_mut() {
+            let last = height.saturating_sub(1);
+            o.scroll = if delta < 0 {
+                o.scroll.saturating_sub(delta.unsigned_abs())
+            } else {
+                o.scroll.saturating_add(delta as usize).min(last)
+            };
+        }
+        Action::Render
+    }
+
+    fn step_open_change_card(&mut self, delta: isize) -> Action {
+        let Some(open) = self.open_change_card.as_ref() else {
+            return Action::Render;
+        };
+        let cards = crate::change_card::cards_for_message(
+            match self.chat_messages.get(open.card.message_index) {
+                Some(m) => m,
+                None => return Action::Render,
+            },
+            open.card.message_index,
+        );
+        let Some(cur) = cards.iter().position(|c| c.tool_index == open.card.tool_index) else {
+            return Action::Render;
+        };
+        let next = if delta < 0 {
+            cur.saturating_sub(delta.unsigned_abs())
+        } else {
+            cur.saturating_add(delta as usize)
+                .min(cards.len().saturating_sub(1))
+        };
+        if next != cur {
+            // Scroll resets: the offset belonged to the previous diff, and
+            // carrying it lands the reader mid-file in a card they have not
+            // seen the top of.
+            self.open_change_card = Some(OpenChangeCard {
+                card: cards[next].clone(),
+                scroll: 0,
+            });
+        }
+        Action::Render
+    }
+
+    /// `y` / `Shift-Y` on the open card — routed through the transcript's own
+    /// `copy_block`, so the redact/truncate/encode/acknowledge behaviour is
+    /// literally the same code, not a second implementation of it.
+    pub fn copy_open_change_card(&mut self, form: crate::chat_copy::CopyForm) -> Action {
+        let Some(open) = self.open_change_card.as_ref() else {
+            return Action::None;
+        };
+        let outcome = crate::chat_copy::copy_block(
+            &open.card.copy_block(),
+            form,
+            crate::chat_copy::passthrough_from_env(),
+        );
+        self.apply_copy_outcome(outcome)
+    }
+
     /// `y` (rendered) / `Shift-Y` (raw). Returns the escape-sequence action on
     /// success and acknowledges through the EXISTING toast surface either way —
     /// an unavailable raw payload must say so, never silently copy the rendered
@@ -2852,6 +3006,14 @@ impl App {
             form,
             crate::chat_copy::passthrough_from_env(),
         );
+        self.apply_copy_outcome(outcome)
+    }
+
+    /// Turn a copy outcome into a toast plus an action. Shared by the
+    /// transcript and the change-card overlay so the two acknowledge
+    /// identically — a copy that toasts on one surface and not the other is
+    /// how a reader learns to distrust the acknowledgement.
+    fn apply_copy_outcome(&mut self, outcome: crate::chat_copy::CopyOutcome) -> Action {
         match outcome {
             crate::chat_copy::CopyOutcome::Copied { sequence, ack, .. } => {
                 self.toast = Some(Notif {
@@ -9132,6 +9294,17 @@ impl App {
                 query: String::new(),
             };
         }
+        // An open change card is a modal surface (PUBLIC_RELEASE_UX.md
+        // § Keyboard precedence rank 3): it owns scroll and copy while open, so
+        // `j`/`k`/`y` mean THIS diff rather than the transcript behind it. It
+        // sits below the blocking question/switcher surfaces above and above
+        // every per-tab arm below. Unclaimed keys fall straight through, so a
+        // tab switch or Ctrl-X is never trapped behind an open diff.
+        if self.open_change_card.is_some() {
+            if let Some(action) = self.change_card_key(code) {
+                return action;
+            }
+        }
         if self.tab == Tab::Sessions {
             if let Some(action) = self.session_browser_key(code, mods) {
                 return action;
@@ -9988,6 +10161,13 @@ impl App {
                     self.operator_dock_focused = false;
                     return Action::Render;
                 }
+                // Enter expands the focused change card when — and only when —
+                // the reader has put a cursor on a block; otherwise it keeps
+                // opening the composer. `i` is never the expand gesture, so it
+                // stays the unconditional composer key.
+                KeyCode::Enter if self.open_focused_change_card() => {
+                    return Action::Render;
+                }
                 KeyCode::Char('i') | KeyCode::Enter => {
                     self.chat_composing = true;
                     return Action::Render;
@@ -10658,6 +10838,13 @@ impl App {
                 Action::Render
             }
             // Enter on the operator pane (outside compose) focuses the composer.
+            // Enter expands the focused card (PUBLIC_RELEASE_UX.md:372) — but
+            // ONLY when the reader has explicitly put a cursor on a block with
+            // `{`/`}`. With no cursor, Enter keeps its existing meaning and
+            // opens the composer, unchanged.
+            KeyCode::Enter if self.tab == Tab::Operator && self.open_focused_change_card() => {
+                Action::Render
+            }
             KeyCode::Enter if self.tab == Tab::Operator => {
                 self.chat_composing = true;
                 Action::Render
