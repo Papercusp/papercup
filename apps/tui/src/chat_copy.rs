@@ -505,6 +505,46 @@ pub fn token_is_secret(tok: &str) -> bool {
     false
 }
 
+/// Redact the value half of a `KEY=value` run.
+///
+/// `=`, `-` and `_` are all token characters, so an assignment arrives as ONE
+/// maximal run: `ANTHROPIC_API_KEY=sk-…` is a single token beginning
+/// `anthropic`, which matches no credential prefix and is preceded by no
+/// auth keyword — so the scanner above passed it through INTACT. That is the
+/// exact shape of a `.env` line, a `docker run -e`, a `curl -H`, and a query
+/// string, which makes it the likeliest secret in a copied transcript or a
+/// change card, not an edge case. Measured 2026-09-11 against a change card
+/// writing a `.env` file: the key survived both `redact_text` and the whole
+/// rendered copy path.
+///
+/// Splitting on `=` and judging each half recovers both readings a bare
+/// prefix scan misses: a secret-shaped KEY redacts whatever it is assigned,
+/// and a credential-shaped VALUE redacts itself whatever it is called. The key
+/// NAME is deliberately kept — `REDACTED` exists so a reader can tell "a
+/// secret was here" from "this field was absent", and which secret it was is
+/// part of that.
+///
+/// Returns `None` when nothing matched, so the caller keeps the original run
+/// byte-for-byte rather than paying a rebuild on every ordinary token.
+fn redact_assignment(run: &str) -> Option<String> {
+    if !run.contains('=') {
+        return None;
+    }
+    let mut parts: Vec<String> = run.split('=').map(str::to_string).collect();
+    let mut hit = false;
+    for i in 1..parts.len() {
+        // Trailing `=` is base64 padding, not an empty assignment.
+        if parts[i].is_empty() {
+            continue;
+        }
+        if key_is_secret(&parts[i - 1]) || token_is_secret(&parts[i]) {
+            parts[i] = REDACTED.to_string();
+            hit = true;
+        }
+    }
+    hit.then(|| parts.join("="))
+}
+
 fn prev_run_is_auth_keyword(prev: Option<&str>) -> bool {
     prev.map(|p| {
         let n = normalize_key(p);
@@ -531,6 +571,8 @@ pub fn redact_text(s: &str) -> String {
         }
         if token_is_secret(cur) || (prev_run_is_auth_keyword(prev.as_deref()) && cur.len() >= 12) {
             out.push_str(REDACTED);
+        } else if let Some(repaired) = redact_assignment(cur) {
+            out.push_str(&repaired);
         } else {
             out.push_str(cur);
         }
@@ -659,6 +701,47 @@ mod tests {
         assert!(!out.contains(&pat), "got {out}");
         assert!(out.contains(REDACTED));
         assert!(out.starts_with("use ") && out.ends_with(" then stop"));
+    }
+
+    #[test]
+    fn key_equals_value_assignments_are_redacted_on_both_readings() {
+        // REGRESSION (measured 2026-09-11, this was LEAKING): `=`, `-` and `_`
+        // are all token characters, so an assignment is ONE maximal run that
+        // begins with the key. No credential prefix matches it and no auth
+        // keyword precedes it, so the scanner passed the whole thing through.
+        // This is the `.env` / `-e` / query-string shape — the likeliest
+        // secret in a copied transcript, not an edge case.
+        let key = fake_anthropic_key();
+
+        // (a) credential-shaped VALUE, under an innocent key.
+        let out = redact_text(&format!("ran with FOO={key} today"));
+        assert!(!out.contains(&key), "value-shaped secret leaked: {out}");
+        assert!(out.contains("FOO="), "the key name must survive: {out}");
+
+        // (b) secret-shaped KEY, over a shapeless opaque value.
+        let out = redact_text("ANTHROPIC_API_KEY=totallyOpaqueValue0123456789");
+        assert!(!out.contains("totallyOpaqueValue"), "keyed secret leaked: {out}");
+        assert!(
+            out.contains("ANTHROPIC_API_KEY="),
+            "which secret it was is part of the signal: {out}"
+        );
+    }
+
+    #[test]
+    fn calibration_ordinary_assignments_survive_byte_for_byte() {
+        // The falsifying control for the test above: if `redact_assignment`
+        // were widened to redact any `k=v`, BOTH tests would still pass on the
+        // leak half while quietly destroying every diff line and query string
+        // in the transcript. This is the half that would catch that.
+        for s in [
+            "let x=1",
+            "sort_key=name",
+            "?page=2&limit=50",
+            "-D CMAKE_BUILD_TYPE=Release",
+            "content-type=application/json",
+        ] {
+            assert_eq!(redact_text(s), s, "ordinary assignment was mangled");
+        }
     }
 
     #[test]
