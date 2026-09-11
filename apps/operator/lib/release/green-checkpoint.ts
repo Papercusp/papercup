@@ -207,6 +207,17 @@ import {
 // deliberately outside the root npm workspaces (the lockfile carries them as standalone links),
 // so `npm --workspace <name>` cannot address them from the superproject root.
 import { STANDALONE_PACKAGE_DIRS } from "../../../../scripts/lib/test-runner-classes.mjs";
+// WI-10000288: a repair-signature leg that answers "I verified NOTHING" (EXIT_NOT_CHECKED)
+// is not a failing leg, and judging it as one red-pins the candidate forever — no fix to the
+// SUBJECT can repair a verdict that was never about the subject. These guards infer their
+// subject from a working-tree diff, which is empty by construction in the gate's clean
+// checkout, so this is the expected answer there rather than a finding. Only a guard whose
+// registration opts in is forgiven; see the module for why the mirror exists and how it is
+// pinned to `REPO_WIDE_INVARIANT_GUARDS`.
+// @ts-ignore -- plain .mjs policy module, no type declarations; keep immediately above the module specifier.
+import { isNotCheckedNonGating } from "../../../../scripts/lib/not-checked-non-gating.mjs";
+// @ts-ignore -- plain .mjs policy module, no type declarations; keep immediately above the module specifier.
+import { EXIT_NOT_CHECKED } from "../../../../scripts/lib/not-checked.mjs";
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
@@ -18601,8 +18612,28 @@ export function realCheckpointDeps(
           allowNonZero: true,
           ...rescueTaskWatchdogOptions(script, env),
         }).catch((e: unknown) => ({ code: 1, stdout: "", stderr: String(e) }));
-        summaries.push(`${label}: ${r.code === 0 ? "pass" : "FAIL"}`);
-        if (r.code !== 0) return { pass: false, summary: summaries.join("; ") };
+        // WI-10000288: three outcomes, not two. `EXIT_NOT_CHECKED` from a guard REGISTERED
+        // `notCheckedIsNonGating` means the guard examined nothing — the honest answer in a
+        // clean checkout, where its working-tree diff is empty by construction. Rendering it
+        // as FAIL put a leg into the repair signature that NO fix to the subject could ever
+        // clear, because the verdict was never about the subject; the frozen candidate then
+        // stayed red indefinitely. Reported distinctly rather than as a pass, so the coverage
+        // gap stays visible instead of reading as verification nobody performed — the same
+        // absent-evidence-is-not-evidence-of-absence contract affected-tests.mjs applies on
+        // its own path.
+        const notChecked =
+          r.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label);
+        summaries.push(
+          `${label}: ${
+            r.code === 0
+              ? "pass"
+              : notChecked
+                ? "NOT CHECKED (examined nothing — not gating)"
+                : "FAIL"
+          }`,
+        );
+        if (r.code !== 0 && !notChecked)
+          return { pass: false, summary: summaries.join("; ") };
       }
       return { pass: true, summary: summaries.join("; ") };
     },
