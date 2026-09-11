@@ -110,6 +110,19 @@ function broadIntentHint(intent: string, hasStructuredItems: boolean): string | 
   );
 }
 
+/**
+ * EI-22662451852499659: has THIS process completed one intent-pivot embed?
+ * Until it has, the pivot leg answers lexically and warms the embedder in the
+ * background instead of racing a cold in-process model load against
+ * PIVOT_EMBED_BUDGET_MS (measured: the deadline fired on every cold installed
+ * run and vitest-fail-on-console turned the warning into a red).
+ */
+let pivotEmbedWarm = false;
+/** Test seam only. */
+export function __resetPivotEmbedWarmForTest(): void {
+  pivotEmbedWarm = false;
+}
+
 export default defineTool({
   name: 'coord:declare-intent',
   description:
@@ -439,6 +452,32 @@ export default defineTool({
             if (resolved.mode === 'disabled') throw new Error('embedder disabled');
             return resolved.embed(text);
           };
+          // EI-22662451852499659: on a COLD process the lazy embed pays an
+          // in-process model load per text, so the 1500ms pivot deadline fires
+          // on every first call and logs a [bounded-timeout] warning that
+          // fail-on-console turns into a test failure. When local embed
+          // acquisition is not cheap (no ready sidecar), skip the embedding
+          // race entirely — lexical is the documented fallback and needs no
+          // deadline — rather than racing a load we know will lose.
+          // Two gates, both required before the embedding race is offered:
+          //  (1) acquisition is cheap (a sidecar URL resolves, or no sidecar is
+          //      configured, or this process's sidecar finished its handshake);
+          //  (2) this PROCESS has already completed one embed — the in-process
+          //      fallback's model load is deferred to the first embed(text)
+          //      call, which is exactly the cold cost that overran the deadline.
+          // The first eligible call warms the embedder in the BACKGROUND (its
+          // result is discarded) and answers lexically; every later call in the
+          // same process races the warm embedder within budget.
+          const { isLocalEmbedAcquisitionCheap } = await import('../../../memory/embed-sidecar-wiring');
+          if (!isLocalEmbedAcquisitionCheap()) return detectIntentPivot(prevIntent, args.intent, {});
+          if (!pivotEmbedWarm) {
+            void embed(args.intent)
+              .then(() => {
+                pivotEmbedWarm = true;
+              })
+              .catch(() => {});
+            return detectIntentPivot(prevIntent, args.intent, {});
+          }
           return detectIntentPivot(prevIntent, args.intent, { embed });
         })(),
         { fallback: null, timeoutMs: 2_500, label: 'declare-intent:pivot' },

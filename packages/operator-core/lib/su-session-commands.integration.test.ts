@@ -51,7 +51,8 @@ function descriptor(): SuSessionDescriptor<'claude'> {
     model: null, accountRoute: 'default', modes: [],
     capabilities: {
       commands: { owner_turn: supported, interrupt: supported, resume: supported, fork: supported, focus: supported, end: supported },
-      features: { 'tool-events': supported, 'interactive-cards': supported, 'reasoning-stream': supported, usage: supported, compaction: supported },
+      features: { 'tool-events': supported, 'interactive-cards': supported, 'reasoning-stream': supported, usage: supported, compaction: supported,
+        approvals: supported, context: supported, modes: supported },
     },
     backendExtension: { backend: 'claude', configDir: null, configDirSource: 'unknown' },
   };

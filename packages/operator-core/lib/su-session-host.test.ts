@@ -34,6 +34,9 @@ const capabilities: SuSessionCapabilities = {
     'reasoning-stream': supported,
     usage: supported,
     compaction: supported,
+    approvals: supported,
+    context: supported,
+    modes: supported,
   },
 };
 
