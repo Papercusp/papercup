@@ -273,6 +273,37 @@ function nextGistPageUrl(linkHeader: string | null): string | null {
   return null;
 }
 
+/**
+ * A gist LISTING is a pure READ, so retrying it cannot create a duplicate
+ * binding — the hazard every refusal below names lives on the CREATE path.
+ * That asymmetry is what makes a bounded retry here safe, and it is why a
+ * transient upstream fault must not be treated like a permanent refusal:
+ * the live-federation gate spends ~70min on build+repack before this
+ * preflight runs, so one GitHub 502 discarded the entire cycle (observed
+ * 2026-09-11 on the first run in 225h to reach the federation legs at all —
+ * WI-10000280). The sibling identity preflight in the same rig already
+ * retries (`fed_github_user_json_with_retry`, papercusp-desktop/bin/lib/
+ * federation-asserts.sh); this closes the gap for its attestation half.
+ *
+ * Rate-limit statuses are deliberately NOT retried — armRateLimitCooldown
+ * owns that path, and hammering a quota wall is what the cooldown prevents.
+ */
+const LIST_ATTEMPTS = Math.max(1, Number(process.env.PAPERCUSP_ATTESTATION_LIST_ATTEMPTS) || 3);
+const LIST_RETRY_DELAY_MS = Math.max(
+  0,
+  Number(process.env.PAPERCUSP_ATTESTATION_LIST_RETRY_DELAY_MS) || 2000,
+);
+
+function isTransientListStatus(status: number): boolean {
+  // 5xx is upstream failing; 408 is the request timing out. Both mean the read
+  // did not happen — distinct from 401/403/404/422, which are real answers.
+  return status >= 500 || status === 408;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function listAttestationGists(token: string): Promise<AttestationGistListEntry[]> {
   const headers = {
     Authorization: 'token ' + token,
@@ -291,22 +322,44 @@ async function listAttestationGists(token: string): Promise<AttestationGistListE
     }
     seenPages.add(pageUrl);
 
-    let resp: Response;
-    try {
-      resp = await fetch(pageUrl, { headers });
-    } catch (err) {
+    let resp: Response | null = null;
+    for (let attempt = 1; attempt <= LIST_ATTEMPTS; attempt += 1) {
+      const lastAttempt = attempt >= LIST_ATTEMPTS;
+      let candidate: Response;
+      try {
+        candidate = await fetch(pageUrl, { headers });
+      } catch (err) {
+        // A socket-level failure is the same class as a 5xx: the read did not
+        // happen, so we still cannot know whether a binding already exists.
+        if (!lastAttempt) {
+          await sleepMs(LIST_RETRY_DELAY_MS * attempt);
+          continue;
+        }
+        throw new Error(
+          'ensureAttestationGist: gist listing failed (' + String(err) +
+            ') after ' + attempt + ' attempt(s) — refusing to create a duplicate binding',
+        );
+      }
+
+      if (candidate.ok) {
+        resp = candidate;
+        break;
+      }
+
+      // The list path must arm the same cooldown that protects verification.
+      armRateLimitCooldown(candidate);
+      if (isTransientListStatus(candidate.status) && !lastAttempt) {
+        await sleepMs(LIST_RETRY_DELAY_MS * attempt);
+        continue;
+      }
       throw new Error(
-        'ensureAttestationGist: gist listing failed (' + String(err) +
-          ') — refusing to create a duplicate binding',
+        'ensureAttestationGist: gist listing refused (HTTP ' + candidate.status +
+          ') after ' + attempt + ' attempt(s) — refusing to create a duplicate binding',
       );
     }
-
-    if (!resp.ok) {
-      // The list path must arm the same cooldown that protects verification.
-      armRateLimitCooldown(resp);
+    if (!resp) {
       throw new Error(
-        'ensureAttestationGist: gist listing refused (HTTP ' + resp.status +
-          ') — refusing to create a duplicate binding',
+        'ensureAttestationGist: gist listing exhausted retries without a response — refusing to create a duplicate binding',
       );
     }
 
