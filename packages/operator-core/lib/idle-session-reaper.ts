@@ -299,10 +299,22 @@ export async function gatherProtectedSessionOwners(
     includeClaimHolders?: boolean;
     /** Probe the recorded local process identity and remove confirmed-dead owners. */
     confirmDeadPids?: boolean;
+    /**
+     * EI-22651749738479868: the owner whose session has JUST ENDED. Its own
+     * coord_presence heartbeat / last_active_at are still fresh (STALE_MS=600s)
+     * for far longer than the session-end release retries span (<=60s), so
+     * without this the ending owner protects ITSELF and the release never
+     * fires ("owner-live" on every attempt). The caller has already
+     * established the owner has no OTHER open session; every other leg
+     * (live psu host, armed loop, pending wake delivery, spawned_agents
+     * heartbeat) still protects it.
+     */
+    ignoreOwnPresenceFor?: string;
   } = {},
 ): Promise<Set<string>> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
   const includeClaimHolders = opts.includeClaimHolders !== false;
+  const ignoredPresenceOwner = opts.ignoreOwnPresenceFor?.trim() || '';
   // EI-19357343... (WI-6638 side-finding): harness_features_consolidated is the
   // FEATURE-ONLY view (`WHERE item_kind <> ALL ('{bug,change,task}')` — see its
   // pg_get_viewdef) — issue-family (bug/change/task) claims live in
@@ -318,6 +330,7 @@ export async function gatherProtectedSessionOwners(
         FROM harness_shared.coord_presence
        WHERE heartbeat_at IS NOT NULL
          AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
+         AND owner_id <> ${ignoredPresenceOwner}
       UNION
       SELECT a.alias
         FROM harness_shared.spawned_agents n
@@ -368,7 +381,8 @@ export async function gatherProtectedSessionOwners(
     >`
       SELECT DISTINCT owner_id, host, pid,
              (last_active_at IS NOT NULL
-              AND (now() - last_active_at) < make_interval(secs => ${graceSec})) AS active_fresh,
+              AND (now() - last_active_at) < make_interval(secs => ${graceSec})
+              AND owner_id <> ${ignoredPresenceOwner}) AS active_fresh,
              EXISTS (
                SELECT 1 FROM harness_shared.routines r
                 WHERE r.target_owner_id = coord_presence.owner_id

@@ -45,7 +45,11 @@ export interface SessionEndLeaseRow {
 
 export interface SessionEndLeaseReleaseDeps {
   loadRow?: (advSessionId: number) => Promise<SessionEndLeaseRow | null>;
-  loadProtectedOwners?: () => Promise<ReadonlySet<string>>;
+  /**
+   * Receives the ENDING owner's id so the protection query can ignore that
+   * owner's own (still-fresh) presence row — EI-22651749738479868.
+   */
+  loadProtectedOwners?: (endingOwnerId: string) => Promise<ReadonlySet<string>>;
   releaseLocks?: typeof releaseAllOwnedLocks;
   releaseWorkItems?: typeof releaseAllWorkItemLeasesForOwner;
   listTasks?: typeof listTasks;
@@ -150,7 +154,7 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
   };
 }
 
-async function loadProtectedOwners(): Promise<ReadonlySet<string>> {
+async function loadProtectedOwners(endingOwnerId: string): Promise<ReadonlySet<string>> {
   // Dynamic imports avoid turning adv-sessions -> this hook -> idle-session-reaper
   // -> adv-sessions into an eager module cycle. This path runs only after an end.
   const [{ gatherProtectedSessionOwners, liveHostOwnerSet }, { listLiveHosts }] = await Promise.all([
@@ -168,6 +172,7 @@ async function loadProtectedOwners(): Promise<ReadonlySet<string>> {
     includeClaimHolders: false,
     liveHostOwners,
     confirmDeadPids: true,
+    ignoreOwnPresenceFor: endingOwnerId,
   });
 }
 
@@ -189,7 +194,7 @@ export async function runSessionEndLeaseRelease(
   if (!ownerId) return { ok: false, reason: 'owner-missing' };
   if (row.ownerHasOpenSession) return { ok: false, reason: 'owner-resumed', ownerId };
 
-  const protectedOwners = await (deps.loadProtectedOwners ?? loadProtectedOwners)();
+  const protectedOwners = await (deps.loadProtectedOwners ?? loadProtectedOwners)(ownerId);
   if (protectedOwners.has(ownerId)) return { ok: false, reason: 'owner-live', ownerId };
 
   const reapAgentSessionTasks = async () => {
