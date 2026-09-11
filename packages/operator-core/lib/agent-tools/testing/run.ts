@@ -2414,7 +2414,7 @@ export default defineTool({
       .max(200)
       .optional()
       .describe(
-        "Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`), never reported as a pass — vitest merely skips them all and exits 0.",
+        "Run only tests whose full name matches — a REGEX (Vitest `-t`), never literal text. To re-run ONE failing test from a previous result's `failures[].test`, regex-escape it first: a name containing `(`, `+` or `[` does not match itself. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`) and hands back the escaped form to retry, never reported as a pass — vitest merely skips them all and exits 0.",
       ),
     timeoutMs: z
       .number()
