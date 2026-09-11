@@ -1465,6 +1465,42 @@ export const NATIVE_SCHEDULER_DENY_FLAG =
 export const NO_SUBAGENTS_DENY_FLAG = "--disallowedTools=Task,Agent,Workflow";
 
 /**
+ * Native client tool-search lockout (owner directive 2026-09-11): every psu
+ * launch loses claude's built-in `ToolSearch`, forcing discovery through
+ * papercusp's `tools:find` (result-door-capped) and `tools:invoke` (zero schema
+ * tokens — it dispatches server-side).
+ *
+ * WHY: measured on a live su session (WI-10001033), ONE `ToolSearch` call
+ * loading six schemas cost +67,045 tokens — 17% of that session's whole budget
+ * in a single hop. It bypasses `applyResultDoor` (applied only in papercusp's
+ * MCP transport, `_mcp-host.ts`), which caps results at ~1,500 tokens — a ~45x
+ * overshoot through the one channel no guard watches.
+ *
+ * ⚠ IT DOES NOT STRAND THE SESSION — the fear is real but wrong, and it was
+ * verified both ways on the SAME raw `claude -p` path, varying only this flag:
+ * ToolSearch ALLOWED → 0 papercusp tools directly callable (the client defers
+ * them all and points at ToolSearch); ToolSearch DENIED → 63 directly callable,
+ * and `mcp__papercusp-su__tools_invoke` genuinely DISPATCHED (`CALL_OK` with a
+ * real result payload, not a model's self-report). The deferral is CONDITIONAL
+ * ON ToolSearch EXISTING. Re-run both arms against a new claude build before
+ * trusting this — the policy is closed-source, exactly like the Task→Agent
+ * rename that silently no-op'd the subagent deny.
+ *
+ * A SEPARATE `--disallowedTools=` token (claude unions repeated occurrences —
+ * verified live) so it stays independently revertible and cannot disturb the
+ * other flags' lockstep-pinned literals. MUST stay one `=` token — same
+ * greed-guard reason as NATIVE_SCHEDULER_DENY_FLAG. The literal mirrors
+ * `NATIVE_TOOL_SEARCH_DENY` in `@papercusp/orchestrator/native-tool-search-deny`;
+ * the lockstep test in `lib/psu-launcher.test.ts` pins the two copies together.
+ * Exported for tests.
+ *
+ * ⚠ Same native-only caveat as NO_SUBAGENTS_DENY_FLAG: this works because
+ * `ToolSearch` is a NATIVE tool. Do NOT add an `mcp__*` entry here expecting
+ * confinement — `tools:invoke` re-reaches any MCP tool by name server-side.
+ */
+export const NATIVE_TOOL_SEARCH_DENY_FLAG = "--disallowedTools=ToolSearch";
+
+/**
  * EI-3294 known-risk warning: an opted-in subagent (Task/Agent tool) session
  * running on the DEFAULT (no-gateway, direct local OAuth) account route died
  * with 401 "Please run /login" after 12-39 tool calls, while the PARENT
@@ -1613,6 +1649,11 @@ export function roleLaunchArgs(
         // Agent sessions must schedule ONLY via the harness routines table —
         // never claude's own cron/schedule/loop surfaces (D-001).
         NATIVE_SCHEDULER_DENY_FLAG,
+        // Native client tool-search lockout (owner directive 2026-09-11).
+        // UNCONDITIONAL — no opt-in flag, unlike subagents: papercusp's
+        // tools:find/tools:invoke fully cover the capability, so there is no
+        // reason to keep the uncapped native one. See its doc comment.
+        NATIVE_TOOL_SEARCH_DENY_FLAG,
         // Owner-desktop notify-send lockout (owner directive 2026-07-14).
         OWNER_DESKTOP_NOTIFY_DENY_FLAG,
         // Subagent-launch (Task/Agent) is DENIED BY DEFAULT (owner mandate
@@ -1747,6 +1788,10 @@ export function suLaunchArgs(
         // Subagent-launch (Task/Agent) DENIED BY DEFAULT (owner mandate 2026-07-02);
         // `--allow-subagents` opts THIS su launch back IN. See NO_SUBAGENTS_DENY_FLAG.
         ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]),
+        // Native client tool-search lockout (owner directive 2026-09-11) —
+        // unconditional, su sessions included, and NO opt-in: papercusp's
+        // tools:find/tools:invoke fully cover it. See its doc comment.
+        NATIVE_TOOL_SEARCH_DENY_FLAG,
         // Owner-desktop notify-send lockout (owner directive 2026-07-14) —
         // unconditional, su sessions included (an su agent fired the popups).
         OWNER_DESKTOP_NOTIFY_DENY_FLAG,
@@ -2111,6 +2156,11 @@ export function resumeArgsFor(
         "--permission-mode",
         "bypassPermissions",
         ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]),
+        // Native tool-search deny on RESUME too — same persistence gap as the
+        // subagent deny: a spawn-time deny does NOT survive into a resume, so a
+        // resumed session would silently regain ToolSearch and its uncapped
+        // schema loads (this is the psu twin of the wake-executor re-arm).
+        NATIVE_TOOL_SEARCH_DENY_FLAG,
         OWNER_DESKTOP_NOTIFY_DENY_FLAG,
         ...forkFlag,
         ...addDirArgs("claude", addDir),
