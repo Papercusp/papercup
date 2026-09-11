@@ -241,7 +241,12 @@ export const scorecardEmitArgs = z
       ),
     title: z.string().min(1).max(240).optional(),
     body: z.string().max(8000).optional(),
-    ratings: z.record(z.string().min(1), scorecardRatingEntrySchema),
+    ratings: z
+      .record(z.string().min(1), scorecardRatingEntrySchema)
+      .optional()
+      .describe(
+        "Complete per-criterion ratings. Required on every emit EXCEPT an acceptance author's verdict that supplies `acceptanceOf` — there the server adopts the referenced independent card's ratings verbatim, so the persisted card is still schema-complete without the author re-transcribing a grading they did not perform.",
+      ),
     testedSha: z
       .string()
       .trim()
@@ -258,7 +263,15 @@ export const scorecardEmitArgs = z
       .strict()
       .optional()
       .describe(
-        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. The top-level ratings field remains schema-required and must contain the complete rubric ratings; acceptance does not replace it. Independent graders omit it. Use 'accept-pending-delivery' when the graded work is accepted and the ONLY outstanding obligation is evidence on a delivery plane you cannot reach (a deployed/live BAR behind a gate or a deploy another agent owns): 'accept' would overclaim delivery and 'reject' would be false, so this records the acceptance judgment durably while leaving the delivery fact separately open. It does NOT waive the delivery-plane evidence, which keeps blocking on its own code.",
+        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. The persisted card always carries complete ratings: either supply them in `ratings`, or name the exact independent card in `acceptanceOf` and the server adopts that card's ratings verbatim (no re-transcription). Independent graders omit it. Use 'accept-pending-delivery' when the graded work is accepted and the ONLY outstanding obligation is evidence on a delivery plane you cannot reach (a deployed/live BAR behind a gate or a deploy another agent owns): 'accept' would overclaim delivery and 'reject' would be false, so this records the acceptance judgment durably while leaving the delivery fact separately open. It does NOT waive the delivery-plane evidence, which keeps blocking on its own code.",
+      ),
+    acceptanceOf: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        "The EXACT independent scorecard this acceptance verdict responds to (its issue id, e.g. 'EI-123…'). Valid only alongside `acceptance`. Naming it lets you omit `ratings`: the server re-reads that card, re-checks it against the same independence, completeness and current-revision rails the scan applies, and adopts its ratings verbatim into your card, stamping ratingsProvenance so the adoption stays auditable. Prefer it over omitting the reference — without it the server accepts whatever independent card it finds first, which may not be the one you read.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     current: z.array(evidenceCurrentInputSchema).max(2000).optional().describe(
@@ -608,7 +621,7 @@ function validateSpecTestAdequacyBinding(
   // shared rating vocabulary so aliases such as "healthy" cannot bypass it.
   if (
     parsedRecipe.data.current.supplied === false &&
-    ratingVerdict(args.ratings.freshness?.rating ?? '') === 'pass'
+    ratingVerdict(args.ratings?.freshness?.rating ?? '') === 'pass'
   ) {
     return {
       code: 'invalid_spec_test_adequacy_binding',
@@ -1470,7 +1483,7 @@ export async function emitScorecard(
       // whose generation is known to contain the graded card can audit it.
       if (
         gradedObservation.rerunRecipe &&
-        ratingVerdict(args.ratings['re-runnable-evidence']?.rating ?? '') === 'fail'
+        ratingVerdict(args.ratings?.['re-runnable-evidence']?.rating ?? '') === 'fail'
       ) {
         const rawGeneration =
           gradedRawObservation && typeof gradedRawObservation === 'object' && !Array.isArray(gradedRawObservation)
