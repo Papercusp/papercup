@@ -19,6 +19,7 @@ mod card_view;
 /// every `Tab::ALL` destination in every state and pins the census table.
 #[cfg(test)]
 mod census;
+mod chat_copy;
 mod chat_tags;
 mod client;
 mod companion;
