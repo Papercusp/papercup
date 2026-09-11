@@ -67,6 +67,16 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 )]
 pub enum Action {
     None,
+    /// Write a pre-built terminal escape sequence straight to the tty (P-007
+    /// transcript copy contract, PUBLIC_RELEASE_UX.md:188). The reducer owns
+    /// WHAT is copied — `chat_copy::copy` has already resolved the block,
+    /// redacted it, truncated it and wrapped it for the active multiplexer —
+    /// so the run loop only has to emit the bytes. Carrying the finished
+    /// sequence (rather than the text) keeps the reducer pure and testable:
+    /// a unit test asserts on this variant without a terminal.
+    CopyToClipboard {
+        sequence: String,
+    },
     /// Re-read the canonical Context projection for the currently bound native
     /// session. Used by `g`; SSE invalidations also refresh it automatically.
     FetchContextProjection,
@@ -2204,6 +2214,21 @@ pub struct App {
     /// in-flight flag, the conversation id (for persistence + load-earlier), and
     /// whether older history exists.
     pub chat_messages: Vec<ChatMessage>,
+    /// Focused transcript block for the `y` / `Shift-Y` copy contract — an index
+    /// into `chat_messages`.
+    ///
+    /// `None` means "the newest block", which is what an unprompted `y` should
+    /// copy (the reply you just read), so copying costs zero setup keys. `{`/`}`
+    /// move it; `j`/`k` deliberately do NOT — those are the transcript's
+    /// line-wise scroll (PUBLIC_RELEASE_UX.md:373 "j/k and PgUp/PgDn navigate")
+    /// and rebinding them would break shipped navigation to add a cursor.
+    ///
+    /// This is reducer state rather than something derived from the rendered
+    /// layout on purpose: `ui::draw` is a pure renderer over `&App` (see the
+    /// crate doc), so it cannot hand a line→block mapping back here, and
+    /// recomputing that mapping in the reducer would make the transcript's
+    /// layout true in two places.
+    pub chat_focus: Option<usize>,
     pub chat_input: String,
     pub chat_composing: bool,
     /// Submitted composer lines, oldest last — the Up/Down recall ring.
@@ -2571,6 +2596,7 @@ impl App {
             paned_bees: std::collections::HashSet::new(),
             lexicon: crate::lexicon::Lexicon::default(),
             chat_messages: Vec::new(),
+            chat_focus: None,
             chat_input: String::new(),
             chat_composing: false,
             chat_history: Vec::new(),
@@ -2648,6 +2674,9 @@ impl App {
     ) {
         self.conversation_id = Some(conversation_id);
         self.chat_messages = messages;
+        // A wholesale replace invalidates any block index the old transcript
+        // produced; fall back to "newest" rather than point at a stranger.
+        self.chat_focus = None;
         self.chat_has_more_earlier = has_more_earlier;
         self.chat_oldest_seq = oldest_seq;
         self.chat_loading_earlier = false;
@@ -2673,6 +2702,15 @@ impl App {
             self.chat_oldest_seq = oldest_seq;
         }
         if !messages.is_empty() {
+            // Prepending shifts every existing index by the page size, so an
+            // explicit focus has to move with it — otherwise `y` would silently
+            // copy a different block than the one the user selected. The fetch
+            // "prepends without moving the user's view", and the focus is part
+            // of that view.
+            let prepended = messages.len();
+            if let Some(i) = self.chat_focus.as_mut() {
+                *i = i.saturating_add(prepended);
+            }
             messages.append(&mut self.chat_messages);
             self.chat_messages = messages;
         }
@@ -2767,6 +2805,76 @@ impl App {
         self.chat_scroll = 0;
     }
 
+    // ── Transcript copy contract (P-007, PUBLIC_RELEASE_UX.md:188/:373) ──────
+
+    /// The block `y` / `Shift-Y` would act on: the explicit focus when set,
+    /// otherwise the newest block.
+    ///
+    /// Resolved on every read rather than stored, so a focus left pointing past
+    /// the end by a reload/clear degrades to the newest block instead of
+    /// silently copying nothing.
+    pub fn effective_chat_focus(&self) -> Option<usize> {
+        if self.chat_messages.is_empty() {
+            return None;
+        }
+        let last = self.chat_messages.len() - 1;
+        Some(self.chat_focus.map_or(last, |i| i.min(last)))
+    }
+
+    /// Step the focus by whole blocks (`}` = +1 toward the newest, `{` = -1 into
+    /// history). Starts from the resolved focus, so the first `{` moves off the
+    /// newest block rather than jumping to an arbitrary index.
+    pub fn step_chat_focus(&mut self, delta: isize) -> Action {
+        let Some(cur) = self.effective_chat_focus() else {
+            return Action::Render;
+        };
+        let last = self.chat_messages.len() - 1;
+        let next = if delta < 0 {
+            cur.saturating_sub(delta.unsigned_abs())
+        } else {
+            cur.saturating_add(delta as usize).min(last)
+        };
+        self.chat_focus = Some(next);
+        Action::Render
+    }
+
+    /// `y` (rendered) / `Shift-Y` (raw). Returns the escape-sequence action on
+    /// success and acknowledges through the EXISTING toast surface either way —
+    /// an unavailable raw payload must say so, never silently copy the rendered
+    /// form.
+    ///
+    /// Deliberately does not touch `chat_focus`: "copy success is acknowledged
+    /// without moving selection" (PUBLIC_RELEASE_UX.md:189).
+    pub fn copy_focused_chat_block(&mut self, form: crate::chat_copy::CopyForm) -> Action {
+        let outcome = crate::chat_copy::copy(
+            &self.chat_messages,
+            self.effective_chat_focus(),
+            form,
+            crate::chat_copy::passthrough_from_env(),
+        );
+        match outcome {
+            crate::chat_copy::CopyOutcome::Copied { sequence, ack, .. } => {
+                self.toast = Some(Notif {
+                    level: "info".to_string(),
+                    message: ack,
+                    harness: None,
+                    ts: None,
+                });
+                Action::CopyToClipboard { sequence }
+            }
+            crate::chat_copy::CopyOutcome::Unavailable { ack }
+            | crate::chat_copy::CopyOutcome::NoSelection { ack } => {
+                self.toast = Some(Notif {
+                    level: "warn".to_string(),
+                    message: ack,
+                    harness: None,
+                    ts: None,
+                });
+                Action::Render
+            }
+        }
+    }
+
     pub fn reset_agent_chat_binding(&mut self) {
         self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
@@ -2778,6 +2886,7 @@ impl App {
         // routed by the LAST one's recorded home (P-011).
         self.pui_runtime_class = None;
         self.chat_messages.clear();
+        self.chat_focus = None;
         self.pending_approvals.clear();
         self.chat_streaming = false;
         self.chat_scroll = 0;
@@ -8682,6 +8791,7 @@ impl App {
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
                     self.chat_messages = messages;
+                    self.chat_focus = None;
                     self.su_rendered_owner_turns = owner_turn_ids.into_iter().collect();
                     self.pending_approvals = approvals;
                     self.chat_scroll = 0;
@@ -9882,6 +9992,18 @@ impl App {
                     self.chat_composing = true;
                     return Action::Render;
                 }
+                // The copy contract follows the transcript into the dock — this
+                // arm exists so the dock is "exactly as usable as the full
+                // Operator tab", and a transcript you can read but not copy
+                // would break that.
+                KeyCode::Char('y') => {
+                    return self.copy_focused_chat_block(crate::chat_copy::CopyForm::Rendered)
+                }
+                KeyCode::Char('Y') => {
+                    return self.copy_focused_chat_block(crate::chat_copy::CopyForm::Raw)
+                }
+                KeyCode::Char('}') => return self.step_chat_focus(1),
+                KeyCode::Char('{') => return self.step_chat_focus(-1),
                 // PageUp doubles as the deliberate "page back into history" gesture
                 // (mirrors the Operator-tab arm): scroll up + kick a load-earlier.
                 KeyCode::PageUp => {
@@ -10642,6 +10764,22 @@ impl App {
                     Action::None
                 }
             }
+            // Transcript copy contract (P-007, PUBLIC_RELEASE_UX.md:188).
+            // `y`/`Shift-Y` are unreachable while composing — the composer's own
+            // Char arm returns above — so they only fire on a read-only
+            // transcript, which is exactly when a copy is meaningful.
+            KeyCode::Char('y') if self.tab == Tab::Operator => {
+                self.copy_focused_chat_block(crate::chat_copy::CopyForm::Rendered)
+            }
+            KeyCode::Char('Y') if self.tab == Tab::Operator => {
+                self.copy_focused_chat_block(crate::chat_copy::CopyForm::Raw)
+            }
+            // Block-wise focus motion. `{`/`}` (vim's paragraph motion) rather
+            // than `j`/`k`, which stay the transcript's line-wise scroll that
+            // PUBLIC_RELEASE_UX.md:373 calls navigation — a copy cursor must not
+            // cost the reader their existing scroll keys.
+            KeyCode::Char('}') if self.tab == Tab::Operator => self.step_chat_focus(1),
+            KeyCode::Char('{') if self.tab == Tab::Operator => self.step_chat_focus(-1),
             // Operator transcript scroll (chat_scroll = lines UP from the bottom).
             // PageUp is also the deliberate "page back into history" gesture, so it
             // kicks off a load-earlier fetch when more turns exist (deduped by the
@@ -19355,6 +19493,122 @@ mod tests {
         });
         assert_eq!(a.update(ev(KeyCode::PageUp)), Action::Render);
         assert!(!a.chat_loading_earlier);
+    }
+
+    // --- Transcript copy contract (P-007, PUBLIC_RELEASE_UX.md:188/:373) ---
+
+    fn chat_app(n: usize) -> App {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.chat_messages = (0..n).map(|i| ChatMessage::user(&format!("m{i}"))).collect();
+        a
+    }
+
+    /// CALIBRATION for the whole group below: `j`/`k` must remain the transcript's
+    /// line-wise scroll. Every other test here would pass just as happily if the
+    /// copy cursor had been bolted onto `j`/`k` and silently broken the shipped
+    /// navigation PUBLIC_RELEASE_UX.md:373 specifies, so this is the test that
+    /// can actually catch that.
+    #[test]
+    fn copy_cursor_does_not_steal_the_j_k_transcript_scroll() {
+        let mut a = chat_app(3);
+        a.chat_scroll = 0;
+        a.update(ev(KeyCode::Char('k')));
+        assert_eq!(a.chat_scroll, 1, "k must still scroll one line into history");
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.chat_scroll, 0, "j must still scroll one line toward latest");
+        assert_eq!(
+            a.chat_focus, None,
+            "scrolling must not set the copy cursor — they are separate gestures"
+        );
+    }
+
+    #[test]
+    fn y_copies_the_newest_block_with_no_focus_set() {
+        let mut a = chat_app(3);
+        match a.update(ev(KeyCode::Char('y'))) {
+            Action::CopyToClipboard { sequence } => {
+                // OSC 52 clipboard write, base64 payload.
+                assert!(sequence.starts_with("\x1b]52;c;"), "got {sequence:?}");
+            }
+            other => panic!("expected a clipboard write, got {other:?}"),
+        }
+        let toast = a.toast.as_ref().expect("copy must acknowledge");
+        assert!(toast.message.starts_with("Copied "), "{}", toast.message);
+    }
+
+    /// "Copy success is acknowledged without moving selection."
+    #[test]
+    fn y_acknowledges_without_moving_the_selection() {
+        let mut a = chat_app(4);
+        a.chat_focus = Some(1);
+        a.update(ev(KeyCode::Char('y')));
+        assert_eq!(a.chat_focus, Some(1));
+        a.update(ev(KeyCode::Char('Y')));
+        assert_eq!(a.chat_focus, Some(1));
+    }
+
+    /// Shift-Y on a block with no payload must SAY so — never quietly fall back
+    /// to the rendered form, which would hand the user different bytes than the
+    /// key they pressed promises.
+    #[test]
+    fn shift_y_without_a_raw_payload_refuses_instead_of_copying_rendered() {
+        let mut a = chat_app(1);
+        let action = a.update(ev(KeyCode::Char('Y')));
+        assert!(
+            matches!(action, Action::Render),
+            "no clipboard write is owed, got {action:?}"
+        );
+        let toast = a.toast.as_ref().expect("must acknowledge the refusal");
+        assert!(toast.message.contains("No raw payload"), "{}", toast.message);
+    }
+
+    #[test]
+    fn brace_keys_step_the_focus_and_clamp_at_both_ends() {
+        let mut a = chat_app(3);
+        // Focus resolves to the newest (index 2) before the first explicit move.
+        a.update(ev(KeyCode::Char('{')));
+        assert_eq!(a.chat_focus, Some(1));
+        a.update(ev(KeyCode::Char('{')));
+        assert_eq!(a.chat_focus, Some(0));
+        a.update(ev(KeyCode::Char('{')));
+        assert_eq!(a.chat_focus, Some(0), "clamps at the oldest block");
+        for _ in 0..5 {
+            a.update(ev(KeyCode::Char('}')));
+        }
+        assert_eq!(a.chat_focus, Some(2), "clamps at the newest block");
+    }
+
+    /// Prepending history renumbers every block, so the focus must ride along or
+    /// `y` would copy a different message than the one that is marked.
+    #[test]
+    fn loading_earlier_history_keeps_the_focus_on_the_same_block() {
+        let mut a = chat_app(2);
+        a.chat_focus = Some(0);
+        let focused_before = a.chat_messages[0].content.clone();
+        a.prepend_chat_earlier(
+            vec![ChatMessage::user("older-a"), ChatMessage::user("older-b")],
+            false,
+            None,
+        );
+        assert_eq!(a.chat_focus, Some(2), "shifted by the page size");
+        assert_eq!(
+            a.chat_messages[a.effective_chat_focus().unwrap()].content,
+            focused_before,
+            "the SAME block stays focused after the renumber"
+        );
+    }
+
+    /// A focus stranded past the end by a reload degrades to the newest block
+    /// rather than copying nothing.
+    #[test]
+    fn out_of_range_focus_falls_back_to_the_newest_block() {
+        let mut a = chat_app(2);
+        a.chat_focus = Some(99);
+        assert_eq!(a.effective_chat_focus(), Some(1));
+        let mut empty = chat_app(0);
+        empty.chat_focus = Some(3);
+        assert_eq!(empty.effective_chat_focus(), None);
     }
 
     #[test]

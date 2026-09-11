@@ -2803,7 +2803,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Theme::dim(),
         )));
     }
-    for m in &app.chat_messages {
+    // P-007 copy contract: the block `y`/`Shift-Y` would act on. Resolved once
+    // here (not per message) so the marker cannot disagree with what the reducer
+    // would actually copy.
+    let copy_focus = app.effective_chat_focus();
+    for (block_idx, m) in app.chat_messages.iter().enumerate() {
         let (who, who_style) = match m.role.as_str() {
             "user" => ("you", Theme::selected()),
             "assistant" => ("agent", Theme::notify()),
@@ -2813,6 +2817,15 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             format!("{who} ▌")
         } else {
             who.to_string()
+        };
+        // Mark the copy target in the header gutter. A leading glyph rather than
+        // a background highlight: the transcript already spends colour on role,
+        // tone and tool state, and the marker has to stay legible on a
+        // monochrome or high-contrast terminal in the release matrix.
+        let header = if Some(block_idx) == copy_focus {
+            format!("▸ {header}")
+        } else {
+            format!("  {header}")
         };
         lines.push(Line::from(Span::styled(header, who_style)));
         if let Some(provenance) = m.provenance.as_ref() {

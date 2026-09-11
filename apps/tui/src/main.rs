@@ -1407,6 +1407,29 @@ async fn run<B: Backend>(
                 Action::Render => {
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                // P-007 transcript copy: emit the OSC 52 sequence the reducer
+                // already built. Written straight to the tty and flushed rather
+                // than through `terminal` — the sequence paints nothing, so it
+                // must not go through the draw buffer (ratatui would diff it as
+                // cell content), and it has to reach the emulator the human is
+                // actually looking at, which is what OSC 52 is for. A failed
+                // write is not fatal: the toast already told the user what was
+                // copied, and killing the session over a clipboard byte would be
+                // a far worse outcome than a copy that did not land.
+                Action::CopyToClipboard { sequence } => {
+                    use std::io::Write as _;
+                    let mut out = stdout();
+                    if out.write_all(sequence.as_bytes()).and_then(|()| out.flush()).is_err() {
+                        app.toast = Some(models::Notif {
+                            level: "error".to_string(),
+                            message: "Clipboard write failed — the terminal did not accept the copy"
+                                .to_string(),
+                            harness: None,
+                            ts: None,
+                        });
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
                 Action::PublishBeeSelection { owner_id, name } => {
                     // In-process selection drive (pui-dock-consolidation-2026-06-07):
                     // the dossier renders inside the Fleet tab now — apply the
