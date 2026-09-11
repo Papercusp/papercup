@@ -250,7 +250,7 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
     const kinId = await fileIndependentGrading({ createdBy: 'su-p003-kin' });
 
     const r = await emitScorecard(acceptanceArgs(kinId) as never, asAuthor as never, {
-      lineageRelated: async (first, second) =>
+      lineageRelated: async (first: string, second: string) =>
         // The kin grader is inside the author's lineage; everyone else is not.
         (first === AUTHOR && second === 'su-p003-kin') || (first === 'su-p003-kin' && second === AUTHOR),
     } as never);
