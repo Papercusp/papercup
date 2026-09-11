@@ -2,12 +2,20 @@ import { describe, expect, it, vi } from 'vitest';
 import { prepareTestEvidence, finishTestEvidence, recoverTestEvidence, testEvidenceOutcome, testEvidenceSchema } from './evidence';
 import type { TestFilesCoreResult } from './run';
 
+/**
+ * The SUCCESS member of the result union. Every helper below builds a run that COMPLETED, and
+ * annotating one with the whole union checks its object literal against the ERROR member too —
+ * where `passed` is an excess property, not a field. Naming the member is what lets a helper
+ * spread another helper's result; the union stays in use wherever a caller really accepts both.
+ */
+type TestFilesRunResult = Extract<TestFilesCoreResult, { error?: undefined }>;
+
 const runId = 'ca5fce52-7c67-4d38-8c26-96a952f6a2a2';
 const scope = { workspaceId: 'ws', harnessSlug: 'h1', actorId: 'su-test', root: '/repo' };
 const binding = { specId: 'R-1', specRevision: 2, testPath: 'test/feature.test.ts', sourcePaths: ['src/feature.ts'],
   testLayer: 'unit' as const, scenarioIds: ['happy'], causalPairId: 'original-failure' };
 const request = { workItemId: 'WI-1', planSlug: 'p1', bindings: [binding] };
-const result = (counts: { passed?: number; failed?: number; skipped?: number; collectionFailed?: boolean } = {}): TestFilesCoreResult => ({
+const result = (counts: { passed?: number; failed?: number; skipped?: number; collectionFailed?: boolean } = {}): TestFilesRunResult => ({
   ok: true, runId, root: '/repo', passed: 1, failed: 0, skipped: 0, files: 1,
   failures: [], failuresTruncated: false, durationMs: 10,
   byFile: { [binding.testPath]: { passed: 1, failed: 0, skipped: 0, collectionFailed: false, ...counts } },
@@ -231,7 +239,7 @@ describe('failed-scenario rerun scope (SPEC-P006-FAILED-SCENARIO-RERUN)', () => 
   const matrixRequest = { ...request, bindings: [matrix] };
 
   /** The rerun of one failed scenario: 1 executed, the 3 siblings excluded by the filter. */
-  const narrowed = (): TestFilesCoreResult => ({ ...result(), passed: 1, failed: 0, skipped: 3,
+  const narrowed = (): TestFilesRunResult => ({ ...result(), passed: 1, failed: 0, skipped: 3,
     byFile: { [matrix.testPath]: { passed: 1, failed: 0, skipped: 3, collectionFailed: false } },
     testNamePattern: 'recover' });
 

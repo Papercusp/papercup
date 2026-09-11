@@ -157,7 +157,11 @@ async function readSiblingEvidence(row: Prepared, scope: Scope, deps: Deps) {
   const rows = await deps.list({
     harnessSlug: scope.harnessSlug,
     planSlugs: [row.input.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE],
-    workItemIds: [row.input.workItemId], specIds: [row.input.specId],
+    // `binding.specId` rather than `input.specId`: the store's input type makes `specId`
+    // optional (a binding may instead be keyed by `sourceValId`), but this path is only ever
+    // reached for a schema-validated binding, where it is required — and line-for-line the
+    // same value the input was built from. Reading the required field keeps the query total.
+    workItemIds: [row.input.workItemId], specIds: [row.binding.specId],
     evidenceKinds: ['test'], limit: 50,
   }).catch(() => null);
   if (!rows) return null;
