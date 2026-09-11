@@ -133,6 +133,23 @@ export interface ScorecardAcceptance {
    * successor's verdict as an independent grading.
    */
   seat?: AcceptanceSeatSuccession;
+  /**
+   * P-003 (review-verification-efficiency-2026-09-09): present when this
+   * verdict's ratings were ADOPTED verbatim from the named independent card
+   * rather than transcribed by the author. The persisted card is complete
+   * either way, so without this stamp an adopted grading would be
+   * indistinguishable from one the author rated themselves — and the whole
+   * point of the reference is that the author did NOT re-perform the grading.
+   * Absent on the ordinary transcribed path.
+   */
+  adoptedRatingsFrom?: {
+    /** The independent scorecard's issue id, exactly as the author cited it. */
+    scorecardId: string;
+    /** Who graded it — the party whose judgment these ratings actually are. */
+    gradedBy: string;
+    /** The rubric revision that card graded; equal to the accepting card's by construction. */
+    rubricRevision?: number;
+  };
 }
 
 /**
