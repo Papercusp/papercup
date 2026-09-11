@@ -19691,6 +19691,175 @@ mod tests {
         a
     }
 
+    // --- change cards (PUBLIC_RELEASE_UX.md:375) -------------------------
+    fn edit_call(path: &str) -> crate::models::ChatToolCall {
+        crate::models::ChatToolCall {
+            name: "capability:edit".into(),
+            id: Some("c1".into()),
+            needs_approval: false,
+            input: Some(serde_json::json!({
+                "file_path": path, "old_string": "a\nb\nc", "new_string": "a\nB\nc",
+            })),
+            result: None,
+            outcome: crate::models::ToolOutcome::Ok,
+        }
+    }
+
+    /// An app whose newest block carries `n` change cards.
+    fn card_app(n: usize) -> App {
+        let mut a = chat_app(2);
+        let last = a.chat_messages.len() - 1;
+        a.chat_messages[last].tools =
+            (0..n).map(|i| edit_call(&format!("f{i}.rs"))).collect();
+        a
+    }
+
+    /// CALIBRATION for the change-card group: with NO explicit cursor, Enter on
+    /// the Operator tab must still open the composer. Every other test below
+    /// passes identically whether or not expansion quietly stole Enter from the
+    /// composer for the (very common) case of a last turn that edited a file —
+    /// so this is the one that can catch it.
+    #[test]
+    fn enter_without_a_cursor_still_opens_the_composer() {
+        let mut a = card_app(1);
+        a.tab = Tab::Operator;
+        assert!(a.chat_focus.is_none(), "precondition: no explicit cursor");
+        assert!(
+            !a.focused_change_cards().is_empty(),
+            "precondition: a change card IS present, so only the cursor gate can save Enter"
+        );
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.chat_composing, "Enter must still open the composer");
+        assert!(a.open_change_card.is_none(), "and must not open a diff");
+    }
+
+    #[test]
+    fn enter_on_a_cursored_block_opens_its_change_card() {
+        let mut a = card_app(1);
+        a.tab = Tab::Operator;
+        a.step_chat_focus(0); // an explicit cursor, without moving it
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let open = a.open_change_card.as_ref().expect("card must open");
+        assert_eq!(open.card.path, "f0.rs");
+        assert_eq!(open.scroll, 0);
+        assert!(!a.chat_composing, "expansion must not also open the composer");
+    }
+
+    #[test]
+    fn enter_on_a_cursored_block_with_no_edit_still_opens_the_composer() {
+        let mut a = chat_app(2); // no tool calls at all
+        a.tab = Tab::Operator;
+        a.step_chat_focus(0);
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.chat_composing);
+        assert!(a.open_change_card.is_none());
+    }
+
+    #[test]
+    fn an_open_card_owns_scroll_and_copy_then_esc_returns_the_transcript() {
+        let mut a = card_app(1);
+        a.tab = Tab::Operator;
+        a.chat_scroll = 0;
+        a.step_chat_focus(0);
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        a.on_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(a.open_change_card.as_ref().unwrap().scroll, 1);
+        assert_eq!(a.chat_scroll, 0, "the transcript behind must not scroll");
+
+        a.on_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(a.open_change_card.as_ref().unwrap().scroll, 0);
+
+        match a.on_key(KeyCode::Char('y'), KeyModifiers::NONE) {
+            Action::CopyToClipboard { sequence } => assert!(sequence.contains("\x1b]52;c;")),
+            other => panic!("y must copy the open card, got {other:?}"),
+        }
+        let ack = a.toast.as_ref().map(|t| t.message.clone()).unwrap_or_default();
+        assert!(ack.contains("edit card"), "copied the wrong subject: {ack}");
+
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.open_change_card.is_none());
+        // Esc closed the card and left the transcript exactly as it was.
+        assert_eq!(a.chat_scroll, 0);
+        assert!(!a.chat_composing);
+    }
+
+    #[test]
+    fn shift_y_on_an_open_card_copies_the_raw_payload() {
+        let mut a = card_app(1);
+        a.tab = Tab::Operator;
+        a.step_chat_focus(0);
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        a.on_key(KeyCode::Char('Y'), KeyModifiers::NONE);
+        let ack = a.toast.as_ref().map(|t| t.message.clone()).unwrap_or_default();
+        assert!(ack.starts_with("Copied edit card raw"), "{ack}");
+    }
+
+    #[test]
+    fn n_and_p_walk_the_other_cards_on_the_same_block_and_reset_scroll() {
+        // A turn that edited three files is ONE transcript block; without this
+        // the other two are unreachable without closing and re-opening, with no
+        // gesture that says which one you get.
+        let mut a = card_app(3);
+        a.tab = Tab::Operator;
+        a.step_chat_focus(0);
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(a.open_change_card.as_ref().unwrap().card.path, "f0.rs");
+
+        a.on_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(a.open_change_card.as_ref().unwrap().scroll, 1);
+        a.on_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        let open = a.open_change_card.as_ref().unwrap();
+        assert_eq!(open.card.path, "f1.rs");
+        assert_eq!(open.scroll, 0, "a new diff must start at its top");
+
+        a.on_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(a.open_change_card.as_ref().unwrap().card.path, "f2.rs");
+        a.on_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(
+            a.open_change_card.as_ref().unwrap().card.path,
+            "f2.rs",
+            "clamps at the last card"
+        );
+        a.on_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(a.open_change_card.as_ref().unwrap().card.path, "f1.rs");
+    }
+
+    #[test]
+    fn an_open_card_does_not_trap_keys_it_does_not_claim() {
+        // The precedence rule is "owns scroll and copy", NOT "swallows
+        // everything" — a modal that traps the tab keys strands the reader.
+        let mut a = card_app(1);
+        a.tab = Tab::Operator;
+        a.step_chat_focus(0);
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.open_change_card.is_some());
+        a.on_key(KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_ne!(a.tab, Tab::Operator, "a tab switch must still get through");
+    }
+
+    #[test]
+    fn the_open_card_is_a_snapshot_that_streaming_cannot_re_resolve() {
+        // The transcript streams and prepends under an open diff; re-resolving
+        // the card from a live index would swap the file out mid-scroll.
+        let mut a = card_app(1);
+        a.tab = Tab::Operator;
+        a.step_chat_focus(0);
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let before = a.open_change_card.clone().unwrap();
+
+        a.chat_messages
+            .insert(0, crate::models::ChatMessage::user("an earlier turn arrived"));
+        a.chat_messages
+            .push(crate::models::ChatMessage::assistant("and a newer one"));
+
+        assert_eq!(
+            a.open_change_card.as_ref().unwrap().card,
+            before.card,
+            "the open diff must not change identity underneath the reader"
+        );
+    }
+
     /// CALIBRATION for the whole group below: `j`/`k` must remain the transcript's
     /// line-wise scroll. Every other test here would pass just as happily if the
     /// copy cursor had been bolted onto `j`/`k` and silently broken the shipped
