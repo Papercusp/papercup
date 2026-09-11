@@ -1,0 +1,15 @@
+{
+  "_comment": "Durable PUI_NATIVE_ACCOUNT_CATALOG for replaying the P-006 real-engine journeys. The previous copy lived at .papercusp/scratch/p006/account-catalog.json, which .gitignore:187 (**/.papercusp/scratch/) excludes — so any recorded replay command pointing there stops reproducing the moment that scratch directory is gone (the same trap as plan Decision D-012: a scratch-only artifact is not durable). This file is route metadata ONLY: agent-chat-pty.integration.test.ts validates each entry against /^[A-Za-z0-9._-]+$/ with provider in [claude, codex] and notes that 'the isolated operator needs only the catalogue for route validation. Credentials and all upstream selection remain in the real gateway.' No credentials are present or required here.",
+  "accounts": [
+    { "id": "aviynw2", "provider": "claude" },
+    { "id": "aviynw4", "provider": "claude" },
+    { "id": "aviynw8", "provider": "claude" },
+    { "id": "chatgpt-sub-cli", "provider": "codex" },
+    { "id": "aviynw2_codex", "provider": "codex" },
+    { "id": "aviynw_3", "provider": "codex" },
+    { "id": "aviynw4_codex", "provider": "codex" },
+    { "id": "aviynw5_codex", "provider": "codex" },
+    { "id": "aviynw3_codex", "provider": "codex" },
+    { "id": "aviynw6_codex", "provider": "codex" }
+  ]
+}
