@@ -3036,6 +3036,15 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let chat_dispatch = app.su_dispatch_decision();
     let chat_dispatch_readonly =
         app.chat_composing && chat_dispatch.target == crate::su_session::SuDispatchTarget::ReadOnly;
+    // P-007 draft queuing. Computed once because BOTH in-flight branches need it:
+    // the pending-acknowledgement branch wins for the first moments of every turn,
+    // so an owner who queues in that window would otherwise get no feedback at all
+    // until the ack landed.
+    let queued_note = match app.chat_queued.len() {
+        0 => String::new(),
+        1 => "  · 1 queued".to_string(),
+        n => format!("  · {n} queued"),
+    };
     let (ctitle, ctext, cstyle) = if app.card_state.has_card() {
         // A blocking card is open — the composer is suspended; the card owns the
         // keys (arrows/number/space/Enter). Tell the user where to act.
@@ -3080,7 +3089,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     } else if app.su_pending_turn.is_some() && app.chat_streaming {
         (
             " Sending — awaiting acceptance · draft retained ",
-            format!("> {}", app.chat_input),
+            format!("> {}{queued_note}", app.chat_input),
             Theme::notify(),
         )
     } else if app.su_pending_turn.as_ref().is_some_and(|p| p.uncertain) {
@@ -3102,9 +3111,22 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Theme::warn(),
         )
     } else if app.chat_streaming {
+        // The bar read " Running — input locked " until P-007 draft queuing, and
+        // that is now a statement the app does not honour: Enter queues the line
+        // and it sends itself when the turn settles. A bar naming a behaviour the
+        // keys do not have is worse than a bare one — an owner who believes the
+        // input is locked stops typing and waits, which is the whole cost this
+        // slice was meant to remove.
+        //
+        // The draft LEADS the body for the same reason as the read-only branch
+        // below: this is one unwrapped row beside the Presence rail, so the trailing
+        // key hints are the part allowed to truncate, never the owner's own text.
         (
-            " Running — input locked ",
-            "Running · Ctrl+X cancel".to_string(),
+            " Running — Enter queues your next message ",
+            format!(
+                "> {}{queued_note} · Ctrl+X cancels (clears the queue)",
+                app.chat_input.replace('\n', "⏎")
+            ),
             Theme::notify(),
         )
     } else if chat_dispatch_readonly {
