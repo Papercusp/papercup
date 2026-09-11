@@ -21,11 +21,21 @@
  */
 export function isWorkspaceContended(e: unknown): boolean {
   if (!e || typeof e !== 'object') return false;
-  const o = e as { name?: string; pgCode?: string; code?: string };
+  const o = e as { name?: string; pgCode?: string; code?: string; retryable?: unknown };
   return (
     o.name === 'WorkspaceContendedError' ||
     o.pgCode === '57014' || o.pgCode === '55P03' ||
-    o.code === '57014' || o.code === '55P03'
+    o.code === '57014' || o.code === '55P03' ||
+    // EI-22803020855465174: a bounded read (`boundedPgReadTxn` / `boundedOrgTxn`) that
+    // could not ACQUIRE a pool connection within its deadline throws a
+    // `DbCallDeadlineError`, not a PG SQLSTATE — so the acceptance-grading sweep's
+    // `reconcilePendingGradingAudits` was rethrowing it on attempt 0 and leaving its
+    // scorecards pending with zero auditors. The error carries the pool's OWN verdict:
+    // `retryable` is true only when this process measured a recent successful
+    // acquisition or a client-side saturation/queue verdict (a saturated-but-healthy
+    // pool = the same transient-under-load class as 55P03). An unmeasured/stale pool
+    // may be a dead endpoint, so those deadlines stay non-retryable and surface at once.
+    (o.name === 'DbCallDeadlineError' && o.retryable === true)
   );
 }
 

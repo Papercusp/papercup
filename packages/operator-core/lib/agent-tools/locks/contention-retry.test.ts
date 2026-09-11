@@ -22,6 +22,31 @@ describe('isWorkspaceContended', () => {
     expect(isWorkspaceContended({ code: '55P03' })).toBe(true);
   });
 
+  // EI-22803020855465174: the acceptance-grading sweep's bounded scorecard read failed with a
+  // pool-ACQUISITION deadline (DbCallDeadlineError, no SQLSTATE) and was rethrown on attempt 0.
+  it('classifies a pool-measured retryable DbCallDeadlineError as transient contention', () => {
+    expect(
+      isWorkspaceContended({
+        name: 'DbCallDeadlineError',
+        label: 'boundedPgReadTxn:acquire(admin)',
+        pool: 'org-admin',
+        retryable: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps an UNMEASURED / dead-endpoint DbCallDeadlineError fail-closed (not retried)', () => {
+    // retryable:false = no recent acquisition measured — may be a dead endpoint (WI-7097).
+    expect(
+      isWorkspaceContended({ name: 'DbCallDeadlineError', label: 'boundedPgReadTxn:acquire(admin)', retryable: false }),
+    ).toBe(false);
+    // A missing / non-boolean flag is never promoted to retryable.
+    expect(isWorkspaceContended({ name: 'DbCallDeadlineError', label: 'x' })).toBe(false);
+    expect(isWorkspaceContended({ name: 'DbCallDeadlineError', retryable: 'true' })).toBe(false);
+    // The flag alone, without the deadline error's name, is not contention either.
+    expect(isWorkspaceContended({ name: 'Error', retryable: true })).toBe(false);
+  });
+
   it('does NOT classify a real error / non-object as contention (it must surface immediately)', () => {
     expect(isWorkspaceContended({ name: 'Error', code: '23505' })).toBe(false); // unique violation
     expect(isWorkspaceContended({ pgCode: '00000' })).toBe(false);
