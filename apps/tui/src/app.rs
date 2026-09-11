@@ -1797,6 +1797,45 @@ pub struct OpenChangeCard {
     pub scroll: usize,
 }
 
+/// The composer's `@` file picker while it is open.
+///
+/// A modal surface in the same sense as [`OpenChangeCard`]: while it is open it
+/// owns typing, which is what lets the query filter the listing instead of the
+/// characters landing in the draft behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OpenFilePicker {
+    /// What the owner has typed to filter the listing.
+    pub query: String,
+    /// Project-relative candidate paths, unfiltered. Filtering is applied at
+    /// read time so editing the query can never desynchronise the two.
+    pub entries: Vec<String>,
+    /// Index into the FILTERED list, not into `entries`.
+    pub selected: usize,
+    /// Why the last choice was refused, shown until the next action.
+    ///
+    /// The contract requires the PUI to SAY why a path was refused, so this is
+    /// carried as state rather than dropped: a picker that silently ignores a
+    /// rejected path is indistinguishable from one that is broken.
+    pub notice: Option<String>,
+}
+
+impl OpenFilePicker {
+    /// Entries matching the current query, in listing order.
+    ///
+    /// A case-insensitive SUBSTRING match over the project-relative path — not
+    /// a search by file NAME, which is the fallback the contract forbids. This
+    /// only ever narrows paths already inside the project, and every match is
+    /// still re-resolved by `file_picker::attach` before it can be attached.
+    pub fn matches(&self) -> Vec<&str> {
+        let query = self.query.to_lowercase();
+        self.entries
+            .iter()
+            .map(String::as_str)
+            .filter(|entry| query.is_empty() || entry.to_lowercase().contains(&query))
+            .collect()
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
     pub status: String,
@@ -2247,6 +2286,17 @@ pub struct App {
     /// unbounded and the transcript is not: expanding one in place moves every
     /// block below it and loses the reader's place.
     pub open_change_card: Option<OpenChangeCard>,
+    /// The composer's `@` picker, when open.
+    pub open_file_picker: Option<OpenFilePicker>,
+    /// Files the owner has put in front of the agent for the next turn.
+    ///
+    /// Held beside the draft rather than inside it so that editing, undoing, or
+    /// recalling a draft line cannot silently change what is attached.
+    pub attachments: crate::file_picker::Attachments,
+    /// The session's project root — the ONLY directory the picker attaches
+    /// from. A field rather than the process cwd so the same choice resolves
+    /// identically however the PUI was launched (see `file_picker`).
+    pub project_root: std::path::PathBuf,
     pub chat_input: String,
     pub chat_composing: bool,
     /// Submitted composer lines, oldest last — the Up/Down recall ring.
@@ -2641,6 +2691,12 @@ impl App {
             chat_messages: Vec::new(),
             chat_focus: None,
             open_change_card: None,
+            open_file_picker: None,
+            attachments: crate::file_picker::Attachments::default(),
+            // The launch directory is the session's project. `attach` compares
+            // CANONICAL paths, so a non-canonical or missing cwd cannot widen
+            // the root — it can only refuse.
+            project_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             chat_input: String::new(),
             chat_composing: false,
             chat_history: Vec::new(),
@@ -2935,6 +2991,122 @@ impl App {
     /// rank 3), so it OWNS scroll and copy while open — which is what makes
     /// `y`/`Shift-Y` here mean "this diff" rather than "the transcript block
     /// behind it".
+    /// Open the composer's project-scoped file picker.
+    ///
+    /// Called only from the COMPOSING branch of `on_key`, which is what makes
+    /// "when the composer is focused" true by construction rather than by a
+    /// focus check that could drift: there is no global `@` handler.
+    pub fn open_file_picker(&mut self) -> Action {
+        let entries = crate::file_picker::list_project_files(&self.project_root, 2000);
+        self.open_file_picker = Some(OpenFilePicker {
+            query: String::new(),
+            entries,
+            selected: 0,
+            notice: None,
+        });
+        Action::Render
+    }
+
+    /// Keys for the open picker; `None` lets a key fall through.
+    ///
+    /// Chars carrying CONTROL or ALT deliberately fall through, so Ctrl-C and
+    /// the tab switches stay reachable while a modal that captures ordinary
+    /// typing is open.
+    pub fn file_picker_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Action> {
+        let picker = self.open_file_picker.as_ref()?;
+        let match_count = picker.matches().len();
+        match code {
+            KeyCode::Esc => {
+                self.open_file_picker = None;
+                Some(Action::Render)
+            }
+            KeyCode::Up => {
+                if let Some(p) = self.open_file_picker.as_mut() {
+                    p.selected = p.selected.saturating_sub(1);
+                    p.notice = None;
+                }
+                Some(Action::Render)
+            }
+            KeyCode::Down => {
+                if let Some(p) = self.open_file_picker.as_mut() {
+                    p.selected = (p.selected + 1).min(match_count.saturating_sub(1));
+                    p.notice = None;
+                }
+                Some(Action::Render)
+            }
+            KeyCode::Enter => Some(self.toggle_picker_choice()),
+            KeyCode::Backspace => {
+                if let Some(p) = self.open_file_picker.as_mut() {
+                    p.query.pop();
+                    // The filter widened, so the old index may point past the
+                    // end of a different list.
+                    p.selected = 0;
+                    p.notice = None;
+                }
+                Some(Action::Render)
+            }
+            KeyCode::Char(c)
+                if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) =>
+            {
+                if let Some(p) = self.open_file_picker.as_mut() {
+                    p.query.push(c);
+                    p.selected = 0;
+                    p.notice = None;
+                }
+                Some(Action::Render)
+            }
+            _ => None,
+        }
+    }
+
+    /// Attach the highlighted path, or detach it if it is already attached.
+    ///
+    /// Enter toggles rather than only attaching because that makes removal
+    /// list-only BY CONSTRUCTION — there is no code path from this surface to
+    /// the filesystem, which is how "removing an attachment does not alter the
+    /// file" is guaranteed rather than merely intended.
+    fn toggle_picker_choice(&mut self) -> Action {
+        // Resolve the highlighted path to an OWNED string first, so the
+        // immutable borrow of the picker ends before the mutations below.
+        let choice = match self.open_file_picker.as_ref() {
+            Some(picker) => picker.matches().get(picker.selected).map(|s| s.to_string()),
+            None => return Action::Render,
+        };
+        let Some(choice) = choice else {
+            if let Some(p) = self.open_file_picker.as_mut() {
+                p.notice = Some("No file matches this filter.".to_string());
+            }
+            return Action::Render;
+        };
+        // The reference is derived from the project-relative path, so it can be
+        // recomputed here without consulting the attachment list's order.
+        let reference = format!("@{choice}");
+        if self.attachments.remove(&reference) {
+            if let Some(p) = self.open_file_picker.as_mut() {
+                p.notice = Some(format!("Removed {choice} — the file itself is unchanged."));
+            }
+            return Action::Render;
+        }
+        let root = self.project_root.clone();
+        // Computed before touching the picker so that attaching (which mutates
+        // `self.attachments`) and recording the notice are not borrowing `self`
+        // at the same time.
+        let notice = match crate::file_picker::attach(&root, std::path::Path::new(&choice)) {
+            Ok(attachment) => {
+                let row = attachment.row();
+                self.attachments.add(attachment);
+                Some(format!("Attached {row}"))
+            }
+            // The reason is SHOWN, never swallowed, and nothing resembling a
+            // name search runs on the way here.
+            Err(refusal) => Some(refusal.reason()),
+        };
+        if let Some(p) = self.open_file_picker.as_mut() {
+            p.notice = notice;
+        }
+        Action::Render
+    }
+
     pub fn change_card_key(&mut self, code: KeyCode) -> Option<Action> {
         let open = self.open_change_card.as_ref()?;
         let height = open.card.render_lines().len();
@@ -9594,6 +9766,17 @@ impl App {
         // sits below the blocking question/switcher surfaces above and above
         // every per-tab arm below. Unclaimed keys fall straight through, so a
         // tab switch or Ctrl-X is never trapped behind an open diff.
+        // The composer's `@` picker is a modal surface in the same sense as the
+        // change card below (PUBLIC_RELEASE_UX.md § Keyboard precedence rank 3):
+        // while it is open it owns ordinary typing, so the query filters the
+        // listing instead of the characters landing in the draft behind it. It
+        // sits directly above the change card and, like it, lets unclaimed keys
+        // — Ctrl-C, a tab switch — fall straight through.
+        if self.open_file_picker.is_some() {
+            if let Some(action) = self.file_picker_key(code, mods) {
+                return action;
+            }
+        }
         if self.open_change_card.is_some() {
             if let Some(action) = self.change_card_key(code) {
                 return action;
@@ -10307,6 +10490,12 @@ impl App {
                     self.chat_input.pop();
                     Action::Render
                 }
+                // `@` opens the project-scoped file/attachment picker
+                // (PUBLIC_RELEASE_UX.md:315). It is intercepted HERE, inside the
+                // composing branch, rather than globally: this arm only runs
+                // while the composer is focused, so the contract's "when the
+                // composer is focused" needs no separate focus test.
+                KeyCode::Char('@') => self.open_file_picker(),
                 KeyCode::Char(c) => {
                     self.chat_history_idx = None;
                     self.chat_input.push(c);
