@@ -19,6 +19,7 @@ import {
 } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
@@ -480,7 +481,9 @@ async function main(): Promise<void> {
     ],
     benchmark: 'BYOC-ACCEL-P006-CACHE@2 controlled release preparation',
     observedAtUtc: new Date().toISOString(),
-    host: execFileSync('hostname', { encoding: 'utf8' }).trim(),
+    // os.hostname() reads the same value in-process; spawning `hostname` was a
+    // resource start outside admission (lint:resource-governor-enforcement).
+    host: hostname(),
     runtime: { node: process.version, platform: process.platform, arch: process.arch },
     pinnedSource: { sourceSha, gitlinks, sourceFingerprints },
     fixture: {
