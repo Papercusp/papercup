@@ -73,6 +73,28 @@ const FAILURE_HINTS: Record<
   unauthorized: 'credential-unauthorized',
 };
 
+/**
+ * Every probe-failure reason that must NOT buy admission — i.e. the whole union except the single
+ * quota reason admission deliberately tolerates.
+ *
+ * EXHAUSTIVE BY CONSTRUCTION: `satisfies Record<Exclude<…, 'provider-usage-limit'>, true>` fails
+ * the typecheck if a new `WorkspaceHostAgentProbeFailureReason` is added to the union without being
+ * classified here. That is the point — before WI-10001036 this coverage was a hand-written list
+ * that had silently fallen three reasons behind the union ('non-zero-exit',
+ * 'no-verification-proof', 'probe-error' appeared nowhere in this suite), and a hand-written list
+ * would fall behind again the next time the union grows.
+ */
+const NON_QUOTA_PROBE_FAILURES = Object.keys({
+  'non-zero-exit': true,
+  'no-verification-proof': true,
+  'probe-error': true,
+  'credential-revoked': true,
+  'credential-malformed': true,
+  'credential-unauthorized': true,
+} satisfies Record<Exclude<WorkspaceHostAgentProbeFailureReason, 'provider-usage-limit'>, true>) as ReadonlyArray<
+  Exclude<WorkspaceHostAgentProbeFailureReason, 'provider-usage-limit'>
+>;
+
 function bundle(codex: CodexProbeStatus): Buffer {
   const file = (agent: string, status: string) =>
     Buffer.from(
@@ -324,8 +346,13 @@ describe('workspace-host exact-generation agent credential admission', () => {
     },
   );
 
-  it('rejects a receipt that claims an unfunded agent while its evidence carries an identity failure', async () => {
-    const evidence = await verifyWorkspaceHostAgentCredentialAdmission(
+  // The quota tolerance is keyed on ONE reason, checked at two independent seams: the producer
+  // (the `unfundedAgents` filter) and the receipt validator (`isUnfundedAgentVerificationEvidence`).
+  // These arms pin the validator seam — the last line of defence, and the only one reachable for
+  // the three SHAPE codes, which no CodexProbeStatus can express so the live-probe arm above
+  // cannot reach them. 'probe-error' is the crashed-probe case and occurs in production today.
+  async function unfundedReceipt() {
+    return await verifyWorkspaceHostAgentCredentialAdmission(
       {
         credentialRef: { kind: 'agent', ref: AGENT_REF },
         delivery: DELIVERY,
@@ -333,19 +360,48 @@ describe('workspace-host exact-generation agent credential admission', () => {
       },
       { runner: new BundleAwareRunner(), probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
     );
+  }
 
-    // A forged receipt cannot buy admission by relabelling a revoked credential as merely unfunded.
-    const forged = {
+  function relabelCodexFailure(
+    evidence: Awaited<ReturnType<typeof unfundedReceipt>>,
+    failure: WorkspaceHostAgentProbeFailureReason,
+  ) {
+    return {
       ...evidence,
       verification: {
         ...evidence.verification,
         agents: {
           ...evidence.verification.agents,
-          codex: { ...evidence.verification.agents.codex, failure: 'credential-revoked' },
+          codex: { ...evidence.verification.agents.codex, failure },
         },
       },
     };
-    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(forged)).toThrow(/invalid 'codex' verification/);
+  }
+
+  it.each(NON_QUOTA_PROBE_FAILURES)(
+    'rejects a receipt that relabels a %s failure as merely unfunded',
+    async (failure) => {
+      const forged = relabelCodexFailure(await unfundedReceipt(), failure);
+      expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(forged)).toThrow(
+        /invalid 'codex' verification/,
+      );
+    },
+  );
+
+  // CALIBRATION for the arms above. They relabel a field on an otherwise-valid receipt, so they
+  // would also "pass" if the relabelling itself were what the validator rejected — in which case
+  // they would discriminate nothing. Applying the SAME rewrite with the one tolerated reason must
+  // therefore be accepted: that is what proves the arms turn on the REASON and not on the forgery.
+  it('still accepts the receipt when the same relabelling writes the tolerated quota reason', async () => {
+    const evidence = await unfundedReceipt();
+    const relabelled = relabelCodexFailure(evidence, 'provider-usage-limit');
+    expect(relabelled.verification.agents.codex.failure).toBe('provider-usage-limit');
+    expect(() =>
+      assertWorkspaceHostAgentCredentialAdmissionEvidence(relabelled, {
+        credentialRef: { kind: 'agent', ref: AGENT_REF },
+        delivery: DELIVERY,
+      }),
+    ).not.toThrow();
   });
 
   it('rejects a receipt that claims both an unfunded agent and full readiness', async () => {
