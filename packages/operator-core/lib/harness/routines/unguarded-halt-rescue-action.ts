@@ -70,7 +70,6 @@
  */
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { getFleet } from '../../agent-fleets-store';
 import { groupByAgent, lastToolCallAtByOwner, listFleetAssignments } from '../../fleet/assignments';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
@@ -125,14 +124,18 @@ export const DEFAULT_HALT_MAX_IDLE_MS = 6 * 60 * 60_000;
  *  steadily rather than detonating hundreds of billable turns in one tick. */
 export const MAX_RESCUES_PER_TICK = 10;
 
-/** A fleet member this routine may consider. */
+/** Any agent this routine may consider — fleet member or solo. */
 export interface HaltCandidate {
   agentId: string;
-  /** The fleet it belongs to; a non-member is never a rescue target. */
+  /** The fleet it belongs to, or null for a solo/interactive agent. Carried for
+   *  message + auto-arm context ONLY; it is never an exclusion. A halt is a halt
+   *  whether or not the agent is in a fleet. */
   fleetSlug: string | null;
-  /** Only workers are auto-repaired here; fleet leaders own their own loop policy. */
+  /** Carried for auto-arm context only; never an exclusion. */
   fleetRole?: string | null;
-  /** Work-items currently held. Only an EMPTY-handed agent is a rescue target. */
+  /** Work-items currently held. load>0 is a REASON TO WAKE, never an exclusion:
+   *  a halted HOLDER is the worst case, because the item is claimed (so no peer
+   *  will take it) and the holder is silent — a deadlock with no discovery path. */
   load: number;
   /** Epoch ms of the agent's last tool call — its last real TURN activity. */
   lastToolCallMs: number | null;
@@ -144,11 +147,28 @@ export interface SelectOpts {
 }
 
 /**
- * PURE: which fleet members are eligible to be SWEPT this tick.
+ * PURE: which agents are eligible to be SWEPT this tick.
  *
- * See the module doc for why none of these conjuncts is a liveness signal.
- * `activeFleets` carries the slugs whose fleet `controlState === 'active'`; a
- * member of a winding-down or unknown fleet is never woken.
+ * UNIVERSAL BY OWNER DIRECTIVE [owner 2026-09-11, interactive, verbatim:
+ * "fix the code so it structurally sees all agents, it shouldn't filter any out
+ * for this behavior, we want this behavior universally for all agents"].
+ *
+ * Two conjuncts were DELIBERATELY REMOVED here (WI-10001032). Do not restore
+ * them; each made the sweep structurally blind to a real halt:
+ *
+ *   (1) FLEET MEMBERSHIP (`!c.fleetSlug || !activeFleets.has(...)`) — dropped
+ *       every solo/interactive su session. Its real job was excluding the 6-9-day
+ *       ABANDONED population, and `maxIdleMs` below does that directly and
+ *       without collateral: abandonment is a time question, not a topology one.
+ *   (2) EMPTY-HANDEDNESS (`c.load > 0`) — dropped every halted claim-HOLDER,
+ *       which inverts the priority. The old rule encoded "an idle agent with a
+ *       nonempty queue is a bug"; a halted holder is strictly worse, since its
+ *       claim actively prevents anyone else from picking the work up.
+ *
+ * What remains is the honest definition of "halted", none of it agent-selective:
+ * a throttle (not a filter — a rate limit), and an idle WINDOW whose lower bound
+ * avoids interrupting a long legitimate turn and whose upper bound stops at
+ * abandonment. See the module doc for why no liveness signal appears here.
  *
  * Ordering is stable by agentId so a capped tick is deterministic and the same
  * agent is not starved.
@@ -156,7 +176,6 @@ export interface SelectOpts {
 export function selectSweepCandidates(
   candidates: readonly HaltCandidate[],
   recentlyRescued: ReadonlySet<string>,
-  activeFleets: ReadonlySet<string>,
   nowMs: number,
   opts: SelectOpts = {},
 ): HaltCandidate[] {
@@ -166,16 +185,33 @@ export function selectSweepCandidates(
     .filter((c) => {
       if (!c.agentId) return false;
       if (recentlyRescued.has(c.agentId)) return false;
-      // (1) still belongs to a fleet that is doing something.
-      if (!c.fleetSlug || (c.fleetRole != null && c.fleetRole !== 'member') || !activeFleets.has(c.fleetSlug)) return false;
-      // (2) empty-handed — an agent holding work has something to resume.
-      if (c.load > 0) return false;
-      // (3) idle INSIDE the window: past a plausible long turn, short of abandoned.
+      // idle INSIDE the window: past a plausible long turn, short of abandoned.
       if (c.lastToolCallMs == null) return false;
       const idle = nowMs - c.lastToolCallMs;
       return idle >= idleMs && idle <= maxIdleMs;
     })
     .sort((a, b) => a.agentId.localeCompare(b.agentId));
+}
+
+/**
+ * Why this agent is worth a billable wake. `holding` is the deadlock case added
+ * by WI-10001032; `claimable` is the original "idle worker, nonempty queue".
+ * A candidate with NEITHER is never woken — the sweep stays reason-gated, which
+ * is what keeps universal DETECTION from becoming a universal wake storm.
+ */
+export type WakeReason =
+  | { kind: 'holding'; load: number }
+  | { kind: 'claimable'; claimable: number; fleetSlug: string | null };
+
+export function wakeReasonFor(
+  candidate: Pick<HaltCandidate, 'load' | 'fleetSlug'>,
+  claimable: number,
+): WakeReason | null {
+  if (candidate.load > 0) return { kind: 'holding', load: candidate.load };
+  if (claimable > 0) {
+    return { kind: 'claimable', claimable, fleetSlug: candidate.fleetSlug ?? null };
+  }
+  return null;
 }
 
 /**
@@ -204,9 +240,10 @@ export function rescueSummary(): string {
 }
 
 export function rescueBody(
-  fleetSlug: string,
+  fleetSlug: string | null,
   claimable: number,
   loopRepair?: { armed: boolean; reason: string; loopName?: string },
+  reason?: WakeReason,
 ): string {
   const repair = loopRepair?.armed || loopRepair?.reason === 'already-armed'
     ? [
@@ -227,12 +264,23 @@ export function rescueBody(
     `system-side unguarded-halt sweep, not from a peer — there is no one to reply to.`,
     ``,
     ...repair,
-    `You were woken because WORK IS ACTUALLY WAITING: ${claimable} item(s) are claimable`,
-    `right now under your effective claim spec inside fleet "${fleetSlug}". If you stopped because your`,
-    `lane looked drained, that verdict had a TIMESTAMP and is stale — "drained" is a`,
-    `measurement, not a state.`,
-    ``,
-    `NEXT: pull work with scheduler:get_next { harness } (it inherits your claim spec).`,
+    ...(reason?.kind === 'holding'
+      ? [
+          `You were woken because YOU ARE STILL HOLDING ${reason.load} work-item(s) and had no`,
+          `wake source. That is a DEADLOCK, not an idle: the item is CLAIMED, so no peer will`,
+          `pick it up, and you were never going to speak again. Nothing would have noticed.`,
+          ``,
+          `NEXT: re-read what you hold (work_items:get). Then resume it, checkpoint it`,
+          `(work_items:checkpoint), or release it (work_items:release) so someone else can.`,
+        ]
+      : [
+          `You were woken because WORK IS ACTUALLY WAITING: ${claimable} item(s) are claimable`,
+          `right now under your effective claim spec${fleetSlug ? ` inside fleet "${fleetSlug}"` : ''}. If you`,
+          `stopped because your lane looked drained, that verdict had a TIMESTAMP and is stale`,
+          `— "drained" is a measurement, not a state.`,
+          ``,
+          `NEXT: pull work with scheduler:get_next { harness } (it inherits your claim spec).`,
+        ]),
     ``,
     `THEN, before you end your next turn, make sure a re-wake actually exists:`,
     `  - loop:arm { intervalSec, goal }   — for ongoing work (verify loop:status.active)`,
@@ -278,7 +326,13 @@ export async function claimabilityForCandidate(
   candidate: Pick<HaltCandidate, 'agentId' | 'fleetSlug'>,
   workspaceId: string,
 ): Promise<ClaimabilityForCandidate | null> {
-  if (!candidate.agentId || !candidate.fleetSlug) return null;
+  // WI-10001032: a SOLO agent (fleetSlug null) resolves its own effective claim
+  // spec by cupId exactly as a fleet member does, so fleetlessness must not
+  // short-circuit the claimability read — that was half of what made this sweep
+  // blind to non-fleet sessions. The `source === 'default'` fail-closed below is
+  // the guard that still matters: it is what stops an unresolved sentinel
+  // becoming a broad default-backlog wake, and it applies to solo agents too.
+  if (!candidate.agentId) return null;
   try {
     const resolved = await getClaimSpecRecord({ cupId: candidate.agentId, workspaceId });
     // A fleet member whose sentinel is missing/invalid is in the same
@@ -345,17 +399,11 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
 
   const all = await readHaltCandidates();
 
-  // Which fleets are still active? Resolved once per distinct slug.
-  const slugs = [...new Set(all.map((c) => c.fleetSlug).filter((s): s is string => !!s))];
-  const activeFleets = new Set<string>();
-  await Promise.all(
-    slugs.map(async (slug) => {
-      const fleet = await getFleet(ctx.workspaceId, slug).catch(() => null);
-      if (fleet?.controlState === 'active') activeFleets.add(slug);
-    }),
-  );
-
-  const candidates = selectSweepCandidates(all, recentlyRescued, activeFleets, nowMs, {
+  // WI-10001032: fleet controlState is deliberately NOT read here any more. It
+  // used to gate the entire sweep, which made every solo/interactive session
+  // invisible to the one routine built to rescue halts. Abandonment — the thing
+  // that gate was really buying — is bounded directly by maxIdleMs.
+  const candidates = selectSweepCandidates(all, recentlyRescued, nowMs, {
     idleMs,
     maxIdleMs,
   });
@@ -381,7 +429,15 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
     candidates.map((c) => c.agentId),
     { workspaceId: ctx.workspaceId },
   ).catch(() => null);
-  const { rescuable, stoodDown } = partitionStoodDown(candidates, loopRows);
+  const { rescuable: notStoodDown, stoodDown } = partitionStoodDown(candidates, loopRows);
+  // WI-10001032: a deliberate wind-down (loop:end) excuses an EMPTY-HANDED halt,
+  // which is what stand-down was built for. It does NOT excuse halting while
+  // still HOLDING work — that is the deadlock case, and suppressing it is how a
+  // claimed item ends up parked behind a silent holder forever.
+  const stoodDownHolders = stoodDown.filter((c) => c.load > 0);
+  const rescuable = [...notStoodDown, ...stoodDownHolders].sort((a, b) =>
+    a.agentId.localeCompare(b.agentId),
+  );
   if (rescuable.length === 0) {
     console.log(
       `[unguarded-halt-rescue] ${all.length} member(s) → ${candidates.length} idle in an active fleet → ` +
@@ -399,9 +455,16 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
       if (result) claimabilityByCandidate.set(candidate.agentId, result);
     }),
   );
-  const withWork = rescuable.filter(
-    (c) => (claimabilityByCandidate.get(c.agentId)?.claimable ?? 0) > 0,
-  );
+  // WI-10001032: reason-gated, but with TWO reasons now. A holder is woken on
+  // the strength of what it is sitting on; an empty-handed agent still needs a
+  // nonempty queue. Neither ⇒ never woken, which is what keeps universal
+  // DETECTION from becoming a universal wake storm.
+  const reasonByCandidate = new Map<string, WakeReason>();
+  for (const c of rescuable) {
+    const reason = wakeReasonFor(c, claimabilityByCandidate.get(c.agentId)?.claimable ?? 0);
+    if (reason) reasonByCandidate.set(c.agentId, reason);
+  }
+  const withWork = rescuable.filter((c) => reasonByCandidate.has(c.agentId));
 
   // Only now — for agents that are idle in an active fleet WITH work waiting — is
   // the (more expensive, per-agent) halt predicate worth evaluating.
@@ -419,28 +482,40 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
 
   const { autoArmFleetMemberLoop } = await import('./loop');
   for (const { c } of rescuing) {
-    const slug = c.fleetSlug!;
-    const claimability = claimabilityByCandidate.get(c.agentId)!;
+    const slug = c.fleetSlug;
+    const reason = reasonByCandidate.get(c.agentId)!;
+    // WI-10001032: both may legitimately be absent now — a solo halted HOLDER is
+    // woken on its held work alone and may have no resolved claim spec at all.
+    const claimability = claimabilityByCandidate.get(c.agentId) ?? null;
     // EI-21275400284931421: wake is the immediate recovery; arming the existing
     // engine loop is the recurrence fix. Planless members are admitted only
     // because claimabilityForCandidate already resolved their effective authored
     // claim spec and harness. autoArm repeats that fail-closed check at the write
     // boundary so a concurrent sentinel removal cannot widen the member.
-    const loopRepair = await autoArmFleetMemberLoop({
-      workspaceId: ctx.workspaceId,
-      ownerId: c.agentId,
-      harnessSlug: claimability.harnessSlug,
-      planSlug: null,
-      fleetSlug: slug,
-      fleetRole: 'member',
-    });
-    const claimable = claimability.claimable;
+    // WI-10001032: auto-arm still requires a fleet member WITH a resolved harness
+    // (autoArmFleetMemberLoop hard-returns 'not-a-member' otherwise). A solo agent
+    // therefore gets the WAKE — the immediate recovery, and the whole point of the
+    // widening — plus the message's explicit "could not arm" branch telling it to
+    // run loop:arm itself. Widening auto-arm to fleetless agents is a separate
+    // change against a riskier seam; it is NOT a precondition for the rescue.
+    const loopRepair =
+      slug && claimability
+        ? await autoArmFleetMemberLoop({
+            workspaceId: ctx.workspaceId,
+            ownerId: c.agentId,
+            harnessSlug: claimability.harnessSlug,
+            planSlug: null,
+            fleetSlug: slug,
+            fleetRole: 'member',
+          })
+        : { armed: false, reason: 'no-fleet-loop-template-for-solo-agent' };
+    const claimable = claimability?.claimable ?? 0;
     // Durable inbox row first (the record survives even if the wake fan fails),
     // then the wake — the same ordering coord:send uses.
     await sendMessage(RESCUE_IDENTITY, {
       to: [c.agentId],
       summary: rescueSummary(),
-      body: rescueBody(slug, claimable, loopRepair),
+      body: rescueBody(slug, claimable, loopRepair, reason),
     }).catch((e) =>
       console.warn(`[unguarded-halt-rescue] inbox write for ${c.agentId} failed:`, (e as Error)?.message ?? e),
     );
