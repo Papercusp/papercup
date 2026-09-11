@@ -330,10 +330,21 @@ export function classifyAcceptanceGraderTerminalFailure(
     allowStandaloneWeeklyLimit = false,
     allowInferenceGatewayError = false,
     allowLauncherQuotaDrop = false,
+    allowLauncherWalledPoolRefusal = false,
   }: {
     allowStandaloneWeeklyLimit?: boolean;
     allowInferenceGatewayError?: boolean;
     allowLauncherQuotaDrop?: boolean;
+    /**
+     * EI-22978598482930667: psu REFUSES a launch whose auto-route pool is
+     * provably walled and exits {@link ACCEPTANCE_GRADER_WALLED_POOL_REFUSAL_EXIT}
+     * rather than spawning a doomed agent. That refusal is terminal for the
+     * mission, but nothing classified it, so a fire-and-forget dispatcher read a
+     * refused launch as a LAUNCHED one and held its reservation until the TTL.
+     * Opt-in for the same reason as the siblings above: a general acceptance
+     * brief can quote launcher diagnostics in its frozen evidence.
+     */
+    allowLauncherWalledPoolRefusal?: boolean;
   } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
@@ -378,6 +389,23 @@ export function classifyAcceptanceGraderTerminalFailure(
     return {
       code: 'model_quota_exhausted',
       evidence: launcherQuotaDrop[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+
+  // EI-22978598482930667: the launcher's walled-pool refusal (exit 78) is the
+  // OTHER half of the same quota wall, and it is the only terminal receipt that
+  // carries a machine-readable recovery instant. Match only as far as the
+  // horizon clause so the 400-char evidence slice can never drop it — the
+  // dispatcher's reset-aware backoff reads the instant back out of this string.
+  const launcherWalledPoolRefusal = allowLauncherWalledPoolRefusal
+    ? normalized.match(
+        /psu: REFUSING TO LAUNCH [—-] [^\n]{1,240}?(?:earliest known recovery \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z|earliest recovery unknown)/i,
+      )
+    : null;
+  if (launcherWalledPoolRefusal) {
+    return {
+      code: 'model_quota_exhausted',
+      evidence: launcherWalledPoolRefusal[0].replace(/\s+/g, ' ').trim().slice(0, 400),
     };
   }
 

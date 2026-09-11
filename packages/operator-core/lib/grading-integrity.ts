@@ -49,6 +49,35 @@ export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
  */
 export const GRADING_AUDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
 /**
+ * EI-22978598482930667 — reset-aware re-dispatch suppression.
+ *
+ * A terminal quota failure carries a KNOWN future recovery instant, and until
+ * this constant existed nothing consumed it: the reservation was released on the
+ * terminal failure and the next sweep tick re-launched the same doomed judge.
+ * Measured 2026-09-11 over the WHOLE grading-audit log population (n=6163, not a
+ * recency head): 2228 legs died on the pty-host `(quota-blocked)` drop and 2523
+ * launches were refused outright by the launcher's walled-pool preflight — every
+ * one of those 2523 printing a contiguous `earliest known recovery <ISO>` — while
+ * ZERO cards were emitted.
+ *
+ * The suppression is PROVIDER-AGNOSTIC by construction: it keys on the terminal
+ * failure and on the account ledger's own reset terms, so it covers the Claude
+ * primary leg (which no launcher preflight gates — `isCodexAutoRoute` is false
+ * for a claude-resolved provider) exactly as it covers the Codex fallback.
+ */
+export const GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS = 15 * 60 * 1000;
+/**
+ * Floor: a recovered-but-still-walled pool must never collapse back into the
+ * ~55s sweep-tick busy loop this suppression exists to stop.
+ */
+export const GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS = 5 * 60 * 1000;
+/**
+ * Ceiling: a wrong-but-plausible far-future reset must degrade into "re-probe in
+ * six hours", never into a permanently stranded audit queue. A reset beyond this
+ * is clamped, re-probed once, and re-recorded from whatever the wall says then.
+ */
+export const GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
+/**
  * Automatic grading auditors must use the inference gateway so a quota-walled
  * system/default credential cannot strand the audit queue before kickoff.
  */
@@ -124,9 +153,32 @@ export interface DispatchPendingGradingAuditsDeps {
   terminalLogMaxRechecks?: number;
   /** Read the active workspace-wide owner pause before dispatching new auditors. */
   listWorkspaceWideLoopStanddownOwners?: (workspaceId: string, nowMs: number) => Promise<Set<string>>;
+  /** Future usage-reset terms for the account pool, for reset-aware quota backoff. */
+  readProviderResets?: (nowMs: number) => Promise<number[]>;
+  /** Clock seam for the recorded backoff instant. */
+  now?: () => number;
 }
 
-export type GradingAuditReservationStatus = 'claimed' | 'already-reserved' | 'not-pending';
+export type GradingAuditReservationStatus = 'claimed' | 'already-reserved' | 'not-pending' | 'quota-backoff';
+
+/**
+ * Why a card must not be re-dispatched yet, recorded on the card itself so the
+ * suppression survives the dispatcher process that learned it.
+ */
+export interface GradingAuditDispatchBackoff {
+  /** ISO-8601 instant before which this card must not be re-dispatched. */
+  until: string;
+  /**
+   * Where the instant came from. `default` is the honest answer when a quota
+   * wall was measured but no reset was recoverable from either source — it is a
+   * conservative window, NOT a claim about when capacity returns.
+   */
+  source: 'account-ledger' | 'launcher-horizon' | 'default';
+  /** The terminal failure code that produced the suppression. */
+  code: string;
+  recordedAt: string;
+  reason: string;
+}
 
 export interface GradingAuditReservationResult {
   status: GradingAuditReservationStatus;
@@ -134,6 +186,8 @@ export interface GradingAuditReservationResult {
     key: string;
     reservedAt: string;
   };
+  /** Present on `quota-backoff`: the live suppression that refused the claim. */
+  backoff?: GradingAuditDispatchBackoff;
 }
 
 interface GradingAuditReservationOptions {
@@ -162,6 +216,90 @@ function reopenableSettledAuditIdentity(
     (currentness.state === 'stale' ||
       (currentness.state === 'unknown' && currentness.reason === 'recorded-identity-missing')),
   );
+}
+
+/**
+ * The launcher's walled-pool refusal prints its own recovery horizon as a
+ * contiguous ISO instant. Measured over the whole grading-audit log population
+ * (2026-09-11, n=6163): 2523 refusals, 2523 contiguous horizons — the TUI never
+ * wrapped one, so reading it back out of the terminal evidence is sound.
+ */
+const LAUNCHER_RECOVERY_HORIZON = /earliest known recovery (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/i;
+
+/** Extract the launcher's printed recovery instant; null when absent or already past. */
+export function parseLauncherRecoveryHorizon(rawLog: string | null | undefined, nowMs = Date.now()): number | null {
+  const match = LAUNCHER_RECOVERY_HORIZON.exec(rawLog ?? '');
+  if (!match?.[1]) return null;
+  const at = Date.parse(match[1]);
+  return Number.isFinite(at) && at > nowMs ? at : null;
+}
+
+/**
+ * Future reset terms for every usage-walled account in the pool, across ALL
+ * providers on purpose: the dispatcher may use its Claude primary OR its Codex
+ * fallback, so re-dispatch becomes useful the moment EITHER provider recovers.
+ * Fail-open (an empty list) on any read failure — a missing ledger must degrade
+ * to the default window, never strand the queue.
+ */
+export async function readWalledAccountResets(nowMs: number): Promise<number[]> {
+  try {
+    const [{ accountStatus }, { activeWorkspaceId }] = await Promise.all([
+      import('./deployment/account-pool-store'),
+      import('./workspace-registry'),
+    ]);
+    const rows = await accountStatus(activeWorkspaceId());
+    return rows
+      .filter((row) => row.usageWalled)
+      .map((row) => row.usageResetAt)
+      .filter((at): at is number => typeof at === 'number' && Number.isFinite(at) && at > nowMs);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Turn a measured quota wall into a DATED suppression.
+ *
+ * The EARLIEST future candidate wins, deliberately. The two error directions are
+ * not symmetric: waking too early costs one futile boot that simply re-records
+ * the backoff, while waking too late strands the whole audit queue past the
+ * moment capacity actually returned. When neither source yields an instant the
+ * result says so (`source: 'default'`) instead of inventing a recovery time.
+ */
+export async function resolveGradingAuditQuotaBackoff(input: {
+  code: string;
+  evidence?: string | null;
+  logTail?: string | null;
+  nowMs?: number;
+  readProviderResets?: (nowMs: number) => Promise<number[]>;
+}): Promise<GradingAuditDispatchBackoff> {
+  const nowMs = input.nowMs ?? Date.now();
+  const horizon = parseLauncherRecoveryHorizon(`${input.logTail ?? ''}\n${input.evidence ?? ''}`, nowMs);
+  const ledger = await (input.readProviderResets ?? readWalledAccountResets)(nowMs).catch(() => [] as number[]);
+  const ledgerEarliest = ledger
+    .filter((at) => Number.isFinite(at) && at > nowMs)
+    .sort((a, b) => a - b)[0];
+  const candidates: Array<{ at: number; source: GradingAuditDispatchBackoff['source'] }> = [
+    ...(ledgerEarliest != null ? [{ at: ledgerEarliest, source: 'account-ledger' as const }] : []),
+    ...(horizon != null ? [{ at: horizon, source: 'launcher-horizon' as const }] : []),
+  ].sort((a, b) => a.at - b.at);
+  const chosen = candidates[0];
+  const rawUntil = chosen ? chosen.at : nowMs + GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS;
+  const until = Math.min(
+    Math.max(rawUntil, nowMs + GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS),
+    nowMs + GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS,
+  );
+  const source = chosen?.source ?? 'default';
+  return {
+    until: new Date(until).toISOString(),
+    source,
+    code: input.code,
+    recordedAt: new Date(nowMs).toISOString(),
+    reason:
+      source === 'default'
+        ? `terminal ${input.code} with no recoverable reset; suppressing re-dispatch for a conservative window`
+        : `terminal ${input.code}; suppressing re-dispatch until the ${source} reset`,
+  };
 }
 
 /**
@@ -205,7 +343,9 @@ export async function reservePendingGradingAudit(
     const claimed = await tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
-               COALESCE(payload, '{}'::jsonb),
+               -- A claim only succeeds once any quota backoff below has EXPIRED,
+               -- so clearing it here is the natural place: the stamp is spent.
+               COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}',
                '{observation,gradingAudit,dispatchReservation}',
                ${reservation}::jsonb,
                true
@@ -224,6 +364,19 @@ export async function reservePendingGradingAudit(
                     WHEN payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt'
                          ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
                     THEN (payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
+                    ELSE TRUE
+                  END
+             )
+             -- EI-22978598482930667: a live reset-aware quota backoff refuses the
+             -- claim outright. Fail OPEN on an unparseable stamp, exactly like the
+             -- reservation predicate above: a malformed value must never be able to
+             -- strand a card permanently.
+             AND (
+               payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until' IS NULL
+               OR CASE
+                    WHEN payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until'
+                         ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+                    THEN (payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until')::timestamptz <= ${reservedAt}::timestamptz
                     ELSE TRUE
                   END
              )
@@ -268,32 +421,60 @@ export async function reservePendingGradingAudit(
       return { status: 'claimed' as const, reservation: { key: reservationKey, reservedAt } };
     }
 
-    const current = await tx<{ state: string | null; has_reservation: boolean }[]>`
+    const current = await tx<
+      { state: string | null; has_reservation: boolean; backoff: GradingAuditDispatchBackoff | null }[]
+    >`
       SELECT payload->'observation'->'gradingAudit'->>'state' AS state,
-             (payload->'observation'->'gradingAudit' ? 'dispatchReservation') AS has_reservation
+             (payload->'observation'->'gradingAudit' ? 'dispatchReservation') AS has_reservation,
+             payload->'observation'->'gradingAudit'->'dispatchBackoff' AS backoff
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
          AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
        FOR UPDATE`;
-    return current[0]?.state === 'pending' && current[0].has_reservation
-      ? { status: 'already-reserved' as const }
-      : { status: 'not-pending' as const };
+    const row = current[0];
+    if (row?.state !== 'pending') return { status: 'not-pending' as const };
+    // Report the quota wall ahead of the reservation: a backoff is only written
+    // as the reservation is released, so a live one is the specific reason this
+    // claim was refused — and a caller that reads 'already-reserved' would wait
+    // on a dispatcher that is not in fact running.
+    const until = row.backoff?.until ? Date.parse(row.backoff.until) : NaN;
+    if (row.backoff && Number.isFinite(until) && until > now.getTime()) {
+      return { status: 'quota-backoff' as const, backoff: row.backoff };
+    }
+    return row.has_reservation ? { status: 'already-reserved' as const } : { status: 'not-pending' as const };
   });
 }
 
-/** Release only the reservation owned by this dispatcher. */
+/**
+ * Release only the reservation owned by this dispatcher.
+ *
+ * EI-22978598482930667: pass `backoff` to record a reset-aware quota suppression
+ * in the SAME statement that drops the reservation. Atomicity is the point — a
+ * separate write could lose the race to the next sweep tick and re-launch the
+ * judge the suppression exists to stop.
+ */
 export async function releasePendingGradingAudit(
   issueId: string,
   reservationKey: string,
-  options: Pick<GradingAuditReservationOptions, 'workspaceId'> = {},
+  options: Pick<GradingAuditReservationOptions, 'workspaceId'> & { backoff?: GradingAuditDispatchBackoff } = {},
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
+  const backoffJson = options.backoff ? JSON.stringify(options.backoff) : null;
   const released = await boundedOrgTxn(
     async (tx: OrgSql) =>
       tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
-         SET payload = payload #- '{observation,gradingAudit,dispatchReservation}',
+         SET payload = ${
+           backoffJson
+             ? tx`jsonb_set(
+                 payload #- '{observation,gradingAudit,dispatchReservation}',
+                 '{observation,gradingAudit,dispatchBackoff}',
+                 ${backoffJson}::jsonb,
+                 true
+               )`
+             : tx`payload #- '{observation,gradingAudit,dispatchReservation}'`
+         },
              origin = 'local',
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
@@ -444,11 +625,14 @@ export async function dispatchPendingGradingAudits(
     let attempts = 0;
     let reservationHeld = false;
     let routingFallback: string | undefined;
-    const releaseReservation = async () => {
+    const releaseReservation = async (backoff?: GradingAuditDispatchBackoff) => {
       if (!reservationHeld) return;
       reservationHeld = false;
       try {
-        await release(issueId, idempotencyKey, { workspaceId: input.ctx.workspaceId });
+        await release(issueId, idempotencyKey, {
+          workspaceId: input.ctx.workspaceId,
+          ...(backoff ? { backoff } : {}),
+        });
       } catch {
         // The reservation TTL is the durable cleanup fallback if this release
         // cannot reach the database after a launcher failure.
@@ -479,9 +663,12 @@ export async function dispatchPendingGradingAudits(
           state: 'skipped',
           idempotencyKey,
           reason:
-            reservation.status === 'already-reserved'
-              ? 'another dispatcher already reserved this scorecard'
-              : 'target is no longer a pending scorecard',
+            reservation.status === 'quota-backoff'
+              ? `re-dispatch suppressed until ${reservation.backoff?.until} ` +
+                `(${reservation.backoff?.source ?? 'unknown'} reset after terminal ${reservation.backoff?.code ?? 'quota failure'})`
+              : reservation.status === 'already-reserved'
+                ? 'another dispatcher already reserved this scorecard'
+                : 'target is no longer a pending scorecard',
         });
         continue;
       }
@@ -508,6 +695,36 @@ export async function dispatchPendingGradingAudits(
       const terminateTask = deps.killTask ?? killTask;
       const readTask = deps.getTask ?? getTask;
       const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+      /**
+       * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
+       * capacity returns, and the recovery instant is knowable — from the account
+       * ledger's reset terms, or from the horizon the launcher itself printed in
+       * this very log. Record it so the reservation release ALSO suppresses the
+       * next sweep tick. Only `model_quota_exhausted` earns a suppression: a
+       * gateway 5xx or a startup stall is a transient this must not sit out.
+       */
+      const quotaBackoffFor = async (
+        failure: { code: GradingAuditRecoveryCode; evidence: string },
+        failedLogPath: string | null,
+      ): Promise<GradingAuditDispatchBackoff | undefined> => {
+        if (failure.code !== 'model_quota_exhausted') return undefined;
+        let logTail = '';
+        if (failedLogPath) {
+          try {
+            logTail = await readLogTail(failedLogPath);
+          } catch {
+            // The evidence string alone still carries the horizon when the
+            // launcher refused; an unreadable log must not block the backoff.
+          }
+        }
+        return resolveGradingAuditQuotaBackoff({
+          code: failure.code,
+          evidence: failure.evidence,
+          logTail,
+          ...(deps.now ? { nowMs: deps.now() } : {}),
+          ...(deps.readProviderResets ? { readProviderResets: deps.readProviderResets } : {}),
+        });
+      };
       let launchBackend: 'claude' | 'codex' = 'claude';
       let receipt: PendingGradingAuditDispatchReceipt | null = null;
 
@@ -557,6 +774,11 @@ export async function dispatchPendingGradingAudits(
               allowStandaloneWeeklyLimit: true,
               allowInferenceGatewayError: true,
               allowLauncherQuotaDrop: true,
+              // EI-22978598482930667: a launch REFUSED by the walled-pool preflight
+              // is terminal for this mission. Without this it classified as nothing,
+              // so the refusal was receipted as a successful launch and the card sat
+              // on a held reservation until the TTL expired.
+              allowLauncherWalledPoolRefusal: true,
               detectStartupStall: false,
             })
           : null;
@@ -579,7 +801,7 @@ export async function dispatchPendingGradingAudits(
 
         if (terminalFailure) {
           if (!taskId) {
-            await releaseReservation();
+            await releaseReservation(await quotaBackoffFor(terminalFailure, logPath));
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -600,7 +822,7 @@ export async function dispatchPendingGradingAudits(
             killed.error !== 'task_not_found' &&
             killed.error !== 'already_gone'
           ) {
-            await releaseReservation();
+            await releaseReservation(await quotaBackoffFor(terminalFailure, logPath));
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -617,7 +839,11 @@ export async function dispatchPendingGradingAudits(
           retiredTaskIds.push(taskId);
           terminalCodes.push(terminalFailure.code);
           if (terminalFallbacks >= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
-            await releaseReservation();
+            // The dominant path: BOTH legs are terminally quota-blocked. Before
+            // EI-22978598482930667 this released the reservation with no backoff,
+            // so the next ~55s sweep tick re-launched the same doomed pair.
+            const backoff = await quotaBackoffFor(terminalFailure, logPath);
+            await releaseReservation(backoff);
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -626,7 +852,8 @@ export async function dispatchPendingGradingAudits(
               launch: result.data?.launch,
               reason:
                 `grading auditor fallback also ended on ${terminalFailure.code}; ` +
-                'the one-retry ceiling stopped another launch',
+                'the one-retry ceiling stopped another launch' +
+                (backoff ? `; re-dispatch suppressed until ${backoff.until} (${backoff.source})` : ''),
               ...recoveryFields(),
             };
             break;
