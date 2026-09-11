@@ -1,0 +1,332 @@
+/**
+ * P-006 / R6 (green-gate-zero-wait-convergence-2026-09-08, D-002): the ADMISSION FIX PRE-CHECK.
+ *
+ * Before the repair-queue admit door PUBLISHES an admission onto the frozen lineage, it runs the
+ * frozen signature's `test-file` entries plus any admitted test files at the BUILT (still
+ * unpublished) admission commit, and refuses:
+ *
+ *   - `admission-imports-red`   — an admitted test file OUTSIDE the signature fails at the built
+ *                                 commit: the admission would import a new red into the lineage.
+ *   - `admission-does-not-fix`  — the signature consists ONLY of `test-file` entries and NONE of
+ *                                 them pass at the built commit: the admission fixes nothing it
+ *                                 claims to. When the signature carries other kinds (lint-leg,
+ *                                 workspace-task, post-suite-leg, seed) a test run cannot prove
+ *                                 "fixes nothing", so only imports-red applies.
+ *
+ * Unmeasured files (route error, matched=0, runner crash) NEVER count as passing.
+ *
+ * The checkpoint tree is the gate's own instrument. When a gate run holds it, the runner reports
+ * `checkpoint-tree-busy` and the door ACCEPTS the admission with a loud `precheck:{ran:false}`
+ * marker — the R-1 event-driven re-judge measures it. A fail-closed door here would stall every
+ * fixer admission for the length of a gate run and defeat R-1/R-2.
+ *
+ * Layering: `precheckPopulation` + `evaluateFixPrecheck` are PURE (unit-tested without a tree);
+ * `FixPrecheckRunner` is the seam the door injects; `createCheckpointTreeFixPrecheckRunner` is
+ * the real runner (setup-release-checkout into the checkpoint tree, `scripts/test-files.mjs`
+ * per file), guarded by the gate's run-lock probe.
+ */
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
+import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
+
+export const ADMISSION_PRECHECK_REFUSALS = Object.freeze(['admission-does-not-fix', 'admission-imports-red'] as const);
+export type AdmissionPrecheckRefusalCode = (typeof ADMISSION_PRECHECK_REFUSALS)[number];
+
+/** A repo-relative path the test router would run as a test file. */
+export const TEST_FILE_RE = /\.(?:integration\.)?(?:test|spec)\.[cm]?[jt]sx?$/;
+
+export function isTestFilePath(p: string): boolean {
+  return TEST_FILE_RE.test(p);
+}
+
+export type SignatureLike = Pick<RepairSignatureEntry, 'kind' | 'id'> & Partial<Pick<RepairSignatureEntry, 'workspace'>>;
+
+export interface FixPrecheckPopulation {
+  /** Signature `test-file` ids — the reds the admission claims to fix. */
+  signatureTestFiles: string[];
+  /** Admitted paths that are test files and NOT in the signature — a fresh red here is an import. */
+  admittedTestFiles: string[];
+  /** Signature kinds other than `test-file` present (each defeats the does-not-fix proof). */
+  nonTestKinds: RepairSignatureKind[];
+  /** True only when the signature is non-empty and consists solely of `test-file` entries. */
+  canProveDoesNotFix: boolean;
+  /** Union of both file sets, in run order (signature first). */
+  files: string[];
+}
+
+function normalize(p: string): string {
+  return p.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+export function precheckPopulation(input: {
+  signature: readonly SignatureLike[];
+  admittedPaths: readonly string[];
+}): FixPrecheckPopulation {
+  const signatureTestFiles: string[] = [];
+  const nonTestKinds = new Set<RepairSignatureKind>();
+  for (const entry of input.signature) {
+    if (entry.kind === 'test-file') {
+      const id = normalize(entry.id);
+      if (id && !signatureTestFiles.includes(id)) signatureTestFiles.push(id);
+    } else {
+      nonTestKinds.add(entry.kind);
+    }
+  }
+  const admittedTestFiles: string[] = [];
+  for (const raw of input.admittedPaths) {
+    const p = normalize(raw);
+    if (!p || !isTestFilePath(p)) continue;
+    if (signatureTestFiles.includes(p) || admittedTestFiles.includes(p)) continue;
+    admittedTestFiles.push(p);
+  }
+  return {
+    signatureTestFiles,
+    admittedTestFiles,
+    nonTestKinds: [...nonTestKinds],
+    canProveDoesNotFix: signatureTestFiles.length > 0 && nonTestKinds.size === 0,
+    files: [...signatureTestFiles, ...admittedTestFiles],
+  };
+}
+
+export type FixPrecheckFileStatus = 'pass' | 'fail' | 'unmeasured';
+
+export interface FixPrecheckFileResult {
+  path: string;
+  status: FixPrecheckFileStatus;
+  /** Why an `unmeasured` file could not be judged (route error, matched=0, timeout, crash). */
+  detail?: string;
+  exitCode?: number | null;
+  durationMs?: number;
+}
+
+export type FixPrecheckBusyReason = 'checkpoint-tree-busy';
+
+export type FixPrecheckRunResult =
+  | { ran: true; commit: string; results: FixPrecheckFileResult[]; setup?: { durationMs: number } }
+  | { ran: false; reason: FixPrecheckBusyReason; detail: string; holder?: { pid?: number; elapsedSec: number | null } }
+  | { ran: false; reason: 'runner-failed'; detail: string };
+
+/** The seam the admit door injects: measure `files` at `commit` (a real, unpublished object in the root's store). */
+export type FixPrecheckRunner = (input: { commit: string; files: readonly string[] }) => Promise<FixPrecheckRunResult>;
+
+export type FixPrecheckVerdict =
+  | {
+      ok: true;
+      ran: true;
+      commit: string;
+      population: FixPrecheckPopulation;
+      results: FixPrecheckFileResult[];
+      passing: string[];
+      failing: string[];
+      unmeasured: string[];
+      /** Signature test files that pass at the built commit — what the admission provably fixes. */
+      fixes: string[];
+    }
+  | { ok: true; ran: false; reason: 'nothing-to-run'; population: FixPrecheckPopulation }
+  | {
+      ok: true;
+      ran: false;
+      reason: FixPrecheckBusyReason;
+      detail: string;
+      population: FixPrecheckPopulation;
+      holder?: { pid?: number; elapsedSec: number | null };
+    }
+  | { ok: true; ran: false; reason: 'runner-failed'; detail: string; population: FixPrecheckPopulation }
+  | {
+      ok: false;
+      ran: true;
+      commit: string;
+      code: AdmissionPrecheckRefusalCode;
+      detail: string;
+      population: FixPrecheckPopulation;
+      results: FixPrecheckFileResult[];
+      passing: string[];
+      failing: string[];
+      unmeasured: string[];
+      /** Admitted-outside-signature test files that fail (the imports-red set), always reported. */
+      importedRed: string[];
+      /** Whether BOTH refusals apply — `code` names the primary one. */
+      alsoImportsRed: boolean;
+    };
+
+/**
+ * Pure verdict. `admission-does-not-fix` is checked first (the admission's stated purpose), then
+ * `admission-imports-red`; when both hold, `code` is does-not-fix and `alsoImportsRed:true`.
+ */
+export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixPrecheckRunResult): FixPrecheckVerdict {
+  if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
+  if (!run.ran) {
+    return run.reason === 'runner-failed'
+      ? { ok: true, ran: false, reason: 'runner-failed', detail: run.detail, population }
+      : { ok: true, ran: false, reason: run.reason, detail: run.detail, population, ...(run.holder ? { holder: run.holder } : {}) };
+  }
+  const byPath = new Map(run.results.map((r) => [normalize(r.path), r] as const));
+  const results: FixPrecheckFileResult[] = population.files.map(
+    (p) => byPath.get(p) ?? { path: p, status: 'unmeasured', detail: 'the runner returned no result for this file' },
+  );
+  const passing = results.filter((r) => r.status === 'pass').map((r) => r.path);
+  const failing = results.filter((r) => r.status === 'fail').map((r) => r.path);
+  const unmeasured = results.filter((r) => r.status === 'unmeasured').map((r) => r.path);
+  const fixes = population.signatureTestFiles.filter((p) => passing.includes(p));
+  const importedRed = population.admittedTestFiles.filter((p) => failing.includes(p));
+  const doesNotFix = population.canProveDoesNotFix && fixes.length === 0;
+  const importsRed = importedRed.length > 0;
+  const base = { ran: true as const, commit: run.commit, population, results, passing, failing, unmeasured };
+  if (doesNotFix) {
+    const unmeasuredNote = unmeasured.length
+      ? ` (${unmeasured.length} unmeasured — an unmeasured file never counts as passing)`
+      : '';
+    return {
+      ok: false,
+      ...base,
+      code: 'admission-does-not-fix',
+      detail:
+        `none of the ${population.signatureTestFiles.length} signature test file(s) pass at the built admission commit ` +
+        `${run.commit.slice(0, 12)}${unmeasuredNote}; the admission fixes nothing the frozen queue is red about` +
+        (importsRed ? `, and it also imports ${importedRed.length} new red test file(s): ${importedRed.join(', ')}` : ''),
+      importedRed,
+      alsoImportsRed: importsRed,
+    };
+  }
+  if (importsRed) {
+    return {
+      ok: false,
+      ...base,
+      code: 'admission-imports-red',
+      detail:
+        `${importedRed.length} admitted test file(s) outside the frozen signature fail at the built admission commit ` +
+        `${run.commit.slice(0, 12)}: ${importedRed.join(', ')} — the admission would import a new red onto the lineage`,
+      importedRed,
+      alsoImportsRed: false,
+    };
+  }
+  return { ok: true, ...base, fixes };
+}
+
+// ─── the real runner ─────────────────────────────────────────────────────────────────────────
+
+export interface CheckpointTreeRunnerOptions {
+  /** The canonical integration checkout (where the unpublished commit object lives). */
+  integrationRoot: string;
+  /** The gate's isolated checkout — setup-release-checkout materializes `commit` here. */
+  checkpointRoot: string;
+  /** Per-file wall-clock budget (default 10 min). */
+  perFileTimeoutMs?: number;
+  /** Setup budget (default 20 min — dependency materialization can take minutes). */
+  setupTimeoutMs?: number;
+  /** Injectable for tests: is a gate run holding the checkpoint tree right now? */
+  runLockHeld?: (root: string) => { held: boolean; pid?: number; elapsedSec: number | null };
+  /** Injectable for tests: run one child and capture its exit + output. */
+  exec?: (argv: readonly string[], opts: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv }) => Promise<ExecResult>;
+  log?: (line: string) => void;
+}
+
+export interface ExecResult {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  output: string;
+  durationMs: number;
+}
+
+export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (argv, opts) =>
+  new Promise<ExecResult>((resolve) => {
+    const startedAt = Date.now();
+    const [cmd, ...rest] = argv;
+    const child = spawn(cmd, rest, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const chunks: string[] = [];
+    let size = 0;
+    const collect = (buf: Buffer) => {
+      if (size > 256_000) return;
+      const s = buf.toString('utf8');
+      size += s.length;
+      chunks.push(s);
+    };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+    }, opts.timeoutMs);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ exitCode: null, signal: null, timedOut, output: `${chunks.join('')}\n${err.message}`, durationMs: Date.now() - startedAt });
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ exitCode: code, signal, timedOut, output: chunks.join(''), durationMs: Date.now() - startedAt });
+    });
+  });
+
+/** Classify one `scripts/test-files.mjs <file>` run. Route errors / zero matches are UNMEASURED, never a pass. */
+export function classifyTestFileRun(r: ExecResult): { status: FixPrecheckFileStatus; detail?: string } {
+  if (r.timedOut) return { status: 'unmeasured', detail: `timed out after ${r.durationMs}ms` };
+  if (/TEST_FILE_ROUTE_ERROR|matched=0\b|No test files found/.test(r.output)) {
+    return { status: 'unmeasured', detail: 'the router matched zero test files (route error / matched=0)' };
+  }
+  if (r.exitCode === 0) return { status: 'pass' };
+  if (r.exitCode === null) return { status: 'unmeasured', detail: `runner exited by signal ${r.signal ?? 'unknown'}` };
+  return { status: 'fail', detail: `exit ${r.exitCode}` };
+}
+
+export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunnerOptions): FixPrecheckRunner {
+  const exec = opts.exec ?? defaultExec;
+  const runLockHeld = opts.runLockHeld ?? ((root: string) => isCheckpointRunLockHeldCheap(root));
+  const perFileTimeoutMs = opts.perFileTimeoutMs ?? 10 * 60_000;
+  const setupTimeoutMs = opts.setupTimeoutMs ?? 20 * 60_000;
+  const log = opts.log ?? (() => {});
+  return async ({ commit, files }) => {
+    const held = runLockHeld(opts.integrationRoot);
+    if (held.held) {
+      return {
+        ran: false,
+        reason: 'checkpoint-tree-busy',
+        detail:
+          `a green-checkpoint run holds the checkpoint tree (pid ${held.pid ?? '?'}, ${held.elapsedSec ?? '?'}s in); ` +
+          'the admission pre-check did not run — the gate re-judges the admission itself (R-1)',
+        holder: { pid: held.pid, elapsedSec: held.elapsedSec },
+      };
+    }
+    const setupScript = path.join(opts.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
+    log(`[admission-precheck] materializing ${commit.slice(0, 12)} into ${opts.checkpointRoot}`);
+    const setup = await exec(
+      [
+        'bash',
+        setupScript,
+        '--ref',
+        commit,
+        '--integration',
+        opts.integrationRoot,
+        '--release',
+        opts.checkpointRoot,
+        '--node-modules',
+        'auto',
+        '--node-modules-copy',
+        'copy',
+      ],
+      { cwd: opts.integrationRoot, timeoutMs: setupTimeoutMs },
+    );
+    if (setup.exitCode !== 0) {
+      return {
+        ran: false,
+        reason: 'runner-failed',
+        detail: `setup-release-checkout exited ${setup.exitCode ?? setup.signal} for ${commit.slice(0, 12)}${setup.timedOut ? ' (timed out)' : ''}: ${setup.output.slice(-600)}`,
+      };
+    }
+    const results: FixPrecheckFileResult[] = [];
+    for (const file of files) {
+      log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
+      const r = await exec(['node', 'scripts/test-files.mjs', file], {
+        cwd: opts.checkpointRoot,
+        timeoutMs: perFileTimeoutMs,
+        env: { PAPERCUSP_ADMISSION_PRECHECK: '1', PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}` },
+      });
+      const c = classifyTestFileRun(r);
+      results.push({ path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs });
+    }
+    return { ran: true, commit, results, setup: { durationMs: setup.durationMs } };
+  };
+}
