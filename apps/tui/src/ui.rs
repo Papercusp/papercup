@@ -53,6 +53,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     // tab is re-pinned in main.rs). Help + the latest toast still overlay.
     if let Some(pinned) = app.pinned {
         draw_tab_body(f, app, pinned, f.area());
+        // The chat dock's operator pane is exactly where a change card is
+        // opened, so the pinned branch needs the paint as much as the full
+        // layout does — the same omission that once left 'N' opening a
+        // notifications overlay that never drew.
+        draw_change_card(f, app);
         if app.show_notifs {
             // The history overlay must render in pinned dock panes too — the
             // toast flashes here, and without this branch 'N' opened an
@@ -164,6 +169,13 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_operator_dock(f, app, area);
     }
     draw_status(f, app, root[2]);
+
+    // An open change card sits above the body and BELOW the toast: `y` on the
+    // card acknowledges through that same toast, and a copy the reader cannot
+    // see confirmed is the one thing this surface must not do. It is likewise
+    // below every modal overlay drawn after it, which is where `on_key` puts
+    // it — the switcher/question surfaces own their keys ahead of the card.
+    draw_change_card(f, app);
 
     // A transient toast for the latest notification sits above the body but
     // below the modal overlays (it shouldn't fight the help/palette/tutorial).
@@ -4155,6 +4167,93 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(right)).style(Theme::status_bar()),
         sub,
+    );
+}
+
+/// Gutter marker → style, for one already-rendered change-card row.
+///
+/// This reads the rendered TEXT rather than the typed `DiffLine` on purpose.
+/// The card's paint and its `y` payload are the same `render_lines()` strings,
+/// so colouring what is literally on screen cannot drift from what lands on the
+/// clipboard — a second pass over the typed hunks could, and the first thing it
+/// would get wrong is the degraded whole-block replace, whose lines are still
+/// `Added`/`Removed` but mean something else.
+fn diff_line_style(line: &str) -> Style {
+    if line.starts_with("@@") {
+        Theme::info()
+    } else if line.starts_with('+') {
+        Theme::success()
+    } else if line.starts_with('-') {
+        Theme::danger()
+    } else if line.starts_with("  error:") || line.starts_with('…') {
+        Theme::warn()
+    } else {
+        Theme::popup()
+    }
+}
+
+/// The open change card (P-007): a scrollable, colourised diff over the
+/// transcript.
+///
+/// # Why rows are truncated and never wrapped
+///
+/// `OpenChangeCard::scroll` indexes `ChangeCard::render_lines()`, and the app
+/// layer clamps it against that same count — so one rendered line MUST occupy
+/// exactly one display row, or the clamp is computed against a length the
+/// screen does not have and the last screenful becomes unreachable. Wrapping is
+/// also wrong for the content: a wrapped `+` line loses the gutter alignment
+/// that makes the three markers readable at a glance. Nothing is lost by
+/// truncating — `y` copies `render_lines()` verbatim, unbounded by the
+/// terminal's width.
+///
+/// # Why the frame title is the path and not `card.title()`
+///
+/// `render_lines()[0]` IS `card.title()`, and the body is painted verbatim so
+/// that what the reader sees is exactly what `y` copies. Putting the same
+/// string in the frame would render it twice, one row apart. The frame instead
+/// carries a pager status line — which file, and where in it you are — so the
+/// identity survives scrolling past row 0, which is the only thing a frame
+/// title is actually for here.
+fn draw_change_card(f: &mut Frame, app: &App) {
+    let Some(open) = app.open_change_card.as_ref() else {
+        return;
+    };
+    let area = centered_rect(86, 82, f.area());
+    // A frame needs two columns/rows of border before it can hold anything.
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+
+    let lines = open.card.render_lines();
+    let total = lines.len();
+    let start = open.scroll.min(total.saturating_sub(1));
+    let rows: Vec<Line> = lines
+        .iter()
+        .skip(start)
+        .take(inner_h)
+        .map(|l| Line::from(Span::styled(trunc(l, inner_w), diff_line_style(l))))
+        .collect();
+    let shown_to = (start + rows.len()).min(total);
+
+    let head = format!(
+        " {} · {}-{}/{} ",
+        elide_left(&open.card.path, inner_w.saturating_sub(20)),
+        start + 1,
+        shown_to,
+        total
+    );
+    let foot = " j/k scroll · PgUp/PgDn page · g/G top/bottom · n/p card · y copy · Shift-Y raw · Esc close ";
+
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(rows).style(Theme::popup()).block(
+            Theme::popup_block(Line::from(trunc(&head, inner_w))).title_bottom(Line::from(
+                Span::styled(trunc(foot, inner_w), Theme::dim()),
+            )),
+        ),
+        area,
     );
 }
 
