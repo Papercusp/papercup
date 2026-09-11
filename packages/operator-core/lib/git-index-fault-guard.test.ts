@@ -293,6 +293,8 @@ describe('END TO END — the real guards against a real torn index', () => {
     const out = execFileSync('git', ['ls-files', '--', 'package.json'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
     expect(out).toContain('package.json');
   });
@@ -304,6 +306,8 @@ describe('END TO END — the real guards against a real torn index', () => {
         cwd: REPO_ROOT,
         encoding: 'utf8',
         env: { ...process.env, GIT_INDEX_FILE: tornIndex },
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
       });
       expect.unreachable('git should have failed on a 0-byte index');
     } catch (error) {

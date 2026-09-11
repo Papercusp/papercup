@@ -31,13 +31,13 @@ describe('direct Vite typecheck refreshes cold-checkout routing types', () => {
   it('runs the configured generator before a compiler can read the route tree', () => {
     expect(command).toBeDefined();
     const cwd = fixture("import { writeFileSync } from 'node:fs'; writeFileSync('routes-ready', 'generated');");
-    execSync(command!, { cwd, stdio: 'pipe' });
+    execSync(command!, { cwd, stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' });
     expect(readFileSync(join(cwd, 'routes-ready'), 'utf8')).toBe('generated');
   });
 
   it('propagates a generator failure instead of accepting a stale route tree', () => {
     expect(command).toBeDefined();
     const cwd = fixture("throw new Error('route generation failed');");
-    expect(() => execSync(command!, { cwd, stdio: 'pipe' })).toThrow();
+    expect(() => execSync(command!, { cwd, stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' })).toThrow();
   });
 });
