@@ -17208,6 +17208,207 @@ mod tests {
         assert_eq!(app.chat_input, "next draft");
     }
 
+    /// Drive a fresh pane to "a turn is running and acknowledged" — the state an
+    /// owner is actually in when they start typing the next thing.
+    fn running_turn(first: &str) -> App {
+        let mut app = composing(first);
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let id = app.su_pending_turn.as_ref().unwrap().command_id.clone();
+        app.acknowledge_su_turn(&id);
+        assert!(app.chat_streaming, "the first turn is in flight");
+        assert!(
+            app.su_pending_turn.is_none(),
+            "and acknowledged, so the queue is free to advance"
+        );
+        app
+    }
+
+    fn dispatched_text(action: &Action) -> Option<&str> {
+        match action {
+            Action::SendSuSessionTurn(t) => Some(t.as_str()),
+            Action::OpenSuSession {
+                initial_turn: Some(t),
+                ..
+            } => Some(t.as_str()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn enter_during_a_turn_queues_the_line_instead_of_swallowing_the_key() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        let action = app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(action, Action::Render);
+        assert_eq!(app.chat_queued, vec!["second".to_string()]);
+        assert!(
+            app.chat_input.is_empty(),
+            "the line moved to the queue, so leaving it in the composer would \
+             show it twice and invite a double send"
+        );
+        assert!(
+            app.su_pending_turn.is_none(),
+            "queuing must not dispatch — the running turn owns the session"
+        );
+        let note = app.session_note.clone().unwrap_or_default();
+        assert!(note.contains("Queued"), "{note}");
+    }
+
+    #[test]
+    fn a_queued_line_sends_itself_once_the_turn_settles() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        app.finish_chat_turn();
+        let action = app.update(Event::Tick);
+        assert_eq!(
+            dispatched_text(&action),
+            Some("second"),
+            "the tick must dispatch the queued line, got {action:?}"
+        );
+        assert!(app.chat_queued.is_empty(), "and consume it exactly once");
+        assert!(app.chat_streaming, "the queued turn is now the running one");
+    }
+
+    /// CALIBRATION for `a_queued_line_sends_itself_once_the_turn_settles`: that
+    /// test passes for a drain hard-wired to fire on every tick. This is the
+    /// assertion that fails for one.
+    #[test]
+    fn the_queue_does_not_drain_while_the_turn_is_still_running() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        for _ in 0..5 {
+            let action = app.update(Event::Tick);
+            assert_eq!(
+                dispatched_text(&action),
+                None,
+                "a queued line must not be sent into a turn that is still running"
+            );
+        }
+        assert_eq!(app.chat_queued, vec!["second".to_string()]);
+    }
+
+    /// CALIBRATION for the second drain guard. An unacknowledged turn may still
+    /// be in flight on the wire, so draining onto it mints the duplicate turn
+    /// that `dispatch_chat_turn`'s reconcile branch exists to prevent — and
+    /// `chat_streaming` alone does NOT catch it: a delivery failure clears
+    /// streaming while leaving the turn outstanding.
+    #[test]
+    fn the_queue_does_not_drain_onto_an_unacknowledged_turn() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        // The exact state a failed-but-uncertain delivery leaves behind.
+        app.su_pending_turn = Some(PendingSuTurn {
+            command_id: "pui-outstanding".into(),
+            content: "first".into(),
+            command: None,
+            uncertain: true,
+            error: Some("connection lost".into()),
+        });
+        app.chat_streaming = false;
+
+        let action = app.update(Event::Tick);
+        assert_eq!(
+            dispatched_text(&action),
+            None,
+            "an outstanding turn blocks the queue even though nothing is streaming"
+        );
+        assert_eq!(app.chat_queued, vec!["second".to_string()]);
+    }
+
+    #[test]
+    fn queued_lines_send_in_the_order_they_were_composed() {
+        let mut app = running_turn("first");
+        for text in ["second", "third"] {
+            app.chat_input = text.into();
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        assert_eq!(app.chat_queued, vec!["second".to_string(), "third".into()]);
+
+        app.finish_chat_turn();
+        let action = app.update(Event::Tick);
+        assert_eq!(dispatched_text(&action), Some("second"));
+
+        // "third" must wait for "second" to settle, not ride the same tick.
+        let action = app.update(Event::Tick);
+        assert_eq!(dispatched_text(&action), None);
+
+        let id = app.su_pending_turn.as_ref().unwrap().command_id.clone();
+        app.acknowledge_su_turn(&id);
+        app.finish_chat_turn();
+        let action = app.update(Event::Tick);
+        assert_eq!(dispatched_text(&action), Some("third"));
+        assert!(app.chat_queued.is_empty());
+    }
+
+    /// A queued line must be byte-identical to the same text sent with Enter —
+    /// `su_first_draft_survives_until_its_own_acknowledgement` pins that exact
+    /// whitespace for the interactive path, and a queue that trimmed would make
+    /// the two paths disagree about what the owner actually sent.
+    #[test]
+    fn a_queued_line_is_sent_exactly_as_composed() {
+        let text = "  exact queued λ  ";
+        let mut app = running_turn("first");
+        app.chat_input = text.into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.chat_queued, vec![text.to_string()]);
+
+        app.finish_chat_turn();
+        let action = app.update(Event::Tick);
+        assert_eq!(dispatched_text(&action), Some(text));
+        assert_eq!(app.su_pending_turn.as_ref().unwrap().content, text);
+    }
+
+    #[test]
+    fn an_owner_interrupt_clears_the_queue() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.chat_queued.is_empty());
+
+        app.on_key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert!(
+            app.chat_queued.is_empty(),
+            "Ctrl+X means stop; the drain fires within one tick, so a queue that \
+             survived the interrupt would immediately restart the halted work"
+        );
+
+        // And it stays cleared once the cancelled turn settles.
+        app.finish_chat_turn();
+        let action = app.update(Event::Tick);
+        assert_eq!(dispatched_text(&action), None);
+    }
+
+    #[test]
+    fn rebinding_the_conversation_clears_the_queue() {
+        let mut app = running_turn("first");
+        app.chat_input = "second".into();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        app.reset_agent_chat_binding();
+        assert!(
+            app.chat_queued.is_empty(),
+            "a line composed for THIS conversation must never be delivered to \
+             whatever is bound next"
+        );
+        let action = app.update(Event::Tick);
+        assert_eq!(dispatched_text(&action), None);
+    }
+
+    #[test]
+    fn enter_on_an_empty_composer_during_a_turn_queues_nothing() {
+        let mut app = running_turn("first");
+        app.chat_input = "   ".into();
+        let action = app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(action, Action::Render);
+        assert!(app.chat_queued.is_empty());
+    }
+
     #[test]
     fn su_replayed_receipt_restores_the_actual_running_or_idle_state() {
         for running in [false, true] {

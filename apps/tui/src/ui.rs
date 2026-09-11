@@ -8175,7 +8175,57 @@ mod tests {
         assert!(text.contains("claude-sonnet-4-6:high"));
         assert!(text.contains("account auto"));
         assert!(text.contains("Running"));
-        assert!(text.contains("input locked"));
+        // Was `input locked` until P-007 draft queuing. Enter now QUEUES the next
+        // line, so the bar must advertise that instead — and must not go on
+        // claiming a lock the keys no longer enforce.
+        assert!(text.contains("Enter queues"), "{text}");
+        assert!(!text.contains("input locked"), "{text}");
+    }
+
+    #[test]
+    fn the_running_bar_counts_queued_lines_in_both_in_flight_states() {
+        // Post-acknowledgement: `su_pending_turn` is clear, so the plain Running
+        // branch renders.
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.begin_user_send("first");
+        app.chat_queued.push("second".into());
+        let text = render(&app, 100, 16);
+        assert!(text.contains("1 queued"), "{text}");
+        assert!(text.contains("Ctrl+X"), "cancelling must stay discoverable: {text}");
+
+        app.chat_queued.push("third".into());
+        let text = render(&app, 100, 16);
+        assert!(text.contains("2 queued"), "{text}");
+
+        // Pre-acknowledgement: the "Sending — awaiting acceptance" branch wins for
+        // the first moments of EVERY turn, which is exactly the window an owner
+        // types ahead in. A count only on the Running branch would leave those
+        // keystrokes looking dropped.
+        app.su_pending_turn = Some(crate::app::PendingSuTurn {
+            command_id: "pui-1".into(),
+            content: "first".into(),
+            command: None,
+            uncertain: false,
+            error: None,
+        });
+        app.chat_streaming = true;
+        let text = render(&app, 100, 16);
+        assert!(text.contains("awaiting acceptance"), "{text}");
+        assert!(text.contains("2 queued"), "{text}");
+    }
+
+    /// CALIBRATION for the test above: with no queued lines the count must be
+    /// ABSENT, not rendered as "0 queued". An always-on suffix would satisfy
+    /// every `contains` assertion there while telling the owner nothing.
+    #[test]
+    fn the_running_bar_says_nothing_about_a_queue_that_is_empty() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.begin_user_send("first");
+        let text = render(&app, 100, 16);
+        assert!(text.contains("Enter queues"), "{text}");
+        assert!(!text.contains("queued"), "{text}");
     }
 
     #[test]
