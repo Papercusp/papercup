@@ -56,7 +56,20 @@ const PROBES = {
   omp: [probe('omp')],
 } satisfies Record<'claude' | 'codex' | 'omp', readonly WorkspaceHostAgentVerificationProbeSpec[]>;
 
-function bundle(codex: 'healthy' | 'revoked'): Buffer {
+type CodexProbeStatus = 'healthy' | 'revoked' | 'unfunded' | 'malformed' | 'unauthorized';
+
+/**
+ * The failure reason the classifier would produce for each simulated state. Only `unfunded` is
+ * compatible with an authentic credential; the other three describe the credential itself.
+ */
+const FAILURE_HINTS: Record<Exclude<CodexProbeStatus, 'healthy'>, string> = {
+  revoked: 'credential-revoked',
+  unfunded: 'provider-usage-limit',
+  malformed: 'credential-malformed',
+  unauthorized: 'credential-unauthorized',
+};
+
+function bundle(codex: CodexProbeStatus): Buffer {
   const file = (agent: string, status: string) =>
     Buffer.from(
       JSON.stringify(
@@ -122,9 +135,10 @@ class BundleAwareRunner implements WorkspaceHostAgentProbeRunner {
     };
     this.observed[agent] = body.status;
     this.observedBodies[agent] = body;
-    return body.status === 'healthy'
-      ? { exitCode: 0, stdout: 'READY\n' }
-      : { exitCode: 1, stdout: '', failureHint: 'credential-revoked' };
+    if (body.status === 'healthy') return { exitCode: 0, stdout: 'READY\n' };
+    const failureHint = FAILURE_HINTS[body.status as Exclude<CodexProbeStatus, 'healthy'>];
+    if (!failureHint) throw new Error(`unmapped probe status '${body.status}'`);
+    return { exitCode: 1, stdout: '', failureHint };
   }
 }
 
@@ -252,6 +266,101 @@ describe('workspace-host exact-generation agent credential admission', () => {
     expect(JSON.stringify(rejected)).not.toContain('healthy-default');
     expect(JSON.stringify(rejected)).not.toContain('"status":"revoked"');
     await expect(access(runner.homes[0]!)).rejects.toThrow();
+  });
+
+  it('admits an authenticated but out-of-quota agent, records it, and still reports it not ready', async () => {
+    const runner = new BundleAwareRunner();
+    const evidence = await verifyWorkspaceHostAgentCredentialAdmission(
+      {
+        credentialRef: { kind: 'agent', ref: AGENT_REF },
+        delivery: DELIVERY,
+        materialSource: source(bundle('unfunded'), []),
+      },
+      { runner, probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+    );
+
+    // Admission is about authenticity: a quota refusal is only reportable for an identity the
+    // provider ACCEPTED, so the credential is proven genuine and must be admitted.
+    expect(evidence.verification.admissible).toBe(true);
+    expect(evidence.verification.unfundedAgents).toEqual(['codex']);
+    expect(evidence.verification.agents.codex).toMatchObject({
+      ready: false,
+      failure: 'provider-usage-limit',
+    });
+    // ...but the readiness claim the canary layer reads must NOT be bought by admission.
+    expect(evidence.verification.allReady).toBe(false);
+    // The admitted receipt must survive the shared validator every consumer calls.
+    expect(() =>
+      assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, {
+        credentialRef: { kind: 'agent', ref: AGENT_REF },
+        delivery: DELIVERY,
+      }),
+    ).not.toThrow();
+    expect(JSON.stringify(evidence)).not.toContain('"status":"unfunded"');
+  });
+
+  // FALSIFIABILITY. Tolerating the quota case is only safe if every reason that describes the
+  // CREDENTIAL still hard-fails. Without these arms the guard above is indistinguishable from
+  // "admission accepts any failing probe".
+  it.each(['revoked', 'malformed', 'unauthorized'] as const)(
+    'still fails admission closed for a %s credential, which quota tolerance must never cover',
+    async (status) => {
+      const runner = new BundleAwareRunner();
+      await expect(
+        verifyWorkspaceHostAgentCredentialAdmission(
+          {
+            credentialRef: { kind: 'agent', ref: AGENT_REF },
+            delivery: DELIVERY,
+            materialSource: source(bundle(status), []),
+          },
+          { runner, probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+        ),
+      ).rejects.toBeInstanceOf(WorkspaceHostAgentCredentialAdmissionError);
+      expect(runner.observed.codex).toBe(status);
+    },
+  );
+
+  it('rejects a receipt that claims an unfunded agent while its evidence carries an identity failure', async () => {
+    const evidence = await verifyWorkspaceHostAgentCredentialAdmission(
+      {
+        credentialRef: { kind: 'agent', ref: AGENT_REF },
+        delivery: DELIVERY,
+        materialSource: source(bundle('unfunded'), []),
+      },
+      { runner: new BundleAwareRunner(), probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+    );
+
+    // A forged receipt cannot buy admission by relabelling a revoked credential as merely unfunded.
+    const forged = {
+      ...evidence,
+      verification: {
+        ...evidence.verification,
+        agents: {
+          ...evidence.verification.agents,
+          codex: { ...evidence.verification.agents.codex, failure: 'credential-revoked' },
+        },
+      },
+    };
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(forged)).toThrow(/invalid 'codex' verification/);
+  });
+
+  it('rejects a receipt that claims both an unfunded agent and full readiness', async () => {
+    const evidence = await verifyWorkspaceHostAgentCredentialAdmission(
+      {
+        credentialRef: { kind: 'agent', ref: AGENT_REF },
+        delivery: DELIVERY,
+        materialSource: source(bundle('unfunded'), []),
+      },
+      { runner: new BundleAwareRunner(), probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+    );
+
+    // allReady is what the readiness layer trusts; an unfunded agent must falsify it, so a receipt
+    // asserting both is incoherent and must not be accepted by anything downstream.
+    const forged = {
+      ...evidence,
+      verification: { ...evidence.verification, allReady: true },
+    };
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(forged)).toThrow(/invalid agent coverage/);
   });
 
   it('rejects compound receipts that claim readiness without coherent exact agent coverage', async () => {
