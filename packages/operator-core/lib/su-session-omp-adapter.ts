@@ -246,6 +246,18 @@ export function ompCapabilities(): SuSessionCapabilities {
         state: 'conditional', implementation: 'host',
         reason: 'OMP carry uses the managed host hard-recycle path and P-004 runtime reconciliation',
       },
+      approvals: {
+        state: 'conditional', implementation: 'native',
+        reason: 'the rpc-ui launch installs OMP native question callbacks and rewrites the managed approval mode to always-ask only under the acceptance-only toolApproval prompt launch; the default managed launch stays yolo',
+      },
+      context: {
+        state: 'unsupported',
+        reason: 'the v1 SU-session contract carries no context event or descriptor field, so OMP context consumption stays inside the native runtime and never reaches the PUI',
+      },
+      modes: {
+        state: 'conditional', implementation: 'host',
+        reason: 'the descriptor reports modes supplied by the managed launch and preserved across resume, but the v1 command set has no mode-change command and the descriptor is not refreshed when modes change mid-session',
+      },
     },
   };
 }

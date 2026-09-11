@@ -258,6 +258,20 @@ export function claudeCapabilities(): SuSessionCapabilities {
         implementation: 'host',
         reason: 'Claude carry uses the managed host hard-recycle path and P-004 runtime reconciliation',
       },
+      approvals: {
+        state: 'conditional',
+        implementation: 'native',
+        reason: 'permission requests reach the owner as typed PUI cards via canUseTool only under the acceptance-only toolApproval prompt launch; the default managed launch runs permissionMode bypassPermissions and never asks',
+      },
+      context: {
+        state: 'unsupported',
+        reason: 'the v1 SU-session contract carries no context event or descriptor field, so Claude context consumption stays inside the native runtime and never reaches the PUI',
+      },
+      modes: {
+        state: 'conditional',
+        implementation: 'host',
+        reason: 'the descriptor reports modes supplied by the managed launch and preserved across resume, but the v1 command set has no mode-change command and the descriptor is not refreshed when modes change mid-session',
+      },
     },
   };
 }

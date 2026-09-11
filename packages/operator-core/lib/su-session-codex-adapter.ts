@@ -305,6 +305,20 @@ export function codexCapabilities(): SuSessionCapabilities {
         implementation: 'host',
         reason: 'Codex carry uses the managed host hard-recycle path and P-004 runtime reconciliation',
       },
+      approvals: {
+        state: 'conditional',
+        implementation: 'native',
+        reason: 'the thread starts with approvalPolicy on-request and a workspace-write sandbox only under the acceptance-only toolApproval prompt launch; the default managed launch starts it with never and danger-full-access',
+      },
+      context: {
+        state: 'unsupported',
+        reason: 'the v1 SU-session contract carries no context event or descriptor field, so Codex context consumption stays inside the native runtime and never reaches the PUI',
+      },
+      modes: {
+        state: 'conditional',
+        implementation: 'host',
+        reason: 'the descriptor reports modes supplied by the managed launch and preserved across resume, but the v1 command set has no mode-change command and the descriptor is not refreshed when modes change mid-session',
+      },
     },
   };
 }
