@@ -1022,3 +1022,174 @@ describe('promotion contract join (P-006)', () => {
     ).toEqual(first);
   });
 });
+
+/**
+ * SPEC-P006-FAILED-SCENARIO-RERUN@1, integration layer (requiredTestLayers: integration + unit).
+ *
+ * The unit control for this guard hands `deps.list` a hand-built prior row, so it proves the
+ * DECISION and nothing about the READ. The step it cannot reach is the one that actually has
+ * to work here: `readSiblingEvidence` has to find the previous run's settled row through the
+ * REAL `listSpecEvidence` query, against real Postgres, with fingerprints really measured off
+ * disk — scoped by harness, plan, work item, spec, kind, and pinned to the same spec REVISION.
+ *
+ * That read failing is INVISIBLE to the falsifier arm on its own: `listSpecEvidence` throwing,
+ * or simply matching nothing, resolves to `no-sibling-evidence`, which is ALSO `full-matrix`
+ * and ALSO lands phase `stale-sibling-evidence`. A broken query and a correctly-detected stale
+ * carry are indistinguishable at the phase. So the currency arm below is not decoration: it is
+ * the only assertion that can tell "the guard fired because the row was stale" apart from "the
+ * guard fired because the row was never found", and it must pass BEFORE and AFTER the fix.
+ */
+describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row (SPEC-P006-FAILED-SCENARIO-RERUN)', () => {
+  const testPath = 'test/matrix.test.ts';
+  const sourcePath = 'src/matrix.ts';
+  const SCENARIOS = ['boot', 'retry', 'teardown', 'recover'];
+  const PRIOR_RUN = 'aa4c9d0e-6d41-4a7e-9a1f-2b7d1c5e8f30';
+  const RERUN = 'bb51e7c2-90d3-4f28-8c6a-3e9f0a4d7b11';
+
+  beforeEach(async () => {
+    await writeFile(path.join(h.repoRoot, sourcePath), 'export const matrix = true;\n');
+    await writeFile(path.join(h.repoRoot, testPath), 'expect(matrix).toBe(true);\n');
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+  });
+
+  async function harness() {
+    const { prepareTestEvidence, finishTestEvidence } = await import('../testing/evidence');
+    const { readHarnessTestRunEvidence, countUnattributedTestRunRows } = await import('../../testing-run-store');
+    const scope = { workspaceId: WORKSPACE, harnessSlug: HARNESS, actorId: 'su-test', root: h.repoRoot };
+    const deps = {
+      bind: evidenceStore.bindSpecEvidence,
+      measure: evidenceStore.measureRepoFilesEvidenceAtRoot,
+      // The REAL query — the whole point of exercising this at the integration layer.
+      list: evidenceStore.listSpecEvidence,
+      ledger: (args: Parameters<typeof readHarnessTestRunEvidence>[0]) => readHarnessTestRunEvidence({
+        ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof readHarnessTestRunEvidence>[0]['sql']>,
+      }),
+      unattributed: countUnattributedTestRunRows,
+    };
+    /** One run of the matrix file. `pattern` undefined = the unfiltered whole-file run. */
+    const run = async (opts: { runId: string; pattern?: string; scenarioIds?: string[] }) => {
+      const ids = opts.scenarioIds ?? SCENARIOS;
+      const executed = opts.pattern ? 1 : ids.length;
+      const prepared = await prepareTestEvidence({
+        workItemId: 'WI-101', planSlug: 'reconnect-plan',
+        bindings: [{ specId: 'SPEC-003-01', specRevision: 1, testPath, sourcePaths: [sourcePath],
+          testLayer: 'integration' as const, scenarioIds: ids }],
+      }, opts.runId, [testPath], scope, deps);
+      await db.sql`INSERT INTO harness_shared.test_runs
+        (workspace_id,harness_slug,file_path,status,finished_at,run_group_id)
+        VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${opts.runId})`;
+      const result = {
+        ok: true as const, runId: opts.runId, root: h.repoRoot, files: 1,
+        passed: executed, failed: 0, skipped: ids.length - executed,
+        failures: [], failuresTruncated: false, durationMs: 1,
+        byFile: { [testPath]: { passed: executed, failed: 0, skipped: ids.length - executed, collectionFailed: false } },
+        ...(opts.pattern ? { testNamePattern: opts.pattern } : {}),
+      };
+      return finishTestEvidence(prepared, opts.runId, opts.runId, scope, result, deps);
+    };
+    /**
+     * The persisted row the guard has to re-read, as the REAL store returns it.
+     *
+     * The store types `details` as opaque `Record<string, unknown>` — it is jsonb, and it is
+     * not this module's job to know what a caller put there. The shape THIS spec asserts on is
+     * therefore named once, at the single point the opaque value is read back, rather than
+     * re-asserted at each call site: four separate casts would let the recorded shape drift
+     * while four assertions kept passing against four independent descriptions of it.
+     */
+    type PersistedDetails = {
+      testExecution: {
+        phase?: string; testNamePattern?: string; sourceStable?: boolean; siblingEvidenceRef?: string;
+        rerunScope?: { scope?: string; reason?: string; carried?: string[]; stale?: string[] };
+      };
+      adequacy: { outcome?: string; executed?: boolean; scenarioIds?: string[] };
+    };
+    const persisted = async (runId: string) => {
+      const rows = await evidenceStore.listSpecEvidence({
+        harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'],
+        specIds: ['SPEC-003-01'], evidenceKinds: ['test'], limit: 50,
+      });
+      const row = rows.find(candidate => String(candidate.evidenceRef).includes(runId));
+      return row && { ...row, details: row.details as PersistedDetails };
+    };
+    return { run, persisted };
+  }
+
+  /** Edit the source AFTER the prior run settled: its recorded fingerprint now trails disk. */
+  const editSourceAfterPriorRun = () =>
+    writeFile(path.join(h.repoRoot, sourcePath), 'export const matrix = "edited after the matrix run";\n');
+
+  // CURRENCY ARM / CALIBRATION. Must pass before AND after the fix. It is the only assertion
+  // that proves the real query RESOLVED the sibling row — without it, a query that silently
+  // matches nothing makes the falsifier arm below green for entirely the wrong reason.
+  it('settles a narrowed rerun and names the real prior row it carried', async () => {
+    const { run, persisted } = await harness();
+    const prior = await run({ runId: PRIOR_RUN });
+    expect(prior.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+
+    const bundle = await run({ runId: RERUN, pattern: 'recover' });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+    expect(bundle.verificationFingerprint).toBeTruthy();
+
+    const settled = await persisted(RERUN);
+    const priorRow = await persisted(PRIOR_RUN);
+    expect(settled!.details.testExecution).toMatchObject({
+      testNamePattern: 'recover',
+      rerunScope: { scope: 'failed-scenario', reason: 'sibling-evidence-current', carried: SCENARIOS, stale: [] },
+      // Read back through the store, so this is the ROW the query found — not a fake.
+      siblingEvidenceRef: priorRow!.evidenceRef,
+    });
+  });
+
+  // FALSIFIER ARM. The identical rerun with ONE variable moved: the source on disk changed
+  // after the prior run recorded its proof, so the sibling scenarios' evidence no longer
+  // describes the code under test and may not be carried.
+  it('refuses to carry the remaining matrix once the prior row trails disk', async () => {
+    const { run, persisted } = await harness();
+    expect((await run({ runId: PRIOR_RUN })).rows[0]).toMatchObject({ phase: 'settled' });
+    await editSourceAfterPriorRun();
+
+    const bundle = await run({ runId: RERUN, pattern: 'recover' });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'stale-sibling-evidence', outcome: 'unknown' });
+    expect(bundle.verificationFingerprint).toBeNull();
+
+    const refused = await persisted(RERUN);
+    expect(refused!.details.adequacy).toMatchObject({ outcome: 'unknown', executed: false });
+    // `reason` and `stale` are load-bearing: a query that found NOTHING would report
+    // `no-sibling-evidence` with an empty `stale`, at this very same phase.
+    expect(refused!.details.testExecution.rerunScope).toMatchObject({
+      scope: 'full-matrix', reason: 'stale-sibling-evidence', stale: ['source'], carried: [],
+    });
+    // The pre-existing prepare-vs-finish check cannot cover this case and must not be
+    // credited with it: both measurements happen AFTER the edit, so the source looks stable.
+    expect(refused!.details.testExecution.sourceStable).toBe(true);
+  });
+
+  // CALIBRATION. The guard must fire on the NARROWING, not on a stale prior row alone. An
+  // unfiltered run re-measures the whole matrix itself, so it carries nothing and must still
+  // settle against the very same stale row. Without this, an implementation that simply
+  // refused any stale prior row would pass both arms above while taxing every ordinary rerun —
+  // which is precisely the saving this plan exists to produce.
+  it('still settles an UNFILTERED rerun against that same stale prior row', async () => {
+    const { run, persisted } = await harness();
+    expect((await run({ runId: PRIOR_RUN })).rows[0]).toMatchObject({ phase: 'settled' });
+    await editSourceAfterPriorRun();
+
+    const bundle = await run({ runId: RERUN });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect((await persisted(RERUN))!.details.testExecution.rerunScope).toBeUndefined();
+  });
+
+  // CALIBRATION. A binding claiming ONE scenario has no remaining matrix to carry, so the
+  // narrowed run measured everything it claims and settles against the same stale row.
+  it('still settles a single-scenario narrowed rerun against that same stale prior row', async () => {
+    const { run, persisted } = await harness();
+    expect((await run({ runId: PRIOR_RUN })).rows[0]).toMatchObject({ phase: 'settled' });
+    await editSourceAfterPriorRun();
+
+    const bundle = await run({ runId: RERUN, pattern: 'recover', scenarioIds: ['recover'] });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect((await persisted(RERUN))!.details.testExecution.rerunScope).toBeUndefined();
+  });
+});
