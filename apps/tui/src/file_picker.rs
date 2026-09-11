@@ -244,6 +244,75 @@ impl Attachments {
     pub fn rows(&self) -> Vec<String> {
         self.items.iter().map(Attachment::row).collect()
     }
+
+    /// Whether this exact reference is already attached.
+    pub fn contains(&self, reference: &str) -> bool {
+        self.items.iter().any(|a| a.reference == reference)
+    }
+}
+
+/// Directory names never worth offering. Build output and dependency trees are
+/// large enough to crowd the actual project out of a bounded listing, which
+/// would make the picker look empty of the files the owner came for.
+const SKIPPED_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "coverage",
+    "__pycache__",
+];
+
+/// Project-relative, forward-slashed paths of the regular files under `root`,
+/// sorted, capped at `limit`.
+///
+/// # Why this is bounded, and why the bound is safe
+///
+/// The walk runs on the keystroke that opens the picker, so an unbounded walk
+/// of a large checkout would stall the UI thread.
+///
+/// The cap is a LISTING cap only — it never widens or narrows what [`attach`]
+/// admits. That separation is the point: the listing is a convenience, and
+/// `attach` re-resolves every choice from scratch, so a file missing from the
+/// listing is still attachable by typing its path, and a file PRESENT in the
+/// listing is still canonicalised and range-checked before it can become an
+/// attachment. No path reaches the agent because it appeared in this list.
+///
+/// Symlinks are not listed: [`std::fs::DirEntry::file_type`] does not follow
+/// them, so a link reports neither `is_file` nor `is_dir` here. That is the
+/// conservative direction — and a link the owner names explicitly is still
+/// resolved (and refused, if it leaves the project) by `attach`.
+pub fn list_project_files(root: &Path, limit: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut queue: std::collections::VecDeque<PathBuf> = std::collections::VecDeque::new();
+    queue.push_back(root.to_path_buf());
+    while let Some(dir) = queue.pop_front() {
+        if out.len() >= limit {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if file_type.is_dir() {
+                if SKIPPED_DIRS.contains(&name.as_str()) || name.starts_with('.') {
+                    continue;
+                }
+                queue.push_back(entry.path());
+            } else if file_type.is_file() {
+                if let Ok(rel) = entry.path().strip_prefix(root) {
+                    out.push(slashed(rel));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.truncate(limit);
+    out
 }
 
 #[cfg(test)]
