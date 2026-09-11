@@ -1010,6 +1010,20 @@ export default defineTool({
       declaredPaths: args.paths ?? [],
       candidate: preflight.candidate,
       evidenceRefs: ['tool:release:checkpoint-run'],
+      // EI-22931381517977345: with NO declared paths the preflight yields candidate:null/tip:null,
+      // so the id above is a per-root CONSTANT — one terminal code-inconclusive attempt then
+      // refused every later verify of the frozen lineage even after `repairHead` advanced
+      // (observed 2026-09-11: stored candidate ded5e530, queue repairHead d5c9f96b, same id).
+      // The store derives the identity from the queue's verification target it reads under
+      // the same row lock, so an advanced repairHead is a NEW logical attempt.
+      attemptIdForVerificationTarget: (target: string) =>
+        checkpointEligibilityPendingId({
+          root,
+          candidate: target,
+          tip: target,
+          paths: args.paths ?? [],
+          requiredAncestorSha: args.requiredAncestorSha,
+        }),
     };
     const storedQualification = await readStoredQualification(qualificationTarget);
     if (storedQualification.status === 'unreadable') {
@@ -1046,6 +1060,9 @@ export default defineTool({
       {
         ...beginInput,
         attemptId: logicalAttemptId,
+        // An id INHERITED from a live non-terminal attempt with the same intent must stay
+        // idempotent; only a fresh request derives its identity from the queue target.
+        ...(logicalAttemptId !== beginInput.attemptId ? { attemptIdForVerificationTarget: undefined } : {}),
       },
       { reconcileTerminalRepairQueueForSuccessor: !preflight.refuse },
     );

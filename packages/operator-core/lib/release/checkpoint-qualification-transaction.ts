@@ -208,6 +208,17 @@ export interface BeginQualificationInput {
   /** What the caller proved about the INCUMBENT attempt's runner. Default 'unknown' = old behaviour. */
   incumbentLiveness?: RunnerLiveness;
   nowMs?: number;
+  /**
+   * EI-22931381517977345: derive the logical attempt identity from the frozen repair queue's
+   * VERIFICATION TARGET (`repairHead`, else `candidate`), read from the SAME locked routine row
+   * the transaction lives in. Without it a request that declares no paths hashes to a per-root
+   * constant (the pre-launch preflight yields candidate:null/tip:null), so one terminal
+   * code-inconclusive attempt refuses every later verify of the lineage — even after an
+   * admission advanced `repairHead` — via the same-id 'terminal' branch, which never reaches the
+   * distinct-successor reconciliation. Called only when a queue target exists; the returned id
+   * replaces `attemptId`.
+   */
+  attemptIdForVerificationTarget?: (target: string) => string;
 }
 
 export interface CancelQualificationInput {
@@ -434,6 +445,33 @@ export function qualificationIntentMatches(
     current.requiredAncestorSha === (input.requiredAncestorSha?.trim() || null) &&
     sameStrings(current.candidatePolicy.declaredPaths, input.declaredPaths ?? [])
   );
+}
+
+/**
+ * The sha a suite would judge for a stored frozen repair queue: the advanced `repairHead` when
+ * one exists, else the frozen `candidate`. Deliberately a lenient structural read (not the full
+ * queue parser): the identity of a logical attempt must be derivable from a legacy or partially
+ * populated row too, and the policy read that decides whether a suite RUNS happens later.
+ */
+export function frozenRepairQueueVerificationTarget(rawRepairQueue: unknown): string | null {
+  if (!rawRepairQueue || typeof rawRepairQueue !== 'object' || Array.isArray(rawRepairQueue)) return null;
+  const row = rawRepairQueue as Record<string, unknown>;
+  const pick = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim() ? value.trim() : null;
+  return pick(row.repairHead) ?? pick(row.candidate);
+}
+
+/**
+ * EI-22931381517977345: the logical attempt id a begin request actually installs. With a frozen
+ * queue present and a caller-supplied `attemptIdForVerificationTarget`, the id is derived from
+ * the queue's verification target so an advanced repairHead is a NEW logical attempt after a
+ * terminal predecessor; otherwise the caller's `attemptId` stands.
+ */
+export function resolveQualificationAttemptId(input: BeginQualificationInput, rawRepairQueue: unknown): string {
+  const target = frozenRepairQueueVerificationTarget(rawRepairQueue);
+  if (target === null || !input.attemptIdForVerificationTarget) return input.attemptId;
+  const derived = input.attemptIdForVerificationTarget(target);
+  return typeof derived === 'string' && derived.trim() ? derived.trim() : input.attemptId;
 }
 
 export function parseCheckpointQualificationTransaction(
@@ -957,17 +995,27 @@ export function assessTerminalRepairQueueReconciliation(
   };
 }
 
+/** What the locked routine row held beside the transaction when a mutation was decided. */
+type StoredQualificationRowContext = {
+  /** `metadata.repair_queue` exactly as stored (null when no frozen queue exists). */
+  rawRepairQueue: unknown;
+};
+
 type StoredQualificationMutationOptions = {
   /**
    * Reconcile the predecessor's exact safe queue in the SAME locked row update that
-   * installs a distinct successor qualification.
+   * installs a distinct successor qualification. A function form receives the locked row's
+   * context so the successor's attempt id can be derived from the queue it will verify.
    */
-  successorInput?: BeginQualificationInput;
+  successorInput?: BeginQualificationInput | ((context: StoredQualificationRowContext) => BeginQualificationInput);
 };
 
 async function mutateStoredQualification(
   target: GateVerdictTarget,
-  change: (current: CheckpointQualificationTransaction | null) => StoredQualificationMutation,
+  change: (
+    current: CheckpointQualificationTransaction | null,
+    context: StoredQualificationRowContext,
+  ) => StoredQualificationMutation,
   options: StoredQualificationMutationOptions = {},
 ): Promise<StoredQualificationMutation> {
   try {
@@ -986,20 +1034,23 @@ async function mutateStoredQualification(
       if (raw != null && !current) {
         return { status: 'unreadable' as const, error: 'qualification transaction metadata is malformed' };
       }
-      const transition = change(current);
+      const rowContext: StoredQualificationRowContext = { rawRepairQueue: metadata.repair_queue ?? null };
+      const transition = change(current, rowContext);
       if (transition.status !== 'updated') return transition;
+      const successorInput =
+        typeof options.successorInput === 'function' ? options.successorInput(rowContext) : options.successorInput;
       const predecessor =
-        options.successorInput &&
+        successorInput &&
         current &&
         isTerminalQualificationOutcome(current.outcome) &&
         current.attemptId !== transition.transaction.attemptId
           ? current
           : null;
       const reconciliation =
-        predecessor && options.successorInput
+        predecessor && successorInput
           ? assessTerminalRepairQueueReconciliation(
               predecessor,
-              options.successorInput,
+              successorInput,
               metadata.repair_queue,
             )
           : null;
@@ -1112,12 +1163,21 @@ export function beginStoredQualification(
     // Probe INSIDE the mutation so the liveness verdict is taken against the same `current` the
     // transition decides on. Probing outside would race: the incumbent can die, or a fresh runner
     // can take the lease, between the read and the write.
-    (current) =>
+    (current, context) =>
       beginQualificationTransaction(current, {
         ...input,
+        // EI-22931381517977345: the identity is decided against the SAME locked row's queue.
+        attemptId: resolveQualificationAttemptId(input, context.rawRepairQueue),
         incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current?.currentPhysicalRunner),
       }),
-    options.reconcileTerminalRepairQueueForSuccessor ? { successorInput: input } : {},
+    options.reconcileTerminalRepairQueueForSuccessor
+      ? {
+          successorInput: (context) => ({
+            ...input,
+            attemptId: resolveQualificationAttemptId(input, context.rawRepairQueue),
+          }),
+        }
+      : {},
   );
 }
 
