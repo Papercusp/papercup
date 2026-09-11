@@ -1839,9 +1839,19 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           && event.role === 'assistant' && event.phase === 'delta' && event.turnId === longCommand.turnId
           ? [event.content] : []).join('');
         expect(partialText, 'native text must reach the host before completion').toMatch(/\b1\s+2\s+3\b/);
+        // Read the FIRST pane column, not one bar off each end: the agent-chat pane
+        // is rendered beside the Presence rail (`│5302 …││● claude  su │`), so
+        // stripping a single leading/trailing `│` leaves the rail's text attached and
+        // NO line can ever match /^\d+$/. Splitting on `│` takes the agent-chat cell in
+        // both the railed and the narrow single-pane layout (apps/tui/src/ui.rs).
         const visibleNumbers = pane.screen().split('\n')
-          .map((line) => line.replace(/^│|│$/g, '').trim())
+          .map((line) => (line.split('│')[1] ?? '').trim())
           .filter((line) => /^\d+$/.test(line)).map(Number);
+        // Positive control: an EMPTY scrape makes the .some() below false, which is
+        // indistinguishable from "the PUI painted nothing". Fail on the real cause —
+        // the scrape measured nothing — instead of blaming the product for a layout change.
+        expect(visibleNumbers.length,
+          'screen scrape found no numeric lines: the pane layout changed and this assertion is measuring nothing').toBeGreaterThan(0);
         expect(visibleNumbers.some((value, index) => visibleNumbers[index + 1] === value + 1
           && visibleNumbers[index + 2] === value + 2), 'the installed PUI must paint incremental assistant text').toBe(true);
         expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
