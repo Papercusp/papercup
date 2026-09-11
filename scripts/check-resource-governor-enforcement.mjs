@@ -378,6 +378,27 @@ export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
+    path: "apps/operator/lib/release/green-checkpoint-gen-check-self-heal.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for apps/operator/lib/release/green-checkpoint-gen-check-self-heal.ts: R-5's gen-check self-heal re-runs the paired generator inside the frozen verification tree and rebuilds a scratch git index (read-tree, hash-object, update-index) to admit the regenerated artifacts onto repairHead. Every start is git plumbing that is bounded, awaited, and confined to one self-heal attempt against a temporary GIT_INDEX_FILE in a mkdtemp scratch dir; it creates no independent resident queue, and it must remain runnable while productive capacity is pressured because it sits on the release gate's own critical path — a held red cannot clear if the heal cannot run.",
+  },
+  {
+    path: "packages/operator-core/lib/release/admission-fix-precheck.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/admission-fix-precheck.ts: `defaultExec` is the injectable command-runner seam behind the checkpoint-tree precheck (callers may substitute their own via CheckpointTreeRunnerOptions.exec). Each start is a single awaited child under an enforced timeout, with combined stdout/stderr capped at 256KB, resolving to an explicit {code, signal, timedOut, durationMs} receipt; nothing is retained between calls, so it adds no residency, and it must stay runnable under pressure so an admission precheck can still reach a verdict.",
+  },
+  {
+    path: "scripts/bench-release-task-reuse.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/bench-release-task-reuse.ts: this is a hand-invoked benchmark harness that shells out to read-only git plumbing to pin the source sha, gitlinks and source fingerprints for one controlled release-preparation measurement. The starts are bounded, awaited and non-mutating, they run only when a human runs the bench script rather than on any scheduled or serving path, and they create no resident queue.",
+  },
+  {
     path: "apps/operator/lib/release/cut-seed-cli.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
