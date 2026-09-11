@@ -39,14 +39,34 @@ import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
-  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question',
+  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'edit' | 'stream',
   successText: 'PUI structured engine replied',
-  // Inline-question fixture (mode:'question'). questionCallId doubles as the
-  // card's correlationId, which is how a test proves an answer reached the
-  // MATCHING waiting turn instead of some other one.
+  // Streaming fixture (mode:'stream'). Ordered, individually identifiable
+  // chunks: asserting the exact concatenation then decides DROPPED and
+  // REORDERED at once, which two separate "contains" checks could not.
+  streamChunks: ['STREAM-A1 ', 'STREAM-B2 ', 'STREAM-C3 ', 'STREAM-D4 ', 'STREAM-E5'] as string[],
+  // Slow enough that the draft edits below genuinely land mid-stream.
+  streamDelayMs: 800,
+  // File-editing fixture (mode:'edit'). The PUI resolves an Edit tool call into
+  // a CHANGE CARD from these ARGUMENTS alone (change_card.rs::card_for_tool), so
+  // the path deliberately need not exist on disk — the card is a view of the
+  // proposed edit, not of the filesystem.
+  editPath: 'apps/tui/src/pui_diff_probe.rs',
+  editOld: 'fn probe() {\n    let kept = 1;\n    let dropped = 2;\n}',
+  editNew: 'fn probe() {\n    let kept = 1;\n    let introduced = 3;\n}',
+  // Inline-question fixture (mode:'question'). `questionCallId` is the TOOL
+  // call id only. The card's correlationId is minted independently by
+  // `registerCard` inside SuNativeCards (su-session-native-cards.ts:35), so a
+  // test proves an answer reached the MATCHING waiting turn from the card
+  // event's `turnId` and from the answers map keyed by the exact question
+  // text — never by assuming the card is keyed by the tool call id.
   questionCallId: 'pui-question-tool',
   questionPrompt: 'Keep or change the draft title?',
   questionOptions: ['Keep', 'Change'] as string[],
+  // What the engine's permission callback returned — i.e. what the answer
+  // looked like by the time it got back to the model. This is the half that
+  // decides "the answer was lost".
+  questionVerdicts: [] as Array<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>,
   requests: [] as string[],
   engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
@@ -91,7 +111,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
         })();
         return engine;
       }
-      const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt }) => {
+      const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options: sdkOptions }) => {
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
         const result = () => output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
@@ -114,26 +134,98 @@ vi.mock('../su-session-claude-engine', async (original) => {
                 is_error: true, errors: ['PUI-E2E engine failed visibly'] });
               continue;
             }
-            if (scriptedEngine.mode === 'question') {
-              // An inline question, left OPEN: the turn must park until the owner
-              // answers, which is the state PUI-QUESTION is about. The adapter
-              // turns an `AskUserQuestion` tool_use into a card
-              // (su-session-claude-adapter.ts:630 -> cardFromClaudeQuestion:349)
-              // and stamps the card's correlationId with THIS callId, so the id
-              // below is what later proves the answer reached the matching turn
-              // rather than some other one. The input shape is load-bearing:
-              // `questions` must be a non-empty array and questions[0].question a
-              // non-empty string, or cardFromClaudeQuestion returns null and NO
-              // card is emitted at all — a silent nothing, not an error.
+            if (scriptedEngine.mode === 'stream') {
+              // Real partial-message streaming, the path the adapter ingests at
+              // su-session-claude-adapter.ts:512 (`stream_event` ->
+              // content_block_delta/text_delta). The turn stays in flight across
+              // several chunks so a test can edit the composer DURING it, which
+              // is the situation AUTO-BAR-R-05 is about.
+              output.write({ type: 'stream_event', session_id: nativeId,
+                event: { type: 'message_start', message: { role: 'assistant', id: 'pui-stream-msg' } } });
+              void (async () => {
+                for (const chunk of scriptedEngine.streamChunks) {
+                  await new Promise((resolve) => setTimeout(resolve, scriptedEngine.streamDelayMs));
+                  output.write({ type: 'stream_event', session_id: nativeId,
+                    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: chunk } } });
+                }
+                // The canonical block must agree with what was streamed, or the
+                // adapter's reconciliation (:538) would be papering over a
+                // difference this clause exists to detect.
+                output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                  { type: 'text', text: scriptedEngine.streamChunks.join('') },
+                ] } });
+                result();
+              })().catch((error: Error) => output.destroy(error));
+              continue;
+            }
+            if (scriptedEngine.mode === 'edit') {
+              // A file-editing tool call. The PUI resolves this into the in-PUI
+              // scrollable change card (PUBLIC_RELEASE_UX.md:375) that
+              // PUI-TOOLS-DIFF is about, straight from these arguments.
               output.write({ type: 'assistant', session_id: nativeId, message: { content: [
-                { type: 'tool_use', id: scriptedEngine.questionCallId, name: 'AskUserQuestion', input: {
-                  questions: [{
-                    question: scriptedEngine.questionPrompt,
-                    options: scriptedEngine.questionOptions.map((label) => ({ label })),
-                    multiSelect: false, // -> presentation.kind 'radio' (true would give 'checkbox')
-                  }],
+                { type: 'tool_use', id: 'pui-e2e-edit', name: 'Edit', input: {
+                  file_path: scriptedEngine.editPath,
+                  old_string: scriptedEngine.editOld,
+                  new_string: scriptedEngine.editNew,
                 } },
               ] } });
+              output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'pui-e2e-edit', content: 'edit applied' },
+              ] } });
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'text', text: scriptedEngine.successText },
+              ] } });
+              result();
+              continue;
+            }
+            if (scriptedEngine.mode === 'question') {
+              // An inline question, left OPEN: the turn must park until the owner
+              // answers, which is the state PUI-QUESTION is about.
+              //
+              // ⚠ The card does NOT come from this tool_use. The engine pins
+              // `cardSource: 'transport'` (su-session-claude-engine.ts:187), so
+              // the adapter's transcript -> card branch is gated off at
+              // su-session-claude-adapter.ts:630 (`!this.transportHandlesCards`)
+              // and emitting an `AskUserQuestion` tool_use ALONE produces no card
+              // whatsoever — a silent nothing rather than an error, which is
+              // exactly how this reads as "the fixture cannot do questions".
+              //
+              // The live provider's questions arrive over the SDK permission
+              // callback the engine installs (su-session-claude-engine.ts:265),
+              // which routes into `SuNativeCards.handleClaude` and mints the card
+              // there. So the fixture emits BOTH halves, as the real provider
+              // does: the transcript tool_use (observable as a `tool` event) and
+              // the permission callback (observable as a `card` event). Driving
+              // the callback means this case exercises the production card code
+              // end to end rather than a fixture re-implementation of it.
+              const questions = [{
+                question: scriptedEngine.questionPrompt,
+                options: scriptedEngine.questionOptions.map((label) => ({ label })),
+                multiSelect: false, // -> presentation.kind 'radio' (true would give 'checkbox')
+              }];
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'tool_use', id: scriptedEngine.questionCallId, name: 'AskUserQuestion', input: { questions } },
+              ] } });
+              // `signal` is the only required member of the permission context
+              // (sdk.d.ts:209); handleClaude reads nothing else on the
+              // AskUserQuestion path.
+              const controller = new AbortController();
+              void Promise.resolve(sdkOptions.canUseTool?.('AskUserQuestion', { questions }, { signal: controller.signal }))
+                .then((verdict) => {
+                  scriptedEngine.questionVerdicts.push(verdict ?? { behavior: 'no-permission-callback' });
+                  const answers = verdict && 'updatedInput' in verdict
+                    ? (verdict.updatedInput as { answers?: Record<string, string> } | undefined)?.answers ?? {} : {};
+                  // Only now does the turn finish: the owner's answer is what
+                  // un-parks it, which is the half a test cannot see from the
+                  // card events alone.
+                  output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+                    { type: 'tool_result', tool_use_id: scriptedEngine.questionCallId, content: JSON.stringify(answers) },
+                  ] } });
+                  output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                    { type: 'text', text: scriptedEngine.successText },
+                  ] } });
+                  result();
+                }).catch((error: Error) => output.destroy(error));
               continue;
             }
             output.write({ type: 'assistant', session_id: nativeId, message: { content: [
@@ -1191,6 +1283,12 @@ beforeEach(async () => {
   scriptedEngine.mode = 'success';
   scriptedEngine.successText = 'PUI structured engine replied';
   scriptedEngine.questionCallId = 'pui-question-tool';
+  scriptedEngine.questionVerdicts = [];
+  scriptedEngine.streamChunks = ['STREAM-A1 ', 'STREAM-B2 ', 'STREAM-C3 ', 'STREAM-D4 ', 'STREAM-E5'];
+  scriptedEngine.streamDelayMs = 800;
+  scriptedEngine.editPath = 'apps/tui/src/pui_diff_probe.rs';
+  scriptedEngine.editOld = 'fn probe() {\n    let kept = 1;\n    let dropped = 2;\n}';
+  scriptedEngine.editNew = 'fn probe() {\n    let kept = 1;\n    let introduced = 3;\n}';
   scriptedEngine.questionPrompt = 'Keep or change the draft title?';
   scriptedEngine.questionOptions = ['Keep', 'Change'];
   scriptedEngine.requests = [];
@@ -1997,6 +2095,290 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
         recalledOlder: true,
         submittedDuringNavigation: commandPosts.length - 2,
       }));
+    } finally { await pane.stop().catch(() => {}); }
+  });
+
+  // PUI-QUESTION — an inline native question is asked, answered and delivered
+  // back inside the PUI. Falsifier: "answer lost/misattributed/needs the native
+  // interface." Each of those three is decided separately below, because they
+  // fail independently and a test that only proves one reads as proving all.
+  //
+  // The question is driven through the engine's real SDK permission callback,
+  // so the card under test is minted by the production `SuNativeCards` path
+  // that the live provider uses — not by fixture code standing in for it.
+  test('PUI-QUESTION: an inline question is answered in the PUI and the answer reaches the asking turn', async () => {
+    const prompt = 'PUI question clause probe';
+    // Distinct from the default so the completion wait cannot be satisfied by
+    // some earlier turn's text sitting in the append-only transcript.
+    scriptedEngine.successText = 'PUI question clause answered';
+    scriptedEngine.mode = 'question';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+
+      // The card must OPEN and stay open: the turn parks until answered.
+      await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(1), { timeout: 60_000, interval: 100 });
+      const card = pendingNativeCards()[0];
+
+      // Falsifier half 1 — "needs the native interface". The question and every
+      // choice have to be legible in the PUI itself, and answerable from it.
+      // Asserting only on the card OBJECT would not decide this: the card can be
+      // perfectly well-formed in memory and never reach the terminal.
+      await pane.waitFor(scriptedEngine.questionPrompt, { timeoutMs: 30_000 });
+      for (const label of scriptedEngine.questionOptions) await pane.waitFor(label, { timeoutMs: 30_000 });
+      const questionFrame = pane.screen();
+
+      if (card.presentation?.kind !== 'radio' || !card.presentation.options) {
+        throw new Error(`multiSelect:false must present a radio card, got ${JSON.stringify(card.presentation)}`);
+      }
+      expect(card.prompt).toBe(scriptedEngine.questionPrompt);
+      // handleClaude appends its own free-text escape hatch, so the card carries
+      // one more option than the model offered. Pinning an exact length here
+      // would be asserting that detail rather than this clause.
+      expect(card.presentation.options.map((option) => option.label))
+        .toEqual(expect.arrayContaining(scriptedEngine.questionOptions));
+
+      // Still parked — nothing may have closed this card before the owner acted.
+      expect(scriptedEngine.events.some((event) => event.type === 'card'
+        && event.phase === 'closed' && event.correlationId === card.correlationId)).toBe(false);
+      expect(scriptedEngine.questionVerdicts).toHaveLength(0);
+
+      // Answer it from the PUI, by keystroke — the same way an owner would.
+      const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
+      expect(choiceIndex, questionFrame).toBeGreaterThanOrEqual(0);
+      pane.write(String(choiceIndex + 1));
+      await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      expect(cardReplies[0]).toMatchObject({ status: 200 });
+
+      // Falsifier half 2 — "answer lost". The selection has to arrive back at
+      // the model, not merely close the card. The verdict below is what the
+      // engine actually handed the provider.
+      await vi.waitFor(() => expect(scriptedEngine.questionVerdicts).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      const verdict = scriptedEngine.questionVerdicts[0];
+      expect(verdict.behavior, JSON.stringify(verdict)).toBe('allow');
+      // Keyed by the exact question text: this is simultaneously the
+      // "not lost" and the "not misattributed to another question" evidence.
+      expect(verdict.updatedInput?.answers).toEqual({ [scriptedEngine.questionPrompt]: 'Change' });
+
+      // Falsifier half 3 — "misattributed". The card has to belong to the turn
+      // that asked. correlationId is minted by registerCard and is NOT the tool
+      // call id, so attribution is carried by turnId, which must agree across
+      // the asking tool event and both card phases.
+      const opened = scriptedEngine.events.find((event) => event.type === 'card'
+        && event.phase === 'opened' && event.card.correlationId === card.correlationId);
+      const closed = scriptedEngine.events.find((event) => event.type === 'card'
+        && event.phase === 'closed' && event.correlationId === card.correlationId);
+      const askedBy = scriptedEngine.events.find((event) => event.type === 'tool'
+        && event.phase === 'started' && event.name === 'AskUserQuestion');
+      if (opened?.type !== 'card' || closed?.type !== 'card' || askedBy?.type !== 'tool') {
+        throw new Error('The question did not produce a matched tool/card open/close triple');
+      }
+      expect(closed).toMatchObject({ resolution: 'submitted' });
+      expect(opened.turnId).toBe(askedBy.turnId);
+      expect(closed.turnId).toBe(askedBy.turnId);
+      // Exactly one card: a second one would mean the answer could have been
+      // applied to the wrong prompt.
+      expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+
+      // The parked turn resumes only after the answer, and finishes in the PUI.
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.requests).toEqual([prompt]);
+
+      console.info('PUI_QUESTION_ACCEPTANCE', JSON.stringify({
+        binary: bin,
+        binarySha256,
+        prompt: card.prompt,
+        options: card.presentation.options.map((option) => option.label),
+        selected: 'Change',
+        answers: verdict.updatedInput?.answers,
+        turnId: opened.turnId,
+        correlationId: card.correlationId,
+        cardReplies,
+      }));
+    } catch (error) {
+      console.info('PUI_QUESTION_FAILURE', JSON.stringify({ ...pane.failureEvidence(), cardReplies,
+        verdicts: scriptedEngine.questionVerdicts,
+        cardEvents: scriptedEngine.events.filter((event) => event.type === 'card') }));
+      throw error;
+    } finally { await pane.stop().catch(() => {}); }
+  });
+
+  // PUI-TOOLS-DIFF — a file edit is reviewable as a diff inside the PUI.
+  // Falsifier: "reviewing the edit needs a native client, or the diff is
+  // unavailable."
+  //
+  // The two halves are decided against DIFFERENT evidence on purpose. "No
+  // native client" is a claim about the terminal, so it is decided on the
+  // rendered screen. "The diff is available" is a claim about diff STRUCTURE
+  // (hunk header, +/- gutter markers, both sides of the change), and the screen
+  // cannot decide that: it wraps and pads, so an assertion on exact diff text
+  // there would be brittle in the one direction that matters. The card's own
+  // copy payload is the exact bytes `render()` produced, so the structure is
+  // decided there — the same split the COPY clause makes.
+  test('PUI-TOOLS-DIFF: a file edit opens a reviewable in-PUI diff', async () => {
+    const prompt = 'PUI tools diff clause probe';
+    scriptedEngine.successText = 'PUI diff clause replied';
+    scriptedEngine.mode = 'edit';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor('Message — Enter send');
+
+      // Non-vacuity: the diff must not already be on screen. Without this, a
+      // transcript that happened to print the tool arguments inline would
+      // satisfy every assertion below while the card never opened at all.
+      expect(pane.screen()).not.toContain('@@ hunk');
+
+      pane.escape();
+      await pane.waitFor('i type · v speak');
+
+      // `Enter` opens the focused block's change card, but ONLY when the reader
+      // has EXPLICITLY moved the cursor (app.rs::open_focused_change_card gates
+      // on the RAW `chat_focus`, never the resolved one) — so a motion key is
+      // required first, and `}` sets the cursor on the newest block without
+      // moving off it (step_chat_focus clamps at the last index).
+      //
+      // Which block carries the edit is deliberately not pinned: the transcript
+      // may fold the tool into the assistant turn or stand it up as its own
+      // block, and this clause is about the diff, not about one block layout.
+      // So walk older until the card opens. When `Enter` finds no card it falls
+      // through to its other meaning and opens the COMPOSER, which is why each
+      // miss is closed again before stepping.
+      pane.write('}');
+      let opened = false;
+      for (let step = 0; step < 6 && !opened; step += 1) {
+        pane.enter();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        if (pane.screen().includes('@@ hunk')) { opened = true; break; }
+        if (pane.screen().includes('Message — Enter send')) {
+          pane.escape();
+          await pane.waitFor('i type · v speak');
+        }
+        pane.write('{');
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      const diffFrame = pane.screen();
+      expect(opened, diffFrame).toBe(true);
+
+      // Falsifier half 1 — "needs a native client". The review surface has to be
+      // the terminal itself: the file under edit and BOTH sides of the change
+      // are legible here, with no other client involved.
+      expect(diffFrame).toContain(scriptedEngine.editPath);
+      expect(diffFrame).toContain('dropped');
+      expect(diffFrame).toContain('introduced');
+
+      // Falsifier half 2 — "the diff is unavailable". Decided on the card's own
+      // copy payload, which is exactly what the scroll view painted
+      // (change_card.rs: render_lines feeds both), so screen and clipboard
+      // cannot disagree about what was reviewed.
+      const before = pane.clipboardWrites().length;
+      pane.write('y');
+      await vi.waitFor(() => expect(pane.clipboardWrites().length).toBeGreaterThan(before),
+        { timeout: 15_000, interval: 100 });
+      const payload = pane.clipboardWrites().slice(before).join('\n');
+
+      // Title states the file and the shape of the change.
+      expect(payload).toContain(`Edit · ${scriptedEngine.editPath} · +1 -1`);
+      // Hunk context, and the classic ASCII gutter trio — a card must read as a
+      // diff to a human AND to a tool, so the markers are load-bearing, not
+      // decoration. Asserting only that the words appear would pass against a
+      // card that printed the new file with no diff structure at all.
+      expect(payload).toContain('@@ hunk 1/1 @@');
+      expect(payload).toContain('-    let dropped = 2;');
+      expect(payload).toContain('+    let introduced = 3;');
+      // The unchanged line is carried as CONTEXT (leading space), which is what
+      // makes the hunk reviewable rather than a bare pair of edits.
+      expect(payload).toContain('     let kept = 1;');
+
+      console.info('PUI_TOOLS_DIFF_ACCEPTANCE', JSON.stringify({
+        binary: bin,
+        binarySha256,
+        path: scriptedEngine.editPath,
+        payload,
+      }));
+    } catch (error) {
+      console.info('PUI_TOOLS_DIFF_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
+        clipboard: pane.clipboardWrites() }));
+      throw error;
+    } finally { await pane.stop().catch(() => {}); }
+  });
+
+  // AUTO-BAR-R-05-P-007 — editing a draft while a turn streams must disturb
+  // neither side. Falsifier: "streaming drops/reorders/sends text from the new
+  // draft." Probe (from the spec): paste and edit a Unicode multiline draft
+  // DURING a streamed turn, then inspect the submitted bytes.
+  //
+  // Three independent failures, so three independent checks:
+  //   dropped/reordered -> the exact chunk concatenation must appear;
+  //   sent -> no additional turn may be dispatched while the draft sits;
+  //   corrupted -> the bytes finally submitted must equal the draft exactly.
+  test('AUTO-BAR-R-05-P-007: editing a draft during a streamed turn neither disturbs the stream nor sends the draft', async () => {
+    const prompt = 'AUTO-BAR stream clause probe';
+    // Multiline AND non-ASCII: the clause names both, and a pure-ASCII draft
+    // would leave the Unicode half of "corrupted" untested.
+    const draft = 'héllo — ünïcode ✓\nseconde ligne\n第三行';
+    scriptedEngine.mode = 'stream';
+    const streamed = scriptedEngine.streamChunks.join('');
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+
+      // Wait for the FIRST chunk only: that proves the turn is genuinely
+      // mid-stream, so the editing below happens during streaming rather than
+      // after it — which is the entire premise of this clause.
+      await pane.waitFor(scriptedEngine.streamChunks[0], { timeoutMs: 60_000 });
+      expect(pane.screen(), pane.screen()).not.toContain(streamed);
+      const postsBeforeDraft = commandPosts.length;
+
+      // A REAL bracketed paste — one edit, exactly as a user pasting multiline
+      // Unicode would produce. Replayed keystrokes would take a different code
+      // path and would not exercise the paste handling the clause names.
+      await openComposer(pane);
+      pane.write(`\x1b[200~${draft}\x1b[201~`);
+      // Then EDIT it, as the spec's probe says: append after the paste.
+      const appended = ' ⟵ edited';
+      pane.write(appended);
+
+      // Falsifier half 1 — the stream must not be dropped or reordered by the
+      // editing. Asserting the exact concatenation decides both at once: a drop
+      // breaks the string, and so does a swap.
+      await pane.waitFor(streamed, { timeoutMs: 60_000 });
+
+      // Falsifier half 2 — "sends text from the new draft". Nothing the user
+      // typed may be dispatched as a turn while it is still a draft, and the
+      // streamed turn completing must not sweep it up either.
+      expect(commandPosts.length, pane.screen()).toBe(postsBeforeDraft);
+      expect(scriptedEngine.requests, pane.screen()).toEqual([prompt]);
+
+      // Falsifier half 3 — the bytes. Submit the draft only now, and require
+      // the engine to have received it EXACTLY: same Unicode, same newlines,
+      // same order. This is the "inspect submitted bytes" the probe asks for,
+      // and it is decided against what the engine received rather than against
+      // the screen, which cannot show trailing or duplicated whitespace.
+      pane.enter();
+      await vi.waitFor(() => expect(scriptedEngine.requests).toHaveLength(2),
+        { timeout: 60_000, interval: 100 });
+      expect(scriptedEngine.requests[1]).toBe(`${draft}${appended}`);
+
+      console.info('AUTO_BAR_R_05_ACCEPTANCE', JSON.stringify({
+        binary: bin,
+        binarySha256,
+        streamed,
+        submitted: scriptedEngine.requests[1],
+        draftIntact: scriptedEngine.requests[1] === `${draft}${appended}`,
+        turnsDispatched: scriptedEngine.requests.length,
+      }));
+    } catch (error) {
+      console.info('AUTO_BAR_R_05_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
+        requests: scriptedEngine.requests, commandPosts: commandPosts.length }));
+      throw error;
     } finally { await pane.stop().catch(() => {}); }
   });
 });
