@@ -2833,6 +2833,29 @@ impl ChatMessage {
             streaming: false,
         }
     }
+    /// A line the owner composed that was NEVER delivered, preserved in the
+    /// transcript instead of discarded.
+    ///
+    /// The plan's product-flow contract is that no state "accepts a message
+    /// that will simply disappear". A queued line whose conversation turns out
+    /// to refuse writes is exactly that state, and the composer holds at most
+    /// ONE line — so everything past the first needs a home that stays visible
+    /// and copyable rather than being dropped with a count.
+    ///
+    /// The role is deliberately NOT `user`: a `user` bubble asserts the message
+    /// was sent, and this one asserts the opposite. It also keeps the text off
+    /// the markdown path in the transcript renderer (only `assistant` prose is
+    /// markdown), so the owner's literal line is shown back unrestyled.
+    pub fn undelivered(text: &str) -> Self {
+        Self {
+            role: "undelivered".into(),
+            content: text.into(),
+            reasoning: String::new(),
+            provenance: None,
+            tools: Vec::new(),
+            streaming: false,
+        }
+    }
     /// The in-flight assistant bubble — empty, `streaming`, accumulates deltas.
     pub fn streaming_assistant() -> Self {
         Self {
