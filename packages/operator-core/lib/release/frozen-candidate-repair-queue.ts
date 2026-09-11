@@ -585,6 +585,25 @@ export interface FrozenRepairAdmission {
    * Absent on a pre-P-020 entry (which was whole-blob by construction).
    */
   mode?: 'hunk-exact' | 'whole-blob' | 'committed-patch';
+  /**
+   * P-006 / R6 (D-002): what the admission pre-check established at the built commit BEFORE
+   * publication. `ran:true` carries the measured population; `ran:false` names why it did not
+   * run (`checkpoint-tree-busy` = a gate run held the tree, accepted loud; `skipped` = the
+   * caller opted out with `skipPrecheck` + `precheckReason`; `nothing-to-run`; `runner-failed`).
+   */
+  precheck?: {
+    ran: boolean;
+    reason?: string;
+    detail?: string;
+    precheckReason?: string;
+    commit?: string;
+    /** What the pre-check WOULD run (dry-run / skipped / busy) — the population it did not measure. */
+    wouldRun?: string[];
+    fixes?: string[];
+    passing?: string[];
+    failing?: string[];
+    unmeasured?: string[];
+  };
   /** Explicit reviewed commit delta; provenance is NOT hook or agent authorship. */
   patch?: { commit: string; parent: string; sha256: string };
   /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */

@@ -38,6 +38,14 @@ import { buildCommittedPatchSource, buildHunkExactSource, summarizeForeignHunks,
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
 import { importCompletenessPreflight } from '../../release/admission-import-completeness';
 import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
+import {
+  createCheckpointTreeFixPrecheckRunner,
+  evaluateFixPrecheck,
+  precheckPopulation,
+  type FixPrecheckPopulation,
+  type FixPrecheckVerdict,
+} from '../../release/admission-fix-precheck';
+import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
 import { readIdentity } from '../locks/identity';
 
@@ -109,6 +117,9 @@ const argsSchema = z.preprocess(
       wholeBlob: z.boolean().optional(),
       /** Explicit reviewed single-commit delta from staging history when hook capture is missing. Requires reason; incompatible with other source options. */
       patchCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+      /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
+      skipPrecheck: z.boolean().optional(),
+      precheckReason: z.string().min(8).max(2000).optional(),
     }),
     z.object({
       /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
@@ -120,6 +131,8 @@ const argsSchema = z.preprocess(
       includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
       wholeBlob: z.boolean().optional(),
       patchCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+      skipPrecheck: z.boolean().optional(),
+      precheckReason: z.string().min(8).max(2000).optional(),
     }),
     z.object({
       /**
@@ -372,6 +385,34 @@ async function inspectQueue() {
 async function inspectFixerLiveness(queue: FrozenCandidateRepairQueue | null) {
   if (!queue?.fixerSpawnId) return null;
   return releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
+}
+
+/** P-006 (R6): the compact pre-check record carried on the ledger entry, the audit row and the result. */
+function precheckRecordOf(
+  verdict: FixPrecheckVerdict | null,
+  ctx: { skipPrecheck: boolean; precheckReason: string; dryRun: boolean; population: FixPrecheckPopulation },
+): NonNullable<FrozenRepairAdmission['precheck']> {
+  if (verdict === null) {
+    if (ctx.skipPrecheck) return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files };
+    if (ctx.population.files.length === 0) return { ran: false, reason: 'nothing-to-run' };
+    return { ran: false, reason: ctx.dryRun ? 'dry-run' : 'not-run', wouldRun: ctx.population.files };
+  }
+  if (verdict.ran) {
+    return {
+      ran: true,
+      commit: verdict.commit,
+      passing: verdict.passing,
+      failing: verdict.failing,
+      unmeasured: verdict.unmeasured,
+      ...(verdict.ok ? { fixes: verdict.fixes } : {}),
+    };
+  }
+  return {
+    ran: false,
+    reason: verdict.reason,
+    ...('detail' in verdict ? { detail: verdict.detail } : {}),
+    wouldRun: ctx.population.files,
+  };
 }
 
 async function recordAudit(
@@ -803,22 +844,90 @@ export default defineTool({
         hunkExact = built;
         sourceRef = built.sourceCommit;
       }
-      const outcome = admitPathsOntoRepairHead({
-        root,
-        candidate: queue.candidate,
-        repairHead: queue.repairHead,
-        paths,
-        source: { ref: sourceRef },
-        actor: identity.ownerId,
-        reason: args.reason,
-        nowMs: Date.now(),
-        dryRun,
-        // P-004: the proved commit must resolve every relative import of every admitted TS/JS
-        // file, or the door refuses `admission-incomplete` naming the sibling to admit. The
-        // branch is only CONSULTED to say whether that sibling exists there; nothing from it
-        // is ever admitted on the caller's behalf.
-        preflight: importCompletenessPreflight({ root, probeRef: branch }),
-      });
+      // P-006 (R6, D-002): the ADMISSION PRE-CHECK. A confirmed admit is two-phase: phase 1
+      // builds + PROVES the admission commit unpublished (dryRun:true — a real object in the
+      // root's store), the frozen signature's test-file entries plus any admitted test files
+      // are measured AT that commit in the checkpoint tree, and only a non-red result reaches
+      // phase 2 (the publishing build of the same tree onto the same parent; the lineage-ref
+      // CAS still guards races). A gate run holding the checkpoint tree makes the pre-check
+      // fail OPEN AND LOUD (`precheck.ran:false, reason:'checkpoint-tree-busy'`) — the R-1
+      // re-judge measures it; a fail-closed door here would stall every fixer admission for
+      // the length of a gate run. `skipPrecheck:true` + `precheckReason` is the ledgered opt-out.
+      const population = precheckPopulation({ signature: queue.signature ?? [], admittedPaths: paths });
+      const skipPrecheck = args.skipPrecheck === true;
+      const precheckReason = typeof args.precheckReason === 'string' ? args.precheckReason.trim() : '';
+      if (skipPrecheck && precheckReason.length < 8) {
+        return json({
+          ...base,
+          ok: false,
+          admitted: false,
+          refused: true,
+          dryRun,
+          verdict: 'refused',
+          reason: 'precheck-reason-required',
+          detail:
+            'skipPrecheck:true opts a confirmed admission OUT of the R6 pre-check (the built commit is not measured before publication) — say why that is safe in `precheckReason` (≥ 8 chars); it is recorded on the ledger entry.',
+          judgedSha: queue.repairHead,
+          containment: containmentAt(queue.repairHead),
+          mode,
+        });
+      }
+      const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
+      const buildAdmission = (dry: boolean) =>
+        admitPathsOntoRepairHead({
+          root,
+          candidate: queue.candidate,
+          repairHead: queue.repairHead,
+          paths,
+          source: { ref: sourceRef },
+          actor: identity.ownerId,
+          reason: args.reason,
+          nowMs: Date.now(),
+          dryRun: dry,
+          // P-004: the proved commit must resolve every relative import of every admitted TS/JS
+          // file, or the door refuses `admission-incomplete` naming the sibling to admit. The
+          // branch is only CONSULTED to say whether that sibling exists there; nothing from it
+          // is ever admitted on the caller's behalf.
+          preflight: importCompletenessPreflight({ root, probeRef: branch }),
+        });
+      let outcome = buildAdmission(dryRun || precheckApplies);
+      let precheck: FixPrecheckVerdict | null = null;
+      if (precheckApplies && outcome.ok) {
+        const builtCommit = outcome.commit;
+        const runner = createCheckpointTreeFixPrecheckRunner({ integrationRoot: root, checkpointRoot: checkpointRootMirror(root) });
+        let run: Awaited<ReturnType<typeof runner>>;
+        try {
+          run = await runner({ commit: builtCommit, files: population.files });
+        } catch (err) {
+          run = { ran: false, reason: 'runner-failed', detail: (err as Error).message };
+        }
+        precheck = evaluateFixPrecheck(population, run);
+        if (!precheck.ok) {
+          return json({
+            ...base,
+            ok: false,
+            admitted: false,
+            refused: true,
+            dryRun: false,
+            verdict: 'refused',
+            reason: precheck.code,
+            detail: precheck.detail,
+            precheck: precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population }),
+            precheckResults: precheck.results,
+            builtCommit,
+            judgedSha: queue.repairHead,
+            containment: containmentAt(queue.repairHead),
+            mode,
+            note:
+              'R6: nothing was published — the admission commit was built and measured but the lineage ref did not move. ' +
+              'Fix the red at the built commit (or, for a deliberate wide admission, re-run with skipPrecheck:true + precheckReason).',
+          });
+        }
+        // Phase 2: publish. Same inputs ⇒ the same tree onto the same parent; a peer's
+        // concurrent admission moves the lineage ref and this rebuild refuses on the CAS.
+        outcome = buildAdmission(false);
+      }
+      const precheckEntry = precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population });
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
         : null;
@@ -881,6 +990,7 @@ export default defineTool({
       const entry: FrozenRepairAdmission = {
         ...outcome.entry,
         mode,
+        precheck: precheckEntry,
         ...(patch ? { patch } : hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
       };
       const proof = { diff: outcome.diff, unchanged: outcome.unchanged, blobs: outcome.entry.blobs, tree: outcome.tree };
@@ -894,6 +1004,7 @@ export default defineTool({
           wouldMoveRepairHead: { from: queue.repairHead, to: outcome.commit },
           lineageRef: outcome.lineageRef,
           proof,
+          precheck: precheckEntry,
           containment: containmentAt(queue.repairHead),
           note:
             `Pass confirm:true to publish admission ${outcome.commit.slice(0, 12)} onto ${outcome.lineageRef} ` +
@@ -959,6 +1070,7 @@ export default defineTool({
         unchanged: outcome.entry.unchanged,
         mode,
         ...(patch ? { patch } : hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+        precheck: precheckEntry,
         persisted,
         ...(retracted === null ? {} : { retracted }),
       });
@@ -974,6 +1086,7 @@ export default defineTool({
         proof,
         admission: entry,
         ...provenance,
+        precheck: precheckEntry,
         containment: containmentAt(judgedSha),
         persisted,
         auditRecorded,
@@ -986,7 +1099,14 @@ export default defineTool({
           ? {
               nextAction:
                 `repairHead is ${outcome.commit.slice(0, 12)} (phase ${next.phase}); the gate re-verifies at that head on its next tick. ` +
-                'Do NOT fire release:checkpoint-run and do NOT retire.',
+                'Do NOT fire release:checkpoint-run and do NOT retire.' +
+                (precheckEntry.ran
+                  ? ` R6 pre-check ran at the built commit: ${precheckEntry.fixes?.length ?? 0} signature red(s) fixed, ${precheckEntry.failing?.length ?? 0} still failing, ${precheckEntry.unmeasured?.length ?? 0} unmeasured.`
+                  : precheckEntry.reason === 'checkpoint-tree-busy'
+                    ? ' ⚠ R6 pre-check did NOT run (a gate run holds the checkpoint tree) — accepted loud; the re-judge measures it.'
+                    : precheckEntry.reason === 'skipped'
+                      ? ' ⚠ R6 pre-check SKIPPED by the caller (skipPrecheck); the re-judge measures it.'
+                      : ''),
             }
           : {
               refused: true,

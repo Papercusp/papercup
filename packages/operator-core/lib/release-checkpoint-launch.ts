@@ -871,7 +871,7 @@ function checkpointLogDirFromEnv(): string {
  * not conclude the field is bogus (and above all do not fire a manual run over it: that
  * discards the in-flight rescue and costs a full suite). Unlike the manual-unit path, this one
  * always reports the CURRENT candidate; it simply cannot say what the run started on. */
-function checkpointRootMirror(root: string): string {
+export function checkpointRootMirror(root: string): string {
   return process.env.PAPERCUSP_CHECKPOINT_ROOT ?? path.join(path.dirname(root), `${path.basename(root)}-checkpoint`);
 }
 
