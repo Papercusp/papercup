@@ -113,7 +113,7 @@ function admissionEvidence(
       referenceDigest: workspaceHostCredentialReferenceDigest(input.credentialRef.ref),
     },
     observedAt: verification.observedAt,
-    verification: { ...verification, agents, credentialFreeAgents: [] },
+    verification: { ...verification, agents, credentialFreeAgents: [], unfundedAgents: [], admissible: true },
   };
 }
 
