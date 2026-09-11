@@ -246,7 +246,10 @@ pub fn copy(
     pt: Passthrough,
 ) -> CopyOutcome {
     let no_selection = || CopyOutcome::NoSelection {
-        ack: "Nothing selected — j/k to focus a block, then y to copy".to_string(),
+        // `{` / `}` — NOT j/k, which stay the transcript's line-wise scroll.
+        // An acknowledgement that names the wrong keys is worse than none: it
+        // sends the reader to a gesture that does something else entirely.
+        ack: "Nothing selected — { } to focus a block, then y to copy".to_string(),
     };
     let Some(idx) = focus else {
         return no_selection();
@@ -254,6 +257,16 @@ pub fn copy(
     let Some(block) = block_at(messages, idx) else {
         return no_selection();
     };
+    copy_block(&block, form, pt)
+}
+
+/// The second half of [`copy`], over an ALREADY-RESOLVED block.
+///
+/// Split out so every copyable surface — transcript messages today, change
+/// cards next door — shares ONE redact/truncate/encode/acknowledge path. A
+/// second copy path is how the redaction or the truncation cap ends up applied
+/// on one surface and not the other.
+pub fn copy_block(block: &CopyBlock, form: CopyForm, pt: Passthrough) -> CopyOutcome {
     let Some(text) = block.text(form) else {
         return CopyOutcome::Unavailable {
             ack: format!(
