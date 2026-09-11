@@ -69,8 +69,9 @@ import {
   claudeCredExpiresAt,
   gatewayPinEnv,
   gatewayAutoEnv,
-  codexAutoPoolWarning,
-  warnIfCodexAutoPoolWalled,
+  codexAutoPoolVerdict,
+  preflightCodexAutoPool,
+  ALLOW_WALLED_LAUNCH_ENV,
   accountRoutingMode,
   codexGatewayConfigPatch,
   accountPinnable,
@@ -4728,9 +4729,9 @@ describe("psu-launcher arg parsing", () => {
       expect(accountRoutingMode(v)).toBe("pin");
   });
 
-  it("codexAutoPoolWarning: warns with the live denominator and recovery horizon only for an all-walled Codex auto route", () => {
+  it("codexAutoPoolVerdict: REFUSES an all-walled Codex auto route, naming the denominator, the horizon and the re-route that works", () => {
     const now = Date.UTC(2026, 8, 5, 20, 0, 0);
-    const warning = codexAutoPoolWarning({
+    const verdict = codexAutoPoolVerdict({
       agent: "codex",
       model: "gpt-5.6-sol",
       account: "auto",
@@ -4741,14 +4742,22 @@ describe("psu-launcher arg parsing", () => {
       },
       now,
     });
-    expect(warning).toContain("0 of 7 ChatGPT accounts serviceable");
-    expect(warning).toContain(
+    expect(verdict.kind).toBe("refuse");
+    expect(verdict.recoveryAt).toBe(now + 3_600_000);
+    expect(verdict.message).toContain("REFUSING TO LAUNCH");
+    expect(verdict.message).toContain("0 of 7 ChatGPT accounts serviceable");
+    expect(verdict.message).toContain(
       "earliest known recovery 2026-09-05T21:00:00.000Z",
     );
-    expect(warning).toContain("first model call will fail fast with 429");
+    // The refusal must name the lever that ACTUALLY works. Auto-routing is
+    // PROVIDER-SCOPED, so no --account value can cross to another provider's pool;
+    // a refusal that sent the reader to --account would cost them the same wall again.
+    expect(verdict.message).toContain("--agent claude");
+    expect(verdict.message).toContain(ALLOW_WALLED_LAUNCH_ENV);
 
-    expect(
-      codexAutoPoolWarning({
+    // Fail open: a healthy pool, a non-Codex route, and a non-auto route all proceed.
+    for (const input of [
+      {
         agent: "codex",
         model: "gpt-5.6-sol",
         account: "auto",
@@ -4757,31 +4766,27 @@ describe("psu-launcher arg parsing", () => {
           codexTotalAccounts: 7,
           codexEarliestRecoveryAt: 0,
         },
-        now,
-      }),
-    ).toBeNull();
-    expect(
-      codexAutoPoolWarning({
+      },
+      {
         agent: "claude",
         model: "claude-fable-5",
         account: "auto",
         stats: { codexHealthyAccounts: 0, codexTotalAccounts: 7 },
-        now,
-      }),
-    ).toBeNull();
-    expect(
-      codexAutoPoolWarning({
+      },
+      {
         agent: "codex",
         model: "gpt-5.6-sol",
         account: "default",
         stats: { codexHealthyAccounts: 0, codexTotalAccounts: 7 },
-        now,
-      }),
-    ).toBeNull();
+      },
+    ])
+      expect(codexAutoPoolVerdict({ ...input, now }).kind).toBe("proceed");
   });
 
-  it("codexAutoPoolWarning: recognizes an OMP model routed through the Codex pool and handles an unknown horizon honestly", () => {
-    const warning = codexAutoPoolWarning({
+  it("codexAutoPoolVerdict: an UNKNOWN horizon still refuses; a horizon already PAST only warns", () => {
+    const now = Date.UTC(2026, 8, 5, 20, 0, 0);
+    // OMP routed through the Codex pool, walled with no known recovery: still futile.
+    const unknownHorizon = codexAutoPoolVerdict({
       agent: "omp",
       model: "openai-codex/gpt-5.6-terra:xhigh",
       account: { mode: "auto", provider: "codex" },
@@ -4790,12 +4795,35 @@ describe("psu-launcher arg parsing", () => {
         codexTotalAccounts: 2,
         codexEarliestRecoveryAt: null,
       },
+      now,
     });
-    expect(warning).toContain("0 of 2 ChatGPT accounts serviceable");
-    expect(warning).toContain("earliest recovery unknown");
+    expect(unknownHorizon.kind).toBe("refuse");
+    expect(unknownHorizon.recoveryAt).toBeNull();
+    expect(unknownHorizon.message).toContain(
+      "0 of 2 ChatGPT accounts serviceable",
+    );
+    expect(unknownHorizon.message).toContain("earliest recovery unknown");
+
+    // A snapshot that contradicts ITSELF — walled, yet its own predicted recovery has
+    // already passed — may simply be stale. That reading stays ADVISORY: the whole
+    // fail-open design turns on never stranding a launch on an uncertain measurement.
+    const stale = codexAutoPoolVerdict({
+      agent: "codex",
+      model: "gpt-5.6-sol",
+      account: "auto",
+      stats: {
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 7,
+        codexEarliestRecoveryAt: now - 1,
+      },
+      now,
+    });
+    expect(stale.kind).toBe("warn");
+    expect(stale.message).toContain("may be stale");
+    expect(stale.message).not.toContain("REFUSING");
   });
 
-  it("warnIfCodexAutoPoolWalled: probes the live stats endpoint and fails open for healthy, legacy, unreachable, and timed-out responses", async () => {
+  it("preflightCodexAutoPool: ABORTS a provably-walled launch, and fails open for healthy, legacy, unreachable, and timed-out responses", async () => {
     const allWalledFetch = vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -4806,7 +4834,7 @@ describe("psu-launcher arg parsing", () => {
     })) as unknown as typeof fetch;
     const log = vi.fn();
     await expect(
-      warnIfCodexAutoPoolWalled({
+      preflightCodexAutoPool({
         agent: "codex",
         model: "gpt-5.6-sol",
         account: "auto",
@@ -4814,14 +4842,19 @@ describe("psu-launcher arg parsing", () => {
         log,
         port: 9876,
         timeoutMs: 25,
+        env: {},
       }),
-    ).resolves.toContain("0 of 7 ChatGPT accounts serviceable");
+    ).resolves.toBe(false);
     expect(allWalledFetch).toHaveBeenCalledWith(
       "http://127.0.0.1:9876/stats",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(log).toHaveBeenCalledOnce();
+    expect(String(log.mock.calls[0]?.[0])).toContain("REFUSING TO LAUNCH");
 
+    // EVERY uncertain reading proceeds silently. A down, legacy or half-described
+    // gateway must never block psu — only an affirmative, complete, self-consistent
+    // all-walled snapshot does.
     for (const stats of [
       { codexHealthyAccounts: 1, codexTotalAccounts: 7 },
       { codexTotalAccounts: 7 },
@@ -4834,7 +4867,7 @@ describe("psu-launcher arg parsing", () => {
     ]) {
       const quietLog = vi.fn();
       await expect(
-        warnIfCodexAutoPoolWalled({
+        preflightCodexAutoPool({
           agent: "codex",
           model: "gpt-5.6-sol",
           account: "auto",
@@ -4843,50 +4876,78 @@ describe("psu-launcher arg parsing", () => {
             json: async () => stats,
           })) as unknown as typeof fetch,
           log: quietLog,
+          env: {},
         }),
-      ).resolves.toBeNull();
+      ).resolves.toBe(true);
       expect(quietLog).not.toHaveBeenCalled();
     }
 
     await expect(
-      warnIfCodexAutoPoolWalled({
+      preflightCodexAutoPool({
         agent: "codex",
         model: "gpt-5.6-sol",
         account: "auto",
+        env: {},
         fetchImpl: vi.fn(async () => {
           throw new Error("gateway unavailable");
         }) as unknown as typeof fetch,
       }),
-    ).resolves.toBeNull();
+    ).resolves.toBe(true);
 
     vi.useFakeTimers();
     try {
-      const timedOut = warnIfCodexAutoPoolWalled({
+      const timedOut = preflightCodexAutoPool({
         agent: "codex",
         model: "gpt-5.6-sol",
         account: "auto",
         timeoutMs: 5,
+        env: {},
         fetchImpl: vi.fn((_url, init) => new Promise((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
         })) as unknown as typeof fetch,
       });
       await vi.advanceTimersByTimeAsync(6);
-      await expect(timedOut).resolves.toBeNull();
+      await expect(timedOut).resolves.toBe(true);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("warnIfCodexAutoPoolWalled: skips the network for routes outside the Codex auto pool", async () => {
+  it("preflightCodexAutoPool: the env override downgrades a refusal to a loud warning instead of an abort", async () => {
+    const log = vi.fn();
+    await expect(
+      preflightCodexAutoPool({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "auto",
+        log,
+        env: { [ALLOW_WALLED_LAUNCH_ENV]: "1" },
+        fetchImpl: vi.fn(async () => ({
+          ok: true,
+          json: async () => ({
+            codexHealthyAccounts: 0,
+            codexTotalAccounts: 7,
+            codexEarliestRecoveryAt: Date.now() + 60_000,
+          }),
+        })) as unknown as typeof fetch,
+      }),
+    ).resolves.toBe(true);
+    const printed = String(log.mock.calls[0]?.[0]);
+    expect(printed).toContain("REFUSING TO LAUNCH");
+    expect(printed).toContain("launching anyway");
+  });
+
+  it("preflightCodexAutoPool: skips the network for routes outside the Codex auto pool", async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     await expect(
-      warnIfCodexAutoPoolWalled({
+      preflightCodexAutoPool({
         agent: "claude",
         model: "claude-fable-5",
         account: "auto",
         fetchImpl,
+        env: {},
       }),
-    ).resolves.toBeNull();
+    ).resolves.toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -4904,22 +4965,35 @@ describe("psu-launcher arg parsing", () => {
     };
 
     const role = section("async function roleFlow(", "async function setClaudeTokenFlow(");
-    expect(role.indexOf("await warnIfCodexAutoPoolWalled(")).toBeGreaterThan(-1);
+    expect(role.indexOf("await preflightCodexAutoPool(")).toBeGreaterThan(-1);
     expect(role.indexOf("/api/agent-mcp/console/bootstrap-role")).toBeGreaterThan(
-      role.indexOf("await warnIfCodexAutoPoolWalled("),
+      role.indexOf("await preflightCodexAutoPool("),
     );
 
     const resume = section("async function launchResolvedResume(", "async function resumeFlow(");
     expect(resume).toContain('target.operation === "port"');
     expect(resume).toContain("await launchSessionPort(");
-    expect(resume).toContain("await warnIfCodexAutoPoolWalled(");
+    expect(resume).toContain("await preflightCodexAutoPool(");
 
     const port = section("async function launchSessionPort(", "async function launchResolvedResume(");
     expect(port).toContain("await launchFreshSu(");
     const fresh = section("async function launchFreshSu(", null);
-    expect(fresh).toContain("await warnIfCodexAutoPoolWalled(");
+    expect(fresh).toContain("await preflightCodexAutoPool(");
 
-    expect(source.match(/await warnIfCodexAutoPoolWalled\(/g) ?? []).toHaveLength(3);
+    expect(source.match(/await preflightCodexAutoPool\(/g) ?? []).toHaveLength(3);
+
+    // Every call site must ACT on the verdict. A preflight that computes futility and
+    // launches regardless IS the bug this guard exists for: measured 2026-09-11, the
+    // warn-only ancestor printed "0 of 7 serviceable" into 342 judge launches over 3h
+    // that emitted zero cards (EI-22976924584016603). Negating the call is what turns
+    // the measurement into an abort, so assert the negation, not merely the call.
+    expect(source.match(/!\(await preflightCodexAutoPool\(/g) ?? []).toHaveLength(
+      3,
+    );
+    // …and each abort carries the distinguishable exit code (const + 3 call sites).
+    expect(
+      (source.match(/WALLED_POOL_REFUSAL_EXIT/g) ?? []).length,
+    ).toBeGreaterThanOrEqual(4);
   });
 
   it("gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)", () => {
