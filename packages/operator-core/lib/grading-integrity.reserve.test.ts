@@ -9,7 +9,12 @@ import type { ScorecardGradingAuditCurrentness } from './scorecards';
 
 type QueryResult = Record<string, unknown>[];
 
-function transactionHarness(options: { claim: boolean; currentState?: string }) {
+function transactionHarness(options: {
+  claim: boolean;
+  currentState?: string;
+  hasReservation?: boolean;
+  backoff?: unknown;
+}) {
   const statements: Array<{ text: string; values: unknown[] }> = [];
   const tx = (async (strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> => {
     const text = strings.join('?');
@@ -19,7 +24,13 @@ function transactionHarness(options: { claim: boolean; currentState?: string }) 
     }
     if (text.includes("'{observation,gradingAudit}'")) return [];
     if (text.includes("SELECT payload->'observation'->'gradingAudit'->>'state'")) {
-      return [{ state: options.currentState ?? 'failed', has_reservation: false }];
+      return [
+        {
+          state: options.currentState ?? 'failed',
+          has_reservation: options.hasReservation ?? false,
+          backoff: options.backoff ?? null,
+        },
+      ];
     }
     if (text.trim() === 'FALSE' || text.includes("gradingAudit'->>'state' IN ('passed', 'failed')")) return [];
     throw new Error(`unexpected query: ${text}`);
@@ -87,5 +98,74 @@ describe('reservePendingGradingAudit', () => {
 
     expect(result).toEqual({ status: 'not-pending' });
     expect(statements.some((statement) => statement.text.includes("'{observation,gradingAudit}'"))).toBe(false);
+  });
+
+  // EI-22978598482930667: the reset-aware quota suppression lives on the card, so
+  // the reservation gate is where it has to be enforced and retired.
+  describe('reset-aware quota backoff', () => {
+    const now = new Date('2026-09-11T16:00:00.000Z');
+    const liveBackoff = {
+      until: '2026-09-11T17:00:00.000Z',
+      source: 'launcher-horizon' as const,
+      code: 'model_quota_exhausted',
+      recordedAt: '2026-09-11T16:00:00.000Z',
+      reason: 'terminal model_quota_exhausted; suppressing re-dispatch until the launcher-horizon reset',
+    };
+
+    it('refuses the claim with quota-backoff, reported AHEAD of an existing reservation', async () => {
+      // has_reservation is deliberately true: a caller told 'already-reserved'
+      // would wait on a dispatcher that is not in fact running, so the live
+      // quota wall must win the report.
+      transactionHarness({
+        claim: false,
+        currentState: 'pending',
+        hasReservation: true,
+        backoff: liveBackoff,
+      });
+
+      const result = await reservePendingGradingAudit('EI-walled', 'grading-audit:walled', {
+        workspaceId: 'ws-test',
+        now,
+      });
+
+      expect(result).toEqual({ status: 'quota-backoff', backoff: liveBackoff });
+    });
+
+    it('does not refuse on a SPENT backoff — an elapsed stamp falls through to the ordinary verdict', async () => {
+      transactionHarness({
+        claim: false,
+        currentState: 'pending',
+        hasReservation: true,
+        backoff: { ...liveBackoff, until: '2026-09-11T15:30:00.000Z' },
+      });
+
+      const result = await reservePendingGradingAudit('EI-recovered', 'grading-audit:recovered', {
+        workspaceId: 'ws-test',
+        now,
+      });
+
+      expect(result).toEqual({ status: 'already-reserved' });
+    });
+
+    it('gates the claim on the stamp and CLEARS it in the same winning UPDATE', async () => {
+      const { statements } = transactionHarness({ claim: true });
+
+      const result = await reservePendingGradingAudit('EI-legacy-settled', 'grading-audit:claim', {
+        workspaceId: 'ws-test',
+        now,
+      });
+
+      expect(result).toMatchObject({ status: 'claimed' });
+      const claim = statements.find((statement) => statement.text.includes('RETURNING feature_id'));
+      expect(claim).toBeDefined();
+      // A claim only succeeds once the backoff has expired, so the winning
+      // UPDATE is the right place to retire the spent stamp — leaving it would
+      // make the next release's freshly-written backoff ambiguous.
+      expect(claim?.text).toContain("#- '{observation,gradingAudit,dispatchBackoff}'");
+      expect(claim?.text).toContain("payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until' IS NULL");
+      // Fail OPEN on an unparseable stamp, exactly like the reservation
+      // predicate: a malformed value must never strand a card permanently.
+      expect(claim?.text).toContain('ELSE TRUE');
+    });
   });
 });

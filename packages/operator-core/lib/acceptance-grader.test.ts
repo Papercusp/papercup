@@ -1207,3 +1207,60 @@ describe('buildAssignedAcceptanceGraderBrief (cross-hive reachability)', () => {
     expect(brief).not.toContain('targetHive:');
   });
 });
+
+// EI-22978598482930667: psu refuses a launch whose auto-route pool is provably
+// walled (exit 78) instead of spawning a doomed agent. Nothing classified that
+// refusal, so a fire-and-forget dispatcher receipted it as a LAUNCHED judge and
+// held its reservation until the TTL — measured on 2526 launches over the whole
+// grading-audit log population. It is also the only terminal receipt in the
+// system that carries a machine-readable recovery instant.
+describe('classifyAcceptanceGraderTerminalFailure — launcher walled-pool refusal', () => {
+  // Verbatim shape from the real fleet logs.
+  const REFUSAL =
+    'psu: REFUSING TO LAUNCH — Codex auto-route pool is fully walled: 0 of 7 ChatGPT accounts ' +
+    'serviceable; earliest known recovery 2026-09-15T01:25:13.000Z. Every model call would fail ' +
+    'fast with 429, so this launch can only burn quota.';
+
+  it('stays UNCLASSIFIED without the opt-in, so a general acceptance brief cannot self-trip on quoted evidence', () => {
+    expect(classifyAcceptanceGraderTerminalFailure(REFUSAL)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(REFUSAL, { allowLauncherQuotaDrop: true })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(REFUSAL, { allowStandaloneWeeklyLimit: true })).toBeNull();
+  });
+
+  it('classifies as a quota wall with the opt-in, and its evidence slice PRESERVES the recovery instant', () => {
+    const failure = classifyAcceptanceGraderTerminalFailure(REFUSAL, {
+      allowLauncherWalledPoolRefusal: true,
+    });
+
+    expect(failure).toMatchObject({ code: 'model_quota_exhausted' });
+    // The load-bearing property: the dispatcher's reset-aware backoff reads the
+    // instant back out of this string, so the 400-char slice must never drop it.
+    expect(failure?.evidence).toContain('2026-09-15T01:25:13.000Z');
+    expect((failure?.evidence ?? '').length).toBeLessThanOrEqual(400);
+  });
+
+  it('keeps the instant even when the refusal preamble runs to the bound of the match', () => {
+    const padded =
+      'psu: REFUSING TO LAUNCH — Codex auto-route pool is fully walled across every configured ' +
+      'account tier and no serviceable credential remains for this route at all; ' +
+      'earliest known recovery 2026-09-15T01:25:13.000Z. Every model call would fail fast.';
+    const failure = classifyAcceptanceGraderTerminalFailure(padded, { allowLauncherWalledPoolRefusal: true });
+
+    expect(failure?.evidence).toContain('2026-09-15T01:25:13.000Z');
+    expect((failure?.evidence ?? '').length).toBeLessThanOrEqual(400);
+  });
+
+  it('still classifies the refusal variant that carries no recoverable instant', () => {
+    const unknownHorizon =
+      'psu: REFUSING TO LAUNCH — Codex auto-route pool is fully walled: 0 of 7 accounts ' +
+      'serviceable; earliest recovery unknown. Every model call would fail fast with 429.';
+    const failure = classifyAcceptanceGraderTerminalFailure(unknownHorizon, {
+      allowLauncherWalledPoolRefusal: true,
+    });
+
+    // Terminal either way — the missing instant degrades the backoff to its
+    // default window, it does not make the refusal survivable.
+    expect(failure).toMatchObject({ code: 'model_quota_exhausted' });
+    expect(failure?.evidence).toContain('earliest recovery unknown');
+  });
+});
