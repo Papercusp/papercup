@@ -2267,6 +2267,13 @@ pub struct App {
     /// line the owner queued for a DIFFERENT agent — or for a run they just
     /// stopped — is worse than losing it.
     pub chat_queued: Vec<String>,
+    /// Which terminal host we are running inside (P-007). Resolved ONCE at
+    /// startup rather than per frame: the env cannot change under a running
+    /// process, and storing it keeps every hint that depends on it testable
+    /// without mutating the process environment (which races every other test in
+    /// this binary). Defaults to `Plain`, so a test that does not care sees the
+    /// bare-terminal hints.
+    pub keyboard_host: crate::keyboard::Host,
     /// Exact draft and command retained until the host acknowledges this turn.
     pub su_pending_turn: Option<PendingSuTurn>,
     pub su_active_command_id: Option<String>,
@@ -2632,6 +2639,7 @@ impl App {
             chat_scroll: 0,
             chat_streaming: false,
             chat_queued: Vec::new(),
+            keyboard_host: crate::keyboard::from_env(),
             su_pending_turn: None,
             su_active_command_id: None,
             su_rendered_owner_turns: BTreeSet::new(),
@@ -6306,7 +6314,10 @@ impl App {
                 }
                 Action::Render
             }
-            KeyCode::Tab => {
+            // BackTab aliases Tab here for the same reason as the subview
+            // cycles below (P-007): the dock eats plain Tab, which would leave
+            // the switcher's MRU hop unreachable there.
+            KeyCode::Tab | KeyCode::BackTab => {
                 let rows = self.visible_session_switcher();
                 let mru: Vec<usize> = self
                     .session_mru
@@ -6610,7 +6621,7 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => Some(self.move_session_browser(1)),
             KeyCode::Char('k') | KeyCode::Up => Some(self.move_session_browser(-1)),
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::BackTab => {
                 self.session_browser.facet = self.session_browser.facet.next();
                 Some(Action::Render)
             }
@@ -9187,32 +9198,59 @@ impl App {
             // A key RELEASE (kitty protocol only). On the Voice tab it ends
             // hold-to-talk transmit into the P2P channel (P-009); on the Operator
             // tab/dock it stops the voice-mode PTT recording. Else ignored.
-            Event::KeyRelease(key) => {
-                if self.tab == Tab::Voice {
-                    if let Some(cmd) = crate::voice_ui::handle_release(&self.voice_ui, key.code) {
-                        return Action::VoiceChan(cmd);
-                    }
-                    return Action::None;
-                }
-                if key.code == KeyCode::Char('v')
-                    && self.convai_phase != ConvAiPhase::Off
-                    && self.convai_mode == "push-to-talk"
-                    && self.convai_ptt_active
-                {
-                    self.convai_ptt_active = false;
-                    return Action::VoiceSessionControl(crate::voice_convai::ConvAiControl::Ptt(
-                        false,
-                    ));
-                }
-                if key.code == KeyCode::Char('v')
-                    && self.voice_phase == VoicePhase::Recording
-                    && self.voice_key_active()
-                {
-                    return Action::Voice(VoiceCmd::Stop);
-                }
-                Action::None
-            }
+            Event::KeyRelease(key) => self.release_held(Some(key.code)),
+            // Focus left the terminal (or the zellij pane) — see
+            // Event::FocusLost. Every key we believe is held is now unreleasable
+            // to us, so release them all through the SAME path a real release
+            // takes. Sharing it by construction is the point: a fourth
+            // hold-to-talk surface added later is stopped by focus loss without
+            // anyone remembering to wire a second site.
+            Event::FocusLost => self.release_held(None),
         }
+    }
+
+    /// The key to NAME in a hint for a subview/facet cycle.
+    ///
+    /// `Tab` on a bare terminal; `Shift+Tab` inside the dock session, whose
+    /// zellij layout binds plain Tab to its zoom toggle so the keystroke never
+    /// reaches us. BOTH keys work on every host — only the advertisement moves,
+    /// which is what keeps this a hint decision rather than a behaviour one.
+    pub fn cycle_key(&self) -> &'static str {
+        self.keyboard_host.cycle_key()
+    }
+
+    /// The release path, shared by a real key RELEASE (kitty protocol only) and
+    /// by focus loss.
+    ///
+    /// `key` is `Some(code)` for a real release, and `None` for focus loss,
+    /// which releases every held key at once. The Voice tab's held key is
+    /// configurable (`voicePttKey`), so focus loss asks `voice_ui` which key
+    /// that is rather than assuming `v` — the assumption would silently stop
+    /// working for anyone who rebound it, and stop working in the ONE direction
+    /// that leaves the microphone open.
+    fn release_held(&mut self, key: Option<KeyCode>) -> Action {
+        if self.tab == Tab::Voice {
+            let code = key.unwrap_or_else(|| crate::voice_ui::ptt_key_code(&self.voice_ui));
+            if let Some(cmd) = crate::voice_ui::handle_release(&self.voice_ui, code) {
+                return Action::VoiceChan(cmd);
+            }
+            return Action::None;
+        }
+        // Outside the Voice tab the held key is `v` on both surfaces below, so
+        // focus loss (`None`) matches either of them.
+        let is_ptt = key.is_none_or(|c| c == KeyCode::Char('v'));
+        if is_ptt
+            && self.convai_phase != ConvAiPhase::Off
+            && self.convai_mode == "push-to-talk"
+            && self.convai_ptt_active
+        {
+            self.convai_ptt_active = false;
+            return Action::VoiceSessionControl(crate::voice_convai::ConvAiControl::Ptt(false));
+        }
+        if is_ptt && self.voice_phase == VoicePhase::Recording && self.voice_key_active() {
+            return Action::Voice(VoiceCmd::Stop);
+        }
+        Action::None
     }
 
     fn close_palette(&mut self) {
@@ -10714,7 +10752,7 @@ impl App {
             // Cupboard sub-view focus: Tab cycles the marketplace Browse list ▸
             // the absorbed installed-plugin inventory ▸ its panes launcher.
             // This is the only keystroke that reaches either absorbed view.
-            KeyCode::Tab if self.tab == Tab::Cupboard => {
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Cupboard => {
                 self.cupboard_focus = self.cupboard_focus.next();
                 self.cupboard_confirm = None;
                 Action::Render
@@ -11002,7 +11040,15 @@ impl App {
             // tabs are appended (pui-fleet-status-view-2026-06-04).
             KeyCode::Char('>') => self.cycle_tab(1),
             KeyCode::Char('<') => self.cycle_tab(-1),
-            KeyCode::Tab if self.tab == Tab::Harnesses => {
+            // `Tab | BackTab` on every subview cycle below (P-007): the dock
+            // session binds plain Tab to zellij's zoom toggle (layout::DOCK_BINDS),
+            // so inside it a Tab keystroke never reaches this program — and for
+            // the Inbox arm that is the ONLY route to the absorbed Convos
+            // browser, which would make the capability unreachable there rather
+            // than merely unadvertised. BackTab is the alias on EVERY host, so
+            // the fix does not depend on which one we are running under; only
+            // the HINT does (`Host::cycle_key`).
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Harnesses => {
                 self.harness_focus = match self.harness_focus {
                     HarnessFocus::Features => HarnessFocus::Issues,
                     HarnessFocus::Issues => HarnessFocus::Features,
@@ -11011,12 +11057,12 @@ impl App {
             }
             // Fleet curated ↔ mirror toggle (D-006). On `Tab`, mirroring
             // the Pots column-switch idiom — frees `m` for the Memory tab.
-            KeyCode::Tab if self.tab == Tab::Fleet => {
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Fleet => {
                 self.fleet.toggle_mode();
                 Action::Render
             }
             // Testing column focus (D-004a): Tab hops domains ↔ files.
-            KeyCode::Tab if self.tab == Tab::Testing => {
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Testing => {
                 self.testing_focus = match self.testing_focus {
                     TestingFocus::Domains => TestingFocus::Files,
                     TestingFocus::Files => TestingFocus::Domains,
@@ -11027,7 +11073,7 @@ impl App {
             // Convos thread browser. This is the ONLY keystroke that reaches
             // the absorbed capability, so it is what makes the Convos→Inbox
             // absorption real rather than title-only.
-            KeyCode::Tab if self.tab == Tab::Inbox => {
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Inbox => {
                 self.inbox_focus = self.inbox_focus.next();
                 self.inbox_sel = 0;
                 Action::Render
