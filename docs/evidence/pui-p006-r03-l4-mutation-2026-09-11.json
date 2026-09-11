@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "papercusp-evidence-v1",
+  "title": "P-006 / AUTO-BAR-R-03-P-006 — targeted L4 mutation proof (plan-class-risk-floor)",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItems": ["WI-10000428"],
+  "recordedAt": "2026-09-11T09:33:04Z",
+
+  "whyL4IsRequired": {
+    "specId": "AUTO-BAR-R-03-P-006",
+    "specRevision": 6,
+    "behaviorClass": "lifecycle",
+    "mechanism": "spec-test-adequacy.ts requiredProofFloor() returns 'l4' when HIGH_RISK_BEHAVIOR_CLASSES includes the clause's behaviorClass; 'lifecycle' is a member. AUTO-BAR-R-10-P-006 is behaviorClass 'happy-path' and carries no such floor.",
+    "note": "This row exists because a PASSING journey does not by itself show the journey can FAIL. The mutation below establishes red capability."
+  },
+
+  "mutation": {
+    "file": "packages/operator-core/lib/su-session-resume.ts",
+    "line": 54,
+    "before": "const nativeId = saved.identity.nativeSessionId;",
+    "after": "const nativeId = randomUUID();",
+    "targets": "The exact identity the R-03 journey asserts: 'restores the SAME native conversation after the operator OS process exits'. The mutant binds the restored session to a fresh id, so resume restores a DIFFERENT conversation.",
+    "preconditionsVerifiedBeforeLaunch": [
+      "target string occurs EXACTLY once in the file (a multi-site mutation would not be targeted)",
+      "mutation sits AFTER the identity guard at lines 39-48, so the guard does not short-circuit it",
+      "randomUUID is already imported at line 4, so the mutant still compiles and stays type-correct",
+      "su-session-resume.ts is backend-agnostic, so the OMP journey reaches it"
+    ]
+  },
+
+  "probe": {
+    "tool": "scripts/mutation-probe.sh",
+    "tier": "in-tree with sweep-lock held (the test reaches the module through the import graph, so copy-out cannot work)",
+    "sweepLock": {
+      "lockId": "a99f501c-2981-4ebb-82d4-3378d61e5049",
+      "paths": ["packages/operator-core/lib/su-session-resume.ts"],
+      "reason": "exclude the mutated file from the git-sync sweep for the probe's duration",
+      "released": "2026-09-11T09:30Z, after byte-exact restore was verified"
+    },
+    "guardCommand": "PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'restores the same native conversation after the operator OS process exits'"
+  },
+
+  "result": {
+    "verdict": "caught",
+    "expected": "caught",
+    "baselineExit": 0,
+    "guardExit": 1,
+    "baselineOutcome": "PASS — journey green on unmutated source (105252ms)",
+    "mutantOutcome": "FAIL — journey red on mutated source (188000ms)",
+    "raw": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1 mutant_parse=unchecked",
+    "meaning": "The R-03 journey is FALSIFIABLE: it passes on correct source and fails on a targeted break of the exact property it claims to assert. Exit 0 from the probe means the MUTANT WAS CAUGHT, i.e. the guard failed on the mutant — 'probe succeeded' and 'test passed' mean opposite things here."
+  },
+
+  "restoreProof": {
+    "method": "sha256 of the tracked file compared against the fingerprint bound in the P-006 parity artifact — strictly stronger than an empty `git diff`, which on this swept tree only proves the sweep ran",
+    "expectedSha256": "585082c9c49ba102750fa35af490ee87d26837fa136a09b9efb67e229e26aa37",
+    "actualSha256": "585082c9c49ba102750fa35af490ee87d26837fa136a09b9efb67e229e26aa37",
+    "match": true,
+    "gitDiff": "empty",
+    "originalLineRestored": 1
+  },
+
+  "bindableTestRun": {
+    "testRunId": 17771169,
+    "status": "pass",
+    "source": "local",
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp",
+    "commitSha": "bab354e95ccfe9598e95e515fd1f0937ffd3ecbc",
+    "testFileResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed provenance=stamped skippedTests=15",
+    "whySeparateRun": "admin-test-runs-reporter EXCLUDES source='mutation-probe' rows from test_runs (EI-22955349101740344), so the probe's own baseline is NOT bindable. A separate clean unmutated run was executed afterwards to produce a bindable, tenant-stamped row.",
+    "exclusionCorroboratedEmpirically": "Three runs executed in the window 09:23-09:33Z (probe baseline, probe mutant, clean run) but exactly ONE test_runs row exists (17771169), confirming the exclusion rather than assuming it."
+  },
+
+  "fingerprints": {
+    "algorithm": "sha256-file-set-v1 — sha256 over JSON.stringify of the deduped, lexically sorted [{path, sha256}] entry list (packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts fingerprintRepoFileSet)",
+    "sourceFingerprint": "sha256-file-set-v1:29ecd9d6b5e041713a81299d20d6dbd0e06e3275ee649afe017c781e0da51286",
+    "testFingerprint": "sha256-file-set-v1:f2487e4ae748919516255c537a9da78909c1f29919c8074091fc28db36b2fd65",
+    "positiveControl": "The algorithm was validated by RECOMPUTING the previously recorded sourceFingerprint (0b82624b…) from the recorded per-file shas before computing the new value, and independently by reproducing the recorded testFingerprint (f2487e4a…) from the current tree. Both reproduced exactly.",
+    "measuredAt": "2026-09-11T09:31:00Z"
+  },
+
+  "supersedes": {
+    "reason": "The P-006 parity artifact's bound sourceFingerprint (0b82624b…) went stale: exactly 1 of its 7 source files drifted — su-session-claude-engine.ts (bound df4a4f3b…, current 47669f7f…) — because the engine fix landed after binding. The other 6 files are byte-identical.",
+    "repairable": "Yes. Bindings are append-only, so a NEW binding carrying the recomputed fingerprint supersedes the stale rows rather than requiring a new spec revision."
+  }
+}
