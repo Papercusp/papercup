@@ -37,7 +37,48 @@
       "reason": "exclude the mutated file from the git-sync sweep for the probe's duration",
       "released": "2026-09-11T09:30Z, after byte-exact restore was verified"
     },
-    "guardCommand": "PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'restores the same native conversation after the operator OS process exits'"
+    "guardCommandAsOriginallyRecorded": "PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'restores the same native conversation after the operator OS process exits'",
+
+    "guardCommandRepair": {
+      "defect": "EI-22959184107034728 — the command in guardCommandAsOriginallyRecorded CANNOT reproduce the result recorded below. It omits THREE variables the journey requires, so a replay executes ZERO tests. (A fourth, PUI_REAL_MODEL, was correctly absent for this backend — see guardCommandModelPinCaveat.)",
+      "omittedAndWhy": [
+        "PUI_REAL_ENGINE=1 — the target test sits inside describe.skipIf(!scriptedEngine.real) (agent-chat-pty.integration.test.ts:1573), and scriptedEngine.real is process.env.PUI_REAL_ENGINE === '1' (:40). Without it the whole block is skipped and -t matches nothing.",
+        "PUI_BIN — ensurePuiBinary() throws 'PUI_REAL_ENGINE requires PUI_BIN from the supported install-update.sh installer' (:268) once real is set.",
+        "PUI_NATIVE_ACCOUNT_CATALOG — required whenever PUI_REAL_ACCOUNT=auto, which THIS command sets: 'Native routed-account acceptance requires PUI_NATIVE_ACCOUNT_CATALOG with accounts:list id/provider metadata' (:684).",
+        "NOT PUI_REAL_MODEL — this one is a deliberate NON-omission, recorded here because the obvious reading of D-012 gets it wrong. D-012 says to pin PUI_REAL_MODEL on every real-engine leg, but that was derived from the CLAUDE leg (WI-10001027). On THIS journey's OMP backend with PUI_REAL_ACCOUNT=auto the pin is refused at engine start (503 attached_engine_start_failed), so the original command was RIGHT to leave it unset. Ruling: pui-first-party-public-release-2026-09-07#D-013."
+      ],
+      "whyThisIsAnUnderRecordedCommandAndNotAFabricatedResult": "The run itself was real; only its environment was under-recorded. Two independent corroborations: (1) bindableTestRun.testFileResult reports 'matched=1 ... skippedTests=15', and this file contains exactly 16 tests — 15 skipped + 1 matched means the real-engine block WAS active, which only PUI_REAL_ENGINE=1 produces; (2) the recorded baseline/mutant durations are 105252ms and 188000ms, which no zero-test run can take.",
+      "negativeControl": {
+        "ranAt": "2026-09-11T12:14:43Z",
+        "head": "ee41f91769",
+        "command": "the guardCommandAsOriginallyRecorded string above, verbatim, with PUI_REAL_ENGINE / PUI_BIN / PUI_REAL_MODEL / PUI_NATIVE_ACCOUNT_CATALOG explicitly unset",
+        "observed": "Test Files 1 skipped (1) · Tests 16 skipped (16) · Duration 1.18s · exit 2 · NO TEST_FILE_RESULT line emitted at all",
+        "meaning": "Zero tests executed. The failure is SILENT in the dangerous direction: a skipped run emits no failing assertion, so a replayer reads it as 'nothing to do' rather than 'this measured nothing' — the same false-green family as a -t matching zero tests."
+      },
+      "positiveControl": {
+        "ranAt": "2026-09-11T12:19:18.856Z, finished 12:21:25Z (~127s wall)",
+        "head": "ee41f91769",
+        "command": "the repaired `guardCommand` string below, verbatim — OMP backend, PUI_REAL_ACCOUNT=auto, NO PUI_REAL_MODEL pin, catalog pointed at the committed docs/evidence/pui-p006-account-catalog.json",
+        "observed": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=ee41f91769 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-11T12:19:18.856Z skippedTests=15 · Test Files 1 passed (1) · Tests 1 passed | 15 skipped (16) · exit 0",
+        "meaning": "The reproducibility repair is VERIFIED end-to-end, not merely asserted. Three things are settled at once: (1) executed=1 matched=1 vs the negative control's 0-executed silent skip, so the repaired command actually reaches the target test; (2) the 1-passed/15-skipped split independently REPRODUCES the original artifact's recorded 'matched=1 ... skippedTests=15', confirming the original run was under-RECORDED, never fabricated; (3) the ~127s wall time is the same order as the recorded 105252ms baseline and nothing like the negative control's 1.18s.",
+        "rawLog": ".papercusp/scratch/p006/ei22959-positive-nomodel.log (gitignored scratch — the verdict line above is the durable copy, per catalogDurability below)"
+      },
+      "catalogDurability": "The catalog previously used for these runs lived at .papercusp/scratch/p006/account-catalog.json, which .gitignore:187 (**/.papercusp/scratch/) excludes. A committed artifact pointing into gitignored scratch is not reproducible for any successor, so a durable copy now lives in the TRACKABLE tree at docs/evidence/pui-p006-account-catalog.json (verified 2026-09-11T12:33Z: `git check-ignore` says NOT-IGNORED, `git status --porcelain` says untracked-and-sweepable, so the scheduled git-sync sweep commits it — it was NOT yet in a commit at the moment this artifact was written, and a replayer should confirm with `git log -1 -- docs/evidence/pui-p006-account-catalog.json`) and the command below points there.",
+      "generalizedFollowUp": "EI-22967275079634077 — nothing currently checks that a recorded replay command can reproduce its own recorded result; this artifact carried BOTH failure modes (omitted env, and a gitignored path in a committed artifact)."
+    },
+
+    "guardCommandPathNote": "PUI_NATIVE_ACCOUNT_CATALOG must be an ABSOLUTE path: the test reads it with readFileSync and vitest's cwd is packages/operator-core, not the repo root, so a repo-relative path silently fails to resolve. Run from the repo root and let $PWD expand.",
+
+    "guardCommandModelPinCaveat": {
+      "ruling": "pui-first-party-public-release-2026-09-07#D-013",
+      "summary": "THIS journey runs on the OMP backend, and on OMP the D-012 model pin must be OMITTED. D-012 ('always pin PUI_REAL_MODEL') was derived from the CLAUDE leg (WI-10001027). On OMP with PUI_REAL_ACCOUNT=auto the pin is refused at engine start.",
+      "measuredRefusal": "503 {\"code\":\"attached_engine_start_failed\",\"error\":\"--account auto could not be honored: OMP model 'sonnet' is not compatible with gateway account routing; refusing model substitution.\"}",
+      "measuredAt": "2026-09-11T12:23Z, HEAD ee41f91769, log .papercusp/scratch/p006/ei22959-positive.log — TEST_FILE_GROUP_RESULT executed=1 status=failed.",
+      "whyThisIsTheInterestingPart": "executed=1 means the test RAN and the ENGINE refused — categorically different from the negative control's 0 executed. It is therefore positive proof that the reproducibility repair works (the command now reaches the test), and separately that a uniform cross-engine model convention is wrong. P-006 is the parity item, so this asymmetry is itself P-006 evidence.",
+      "correctedFirstAttempt": "An earlier revision of this block recorded PUI_REAL_MODEL=sonnet in guardCommand by applying D-012 uniformly. That was WRONG for this backend and is retracted; the pin is removed below."
+    },
+
+    "guardCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PUI_REAL_ENGINE=1 PUI_BIN=$HOME/.cargo/bin/pui PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$PWD/docs/evidence/pui-p006-account-catalog.json\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'restores the same native conversation after the operator OS process exits'"
   },
 
   "result": {
