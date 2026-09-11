@@ -38,6 +38,127 @@ export function parseSummaryFailedCounts(text: any): {
     tests: number;
 } | null;
 /**
+ * How many tests actually EXECUTED, read from vitest's `Tests` summary row. Skipped is not
+ * executed — that distinction IS the bug: `Tests  20 skipped (20)` is a run that measured nothing.
+ *
+ * Returns null when there is no readable summary row (e.g. `--reporter=json`), which the caller
+ * must treat as UNVERIFIED rather than as a measured zero: fabricating a red on an unreadable
+ * count is the opposite, equally expensive mistake.
+ *
+ * ANSI is stripped FIRST. vitest colourises this row, and EI-18819483316574031 is the same
+ * trap's previous instance — a matcher that skipped the strip passed every hand-written test and
+ * never once fired on real coloured output.
+ *
+ * ⚠ MOVED HERE from `scripts/test-files.mjs` (P-006 / R-8 sub-req 5) and re-exported there, the
+ * same single-writer consolidation WI-37607 applied to `parseTransformFailure`. It moved because
+ * it gained a SECOND consumer: `scripts/affected-tests.mjs`, the path the release promise runs
+ * on, which already imports every other vitest parser from this seam precisely so they are not
+ * "three hand-kept-in-sync copies". A private copy for the gate would reintroduce exactly that.
+ *
+ * @param {string} output combined stdout+stderr of a `vitest run` invocation
+ * @returns {number | null} tests executed, or null when unreadable
+ */
+export function testsExecutedFrom(output: string): number | null;
+/**
+ * EI-19380376466745152 — A SKIPPED ASSERTION IS AN ABSENT MEASUREMENT WEARING A PASS.
+ *
+ * The measured incident: an agent fixed a real regression, ran the owning file, read
+ * `Tests  8 passed | 1 skipped (9)` plus `Test Files  1 passed (1)`, exit 0, and filed that as
+ * proof. A peer had landed `it.skip` on THE EXACT ASSERTION being fixed six minutes earlier. The
+ * eight passes were siblings that were already green before the fix existed; the fix was never
+ * once exercised by the thing cited as evidence for it.
+ *
+ * Every signal in that run reads as success — file-level `1 passed`, exit 0, a skip count that is
+ * one token in a line whose expected shape is a pass, and a clean `git status`. This is the same
+ * class as `-p .` typechecking zero files and reading as clean: a verification whose SUBJECT was
+ * silently absent.
+ *
+ * Three-state like its executed-counting sibling: `null` is UNREADABLE, never a measured zero.
+ * See `testsExecutedFrom` for why both now live at this seam rather than in the focused router.
+ *
+ * @param {string} output combined stdout+stderr of a `vitest run` invocation
+ * @returns {number | null} tests collected-but-not-run, or null when unreadable
+ */
+export function testsSkippedFrom(output: string): number | null;
+/**
+ * P-006 / R-8 sub-requirement 5 — "retain full final coverage where the release promise needs it".
+ *
+ * `scripts/test-files.mjs`, the CHEAP diagnostic path, has treated a collected-but-unexecuted
+ * test as an absent measurement since EI-19380376466745152: it stamps `skippedTests=N` on every
+ * `TEST_FILE_RESULT` and refuses a zero-executed run outright. `scripts/affected-tests.mjs` — the
+ * path whose verdict fast-forwards `main` and triggers the deploy — had none of it. Measured
+ * 2026-09-11 on a genuinely executing run:
+ *
+ *     AFFECTED_TESTS_RESULT status=passed tasks=4 failed=0 quarantinedFailed=0 \
+ *         timedOutTasks=0 undeterminedTasks=0
+ *
+ * Nothing there separates four tasks of real green from four that collected their tests and ran
+ * none. The count was never missing from the DATA — vitest prints it in every task's own output,
+ * and the gate's only numeric parser (`parseSummaryFailedCounts`) read `N failed` and dropped the
+ * rest. This tally is the discarded half, kept.
+ *
+ * THREE-STATE ON PURPOSE. Most gate tasks are not vitest (lint legs, repo-wide invariant guards),
+ * so their test counts are genuinely unreadable. Folding those into a measured `0` would be the
+ * same defect one level up — a bounded measurement rendered as a confident number — so they are
+ * counted separately and never summed into the totals.
+ *
+ * @returns {{ executed: number, skipped: number, unreadableTasks: number,
+ *             notExecuted: { task: string, skipped: number }[] }}
+ */
+export function emptyCoverage(): {
+    executed: number;
+    skipped: number;
+    unreadableTasks: number;
+    notExecuted: {
+        task: string;
+        skipped: number;
+    }[];
+};
+/**
+ * Fold one settled task's captured output into a running coverage tally.
+ *
+ * Pure and copy-on-write so a caller can fold at task settlement without ordering hazards; the
+ * run loop's counters are module-level `let`s and a shared mutable tally beside them would be one
+ * more thing an abort path could report half-updated.
+ *
+ * @param {ReturnType<typeof emptyCoverage>} coverage
+ * @param {{ task: string, output: string }} settled
+ * @returns {ReturnType<typeof emptyCoverage>}
+ */
+export function foldTaskCoverage(coverage: ReturnType<typeof emptyCoverage>, settled: {
+    task: string;
+    output: string;
+}): ReturnType<typeof emptyCoverage>;
+/**
+ * The coverage fields appended to the terminal `AFFECTED_TESTS_RESULT` line.
+ *
+ * APPEND-ONLY, and that is the compatibility contract: `green-checkpoint.ts` matches the marker
+ * line whole (`SUITE_REFUSAL_LINE_RE`) and every reader tokenises `k=v`, so new trailing fields
+ * reach existing parsers inert. Placed on the terminal marker for the reason this contract
+ * already learned twice (EI-19462803905923939 / EI-19467022057492490): that line is the last
+ * thing a `| tail -N` reads and the one line agents actually paste as evidence. A banner printed
+ * only at the top scrolls out of exactly the excerpt that gets quoted.
+ *
+ * @param {ReturnType<typeof emptyCoverage>} coverage
+ * @returns {string}
+ */
+export function formatCoverageFields(coverage: ReturnType<typeof emptyCoverage>): string;
+/**
+ * The greppable disclosure naming each task that collected tests and executed none of them.
+ *
+ * NON-GATING, and it says so on its own line. `affected-tests.mjs` already owns the precedent in
+ * `notCheckedNonGating`: a guard that declared up front that "I could not look" is its expected
+ * answer is "counted and reported LOUDLY — missing coverage must stay visible — but NOT gating",
+ * because folding a non-verdict into a gating counter red-pinned candidate 57483d0491 for the
+ * whole fleet. Coverage that was not obtained is the same class of fact, and a gate that froze
+ * `main` the first time a workspace's suite was legitimately env-gated off would be a worse
+ * defect than the silence it replaced.
+ *
+ * @param {ReturnType<typeof emptyCoverage>} coverage
+ * @returns {string} '' when every readable task executed something
+ */
+export function formatNotExecutedSummary(coverage: ReturnType<typeof emptyCoverage>): string;
+/**
  * The FAILING TEST FILES named by a vitest run's own output.
  *
  * Moved here from affected-tests.mjs (EI-18819483316574031) so that the three parsers
@@ -759,6 +880,7 @@ export function countTimeoutSignatures(text: string): number;
  * RegExp could not serve both; a shared fragment can.
  */
 export const VITEST_TEST_FILE_SOURCE: string;
+export const AFFECTED_TESTS_NOT_EXECUTED_TOKEN: "AFFECTED_TESTS_NOT_EXECUTED";
 /**
  * The workspace-relative DIRECTORY that `papercusp-desktop/bin/lib/run-selftests.sh` runs
  * its selftests out of — i.e. its own `$DIR`, which it never prints.
