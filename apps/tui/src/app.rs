@@ -2259,6 +2259,14 @@ pub struct App {
     pub chat_draft: String,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
+    /// Turns composed WHILE one was already in flight, oldest first (P-007 draft
+    /// queuing). Enter during a streaming turn moves the composed line here
+    /// instead of being swallowed, and `drain_queued_turn` dispatches the head
+    /// once the turn settles. The queue is in-app only: it is cleared by an
+    /// owner interrupt and by rebinding the conversation, because auto-firing a
+    /// line the owner queued for a DIFFERENT agent — or for a run they just
+    /// stopped — is worse than losing it.
+    pub chat_queued: Vec<String>,
     /// Exact draft and command retained until the host acknowledges this turn.
     pub su_pending_turn: Option<PendingSuTurn>,
     pub su_active_command_id: Option<String>,
@@ -2623,6 +2631,7 @@ impl App {
             chat_draft: String::new(),
             chat_scroll: 0,
             chat_streaming: false,
+            chat_queued: Vec::new(),
             su_pending_turn: None,
             su_active_command_id: None,
             su_rendered_owner_turns: BTreeSet::new(),
@@ -3051,6 +3060,10 @@ impl App {
         self.chat_focus = None;
         self.pending_approvals.clear();
         self.chat_streaming = false;
+        // Queued lines were composed FOR the conversation being unbound. Firing
+        // them at whatever is bound next would deliver the owner's message to a
+        // different agent, which is strictly worse than dropping it.
+        self.chat_queued.clear();
         self.chat_scroll = 0;
     }
 
@@ -3716,6 +3729,148 @@ impl App {
     fn finish_chat_turn(&mut self) {
         self.finish_chat_message();
         self.chat_streaming = false;
+    }
+
+    /// Dispatch ONE composed line as a turn. This is the single send path,
+    /// shared BY CONSTRUCTION by the Enter key and by the queue drain.
+    ///
+    /// `None` means nothing was sent — empty text, or a conversation whose
+    /// recorded class refuses dispatch. The caller decides what to do with the
+    /// line; it is deliberately NOT an `Action::Render` sentinel, because a
+    /// successful dispatch could later grow a Render-shaped return and a caller
+    /// matching on the Action would then silently treat a sent turn as dropped.
+    ///
+    /// Two callers taking the routing decision independently is exactly how the
+    /// queued path would drift off the interactive one: `su_dispatch_decision`
+    /// reads the conversation's persisted class (P-013) and is not reproducible
+    /// by eye at a second call site.
+    fn dispatch_chat_turn(&mut self, text: String) -> Option<Action> {
+        if text.trim().is_empty() {
+            return None;
+        }
+        // P-013: every writable PUI conversation now uses the typed
+        // SU-session host. Legacy/unclassified rows remain readable
+        // history and refuse dispatch instead of silently re-homing.
+        let decision = self.su_dispatch_decision();
+        self.su_last_dispatch = Some(decision);
+        // Name the runtime AND, when a conversation is loaded, the
+        // recorded class the decision was taken from — an owner
+        // looking at a surprising target needs to see the input that
+        // produced it, not just the verdict.
+        self.session_note = Some(match self.pui_runtime_class {
+            Some(class) => format!(
+                "this turn → {} [conversation: {}]",
+                decision.reason.note(),
+                class.as_str()
+            ),
+            None => format!("this turn → {}", decision.reason.note()),
+        });
+        if decision.target == crate::su_session::SuDispatchTarget::ReadOnly {
+            return None;
+        }
+        // Unknown delivery must reconcile the original command;
+        // never mint a second turn because its acknowledgement fell
+        // off the wire. Keep any newly edited draft separately.
+        let text = if let Some(pending) = self.su_pending_turn.as_ref().filter(|p| p.uncertain) {
+            pending.content.clone()
+        } else {
+            self.su_pending_turn = Some(PendingSuTurn {
+                command_id: format!("pui-{}", crate::command_nonce()),
+                content: text.clone(),
+                command: None,
+                uncertain: false,
+                error: None,
+            });
+            text
+        };
+        self.chat_streaming = true;
+        self.chat_scroll = 0;
+        Some(match decision.target {
+            crate::su_session::SuDispatchTarget::AttachedSuSession => {
+                Action::SendSuSessionTurn(text)
+            }
+            crate::su_session::SuDispatchTarget::OpenSuSession(backend) => Action::OpenSuSession {
+                harness: self.harness.clone(),
+                role: self.agent_chat_role.clone(),
+                backend,
+                carry: "warm".into(),
+                launch: self.su_session_launch_options(),
+                initial_turn: Some(text),
+            },
+            // Unreachable — returned above — but matched rather than
+            // `unreachable!()` so a new target variant is a compile error here
+            // instead of a panic in the owner's terminal.
+            crate::su_session::SuDispatchTarget::ReadOnly => Action::Render,
+        })
+    }
+
+    /// Enter pressed while a turn is in flight: move the composed line to the
+    /// queue and clear the composer, so the owner can keep typing instead of
+    /// waiting. Before this, the key was a SILENT no-op — the line stayed put
+    /// and nothing happened, which reads as a dropped keypress rather than as
+    /// backpressure.
+    ///
+    /// The line is stored EXACTLY as composed (no trim). `dispatch_chat_turn`
+    /// does not trim either, and the draft-retention contract asserts a turn's
+    /// leading/trailing whitespace survives to its acknowledgement; trimming
+    /// here would make a queued turn differ from the same text sent with Enter.
+    fn queue_chat_turn(&mut self) -> Action {
+        let text = self.chat_input.clone();
+        if text.trim().is_empty() {
+            return Action::Render;
+        }
+        self.chat_queued.push(text);
+        self.chat_input.clear();
+        // Recall state belongs to the line that just left the composer.
+        self.chat_history_idx = None;
+        self.chat_draft.clear();
+        let n = self.chat_queued.len();
+        self.session_note = Some(if n == 1 {
+            "Queued — sends when this turn ends. Ctrl+X interrupts and clears the queue.".into()
+        } else {
+            format!("Queued — {n} messages waiting; each sends as the turn before it ends.")
+        });
+        Action::Render
+    }
+
+    /// Send the head of the queue once the pane is genuinely idle.
+    ///
+    /// Driven from the TICK, so it keys off CURRENT state rather than hooking
+    /// the several places that clear `chat_streaming` (turn finished, stream
+    /// failed, lifecycle ended, snapshot reconciled). A transition hook would
+    /// silently stop draining the first time a new completion path was added,
+    /// and the failure would look like "the queue is just slow".
+    ///
+    /// `su_pending_turn` must be `None`: an unacknowledged or failed turn is
+    /// still outstanding, and stacking a queued line on top of it would mint
+    /// the second turn that the reconcile branch in `dispatch_chat_turn`
+    /// exists to prevent.
+    fn drain_queued_turn(&mut self) -> Option<Action> {
+        if self.chat_streaming || self.su_pending_turn.is_some() || self.chat_queued.is_empty() {
+            return None;
+        }
+        let text = self.chat_queued.remove(0);
+        if let Some(action) = self.dispatch_chat_turn(text.clone()) {
+            return Some(action);
+        }
+        // Not dispatched — the conversation refuses writes. Do NOT re-queue it:
+        // the refusal is a property of the conversation, so retrying every tick
+        // would spin forever and bury the note explaining why. Hand the line
+        // back to the composer and stop.
+        if self.chat_input.is_empty() {
+            self.chat_input = text;
+        }
+        let dropped = self.chat_queued.len();
+        self.chat_queued.clear();
+        self.session_note = Some(if dropped == 0 {
+            "Queued message not sent — this conversation is read-only. It is back in the composer."
+                .into()
+        } else {
+            format!(
+                "Queued messages not sent — this conversation is read-only. The first is back in the composer; {dropped} more discarded."
+            )
+        });
+        Some(Action::Render)
     }
 
     /// Finalize the in-flight bubble as an error (the converse stream failed).
@@ -5805,6 +5960,13 @@ impl App {
     /// due step refetches the browser once and re-arms the next, longer gap;
     /// the burst ends on its own after `LaunchRefresh::GAPS`.
     fn on_tick(&mut self) -> Action {
+        // A queued turn sends the moment the pane is idle. Checked here, ahead
+        // of the launch refresh, because an owner waiting on their own queued
+        // message is more latency-sensitive than a background poll — which at
+        // worst slips a single tick, and only on the frame a turn dispatches.
+        if let Some(action) = self.drain_queued_turn() {
+            return action;
+        }
         let Some(refresh) = self.session_browser.launch_refresh.as_mut() else {
             return Action::None;
         };
@@ -9951,6 +10113,11 @@ impl App {
             && code == KeyCode::Char('x')
             && mods.contains(KeyModifiers::CONTROL)
         {
+            // Interrupt means STOP, so the queue goes with the turn. Draining it
+            // into the session the owner just halted would restart exactly the
+            // work they interrupted — and the drain fires within one tick, so
+            // there is no window in which to reconsider.
+            self.chat_queued.clear();
             if self.su_session.is_some() {
                 return self.su_session_control(crate::su_session::SuSessionControl::Interrupt {
                     reason: Some("owner interrupt".into()),
@@ -9974,68 +10141,14 @@ impl App {
                     Action::Render
                 }
                 KeyCode::Enter => {
+                    // A turn is in flight: QUEUE the line rather than swallowing
+                    // the keypress (P-007 draft queuing). It sends itself when
+                    // the turn settles.
                     if self.chat_streaming {
-                        return Action::Render; // a turn is in flight — wait for it
+                        return self.queue_chat_turn();
                     }
                     let text = self.chat_input.clone();
-                    if text.trim().is_empty() {
-                        return Action::Render;
-                    }
-                    // P-013: every writable PUI conversation now uses the typed
-                    // SU-session host. Legacy/unclassified rows remain readable
-                    // history and refuse dispatch instead of silently re-homing.
-                    let decision = self.su_dispatch_decision();
-                    self.su_last_dispatch = Some(decision);
-                    // Name the runtime AND, when a conversation is loaded, the
-                    // recorded class the decision was taken from — an owner
-                    // looking at a surprising target needs to see the input that
-                    // produced it, not just the verdict.
-                    self.session_note = Some(match self.pui_runtime_class {
-                        Some(class) => format!(
-                            "this turn → {} [conversation: {}]",
-                            decision.reason.note(),
-                            class.as_str()
-                        ),
-                        None => format!("this turn → {}", decision.reason.note()),
-                    });
-                    if decision.target == crate::su_session::SuDispatchTarget::ReadOnly {
-                        return Action::Render;
-                    }
-                    // Unknown delivery must reconcile the original command;
-                    // never mint a second turn because its acknowledgement fell
-                    // off the wire. Keep any newly edited draft separately.
-                    let text = if let Some(pending) =
-                        self.su_pending_turn.as_ref().filter(|p| p.uncertain)
-                    {
-                        pending.content.clone()
-                    } else {
-                        self.su_pending_turn = Some(PendingSuTurn {
-                            command_id: format!("pui-{}", crate::command_nonce()),
-                            content: text.clone(),
-                            command: None,
-                            uncertain: false,
-                            error: None,
-                        });
-                        text
-                    };
-                    self.chat_streaming = true;
-                    self.chat_scroll = 0;
-                    match decision.target {
-                        crate::su_session::SuDispatchTarget::AttachedSuSession => {
-                            Action::SendSuSessionTurn(text)
-                        }
-                        crate::su_session::SuDispatchTarget::OpenSuSession(backend) => {
-                            Action::OpenSuSession {
-                                harness: self.harness.clone(),
-                                role: self.agent_chat_role.clone(),
-                                backend,
-                                carry: "warm".into(),
-                                launch: self.su_session_launch_options(),
-                                initial_turn: Some(text),
-                            }
-                        }
-                        crate::su_session::SuDispatchTarget::ReadOnly => Action::Render,
-                    }
+                    self.dispatch_chat_turn(text).unwrap_or(Action::Render)
                 }
                 // Up/Down recall submitted lines. They were previously inert here
                 // (the composer captures all input, so they fell to Action::None).
