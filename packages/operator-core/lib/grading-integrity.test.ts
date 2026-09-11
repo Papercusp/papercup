@@ -5,8 +5,12 @@ import {
   dispatchPendingGradingAudits,
   GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   GRADING_AUDIT_DISPATCH_LIMIT,
+  GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS,
+  GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS,
+  GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS,
   GRADING_INTEGRITY_RUBRIC_REF,
   reconcilePendingGradingAudits,
+  resolveGradingAuditQuotaBackoff,
   type GradingAuditReservationResult,
   type DispatchPendingGradingAuditsDeps,
   type DispatchPendingGradingAuditsInput,
@@ -834,5 +838,202 @@ describe('dispatchPendingGradingAudits', () => {
     expect(firstRetryKey).toMatch(/^grading-audit:EI-dead-receipt:recovery:[a-f0-9]{16}$/);
     expect(secondRetryKey).toMatch(/^grading-audit:EI-dead-receipt:recovery:[a-f0-9]{16}$/);
     expect(secondRetryKey).not.toBe(firstRetryKey);
+  });
+});
+
+// EI-22978598482930667. Measured over the WHOLE grading-audit log population on
+// 2026-09-11 (n=6163, deliberately not a recency head): 2228 legs died on the
+// pty-host `(quota-blocked)` drop and 2523 launches were refused by the walled-pool
+// preflight, every refusal printing a contiguous `earliest known recovery <ISO>`.
+// Nothing consumed either signal, so the ~55s sweep tick relaunched the same doomed
+// judge forever. These cover the suppression that stops it.
+describe('resolveGradingAuditQuotaBackoff', () => {
+  const NOW = Date.parse('2026-09-11T16:00:00.000Z');
+  const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
+  const refusalLog = (horizon: string) =>
+    'psu: REFUSING TO LAUNCH — Codex auto-route pool is fully walled: 0 of 7 ChatGPT accounts ' +
+    `serviceable; earliest known recovery ${horizon}. Every model call would fail fast with 429.`;
+
+  it('takes the EARLIEST future candidate, whichever source supplies it', async () => {
+    const ledgerFirst = await resolveGradingAuditQuotaBackoff({
+      code: 'model_quota_exhausted',
+      logTail: refusalLog(iso(90 * 60_000)),
+      nowMs: NOW,
+      readProviderResets: async () => [NOW + 40 * 60_000, NOW + 5 * 60 * 60_000],
+    });
+    expect(ledgerFirst).toMatchObject({ until: iso(40 * 60_000), source: 'account-ledger' });
+
+    const horizonFirst = await resolveGradingAuditQuotaBackoff({
+      code: 'model_quota_exhausted',
+      logTail: refusalLog(iso(20 * 60_000)),
+      nowMs: NOW,
+      readProviderResets: async () => [NOW + 3 * 60 * 60_000],
+    });
+    expect(horizonFirst).toMatchObject({ until: iso(20 * 60_000), source: 'launcher-horizon' });
+  });
+
+  it('clamps a candidate below the floor up, and a far-future one down to the ceiling', async () => {
+    // Below MIN: a pool that "recovers" in a minute must not collapse back into
+    // the sweep-tick busy loop this suppression exists to stop.
+    const tooSoon = await resolveGradingAuditQuotaBackoff({
+      code: 'model_quota_exhausted',
+      logTail: refusalLog(iso(60_000)),
+      nowMs: NOW,
+      readProviderResets: async () => [],
+    });
+    expect(tooSoon).toMatchObject({
+      until: iso(GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS),
+      source: 'launcher-horizon',
+    });
+
+    // Above MAX, using the real horizon codex printed on 2026-09-11 (~3.4 days
+    // out): a wrong-but-plausible far reset must degrade to "re-probe in six
+    // hours", never strand the audit queue for days.
+    const tooFar = await resolveGradingAuditQuotaBackoff({
+      code: 'model_quota_exhausted',
+      logTail: refusalLog('2026-09-15T01:25:13.000Z'),
+      nowMs: NOW,
+      readProviderResets: async () => [],
+    });
+    expect(tooFar).toMatchObject({
+      until: iso(GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS),
+      source: 'launcher-horizon',
+    });
+  });
+
+  it('reports source "default" rather than inventing a reset when neither source yields a FUTURE instant', async () => {
+    const backoff = await resolveGradingAuditQuotaBackoff({
+      code: 'model_quota_exhausted',
+      // Both candidates are in the past: an already-elapsed horizon is not a
+      // recovery time, and reading it as one would suppress against nothing.
+      logTail: refusalLog(iso(-60 * 60_000)),
+      nowMs: NOW,
+      readProviderResets: async () => [NOW - 10 * 60_000],
+    });
+    expect(backoff).toMatchObject({
+      until: iso(GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS),
+      source: 'default',
+      code: 'model_quota_exhausted',
+      recordedAt: iso(0),
+    });
+    expect(backoff.reason).toContain('no recoverable reset');
+  });
+
+  it('fails OPEN to the default window when the account-ledger read throws', async () => {
+    const backoff = await resolveGradingAuditQuotaBackoff({
+      code: 'model_quota_exhausted',
+      nowMs: NOW,
+      readProviderResets: async () => {
+        throw new Error('account pool store unavailable');
+      },
+    });
+    expect(backoff).toMatchObject({
+      until: iso(GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS),
+      source: 'default',
+    });
+  });
+});
+
+describe('terminal grading-audit failures record a backoff only for a quota wall', () => {
+  const NOW = Date.parse('2026-09-11T16:00:00.000Z');
+  // Verbatim shape of the launcher refusal, taken from the real fleet logs.
+  const WALLED_POOL_REFUSAL =
+    'psu: REFUSING TO LAUNCH — Codex auto-route pool is fully walled: 0 of 7 ChatGPT accounts ' +
+    'serviceable; earliest known recovery 2026-09-11T17:00:00.000Z. Every model call would fail ' +
+    'fast with 429, so this launch can only burn quota.';
+
+  it('records a reset-aware backoff in the SAME release that drops a quota-terminal reservation', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-walled')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-primary', logPath: '/tmp/primary.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-fallback', logPath: '/tmp/fallback.log' }] },
+        }),
+      );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-walled'], ctx },
+      {
+        ...d,
+        killTask,
+        readLogTail: () => WALLED_POOL_REFUSAL,
+        sleep: async () => undefined,
+        terminalLogRecheckDelayMs: 0,
+        terminalLogMaxRechecks: 0,
+        now: () => NOW,
+        readProviderResets: async () => [],
+      },
+    );
+
+    expect(d.release).toHaveBeenCalledWith('EI-walled', 'grading-audit:EI-walled', {
+      workspaceId: 'ws-test',
+      backoff: {
+        until: '2026-09-11T17:00:00.000Z',
+        source: 'launcher-horizon',
+        code: 'model_quota_exhausted',
+        recordedAt: '2026-09-11T16:00:00.000Z',
+        reason: 'terminal model_quota_exhausted; suppressing re-dispatch until the launcher-horizon reset',
+      },
+    });
+    expect(result.receipts[0]).toMatchObject({
+      state: 'failed',
+      reason: expect.stringContaining('re-dispatch suppressed until 2026-09-11T17:00:00.000Z'),
+    });
+  });
+
+  it('does NOT suppress a non-quota terminal failure, even with a recoverable reset on the ledger', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-dead-receipt-twice')]);
+    d.launch.mockResolvedValue(
+      launchResult({
+        deduped: true,
+        launch: { tasks: [{ taskId: 'task-dead', logPath: '/tmp/dead.log' }] },
+      }),
+    );
+    d.getTask.mockResolvedValue({ state: 'killed' } as Awaited<ReturnType<GetTask>>);
+    const killTask = vi.fn(async (taskId: string) => ({
+      ok: false as const,
+      taskId,
+      action: 'kill',
+      error: 'not_live' as const,
+    }));
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-dead-receipt-twice'], ctx },
+      {
+        ...d,
+        killTask,
+        readLogTail: () => 'no terminal model error was logged',
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+        now: () => NOW,
+        // A live, recoverable reset IS available. If the gate on
+        // `model_quota_exhausted` were ever dropped, this arm would start
+        // producing a backoff and the assertions below would fail — which is
+        // the point of supplying it rather than an empty ledger.
+        readProviderResets: async () => [NOW + 40 * 60_000],
+      },
+    );
+
+    expect(result.receipts[0]).toMatchObject({
+      state: 'failed',
+      terminalRecovery: expect.objectContaining({
+        codes: ['task_receipt_not_live', 'task_receipt_not_live'],
+      }),
+    });
+    // Exact third argument: no `backoff` key at all, so the next sweep retries.
+    expect(d.release).toHaveBeenCalledWith('EI-dead-receipt-twice', 'grading-audit:EI-dead-receipt-twice', {
+      workspaceId: 'ws-test',
+    });
+    expect(result.receipts[0]?.reason).not.toContain('suppressed');
   });
 });

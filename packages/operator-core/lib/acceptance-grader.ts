@@ -236,6 +236,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowStandaloneWeeklyLimit = false,
     allowInferenceGatewayError = false,
     allowLauncherQuotaDrop = false,
+    allowLauncherWalledPoolRefusal = false,
     detectStartupStall = true,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
@@ -264,6 +265,12 @@ export async function detectAcceptanceGraderTerminalFailure(
      * frozen evidence may quote launcher diagnostics.
      */
     allowLauncherQuotaDrop?: boolean;
+    /**
+     * EI-22978598482930667: recognize psu's walled-pool launch REFUSAL (exit 78)
+     * as terminal. Forwarded verbatim to the classifier; see its option doc for
+     * why this stays opt-in rather than always-on.
+     */
+    allowLauncherWalledPoolRefusal?: boolean;
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
@@ -279,6 +286,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError,
       allowLauncherQuotaDrop,
+      allowLauncherWalledPoolRefusal,
     });
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
@@ -298,6 +306,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError,
       allowLauncherQuotaDrop,
+      allowLauncherWalledPoolRefusal,
     });
     if (terminalFailure) return terminalFailure;
     startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
@@ -337,7 +346,7 @@ export function classifyAcceptanceGraderTerminalFailure(
     allowLauncherQuotaDrop?: boolean;
     /**
      * EI-22978598482930667: psu REFUSES a launch whose auto-route pool is
-     * provably walled and exits {@link ACCEPTANCE_GRADER_WALLED_POOL_REFUSAL_EXIT}
+     * provably walled and exits 78
      * rather than spawning a doomed agent. That refusal is terminal for the
      * mission, but nothing classified it, so a fire-and-forget dispatcher read a
      * refused launch as a LAUNCHED one and held its reservation until the TTL.
