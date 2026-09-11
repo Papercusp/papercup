@@ -2951,6 +2951,39 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 }
             }
         }
+        // P-007 change cards: the affordance. The diff overlay is reachable
+        // only by Enter on a CURSORED block, which nothing else on this screen
+        // says — a modal no reader can discover is not a shipped feature. So
+        // every turn that edited a file states that its diffs exist, and names
+        // the key that actually applies from where the reader is standing:
+        // `Enter` once the cursor is on this block, `{`/`}` to get it there.
+        //
+        // `is_change_card` and not `cards_for_message`: this runs for every
+        // visible turn on every frame, and building the cards would run an LCS
+        // diff per edit call per frame to answer a yes/no question.
+        let card_count = m
+            .tools
+            .iter()
+            .filter(|t| crate::change_card::is_change_card(t))
+            .count();
+        if card_count > 0 {
+            let reachable_now = app.chat_focus.is_some() && Some(block_idx) == copy_focus;
+            lines.push(Line::from(Span::styled(
+                trunc(
+                    &format!(
+                        "    {card_count} change card{} · {}",
+                        if card_count == 1 { "" } else { "s" },
+                        if reachable_now {
+                            "Enter opens the diff"
+                        } else {
+                            "{ } to focus this turn, then Enter"
+                        }
+                    ),
+                    inner_w,
+                ),
+                Theme::info(),
+            )));
+        }
         lines.push(Line::from("")); // blank separator between turns
     }
 
@@ -8653,5 +8686,156 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected:?}: {text:?}");
         }
+    }
+
+    // --- change-card overlay (P-007) -------------------------------------
+
+    /// An app holding one open change card, built through the REAL detector so
+    /// the fixture cannot drift from what a live tool call resolves to.
+    /// `chat_messages` is deliberately left EMPTY: the open card is a snapshot,
+    /// and a paint that needed the transcript to still hold the message would
+    /// go blank the moment history reloaded under it.
+    fn card_app(scroll: usize) -> App {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        let tool = crate::models::ChatToolCall {
+            name: "capability:edit".into(),
+            id: Some("c1".into()),
+            needs_approval: false,
+            input: Some(serde_json::json!({
+                "file_path": "apps/tui/src/app.rs",
+                "old_string": "alpha\nbravo\ncharlie",
+                "new_string": "alpha\nBRAVO\ncharlie",
+            })),
+            result: None,
+            outcome: ToolOutcome::Ok,
+        };
+        let card =
+            crate::change_card::card_for_tool(&tool, 0, 0).expect("fixture must resolve to a card");
+        assert_eq!(
+            card.render_lines().len(),
+            7,
+            "the scroll assertions below are written against this exact body"
+        );
+        app.open_change_card = Some(crate::app::OpenChangeCard { card, scroll });
+        app
+    }
+
+    #[test]
+    fn an_open_change_card_paints_its_diff_and_its_keys() {
+        let text = render(&card_app(0), 120, 40);
+        for expected in [
+            " alpha",  // context keeps the gutter column
+            "-bravo",  // removed
+            "+BRAVO",  // added
+            "@@ hunk 1/1 @@",
+            "app.rs",   // the frame's pager status line names the file
+            "1-7/7",    // ...and where in it the reader is
+            "Esc close", // the key footer
+            "y copy",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}: {text:?}");
+        }
+    }
+
+    /// The transcript must SAY a turn has diffs, and must name the key that
+    /// works from where the reader is actually standing. With no cursor set,
+    /// `effective_chat_focus()` still resolves to the newest block — so a hint
+    /// keyed off that would promise "Enter opens the diff" on the very common
+    /// turn whose last act was a file edit, where Enter in fact opens the
+    /// composer. The wrong-key half of this test is the load-bearing half.
+    #[test]
+    fn a_turn_that_edited_a_file_advertises_its_diffs_with_the_key_that_applies() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        let mut msg = crate::models::ChatMessage::assistant("patched it");
+        msg.tools = vec![
+            crate::models::ChatToolCall {
+                name: "capability:edit".into(),
+                id: Some("c1".into()),
+                needs_approval: false,
+                input: Some(serde_json::json!({
+                    "file_path": "apps/tui/src/app.rs",
+                    "old_string": "alpha",
+                    "new_string": "omega",
+                })),
+                result: None,
+                outcome: ToolOutcome::Ok,
+            },
+            // A non-editing call must not be counted.
+            crate::models::ChatToolCall {
+                name: "Bash".into(),
+                id: Some("c2".into()),
+                needs_approval: false,
+                input: Some(serde_json::json!({ "command": "ls" })),
+                result: None,
+                outcome: ToolOutcome::Ok,
+            },
+        ];
+        app.chat_messages = vec![msg];
+
+        let uncursored = render(&app, 120, 40);
+        assert!(
+            uncursored.contains("1 change card"),
+            "the turn must advertise its diff (and count only the edit): {uncursored:?}"
+        );
+        assert!(
+            uncursored.contains("{ } to focus this turn"),
+            "with no cursor, the hint must name the key that gets one: {uncursored:?}"
+        );
+        assert!(
+            !uncursored.contains("Enter opens the diff"),
+            "with no cursor Enter opens the COMPOSER — promising a diff is a lie: {uncursored:?}"
+        );
+
+        app.chat_focus = Some(0);
+        let cursored = render(&app, 120, 40);
+        assert!(
+            cursored.contains("Enter opens the diff"),
+            "once cursored, Enter really does open it: {cursored:?}"
+        );
+    }
+
+    /// CALIBRATION. Every assertion above passes just as well if the overlay
+    /// ignores `scroll` and always paints from line 0, or if it paints whenever
+    /// the app is on the Operator tab rather than when a card is actually open.
+    /// This is the test that can tell those apart.
+    #[test]
+    fn the_overlay_honours_scroll_and_paints_only_while_a_card_is_open() {
+        // Scrolled past the removed line, it must leave the screen — and the
+        // position indicator must agree with what is on it.
+        let scrolled = render(&card_app(5), 120, 40);
+        assert!(
+            !scrolled.contains("-bravo"),
+            "a scrolled viewport must drop the lines above it: {scrolled:?}"
+        );
+        assert!(scrolled.contains("+BRAVO"), "and keep the ones in it");
+        assert!(
+            scrolled.contains("6-7/7"),
+            "the status line must report the visible range: {scrolled:?}"
+        );
+
+        // With no card open the overlay must not paint at all.
+        let mut closed = card_app(0);
+        closed.open_change_card = None;
+        let text = render(&closed, 120, 40);
+        for absent in ["Esc close", "@@ hunk 1/1 @@", "+BRAVO"] {
+            assert!(
+                !text.contains(absent),
+                "the closed transcript must not paint {absent:?}: {text:?}"
+            );
+        }
+
+        // The pinned single-pane dock returns early from `draw`, so it needs
+        // the paint wired separately — the same omission that once left `N`
+        // opening a notifications overlay that never drew in a dock pane. The
+        // chat dock's operator pane is precisely where a card gets opened.
+        let mut pinned = card_app(0);
+        pinned.pinned = Some(Tab::Operator);
+        let docked = render(&pinned, 120, 40);
+        assert!(
+            docked.contains("+BRAVO") && docked.contains("Esc close"),
+            "the card must paint in a pinned dock pane too: {docked:?}"
+        );
     }
 }
