@@ -283,14 +283,46 @@ const NEW_KEYS: &[&str] = &["new_string", "newString", "new_str", "newText", "ne
 const CONTENT_KEYS: &[&str] = &["content", "contents", "text", "file_text"];
 
 /// Build the card for one tool call, or `None` when it is not a file edit.
+/// The admission test: everything [`card_for_tool`] must establish BEFORE it
+/// can start diffing, and therefore everything that decides whether a tool call
+/// has a card at all.
+///
+/// Factored out so [`is_change_card`] and [`card_for_tool`] cannot disagree by
+/// construction. The alternative — a second hand-written predicate — is exactly
+/// the drift the repo guide's derived-truth rule warns about, and it would fail
+/// in the direction that matters: an affordance offering a diff that `Enter`
+/// then declines to open.
+fn admit<'a>(tool: &'a ChatToolCall) -> Option<(ChangeKind, &'a Map<String, Value>, String)> {
+    let kind = kind_of(&tool.name)?;
+    let input = tool.input.as_ref()?.as_object()?;
+    let path = pick(input, PATH_KEYS)?.to_string();
+    // A `MultiEdit` with no `edits` array carries no edit pairs, so it resolves
+    // to nothing further down. Checking it here keeps the two entry points
+    // agreeing on the one kind whose payload can be structurally absent.
+    if kind == ChangeKind::MultiEdit && input.get("edits").and_then(Value::as_array).is_none() {
+        return None;
+    }
+    Some((kind, input, path))
+}
+
+/// Whether this tool call resolves to a change card — WITHOUT building the
+/// diff.
+///
+/// The transcript asks this of every visible tool call on every frame, and
+/// [`card_for_tool`] runs an LCS diff bounded only at [`LCS_MAX_LINES`] a side:
+/// calling it just to ask "is there a diff here?" would put a worst-case
+/// 160k-cell computation per edit call on the render path, which is the
+/// quadratic-work-per-frame anti-pattern the performance guide opens with.
+pub fn is_change_card(tool: &ChatToolCall) -> bool {
+    admit(tool).is_some()
+}
+
 pub fn card_for_tool(
     tool: &ChatToolCall,
     message_index: usize,
     tool_index: usize,
 ) -> Option<ChangeCard> {
-    let kind = kind_of(&tool.name)?;
-    let input = tool.input.as_ref()?.as_object()?;
-    let path = pick(input, PATH_KEYS)?.to_string();
+    let (kind, input, path) = admit(tool)?;
 
     let replace_all = input
         .get("replace_all")
@@ -418,14 +450,11 @@ pub fn cards_for_message(msg: &ChatMessage, message_index: usize) -> Vec<ChangeC
         .collect()
 }
 
-/// Every change card in the transcript, in transcript order.
-pub fn cards_in(messages: &[ChatMessage]) -> Vec<ChangeCard> {
-    messages
-        .iter()
-        .enumerate()
-        .flat_map(|(i, m)| cards_for_message(m, i))
-        .collect()
-}
+// A whole-transcript `cards_in(&[ChatMessage])` used to live here. It is gone
+// on purpose: its only plausible caller was the renderer, and collecting every
+// card in the conversation means running an LCS diff per edit call per frame —
+// the quadratic-work-per-frame trap. The renderer asks `is_change_card` instead
+// (admission only, no diff) and builds the one card the reader actually opened.
 
 // ---------------------------------------------------------------------------
 // Line diff
@@ -827,12 +856,77 @@ mod tests {
             json!({"file_path": "b.rs", "content": "z\n"}),
         )];
 
-        let cards = cards_in(&[ChatMessage::user("go"), m0, m1]);
-        assert_eq!(cards.len(), 2, "only the two editing calls are cards");
-        assert_eq!((cards[0].message_index, cards[0].tool_index), (1, 1));
-        assert_eq!((cards[1].message_index, cards[1].tool_index), (2, 0));
-        assert_eq!(cards[0].path, "a.rs");
-        assert_eq!(cards[1].path, "b.rs");
+        // The transcript addresses a card by (message, call) so it can be
+        // re-found without re-running detection. The non-editing `Bash` call
+        // still consumes tool_index 0, which is the part a naive `enumerate()`
+        // over only the cards would get wrong.
+        let m0_cards = cards_for_message(&m0, 1);
+        let m1_cards = cards_for_message(&m1, 2);
+        assert_eq!(m0_cards.len(), 1, "only the editing call is a card");
+        assert_eq!((m0_cards[0].message_index, m0_cards[0].tool_index), (1, 1));
+        assert_eq!(m0_cards[0].path, "a.rs");
+        assert_eq!(m1_cards.len(), 1);
+        assert_eq!((m1_cards[0].message_index, m1_cards[0].tool_index), (2, 0));
+        assert_eq!(m1_cards[0].path, "b.rs");
+        assert!(
+            cards_for_message(&ChatMessage::user("go"), 0).is_empty(),
+            "a message with no tool calls has no cards"
+        );
+    }
+
+    /// `is_change_card` is what the transcript paints its "Enter to open"
+    /// affordance from, and `card_for_tool` is what Enter then runs. If they
+    /// ever disagree the UI offers a diff that does not open (or hides one that
+    /// would), so pin them to each other over the awkward inputs rather than
+    /// trusting that they share `admit`.
+    #[test]
+    fn the_cheap_predicate_admits_exactly_what_card_for_tool_admits() {
+        let mut no_input = call("capability:edit", json!({}));
+        no_input.input = None;
+        let cases: Vec<ChatToolCall> = vec![
+            // Admitted.
+            call(
+                "capability:edit",
+                json!({"file_path": "a.rs", "old_string": "x", "new_string": "y"}),
+            ),
+            call("Write", json!({"file_path": "a.rs", "content": "x\n"})),
+            call(
+                "MultiEdit",
+                json!({"file_path": "a.rs", "edits": [{"old_string": "x", "new_string": "y"}]}),
+            ),
+            // A no-op edit is STILL a card (it renders "no textual change"),
+            // which is the case a "does it have hunks?" predicate would miss.
+            call(
+                "Edit",
+                json!({"file_path": "a.rs", "old_string": "same", "new_string": "same"}),
+            ),
+            // Refused, one reason each.
+            call("Bash", json!({"command": "ls"})),
+            no_input,
+            call("capability:edit", json!("not-an-object")),
+            call("capability:edit", json!({"old_string": "x"})),
+            call("MultiEdit", json!({"file_path": "a.rs"})),
+        ];
+        let mut admitted = 0usize;
+        for t in &cases {
+            let built = card_for_tool(t, 0, 0).is_some();
+            assert_eq!(
+                is_change_card(t),
+                built,
+                "predicate and builder disagree on {}: {:?}",
+                t.name,
+                t.input
+            );
+            if built {
+                admitted += 1;
+            }
+        }
+        // CALIBRATION: an `is_change_card` hard-wired to `true` — or to
+        // `false` — passes every assertion above only if the table is lopsided.
+        // Both populations have to be non-empty for the agreement to mean
+        // anything.
+        assert_eq!(admitted, 4, "the fixture table must exercise both answers");
+        assert_eq!(cases.len() - admitted, 5);
     }
 
     #[test]
