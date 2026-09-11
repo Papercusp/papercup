@@ -53,6 +53,10 @@ import {
   classifyFailureScope,
   formatFailureScopeSummary,
   formatSelectedFilesLine,
+  emptyCoverage,
+  foldTaskCoverage,
+  formatCoverageFields,
+  formatNotExecutedSummary,
 } from "./lib/vitest-summary.mjs";
 import {
   RELATED_FILTER_LIST_ENV,
@@ -5540,6 +5544,13 @@ let notCheckedNonGating = 0;
 // break into the same red. Purely additive: never subtracted from `failed`, never
 // changes the exit code or any retry/absorption decision.
 let timedOutTasks = 0;
+// P-006 / R-8 sub-requirement 5 — the test-coverage half of the verdict, which this path
+// discarded while the CHEAP focused path (scripts/test-files.mjs) has stamped it since
+// EI-19380376466745152. Folded at task settlement below; rendered onto the terminal
+// AFFECTED_TESTS_RESULT line. NON-GATING by the same reasoning as `notCheckedNonGating`
+// above: coverage that was not obtained is a non-verdict, and folding a non-verdict into a
+// gating counter is what red-pinned candidate 57483d0491 for the whole fleet.
+let coverage = emptyCoverage();
 // The real counters now exist, so an abort during the run loop below — the long
 // window this whole mechanism is about — reports what had actually happened when
 // the signal landed, not the pre-run zeros. Declared here rather than at the top
@@ -6445,6 +6456,40 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
   }
 }
 
+/**
+ * P-006 / R-8 sub-requirement 5 — fold one settled task's own output into the run's coverage
+ * tally, at the same settlement seam the verdict cache already uses.
+ *
+ * Settlement is the right seam for the same reason it was right there: it is the ONLY point
+ * that sees every task that actually ran, exactly once, with its captured output still in hand.
+ * A task that never settles (admission starvation, the wall-clock deadline) is already counted
+ * as `undeterminedTasks`, and deliberately contributes no coverage — reporting a zero for a task
+ * that never started would be the same defect this whole tally exists to remove.
+ *
+ * FAIL-OPEN, and that is load-bearing: this callback is awaited inside runBudgetedTasks' own
+ * try/catch, which RE-THROWS, so an exception here would abort a ~40min gate suite. The tally is
+ * an OBSERVATION — losing it costs visibility and never certifies an unverified task — so a
+ * broken tally must degrade to silence, never to a lost run. Same reasoning, and the same
+ * loud-not-fatal shape, as its sibling above.
+ */
+function foldSettledTaskCoverage(scheduled) {
+  try {
+    const value = scheduled?.value ?? {};
+    coverage = foldTaskCoverage(coverage, {
+      task: taskKey(scheduled.task.t),
+      output: `${value.stdout ?? ""}${value.stderr ?? ""}`,
+    });
+  } catch (error) {
+    // Counted the same way a cache defect is: visible on a line a triager already greps,
+    // never fatal. An unreadable tally is reported as unreadable, never as a measured zero.
+    coverage = { ...coverage, unreadableTasks: coverage.unreadableTasks + 1 };
+    errSync(
+      `AFFECTED_TESTS_COVERAGE status=defect reason=${error.message} ` +
+        `(BUG in foldSettledTaskCoverage — coverage accounting degraded, suite continues)`,
+    );
+  }
+}
+
 // WI-1490656: admission starvation must end as an ATTRIBUTABLE verdict, not a lost run.
 // `runBudgetedTaskShards` now bounds the total time this invocation may spend queued on the
 // shared admission mutex. When that budget is spent, `withFsMutex` throws — and at top level
@@ -6529,7 +6574,13 @@ try {
   estimateMs: (context) =>
     durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => runCapturedTask(context, allocation),
-  onTaskSettled: persistCleanFirstPassTaskVerdict,
+  onTaskSettled: (scheduled) => {
+    // Coverage first: it is pure bookkeeping over output already in hand, while the verdict
+    // cache does filesystem work whose environmental failures are tolerated. Ordering them
+    // this way keeps a slow or failing cache write from costing the tally.
+    foldSettledTaskCoverage(scheduled);
+    persistCleanFirstPassTaskVerdict(scheduled);
+  },
   // WI-1490656: send the shared-admission queue notices through `errSync`, so they land in
   // BOTH stderr and this run's own log. The scheduler's default sink is `console.error`,
   // which never reaches `RUN_LOG_PATH` — the file the BEGIN line explicitly tells a triager
@@ -7308,6 +7359,18 @@ if (notCheckedNonGating) {
   );
   for (const name of notCheckedTaskNames) errSync(`  - ${name}`);
 }
+// P-006 / R-8 sub-req 5 — emits `AFFECTED_TESTS_NOT_EXECUTED`, the sibling disclosure, and
+// deliberately placed beside AFFECTED_TESTS_NOT_CHECKED rather than folded into it. Both name
+// coverage the run did not obtain, but they are different facts: NOT_CHECKED is a guard that
+// declared up front it would look at nothing, while AFFECTED_TESTS_NOT_EXECUTED is a suite that
+// COLLECTED tests and executed none of them — the shape that reads identically to a pass
+// (EI-19380376466745152). Non-gating for the same reason as its neighbour, and it says so on its
+// own line. The token is named here, not just in the formatter, so a triager grepping THIS
+// script for the marker they saw in a log lands on the emission site.
+{
+  const notExecuted = formatNotExecutedSummary(coverage);
+  if (notExecuted) errSync(`\n${notExecuted}`);
+}
 // EI-18796017307093897: a caller observed a background `npm run test:affected`
 // job report "completed, exit code 0" while this SAME run's own log said "1
 // non-quarantined task(s) failed" — i.e. the wrapper/notification layer that
@@ -7324,7 +7387,12 @@ if (notCheckedNonGating) {
 // notifier can grep RUN_LOG_PATH for this line instead of trusting a
 // possibly-misreported exit code alone.
 const resultLine = (status) =>
-  `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks} undeterminedTasks=${undeterminedTasks}`;
+  `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks} undeterminedTasks=${undeterminedTasks}` +
+  // P-006 / R-8 sub-req 5. APPEND-ONLY, and that is the compatibility contract: green-checkpoint.ts
+  // matches this line whole (SUITE_REFUSAL_LINE_RE) and every other reader tokenises `k=v`, so
+  // trailing fields reach existing parsers inert. The prefix through `undeterminedTasks=` stays
+  // byte-identical, exactly as the abort-path line above already promises.
+  ` ${formatCoverageFields(coverage)}`;
 // EI-19416573016968871: which files RAN, stated by the run itself. The verdict log already
 // names the files that FAILED; without this counterpart "no FAIL row for X" is
 // indistinguishable from "X never ran", and because test:affected only runs the workspaces

@@ -307,9 +307,25 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
 
   describe('source shape: the paths too expensive to execute here', () => {
     it('defines resultLine() from the same verdict counters that decide the exit code', () => {
+      // The VERDICT prefix stays byte-identical through `undeterminedTasks=`. That is the
+      // compatibility contract this pin exists to enforce: green-checkpoint.ts matches the
+      // marker line whole and every other reader tokenises `k=v`, so fields may only ever be
+      // APPENDED after this point — never reordered, renamed, or inserted among these.
       expect(source).toMatch(
-        /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\} timedOutTasks=\$\{timedOutTasks\} undeterminedTasks=\$\{undeterminedTasks\}`;/,
+        /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\} timedOutTasks=\$\{timedOutTasks\} undeterminedTasks=\$\{undeterminedTasks\}`/,
       );
+    });
+
+    it('appends the coverage fields AFTER the verdict counters, never among them', () => {
+      // P-006 / R-8 sub-req 5. Asserted as a separate concatenated segment on purpose: a run
+      // that reports `failed=0` while having executed nothing is the failure this whole tally
+      // exists to make visible, so the fields must be ON the line agents paste as evidence.
+      const start = source.indexOf('const resultLine = (status) =>');
+      expect(start, 'resultLine() is no longer declared as expected').toBeGreaterThan(-1);
+      const decl = source.slice(start, source.indexOf(';', start));
+      expect(decl).toContain('undeterminedTasks=${undeterminedTasks}`');
+      // Concatenated after the verdict template, not interpolated inside it.
+      expect(decl).toMatch(/\+\s*(?:\n\s*\/\/[^\n]*)*\n\s*` \$\{formatCoverageFields\(coverage\)\}`/);
     });
 
     it('marks a pre-launch budget refusal as not measured, not zero failures', () => {
