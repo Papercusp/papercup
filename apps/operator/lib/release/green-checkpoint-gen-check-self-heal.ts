@@ -20,8 +20,7 @@
  * R-5's contract: the leg fails only when regeneration itself fails. Every other
  * non-heal outcome is typed and logged LOUDLY (R-7) so a held red says why it held.
  */
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -318,12 +317,17 @@ export function makeRealGenCheckHealIo(input: RealGenCheckHealIoInput): GenCheck
         for (const p of paths) {
           const abs = join(input.checkpointRoot, p);
           // A writer may DELETE a stale artifact; that is a removal in the source commit.
-          const exists = spawnSync("test", ["-e", abs]).status === 0;
+          const exists = existsSync(abs);
           if (!exists) {
             gitOk(["update-index", "--force-remove", "--", p], input.integrationRoot, indexEnv);
             continue;
           }
-          const isExec = spawnSync("test", ["-x", abs]).status === 0;
+          // The only consumer is the 100755-vs-100644 cacheinfo mode below, which git
+          // derives from the file's EXECUTE BITS — so read them directly rather than
+          // spawning `test -x` per path (a start outside admission, and one subprocess
+          // per artifact). `lint:resource-governor-enforcement` requires every start to
+          // route through Governor.admit; the cheapest compliance is not to start.
+          const isExec = (statSync(abs).mode & 0o111) !== 0;
           const blob = gitOk(["hash-object", "-w", "--path", p, "--", abs], input.integrationRoot).trim();
           if (!SHA_RE.test(blob)) throw new Error(`hash-object ${p} produced no sha`);
           gitOk(
