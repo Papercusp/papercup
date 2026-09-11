@@ -65,6 +65,29 @@ describe('getMemoryBlockBounded', () => {
     expect(next.calls()).toBe(1); // background revalidate with the new query
   });
 
+  it('EI-22676212457824880: a deadline-abandoned build is served as `ready` on the next turn of the same scope', async () => {
+    // Discriminator for the production warning "omitting the section this turn; the
+    // in-flight build will serve the next one": H1 (designed SWR path — turn 2 gets the
+    // block) vs H2 (turn 2 starved — null again). Same scopeKey both turns, as
+    // converse-prompt.ts builds it per conversation.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = createCache({ clock: () => Date.now() });
+    const turn1 = controlledBuild('LATE-BLOCK');
+    const p1 = getMemoryBlockBoundedResult('ws', 'papercup:u1:c1', turn1.build, { cache, deadlineMs: 2000 });
+    await vi.advanceTimersByTimeAsync(2001);
+    await expect(p1).resolves.toEqual({ status: 'deadline', block: null });
+
+    turn1.resolveAll();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const turn2 = controlledBuild('TURN2-BLOCK');
+    await expect(
+      getMemoryBlockBoundedResult('ws', 'papercup:u1:c1', turn2.build, { cache, deadlineMs: 2000 }),
+    ).resolves.toEqual({ status: 'ready', block: 'LATE-BLOCK' });
+    expect(turn1.calls()).toBe(1);
+    expect(turn2.calls()).toBe(1); // background revalidate, not a blocking rebuild
+  });
+
   it('keeps a deadline distinct from a completed empty build for delivery metrics', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const cache = createCache({ clock: () => Date.now() });
