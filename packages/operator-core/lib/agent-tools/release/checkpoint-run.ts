@@ -82,6 +82,7 @@ import {
 } from '../../release/checkpoint-serializer-authority';
 import {
   beginStoredQualification,
+  isTerminalQualificationOutcome,
   qualificationIntentMatches,
   readStoredQualification,
   recordStoredQualificationEligibility,
