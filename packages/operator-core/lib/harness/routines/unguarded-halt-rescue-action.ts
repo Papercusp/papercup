@@ -303,7 +303,21 @@ export function rescueBody(
   ].join('\n');
 }
 
-/** Read fleet members + their turn-recency into candidate rows. */
+/**
+ * Read candidate agents + their turn-recency into rows.
+ *
+ * NOT fleet-scoped, despite the view's name (WI-10001032): `listFleetAssignments({})`
+ * passes no `fleet` option, and `harness_shared.fleet_assignment` UNIONs a
+ * workspace-scoped PRESENCE branch, so solo/interactive agents appear with
+ * fleet_slug=NULL. Verified 2026-09-11: 46 presence + 54 work_item_claim +
+ * 16 plan_item_claim rows carried fleet_slug IS NULL, including the halted
+ * claim-holder that reported this bug.
+ *
+ * This is load-bearing. Removing the eligibility filters downstream only matters
+ * because the SOURCE already sees these agents; re-scoping this read to fleets
+ * would silently restore the original blind spot with every unit test still green,
+ * since those inject candidates directly.
+ */
 export async function readHaltCandidates(): Promise<HaltCandidate[]> {
   const rows = await listFleetAssignments({});
   const agents = groupByAgent(rows);
