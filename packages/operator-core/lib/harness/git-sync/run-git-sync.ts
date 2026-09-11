@@ -1987,6 +1987,39 @@ export const STALE_INDEX_LOCK_MS = 90_000;
  * the git dir via `rev-parse --absolute-git-dir` so submodules (whose `.git` is
  * a file, not a dir) work too. Returns true when the caller should retry.
  */
+/**
+ * Does any live process on this host still hold `lockPath` open? Scans
+ * `/proc/<pid>/fd/*` (Linux) for a descriptor resolving to the lock. Fails
+ * CLOSED on a non-/proc host or a scan error: `true` = "assume held", because
+ * a wrongly-kept orphan costs one more failed tick (the next tick re-checks)
+ * while a wrongly-unlinked live lock truncates the index (EI-22703121889295786).
+ */
+export async function lockHasLiveHolder(lockPath: string): Promise<boolean> {
+  let pids: string[];
+  try {
+    pids = (await readdir('/proc')).filter((n) => /^[0-9]+$/.test(n));
+  } catch {
+    return true; // no /proc → cannot prove absence; never unlink on a guess
+  }
+  if (pids.length === 0) return true;
+  for (const pid of pids) {
+    let fds: string[];
+    try {
+      fds = await readdir(`/proc/${pid}/fd`);
+    } catch {
+      continue; // process exited or not ours to inspect — cannot be holding it on our behalf
+    }
+    for (const fd of fds) {
+      try {
+        if ((await readlink(`/proc/${pid}/fd/${fd}`)) === lockPath) return true;
+      } catch {
+        /* fd closed between readdir and readlink */
+      }
+    }
+  }
+  return false;
+}
+
 async function clearStaleGitLock(
   runGit: RunGit,
   repoPath: string,
@@ -1997,6 +2030,12 @@ async function clearStaleGitLock(
     unlinkFile?: (p: string) => Promise<void>;
     now?: () => number;
     staleMs?: number;
+    /** LIVE-HOLDER GUARD (EI-22703121889295786): mtime alone is NOT proof the
+     *  writer is dead — a `git add -A` walking a multi-MB tree can hold
+     *  `index.lock` open for >90s without touching its mtime, and unlinking it
+     *  under a live writer is exactly how the canonical index was truncated to
+     *  0 bytes. Returns true when some live process still has the lock open. */
+    hasLiveHolder?: (lockPath: string) => Promise<boolean>;
   } = {},
 ): Promise<boolean> {
   const statMtimeMs =
@@ -2011,6 +2050,7 @@ async function clearStaleGitLock(
   const unlinkFile = deps.unlinkFile ?? unlink;
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? STALE_INDEX_LOCK_MS;
+  const hasLiveHolder = deps.hasLiveHolder ?? lockHasLiveHolder;
   const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
   if (gd.code !== 0) return false;
   const lockPath = join(gd.stdout.trim(), lockName);
@@ -2020,6 +2060,12 @@ async function clearStaleGitLock(
   if (ageMs < staleMs) {
     log(
       `[git-sync] ${repoPath}: ${lockName} is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it; this tick fails and the next one self-heals if the writer died`,
+    );
+    return false;
+  }
+  if (await hasLiveHolder(lockPath)) {
+    log(
+      `[git-sync] ${repoPath}: ${lockName} is ${Math.round(ageMs / 1000)}s old but a LIVE process still holds it open — FRESH-BY-HOLDER, not touching it (unlinking under a live writer truncates the index; EI-22703121889295786)`,
     );
     return false;
   }
