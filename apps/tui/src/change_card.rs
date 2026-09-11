@@ -292,7 +292,7 @@ const CONTENT_KEYS: &[&str] = &["content", "contents", "text", "file_text"];
 /// the drift the repo guide's derived-truth rule warns about, and it would fail
 /// in the direction that matters: an affordance offering a diff that `Enter`
 /// then declines to open.
-fn admit<'a>(tool: &'a ChatToolCall) -> Option<(ChangeKind, &'a Map<String, Value>, String)> {
+fn admit(tool: &ChatToolCall) -> Option<(ChangeKind, &Map<String, Value>, String)> {
     let kind = kind_of(&tool.name)?;
     let input = tool.input.as_ref()?.as_object()?;
     let path = pick(input, PATH_KEYS)?.to_string();

@@ -97,9 +97,27 @@ npm run test:file -- packages/operator-core/lib/su-session-restart-journey.integ
   toggle, notifications (push → toast/badge/seq, history backfill, `N`/Esc/inbox
   clear, history cap), and the multi-step tutorial (advance/Esc-skip/F1-reopen).
 - **`ui.rs` — rendering (pure `draw(&App)` over a ratatui `TestBackend`).** Each
-  tab view + every overlay (help, palette, tutorial, toast, notifications) is
-  asserted by rendering to a fixed-size buffer and checking content. Includes the
-  presence sidebar (online-only) and the Inbox notification badge.
+  tab view + every overlay (help, palette, tutorial, toast, notifications, the
+  change-card diff) is asserted by rendering to a fixed-size buffer and checking
+  content. Includes the presence sidebar (online-only) and the Inbox
+  notification badge. The change-card group carries its own calibrations: that
+  the overlay honours `scroll` (the same fixture painted at two offsets — an
+  overlay ignoring `scroll` cannot pass both), that it paints in the pinned dock
+  pane whose early return is a separate wiring site, and that the transcript's
+  "N change cards" hint names `{`/`}` rather than `Enter` when no cursor is set,
+  since `effective_chat_focus()` resolves to the newest block either way and
+  Enter there opens the composer.
+- **`change_card.rs` — the diff surface (P-007), pure.** Detection across every
+  seam spelling (`capability:edit`, the MCP-mangled `capability_edit`, `Edit`,
+  `str_replace`, `str_replace_editor`, `Write`, `create_file`, `MultiEdit`,
+  `NotebookEdit`); the LCS line diff, real hunk context recovered from
+  `old_string`, hunk splitting, and the bounded degradations (`LCS_MAX_LINES`
+  → whole-block replace that says so, `MAX_CARD_LINES` truncation that keeps
+  the `+N -M` counts describing the whole edit); that the header never
+  fabricates file line numbers; redaction of both copy forms; and that the
+  cheap `is_change_card` predicate the renderer calls admits exactly what
+  `card_for_tool` admits, over a fixture table asserted to exercise both
+  answers.
 - **`models.rs` — serde DTOs.** Each operator-API shape is parsed from a
   live-probed JSON fixture (plans, roster, attention, features, issues, projects,
   activity, testing domains, claude-settings, docs, toast-log), with null/missing
