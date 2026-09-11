@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { checkpointRootMirror } from '../../release-checkpoint-launch';
 
 const queue = {
   schemaVersion: 3 as const,
@@ -31,6 +32,10 @@ const mocks = vi.hoisted(() => ({
   committedPatch: vi.fn(),
   foreign: vi.fn(),
   ledger: vi.fn(),
+  // P-006 (R6): the admit door's two-phase pre-check seam — the runner FACTORY the door
+  // creates for the canonical root, and the root canonicalization it consults first.
+  precheckFactory: vi.fn(),
+  canonicalRoot: vi.fn(),
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueue: mocks.read,
@@ -40,6 +45,11 @@ vi.mock('../../harness/routines/release-actions', () => ({
 }));
 vi.mock('../../release/fixer-liveness', () => ({ releaseFixerSpawnAlive: mocks.alive }));
 vi.mock('../../release-deploy-launch', () => ({ integrationRoot: () => '/repo' }));
+vi.mock('../../release/admission-fix-precheck', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/admission-fix-precheck')>()),
+  createCheckpointTreeFixPrecheckRunner: mocks.precheckFactory,
+  resolveCanonicalIntegrationRoot: mocks.canonicalRoot,
+}));
 vi.mock('../../release/judged-sha-containment', () => ({
   integrationBranch: () => 'staging',
   containmentForPaths: mocks.containment,
@@ -143,6 +153,12 @@ beforeEach(() => {
   mocks.ledger.mockResolvedValue([]);
   mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
   mocks.hunkExact.mockReturnValue(hunkExactOf());
+  mocks.canonicalRoot.mockImplementation((root: string) => root);
+  mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
+    ran: true as const,
+    commit,
+    results: files.map((path) => ({ path, status: 'pass' as const })),
+  }));
   mocks.containment.mockImplementation((paths: string[], judgedSha: string) =>
     paths.map((path) => ({ path, containedInJudgedSha: judgedSha === NEW_HEAD, judgedBlob: null, stagingBlob: null })),
   );
@@ -389,7 +405,8 @@ describe('release:repair-queue', () => {
         { role: 'su' } as never,
       ),
     );
-    expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ dryRun: false, reason: 'gate red on this file' });
+    // R6 two-phase: the LAST admission call is the publish (the first is the measured build).
+    expect(mocks.admit.mock.calls.at(-1)![0]).toMatchObject({ dryRun: false, reason: 'gate red on this file' });
     expect(mocks.write).toHaveBeenCalledTimes(1);
     const [target, written] = mocks.write.mock.calls[0]!;
     expect(target).toEqual({ workspaceId: 'ws-1', installSlug: 'papercusp' });
@@ -537,9 +554,69 @@ describe('release:repair-queue', () => {
       await tool.handler({ op: 'converge', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
     );
     expect(result).toMatchObject({ ok: true, op: 'admit', verdict: 'admitted', admitted: true });
-    expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ paths: ['lib/red.test.ts'], dryRun: false });
+    expect(mocks.admit.mock.calls.at(-1)![0]).toMatchObject({ paths: ['lib/red.test.ts'], dryRun: false });
     // The alias never fast-forwards: the only head it can produce is the primitive's commit.
     expect(result.movedRepairHead).toEqual({ from: queue.repairHead, to: NEW_HEAD });
+  });
+
+  describe('R6 admission pre-check wiring (P-006)', () => {
+    const dryRuns = () => mocks.admit.mock.calls.map((c) => (c[0] as { dryRun: boolean }).dryRun);
+
+    it('confirm:true is two-phase: build dryRun:true → measure at the built commit in the CANONICAL root → publish dryRun:false', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      // The serving host's root is a LINKED worktree on :3170; the runner must be created for the
+      // main worktree (checkpoint tree, run-lock and setup-release-checkout all key off it).
+      mocks.canonicalRoot.mockReturnValue('/canonical');
+      const runner = vi.fn(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
+        ran: true as const,
+        commit,
+        results: files.map((path) => ({ path, status: 'pass' as const })),
+      }));
+      mocks.precheckFactory.mockReturnValue(runner);
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(result).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
+      expect(dryRuns()).toEqual([true, false]);
+      expect(mocks.canonicalRoot).toHaveBeenCalledWith('/repo');
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+      expect(mocks.precheckFactory).toHaveBeenCalledWith({ integrationRoot: '/canonical', checkpointRoot: checkpointRootMirror('/canonical') });
+      expect(runner).toHaveBeenCalledWith({ commit: NEW_HEAD, files: ['lib/red.test.ts'] });
+    });
+
+    it('a red measurement REFUSES and publishes nothing: one build call, no queue write, the built commit named', async () => {
+      mocks.admit.mockReturnValue(admissionOf(false));
+      mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
+        ran: true as const,
+        commit,
+        results: files.map((path) => ({ path, status: 'fail' as const })),
+      }));
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(result).toMatchObject({ ok: false, refused: true, admitted: false, builtCommit: NEW_HEAD });
+      expect(result.reason).toMatch(/^admission-(does-not-fix|imports-red)$/);
+      expect(dryRuns()).toEqual([true]);
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('a runner failure fails OPEN and loud: the admission still publishes and the precheck record carries the reason', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      mocks.precheckFactory.mockReturnValue(async () => ({ ran: false as const, reason: 'runner-failed' as const, detail: 'setup-release-checkout exited 1' }));
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(result).toMatchObject({ ok: true, admitted: true });
+      expect(dryRuns()).toEqual([true, false]);
+      expect(JSON.stringify(result.precheck)).toContain('runner-failed');
+    });
+
+    it('a dry run never creates the runner', async () => {
+      mocks.admit.mockReturnValue(admissionOf(false));
+      body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never));
+      expect(dryRuns()).toEqual([true]);
+      expect(mocks.precheckFactory).not.toHaveBeenCalled();
+    });
   });
 
   // EI-22208176411693669: assessFrozenRepairFixerAuthorization correctly labels the
