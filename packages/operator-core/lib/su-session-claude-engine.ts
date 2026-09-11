@@ -31,6 +31,8 @@ export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
   beforeReady?: (pid: number | null) => Promise<void>;
   startupTimeoutMs?: number;
   deliveryTimeoutMs?: number;
+  /** Silence on an in-flight owner turn that is reported as a stall. */
+  turnStallTimeoutMs?: number;
   /** Inject the protocol peer in tests, not the host or its event translation. */
   query?: (input: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => ClaudeEngineQuery;
   register?: boolean;
@@ -50,6 +52,68 @@ function deferred<T>() {
   let reject!: (error: Error) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
+}
+
+/** Bytes of child stderr retained for diagnostics. A refusal arrives at the END
+ * of the stream, so the OLDEST bytes are the ones dropped. */
+export const CHILD_STDERR_TAIL_LIMIT = 4_000;
+
+/** Child stderr is a user-facing channel, but the child also inherits an env
+ * carrying OAuth tokens and PATs, and CLIs do echo argv/env on some failures.
+ * Redact before anything reaches an event the transcript will persist. */
+const STDERR_REDACTIONS: readonly (readonly [RegExp, string])[] = [
+  [/\b(sk-ant-|sk-proj-|sk-)[A-Za-z0-9_-]{12,}/g, '$1[redacted]'],
+  [/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{12,}/g, '$1[redacted]'],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g, '[redacted-jwt]'],
+  [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '$1 [redacted]'],
+  [/\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|KEY))(\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s"']+)/g, '$1$2[redacted]'],
+];
+
+export function redactChildStderr(text: string): string {
+  return STDERR_REDACTIONS.reduce((acc, [pattern, replacement]) => acc.replace(pattern, replacement), text);
+}
+
+export interface ChildStderrTail {
+  append(chunk: string | Uint8Array): void;
+  /** The retained tail, redacted and trimmed; empty when the child wrote nothing. */
+  read(): string;
+}
+
+/** Bounded, redacted retention of the child's own stderr.
+ *
+ * The engine used to DISCARD this channel entirely, which made a child that
+ * refuses on stderr — a quota wall answers in ~5s with plain text and exits 1 —
+ * indistinguishable from a silent hang, because every diagnostic the engine
+ * emitted was derived from the protocol stream that child never reached
+ * (EI-22963885533180534). Retaining a bounded tail is what makes the child's own
+ * stated reason observable; the bound is what keeps a noisy child from growing
+ * memory without limit. */
+export function createChildStderrTail(limit = CHILD_STDERR_TAIL_LIMIT): ChildStderrTail {
+  let buffered = '';
+  return {
+    append(chunk) {
+      buffered += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      if (buffered.length > limit) buffered = buffered.slice(buffered.length - limit);
+    },
+    read() { return redactChildStderr(buffered).trim(); },
+  };
+}
+
+/** Drain the child's stderr into the tail. The pipe must still be consumed or a
+ * noisy child deadlocks its own protocol channels — retention replaces the old
+ * discard, it does not stop the draining. */
+export function attachChildStderr(stderr: NodeJS.ReadableStream | null | undefined, tail: ChildStderrTail): void {
+  stderr?.on('data', (chunk: Buffer | string) => tail.append(chunk));
+}
+
+/** Suffix carrying the child's own words onto a transport diagnostic. */
+export function childStderrSuffix(tail: string): string {
+  return tail ? ` Last child stderr: ${tail}` : '';
+}
+
+export function formatStalledTurnMessage(idleMs: number, stderrTail: string): string {
+  return `Claude produced no stream frame for ${Math.round(idleMs / 1000)}s and this owner turn has not ended.`
+    + (stderrTail ? childStderrSuffix(stderrTail) : ' The child wrote nothing to stderr.');
 }
 
 export function startClaudeSuEngine(
@@ -88,6 +152,34 @@ export function startClaudeSuEngine(
   let finishActiveTurn: (() => void) | undefined;
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
   const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
+  // A turn that never ENDS emits no result frame, and BOTH existing detectors —
+  // claude_turn_failed and claude_empty_turn — are nested under one, so neither
+  // can report it. This watchdog is the detector for that third case. It is
+  // observability ONLY: it never fails the turn, interrupts it, or resolves its
+  // receipt; the delivery timeout and the owner remain the deciders.
+  const turnStallTimeoutMs = options.turnStallTimeoutMs ?? 90_000;
+  const childStderr = createChildStderrTail();
+  let lastFrameAt = Date.now();
+  let stallWatch: ManagedHandle | undefined;
+  let stallReported = false;
+  function armStallWatch() {
+    lastFrameAt = Date.now();
+    stallReported = false;
+    // Reported once per turn: a stall does not resolve on its own, so repeating
+    // would bury the transcript without adding an observation.
+    stallWatch ??= managedSetInterval('su-session-claude-turn-stall',
+      Math.max(50, Math.round(turnStallTimeoutMs / 3)), () => {
+        if (closed || stallReported || !activeInputUuid) return;
+        const idleMs = Date.now() - lastFrameAt;
+        if (idleMs < turnStallTimeoutMs) return;
+        stallReported = true;
+        adapter.host.emit({
+          type: 'error', scope: 'transport', code: 'claude_turn_stalled', recoverable: true,
+          message: formatStalledTurnMessage(idleMs, childStderr.read()),
+        });
+      }, { category: 'liveness', instanced: true });
+  }
+  function disarmStallWatch() { stallWatch?.stop(); stallWatch = undefined; }
   const unavailable = (message: string): ClaudeNativeCommandVerdict => ({
     ok: false, code: 'engine_delivery_unknown', message, retryable: false,
   });
@@ -108,12 +200,14 @@ export function startClaudeSuEngine(
           activeOwnerTurnId = turnId;
           activeInputUuid = uuid;
           activeTurnSawAssistant = false;
+          armStallWatch();
           try {
             timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
             input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null,
               origin: { kind: 'human' }, message: { role: 'user', content } } satisfies SDKUserMessage);
             await finished.promise;
           } finally {
+            disarmStallWatch();
             activeInputUuid = undefined;
             activeOwnerTurnId = undefined;
             finishActiveTurn = undefined;
@@ -207,9 +301,12 @@ export function startClaudeSuEngine(
           return {};
         },
       });
-      // Consume stderr so a noisy child cannot deadlock its protocol pipes.
-      // SDK result/error messages carry the user-facing reason, never raw env.
-      child.stderr.on('data', () => undefined);
+      // Drain stderr so a noisy child cannot deadlock its protocol pipes, and
+      // RETAIN a bounded redacted tail. A child that refuses on its own stderr —
+      // a quota wall answers in ~5s and exits 1 — never reaches the protocol
+      // stream, so discarding this channel left that refusal unobservable
+      // everywhere (EI-22963885533180534).
+      attachChildStderr(child.stderr, childStderr);
       child.once('close', (exitCode, signal) => {
         heartbeat?.stop();
         wrapped.release?.();
@@ -239,6 +336,7 @@ export function startClaudeSuEngine(
       closed = true; ready = false;
       cards.cancel();
       heartbeat?.stop();
+      disarmStallWatch();
       for (const receipt of pending.values()) receipt.resolve(unavailable('Claude connection closed before acknowledgement'));
       finishActiveTurn?.();
       input.end(); sdk?.close(); abortController.abort();
@@ -253,6 +351,9 @@ export function startClaudeSuEngine(
     done = (async () => {
       try {
         for await (const event of sdk) {
+          // ANY frame is progress. The watchdog measures SILENCE, not the absence
+          // of a reply — a long tool call streams frames and is not a stall.
+          lastFrameAt = Date.now();
           if ('session_id' in event && event.session_id && event.session_id !== nativeId) {
             throw new Error('Claude stream identity differs from the bootstrapped session');
           }
@@ -305,12 +406,12 @@ export function startClaudeSuEngine(
                 const detail = event.subtype === 'success' ? event.result : event.errors.join('; ');
                 adapter.host.emit({
                   type: 'error', scope: 'transport', code: 'claude_turn_failed', recoverable: true,
-                  message: `Claude ended this turn without a usable reply (${event.subtype}${event.stop_reason ? `, stop reason ${event.stop_reason}` : ''})${detail ? `: ${detail}` : ''}`,
+                  message: `Claude ended this turn without a usable reply (${event.subtype}${event.stop_reason ? `, stop reason ${event.stop_reason}` : ''})${detail ? `: ${detail}` : ''}${childStderrSuffix(childStderr.read())}`,
                 });
               } else if (!activeTurnSawAssistant) {
                 adapter.host.emit({
                   type: 'error', scope: 'transport', code: 'claude_empty_turn', recoverable: true,
-                  message: 'Claude completed this turn without sending any assistant content; the turn produced no reply.',
+                  message: `Claude completed this turn without sending any assistant content; the turn produced no reply.${childStderrSuffix(childStderr.read())}`,
                 });
               }
             }
@@ -321,7 +422,7 @@ export function startClaudeSuEngine(
       } catch (error) {
         const cause = error instanceof Error ? error : new Error(String(error));
         if (!closed) {
-          adapter.host.emit({ type: 'error', scope: 'transport', code: 'claude_stream_failed', message: cause.message, recoverable: true });
+          adapter.host.emit({ type: 'error', scope: 'transport', code: 'claude_stream_failed', message: `${cause.message}${childStderrSuffix(childStderr.read())}`, recoverable: true });
           adapter.reconcileRuntimeExit({ expected: false, reason: cause.message });
           closed = true; ready = false; cards.cancel(); input.end(); sdk.close(); abortController.abort();
         }
