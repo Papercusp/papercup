@@ -2369,6 +2369,42 @@ const CODEX_QUOTA_LIMIT_BANNER_PATTERNS = [
   /your workspace is out of credits/i,
 ];
 
+/** Claude's ROUTINE USAGE ADVISORY, which shares its wall's vocabulary:
+ *    "You've used 75% of your weekly limit · resets Sep 17, 7am (America/New_York)"
+ *  That is a progress notice with quota REMAINING — the opposite of a block — but it
+ *  contains "weekly limit", and "limit … resets", so TWO of the claude patterns above
+ *  fire on it. The detector then latches blocked=true and `injectTurnAtPrompt` drops
+ *  every gated injection with `submit-verification-aborted-quota-blocked`, so the
+ *  session is never compacted or carry-respawned and instead runs past its context
+ *  ceiling until it dies. Measured 2026-09-11T16:51:45Z on
+ *  su-cb1f92db-…: matchedPattern /weekly limit/i, excerpt exactly the line above, at
+ *  75% used — an account with a quarter of its week left, blocked for the rest of a
+ *  ~35min session (WI-10000288's own compaction was one of the casualties).
+ *
+ *  This is WI-2140984 again, one product over: the CODEX set immediately above was
+ *  anchored to WHOLE SENTENCES precisely because codex renders "usage limit" as
+ *  routine chrome, and that lesson was never carried across to the claude set, which
+ *  is still bare phrases. Anchoring claude's patterns the same way is the deeper fix,
+ *  but it needs captured raw text from a REAL claude wall to do safely (widening on a
+ *  guess risks the far worse failure: missing a real wall and hammering it). A
+ *  precise NEGATIVE guard needs no such sample and cannot mask a real wall, because
+ *  it is applied PER MATCH-LINE, not to the whole screen.
+ *
+ *  Keep this list to the percentage-used advisory shape only. Anything that states
+ *  exhaustion ("limit reached", "you've hit") must keep matching. */
+const QUOTA_USAGE_ADVISORY_PATTERNS = [
+  /\bused\s+\d{1,3}\s*%\s+of\s+your\b/i,
+  /\b\d{1,3}\s*%\s+of\s+your\s+(?:weekly|5-hour|usage)\b/i,
+];
+
+/** Is THIS line a usage advisory rather than a wall? Scoped to the single line
+ *  carrying the match so an advisory cannot suppress a real wall elsewhere on the
+ *  same screen. Pure; exported for tests. */
+export function quotaLineIsUsageAdvisory(line) {
+  const text = String(line ?? '');
+  return QUOTA_USAGE_ADVISORY_PATTERNS.some((re) => re.test(text));
+}
+
 /** The banner set for one agent. An UNKNOWN agent gets [] — never another
  *  product's copy (see the cost model above). An unset agent keeps the
  *  historical claude behaviour, matching how the rest of this host reads
@@ -2392,14 +2428,27 @@ export function quotaBannerPatternsForAgent(agent = '') {
 export function quotaLimitBannerMatch(text, agent = '') {
   const visible = stripAnsi(String(text ?? ''));
   for (const re of quotaBannerPatternsForAgent(agent)) {
-    const m = re.exec(visible);
-    if (!m) continue;
-    const at = m.index ?? 0;
-    return {
-      matched: true,
-      pattern: String(re),
-      excerpt: visible.slice(Math.max(0, at - 40), at + m[0].length + 40).replace(/\s+/g, ' ').trim(),
-    };
+    // Scan EVERY occurrence, not just the first: a usage advisory and a real wall can
+    // share one screen, and returning on the first hit would let whichever came first
+    // decide. Skipping an advisory line must never skip the wall below it.
+    const scan = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+    for (let m = scan.exec(visible); m; m = scan.exec(visible)) {
+      const at = m.index ?? 0;
+      const lineStart = visible.lastIndexOf('\n', at) + 1;
+      const lineEndRaw = visible.indexOf('\n', at);
+      const lineEnd = lineEndRaw === -1 ? visible.length : lineEndRaw;
+      if (quotaLineIsUsageAdvisory(visible.slice(lineStart, lineEnd))) {
+        // Zero-length matches cannot happen with these patterns, but a guard here keeps
+        // a future pattern edit from spinning this loop forever.
+        if (scan.lastIndex <= at) scan.lastIndex = at + 1;
+        continue;
+      }
+      return {
+        matched: true,
+        pattern: String(re),
+        excerpt: visible.slice(Math.max(0, at - 40), at + m[0].length + 40).replace(/\s+/g, ' ').trim(),
+      };
+    }
   }
   return { matched: false, pattern: null, excerpt: null };
 }

@@ -794,6 +794,10 @@ export function submitExhaustionTerminatesHost(label: any): boolean;
  * not proof that the injected turn landed, so it must remain distinguishable
  * from both success and bounded exhaustion. Pure; exported for tests. */
 export function submitVerificationFailureReason(result: any): string | null;
+/** Is THIS line a usage advisory rather than a wall? Scoped to the single line
+ *  carrying the match so an advisory cannot suppress a real wall elsewhere on the
+ *  same screen. Pure; exported for tests. */
+export function quotaLineIsUsageAdvisory(line: any): boolean;
 /** The banner set for one agent. An UNKNOWN agent gets [] — never another
  *  product's copy (see the cost model above). An unset agent keeps the
  *  historical claude behaviour, matching how the rest of this host reads
