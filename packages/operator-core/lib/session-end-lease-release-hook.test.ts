@@ -97,6 +97,14 @@ describe('runSessionEndLeaseRelease', () => {
     expect(h.listTasks).not.toHaveBeenCalled();
   });
 
+  it('passes the ENDING owner id to the protection loader so its own still-fresh presence row cannot protect it (EI-22651749738479868)', async () => {
+    // STALE_MS=600s presence vs a <=60s release-retry span: without this arg the
+    // ending owner's own heartbeat reads "owner-live" on every attempt and the
+    // lease is never released.
+    await expect(runSessionEndLeaseRelease(77, deps())).resolves.toMatchObject({ ok: true });
+    expect(h.loadProtectedOwners).toHaveBeenCalledWith('su-ended');
+  });
+
   it('protects a live owner even when the old adv row is ended', async () => {
     h.loadProtectedOwners.mockResolvedValueOnce(new Set(['su-ended']));
     await expect(runSessionEndLeaseRelease(77, deps())).resolves.toMatchObject({
