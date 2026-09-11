@@ -147,4 +147,112 @@ describe('OMP SU-session backend — PUI entry and native session translation', 
       expect(ompThreadIdFromTranscriptPath('/tmp/sessions/no-thread.txt')).toBeNull();
     } finally { adapter.dispose(); }
   });
+
+  /**
+   * P-006 — "verify ACTUAL model selection" for the OMP leg.
+   *
+   * Claude reconciles the descriptor from system/init + root assistant records and
+   * Codex from `turn_context`; OMP did neither, so an OMP session reported the
+   * launch-REQUESTED model for its whole life. That is the worst leg to leave
+   * un-reconciled, because OMP is the only backend that records
+   * `resolvedModelIsFallback` — it KNOWS when the requested model did not run.
+   *
+   * Record shapes below are copied from real transcripts under
+   * ~/.papercusp/su-omp-homes/session-{17497,18672}/agent/sessions/**.jsonl
+   * (two independent sessions, identical shape), not invented for the test:
+   *   {"type":"model_change","id":…,"model":"openrouter/stealth/ox-alpha","resolvedModelIsFallback":false}
+   *   {"type":"message",…,"message":{"role":"assistant","model":"stealth/ox-alpha",…}}
+   * Note the two spellings of the SAME model — that asymmetry is why
+   * `model_change` is authoritative and the assistant stamp is only a fallback.
+   */
+  describe('P-006 actual-model reconciliation', () => {
+    const REQUESTED = 'gpt-5.6-omp';
+    const RESOLVED = 'openrouter/stealth/ox-alpha';
+    const BARE = 'stealth/ox-alpha';
+
+    /**
+     * Models named by `session` events that CHANGED the model away from the
+     * request, oldest first. The host constructor emits one baseline `session`
+     * event carrying the requested model, so a raw event count would measure
+     * that baseline rather than the reconciliation under test.
+     */
+    function modelCorrections(adapter: ReturnType<typeof createOmpSuSessionAdapter>): Array<string | null> {
+      return events(adapter)
+        .filter((e): e is Extract<typeof e, { type: 'session' }> => e.type === 'session')
+        .map((e) => e.descriptor.model)
+        .filter((model) => model !== REQUESTED);
+    }
+
+    function modelAdapter(agentChatId: string) {
+      return createOmpSuSessionAdapter(binding(), runtime(), {
+        agentChatId, model: REQUESTED, register: false,
+      });
+    }
+
+    const modelChange = (model: string) => JSON.stringify({
+      type: 'model_change', id: 'ff8a6b5e', parentId: null,
+      timestamp: '2026-08-26T08:37:24.082Z', model, resolvedModelIsFallback: false,
+    });
+    const assistantSay = (model: string | null) => JSON.stringify({
+      type: 'message', id: `assistant-${model ?? 'none'}`, timestamp: '2026-08-26T08:37:30.000Z',
+      message: { role: 'assistant', ...(model ? { model } : {}), content: [{ type: 'text', text: 'ok' }] },
+    });
+
+    it('corrects the descriptor to the model OMP actually resolved', () => {
+      const adapter = modelAdapter('agent-chat-omp-model-resolve');
+      try {
+        expect(adapter.host.descriptor().model).toBe(REQUESTED);
+        adapter.ingestNativeLine(modelChange(RESOLVED));
+        expect(adapter.host.descriptor().model).toBe(RESOLVED);
+        expect(events(adapter).some((e) => e.type === 'session' && e.descriptor.model === RESOLVED)).toBe(true);
+      } finally { adapter.dispose(); }
+    });
+
+    it('does not flap back to the bare assistant spelling of the same model', () => {
+      const adapter = modelAdapter('agent-chat-omp-model-flap');
+      try {
+        adapter.ingestNativeLine(modelChange(RESOLVED));
+        adapter.ingestNativeLine(assistantSay(BARE));
+        adapter.ingestNativeLine(assistantSay(BARE));
+        expect(adapter.host.descriptor().model).toBe(RESOLVED);
+        // Exactly one CORRECTION, not one per assistant message. The host
+        // constructor emits its own baseline `session` event carrying the
+        // requested model, so count only events that changed the model.
+        expect(modelCorrections(adapter)).toEqual([RESOLVED]);
+      } finally { adapter.dispose(); }
+    });
+
+    it('follows a mid-session model change', () => {
+      const adapter = modelAdapter('agent-chat-omp-model-midsession');
+      try {
+        adapter.ingestNativeLine(modelChange(RESOLVED));
+        adapter.ingestNativeLine(assistantSay(BARE));
+        adapter.ingestNativeLine(modelChange('openrouter/anthropic/claude-opus-5'));
+        expect(adapter.host.descriptor().model).toBe('openrouter/anthropic/claude-opus-5');
+      } finally { adapter.dispose(); }
+    });
+
+    it('falls back to the assistant stamp when no model_change was ever recorded', () => {
+      const adapter = modelAdapter('agent-chat-omp-model-fallback');
+      try {
+        adapter.ingestNativeLine(assistantSay(BARE));
+        expect(adapter.host.descriptor().model).toBe(BARE);
+      } finally { adapter.dispose(); }
+    });
+
+    /**
+     * CALIBRATION — without this, a reconciliation that had degenerated into
+     * "always overwrite" or "always null the model" would still pass every case
+     * above. A transcript that names no model must leave the request untouched.
+     */
+    it('leaves the requested model intact when the transcript names no model', () => {
+      const adapter = modelAdapter('agent-chat-omp-model-silent');
+      try {
+        adapter.ingestNativeLine(assistantSay(null));
+        adapter.ingestNativeLine(JSON.stringify({ type: 'session', id: THREAD_A, timestamp: '2026-08-26T08:37:23.905Z', cwd: '/workspace' }));
+        expect(adapter.host.descriptor().model).toBe(REQUESTED);
+        expect(modelCorrections(adapter)).toEqual([]);
+      } finally { adapter.dispose(); }
+    });
+  });
 });

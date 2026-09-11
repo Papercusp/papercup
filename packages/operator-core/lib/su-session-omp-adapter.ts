@@ -372,6 +372,15 @@ export class OmpSuSessionAdapter {
   private readonly controls: OmpSuSessionControls;
   private readonly unregister: (() => void) | null;
   private lastErrorKey: string | null = null;
+  /**
+   * Set once a `model_change` record has named the resolved model. OMP stamps
+   * assistant messages with a BARE id (`stealth/ox-alpha`) while `model_change`
+   * carries the provider-qualified one (`openrouter/stealth/ox-alpha`), so
+   * accepting both would flap the descriptor between two spellings of the same
+   * model. `model_change` wins; the assistant stamp is only a fallback for a
+   * transcript that never emitted one.
+   */
+  private sawResolvedModel = false;
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'omp' },
@@ -437,6 +446,29 @@ export class OmpSuSessionAdapter {
     const messageRecord = asRecord(record.message);
     const messageToolId = firstString(messageRecord?.toolCallId, messageRecord?.tool_call_id);
     if (!preserveLifecycle && recordIndicatesCompaction(record)) this.host.transition('compacting', 'OMP native transcript compacted');
+
+    // A launch `--model` is only a REQUEST. OMP resolves it — and records
+    // `resolvedModelIsFallback` when the requested model was not available — so
+    // the descriptor must be corrected to the model that actually ran, exactly
+    // as the Claude (system/init + assistant records) and Codex (turn_context)
+    // adapters do. Without this an OMP session shows the requested model for
+    // its whole life, including after a mid-session `model_change`.
+    const resolvedModel = record.type === 'model_change'
+      ? firstString(record.model)
+      : !this.sawResolvedModel && record.type === 'message' && messageRecord?.role === 'assistant'
+        ? firstString(messageRecord?.model)
+        : null;
+    if (resolvedModel) {
+      if (record.type === 'model_change') this.sawResolvedModel = true;
+      const descriptor = this.host.descriptor();
+      if (descriptor.model !== resolvedModel) {
+        this.host.emit({
+          type: 'session',
+          descriptor: { ...descriptor, model: resolvedModel },
+        } as SuSessionEventInput<'omp'>);
+      }
+    }
+
     for (const entry of this.parser.parseLine(line)) {
       const turnId = entry.kind === 'prompt'
         ? (this.currentTurnId = this.nextTurnId(recordId))
