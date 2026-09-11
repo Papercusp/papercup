@@ -13,6 +13,7 @@ import {
   RESCUE_PREFIX,
   rescueBody,
   selectSweepCandidates,
+  wakeReasonFor,
   type HaltCandidate,
 } from './unguarded-halt-rescue-action';
 
@@ -20,10 +21,10 @@ const NOW = 1_700_000_000_000;
 const IDLE = 15 * 60_000;
 const MAX_IDLE = 6 * 60 * 60_000;
 const OPTS = { idleMs: IDLE, maxIdleMs: MAX_IDLE };
-const ACTIVE = new Set(['drain-fleet']);
 const NONE = new Set<string>();
 
-/** Default: an empty-handed member of an ACTIVE fleet, idle inside the window. */
+/** Default: an empty-handed fleet member, idle inside the window. Fleet membership
+ *  is carried for message context only — it is never an eligibility input. */
 function candidate(agentId: string, over: Partial<HaltCandidate> = {}): HaltCandidate {
   return {
     agentId,
@@ -35,8 +36,8 @@ function candidate(agentId: string, over: Partial<HaltCandidate> = {}): HaltCand
 }
 
 describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', () => {
-  it('sweeps an empty-handed member of an active fleet, idle inside the window', () => {
-    const got = selectSweepCandidates([candidate('a')], NONE, ACTIVE, NOW, OPTS);
+  it('sweeps an empty-handed agent idle inside the window', () => {
+    const got = selectSweepCandidates([candidate('a')], NONE, NOW, OPTS);
     expect(got.map((c) => c.agentId)).toEqual(['a']);
   });
 
@@ -44,15 +45,16 @@ describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', (
    * THE WAKE-STORM CLASS. Measured on live data: 30+ agents had made no tool call
    * for 6-9 DAYS while still heartbeating every ~50s, and read
    * state='parked', wakeable=true — INDISTINGUISHABLE from a real orphan on every
-   * liveness surface. Only the fleet-active + idle-upper-bound conjuncts exclude
-   * them. Each spurious wake is a real billable turn.
+   * liveness surface. Since WI-10001032 removed the fleet-activity conjunct, the
+   * idle UPPER BOUND is the only thing excluding them, which is why it is load-
+   * bearing rather than a nicety: abandonment is a time question, not a topology
+   * one. Each spurious wake is a real billable turn.
    */
   it('does NOT wake a 9-day-abandoned session (past the idle upper bound)', () => {
     const nineDays = 9 * 24 * 60 * 60_000;
     const got = selectSweepCandidates(
       [candidate('zombie', { lastToolCallMs: NOW - nineDays })],
       NONE,
-      ACTIVE,
       NOW,
       OPTS,
     );
@@ -71,23 +73,39 @@ describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', (
     const orphans = observedIdleSec.map((s, i) =>
       candidate(`orphan-${i}`, { lastToolCallMs: NOW - s * 1000 }),
     );
-    const got = selectSweepCandidates(orphans, NONE, ACTIVE, NOW, OPTS);
+    const got = selectSweepCandidates(orphans, NONE, NOW, OPTS);
     expect(got).toHaveLength(4);
   });
 
-  it('does NOT wake a member whose fleet is winding down or unknown', () => {
-    const got = selectSweepCandidates([candidate('a')], NONE, NONE, NOW, OPTS);
-    expect(got).toEqual([]);
+  /**
+   * WI-10001032, CONJUNCT 1 REMOVED — this assertion is INVERTED from what it
+   * pinned before, deliberately. The old selector required an active fleet, so
+   * every solo/interactive su session was structurally invisible to the sweep.
+   * The reporting agent WAS the specimen: fleet=null, halted ~2 days, and the
+   * routine built for exactly that failure could not see it.
+   *
+   * Restoring a fleet-membership exclusion here reds this test.
+   */
+  it('sweeps a NON-FLEET (solo/interactive) agent — membership is never an exclusion', () => {
+    const got = selectSweepCandidates([candidate('a', { fleetSlug: null })], NONE, NOW, OPTS);
+    expect(got.map((c) => c.agentId)).toEqual(['a']);
   });
 
-  it('does NOT wake a non-member (no fleet at all)', () => {
-    const got = selectSweepCandidates([candidate('a', { fleetSlug: null })], NONE, ACTIVE, NOW, OPTS);
-    expect(got).toEqual([]);
-  });
-
-  it('does NOT wake an agent that still holds work — it has something to resume', () => {
-    const got = selectSweepCandidates([candidate('a', { load: 1 })], NONE, ACTIVE, NOW, OPTS);
-    expect(got).toEqual([]);
+  /**
+   * WI-10001032, CONJUNCT 2 REMOVED — also INVERTED deliberately.
+   *
+   * The old rule read `load > 0 => skip`, encoding "an idle agent with a nonempty
+   * queue is a bug". A halted agent that HOLDS a claim is strictly worse than an
+   * idle one: the item is claimed, so no peer will pick it up, and the holder is
+   * silent — a deadlock with no discovery path. The old filter dropped precisely
+   * that case while rescuing the benign one.
+   *
+   * Eligibility is universal; whether a wake is WARRANTED is `wakeReasonFor`'s
+   * job (see below), which is what keeps this from becoming a wake storm.
+   */
+  it('sweeps a halted agent that still HOLDS work — the deadlock case', () => {
+    const got = selectSweepCandidates([candidate('a', { load: 1 })], NONE, NOW, OPTS);
+    expect(got.map((c) => c.agentId)).toEqual(['a']);
   });
 
   /**
@@ -99,7 +117,6 @@ describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', (
     const got = selectSweepCandidates(
       [candidate('busy', { lastToolCallMs: NOW - 30_000 })],
       NONE,
-      ACTIVE,
       NOW,
       OPTS,
     );
@@ -111,7 +128,6 @@ describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', (
     const got = selectSweepCandidates(
       [candidate('building', { lastToolCallMs: NOW - 6 * 60_000 })],
       NONE,
-      ACTIVE,
       NOW,
       OPTS,
     );
@@ -119,12 +135,12 @@ describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', (
   });
 
   it('skips an agent that has never made a tool call — no turn taken, so no halt', () => {
-    const got = selectSweepCandidates([candidate('a', { lastToolCallMs: null })], NONE, ACTIVE, NOW, OPTS);
+    const got = selectSweepCandidates([candidate('a', { lastToolCallMs: null })], NONE, NOW, OPTS);
     expect(got).toEqual([]);
   });
 
   it('skips an agent rescued within the throttle window, so a rescue never becomes a wake loop', () => {
-    const got = selectSweepCandidates([candidate('a')], new Set(['a']), ACTIVE, NOW, OPTS);
+    const got = selectSweepCandidates([candidate('a')], new Set(['a']), NOW, OPTS);
     expect(got).toEqual([]);
   });
 
@@ -132,11 +148,60 @@ describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', (
     const got = selectSweepCandidates(
       [candidate('c'), candidate('a'), candidate('b')],
       NONE,
-      ACTIVE,
       NOW,
       OPTS,
     );
     expect(got.map((c) => c.agentId)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+/**
+ * THE OTHER HALF OF WI-10001032, and the reason removing two eligibility
+ * conjuncts is not a wake storm.
+ *
+ * `selectSweepCandidates` is now universal — it asks only "is this agent halted?"
+ * Whether a halt is WORTH a billable wake moved here. Detection is agent-blind;
+ * waking is reason-gated. If this gate ever returns non-null for a candidate with
+ * neither a held item nor claimable work, the sweep becomes a wake storm over
+ * every idle agent on the box — which is exactly what the deleted conjuncts were
+ * incidentally providing cover for.
+ */
+describe('unguarded-halt rescue — the wake REASON gate (WI-10001032)', () => {
+  it('wakes a HOLDER: a claimed item nobody else can take is the deadlock case', () => {
+    expect(wakeReasonFor({ load: 1, fleetSlug: null }, 0)).toEqual({ kind: 'holding', load: 1 });
+  });
+
+  it('prefers the holding reason over claimable — the deadlock is the worse story', () => {
+    expect(wakeReasonFor({ load: 2, fleetSlug: 'drain-fleet' }, 13)).toEqual({
+      kind: 'holding',
+      load: 2,
+    });
+  });
+
+  it('wakes an EMPTY-HANDED agent only when work is actually claimable', () => {
+    expect(wakeReasonFor({ load: 0, fleetSlug: 'drain-fleet' }, 13)).toEqual({
+      kind: 'claimable',
+      claimable: 13,
+      fleetSlug: 'drain-fleet',
+    });
+  });
+
+  /**
+   * THE WAKE-STORM GUARD. An idle agent with nothing held and nothing to claim is
+   * not a halt worth paying for — it has simply finished. Returning a reason here
+   * would bill a turn for every such agent, every throttle window, forever.
+   */
+  it('returns NO reason for an idle agent with nothing held and nothing claimable', () => {
+    expect(wakeReasonFor({ load: 0, fleetSlug: 'drain-fleet' }, 0)).toBeNull();
+    expect(wakeReasonFor({ load: 0, fleetSlug: null }, 0)).toBeNull();
+  });
+
+  it('carries a null fleetSlug through rather than excluding on it (solo agents)', () => {
+    expect(wakeReasonFor({ load: 0, fleetSlug: null }, 4)).toEqual({
+      kind: 'claimable',
+      claimable: 4,
+      fleetSlug: null,
+    });
   });
 });
 
@@ -208,6 +273,33 @@ describe('unguarded-halt rescue — stood-down suppression (ended engine loop)',
     });
     expect(stoodDown).toEqual([]);
     expect(rescuable.map((c) => c.agentId)).toEqual(['stood-down']);
+  });
+
+  /**
+   * THE HOLDER EXCEPTION (WI-10001032) — the deadlock path, and the one case
+   * where stand-down must NOT win.
+   *
+   * Stand-down excuses an agent that finished and went quiet. It cannot excuse
+   * one that went quiet still HOLDING a claim: nobody else can take that item,
+   * and the holder is silent, so suppressing it parks the item behind a dead
+   * holder indefinitely. Suppressing a holder here re-creates exactly the
+   * deadlock this routine exists to break — so it reds a test instead.
+   */
+  it('does NOT suppress a HOLDER, even with an ended loop — a claim outranks wind-down', () => {
+    const holder = candidate('stood-down', { load: 1 });
+    const { rescuable, stoodDown } = partitionStoodDown([holder], {
+      'stood-down': [{ active: false }],
+    });
+    expect(stoodDown).toEqual([]);
+    expect(rescuable.map((c) => c.agentId)).toEqual(['stood-down']);
+  });
+
+  it('still suppresses an EMPTY-HANDED owner with the same ended loop (the contrast)', () => {
+    const { rescuable, stoodDown } = partitionStoodDown([candidate('stood-down', { load: 0 })], {
+      'stood-down': [{ active: false }],
+    });
+    expect(rescuable).toEqual([]);
+    expect(stoodDown.map((c) => c.agentId)).toEqual(['stood-down']);
   });
 
   it('fails OPEN: a failed reader (null) suppresses nobody — pre-fix behavior', () => {

@@ -221,6 +221,18 @@ export function wakeReasonFor(
  * fail-open to the pre-fix behavior: a missed suppression costs one throttled
  * wake, a wrong permanent suppression strands a recoverable halt. Signal
  * semantics + lift conditions live in `engine-loop-standdown.ts`.
+ *
+ * WI-10001032 — THE HOLDER EXCEPTION. Stand-down excuses an EMPTY-HANDED halt,
+ * which is all it was ever built for: an agent that finished, ended its loop and
+ * went quiet owes nobody anything. It does NOT excuse halting while still
+ * HOLDING a claim. That item is claimed, so no peer can pick it up, and the
+ * holder is silent — suppressing it is how a claimed item ends up parked behind
+ * a dead holder forever, which is precisely the deadlock this routine exists to
+ * break. A holder is therefore never stood down, however deliberate its
+ * wind-down looked.
+ *
+ * The rule lives HERE, beside the suppression it qualifies, so the two cannot
+ * drift apart in a caller.
  */
 export function partitionStoodDown(
   candidates: readonly HaltCandidate[],
@@ -230,7 +242,8 @@ export function partitionStoodDown(
   const rescuable: HaltCandidate[] = [];
   const stoodDown: HaltCandidate[] = [];
   for (const c of candidates) {
-    (isStoodDownOwner(loopRows, c.agentId) ? stoodDown : rescuable).push(c);
+    const suppressed = isStoodDownOwner(loopRows, c.agentId) && c.load === 0;
+    (suppressed ? stoodDown : rescuable).push(c);
   }
   return { rescuable, stoodDown };
 }
@@ -416,7 +429,7 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
     // that the DEPLOYED handler is actually executing, which is exactly what
     // verifying this routine after a deploy requires.
     console.log(
-      `[unguarded-halt-rescue] ${all.length} member(s) → 0 idle in an active fleet → nothing to rescue` +
+      `[unguarded-halt-rescue] ${all.length} agent(s) → 0 idle inside the halt window → nothing to rescue` +
         (recentlyRescued.size > 0 ? ` (${recentlyRescued.size} within throttle)` : ''),
     );
     return;
@@ -429,19 +442,13 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
     candidates.map((c) => c.agentId),
     { workspaceId: ctx.workspaceId },
   ).catch(() => null);
-  const { rescuable: notStoodDown, stoodDown } = partitionStoodDown(candidates, loopRows);
-  // WI-10001032: a deliberate wind-down (loop:end) excuses an EMPTY-HANDED halt,
-  // which is what stand-down was built for. It does NOT excuse halting while
-  // still HOLDING work — that is the deadlock case, and suppressing it is how a
-  // claimed item ends up parked behind a silent holder forever.
-  const stoodDownHolders = stoodDown.filter((c) => c.load > 0);
-  const rescuable = [...notStoodDown, ...stoodDownHolders].sort((a, b) =>
-    a.agentId.localeCompare(b.agentId),
-  );
+  // The holder exception (WI-10001032) lives inside partitionStoodDown, beside
+  // the suppression it qualifies, so a caller cannot drift from it.
+  const { rescuable, stoodDown } = partitionStoodDown(candidates, loopRows);
   if (rescuable.length === 0) {
     console.log(
-      `[unguarded-halt-rescue] ${all.length} member(s) → ${candidates.length} idle in an active fleet → ` +
-        `${stoodDown.length} stood down (engine loop ended) → nothing to rescue`,
+      `[unguarded-halt-rescue] ${all.length} agent(s) → ${candidates.length} idle inside the halt window → ` +
+        `${stoodDown.length} stood down (engine loop ended, holding nothing) → nothing to rescue`,
     );
     return;
   }
