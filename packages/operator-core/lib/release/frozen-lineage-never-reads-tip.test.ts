@@ -178,7 +178,16 @@ describe('the ready-to-verify path verifies the repair head at its own sha, neve
     // first arg, exactly as the `(?:repairQueue|fresh)` assertion below does, so a
     // rename cannot red-pin the whole pure lane while the invariant still holds.
     expect(branch).toMatch(/await verifyRepairHead\((?:deps|verifyDeps), repairQueue\)/);
-    expect(branch).not.toMatch(/resolveTip|integrationBranch|transportedCandidate|stagingContainsFrozenRepair/);
+    expect(branch).not.toMatch(/resolveTip|transportedCandidate|stagingContainsFrozenRepair/);
+    // P-008 (green-gate-zero-wait-convergence-2026-09-08) added the ONE permitted mention of
+    // the integration ref on this path: `convergeLockfileDrift` reads that ref's COMMITTED
+    // LOCKFILE BLOBS to clear a permanent `dependency-prewarm-missing` (exit 74,
+    // EI-22752586902645795). It does not move the lineage — the branch still verifies at
+    // `repairQueue.repairHead`, and any non-lockfile delta stays a typed miss. So the ref is
+    // pinned to that exact call rather than banned outright: a SECOND mention, or any other
+    // spelling, would be a real tip read and fails here.
+    expect(branch.match(/integrationBranch/g) ?? []).toHaveLength(1);
+    expect(branch).toContain('integrationRef: cfg.integrationBranch');
     // A red re-queues from the repair head that was just tested; nothing on this path retires
     // the queue (`writeFrozenRepairQueue(null)`) or steps the candidate anywhere else.
     // P-027 / D-014: the red is recorded through `commitFrozenRepairQueueTransition` +
