@@ -57,6 +57,7 @@ import {
   codexHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
+import { nativeToolSearchDenyFlag } from '@papercusp/orchestrator/native-tool-search-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { fallbackCodexLaunchSpecFromAdvSession, getAdvSession, claimAdvSessionResume } from '../../adv-sessions';
@@ -1885,6 +1886,11 @@ export function resumeCommandFor(
         // resume, so a woken bee would silently regain its subagent-launch tool.
         // Re-arm it every wake. Also a single `=` token (same greed-guard).
         noSubagentToolsDenyFlag(),
+        // Native tool-search deny (owner directive 2026-09-11): SAME persistence
+        // gap as the subagent deny — a spawn-time deny does not survive into a
+        // resume, so a woken agent would regain ToolSearch and its uncapped
+        // schema loads. Re-arm every wake. Single `=` token (greed-guard).
+        nativeToolSearchDenyFlag(),
         ...mcpArgs,
         wakeText,
       ],
