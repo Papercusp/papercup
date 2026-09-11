@@ -39,8 +39,25 @@ import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
-  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'edit' | 'stream',
+  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'edit' | 'stream' | 'approval',
   successText: 'PUI structured engine replied',
+  // Approval fixture (mode:'approval'). TWO isolated requests, raised at once,
+  // because both approval clauses are about ISOLATION: answering one must not
+  // decide the other. A single-request probe cannot detect "hits an unrelated
+  // session" or "affects a different request" at all.
+  //
+  // The commands are distinguishable on screen because the approval prompt
+  // embeds the tool input verbatim (native-cards.ts:57), which is how a test
+  // can tell WHICH request the PUI has focused without assuming an order.
+  approvalRequests: [
+    { tag: 'ALPHA', input: { command: 'echo PUI-APPROVAL-ALPHA' } as Record<string, unknown> },
+    { tag: 'BETA', input: { command: 'echo PUI-APPROVAL-BETA' } as Record<string, unknown> },
+  ],
+  approvalVerdicts: [] as Array<{ tag: string; verdict: { behavior: string; updatedInput?: Record<string, unknown>; message?: string } }>,
+  // Appended ONLY when a verdict actually authorises the call, carrying the
+  // arguments as authorised — so "the denied action executed" and "allow
+  // executed something broader" are both directly observable.
+  approvalExecuted: [] as Array<{ tag: string; input: Record<string, unknown> }>,
   // Streaming fixture (mode:'stream'). Ordered, individually identifiable
   // chunks: asserting the exact concatenation then decides DROPPED and
   // REORDERED at once, which two separate "contains" checks could not.
@@ -132,6 +149,34 @@ vi.mock('../su-session-claude-engine', async (original) => {
             if (scriptedEngine.mode === 'failure') {
               output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId,
                 is_error: true, errors: ['PUI-E2E engine failed visibly'] });
+              continue;
+            }
+            if (scriptedEngine.mode === 'approval') {
+              // Tool-approval requests take the SAME permission callback as the
+              // inline question above; `SuNativeCards.handleClaude` branches on
+              // the tool NAME, and any name other than AskUserQuestion raises an
+              // Approve/Decline card (native-cards.ts:56-62). Both requests are
+              // fired together so both cards are open at once, which is the only
+              // arrangement in which isolation is observable.
+              void Promise.all(scriptedEngine.approvalRequests.map(({ tag, input }) =>
+                Promise.resolve(sdkOptions.canUseTool?.('Bash', input, { signal: new AbortController().signal }))
+                  .then((verdict) => {
+                    const settled = verdict ?? { behavior: 'no-permission-callback' };
+                    scriptedEngine.approvalVerdicts.push({ tag, verdict: settled });
+                    // The call runs ONLY on an authorising verdict, and runs the
+                    // arguments the verdict returned — not the ones originally
+                    // requested. That distinction is what makes "allow executes
+                    // a BROADER action" detectable rather than assumed away.
+                    if (settled.behavior === 'allow') {
+                      scriptedEngine.approvalExecuted.push({ tag, input: settled.updatedInput ?? {} });
+                    }
+                  })))
+                .then(() => {
+                  output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                    { type: 'text', text: scriptedEngine.successText },
+                  ] } });
+                  result();
+                }).catch((error: Error) => output.destroy(error));
               continue;
             }
             if (scriptedEngine.mode === 'stream') {
@@ -1284,6 +1329,12 @@ beforeEach(async () => {
   scriptedEngine.successText = 'PUI structured engine replied';
   scriptedEngine.questionCallId = 'pui-question-tool';
   scriptedEngine.questionVerdicts = [];
+  scriptedEngine.approvalRequests = [
+    { tag: 'ALPHA', input: { command: 'echo PUI-APPROVAL-ALPHA' } },
+    { tag: 'BETA', input: { command: 'echo PUI-APPROVAL-BETA' } },
+  ];
+  scriptedEngine.approvalVerdicts = [];
+  scriptedEngine.approvalExecuted = [];
   scriptedEngine.streamChunks = ['STREAM-A1 ', 'STREAM-B2 ', 'STREAM-C3 ', 'STREAM-D4 ', 'STREAM-E5'];
   scriptedEngine.streamDelayMs = 800;
   scriptedEngine.editPath = 'apps/tui/src/pui_diff_probe.rs';
@@ -2340,11 +2391,21 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // A REAL bracketed paste — one edit, exactly as a user pasting multiline
       // Unicode would produce. Replayed keystrokes would take a different code
       // path and would not exercise the paste handling the clause names.
-      await openComposer(pane);
+      //
+      // The composer is ALREADY open here: `openComposer` is a first-open
+      // helper (it waits for `session new`), so calling it again would block
+      // until it timed out — and the stream would finish while it waited,
+      // quietly turning this into an after-the-turn test instead of the
+      // during-the-turn one the clause requires.
+      await pane.waitFor('Message — Enter send');
       pane.write(`\x1b[200~${draft}\x1b[201~`);
       // Then EDIT it, as the spec's probe says: append after the paste.
       const appended = ' ⟵ edited';
       pane.write(appended);
+      // The draft has to be IN the composer for the rest of this to mean
+      // anything; anchor to the composer line (`> `), never a bare screen
+      // match.
+      await pane.waitFor(`> ${draft.split('\n')[0]}`, { timeoutMs: 20_000 });
 
       // Falsifier half 1 — the stream must not be dropped or reordered by the
       // editing. Asserting the exact concatenation decides both at once: a drop
@@ -2378,6 +2439,147 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     } catch (error) {
       console.info('AUTO_BAR_R_05_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
         requests: scriptedEngine.requests, commandPosts: commandPosts.length }));
+      throw error;
+    } finally { await pane.stop().catch(() => {}); }
+  });
+
+  // Shared setup for the two approval clauses: raise BOTH requests, then work
+  // out which one the PUI has actually focused rather than assuming an order.
+  //
+  // The PUI focuses `cards.first()` (card_view.rs::focused_correlation_id) and
+  // offers no card-to-card navigation, so exactly one request is answerable at
+  // a time. Which one that is comes from the SCREEN — the approval prompt
+  // embeds the tool input verbatim — because pinning it to the order the
+  // fixture fired them in would be asserting the fixture, not the PUI, and
+  // would silently answer the wrong request if that order ever changed.
+  const raiseTwoApprovals = async (pane: PuiPane, prompt: string) => {
+    await openComposer(pane);
+    pane.write(prompt);
+    pane.enter();
+    await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(2), { timeout: 60_000, interval: 100 });
+    const focusedTag = await vi.waitFor(() => {
+      const screen = pane.screen();
+      const shown = scriptedEngine.approvalRequests.filter((r) => screen.includes(String(r.input.command)));
+      // Exactly one focused request must be legible, or "which one did the
+      // owner authorise" is not a well-posed question and the assertions below
+      // would be deciding nothing.
+      expect(shown, screen).toHaveLength(1);
+      return shown[0].tag;
+    }, { timeout: 30_000, interval: 200 });
+    const peer = scriptedEngine.approvalRequests.find((r) => r.tag !== focusedTag);
+    if (!peer) throw new Error('The approval fixture must raise two distinct requests');
+    const focused = scriptedEngine.approvalRequests.find((r) => r.tag === focusedTag);
+    if (!focused) throw new Error(`No approval request tagged ${focusedTag}`);
+    // Options are exactly Approve(1)/Decline(2): the non-question branch passes
+    // that pair with no free-text escape hatch appended.
+    await pane.waitFor('Approve');
+    await pane.waitFor('Decline');
+    expect(scriptedEngine.approvalVerdicts).toHaveLength(0);
+    return { focused, peer };
+  };
+
+  // PUI-APPROVAL-ALLOW — approving one request authorises exactly that action.
+  // Falsifier: "allow executes a broader action or hits an unrelated session."
+  // Probe (the clause's own): two isolated requests, approve one, check exact
+  // execution + peer still pending.
+  test('PUI-APPROVAL-ALLOW: approving one request executes exactly it and leaves its peer pending', async () => {
+    scriptedEngine.successText = 'PUI approval clause replied';
+    scriptedEngine.mode = 'approval';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval allow clause probe');
+      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
+      expect(peerCard, pane.screen()).toBeDefined();
+
+      pane.write('1'); // Approve
+      await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      expect(cardReplies[0]).toMatchObject({ status: 200 });
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1),
+        { timeout: 30_000, interval: 100 });
+
+      // Falsifier half 1 — EXACT execution. The authorised call must be the one
+      // that was shown, carrying the arguments that were shown: not a widened
+      // command, not a different tool input.
+      const settled = scriptedEngine.approvalVerdicts[0];
+      expect(settled.tag).toBe(focused.tag);
+      expect(settled.verdict.behavior, JSON.stringify(settled)).toBe('allow');
+      expect(settled.verdict.updatedInput).toEqual(focused.input);
+      expect(scriptedEngine.approvalExecuted).toEqual([{ tag: focused.tag, input: focused.input }]);
+
+      // Falsifier half 2 — the peer is UNTOUCHED. One authorisation must not
+      // travel to another request: no verdict, nothing executed, card still
+      // open. All three, because each fails differently.
+      expect(scriptedEngine.approvalVerdicts.map((v) => v.tag)).not.toContain(peer.tag);
+      expect(scriptedEngine.approvalExecuted.map((e) => e.tag)).not.toContain(peer.tag);
+      expect(scriptedEngine.events.some((event) => event.type === 'card'
+        && event.phase === 'closed' && event.correlationId === peerCard?.correlationId)).toBe(false);
+      expect(pendingNativeCards().map((card) => card.correlationId)).toContain(peerCard?.correlationId);
+
+      console.info('PUI_APPROVAL_ALLOW_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, approved: focused.tag, executed: scriptedEngine.approvalExecuted,
+        peerStillPending: true, peerCorrelationId: peerCard?.correlationId,
+      }));
+
+      // Settle the peer so the turn can finish rather than being torn down
+      // mid-flight, which would leave the engine cancelling a live card.
+      pane.write('2');
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2),
+        { timeout: 30_000, interval: 100 });
+    } catch (error) {
+      console.info('PUI_APPROVAL_ALLOW_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
+        verdicts: scriptedEngine.approvalVerdicts, executed: scriptedEngine.approvalExecuted, cardReplies }));
+      throw error;
+    } finally { await pane.stop().catch(() => {}); }
+  });
+
+  // PUI-APPROVAL-DENY — declining a request stops exactly that action.
+  // Falsifier: "denied action executes or affects a different request."
+  test('PUI-APPROVAL-DENY: declining one request executes nothing and leaves its peer pending', async () => {
+    scriptedEngine.successText = 'PUI approval deny clause replied';
+    scriptedEngine.mode = 'approval';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval deny clause probe');
+      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
+      expect(peerCard, pane.screen()).toBeDefined();
+
+      pane.write('2'); // Decline
+      await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      expect(cardReplies[0]).toMatchObject({ status: 200 });
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1),
+        { timeout: 30_000, interval: 100 });
+
+      // Falsifier half 1 — "the denied action executes". The verdict must
+      // refuse, and nothing may have run: the executed list is what the fixture
+      // appends ONLY on an authorising verdict, so an empty list here is the
+      // direct observation that no call was authorised.
+      const settled = scriptedEngine.approvalVerdicts[0];
+      expect(settled.tag).toBe(focused.tag);
+      expect(settled.verdict.behavior, JSON.stringify(settled)).toBe('deny');
+      expect(scriptedEngine.approvalExecuted).toEqual([]);
+
+      // Falsifier half 2 — "affects a different request". A denial must not
+      // cascade: the peer keeps its own undecided state.
+      expect(scriptedEngine.approvalVerdicts.map((v) => v.tag)).not.toContain(peer.tag);
+      expect(scriptedEngine.events.some((event) => event.type === 'card'
+        && event.phase === 'closed' && event.correlationId === peerCard?.correlationId)).toBe(false);
+      expect(pendingNativeCards().map((card) => card.correlationId)).toContain(peerCard?.correlationId);
+
+      console.info('PUI_APPROVAL_DENY_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, declined: focused.tag, executed: scriptedEngine.approvalExecuted,
+        peerStillPending: true, peerCorrelationId: peerCard?.correlationId,
+      }));
+
+      // Now APPROVE the peer. This is the sharpest evidence the two requests are
+      // genuinely independent: the same pair of cards yields opposite outcomes,
+      // so neither verdict can have been a property of the batch.
+      pane.write('1');
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2),
+        { timeout: 30_000, interval: 100 });
+      expect(scriptedEngine.approvalExecuted).toEqual([{ tag: peer.tag, input: peer.input }]);
+    } catch (error) {
+      console.info('PUI_APPROVAL_DENY_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
+        verdicts: scriptedEngine.approvalVerdicts, executed: scriptedEngine.approvalExecuted, cardReplies }));
       throw error;
     } finally { await pane.stop().catch(() => {}); }
   });
