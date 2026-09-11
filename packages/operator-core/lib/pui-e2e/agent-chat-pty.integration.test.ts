@@ -322,6 +322,30 @@ class PuiPane {
     return vt.text();
   }
 
+  /**
+   * Every OSC 52 clipboard write this TUI has emitted into the PTY, decoded.
+   *
+   * This is the real clipboard payload rather than a rendering of it: `pui`
+   * copies by writing `ESC ] 52 ; c ; <base64> BEL` to the terminal
+   * (`chat_copy::osc52`), so the exact bytes a terminal would place on the
+   * system clipboard are observable here with no display server and no
+   * shelled-out helper. Reading the rendered screen could not decide the
+   * clipboard question at all — the screen is escape-formatted by
+   * construction, so it cannot distinguish "the copy carries plain text" from
+   * "the copy carries the escapes that drew it".
+   *
+   * The tmux/screen passthrough envelopes wrap this same inner sequence, so
+   * the capture keeps working if the fixture ever runs under a multiplexer.
+   */
+  clipboardWrites(): string[] {
+    const writes: string[] = [];
+    const osc52 = /\x1b\]52;[^;]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)/g;
+    for (const match of this.raw.matchAll(osc52)) {
+      writes.push(Buffer.from(match[1], 'base64').toString('utf8'));
+    }
+    return writes;
+  }
+
   failureEvidence(): Record<string, unknown> {
     return {
       screen: this.screen(),
@@ -1569,6 +1593,87 @@ async function startOperatorProcess(port = 0) {
   } catch (error) { await stop().catch(() => {}); throw error; }
   return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
 }
+
+/**
+ * P-007 conversation-editor spec clauses.
+ *
+ * Each case is written to its clause's own recorded falsifier rather than to a
+ * convenient screen assertion, so a regression in the behavior genuinely fails
+ * the case. These share the file's real harness above — installed `pui` binary,
+ * real PTY, real Hono operator, real migrated Postgres — which is what makes
+ * them e2e-layer evidence instead of a reducer test in disguise.
+ */
+describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (spec clauses)', () => {
+  // PUI-EDITOR-COPY — "Copying a selected transcript result preserves its plain
+  // text." Falsifier: "Copied text contains terminal escape sequences or omits
+  // selected result content."
+  //
+  // Both halves are decided against the decoded OSC 52 payload — the bytes the
+  // terminal would actually put on the clipboard. Asserting on the rendered
+  // screen instead would be unfalsifiable for the escape-sequence half, since
+  // the screen is escape-formatted by construction.
+  test('PUI-EDITOR-COPY: copying a focused transcript result preserves its plain text', async () => {
+    const prompt = 'PUI copy clause probe';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor('Message — Enter send');
+      // The scripted engine's Read tool result is the block under test; if it
+      // never rendered, the copy assertion below would be vacuous.
+      expect(pane.screen()).toContain('Read');
+
+      // `y` is deliberately unreachable while composing (the composer's own
+      // Char arm returns first), so the transcript copy contract only exists
+      // once the composer is closed.
+      pane.escape();
+      await pane.waitFor('i type · v speak');
+
+      // Walk focus back through the newest blocks with `{`, copying each with
+      // `y`. The transcript may render the tool result as its own block or fold
+      // it into the assistant turn, so walking keeps the probe faithful to the
+      // behavior under test without pinning it to one block layout.
+      for (let step = 0; step < 6; step += 1) {
+        pane.write('y');
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        pane.write('{');
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      await vi.waitFor(() => {
+        expect(pane.clipboardWrites().length).toBeGreaterThan(0);
+      }, { timeout: 10_000, interval: 100 });
+      const copied = pane.clipboardWrites();
+
+      // Falsifier half 1 — the selected result content must not be omitted.
+      expect(copied.join('\n--- block ---\n')).toContain('scripted engine tool result');
+
+      // Falsifier half 2 — no terminal escape sequence may survive into the
+      // clipboard. ESC (and the 8-bit CSI introducer) can never occur in the
+      // plain text this clause promises.
+      for (const payload of copied) {
+        expect(payload).not.toMatch(/\x1b/);
+        // ...and the 8-bit CSI introducer, U+009B. It appears here as a literal
+        // character because this write path normalises a \u escape back into
+        // one; the duplicate line below is the same assertion. If a formatter
+        // ever strips these invisible literals, replace both with
+        // `expect(payload).not.toContain(String.fromCharCode(0x9b))` rather
+        // than deleting them — they are half of this clause's falsifier.
+        expect(payload).not.toMatch(//);
+        expect(payload).not.toMatch(//);
+      }
+      expect(copied.some((payload) => payload.trim().length > 0)).toBe(true);
+
+      console.info('PUI_EDITOR_COPY_ACCEPTANCE', JSON.stringify({
+        binary: bin,
+        binarySha256,
+        copiedBlocks: copied.length,
+        carriedSelectedResult: copied.some((payload) => payload.includes('scripted engine tool result')),
+      }));
+    } finally { await pane.stop().catch(() => {}); }
+  });
+});
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
   // The installed Codex Default mode excludes request_user_input. Its native
