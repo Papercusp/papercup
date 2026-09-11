@@ -249,7 +249,18 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     // while proving nothing (the same "green because nothing was measured" shape this file
     // exists to catch), and a predicate that returned true for everything would too.
     expect(signatures.size).toBeGreaterThan(5);
-    expect(isRerunnableGateEntry('lint:deliberately-not-registered-anywhere')).toBe(false);
+    // The sentinel must be an entry the predicate genuinely MUST reject. It used to be
+    // 'lint:deliberately-not-registered-anywhere', which stopped discriminating on 2026-09-09
+    // (6710ce37): that commit made a TYPED ROOT lint entry re-runnable by name — the last line
+    // of isRerunnableGateEntry now admits any `lint:` / `seed:` prefix deliberately, since such
+    // an entry carries its exact script as its id. So the old sentinel was asserting the
+    // OPPOSITE of the documented contract and red-pinned this file for two days. Use an entry
+    // that is neither a registry key, nor a `<ws> :: <script>` task id, nor a typed root
+    // lint/seed entry — which is what "the predicate is not constant-true" actually requires.
+    expect(isRerunnableGateEntry('deliberately-not-registered-anywhere')).toBe(false);
+    // Pin the admission that replaced it, so the line above cannot silently drift back into
+    // contradicting the predicate: a typed root lint entry IS rescue-eligible by name.
+    expect(isRerunnableGateEntry('lint:deliberately-not-registered-anywhere')).toBe(true);
 
     const unrescuable = [...signatures].filter(
       (sig) => !isRerunnableGateEntry(sig) && !RESCUE_EXCLUDED.has(sig),

@@ -491,10 +491,16 @@ export interface RepairTickLegRecord {
   /** The NON_TEST_GATE_SCRIPTS registry key (e.g. `lint:tsc`) — NOT an individual script. */
   id: string;
   /** `skipped` = this subject hive does not declare any script for the registry id.
+   *  `not-checked` = every script that RAN answered `EXIT_NOT_CHECKED` and is registered
+   *  `notCheckedIsNonGating` — it examined nothing, because its working-tree diff is empty
+   *  by construction in the gate's clean checkout. Deliberately distinct from `skipped`
+   *  (no script was declared at all), from `pass` (which would claim verification nobody
+   *  performed), and from `fail` (the subject was never found wanting). Like `skipped` it
+   *  is NOT counted by `failingSignatures` — WI-10000288.
    *  `errored` = a script could not be inspected or run (unreadable package.json, spawn
    *  failure, throw) — distinct from a clean non-zero `fail`, and both `fail` and `errored`
    *  count as failing for `failingSignatures`. */
-  status: "pass" | "fail" | "errored" | "skipped";
+  status: "pass" | "fail" | "errored" | "skipped" | "not-checked";
   durationMs: number;
   /** Bounded evidence tail, present only when the leg did NOT pass. */
   outputTail?: string;
@@ -1565,7 +1571,11 @@ export function checkpointVerdictFromResult(
   const measuredLegs: NonNullable<CheckpointVerdict["repairTickLegs"]>["legs"] =
     [];
   for (const leg of repairTickLegs.legs) {
-    if (leg.status === "skipped") continue;
+    // `not-checked` joins `skipped` here for the SAME reason (WI-10000288): the durable verdict
+    // contract below holds only legs that actually produced a measurement, and a guard that
+    // examined nothing produced none. Dropping it keeps that contract honest — recording it as
+    // any of pass/fail/errored would assert a verdict nobody reached.
+    if (leg.status === "skipped" || leg.status === "not-checked") continue;
     measuredLegs.push({
       id: leg.id,
       status: leg.status,
@@ -13701,6 +13711,10 @@ export async function measureRepairTickLegs(
     let worst: RepairTickLegRecord["status"] = "pass";
     const tails: string[] = [];
     let ranScript = false;
+    // WI-10000288: distinguish "a script ran and declined to answer" from "a script ran and
+    // verified", so a leg is reported `not-checked` only when NOTHING that ran verified.
+    let notCheckedAny = false;
+    let verifiedAny = false;
     for (const script of scripts) {
       let availability: NpmScriptCheck | undefined;
       try {
@@ -13721,11 +13735,22 @@ export async function measureRepairTickLegs(
       ranScript = true;
       try {
         const r = await io.runScript(script);
-        if (r.code !== 0) {
+        // WI-10000288: the same three-outcome contract `runGateAtRef` applies, and it matters
+        // MORE here — this is the path that rebuilds `failingSignatures`. A guard registered
+        // `notCheckedIsNonGating` exiting EXIT_NOT_CHECKED examined nothing (empty
+        // working-tree diff in the clean checkout), so collapsing it into `fail` re-entered a
+        // leg into the repair signature every tick that no fix to the subject could ever
+        // retire — the verdict was never about the subject.
+        if (r.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(script)) {
+          notCheckedAny = true;
+          tails.push(`${script}: NOT CHECKED (examined nothing — not gating)`);
+        } else if (r.code !== 0) {
           if (worst === "pass") worst = "fail";
           tails.push(
             `${script}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
           );
+        } else {
+          verifiedAny = true;
         }
       } catch (e) {
         worst = "errored";
@@ -13733,6 +13758,9 @@ export async function measureRepairTickLegs(
       }
     }
     if (!ranScript && worst === "pass") worst = "skipped";
+    // Only when NOTHING that ran actually verified: one passing sibling script is real
+    // coverage, so the leg is a pass that merely notes the declined guard in its tail.
+    else if (worst === "pass" && notCheckedAny && !verifiedAny) worst = "not-checked";
     legs.push({
       id: gateId,
       status: worst,

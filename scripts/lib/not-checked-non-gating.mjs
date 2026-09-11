@@ -27,10 +27,12 @@
 // THIS IS A MIRROR, AND IT IS PINNED
 //   Per the repo's derived-truth ladder, a second copy of a truth the code already owns is
 //   only acceptable at the PIN rung: with a build-time divergence check. That check is
-//   scripts/lib/__tests__/not-checked-non-gating-mirror.test.ts — it parses the registry in
-//   affected-tests.mjs and asserts set equality with this file, in BOTH directions. Add a
-//   guard to the registry with the flag and that test fails until this file is updated;
-//   remove one and it fails the other way. Do not hand-edit this list without running it.
+//   packages/operator-core/lib/__tests__/not-checked-non-gating-mirror.test.ts (a Vitest file,
+//   per the repo's four canonical frameworks — same placement as the sibling pin for
+//   scripts/lib/task-exit-class.mjs). It parses the registry in affected-tests.mjs and asserts
+//   set equality with this file, in BOTH directions. Add a guard to the registry with the flag
+//   and that test fails until this file is updated; remove one and it fails the other way. Do
+//   not hand-edit this list without running it.
 //
 // SCOPE — deliberately narrow.
 //   Only a guard whose REGISTRATION opts in is forgiven. Exit 2 is a perfectly ordinary
