@@ -170,6 +170,14 @@ import {
   convergeLockfileDrift,
   describeLockfileConvergence,
 } from "./green-checkpoint-lockfile-convergence";
+import {
+  applyGenCheckHeal,
+  describeGenCheckHeal,
+  healGenCheckLegs,
+  makeRealGenCheckHealIo,
+  signatureWithoutHealed,
+  type GenCheckHealOutcome,
+} from "./green-checkpoint-gen-check-self-heal";
 import { longestCleanPrefix } from "./longest-clean-prefix";
 import {
   createSetupStretchStamps,
@@ -728,6 +736,16 @@ export interface CheckpointDeps {
     ref: string,
     gateIds: string[],
   ): Promise<RepairTickLegs | null>;
+  /** P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): heal the `gen:*:check`
+   *  members of a repair-round red by running the paired `gen:*` writer INSIDE the frozen
+   *  verification tree (already materialized at `queue.repairHead`), re-running the check
+   *  there, and — only when it passes — admitting the writer's proved delta onto repairHead
+   *  (actor=gate) through the ordinary ledgered door. Optional: absent ⇒ a gen:*:check red
+   *  holds for a fixer exactly as before. */
+  healGenCheckLegs?(
+    queue: FrozenCandidateRepairQueue,
+    signature: readonly { id: string }[],
+  ): Promise<GenCheckHealOutcome>;
   /** P-005 / D-008: the root package.json `scripts` map, supplied rather than read, so the
    *  hygiene classifier stays pure and its `gen:X:check` ⇄ `gen:X` pair derivation is testable
    *  against synthetic script sets. Optional: ABSENT ⇒ no hygiene split is computed at all and
@@ -10599,14 +10617,50 @@ async function runGreenCheckpointInner(
       // freeze-and-converge (D-007) exists to prevent. Its "not observable on staging" re-queue
       // (`repair-staging-mismatch`) is gone with it: the lineage is not required to be on
       // staging to be judged; P-008 folds a promoted lineage back INTO staging afterwards.
-      const verification = await verifyRepairHead(
-        {
-          ...deps,
-          resolveTestWorkspace: makeTestWorkspaceResolver(cfg.integrationRoot),
-        },
-        repairQueue,
-      );
+      const verifyDeps = {
+        ...deps,
+        resolveTestWorkspace: makeTestWorkspaceResolver(cfg.integrationRoot),
+      };
+      let verification = await verifyRepairHead(verifyDeps, repairQueue);
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
+      // P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): a red whose signature
+      // carries `gen:*:check` legs is artifact drift with a MECHANICAL repair — run the paired
+      // writer in the frozen verification tree (already at repairHead), re-check there, and admit
+      // only the writer's proved delta onto repairHead (actor=gate). Every leg healed ⇒ re-judge
+      // the advanced head in THIS run (R-1: zero idle wait, no fixer round). Some other leg still
+      // red ⇒ the admission stands and the REDUCED red is recorded below — the existing D-014
+      // transition sees repairHead moved and records it as superseded at the measured head.
+      let genCheckHeal: Extract<GenCheckHealOutcome, { kind: "healed" }> | null = null;
+      if (
+        verification.kind === "red" &&
+        deps.healGenCheckLegs &&
+        deps.writeFrozenRepairQueue
+      ) {
+        let heal: GenCheckHealOutcome;
+        try {
+          heal = await deps.healGenCheckLegs(repairQueue, verification.signature);
+        } catch (e) {
+          heal = { kind: "probe-failed", detail: e instanceof Error ? e.message : String(e) };
+        }
+        if (heal.kind !== "nothing-to-heal") {
+          deps.log(
+            `repair head ${candidate.slice(0, 8)}: gen:*:check self-heal — ${describeGenCheckHeal(heal)}`,
+          );
+        }
+        if (heal.kind === "healed") {
+          repairQueue = applyGenCheckHeal(repairQueue, heal);
+          await deps.writeFrozenRepairQueue(repairQueue);
+          if (signatureWithoutHealed(verification.signature, heal).length === 0) {
+            candidate = repairQueue.repairHead;
+            verification = await verifyRepairHead(verifyDeps, repairQueue);
+            deps.log(
+              `repair head ${candidate.slice(0, 8)}: ${verification.summary} (re-judged in-run after gen:*:check self-heal)`,
+            );
+          } else {
+            genCheckHeal = heal;
+          }
+        }
+      }
       if (verification.kind === "red") {
         const canRequeue = Boolean(deps.writeFrozenRepairQueue);
         if (canRequeue) {
@@ -10621,9 +10675,15 @@ async function runGreenCheckpointInner(
           // suite's hour is not discarded and the newer head still reads as awaiting
           // verification (D-014's "records its legs" clause).
           let supersededBy = null as FrozenCandidateRepairQueue | null;
+          // P-005: legs the self-heal just admitted a fix for are no longer this red's.
+          const redSignature = genCheckHeal
+            ? signatureWithoutHealed(verification.signature, genCheckHeal)
+            : verification.signature;
           const supersededRedInput = {
-            failingTests: verification.failingTests,
-            signature: verification.signature,
+            failingTests: genCheckHeal
+              ? redSignature.map((entry) => entry.id)
+              : verification.failingTests,
+            signature: redSignature,
             signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
           };
           repairQueue = await commitFrozenRepairQueueTransition(
@@ -18585,6 +18645,36 @@ export function realCheckpointDeps(
         ref,
         registry,
       );
+    },
+    // P-005 (R-5, D-001): gen:*:check self-heal in the frozen verification tree. The tree is
+    // already at queue.repairHead when verifyRepairHead has just measured the red; the writer
+    // runs there (never in canonical staging), and only its dirty-set delta is admitted.
+    async healGenCheckLegs(queue, signature) {
+      const env = buildGreenCheckpointEnv(
+        null,
+        process.env,
+        undefined,
+        cfg.greenCheckpointCapacityMode,
+      );
+      const io = makeRealGenCheckHealIo({
+        checkpointRoot: cfg.checkpointRoot,
+        integrationRoot: cfg.integrationRoot,
+        runScript: async (script) => {
+          const r = await exec("npm", ["run", script], {
+            cwd: cfg.checkpointRoot,
+            env,
+            allowNonZero: true,
+            ...rescueTaskWatchdogOptions(script, env),
+          });
+          return { code: r.code, tail: (r.stderr || r.stdout).slice(-300) };
+        },
+        log: (line) => console.log(line),
+      });
+      return healGenCheckLegs(io, {
+        root: cfg.integrationRoot,
+        queue,
+        signature,
+      });
     },
     // Deploy-staleness alarm seam (P-005): how old is the deployed pin, and how far does
     // it trail tip? `null` on any git failure ⇒ the alarm simply doesn't fire.
