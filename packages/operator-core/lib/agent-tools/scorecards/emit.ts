@@ -573,6 +573,123 @@ async function validateSpecTestAdequacyReplay(
   return undefined;
 }
 
+type GradingAuditReplayConsistencyError = {
+  code: 'grading_audit_replay_uncorroborated' | 'grading_audit_replay_consistent';
+  error: string;
+};
+
+/**
+ * A grading-integrity audit can call the target card's exact evaluator recipe
+ * "re-runnable" while separately claiming its uniform distribution is false.
+ * For spec-test-adequacy cards the evaluator owns those ratings, so corroborate
+ * that claimed contradiction before the audit is allowed to settle the card.
+ */
+async function validateGradingAuditReplayConsistency(
+  gradedObservation: NonNullable<ReturnType<typeof asStructuredObservation>>,
+  auditRatings: z.infer<typeof scorecardEmitArgs>['ratings'],
+  dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+): Promise<GradingAuditReplayConsistencyError | undefined> {
+  if (
+    gradedObservation.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF ||
+    !gradedObservation.rerunRecipe ||
+    ratingVerdict(auditRatings['re-runnable-evidence']?.rating ?? '') !== 'pass' ||
+    ratingVerdict(auditRatings['degenerate-distribution']?.rating ?? '') !== 'fail'
+  ) {
+    return undefined;
+  }
+
+  const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(gradedObservation.rerunRecipe);
+  if (!parsedRecipe.success || !dispatchTool) {
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
+        `re-runnable-evidence='pass': the graded spec-test-adequacy card's exact evaluator recipe ` +
+        'could not be replayed server-side; no audit card was persisted',
+    };
+  }
+
+  let replay: unknown;
+  try {
+    replay = unwrapSpecTestAdequacyReplay(
+      await dispatchTool('plans:evaluate-spec-test-adequacy', {
+        ...parsedRecipe.data.args,
+        payloadTier: 'full',
+      }),
+    );
+  } catch (error) {
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
+        `re-runnable-evidence='pass': the server-side evaluator replay failed ` +
+        `(${error instanceof Error ? error.message : String(error)}); no audit card was persisted`,
+    };
+  }
+
+  const payload = replay && typeof replay === 'object' && !Array.isArray(replay)
+    ? replay as { ok?: unknown; rows?: unknown; error?: unknown }
+    : null;
+  if (payload?.ok === false) {
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
+        `re-runnable-evidence='pass': the server-side evaluator replay refused ` +
+        `(${typeof payload.error === 'string' ? payload.error : 'unknown evaluator error'}); ` +
+        'no audit card was persisted',
+    };
+  }
+
+  const selection = parsedRecipe.data.selection;
+  const rows = Array.isArray(payload?.rows) ? payload.rows as SpecTestAdequacyReplayRow[] : [];
+  const row = rows.find(
+    (candidate) =>
+      candidate &&
+      candidate.specId === selection.specId &&
+      candidate.specRevision === selection.specRevision &&
+      (candidate.specFingerprint === undefined || candidate.specFingerprint === selection.specFingerprint),
+  );
+  if (!row) {
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
+        `re-runnable-evidence='pass': the server-side evaluator replay returned no row for ` +
+        `${selection.planSlug}/${selection.specId}@${selection.specRevision}; no audit card was persisted`,
+    };
+  }
+
+  const replayRatings =
+    row.ratings && typeof row.ratings === 'object' && !Array.isArray(row.ratings)
+      ? row.ratings as Record<string, { rating?: unknown }>
+      : {};
+  const wouldBlock = new Set(
+    Array.isArray(row.wouldBlock)
+      ? row.wouldBlock.filter((key): key is string => typeof key === 'string')
+      : [],
+  );
+  const mismatches = Object.entries(gradedObservation.ratings).flatMap(([criterion, graded]) => {
+    const gradedVerdict = ratingVerdict(graded.rating);
+    if (gradedVerdict === null) return [];
+    const replayRating = replayRatings[criterion];
+    const replayVerdict =
+      replayRating && typeof replayRating.rating === 'string'
+        ? ratingVerdict(replayRating.rating)
+        : null;
+    return replayVerdict !== gradedVerdict || wouldBlock.has(criterion) ? [criterion] : [];
+  });
+  if (mismatches.length > 0) return undefined;
+
+  return {
+    code: 'grading_audit_replay_consistent',
+    error:
+      `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
+      `re-runnable-evidence='pass': the graded card's exact server-side evaluator replay reproduced ` +
+      `every applicable rating with no wouldBlock contradiction; no audit card was persisted`,
+  };
+}
+
 /**
  * The completion gate can only match a spec-test-adequacy card to the exact
  * clause revision selected by the evaluator. Refuse malformed or mismatched
@@ -1619,6 +1736,12 @@ export async function emitScorecard(
             'quotes form the graded evidence; use another auditor',
         };
       }
+      const replayConsistencyError = await validateGradingAuditReplayConsistency(
+        gradedObservation,
+        args.ratings,
+        deps.dispatchTool,
+      );
+      if (replayConsistencyError) return { ok: false as const, ...replayConsistencyError };
       // A grading-integrity FAIL on re-runnable-evidence is a claim about executing
       // the target card's stored probe. An auditor on an older/diverged build can
       // observe its own stale API and manufacture a failure that belongs to the
