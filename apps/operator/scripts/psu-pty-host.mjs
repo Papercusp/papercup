@@ -514,6 +514,67 @@ export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAt
   }
 }
 
+/** Return the newest regular Codex rollout beneath this session's isolated
+ * CODEX_HOME. A resumed/carry chain can contain several native threads in the
+ * same home, so an ordinary warm wake must follow the current writer rather
+ * than pinning the predecessor path forever. Symlinks and paths outside the
+ * sessions root are never candidates; traversal shares the native-proof cap. */
+function newestCodexTranscriptPath(env) {
+  if (!env?.CODEX_HOME) return null;
+  let root;
+  try { root = realpathSync(join(env.CODEX_HOME, 'sessions')); }
+  catch { return null; }
+  const stack = [{ path: root, depth: 0 }];
+  let visited = 0;
+  let newest = null;
+  while (stack.length && visited < 4096) {
+    const current = stack.pop();
+    let entries;
+    try { entries = readdirSync(current.path, { withFileTypes: true }); }
+    catch { continue; }
+    for (const entry of entries) {
+      if (++visited > 4096) break;
+      const path = join(current.path, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (current.depth < 10) stack.push({ path, depth: current.depth + 1 });
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      try {
+        const st = statSync(path);
+        if (!st.isFile() || st.size === 0 || st.size > 64 * 1024 * 1024) continue;
+        if (!newest || st.mtimeMs > newest.mtimeMs || (st.mtimeMs === newest.mtimeMs && path > newest.path)) {
+          newest = { path, mtimeMs: st.mtimeMs };
+        }
+      } catch {
+        /* a concurrently-rotated rollout is simply not a boundary candidate */
+      }
+    }
+  }
+  return newest?.path ?? null;
+}
+
+/** An ordinary warm Codex wake may use the CURRENT native turn's settled state
+ * as its prompt boundary when idle TUI repaint prevents OUTPUT_QUIET_MS from
+ * ever elapsing. Unlike the carry-specific probe above, this follows the newest
+ * rollout in the session's isolated CODEX_HOME and accepts a completion that
+ * predates the arriving wake. `completedAtOrAfterMs` fences out the preceding
+ * completion after any newer owner/machine submit, so a mid-turn wake cannot
+ * use stale history to bypass the anti-wedge gate. Missing/partial proof stays
+ * false and falls back to the existing output-silence gate. */
+export function codexLatestTurnCompleted({
+  agent,
+  env,
+  completedAtOrAfterMs = 0,
+}) {
+  if (agent !== 'codex' || !Number.isFinite(completedAtOrAfterMs)) return false;
+  const transcriptPath = newestCodexTranscriptPath(env);
+  return transcriptPath
+    ? codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAtMs: completedAtOrAfterMs })
+    : false;
+}
+
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
  *   home?: string, timeoutMs?: number, pollMs?: number, nativeId?: string | null}} options
@@ -5312,6 +5373,10 @@ export function hostThroughPty(o) {
     return true;
   };
   let machineTurnActive = false;
+  // Latest owner-visible machine submit into THIS child. The ordinary Codex
+  // native-boundary probe rejects any older task_complete record, preventing a
+  // previous turn from certifying a new turn that has only just been submitted.
+  let lastMachineTurnSubmittedAtMs = 0;
   let queuedOwnerInput = [];
   // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
   // lastOutputAt the activity tracker records on every `child.onData` below, so a
@@ -5603,6 +5668,7 @@ export function hostThroughPty(o) {
               if (i + 1 < chunks.length) await new Promise((r) => setTimeout(r, 0));
             }
           }
+          lastMachineTurnSubmittedAtMs = Date.now();
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
           }
@@ -6351,10 +6417,20 @@ export function hostThroughPty(o) {
           // it applies UNCONDITIONALLY for every gated verb (bridgeTty or not) —
           // gating it on bridgeTty left reset/recycle unguarded whenever the host
           // ran without a bridged terminal.
-          const atPrompt = await agentBusyGate.waitAtPrompt(undefined, msg.mode === 'carry-respawn'
+          const verifiedBoundary = msg.mode === 'carry-respawn'
             ? () => codexCarryTurnCompleted({ agent: env.PAPERCUSP_AGENT, env,
               transcriptPath: msg.sourceTranscriptPath, receivedAtMs: msg.receivedAtMs })
-            : null);
+            : msg.mode === 'turn'
+              ? () => codexLatestTurnCompleted({
+                  agent: env.PAPERCUSP_AGENT,
+                  env,
+                  completedAtOrAfterMs: Math.max(
+                    Number(activity.snapshot().lastInputAt ?? 0),
+                    lastMachineTurnSubmittedAtMs,
+                  ),
+                })
+              : null;
+          const atPrompt = await agentBusyGate.waitAtPrompt(undefined, verifiedBoundary);
           if (atPrompt.deferred) {
             // Agent stayed mid-turn past the cap. DROP the live inject/kill rather
             // than wedge the turn or lose in-flight work — the wake is already
@@ -6764,6 +6840,7 @@ export function hostThroughPty(o) {
             if (msg.mode !== 'osc') quotaBlockDetector.observeInput(step.data);
             sink.write(step.data);
           }
+          if (msg.mode === 'turn' || msg.mode === 'reset') lastMachineTurnSubmittedAtMs = Date.now();
           machineTurnSubmitted = machineTurn;
         } finally {
           if (machineTurn) {

@@ -254,6 +254,27 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
+  it('accepts factual canonical-tree location prose while a frozen queue is open', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);
+
+    const result = await one({
+      id: 'WI-7',
+      checkpoint: 'Canonical tree is /workspace/papercusp on staging.',
+    });
+
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+  });
+
   it('teaches that rowsMode controls rows only and gives the complete body+rows replacement recipe', () => {
     const json = z.toJSONSchema(checkpoint.args as never) as {
       properties?: { rowsMode?: { description?: string } };
@@ -348,13 +369,21 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
   it('publishes the documented structured checkpoint shape in both shorthand schemas', () => {
     const json = z.toJSONSchema(checkpoint.args as never) as {
+      $defs?: Record<string, unknown>;
       properties?: {
         checkpoint?: unknown;
         checks?: unknown;
         items?: { items?: unknown };
       };
     };
+    const resolveRef = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object') return value;
+      const ref = (value as Record<string, unknown>).$ref;
+      if (typeof ref !== 'string' || !ref.startsWith('#/$defs/')) return value;
+      return json.$defs?.[ref.slice('#/$defs/'.length)] ?? value;
+    };
     const hasStructuredCheckpoint = (value: unknown): boolean => {
+      value = resolveRef(value);
       if (!value || typeof value !== 'object') return false;
       const record = value as Record<string, unknown>;
       const properties = record.properties;
@@ -376,6 +405,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(hasStructuredCheckpoint(json.properties?.items?.items)).toBe(true);
 
     const hasProperty = (value: unknown, key: string): boolean => {
+      value = resolveRef(value);
       if (!value || typeof value !== 'object') return false;
       const record = value as Record<string, unknown>;
       const properties = record.properties;
@@ -384,6 +414,31 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     };
     expect(hasProperty(json.properties?.checks, 'testResult')).toBe(true);
     expect(hasProperty(json.properties?.items?.items, 'testResult')).toBe(true);
+  });
+
+  it('publishes shared checkpoint and checks schemas once via defs and refs', () => {
+    const json = z.toJSONSchema(checkpoint.args as never, { io: 'input' }) as {
+      $defs?: Record<string, unknown>;
+      properties?: {
+        checkpoint?: { $ref?: string };
+        checks?: { $ref?: string };
+        items?: { items?: { properties?: { checkpoint?: { $ref?: string }; checks?: { $ref?: string } } } };
+      };
+    };
+    const defs = json.$defs ?? {};
+    const shorthandBodyRef = json.properties?.checkpoint?.$ref;
+    const itemBodyRef = json.properties?.items?.items?.properties?.checkpoint?.$ref;
+    const shorthandChecksRef = json.properties?.checks?.$ref;
+    const itemChecksRef = json.properties?.items?.items?.properties?.checks?.$ref;
+
+    expect(Object.keys(defs)).toEqual(
+      expect.arrayContaining(['work-items-checkpoint-body-v1', 'work-items-checks-v1']),
+    );
+    expect(shorthandBodyRef).toBe('#/$defs/work-items-checkpoint-body-v1');
+    expect(itemBodyRef).toBe(shorthandBodyRef);
+    expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
+    expect(itemChecksRef).toBe(shorthandChecksRef);
+    expect(JSON.stringify(json)).toHaveLength(21406);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -647,6 +702,52 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain('checkpoint_verify_failed');
     expect(r.error).toContain('read back null');
+    expect(r).toMatchObject({
+      errorCode: 'checkpoint_verify_failed',
+      retryable: false,
+      writeCommitted: true,
+      storedLength: 'in-flight state'.length,
+      storedContentHash: expect.stringMatching(/^[0-9a-f]{12}$/),
+      readBackContentHash: null,
+      recovery: {
+        verify: {
+          tool: 'work_items:get',
+          args: { id: 'WI-7', harness: 'papercup', detail: true, threadLimit: 0 },
+          expectedContentHash: expect.stringMatching(/^[0-9a-f]{12}$/),
+        },
+      },
+    });
+    expect(r.error).toContain('Do NOT retry this write');
+  });
+
+  it('EI-22707338795824591: preserves a verifier exception instead of reporting read back null or recommending a duplicate append', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);
+    getWorkItemCheckpoint
+      .mockResolvedValueOnce('prior checkpoint body')
+      .mockRejectedValueOnce(new Error('bounded verifier read timed out'));
+
+    const r = await one({ id: 'WI-7', checkpoint: 'one append only', append: true });
+
+    expect(r).toMatchObject({
+      ok: false,
+      errorCode: 'checkpoint_verify_unavailable',
+      retryable: false,
+      writeCommitted: true,
+      storedLength: 'prior checkpoint body\n\n---\none append only'.length,
+      storedContentHash: expect.stringMatching(/^[0-9a-f]{12}$/),
+      recovery: {
+        verify: {
+          tool: 'work_items:get',
+          args: { id: 'WI-7', harness: 'papercup', detail: true, threadLimit: 0 },
+          expectedContentHash: expect.stringMatching(/^[0-9a-f]{12}$/),
+        },
+      },
+    });
+    expect(r.error).toContain('bounded verifier read timed out');
+    expect(r.error).toContain('Do NOT retry this write');
+    expect(r.error).not.toContain('read back null');
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
   });
 
   it('P-003: a read-back that returns DIFFERENT bytes also fails verification', async () => {
@@ -813,6 +914,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       getWorkItemCheckpoint.mockResolvedValueOnce('did step 1; next: step 2 (detailed 4-file build record)');
       setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
       const r = await one({ id: 'WI-7', checkpoint: 'tsc came back clean', append: true });
+      expect(setWorkItemCheckpointWithPrior.mock.calls.at(-1)?.[2])
+        .toMatchObject({ latestUpdate: 'tsc came back clean' });
       expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
         { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
         'did step 1; next: step 2 (detailed 4-file build record)\n\n---\ntsc came back clean',
@@ -1747,6 +1850,47 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('evidence: observed probe C pass');
     });
 
+    it('round-trips predicted evidence through the observed slot without rendering a verified glyph', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'predicted audit context',
+        checks: [
+          {
+            id: 'p002-current-scorecard-audits',
+            claim: 'P-002 adequacy audits are terminal',
+            recheck: 'read all gradingAudit.state values',
+            status: 'predicted',
+            evidence: 'Pending with advancing reservations',
+          },
+          {
+            id: 'p004-current-measurement',
+            claim: 'P-004 has a current measurement',
+            recheck: 'read the newest measurement artifact',
+            status: 'predicted',
+            evidence: 'Prior artifact is stale',
+          },
+        ],
+      });
+
+      expect(r).toMatchObject({ ok: true, checks: 2 });
+      const stored = await lastStored();
+      const checks = splitCarryNoteChecks(stored).checks;
+      expect(checks).toEqual([
+        expect.objectContaining({
+          id: 'p002-current-scorecard-audits',
+          observed: expect.stringContaining('Pending with advancing reservations'),
+        }),
+        expect.objectContaining({
+          id: 'p004-current-measurement',
+          observed: expect.stringContaining('Prior artifact is stale'),
+        }),
+      ]);
+      expect(checks.every((check) => check.verified === undefined)).toBe(true);
+      expect(stored).not.toContain('- ✓ [#p002-current-scorecard-audits]');
+      expect(stored).not.toContain('- ✓ [#p004-current-measurement]');
+    });
+
     it('EI-21828094173087688: accepts boolean `ok` compatibility rows in shorthand checks', async () => {
       withPrior(null);
       const r = await one({
@@ -2141,8 +2285,15 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const schemaOf = (candidate: unknown) => {
           const args = (candidate as { args: { toJSONSchema: () => unknown } }).args;
           const schema = args.toJSONSchema() as JsonNode;
-          const checks = (schema.properties as JsonNode).checks as JsonNode;
-          return (checks.items as JsonNode).properties as Record<string, JsonNode>;
+          const resolveRef = (value: unknown): JsonNode => {
+            if (!value || typeof value !== 'object') return value as JsonNode;
+            const ref = (value as JsonNode).$ref;
+            if (typeof ref !== 'string' || !ref.startsWith('#/$defs/')) return value as JsonNode;
+            return (schema.$defs as Record<string, JsonNode> | undefined)?.[ref.slice('#/$defs/'.length)] ?? (value as JsonNode);
+          };
+          const checks = resolveRef((schema.properties as JsonNode).checks);
+          const rows = resolveRef(checks.items);
+          return rows.properties as Record<string, JsonNode>;
         };
         const loopCheckpoint = (await import('../loop/checkpoint')).default;
         const workItemRows = schemaOf(checkpoint);
@@ -2982,6 +3133,63 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(stored).toContain('COMPACT-06 refreshed holds');
           expect(stored).not.toContain('COMPACT-06 holds');
           expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+        });
+
+        /**
+         * EI-22754441777968838: the reported runtime had a 7,828-character prior
+         * with checkpointChecks.count === 0, but append_body_overflow claimed those
+         * characters were carried check rows and rejected a 1,000-character append.
+         * A no-check prior is comfortably below the 32,000-character body cap and
+         * must retain the complete submitted progress body.
+         */
+        it('accepts the reported 7,828-char no-check prior plus a 1,000-char append', async () => {
+          const prior = 'B'.repeat(7828);
+          const readCurrent = installLegacyPrior(prior);
+          const addendum = 'N'.repeat(1000);
+
+          const r = (await one({ id: 'WI-7', checkpoint: addendum, append: true })) as {
+            ok: boolean;
+            verified?: boolean;
+            errorCode?: string;
+            checks?: number;
+          };
+
+          expect(r).toMatchObject({ ok: true, verified: true, checks: 0 });
+          expect(r.errorCode).toBeUndefined();
+          const stored = readCurrent();
+          expect(stored).toHaveLength(prior.length + '\n\n---\n'.length + addendum.length);
+          expect(stored!.endsWith(addendum)).toBe(true);
+          expect(splitCarryNoteChecks(stored).checks).toHaveLength(0);
+        });
+
+        /**
+         * EI-23068149727966393: recovered continuations reported the same false
+         * append_body_overflow for short no-check priors (2,336 and 3,002 chars)
+         * when the append also supplied two fresh check rows. The prior is far
+         * below the 32,000-character body cap; both the body and checks must land.
+         */
+        it('accepts short no-check priors when an append also supplies two checks', async () => {
+          for (const priorLength of [2336, 3002]) {
+            const prior = 'B'.repeat(priorLength);
+            const readCurrent = installLegacyPrior(prior);
+
+            const r = (await one({
+              id: 'WI-7',
+              checkpoint: 'short continuation paragraph',
+              append: true,
+              checks: [
+                { claim: 'checkpoint body remains readable', recheck: 'read the stored body' },
+                { claim: 'append progress is retained', recheck: 'read the stored tail' },
+              ],
+            })) as { ok: boolean; verified?: boolean; errorCode?: string; checks?: number };
+
+            expect(r).toMatchObject({ ok: true, verified: true, checks: 2 });
+            expect(r.errorCode).toBeUndefined();
+            const stored = readCurrent();
+            expect(stored).toContain('short continuation paragraph');
+            expect(splitCarryNoteChecks(stored).body.trim().endsWith('short continuation paragraph')).toBe(true);
+            expect(splitCarryNoteChecks(stored).checks).toHaveLength(2);
+          }
         });
 
         it('uses a vacant slot before reporting the remaining supplied row as not retained', async () => {

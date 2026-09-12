@@ -1512,6 +1512,7 @@ export async function fetchRedTestRows(
         FROM harness_shared.test_runs
        WHERE started_at > now() - make_interval(hours => ${windowHours})
          AND status IN ('pass', 'fail', 'error')
+         AND source <> 'mutation-probe'
          -- Only plausible repo paths: the test-runner's own test suites record
          -- synthetic fixture rows ('b', 'fail', 'no-such-bin') into test_runs;
          -- a real run always carries a repo-relative path with a separator.

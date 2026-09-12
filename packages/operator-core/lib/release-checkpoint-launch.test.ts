@@ -627,10 +627,15 @@ describe('launchDetachedCheckpoint', () => {
     const result = await p;
 
     expect(result.launched).toBe(true);
+    expect(result.unit).toBe(checkpointUnitForRoot('/portal-subject'));
     expect(execFn).toHaveBeenCalledWith('git', expect.arrayContaining(['-C', '/portal-subject']));
     expect(spawnFn).toHaveBeenCalledWith(
       'systemd-run',
-      expect.arrayContaining(['--working-directory=/papercusp-tooling', '--setenv=PAPERCUSP_RELEASE_SLUG=portal']),
+      expect.arrayContaining([
+        `--unit=${checkpointUnitForRoot('/portal-subject')}`,
+        '--working-directory=/papercusp-tooling',
+        '--setenv=PAPERCUSP_RELEASE_SLUG=portal',
+      ]),
     );
     expect(result.argv.at(-1)).toContain("PAPERCUSP_INTEGRATION_ROOT='/portal-subject'");
     expect(result.argv.at(-1)).toContain("unset 'DATABASE_URL' &&");

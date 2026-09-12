@@ -385,7 +385,14 @@ export const acceptanceBarContractSchema = z
      */
     meaningRevision: z.number().int().positive().optional(),
   })
-  .strict();
+  // This object is server-owned and persisted in a database shared by staging and
+  // the deployed operator.  A newer writer can therefore add a field before the
+  // older reader is promoted.  Rejecting that additive field makes the older reader
+  // hide the *entire* otherwise-valid rubric, which in turn strands acceptance
+  // grading.  Preserve unknown contract fields across that rollout window.  The
+  // caller-authored rubric surface remains strict at the top level and per criterion;
+  // only this server-owned compatibility envelope is forward-extensible.
+  .passthrough();
 export type AcceptanceBarContract = z.infer<typeof acceptanceBarContractSchema>;
 
 /** Lifecycle provenance for a canonical acceptance BAR. Historical criteria omit it;

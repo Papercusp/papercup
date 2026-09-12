@@ -85,6 +85,7 @@ export default defineTool({
         SELECT COUNT(DISTINCT file_path)::text AS n
           FROM harness_shared.test_runs
          WHERE file_path = ANY(${filePaths})
+           AND source <> 'mutation-probe'
            AND (branch = ${branchFilter} OR source = 'admin-ui')
       `;
       payload.totalFilesTracked = Number(tracked[0]?.n ?? 0);
@@ -98,6 +99,7 @@ export default defineTool({
             SELECT DISTINCT ON (file_path) duration_ms AS d
               FROM harness_shared.test_runs
              WHERE file_path = ANY(${filePaths})
+               AND source <> 'mutation-probe'
                AND (branch = ${branchFilter} OR source = 'admin-ui')
              ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
           ) t
@@ -113,6 +115,7 @@ export default defineTool({
           FROM harness_shared.test_runs
          WHERE file_path = ANY(${filePaths})
            AND status IN ('fail', 'error')
+           AND source <> 'mutation-probe'
            AND (branch = ${branchFilter} OR source = 'admin-ui')
          ORDER BY finished_at DESC NULLS LAST, id DESC
          LIMIT 1
@@ -133,6 +136,7 @@ export default defineTool({
                      ) AS rn
                 FROM harness_shared.test_runs
                WHERE file_path = ANY(${filePaths})
+                 AND source <> 'mutation-probe'
             ) ranked
            WHERE rn <= 10
            GROUP BY file_path

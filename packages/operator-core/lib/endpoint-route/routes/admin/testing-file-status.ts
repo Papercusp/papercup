@@ -101,6 +101,7 @@ export default defineTool({
                file_path, status, duration_ms, finished_at, source, branch
           FROM harness_shared.test_runs
          WHERE file_path = ANY(${filePaths})
+           AND source <> 'mutation-probe'
            AND (branch = ${ctx.branch} OR source = 'admin-ui')
          ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
       `;
@@ -133,6 +134,7 @@ export default defineTool({
                file_path, status, duration_ms, finished_at, source, branch
           FROM harness_shared.test_runs
          WHERE file_path = ANY(${missing})
+           AND source <> 'mutation-probe'
          ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
       `;
       for (const r of rows) {

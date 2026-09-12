@@ -115,6 +115,19 @@ export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAt
     transcriptPath: any;
     receivedAtMs: any;
 }): boolean;
+/** An ordinary warm Codex wake may use the CURRENT native turn's settled state
+ * as its prompt boundary when idle TUI repaint prevents OUTPUT_QUIET_MS from
+ * ever elapsing. Unlike the carry-specific probe above, this follows the newest
+ * rollout in the session's isolated CODEX_HOME and accepts a completion that
+ * predates the arriving wake. `completedAtOrAfterMs` fences out the preceding
+ * completion after any newer owner/machine submit, so a mid-turn wake cannot
+ * use stale history to bypass the anti-wedge gate. Missing/partial proof stays
+ * false and falls back to the existing output-silence gate. */
+export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, }: {
+    agent: any;
+    env: any;
+    completedAtOrAfterMs?: number | undefined;
+}): boolean;
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
  *   home?: string, timeoutMs?: number, pollMs?: number, nativeId?: string | null}} options

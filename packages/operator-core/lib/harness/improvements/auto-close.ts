@@ -397,6 +397,7 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
             FROM harness_shared.test_runs
            WHERE started_at > now() - make_interval(hours => ${windowHours})
              AND status IN ('pass', 'fail', 'error')
+             AND source <> 'mutation-probe'
              AND file_path LIKE '%/%'
         )
         SELECT npath, status, started_at, commit_sha

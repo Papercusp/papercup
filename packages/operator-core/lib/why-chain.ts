@@ -141,6 +141,7 @@ export async function recentFailingFiles(deps: WhyChainDeps = {}): Promise<strin
        WHERE finished_at IS NOT NULL
          AND finished_at > now() - interval '2 hours'
          AND status IN ('fail', 'error')
+         AND source <> 'mutation-probe'
          AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
          AND ${scopePredicate}
        ORDER BY file_path ASC, finished_at DESC

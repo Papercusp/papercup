@@ -1873,7 +1873,7 @@ export function buildCheckpointSystemdArgv(
     '--user',
     '--no-block',
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
-    `--unit=${checkpointUnitForRoot(root)}`,
+    `--unit=${checkpointUnitForRoot(subjectRoot)}`,
     `--property=MemoryMax=${memoryMaxG}G`,
     '--property=MemorySwapMax=0',
     '--property=ManagedOOMPreference=avoid',

@@ -442,6 +442,7 @@ describe('testing:runs tenant scoping and window bounds', () => {
     await runsTool.handler({ limit: 1 } as never, {} as never);
     const call = sqlCalls.find((c) => c.strings.some((part) => part.includes('file_path')));
     expect(call?.values).not.toContain('papercusp');
+    expect(whereFragment()).toContain("source <> 'mutation-probe'");
   });
 
   it('accepts a sub-0.1-hour window and still applies the time predicate', () => {

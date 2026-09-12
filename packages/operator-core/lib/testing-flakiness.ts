@@ -96,7 +96,9 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
   // rows. Same fix, same reasoning: a NULL harness_slug row belongs to no
   // harness, so it can't leak another harness's data and is always safe to
   // include alongside this harness's own explicitly-tagged rows.
-  // EI-19307211919650123: EXCLUDE the release gate's own rows (`source='ci'`).
+  // EI-19307211919650123: EXCLUDE the release gate's own rows (`source='ci'`)
+  // and mutation-probe evidence. Both are valid test-run measurements, but
+  // neither belongs in local cross-run flake/quarantine analytics.
   // They record the SAME repo-relative file paths as an agent's local run, but from
   // a different environment: the checkpoint worktree, under the gate's capped fork
   // concurrency and GREEN_CHECKPOINT skip-set. Folding both populations into one
@@ -113,7 +115,7 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
      WHERE finished_at IS NOT NULL
        AND finished_at > now() - make_interval(days => ${lookbackDays})
        AND status IN ('pass', 'fail', 'error')
-       AND source <> 'ci'
+       AND source NOT IN ('ci', 'mutation-probe')
        AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
        AND ${opts.harnessSlug ? sql`(harness_slug = ${opts.harnessSlug} OR harness_slug IS NULL)` : sql`TRUE`}
        AND ${!opts.harnessSlug && opts.workspaceId ? sql`(workspace_id = ${opts.workspaceId} OR workspace_id IS NULL)` : sql`TRUE`}

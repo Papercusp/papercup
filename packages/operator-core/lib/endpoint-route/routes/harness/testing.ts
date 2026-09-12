@@ -482,6 +482,7 @@ const fileHistory = defineTool({
                output_tail, source, branch, commit_sha
           FROM harness_shared.test_runs
          WHERE harness_slug = ${slug} AND workspace_id = ${ws} AND file_path = ${filePath}
+           AND source <> 'mutation-probe'
          ORDER BY finished_at DESC NULLS LAST, id DESC
          LIMIT ${limit}
       `;

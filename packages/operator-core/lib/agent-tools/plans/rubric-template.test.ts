@@ -146,6 +146,34 @@ describe('rubric template schema', () => {
     ).toBe(true);
   });
 
+  it('preserves additive fields written by a newer server in the BAR contract', () => {
+    const parsed = rubricTemplateDataSchema.safeParse({
+      characteristic: 'plan-acceptance',
+      kind: 'acceptance',
+      subjectPlan: 'some-plan-2026-09-04',
+      criteria: [{ key: 'outcome', title: 'Outcome' }],
+      ratingScale: ['pass', 'fail', 'unknown'],
+      barSetHash: 'a'.repeat(64),
+      barContract: {
+        schemaVersion: 1,
+        adoptionEpoch: 1,
+        cohort: 'post-epoch',
+        subjectPlanRevision: 3,
+        seededAt: '2026-09-04T12:00:00.000Z',
+        seededBy: 'su-author',
+        futureServerField: { revision: 4 },
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.barContract).toMatchObject({
+        subjectPlanRevision: 3,
+        futureServerField: { revision: 4 },
+      });
+    }
+  });
+
   it('persists canonical acceptance BAR metadata but never a second bar text field', () => {
     const criterion = {
       key: 'activation-outcome',

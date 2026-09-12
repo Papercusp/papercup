@@ -368,6 +368,7 @@ export async function testFlakeRollup(days = 7): Promise<{ entries: TestFlakeEnt
         max(created_at) FILTER (WHERE status = 'pass') AS last_pass
       FROM harness_shared.test_runs
       WHERE created_at > ${sinceIso}::timestamptz
+        AND source <> 'mutation-probe'
       GROUP BY file_path
     ),
     per_sha AS (
@@ -376,6 +377,7 @@ export async function testFlakeRollup(days = 7): Promise<{ entries: TestFlakeEnt
         count(*) FILTER (WHERE status = 'pass') AS sha_passes
       FROM harness_shared.test_runs
       WHERE created_at > ${sinceIso}::timestamptz
+        AND source <> 'mutation-probe'
         AND commit_sha IS NOT NULL
       GROUP BY file_path, commit_sha
     ),

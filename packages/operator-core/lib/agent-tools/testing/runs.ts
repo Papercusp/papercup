@@ -218,7 +218,7 @@ export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown 
 export default defineTool({
   name: 'testing:runs',
   description:
-    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); rollups default to `source:"ci"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
+    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); rollups default to `source:"ci"` so local or mutation-probe rows cannot contaminate a gate verdict; ordinary row listings exclude mutation-probe evidence unless `source:"mutation-probe"` is explicit. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
   capability: 'operator:read',
   guidance: {
     when: 'Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:"commit" answers "is this sha green" in one call.',
@@ -261,9 +261,9 @@ export default defineTool({
       .optional()
       .describe("Statuses to include. The RED set is ['fail','error'] — 'error' is a red too."),
     source: z
-      .enum(['ci', 'local', 'admin-ui'])
+      .enum(['ci', 'local', 'admin-ui', 'mutation-probe'])
       .optional()
-      .describe('Which writer produced the row. Use "ci" for gate/CI triage.'),
+      .describe('Which writer produced the row. Use "ci" for gate/CI triage or explicit "mutation-probe" for falsifiability evidence.'),
     since: z.string().max(64).optional().describe('Only runs started at/after this ISO-8601 timestamp.'),
     sinceHours: z
       .number()
@@ -354,6 +354,9 @@ export default defineTool({
     const shaLike = args.commitSha ? toShaPattern(args.commitSha) : null;
     const runGroup = args.runGroup ?? null;
     const source = defaultRollupSource(args.rollup, args.source);
+    const sourceFilter = args.source === undefined && args.rollup === undefined
+      ? sql`source <> 'mutation-probe'`
+      : sql`(${source}::text IS NULL OR source = ${source})`;
     const workspace = args.workspace ?? null;
     const harness = args.harness ?? null;
     const statuses = args.status ?? null;
@@ -368,7 +371,7 @@ export default defineTool({
        WHERE (${pathLike}::text IS NULL OR file_path ILIKE ${pathLike} ESCAPE '\\')
          AND (${shaLike}::text IS NULL OR commit_sha ILIKE ${shaLike})
          AND (${runGroup}::text IS NULL OR run_group_id = ${runGroup})
-         AND (${source}::text IS NULL OR source = ${source})
+         AND ${sourceFilter}
          AND (${workspace}::text IS NULL OR workspace_id = ${workspace})
          AND (${harness}::text IS NULL OR harness_slug = ${harness})
          AND (${statuses}::text[] IS NULL OR status = ANY(${statuses}::text[]))
