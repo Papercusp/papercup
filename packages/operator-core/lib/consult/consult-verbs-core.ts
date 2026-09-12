@@ -241,6 +241,44 @@ function isConsultParticipant(row: ConsultStateRow, authorId: string): boolean {
     .some((selection) => selection.ownerId === authorId);
 }
 
+/**
+ * A refill-exhaustion revival is reserved in selection.selected before the
+ * carry-respawn starts. The revived process can answer during that await, so
+ * claim the reservation atomically before the normal post/state path. This
+ * returns a row snapshot with the reservation consumed; a concurrent finalizer
+ * then fails its CAS and cannot overwrite the first-turn reply.
+ */
+async function claimPendingRevival(
+  sql: Sql,
+  workspaceId: string,
+  conversationId: string,
+  authorId: string,
+  now: string,
+): Promise<ConsultStateRow | null> {
+  const rows = (await sql`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(
+             routing #- ARRAY['selection', 'selected', cascade_cursor::text, 'revivalPending'],
+             ARRAY['selection', 'selected', cascade_cursor::text, 'revived'],
+             'true'::jsonb
+           ),
+           state = CASE WHEN state = 'no_qualified_responder' THEN 'awaiting_responder' ELSE state END,
+           responder_id = ${authorId},
+           updated_at = ${now}::timestamptz
+     WHERE workspace_id = ${workspaceId}
+       AND conversation_id = ${conversationId}
+       AND responder_id = ${authorId}
+       AND closed_at IS NULL
+       AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'ownerId'] = ${authorId}
+       AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'revivalPending'] = 'true'
+    RETURNING workspace_id, conversation_id, requester_id, responder_id, state,
+              question, latency_contract, max_exchanges, exchanges_used,
+              wakes_used, cascade_cursor, cascade_digest,
+              origin_task_ref, routing, outcome, closed_at
+  `) as unknown as ConsultStateRow[];
+  return rows[0] ?? null;
+}
+
 // ── consult:reply ────────────────────────────────────────────────────────────
 
 export interface ConsultReplyRequest {
@@ -288,7 +326,12 @@ export async function consultReplyCore(
   const sql = deps.getSql();
   const now = (deps.now ? deps.now() : new Date()).toISOString();
 
-  const gated = gateCommon(await readState(sql, req.workspaceId, req.conversationId), {
+  let currentRow = await readState(sql, req.workspaceId, req.conversationId);
+  const pendingClaim = currentRow && req.authorId === currentRow.responder_id
+    ? await claimPendingRevival(sql, req.workspaceId, req.conversationId, req.authorId, now)
+    : null;
+  if (pendingClaim) currentRow = pendingClaim;
+  const gated = gateCommon(currentRow, {
     authorId: req.authorId,
     kind: req.kind,
   });

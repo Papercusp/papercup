@@ -505,6 +505,30 @@ describe('release:trace tool contract', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`exceeded ${RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS}ms`));
   });
 
+  it('allows a slow but valid pipeline-position read below the expanded budget', async () => {
+    vi.useFakeTimers();
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ targetSha: 'abcd1234' }), 16_000)),
+    );
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
+
+    const pending = tool.handler({ sha: 'abcd1234' } as never, {} as never);
+    await vi.advanceTimersByTimeAsync(16_000);
+    const result = await pending;
+
+    expect(result).toMatchObject({ data: { ok: true } });
+    expect(mocks.buildReleaseTrace).toHaveBeenCalled();
+  });
+
   it('returns unknown instead of an all-clear when await-history reconciliation stalls', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();

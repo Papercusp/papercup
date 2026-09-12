@@ -298,6 +298,13 @@ export async function advanceCascade(
   const digest = [...digestFromRow(params.digest), params.event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
   const nextIdx = params.cascadeCursor + 1;
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
+  // A refill-exhaustion revival reserves the next cursor before spawning so
+  // the spawned first turn can claim it. Other advance triggers must not
+  // consume that provisional head or send a second wake while the reviver is
+  // still resolving.
+  if (selected[params.cascadeCursor]?.revivalPending) {
+    return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
+  }
 
   if (!next) {
     // WI-39861 min-ANSWERS refill + EI-20864690354207496 revival: the menu is
@@ -371,15 +378,19 @@ export async function advanceCascade(
       // and a stale-LIVE pick who died since expires via the sweep and the
       // cascade advances past them — both staleness directions recover
       // without a liveness re-read here.
-      // Ordering: the revive spawn happens BEFORE the CAS write (mirroring
-      // the creation site — the extension write must record the revived-first
-      // selection). A raced loser may therefore have spawned a session whose
-      // menu entry never lands; that session simply answers into the consult
-      // thread as a bonus voice while the winner's advance stands — the one
-      // deliberate softening of the "raced ⇒ nothing happened" contract.
+      // Ordering: reserve the revived entry BEFORE the revive spawn. The
+      // spawned session can issue its first consult:reply before the reviver
+      // returns, so the reservation must be durable at the current cursor;
+      // otherwise the first turn sees the old responder (or a terminal
+      // no_qualified_responder state) and is refused. Finalization/fallback
+      // below are CAS-guarded on that reservation so a first-turn reply can
+      // claim and advance it without being overwritten by the reviver.
       let revival: AdvanceCascadeResult['revival'];
       let revivedEntry: CascadeSelectionEntry | null = null;
+      let pendingRevivalOwner: string | null = null;
       let underFilledReason: NonNullable<AdvanceCascadeResult['underFilled']>['reason'] | null = null;
+      const rawSelected = Array.isArray(sel.selected) ? (sel.selected as unknown[]) : [];
+      const cursorIdx = selected.length;
       if (liveAdds.length < needed) {
         const revivable = untried.find(
           (c) =>
@@ -393,6 +404,49 @@ export async function advanceCascade(
         else if (revivalBudgetSpent(selected)) underFilledReason = 'budget-spent';
         else if (!revivable) underFilledReason = 'no-revivable-candidate';
         else {
+          const pendingEntry = entryOf(revivable, { revivalPending: true });
+          const pendingSnap = {
+            ...snap,
+            selection: {
+              ...sel,
+              selected: [...rawSelected, pendingEntry, ...liveAdds],
+              // Reserve the same one-shot refill stamp that finalization will
+              // write. If the pending owner replies before revive resolves,
+              // advanceCascade must see the live fallback entries behind it.
+              ...(!sel.refill
+                ? {
+                    refill: {
+                      at: params.nowIso,
+                      added: liveAdds.map((a) => a.ownerId),
+                      reason: `cascade exhausted with ${answers} answer(s) < min ${min}`,
+                    },
+                  }
+                : {}),
+            },
+          };
+          const pendingExpiresAt = new Date(
+            Date.parse(params.nowIso) +
+              (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
+          ).toISOString();
+          const pendingWrote = (await sql`
+            UPDATE harness_shared.consult_state
+               SET cascade_cursor = ${cursorIdx},
+                   responder_id = ${pendingEntry.ownerId},
+                   state = ${params.stateOnAdvance},
+                   expires_at = ${pendingExpiresAt}::timestamptz,
+                   wakes_used = wakes_used + ${reach ? 1 : 0},
+                   cascade_digest = ${sql.json(digest as never)},
+                   routing = ${sql.json(pendingSnap as never)},
+                   updated_at = ${params.nowIso}::timestamptz
+             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+               AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+               AND routing = ${sql.json(snap as never)}
+            RETURNING conversation_id
+          `) as unknown as Array<{ conversation_id: string }>;
+          if (pendingWrote.length === 0) {
+            return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
+          }
+          pendingRevivalOwner = revivable.ownerId;
           const r = await revive({
             ownerId: revivable.ownerId,
             conversationId: params.conversationId,
@@ -425,7 +479,6 @@ export async function advanceCascade(
       }
       const add: CascadeSelectionEntry[] = revivedEntry ? [revivedEntry, ...liveAdds] : liveAdds;
       if (add.length > 0) {
-        const rawSelected = Array.isArray(sel.selected) ? (sel.selected as unknown[]) : [];
         const updatedSnap = {
           ...snap,
           selection: {
@@ -448,27 +501,44 @@ export async function advanceCascade(
         };
         // Cursor lands on the FIRST refill entry: in the selectionFromRouting
         // view the adds append after the `selected.length` well-formed entries.
-        const cursorIdx = selected.length;
         const first = add[0]!;
         const expiresAt = new Date(
           Date.parse(params.nowIso) +
             (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
         ).toISOString();
         const willAttempt = Boolean(reach);
-        const wrote = (await sql`
-          UPDATE harness_shared.consult_state
-             SET cascade_cursor = ${cursorIdx},
-                 responder_id = ${first.ownerId},
-                 state = ${params.stateOnAdvance},
-                 expires_at = ${expiresAt}::timestamptz,
-                 wakes_used = wakes_used + ${willAttempt ? 1 : 0},
-                 cascade_digest = ${sql.json(digest as never)},
-                 routing = ${sql.json(updatedSnap as never)},
-                 updated_at = ${params.nowIso}::timestamptz
-           WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-             AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
-          RETURNING conversation_id
-        `) as unknown as Array<{ conversation_id: string }>;
+        const wrote = pendingRevivalOwner
+          ? ((await sql`
+              UPDATE harness_shared.consult_state
+                 SET cascade_cursor = ${cursorIdx},
+                     responder_id = ${first.ownerId},
+                     state = ${params.stateOnAdvance},
+                     expires_at = ${expiresAt}::timestamptz,
+                     wakes_used = wakes_used + ${willAttempt ? 1 : 0},
+                     cascade_digest = ${sql.json(digest as never)},
+                     routing = ${sql.json(updatedSnap as never)},
+                     updated_at = ${params.nowIso}::timestamptz
+               WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+                 AND cascade_cursor = ${cursorIdx}
+                 AND responder_id = ${pendingRevivalOwner}
+                 AND closed_at IS NULL
+                 AND routing #>> ARRAY['selection', 'selected', ${cursorIdx}::text, 'revivalPending'] = 'true'
+              RETURNING conversation_id
+            `) as unknown as Array<{ conversation_id: string }> )
+          : ((await sql`
+              UPDATE harness_shared.consult_state
+                 SET cascade_cursor = ${cursorIdx},
+                     responder_id = ${first.ownerId},
+                     state = ${params.stateOnAdvance},
+                     expires_at = ${expiresAt}::timestamptz,
+                     wakes_used = wakes_used + ${willAttempt ? 1 : 0},
+                     cascade_digest = ${sql.json(digest as never)},
+                     routing = ${sql.json(updatedSnap as never)},
+                     updated_at = ${params.nowIso}::timestamptz
+               WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+                 AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+              RETURNING conversation_id
+            `) as unknown as Array<{ conversation_id: string }>);
         if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
         let woke = 0;
         if (reach) {
@@ -518,15 +588,28 @@ export async function advanceCascade(
         ...snap,
         selection: { ...sel, underFilled: { at: params.nowIso, ...underFilled } },
       };
-      const wroteTerminal = (await sql`
-        UPDATE harness_shared.consult_state
-           SET cascade_digest = ${sql.json(digest as never)},
-               routing = ${sql.json(terminalSnap as never)},
-               updated_at = ${params.nowIso}::timestamptz
-         WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-           AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
-        RETURNING conversation_id
-      `) as unknown as Array<{ conversation_id: string }>;
+      const wroteTerminal = pendingRevivalOwner
+        ? ((await sql`
+            UPDATE harness_shared.consult_state
+               SET cascade_digest = ${sql.json(digest as never)},
+                   routing = ${sql.json(terminalSnap as never)},
+                   updated_at = ${params.nowIso}::timestamptz
+             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+               AND cascade_cursor = ${cursorIdx}
+               AND responder_id = ${pendingRevivalOwner}
+               AND closed_at IS NULL
+               AND routing #>> ARRAY['selection', 'selected', ${cursorIdx}::text, 'revivalPending'] = 'true'
+            RETURNING conversation_id
+          `) as unknown as Array<{ conversation_id: string }> )
+        : ((await sql`
+            UPDATE harness_shared.consult_state
+               SET cascade_digest = ${sql.json(digest as never)},
+                   routing = ${sql.json(terminalSnap as never)},
+                   updated_at = ${params.nowIso}::timestamptz
+             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+               AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+            RETURNING conversation_id
+          `) as unknown as Array<{ conversation_id: string }>);
       if (wroteTerminal.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
       return {
         advanced: false,

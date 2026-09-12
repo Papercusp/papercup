@@ -1125,6 +1125,53 @@ describe('advanceCascade — refill-exhaustion revival (EI-20864690354207496)', 
     expect(reachCalls.at(-1)?.responder).toBe('dead-x');
   });
 
+  it('persists a pending revival head before spawning: its first reply claims the head and the finalizer cannot clobber it', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
+    const { deps } = makeDeps();
+    let pendingAtSpawn: Record<string, unknown> | undefined;
+    let revivedReply: Awaited<ReturnType<typeof consultReplyCore>> | undefined;
+    deps.revive = async () => {
+      const pendingRow = await stateRow(id);
+      const pendingRouting = parseRouting(pendingRow.routing);
+      pendingAtSpawn = pendingRouting.selection?.selected?.[1];
+      revivedReply = await consultReplyCore(
+        {
+          workspaceId: WS,
+          authorId: 'dead-x',
+          conversationId: id,
+          kind: 'answer',
+          body: 'revived first-turn answer',
+          evidence: EVIDENCE,
+        },
+        deps,
+      );
+      return { spawned: true, verified: true, detail: 'first turn replied before revive finalized' };
+    };
+
+    const decline = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in decline) throw new Error(decline.error);
+    expect(pendingAtSpawn).toMatchObject({ ownerId: 'dead-x', revivalPending: true });
+    expect(revivedReply).toMatchObject({ ok: true, role: 'responder', state: 'active' });
+    // The outer revival finalizer lost its reservation CAS after the first
+    // turn claimed it; it must not restore awaiting_responder or erase the
+    // reply's digest/state transition.
+    expect(decline.cascade.exhausted).toBe(false);
+    const row = await stateRow(id);
+    expect(row.state).toBe('active');
+    expect(row.responder_id).toBe('dead-x');
+    expect(row.cascade_cursor).toBe(1);
+    const routingRow = parseRouting(row.routing);
+    expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'dead-x', revived: true });
+    expect(routingRow.selection?.selected?.[1]?.revivalPending).toBeUndefined();
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: RESPONDER, kind: 'decline' },
+      { ownerId: 'dead-x', kind: 'answer' },
+    ]);
+  });
+
   it('budget already spent (persisted revived stamp) — NO second revival: honest terminal, selection.underFilled says budget-spent', async () => {
     const id = await seedConsult({ state: 'active', routing: deadPoolRouting({ revivedAlready: true }) });
     const { deps } = makeDeps();

@@ -20,10 +20,12 @@ import { statePlaneForDoor } from '../state-plane-door';
  * Keep the composite diagnostic below the MCP transport deadline even when one
  * of its independent release/PG reads is queued behind a saturated pool.
  * The three budgets are sequential in the handler, so their sum remains below
- * the ~55s client deadline in the worst case.
+ * the ~55s client deadline in the worst case. The position leg is 20s because
+ * a measured live read can take about 19.5s while the gate is repairing; a
+ * 15s cap turns a slow-but-valid position into an unknown release verdict.
  */
 export const RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS = 20_000;
-export const RELEASE_TRACE_POSITION_TIMEOUT_MS = 15_000;
+export const RELEASE_TRACE_POSITION_TIMEOUT_MS = 20_000;
 export const RELEASE_TRACE_AWAIT_TIMEOUT_MS = 10_000;
 
 type TraceTimeoutStage = 'pipeline_snapshot' | 'pipeline_position' | 'await_history';

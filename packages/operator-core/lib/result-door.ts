@@ -232,6 +232,7 @@ export function resetResultDoorAggregatesForTests(): void {
 // build:typecheck's public fields (errorsTruncated, byFileTruncated).
 const INNER_TRUNCATION_MARKER_REGEX =
   /(?:"((?:\w+_truncated|\w+Truncated))"|(?<![\w"])((?:\w+_truncated|\w+Truncated)))\s*:\s*true\b/g;
+const INNER_TRUNCATION_TEXT_REGEX = /(?:…|\.\.\.)\[TRUNCATED[^\]]*\]/g;
 
 /** Distinct `*_truncated: true` / `*Truncated: true` marker names found in
  *  `text` (capped — this feeds advisory wording, not an audit). Empty when
@@ -244,6 +245,12 @@ function detectInnerTruncationMarkers(text: string): string[] {
     found.add(m[1] ?? m[2]);
     if (found.size >= 5) break;
   }
+  // Work-item and other custom shapers also put the cutoff directly in the
+  // field value (`…[TRUNCATED ...]`) without a sibling boolean marker. Keep a
+  // named marker for that shape so a hard reference spill cannot promise bytes
+  // that the upstream shaper never serialized.
+  INNER_TRUNCATION_TEXT_REGEX.lastIndex = 0;
+  if (INNER_TRUNCATION_TEXT_REGEX.test(text)) found.add('textTruncated');
   return [...found];
 }
 
@@ -671,9 +678,26 @@ type SpillReason =
  */
 function spillRecoveryNote(
   reason: SpillReason,
+  input: { upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[] } = {},
 ): string {
   const recoverable =
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ';
+  const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
+  if (input.upstreamProjection) {
+    return (
+      'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
+      'However, the tool had already applied a lossy upstream projection before this spill; omitted fields were ' +
+      'never serialized and paging this reference cannot recover them. Re-call the tool with payloadTier:\'full\' ' +
+      '(or narrower arguments) for the missing detail.'
+    );
+  }
+  if (innerTruncationMarkers.length > 0) {
+    return (
+      'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
+      `However, the TOOL ITSELF already truncated field(s) before this spill (${innerTruncationMarkers.join(', ')}); ` +
+      'paging this reference cannot recover those omitted fields. Re-call the tool with a wider per-field limit.'
+    );
+  }
   if (reason === 'aggregate-output-budget-exceeded') {
     return (
       `${recoverable}This result was NOT too large on its own; the shared per-turn fan-out budget had ` +
@@ -715,8 +739,10 @@ function spillRecoveryNote(
  * `OutputEnvelopeIncomplete`) — which stated the exact opposite of the truth
  * AND counted MCP content blocks, which readers took for domain rows ("omitted
  * three items"). Note the spill-failure branch below returns state:'error'
- * instead, so on this `incomplete` branch the spill always succeeded and
- * `recoverable: true` is unconditional.
+ * instead, so on this `incomplete` branch the spill always succeeded. The
+ * reference is recoverable when the source was complete; if the source already
+ * carried an upstream truncation marker, the bytes are still inspectable but
+ * `recoverable` is false because the omitted fields never reached this door.
  */
 function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   result: T;
@@ -727,6 +753,17 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   doorTokens: number;
   aggregate?: ResultDoorAggregateReservation;
 }): T {
+  const upstreamProjection = (
+    input.result._meta as
+      | { payloadProjection?: { truncated?: unknown } }
+      | undefined
+  )?.payloadProjection;
+  const innerTruncationMarkers = upstreamProjection
+    ? []
+    : detectInnerTruncationMarkers(
+        input.result.content.filter(isTextItem).map((item) => item.text).join('\n\n'),
+      );
+  const sourceWasPartial = Boolean(upstreamProjection?.truncated) || innerTruncationMarkers.length > 0;
   const payload = JSON.stringify({
     content: input.result.content,
     ...(input.result.isError !== undefined ? { isError: input.result.isError } : {}),
@@ -798,8 +835,11 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
           incomplete: {
             reason: input.reason,
             spilledItems: input.result.content.length,
-            recoverable: true,
-            note: spillRecoveryNote(input.reason),
+            recoverable: !sourceWasPartial,
+            note: spillRecoveryNote(input.reason, {
+              upstreamProjection: Boolean(upstreamProjection?.truncated),
+              innerTruncationMarkers,
+            }),
           },
         },
         { summaryBudgetChars: 0 },
@@ -836,6 +876,8 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         nonTextBytes: input.nonTextBytes,
         doorTokens: input.doorTokens,
         reason: input.reason,
+        upstreamProjected: Boolean(upstreamProjection?.truncated),
+        innerTruncationMarkers,
         ...(input.aggregate ? { aggregate: input.aggregate } : {}),
         outputEnvelope: envelope,
       },

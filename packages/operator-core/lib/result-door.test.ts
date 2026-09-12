@@ -706,8 +706,9 @@ describe('applyResultDoor', () => {
     });
     expect(original.length).toBeGreaterThan(BUDGET_CHARS);
 
+    const input: DoorableResult = { content: [{ type: 'text' as const, text: original }] };
     const doored = applyResultDoor(
-      { content: [{ type: 'text' as const, text: original }] },
+      input,
       { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const spillPath = (doored._meta!.resultDoor as { spillPath: string }).spillPath;
@@ -1510,6 +1511,35 @@ describe('applyResultDoor', () => {
         structural: true,
         reason: 'explicit-full-request-overflow',
       });
+    });
+
+    it('marks a hard spill non-recoverable when the tool already truncated a field', () => {
+      const text = JSON.stringify({
+        results: [{
+          id: 'WI-1',
+          checkpoint: 'checkpoint prefix…[TRUNCATED +1200 chars — re-read with payloadTier:\'full\']',
+          textTruncated: true,
+          padding: 'P'.repeat(BUDGET_CHARS * 3),
+        }],
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'explicit-full-request-overflow',
+        spilledItems: 1,
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('TOOL ITSELF already truncated');
+      expect(envelope.incomplete.note).toContain('textTruncated');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        upstreamProjected: false,
+        innerTruncationMarkers: ['textTruncated'],
+      });
+      expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain('checkpoint prefix');
     });
 
     it('a small explicit-full body that FITS the door passes through untouched (no spill, no note)', () => {
