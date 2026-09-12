@@ -42,6 +42,9 @@ vi.mock('../coordination/identity', () => ({
     workspaceId: 'ws-1',
     userId: null,
   })),
+  resolveSelfLiteral: vi.fn((value: string | undefined, callerOwnerId: string) =>
+    value === 'self' ? callerOwnerId : value,
+  ),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
@@ -297,6 +300,14 @@ beforeEach(() => {
 describe('loop:arm — WI-1471 ownerId override', () => {
   it("defaults to the caller's own resolved identity when ownerId is omitted", async () => {
     const b = body(await call({}));
+    expect(b).toMatchObject({ ok: true, loop: { ownerId: 'su-caller-own-id', ownerLabel: 'su · caller' } });
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-caller-own-id' }));
+    expect(armWakeM).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-caller-own-id' }));
+    expect(probeM).toHaveBeenCalledWith('su-caller-own-id');
+  });
+
+  it("resolves ownerId:'self' to the caller instead of creating an unreachable literal-self loop", async () => {
+    const b = body(await call({ ownerId: 'self' }));
     expect(b).toMatchObject({ ok: true, loop: { ownerId: 'su-caller-own-id', ownerLabel: 'su · caller' } });
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-caller-own-id' }));
     expect(armWakeM).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-caller-own-id' }));

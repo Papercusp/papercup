@@ -24,7 +24,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { resolveHomePotSlug } from '../pot/_resolve';
@@ -691,8 +691,11 @@ export default defineTool({
     // FALLBACK_CLIENT_ID ('su-loopback') — a fixed id that is never a live,
     // wake-reachable session, so the loop is armed but can never actually fire
     // into a running turn.
-    const ownerId = args.ownerId ?? identity.ownerId;
-    const ownerLabel = args.ownerId ? `su · ${shortOwnerLabel(args.ownerId)}` : identity.ownerLabel;
+    const ownerId = resolveSelfLiteral(args.ownerId, identity.ownerId) ?? identity.ownerId;
+    const ownerLabel =
+      args.ownerId && ownerId !== identity.ownerId
+        ? `su · ${shortOwnerLabel(ownerId)}`
+        : identity.ownerLabel;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const isConcreteHarness = (value?: string | null): value is string => {
       const trimmed = value?.trim().toLowerCase();

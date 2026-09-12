@@ -1,6 +1,6 @@
 # Dream study evidence — interim
 
-Measured 2026-09-12T17:24:09.428Z. **Inconclusive; final acceptance remains open.**
+Measured 2026-09-12T18:19:34.098Z. **Inconclusive; final acceptance remains open.**
 
 19 governed study attempts; $1.614729 accounted, including conservative reservations. This is not invoice cost.
 
@@ -33,6 +33,11 @@ Blender: 2 governed cycles, 5 generated ideas, 0 routed ideas. Routing was expli
 
 - Historical timeout notes claiming never-admitted/local-governor starvation were retracted in EI-22769219749818913: the Codex adapter did not emit onAdmitted. These raw persisted strings do not establish the cause or prove no generation occurred.
 - For the original Haiku cycle 36930ec0-0135-4c3d-8261-b9b8f8028545, the recovered driver log records four HTTP 429 rate_limit_error retries before the deadline. This contradicts its persisted never-admitted explanation. The responding hop, pool account, later retry progress and billed usage remain unestablished; retain the USD 0.039173 unknown-call reservation. Evidence is preserved in EI-22756328656642291 comment 203056; source /tmp/dream-study-pair-after-readiness-20260909.log, SHA-256 ea874cd3a74f97ec879eb9d490a8d1e257684a52f54dc487ccf716e080fe5e3c. This historical evidence does not prove current Haiku recovery.
+
+## Infrastructure corrections
+
+- EI-22762141222831537 is closed: the Scout production path now threads the explicit workspaceId through productionScoutRunner, buildScoutCycleDeps, and the default goal-dispatch path. Twelve focused adapter/runner tests passed. This prevents future runs from relying on ambient sentinel scope; it does not reclassify historical study outcomes.
+- EI-22769219749818913 is closed: the deadline diagnostics now separate admission and generation budgets, with 49 focused tests passing at the recorded base and the relevant source unchanged at closure. The historical d536051b delay remains un-attributable, and no paid identity was retried.
 
 ## Remaining acceptance work
 
