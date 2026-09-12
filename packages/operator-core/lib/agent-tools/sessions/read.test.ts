@@ -47,6 +47,38 @@ function makeTx(rows: unknown[]) {
 }
 
 describe('sessions:read EI-20236684982538421 — structured large-window response', () => {
+  it.each([
+    { session: 'sess-selector', source_kind: 'codex' },
+    { session: 'codex:sess-selector' },
+    { ref: 'session_turn:codex:sess-selector:2' },
+  ])('queries the normalized indexed id for $session $ref', async (selector) => {
+    // Unlike a rows-only stub, enforce the indexed session predicate. Otherwise
+    // a correct response label can conceal a prefixed id sent to PostgreSQL.
+    const tx = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+      const idIndex = parts.findIndex((part) => /\bsession_id =\s*$/.test(part));
+      expect(idIndex).toBeGreaterThanOrEqual(0);
+      expect(values[idIndex]).toBe('sess-selector');
+      return [{
+        source_kind: 'codex', session_id: 'sess-selector', turn_idx: 2,
+        speaker: 'assistant', owner: 'su-self', ts: null, text: 'indexed evidence',
+      }];
+    });
+    const dispatched = await dispatchProjectedTool(
+      projected, 'sessions:read', selector,
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-normalized-selector', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx,
+      }, {},
+    );
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      session_id: 'sess-selector', turn_count: 1,
+      turns: [{ ref: 'session_turn:codex:sess-selector:2', text: 'indexed evidence' }],
+    });
+  });
+
   it('keeps the tail exclusivity rule in the compact discovery prefix', () => {
     expect(projected.description.slice(0, 320)).toContain(
       "`tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`.",

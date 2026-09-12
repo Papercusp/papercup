@@ -185,13 +185,15 @@ export default defineTool({
     const textLimit = args.text_limit ?? SESSION_TURN_TEXT_CHUNK_CAP;
 
     let sessionId = parsedRef?.sessionId ?? args.session!;
-    let querySessionId: string | undefined = sessionId;
     let sourceKind = parsedRef?.sourceKind ?? args.source_kind;
     if (!parsedRef) {
       const selector = parseSessionSelector(sessionId, sourceKind);
       sessionId = selector.sessionId;
       sourceKind = selector.sourceKind;
     }
+    // The SQL predicate must use the same normalized id as refresh/archive and
+    // response refs, never the caller's optional `codex:`/`claude:` prefix.
+    let querySessionId: string | undefined = sessionId;
     let selfNote: string | undefined;
     const selfSession = sessionId === 'self';
     let ownerIds: string[] | undefined;
