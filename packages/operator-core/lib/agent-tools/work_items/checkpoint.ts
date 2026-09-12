@@ -950,12 +950,13 @@ function learnedLevelSpec() {
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
   /** The compressed in-flight state. Null ⇒ CLEAR the checkpoint.
-   *  Omission is allowed only alongside `checks` or `dependsOn`, which are metadata-
-   *  only patches that preserve the stored body (EI-19447043119380534,
-   *  EI-20232161144151845), or alongside `clear:true`. Blank strings require
+   *  Omission is allowed only alongside `checks`, `dependsOn`, `learned`, or
+   *  `learnedLevel`, which are metadata-only patches that preserve the stored body
+   *  (EI-19447043119380534, EI-20232161144151845), or alongside `clear:true`.
+   *  Blank strings require
    *  confirmClear:true (EI-21020695928840897). */
   checkpoint: checkpointBodySchema.describe(
-    'compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks` or `dependsOn` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
+    'compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks`, `dependsOn`, `learned`, or `learnedLevel` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
   ),
   clear: looseBoolean().describe(
     'explicitly clear the checkpoint body. Equivalent to checkpoint:null and rejected with a non-blank checkpoint.',
@@ -1091,12 +1092,13 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),
       /** The compressed in-flight state. Null ⇒ CLEAR the checkpoint.
-       *  Omission is allowed only alongside `checks` or `dependsOn`, which are metadata-
-       *  only patches that preserve the stored body (EI-19447043119380534,
-       *  EI-20232161144151845), or alongside `clear:true`. Blank strings require
+       *  Omission is allowed only alongside `checks`, `dependsOn`, `learned`, or
+       *  `learnedLevel`, which are metadata-only patches that preserve the stored body
+       *  (EI-19447043119380534, EI-20232161144151845), or alongside `clear:true`.
+       *  Blank strings require
        *  confirmClear:true (EI-21020695928840897). */
       checkpoint: checkpointBodySchema.describe(
-        'single shorthand: compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks` or `dependsOn` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
+        'single shorthand: compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks`, `dependsOn`, `learned`, or `learnedLevel` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
       ),
       clear: looseBoolean().describe(
         'single shorthand default for `clear`; explicitly clear the checkpoint body (equivalent to checkpoint:null).',
@@ -1205,6 +1207,14 @@ export default defineTool({
         const wantsConfirmClear = it.confirmClear ?? args.confirmClear ?? false;
         const wantsAppend = it.append ?? args.append ?? false;
         const rawSuppliedChecks = it.checks ?? args.checks;
+        // P-017: `learned`/`learnedLevel` are append-only effort-thread metadata,
+        // not replacement checkpoint content. A learned-only call must therefore
+        // take the same body-preserving route as checks/dependsOn; otherwise the
+        // omission guard rejects the call before the lesson can be posted, and the
+        // underlying store's omitted-body semantics would be unsafe if it did not.
+        const suppliedLearned = it.learned ?? args.learned;
+        const suppliedLearnedLevel = it.learnedLevel ?? args.learnedLevel;
+        const hasLearnedMetadata = suppliedLearned !== undefined || suppliedLearnedLevel !== undefined;
         // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
         // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
         // key when the caller actually supplied one.
@@ -1262,13 +1272,14 @@ export default defineTool({
           suppliedCheckpoint === undefined &&
           !wantsAppend &&
           rawSuppliedChecks === undefined &&
-          declaredDeps === undefined
+          declaredDeps === undefined &&
+          !hasLearnedMetadata
         ) {
           return {
             ok: false as const,
             id: it.id,
             error:
-              'checkpoint_required — checkpoint body was omitted. Use checkpoint:null or clear:true to clear intentionally, or supply checks/dependsOn for a metadata-only patch.',
+              'checkpoint_required — checkpoint body was omitted. Use checkpoint:null or clear:true to clear intentionally, or supply checks/dependsOn/learned/learnedLevel for a metadata-only patch.',
             errorCode: 'checkpoint_required',
             retryable: true,
             recovery: {
@@ -1368,9 +1379,11 @@ export default defineTool({
         // Omitted checkpoint is therefore a dependency-only PATCH, just like the
         // checks-only PATCH below; explicit null/clear:true remains a deliberate clear.
         const isDependencyOnlyPatch = checkpoint === undefined && declaredDeps !== undefined && !wantsAppend;
+        const isLearnedMetadataPatch = checkpoint === undefined && hasLearnedMetadata && !wantsAppend;
         const hasCheckpointBody = typeof checkpoint === 'string' && checkpoint.trim().length > 0;
         const hasMetadataPatch =
-          checkpoint === undefined && (rawSuppliedChecks !== undefined || declaredDeps !== undefined);
+          checkpoint === undefined &&
+          (rawSuppliedChecks !== undefined || declaredDeps !== undefined || hasLearnedMetadata);
         const hasChecksWithExplicitClear =
           typeof checkpoint === 'string' &&
           checkpoint.trim().length === 0 &&
@@ -1708,7 +1721,7 @@ export default defineTool({
         // calls the store directly, so its explicit null clear contract is unchanged.
         // `append:true` makes this body-less metadata patch additive too: supplied
         // checks are UNIONED rather than replacing the carried set.
-        const isBodyPreservingPatch = isChecksOnlyPatch || isDependencyOnlyPatch;
+        const isBodyPreservingPatch = isChecksOnlyPatch || isDependencyOnlyPatch || isLearnedMetadataPatch;
         // `rowsMode:'merge'` is additive for a body write and for the checks-only
         // patch shape. An explicit clear remains a true clear, preserving the
         // work_items:complete cleanup contract.
@@ -1733,7 +1746,7 @@ export default defineTool({
         let suppliedChecksNotRetained: AppendChecksOverflowRow[] = [];
         let preserveCarriedChecksOnOverflow = false;
         const checksTransform =
-          suppliedChecks !== undefined || !isClear || isDependencyOnlyPatch
+          suppliedChecks !== undefined || !isClear || isDependencyOnlyPatch || isLearnedMetadataPatch
             ? (priorNote: string | null, incoming: string | null | undefined) => {
                 const priorSplit = splitCarryNoteChecks(priorNote);
                 const prior = priorSplit.checks;
