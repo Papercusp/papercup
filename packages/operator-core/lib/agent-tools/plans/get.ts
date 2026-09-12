@@ -47,6 +47,7 @@ import { evidenceCurrentInputSchema } from './spec-evidence-store';
 import { readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { previewPlanStartConsult } from './get-activation-readiness';
+import { getBuildInfo } from '../../build-info';
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -216,7 +217,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        "Ask what is blocking this plan's ship RIGHT NOW, without attempting the write. Returns `shipReadiness: { satisfied, code, message, skipped, forcedPast, vettedUnderWaiver, unavailableReason, acceptanceBarContractSnapshot }` from the SAME evaluator plans:set-plan-status enforces, plus the versioned bounded BAR explainability projection. The snapshot is not a second verdict: `satisfied`/`code` remain authoritative. ⚠ Reports ONE gate blocker at a time — the gate short-circuits on the first refusal, while the snapshot's per-BAR traces and `nextRepair` explain the complete BAR state. ⚠ `satisfied:true` is not automatically a clean pass: read `skipped` (the gate did not APPLY — nothing was checked), `forcedPast` (a code-truth waiver) and `unavailableReason` (could not evaluate ≠ passed) before calling a plan shippable. OFF by default — the gate and snapshot read several bounded source families, so it is opt-in and rides on the meta/sections/full payload (not the narrow `heading`/`decisionId` reads).",
+        "Ask what is blocking this plan's ship RIGHT NOW, without attempting the write. Returns `shipReadiness: { satisfied, code, message, skipped, forcedPast, vettedUnderWaiver, unavailableReason, buildProvenance, acceptanceBarContractSnapshot }` from the SAME evaluator plans:set-plan-status enforces, plus the versioned bounded BAR explainability projection. The snapshot is not a second verdict: `satisfied`/`code` remain authoritative. ⚠ Reports ONE gate blocker at a time — the gate short-circuits on the first refusal, while the snapshot's per-BAR traces and `nextRepair` explain the complete BAR state. ⚠ `satisfied:true` is not automatically a clean pass: read `skipped` (the gate did not APPLY — nothing was checked), `forcedPast` (a code-truth waiver) and `unavailableReason` (could not evaluate ≠ passed) before calling a plan shippable. OFF by default — the gate and snapshot read several bounded source families, so it is opt-in and rides on the meta/sections/full payload (not the narrow `heading`/`decisionId` reads).",
       ),
     current: z
       .array(evidenceCurrentInputSchema)
@@ -1254,6 +1255,7 @@ export default defineTool({
           // "passed" distinguishable.
           result.shipReadiness = {
             planSlug: slug,
+            buildProvenance: getBuildInfo(),
             satisfied: false,
             unavailableReason: 'resolver-unavailable',
             message: `Ship readiness could not be evaluated (${

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AcceptanceBarContractSnapshot } from '../acceptance-bar-contract-snapshot';
 import { evidenceCurrentInputSchema } from '../agent-tools/plans/spec-evidence-store';
+import { getBuildInfo, type BuildInfo } from '../build-info';
 
 /**
  * P-011 — the READ surface for a plan's ACCEPTANCE GATE verdict.
@@ -60,6 +61,8 @@ export type PlanAcceptanceGateArgs = z.infer<typeof planAcceptanceGateArgsSchema
 
 export interface PlanAcceptanceGateVerdictRow {
   planSlug: string;
+  /** The loaded operator build that produced this time-sensitive verdict. */
+  buildProvenance: BuildInfo;
   satisfied: boolean;
   /** Set ⇒ the gate did NOT APPLY. Never render as a pass — nothing was checked. */
   skipped: 'flag-off' | 'rubric-template-plan' | 'template-instance' | 'already-shipped' | null;
@@ -125,6 +128,7 @@ export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateA
     return [
       {
         planSlug,
+        buildProvenance: v.buildProvenance ?? getBuildInfo(),
         satisfied: v.satisfied,
         skipped: v.skipped ?? null,
         code: v.code ?? null,
@@ -152,6 +156,7 @@ export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateA
     return [
       {
         planSlug,
+        buildProvenance: getBuildInfo(),
         satisfied: false,
         skipped: null,
         code: null,

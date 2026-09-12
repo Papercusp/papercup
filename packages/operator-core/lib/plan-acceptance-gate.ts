@@ -72,6 +72,7 @@ import { citationDeploymentForPaths, type CitationDeployment } from './deploymen
 import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
+import { getBuildInfo, type BuildInfo } from './build-info';
 
 export type { CitationDeployment };
 
@@ -117,6 +118,8 @@ export type PlanAcceptanceGateCode =
   | 'spec_coverage_unavailable';
 
 export interface PlanAcceptanceGateVerdict {
+  /** The loaded operator build that produced this time-sensitive verdict. */
+  buildProvenance: BuildInfo;
   satisfied: boolean;
   /**
    * Why the gate did not apply (satisfied:true without a graded rubric).
@@ -243,6 +246,8 @@ export interface PlanAcceptanceGateVerdict {
    */
   specCoverage?: PlanSpecCoverageGateVerdict;
 }
+
+type PlanAcceptanceGateVerdictWithoutBuildProvenance = Omit<PlanAcceptanceGateVerdict, 'buildProvenance'>;
 
 export interface PlanAcceptanceGateOpts {
   /** Subject harness, distinct from the acceptance rubric's storage harness. */
@@ -378,15 +383,15 @@ export function evaluateEphemeralDeliverableDurability(content: string): {
  * feature's default posture for that check (the flag read fails toward ON;
  * the exemption read fails toward "not exempt").
  */
-export async function evaluatePlanAcceptanceGate(
+async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   planSlug: string,
   opts: PlanAcceptanceGateOpts = {},
-): Promise<PlanAcceptanceGateVerdict> {
+): Promise<PlanAcceptanceGateVerdictWithoutBuildProvenance> {
   // Each family reads its OWN flag, below, rather than one early return for all of
   // them: the code-truth checks and the rubric checks are independently killable, so
   // rolling back one must not silently disable the other.
   const rubricGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE, 'system').catch(() => true);
-  let deferredBarShipRefusal: PlanAcceptanceGateVerdict | undefined;
+  let deferredBarShipRefusal: PlanAcceptanceGateVerdictWithoutBuildProvenance | undefined;
   // A BAR can already have a complete grading that belongs to an older rubric
   // revision.  That is still a grader gap, but the ordinary rubric-family read
   // includes scorecard history.  Remember the stale reading so the recruitment
@@ -494,7 +499,7 @@ export async function evaluatePlanAcceptanceGate(
         };
       }
       if (!barLifecycle.satisfied) {
-        const refusal: PlanAcceptanceGateVerdict = {
+        const refusal: PlanAcceptanceGateVerdictWithoutBuildProvenance = {
           satisfied: false,
           code: 'acceptance_bar_contract_not_ready',
           message:
@@ -1351,4 +1356,18 @@ export async function evaluatePlanAcceptanceGate(
     ...(citationDeployment ? { citationDeployment } : {}),
     ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
   };
+}
+
+/**
+ * Evaluate the shared ship gate and stamp the result with the identity of the
+ * loaded operator that produced it. The internal evaluator keeps its many
+ * short-circuit returns focused on verdict semantics; this boundary guarantees
+ * every direct result carries the same build identity, including refusals.
+ */
+export async function evaluatePlanAcceptanceGate(
+  planSlug: string,
+  opts: PlanAcceptanceGateOpts = {},
+): Promise<PlanAcceptanceGateVerdict> {
+  const verdict = await evaluatePlanAcceptanceGateWithoutBuildProvenance(planSlug, opts);
+  return { ...verdict, buildProvenance: getBuildInfo() };
 }

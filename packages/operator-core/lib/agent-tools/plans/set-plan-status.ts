@@ -439,6 +439,7 @@ export default defineTool({
               slug,
               error: gate.code ?? 'acceptance_gate_failed',
               message: gate.message,
+              buildProvenance: gate.buildProvenance,
               ...(gate.rubricId ? { rubricId: gate.rubricId } : {}),
               ...(acceptanceGrader ? { acceptanceGrader } : {}),
             };

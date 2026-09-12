@@ -69,6 +69,7 @@ const M = vi.hoisted(() => {
     resolvePlanAcceptanceGateVerdict: vi.fn(async ({ planSlug }: { planSlug: string }) => [
       {
         planSlug,
+        buildProvenance: { sha: 'gate-sha', version: '1.2.3' },
         satisfied: false,
         skipped: null,
         code: 'audit_coverage_stale',
@@ -221,6 +222,7 @@ describe('plans:get — shipReadiness', () => {
       satisfied: false,
       code: 'audit_coverage_stale',
       message: '3 item audit(s) are missing or stale — P-002; P-004; P-005.',
+      buildProvenance: { sha: 'gate-sha', version: '1.2.3' },
       acceptanceBarContractSnapshot: {
         schemaVersion: 1,
         contentHash: 'snapshot-hash',
@@ -270,6 +272,8 @@ describe('plans:get — shipReadiness', () => {
     expect(result.results[0].shipReadiness).toMatchObject({
       satisfied: false,
       unavailableReason: 'resolver-unavailable',
+      buildProvenance: { version: expect.any(String) },
     });
+    expect(result.results[0].shipReadiness.buildProvenance).toHaveProperty('sha');
   });
 });
