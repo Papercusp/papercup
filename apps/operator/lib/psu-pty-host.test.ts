@@ -39,6 +39,7 @@ import {
   makeActivityTracker,
   makeAgentBusyGate,
   codexCarryTurnCompleted,
+  codexLatestTurnCompleted,
   makeCarryRearmController,
   makeSubmitVerifier,
   submitExhaustionTerminatesHost,
@@ -1774,6 +1775,37 @@ describe('Codex carry completion boundary', () => {
       sourceTranscriptPath: '/fixture/sessions/current.jsonl' }))).toMatchObject({
       mode: 'carry-respawn', gated: true, sourceTranscriptPath: '/fixture/sessions/current.jsonl',
     });
+  });
+
+  it('follows the newest Codex rollout and fences out a completion older than the latest submit', async () => {
+    const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'codex-warm-boundary-'));
+    const sessions = pathJoin(root, 'sessions', '2026', '09', '12');
+    nodeFs.mkdirSync(sessions, { recursive: true });
+    const oldPath = pathJoin(sessions, 'rollout-old.jsonl');
+    const currentPath = pathJoin(sessions, 'rollout-current.jsonl');
+    const now = Date.now();
+    const row = (type: string, at: number, turn = 'turn-1') => JSON.stringify({
+      type: 'event_msg', timestamp: new Date(at).toISOString(), payload: { type, turn_id: turn },
+    }) + '\n';
+    const probe = (floor = 0) => codexLatestTurnCompleted({
+      agent: 'codex', env: { CODEX_HOME: root }, completedAtOrAfterMs: floor,
+    });
+    try {
+      nodeFs.writeFileSync(oldPath, row('task_complete', now - 5_000, 'old'));
+      nodeFs.writeFileSync(currentPath, row('task_started', now - 1_000, 'current'));
+      nodeFs.utimesSync(oldPath, new Date(now - 5_000), new Date(now - 5_000));
+      nodeFs.utimesSync(currentPath, new Date(now - 1_000), new Date(now - 1_000));
+      expect(probe()).toBe(false);
+
+      nodeFs.appendFileSync(currentPath, row('task_complete', now - 500, 'current'));
+      expect(probe()).toBe(true);
+      expect(probe(now - 250)).toBe(false);
+
+      const gate = makeAgentBusyGate({ lastOutputAt: Date.now, quietMs: 1_000, capMs: 50 });
+      await expect(gate.waitAtPrompt(undefined, () => probe())).resolves.toMatchObject({
+        deferred: false, boundary: 'native-turn-complete',
+      });
+    } finally { nodeFs.rmSync(root, { recursive: true, force: true }); }
   });
 });
 
