@@ -282,22 +282,48 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
     renderPopup(null, null);
 
     const surface = screen.getByTestId("plan-popup-fullscreen-surface");
-    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    const fullScreen = screen.getByRole("button", { name: "Full screen" });
+    expect(fullScreen.getAttribute("aria-pressed")).toBe("false");
+    expect(fullScreen.closest("[title]")?.getAttribute("title")).toBe(
+      "Fill the whole screen with this plan",
+    );
+    expect(
+      fullScreen.querySelector("svg")?.classList.contains("lucide-maximize"),
+    ).toBe(true);
+    fireEvent.click(fullScreen);
 
     await waitFor(() =>
       expect(fullscreen.requestFullscreen).toHaveBeenCalledTimes(1),
     );
     expect(fullscreen.requestFullscreen.mock.instances[0]).toBe(surface);
+    const exitFullScreen = screen.getByRole("button", {
+      name: "Exit full screen",
+    });
+    expect(exitFullScreen.getAttribute("aria-pressed")).toBe("true");
+    expect(exitFullScreen.closest("[title]")?.getAttribute("title")).toBe(
+      "Exit full screen",
+    );
     expect(
-      screen.getByRole("button", { name: "Exit full screen" }),
-    ).toBeTruthy();
+      exitFullScreen
+        .querySelector("svg")
+        ?.classList.contains("lucide-minimize"),
+    ).toBe(true);
 
     fullscreen.externalExit();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Full screen" })).toBeTruthy(),
-    );
+    const restoredFullScreen = await screen.findByRole("button", {
+      name: "Full screen",
+    });
+    expect(restoredFullScreen.getAttribute("aria-pressed")).toBe("false");
+    expect(
+      restoredFullScreen.closest("[title]")?.getAttribute("title"),
+    ).toBe("Fill the whole screen with this plan");
+    expect(
+      restoredFullScreen
+        .querySelector("svg")
+        ?.classList.contains("lucide-maximize"),
+    ).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    fireEvent.click(restoredFullScreen);
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Exit full screen" }),
@@ -315,6 +341,16 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
 
     const fullWindow = screen.getByRole("button", { name: "Full window" });
     const fullScreen = screen.getByRole("button", { name: "Full screen" });
+    expect(fullWindow.getAttribute("aria-pressed")).toBe("false");
+    expect(fullWindow.closest("[title]")?.getAttribute("title")).toBe(
+      "Fill the app window with this plan",
+    );
+    expect(
+      fullWindow
+        .querySelector("svg")
+        ?.classList.contains("lucide-maximize-2"),
+    ).toBe(true);
+    expect(fullScreen.getAttribute("aria-pressed")).toBe("false");
     expect(
       fullWindow.compareDocumentPosition(fullScreen) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -328,15 +364,40 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
     expect(fullscreen.requestFullscreen).not.toHaveBeenCalled();
     expect(document.fullscreenElement).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Exit full window" }),
-    ).toBeTruthy();
+      screen
+        .getByRole("button", { name: "Exit full window" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    const exitFullWindow = screen.getByRole("button", {
+      name: "Exit full window",
+    });
+    expect(exitFullWindow.closest("[title]")?.getAttribute("title")).toBe(
+      "Exit full window",
+    );
+    expect(
+      exitFullWindow
+        .querySelector("svg")
+        ?.classList.contains("lucide-minimize-2"),
+    ).toBe(true);
     expect(screen.getByRole("button", { name: "Full screen" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Exit full window" }));
+    fireEvent.click(exitFullWindow);
     expect(modal.style.width).toBe("94vw");
     expect(modal.style.maxWidth).toBe("1100px");
     expect(modal.style.maxHeight).toBe("860px");
     expect(screen.getByTestId("plan-popup-wrap").style.padding).toBe("");
+    const restoredFullWindow = screen.getByRole("button", {
+      name: "Full window",
+    });
+    expect(restoredFullWindow.getAttribute("aria-pressed")).toBe("false");
+    expect(
+      restoredFullWindow.closest("[title]")?.getAttribute("title"),
+    ).toBe("Fill the app window with this plan");
+    expect(
+      restoredFullWindow
+        .querySelector("svg")
+        ?.classList.contains("lucide-maximize-2"),
+    ).toBe(true);
   });
 
   it("falls back to filling the window after a rejected browser request", async () => {
