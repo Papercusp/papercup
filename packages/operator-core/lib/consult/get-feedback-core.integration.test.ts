@@ -39,6 +39,7 @@ import { consultReplyCore, consultDeclineCore } from './consult-verbs-core';
 import { sweepExpiredConsults } from './consult-expiry-core';
 import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit } from '../grading-audit-routing';
 import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
+import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import type { ScorecardRow } from '../scorecards';
 import type { Rubric } from '../rubrics';
 
@@ -106,6 +107,21 @@ beforeAll(async () => {
       taken_at timestamptz,
       last_progress_at timestamptz,
       payload jsonb NOT NULL DEFAULT '{}'::jsonb
+    )`);
+  // The source-audit router's persisted-responder liveness check uses the same
+  // session-log evidence as the production oracle. Keep this fixture minimal,
+  // but real PostgreSQL-backed, so ended and launch-window recorded rows cannot
+  // regress into an active-chain dedupe without a failing integration test.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      workspace_id text NOT NULL,
+      mode text NOT NULL DEFAULT 'console',
+      started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz,
+      coord_owner_id text,
+      agent text,
+      role text
     )`);
 }, 120_000);
 
@@ -194,6 +210,96 @@ const baseReq: GetFeedbackRequest = {
 };
 
 describe('source-audit dispatcher through persisted consult routing', () => {
+  it.each(['ended', 'recorded'] as const)(
+    'does not dedupe an active reservation whose persisted responder is %s',
+    async (sessionState) => {
+      const issueId = `EI-stale-responder-${sessionState}`;
+      const reservationKey = `grading-audit:${issueId}`;
+      const responderId = `stale-${sessionState}-responder`;
+      const conversationId = `conv-stale-${sessionState}`;
+      const nowMs = Date.now();
+      await rootSql`
+        INSERT INTO harness_shared.adv_sessions
+          (workspace_id, mode, started_at, ended_at, coord_owner_id, agent, role)
+        VALUES (
+          ${WS}, 'console', ${new Date(nowMs - 1_000).toISOString()}::timestamptz,
+          ${sessionState === 'ended' ? new Date(nowMs - 500).toISOString() : null}::timestamptz,
+          ${responderId}, 'su', 'judge'
+        )`;
+      await rootSql`
+        INSERT INTO harness_shared.consult_state
+          (workspace_id, conversation_id, requester_id, responder_id, state, question, routing, outcome)
+        VALUES (
+          ${WS}, ${conversationId}, 'audit-requester', ${responderId}, 'awaiting_responder',
+          'stale responder regression',
+          ${rootSql.json({
+            cascade: { flavor: 'grading-integrity', reservationKey, issueId },
+          } as never)}, NULL
+        )`;
+
+      const fixture = makeDeps(routeOf([cand('fresh-auditor')]));
+      const feedback = vi.fn(async (req: GetFeedbackRequest, _identity: unknown, options?: { filterRoute?: (route: RouteResult) => Promise<RouteResult> }) =>
+        getFeedbackCore(req, {
+          ...fixture.deps,
+          route: async (params) => {
+            const routed = await fixture.deps.route(params);
+            return options?.filterRoute ? options.filterRoute(routed) : routed;
+          },
+        }),
+      );
+      const resolveResponderLiveness = vi.fn(async (ownerId: string) => {
+        const recorded = await rootSql<Array<{ coord_owner_id: string; started_at: string; ended_at: string | null }>>`
+          SELECT DISTINCT ON (coord_owner_id) coord_owner_id, started_at, ended_at
+            FROM harness_shared.adv_sessions
+           WHERE coord_owner_id = ${ownerId}
+           ORDER BY coord_owner_id, started_at DESC`;
+        const verdicts = await resolveSessionStates([{ ownerId }], {
+          nowMs,
+          fetchWakeabilityFn: async (ids) => new Map(ids.map((id) => [id, { wakeable: false, liveTurn: false }])),
+          fetchRecordedLiveFn: async (ids) => new Set(
+            recorded
+              .filter((row) => ids.includes(row.coord_owner_id) && row.ended_at == null &&
+                Date.parse(row.started_at) > nowMs - 10 * 60_000)
+              .map((row) => row.coord_owner_id),
+          ),
+          fetchRecordedEndedFn: async (ids) => new Set(
+            recorded.filter((row) => ids.includes(row.coord_owner_id) && row.ended_at != null)
+              .map((row) => row.coord_owner_id),
+          ),
+        });
+        return verdicts.get(ownerId);
+      });
+      const input = {
+        card: { issueId, createdBy: 'source-author' } as ScorecardRow,
+        reservationKey,
+        brief: 'Audit stale responder regression',
+        ctx: { workspaceId: WS, uiClientId: `stale-${sessionState}-requester`, isSuperuser: true },
+      };
+      const routeDeps = {
+        getSql: () => rootSql,
+        feedback,
+        resolveParties: async (ids: string[]) => new Map(ids.map((id) => [id, id])),
+        resolveResponderLiveness,
+      };
+
+      const first = await routeSourceGradingAudit(input, routeDeps);
+      expect(first).toMatchObject({ state: 'routed' });
+      expect(resolveResponderLiveness).toHaveBeenCalledWith(responderId);
+      expect(feedback).toHaveBeenCalledOnce();
+      const oldRow = await stateRow(conversationId);
+      expect(oldRow.state).toBe('expired');
+      expect(oldRow.outcome).toMatchObject({
+        dispatch: 'stale-responder', responderId, sessionState,
+      });
+
+      // The fresh consult is still deduped on replay; the stale row is the only
+      // one retired, so a retry cannot create a second active chain.
+      const replay = await routeSourceGradingAudit(input, routeDeps);
+      expect(replay).toMatchObject({ state: 'deduped', conversationId: first.conversationId });
+      expect(feedback).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(['direct-launch', 'duplicate-chain', 'excluded-reviewer'] as const)(
     'counterexample: the persisted dispatch oracle detects %s and accepts the repaired route',
     async (fault) => {

@@ -287,6 +287,25 @@ describe('workspace-host entrypoint behavior', () => {
     ).not.toBe(0);
   });
 
+  it('fails closed when the installed Cupboard prompt inventory is missing', () => {
+    const root = makeFixture();
+    install(root);
+    const prompts = join(root, '.papercusp', 'blueprints', 'base', 'prompts');
+    rmSync(prompts, { recursive: true, force: true });
+    const pgRoot = join(root, 'pgdata');
+    mkdirSync(pgRoot);
+
+    const result = run(join(root, 'bin/papercusp-server'), [], {
+      ...process.env,
+      PAPERCUSP_PORT: '4107',
+      PAPERCUSP_EMBEDDED_PG_ROOT: pgRoot,
+      PAPERCUSP_HOME: join(root, '.papercusp'),
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`installed Cupboard content is missing: ${prompts}`);
+  });
+
   it('maps bootstrap env names, pins immutable runtime policy, and delegates side-effect-free help', () => {
     const root = makeFixture();
     install(root);

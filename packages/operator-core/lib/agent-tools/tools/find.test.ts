@@ -545,6 +545,9 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain(
       'verification?:object{coverage?:object{population:array(≥1)<string>,checked?:array<string>,notChecked?:array<string>,notApplicable?:array<string>,residue?:array<string>}}',
     );
+    expect(compact).toContain(
+      'current?:array(≤500){evidenceKind:enum(test|fixture|coverage-census|mutation|counterexample|check|manual|operational),evidenceRef:string(1-2000),sourceFingerprint:string(1-256)',
+    );
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 

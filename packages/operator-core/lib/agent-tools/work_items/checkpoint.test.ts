@@ -451,7 +451,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(21462);
+    expect(JSON.stringify(json)).toHaveLength(21709);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -3365,6 +3365,41 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
           expect(r).toMatchObject({ ok: false, errorCode: 'append_checks_overflow' });
           expect(readCurrent()).toBe(prior);
+        });
+
+        it('honors confirmRetire:true for checks-only merge overflow and reports the confirmed eviction', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+          }));
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            append: true,
+            confirmRetire: true,
+            checks: [{ claim: 'MINE holds', verified: 'measured now' }],
+          })) as {
+            ok: boolean;
+            checks: number;
+            errorCode?: string;
+            checksDropped?: string[];
+            checksDroppedNote?: string;
+          };
+
+          expect(r).toMatchObject({
+            ok: true,
+            checks: CARRY_NOTE_MAX_CHECKS,
+          });
+          expect(r.errorCode).toBeUndefined();
+          expect(r.checksDropped).toEqual([`PEER-${String(CARRY_NOTE_MAX_CHECKS).padStart(2, '0')} holds`]);
+          expect(r.checksDroppedNote).toContain('CAP EVICTION');
+          const stored = readCurrent();
+          expect(stored).toContain('MINE holds');
+          expect(stored).not.toContain(`PEER-${String(CARRY_NOTE_MAX_CHECKS).padStart(2, '0')} holds`);
+          expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
         });
 
         /**

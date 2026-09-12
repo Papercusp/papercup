@@ -6748,7 +6748,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(health.inFlight.criticalContinuationQueue).toMatchObject({
       waiting: 1,
       max: 1,
-      maxWaitMs: 0,
+      maxWaitMs: 25,
       requests: [
         expect.objectContaining({
           tools: ["work_items:checkpoint"],

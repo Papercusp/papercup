@@ -1120,6 +1120,38 @@ describe('fleet:respawn-member (P-008)', () => {
  * launcher's return value.
  */
 describe('fleet:respawn-member replacement verification (WI-6936)', () => {
+  it('starts roster verification while the nested launcher waits for kickoff proof (EI-23092914186078936)', async () => {
+    let releaseLaunch!: () => void;
+    const launchResult = { content: [{ type: 'text', text: 'Launched su-new into rocket' }] };
+    const launchPending = new Promise<typeof launchResult>((resolve) => {
+      releaseLaunch = () => resolve(launchResult);
+    });
+    launchHandler.mockReturnValueOnce(launchPending);
+
+    let rosterReads = 0;
+    listFleetPresence.mockReset().mockImplementation(async () => {
+      rosterReads += 1;
+      if (rosterReads === 1) return [row(LEADER), row(MEMBER)];
+      const launchArgs = launchHandler.mock.calls[0]?.[0] as { __respawnOwnerId?: string } | undefined;
+      return [row(LEADER), row(launchArgs?.__respawnOwnerId ?? 'missing-replacement')];
+    });
+
+    const responsePromise = tool.handler(
+      { member: MEMBER, model: 'opus[1m]', verifySec: 30 } as never,
+      {} as never,
+    );
+    for (let attempt = 0; attempt < 100 && rosterReads < 2; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(launchHandler).toHaveBeenCalledTimes(1);
+    expect(rosterReads).toBeGreaterThanOrEqual(2);
+    releaseLaunch();
+
+    const p = parse(await responsePromise);
+    expect(p).toMatchObject({ ok: true, verified: true, newMember: p.replacementOwner });
+  });
+
   it('reports verified with the NEW owner-id once it appears in the roster', async () => {
     getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
     const res = await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never);

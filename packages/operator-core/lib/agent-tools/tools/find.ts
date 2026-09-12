@@ -298,6 +298,14 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     .map(([name, raw], index) => ({ name, raw, index, priority: contractPriority(name) }))
     .sort((a, b) => b.priority - a.priority || a.index - b.index)
     .map(({ name, raw }) => [name, raw] as [string, unknown]);
+  const hasRequiredArrayItemFields = (raw: unknown): boolean => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const node = raw as JsonSchemaNode;
+    const item = node.items && typeof node.items === 'object' && !Array.isArray(node.items)
+      ? objectProperties(node.items as JsonSchemaNode)
+      : null;
+    return node.type === 'array' && item != null && item.required.size > 0;
+  };
   const renderEntry = (
     name: string,
     raw: unknown,
@@ -322,6 +330,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   const renderOrderedProperties = (propertiesToRender: Array<[string, unknown]>): {
     body: string;
     omitted: Set<string>;
+    degradedArrayItems: Set<string>;
     oversized: boolean;
   } => {
     let entries = propertiesToRender.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
@@ -332,6 +341,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     let body = '';
     let dropped = 0;
     const omitted = new Set<string>();
+    const degradedArrayItems = new Set<string>();
     for (const [index, entry] of entries.entries()) {
       const candidate = body ? `${body},${entry}` : entry;
       if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
@@ -371,6 +381,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
         });
         if (selectedFallback) {
           body = `${body},${selectedFallback}`;
+          if (selectedFallback === fallback && hasRequiredArrayItemFields(raw)) degradedArrayItems.add(name);
           continue;
         }
         dropped += 1;
@@ -380,7 +391,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       body = candidate;
     }
     if (dropped > 0) body = `${body},…+${dropped}`;
-    return { body: body.length > 0 ? `{${body}}` : '', omitted, oversized };
+    return { body: body.length > 0 ? `{${body}}` : '', omitted, degradedArrayItems, oversized };
   };
 
   let propertiesForRender = orderedProperties;
@@ -394,14 +405,29 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     const omittedRequired = propertiesForRender.filter(
       ([name]) => nested.required.has(name) && rendered.omitted.has(name),
     );
+    const omittedRequiredArrayItems = propertiesForRender.filter(([name, raw]) =>
+      rendered.degradedArrayItems.has(name) || (rendered.omitted.has(name) && hasRequiredArrayItemFields(raw)),
+    );
     // An oversized entry has its own established shallow fallback at the
     // enclosing object level (for example completion.verification.coverage or
     // rerunRecipe.current.supplied). Reordering around it would make that
     // fallback appear to fit and would regress the nested path projection.
-    if (omittedRequired.length === 0 || attempt === 1 || rendered.oversized) return rendered.body;
-    const omittedRequiredNames = new Set(omittedRequired.map(([name]) => name));
+    if (
+      (omittedRequired.length === 0 && omittedRequiredArrayItems.length === 0) ||
+      attempt === 1 ||
+      (rendered.oversized && omittedRequiredArrayItems.length === 0)
+    ) {
+      return rendered.body;
+    }
+    const omittedRequiredNames = new Set([
+      ...omittedRequired.map(([name]) => name),
+      ...omittedRequiredArrayItems.map(([name]) => name),
+    ]);
     propertiesForRender = [
       ...omittedRequired,
+      ...omittedRequiredArrayItems.filter(
+        ([name]) => !omittedRequired.some(([requiredName]) => requiredName === name),
+      ),
       ...propertiesForRender.filter(([name]) => !omittedRequiredNames.has(name)),
     ];
   }

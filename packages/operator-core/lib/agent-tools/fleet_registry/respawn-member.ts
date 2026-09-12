@@ -436,6 +436,9 @@ export async function awaitReplacementMember(opts: {
   freshMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Stop a speculative verifier when the nested launch fails before returning. */
+  cancel?: Promise<void>;
+  shouldStop?: () => boolean;
 }): Promise<AwaitReplacementResult> {
   const {
     before,
@@ -446,6 +449,8 @@ export async function awaitReplacementMember(opts: {
     freshMs = VERIFY_FRESH_MS,
     now = () => Date.now(),
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    cancel,
+    shouldStop,
   } = opts;
   const startedAt = now();
   // Bound the loop by ITERATIONS as well as by the clock: the deadline test alone spins forever if
@@ -454,11 +459,17 @@ export async function awaitReplacementMember(opts: {
   const maxPolls = Math.ceil(timeoutMs / Math.max(1, intervalMs)) + 2;
   let rosterOwnerIds: string[] = [];
   for (let poll = 0; ; poll += 1) {
+    if (shouldStop?.()) {
+      return { verified: false, newMemberOwnerId: null, waitedMs: now() - startedAt, rosterOwnerIds };
+    }
     let rows: FleetPresenceRow[] = [];
     try {
       rows = await list();
     } catch {
       // A transient read failure is not evidence either way — keep polling until the deadline.
+    }
+    if (shouldStop?.()) {
+      return { verified: false, newMemberOwnerId: null, waitedMs: now() - startedAt, rosterOwnerIds };
     }
     rosterOwnerIds = rows.map((r) => r.ownerId);
     const at = now();
@@ -475,7 +486,17 @@ export async function awaitReplacementMember(opts: {
     if (at - startedAt + intervalMs > timeoutMs || poll + 1 >= maxPolls) {
       return { verified: false, newMemberOwnerId: null, waitedMs: at - startedAt, rosterOwnerIds };
     }
-    await sleep(intervalMs);
+    if (cancel) {
+      const stopped = await Promise.race([
+        sleep(intervalMs).then(() => false),
+        cancel.then(() => true),
+      ]);
+      if (stopped || shouldStop?.()) {
+        return { verified: false, newMemberOwnerId: null, waitedMs: now() - startedAt, rosterOwnerIds };
+      }
+    } else {
+      await sleep(intervalMs);
+    }
   }
 }
 
@@ -1403,23 +1424,51 @@ export default defineTool({
       ...(respawnRole !== undefined ? { role: respawnRole } : {}),
       brief,
     };
-    const launch = launchOutcome(
-      await launchTool.handler(
-        {
-          fleet: slug,
-          count: 1,
-          harness: savedLaunchSpec.effective.harness,
-          ...(savedLaunchSpec.effective.plan ? { plan: savedLaunchSpec.effective.plan } : {}),
-          members: [spec],
-          __savedLaunchCarry: savedLaunchSpec.effective.member.carry,
-          __respawnOwnerId: replacementOwner,
-          ...(args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : {}),
-        } as never,
-        ctx,
-      ),
+    // Start the roster verifier immediately after invoking the nested launcher. The launcher
+    // may spend up to 30s waiting for its native kickoff-proof receipt; starting verification
+    // only after that await creates an unverified interval in which a healthy replacement can
+    // already be live while the outer respawn still reports no evidence (EI-23092914186078936).
+    // Invoke first, then start the verifier, so the first roster read can observe the exact
+    // pre-pinned owner even in the direct-handler test seam; in production both proceed
+    // concurrently while capability:launch-agent performs its preflight/spawn work.
+    const launchRequest = launchTool.handler(
+      {
+        fleet: slug,
+        count: 1,
+        harness: savedLaunchSpec.effective.harness,
+        ...(savedLaunchSpec.effective.plan ? { plan: savedLaunchSpec.effective.plan } : {}),
+        members: [spec],
+        __savedLaunchCarry: savedLaunchSpec.effective.member.carry,
+        __respawnOwnerId: replacementOwner,
+        ...(args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : {}),
+      } as never,
+      ctx,
     );
+    const verifySec = args.verifySec ?? DEFAULT_VERIFY_SEC;
+    let cancelReplacementVerification: (() => void) | undefined;
+    let replacementVerification: Promise<AwaitReplacementResult> | null = null;
+    if (verifySec > 0 && rosterReadable) {
+      let cancelled = false;
+      let resolveCancellation!: () => void;
+      const cancellation = new Promise<void>((resolve) => { resolveCancellation = resolve; });
+      cancelReplacementVerification = () => {
+        cancelled = true;
+        resolveCancellation();
+      };
+      replacementVerification = awaitReplacementMember({
+        before: rosterBefore,
+        expectedOwnerId: replacementOwner,
+        list: () => listFleetPresence(workspaceId, slug),
+        timeoutMs: verifySec * 1000,
+        cancel: cancellation,
+        shouldStop: () => cancelled,
+      });
+    }
+    const launch = launchOutcome(await launchRequest);
 
     if (!launch.ok) {
+      cancelReplacementVerification?.();
+      if (replacementVerification) await replacementVerification;
       const headcount = await readRespawnFailureHeadcount({
         target: savedLaunchSpec.target,
         drainedOwnerId: memberOwnerId,
@@ -1458,7 +1507,6 @@ export default defineTool({
     //    terminal, and that terminal outlives a CLI that dies on its first call — so without this
     //    step ok:true means "a window opened", which reads as "the member is back" and is how a
     //    respawn silently leaves a fleet a member down (WI-6936).
-    const verifySec = args.verifySec ?? DEFAULT_VERIFY_SEC;
     if (verifySec === 0 || !rosterReadable) {
       const launchTransactionPersistence = await persistRespawnTransaction(
         'unverified',
@@ -1488,12 +1536,14 @@ export default defineTool({
       });
     }
 
-    const verify = await awaitReplacementMember({
-      before: rosterBefore,
-      expectedOwnerId: replacementOwner,
-      list: () => listFleetPresence(workspaceId, slug),
-      timeoutMs: verifySec * 1000,
-    });
+    const verify = replacementVerification
+      ? await replacementVerification
+      : await awaitReplacementMember({
+          before: rosterBefore,
+          expectedOwnerId: replacementOwner,
+          list: () => listFleetPresence(workspaceId, slug),
+          timeoutMs: verifySec * 1000,
+        });
     const launchTransactionPersistence = await persistRespawnTransaction(
       verify.verified ? 'verified' : 'unverified',
       verify.verified

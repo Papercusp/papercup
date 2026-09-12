@@ -292,6 +292,23 @@ export function run() {
   });
 });
 
+describe('bounded awaited process-group runners', () => {
+  const oddsmith = 'packages/operator-core/lib/harness/routines/oddsmith-cron-shared.ts';
+  const source = readFileSync(join(REPO_ROOT, oddsmith), 'utf8');
+
+  it('allowlists oddsmith only after proving its detached child is bounded and awaited', () => {
+    expect(KNOWN_DEFECTS.has(oddsmith)).toBe(false);
+    expect(allow.has(oddsmith)).toBe(true);
+    expect(spawnTriggers(oddsmith, source).detachedNotFalse).toBe(true);
+    expect(source).toContain("child.on('close', (code) =>");
+    expect(source).toContain('process.kill(-child.pid, sig)');
+    // The same source is still an offender under a new path; the allowlist is the
+    // explicit lifetime decision, not a detector blind spot.
+    expect(check(NEW, source)).toBe(true);
+    expect(check(oddsmith, source)).toBe(false);
+  });
+});
+
 describe('KNOWN_DEFECTS hygiene', () => {
   // This map suppresses a FAILURE, so it is the one place a real hazard can go quiet, and
   // it is governed harder than the allowlist rather than more softly.

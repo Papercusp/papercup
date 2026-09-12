@@ -59,7 +59,12 @@ const server = createServer(async (req, res) => {
   res.end('ok', () => {
     let command = '';
     try { command = JSON.parse(body).command || ''; } catch {}
-    if (command === 'stop') server.close(() => process.exit(0));
+    if (command === 'stop') {
+      // undici keeps the response connection alive, so waiting for server.close's
+      // callback would leave this detached fixture resident after the client exits.
+      server.close();
+      process.exit(0);
+    }
   });
 });
 server.listen(0, '127.0.0.1', () => {

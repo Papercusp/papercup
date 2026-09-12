@@ -6,6 +6,7 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from './agent-tools/coo
 import { lineagePartyKeys } from './acceptance-author-identity';
 import { getFeedbackProd } from './consult/get-feedback-prod';
 import type { RouteResult } from './consult/relevance-router';
+import { resolveSessionStates, type LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
 
 export interface SourceAuditRouteInput {
   card: ScorecardRow;
@@ -41,7 +42,14 @@ export async function independentSourceAuditRoute(
 
 export async function routeSourceGradingAudit(
   input: SourceAuditRouteInput,
-  deps: { getSql?: () => Sql; feedback?: typeof getFeedbackProd; resolveParties?: typeof lineagePartyKeys } = {},
+  deps: {
+    getSql?: () => Sql;
+    feedback?: typeof getFeedbackProd;
+    resolveParties?: typeof lineagePartyKeys;
+    resolveResponderLiveness?: (
+      ownerId: string,
+    ) => Promise<Pick<LivenessVerdict, 'sessionState'> | null | undefined>;
+  } = {},
 ): Promise<SourceAuditRouteResult> {
   const identity = resolveAgentIdentity(input.ctx);
   const workspaceId = input.ctx.workspaceId?.trim() || identity.workspaceId;
@@ -49,17 +57,57 @@ export async function routeSourceGradingAudit(
   const sql = (deps.getSql ?? (() => getOrgPg().sql))();
   // The card reservation already serializes creation. On its TTL retry, reuse
   // a still-active chain instead of recruiting a second auditor.
-  const active = await sql<{ conversation_id: string; state: string; dispatch: string | null }[]>`
-    SELECT conversation_id, state, outcome->>'dispatch' AS dispatch FROM harness_shared.consult_state
+  const active = await sql<{
+    conversation_id: string;
+    state: string;
+    dispatch: string | null;
+    responder_id: string | null;
+  }[]>`
+    SELECT conversation_id, state, outcome->>'dispatch' AS dispatch, responder_id
+      FROM harness_shared.consult_state
     WHERE workspace_id = ${workspaceId}
       AND routing->'cascade'->>'flavor' = 'grading-integrity'
       AND routing->'cascade'->>'reservationKey' = ${input.reservationKey}
     ORDER BY created_at DESC LIMIT 1`;
   if (active[0]?.dispatch === 'launch-fallback') return { state: 'fallback', reason: 'existing router: reuse reserved launch fallback' };
+  let retiredStaleResponder = false;
   if (active[0] && ['awaiting_responder', 'active'].includes(active[0].state)) {
-    return { state: 'deduped', conversationId: active[0].conversation_id };
+    // A reservation can outlive the responder it delivered to. Dedupe only
+    // when the persisted responder is not positively known to be terminal or
+    // non-wakeable; an unknown/degraded liveness read preserves the previous
+    // fail-open dedupe behavior rather than creating a duplicate audit.
+    const responderState = active[0].responder_id
+      ? await (deps.resolveResponderLiveness ?? (async (ownerId: string) => {
+          try {
+            return (await resolveSessionStates([{ ownerId }], {
+              hydratePerId: true,
+              psuHostPositiveAuthority: true,
+            })).get(ownerId) ?? null;
+          } catch {
+            return null;
+          }
+        }))(active[0].responder_id)
+      : null;
+    if (responderState?.sessionState === 'ended' || responderState?.sessionState === 'recorded') {
+      // Retire the stranded row before routing a fresh audit. Without this,
+      // the expiry sweep can later advance the dead chain alongside the retry.
+      await sql`
+        UPDATE harness_shared.consult_state
+           SET state = 'expired', closed_at = now(), updated_at = now(),
+               outcome = jsonb_build_object(
+                 'dispatch', 'stale-responder',
+                 'responderId', ${active[0].responder_id}::text,
+                 'sessionState', ${responderState.sessionState}::text
+               )
+         WHERE workspace_id = ${workspaceId}
+           AND conversation_id = ${active[0].conversation_id}
+           AND state IN ('awaiting_responder', 'active')`;
+      retiredStaleResponder = true;
+    } else {
+      return { state: 'deduped', conversationId: active[0].conversation_id };
+    }
   }
-  if (active[0] && active[0].state !== 'closed_answered') {
+  if (active[0] && !retiredStaleResponder && active[0].state !== 'closed_answered') {
     return { state: 'fallback', reason: `existing router cascade exhausted (${active[0].state}); bounded launch fallback` };
   }
   const result = await (deps.feedback ?? getFeedbackProd)({
