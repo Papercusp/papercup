@@ -63,6 +63,7 @@ function scorecard(overrides: Partial<ScorecardRow> = {}): ScorecardRow {
     createdBy: 'su-grader',
     rubricRef: 'acceptance-plan-a',
     rubricRevision: 2,
+    criteriaHash: 'criteria-hash',
     ratings: {},
     nKeys: 0,
     missingKeys: [],
@@ -240,7 +241,13 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
     ratings: { completeness: { rating: 'healthy', evidence: 'complete' } },
     nKeys: 1,
     subject: { kind: 'rubric', ref: 'acceptance-plan-a' },
-    vetting: { consultId: 'conv-1', rubricRevision: 2, critiquePosts: 1, critics: ['su-critic'] },
+    vetting: {
+      consultId: 'conv-1',
+      rubricRevision: 2,
+      criteriaHash: 'criteria-hash',
+      critiquePosts: 1,
+      critics: ['su-critic'],
+    },
   });
   return {
     planRows: rows([plan], 1),
@@ -370,6 +377,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   it('exposes earlier failed grades and implementer reports separately from independent grading and author acceptance', () => {
     const input = provedFixture(1);
     input.scorecards.rows.push(scorecard({ issueId: 'SC-OLD', rubricRevision: 1,
+      criteriaHash: 'criteria-hash-before-change',
       createdAt: '2026-09-03T13:00:00.000Z', supersededBy: 'SC-GRADE',
       ratings: { 'r-1': { rating: 'broken', evidence: 'Export omitted an attachment.' } } }),
     scorecard({ issueId: 'SC-SELF', createdBy: 'su-impl',
@@ -415,8 +423,20 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
         authoritativeScorecardId: 'SC-GRADE',
         gradedBy: 'su-grader',
         selectedVia: 'floor',
-        vetting: { state: 'current', scorecardId: 'SC-VET', rubricRevision: 2 },
-        authorVerdict: { state: 'accepted', scorecardId: 'SC-AUTHOR', verdict: 'accept' },
+        rubricRevision: 2,
+        criteriaHash: 'criteria-hash',
+        vetting: {
+          state: 'current',
+          scorecardId: 'SC-VET',
+          rubricRevision: 2,
+          criteriaHash: 'criteria-hash',
+        },
+        authorVerdict: {
+          state: 'accepted',
+          scorecardId: 'SC-AUTHOR',
+          verdict: 'accept',
+          criteriaHash: 'criteria-hash',
+        },
       },
     });
     expect(snapshot.contentHash).toMatch(/^[a-f0-9]{64}$/);
@@ -945,21 +965,19 @@ describe('BAR reporting-layer repairs (bar-reporting-layer-repairs-2026-09-07)',
     });
   });
 
-  describe('R-3 / P-003 — a meaning-preserving revision does not invalidate grading or vetting', () => {
+  describe('R-6 / P-004 — rubric evidence follows substantive identity, not revision churn', () => {
     /**
      * Two inputs differing ONLY in the rubric revision counter: same criteria, same
      * `barHash` for every BAR. The recorded cards stay pinned at revision 2.
      */
-    const bumpedTo3 = (meaningRevision: number | null) => {
+    const bumpedTo3 = (criteriaHash = 'criteria-hash') => {
       const input = fixture(1);
       const rubric = input.rubrics.rows[0]!;
       const hashesBefore = rubric.criteria.map((entry) => entry.barHash);
 
       (rubric as unknown as { revision: number }).revision = 3;
+      rubric.criteriaHash = criteriaHash;
       input.planRows.rows[0]!.rubricRevision = 3;
-      if (meaningRevision != null) {
-        (rubric.barContract as unknown as Record<string, unknown>).meaningRevision = meaningRevision;
-      }
 
       // The premise the clause names: BAR identity is byte-identical either way.
       expect(rubric.criteria.map((entry) => entry.barHash)).toEqual(hashesBefore);
@@ -967,26 +985,29 @@ describe('BAR reporting-layer repairs (bar-reporting-layer-repairs-2026-09-07)',
     };
 
     it('keeps an already-recorded grading card and the vetting attestation current', () => {
-      // Meaning last changed at revision 2; the cards were recorded at 2.
-      const snapshot = bumpedTo3(2);
+      const snapshot = bumpedTo3();
 
       expect(snapshot.bars[0]!.grading.state).toBe('pass');
       expect(snapshot.grading.vetting.state).toBe('current');
+      expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_projection_stale');
     });
 
-    it('CONTROL: a revision that DID change BAR meaning invalidates both', () => {
-      // Meaning changed at revision 3; a card recorded at 2 now predates it.
-      const snapshot = bumpedTo3(3);
+    it('CONTROL: a same-revision dependency identity change invalidates both', () => {
+      const input = fixture(1);
+      input.rubrics.rows[0]!.criteriaHash = 'criteria-hash-after-method-change';
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
 
       expect(snapshot.bars[0]!.grading.state).toBe('stale');
       expect(snapshot.grading.vetting.state).toBe('stale');
     });
 
-    it('CONTROL: with NO meaning epoch recorded, currentness falls back to strict equality', () => {
-      // A rubric written before the field existed. "Meaning history unknown" must not
-      // be read as "meaning unchanged" — that would bless a card graded before an
-      // untracked meaning change, the very failure the epoch exists to prevent.
-      const snapshot = bumpedTo3(null);
+    it('CONTROL: one-sided legacy identity is unknown and never becomes passing proof', () => {
+      const input = fixture(1);
+      for (const card of input.scorecards.rows) delete card.criteriaHash;
+      for (const card of input.vettingScorecards.rows) {
+        if (card.vetting) delete card.vetting.criteriaHash;
+      }
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
 
       expect(snapshot.bars[0]!.grading.state).toBe('stale');
       expect(snapshot.grading.vetting.state).toBe('stale');
