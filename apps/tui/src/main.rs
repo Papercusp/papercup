@@ -5127,7 +5127,7 @@ async fn stream_su_session_events(
         if startup_snapshot_can_send_initial_turn(&binding, snapshot, &harness, &chat_id) {
             let pending = initial_turn.take().expect("checked pending first turn");
             send_su_turn_with_client(&client, &harness, &chat_id, &binding, pending, &tx).await;
-        } else if snapshot.terminal || !identity_matches {
+        } else if !identity_matches {
             let command_id = pending.command_id.clone();
             initial_turn = None;
             let _ = tx.send(Event::SuTurnFailed {
@@ -5138,7 +5138,12 @@ async fn stream_su_session_events(
         }
     }
 
-    let mut terminal_seen = false;
+    // A terminal snapshot has no failure reason. Keep the pending draft until
+    // its replay supplies the error/lifecycle reason (or the stream closes).
+    // Pin terminality now so an older replayed ready event cannot send it.
+    let mut terminal_seen = startup_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.terminal);
     let mut startup_error: Option<String> = None;
     // The host may spend 45 seconds initializing its engine and SU MCP. Keep
     // the draft pending across its starting descriptor and await a ready event.
@@ -5164,7 +5169,7 @@ async fn stream_su_session_events(
         let event = match next {
             Ok(event) => event,
             Err(error) => {
-                if !terminal_seen {
+                if !terminal_seen || initial_turn.is_some() {
                     let _ = tx.send(Event::SuSessionStreamError {
                         chat_id: chat_id.clone(),
                         message: error.to_string(),
@@ -5210,7 +5215,11 @@ async fn stream_su_session_events(
             }
         }
         let _ = tx.send(Event::SuSessionEvent(event));
-        if initial_turn.is_some() && (can_send || terminal_seen || !identity_matches) {
+        if initial_turn.is_some()
+            && ((!terminal_seen && can_send)
+                || (terminal_seen && startup_error.is_some())
+                || !identity_matches)
+        {
             let pending = initial_turn.take().expect("checked pending first turn");
             if terminal_seen || !identity_matches {
                 let message = if identity_matches { startup_error.take() } else { None }
@@ -5227,7 +5236,15 @@ async fn stream_su_session_events(
             }
         }
     }
-    if !terminal_seen {
+    if let Some(pending) = initial_turn.take() {
+        let _ = tx.send(Event::SuTurnFailed {
+            command_id: pending.command_id,
+            message: startup_error.unwrap_or_else(|| {
+                "Session ended before becoming ready. Draft retained; reconnect to retry.".into()
+            }),
+            uncertain: false,
+        });
+    } else if !terminal_seen {
         let _ = tx.send(Event::SuSessionStreamError {
             chat_id,
             message: "SU-session stream closed".into(),
