@@ -8,6 +8,7 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
 import validateTool from '../validate';
 import createTool from '../create';
 import extendTool from '../extend';
@@ -35,6 +36,59 @@ describe('blueprint:validate', () => {
     expect(r.summary.id).toBe('coding-factory');
     expect(r.summary.spineVerbs).toContain('DONE');
     expect(r.summary.spineVerbs).toContain('NEXT_WORKER');
+  });
+
+  it('validates the official abstract identity and fleet-posture overlays', async () => {
+    const previousHome = process.env.PAPERCUSP_HOME;
+    const home = await fs.mkdtemp(join(tmpdir(), 'bp-validate-identities-'));
+    process.env.PAPERCUSP_HOME = home;
+    _resetPapercuspRootForTests();
+    try {
+      for (const [id, slot] of [
+        ['papercusp-engineer', 'domain'],
+        ['su.fleet-member', 'fleet-posture'],
+        ['su.fleet-leader', 'fleet-posture'],
+      ] as const) {
+        const r = await run(validateTool, { id });
+        expect(r.ok, id).toBe(true);
+        expect(r.summary).toMatchObject({ id, sourceKind: 'identity', runnable: false, slots: [slot] });
+        expect(r.errors).toEqual([]);
+      }
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousHome;
+      _resetPapercuspRootForTests();
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts an exact built-in identity copy materialized in the installed tier', async () => {
+    const previousHome = process.env.PAPERCUSP_HOME;
+    const home = await fs.mkdtemp(join(tmpdir(), 'bp-validate-installed-identity-'));
+    const id = 'papercusp-engineer';
+    const target = join(home, 'blueprints', id, 'blueprint.yaml');
+    await fs.mkdir(join(home, 'blueprints', id), { recursive: true });
+    await fs.copyFile(builtinBlueprintPath(id), target);
+    process.env.PAPERCUSP_HOME = home;
+    _resetPapercuspRootForTests();
+    try {
+      const r = await run(validateTool, { id });
+      expect(r.ok).toBe(true);
+      expect(r.summary).toMatchObject({ id, sourceKind: 'identity', runnable: false, slots: ['domain'] });
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousHome;
+      _resetPapercuspRootForTests();
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('validates an abstract identity supplied inline', async () => {
+    const r = await run(validateTool, {
+      source: 'id: inline-identity\nextends: base\nslots:\n  - slot: practice\n',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.summary).toMatchObject({ id: 'inline-identity', sourceKind: 'identity', runnable: false, slots: ['practice'] });
   });
 
   it('reports a parse error for malformed source', async () => {

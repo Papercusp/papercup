@@ -109,6 +109,8 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     // composer and PostgreSQL cursor are the production path under test.
     const deps: OrientationDeps = {
       held: async () => [],
+      historyUpdates: async () => [],
+      effortUpdates: async () => [],
       inbox: async () => ({ count: 3, newest: [] }),
       announcedGates: async () => [],
       openAsks: async () => null,

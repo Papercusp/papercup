@@ -59,6 +59,7 @@ import {
   assessMainBehindStaging,
 } from './git-pipeline-position';
 import { assessGateOwnership } from './coord/gate-ownership';
+import { CRITICAL_CLAIM_PROGRESS_LEASE_MS } from './agent-tools/work_items/release-force-guard';
 import {
   assessFreezeDisposition,
   type FreezeAndConvergeGateHealth,
@@ -247,6 +248,9 @@ const GOALOF = (agreement: string, competing: readonly string[] = []) =>
     corroboratedBy: [],
     declaredAt: '2026-08-24T00:00:00.000Z',
   }) as never;
+
+const OWNERSHIP_NOW_MS = 1_800_000_000_000;
+const ownershipAtAge = (ageMs: number): string => new Date(OWNERSHIP_NOW_MS - ageMs).toISOString();
 
 // ⚠ ANNOTATED, not `as const`. An `as const` base narrows every field to its own literal
 // (`consecutiveReds: 0`, `repairQueue: null`, `fireStale: false`, `ownership: {…}`), so the
@@ -681,6 +685,17 @@ const CONTROLS: Record<string, readonly Control[]> = {
       label: 'held by a live session',
       expect: assessGateOwnership({ claimState: 'held', holderSessionState: 'live', duplicates: [] }),
     },
+    {
+      label: 'held by a live session whose item progress lease expired',
+      expect: assessGateOwnership({
+        claimState: 'held',
+        holderSessionState: 'live',
+        duplicates: [],
+        takenAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      }),
+    },
     /**
      * D-018's sign-flip, pinned as its own row. `recorded` is authoritatively ALIVE
      * per the session log — the verdict helper that shipped in P-005 counted it as a
@@ -1056,6 +1071,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'hold-blocked',
     'lease-expired',
     'held-live',
+    'held-stalled',
     'held-live',
     'held-needs-confirmation',
     'held-by-ended-session',
@@ -1480,10 +1496,24 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
     ],
     [
       'gate.greenCheckpoint.ownership',
-      'gate.ownership.holderSessionState',
-      assessGateOwnership({ claimState: 'held', holderSessionState: 'live', duplicates: [] }) ?? '',
-      assessGateOwnership({ claimState: 'held', holderSessionState: 'ended', duplicates: [] }) ?? '',
-      'a dead holder must not read as live ownership',
+      'gate.ownership.lastProgressAt',
+      assessGateOwnership({
+        claimState: 'held',
+        holderSessionState: 'live',
+        duplicates: [],
+        takenAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      }) ?? '',
+      assessGateOwnership({
+        claimState: 'held',
+        holderSessionState: 'live',
+        duplicates: [],
+        takenAt: ownershipAtAge(1),
+        lastProgressAt: ownershipAtAge(1),
+        nowMs: OWNERSHIP_NOW_MS,
+      }) ?? '',
+      'an expired item-progress lease must not read as a live hold',
     ],
     [
       'gate.greenCheckpoint.qualification',

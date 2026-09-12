@@ -8,9 +8,11 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
+import { readFileSync } from 'node:fs';
+import { builtinBlueprintPath, loadBlueprintFromFile, parseBlueprintSourceDocument } from '@papercusp/orchestrator/blueprint';
 import { COORD_ROLES } from '../coordination/roles';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
+import { inspectIdentitySource } from '../../agent-identities/source';
 import { parseBlueprintSource, resolveAndValidate, type ResolveResult } from './_resolve';
 
 function summarize(r: ResolveResult) {
@@ -32,6 +34,44 @@ function summarize(r: ResolveResult) {
       requiresRepo: bp.knobs.requiresRepo,
     },
   };
+}
+
+function summarizeIdentity(result: ReturnType<typeof inspectIdentitySource>) {
+  if (!result.ok && !('errors' in result)) {
+    return { ok: false, parseError: result.error };
+  }
+  const identity = result.identity;
+  return {
+    ok: result.ok,
+    errors: result.errors,
+    warnings: result.warnings,
+    summary: {
+      id: identity?.id,
+      version: identity?.version,
+      sourceKind: 'identity' as const,
+      runnable: result.runnable,
+      slots: identity?.slots?.map((slot) => slot.slot) ?? [],
+      layers: result.layers?.map((layer) => layer.id) ?? [],
+    },
+  };
+}
+
+/**
+ * Workspace provisioning may materialize an exact copy of an official identity
+ * into the installed tier so prompt composition can resolve it by id. That copy
+ * is still the built-in document, not an independently published layer, so use
+ * the canonical path for trust classification while preserving the composed
+ * resolver for its parents. A changed installed override remains subject to the
+ * installed-layer attestation requirement.
+ */
+function trustPathForIdentity(id: string, resolvedPath: string): string {
+  const builtinPath = builtinBlueprintPath(id);
+  try {
+    if (readFileSync(resolvedPath, 'utf8') === readFileSync(builtinPath, 'utf8')) return builtinPath;
+  } catch {
+    // Keep the resolved path; the identity inspector will report its actual error.
+  }
+  return resolvedPath;
 }
 
 export default defineTool({
@@ -64,6 +104,11 @@ export default defineTool({
         const resolver = operatorResolveExtends();
         const file = resolver(args.id);
         if (!file) throw new Error(`no blueprint "${args.id}" in the installed or built-in tiers`);
+        const raw = parseBlueprintSource(readFileSync(file, 'utf8'));
+        if (parseBlueprintSourceDocument(raw).kind === 'identity') {
+          const sourcePath = trustPathForIdentity(args.id, file);
+          return { content: [{ type: 'text' as const, text: JSON.stringify(summarizeIdentity(inspectIdentitySource(raw, { sourcePath }))) }] };
+        }
         const loaded = loadBlueprintFromFile(file, resolver);
         result = { ok: loaded.validation.ok, blueprint: loaded.blueprint, validation: loaded.validation };
       } catch (e) {
@@ -71,7 +116,11 @@ export default defineTool({
       }
     } else {
       try {
-        result = resolveAndValidate(parseBlueprintSource(args.source!));
+        const raw = parseBlueprintSource(args.source!);
+        if (parseBlueprintSourceDocument(raw).kind === 'identity') {
+          return { content: [{ type: 'text' as const, text: JSON.stringify(summarizeIdentity(inspectIdentitySource(raw))) }] };
+        }
+        result = resolveAndValidate(raw);
       } catch (e) {
         result = { ok: false, parseError: e instanceof Error ? e.message : String(e) };
       }

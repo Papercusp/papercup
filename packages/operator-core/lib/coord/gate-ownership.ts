@@ -33,6 +33,7 @@ import { cellUnknown, type CellUnknown } from '../cell-contract';
 import { noSubjectThread, readCellThread, unmeasuredThread, type CellThread } from './cell-thread';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { needsLivenessConfirmation, type SessionState } from '../agent-tools/coordination/presence-wakeability';
+import { assessCriticalClaimProgressLease } from '../agent-tools/work_items/release-force-guard';
 
 /**
  * The condition whose lifetime IS a green-checkpoint stall.
@@ -182,6 +183,7 @@ export type GateOwnershipAssessment =
   | 'hold-blocked'
   | 'lease-expired'
   | 'held-live'
+  | 'held-stalled'
   | 'held-needs-confirmation'
   | 'held-by-ended-session';
 
@@ -190,13 +192,21 @@ export type GateOwnershipAssessment =
  *
  * Order is load-bearing: duplicates outrank whichever canonical row happened to
  * be selected, and a held claim is not called live until the independent
- * session oracle positively says so. A new claim or session state is therefore
- * a compile-time exhaustiveness failure rather than a reassuring default.
+ * session oracle positively says so. A positively-live claim is only called
+ * `held-stalled` when the shared critical-claim progress lease has expired;
+ * presence alone is not evidence that this item is moving. A new claim or
+ * session state is therefore a compile-time exhaustiveness failure rather than
+ * a reassuring default.
  */
 export function assessGateOwnership(input: {
   claimState: ConditionClaimState | null;
   holderSessionState: SessionState | null;
   duplicates: readonly string[];
+  /** Genuine item progress, with takenAt as the new-claim fallback anchor. */
+  takenAt?: string | Date | null;
+  lastProgressAt?: string | Date | null;
+  /** Injected for deterministic callers/tests; defaults inside the shared helper. */
+  nowMs?: number;
 }): GateOwnershipAssessment | null {
   if (input.claimState === null) return null;
   if (input.duplicates.length > 0) return 'duplicate-owners';
@@ -215,7 +225,13 @@ export function assessGateOwnership(input: {
         case 'live':
         case 'parked':
         case 'recorded':
-          return 'held-live';
+          return assessCriticalClaimProgressLease({
+            takenAt: input.takenAt ?? null,
+            lastProgressAt: input.lastProgressAt ?? null,
+            nowMs: input.nowMs,
+          }).expired
+            ? 'held-stalled'
+            : 'held-live';
         case 'draining':
         case 'suspect':
         case null:
@@ -239,12 +255,16 @@ export function toCellOwnership(
   obj: ConditionObject,
   holderSessionState: SessionState | null = null,
   thread: CellThread = noSubjectThread('thread not read on this projection'),
+  nowMs?: number,
 ): CellOwnership {
   return {
     assessment: assessGateOwnership({
       claimState: obj.claimState,
       holderSessionState,
       duplicates: obj.duplicates,
+      takenAt: obj.takenAt,
+      lastProgressAt: obj.lastProgressAt,
+      nowMs,
     }),
     eventKey: obj.conditionKey,
     workItem: obj.workItem,
@@ -402,6 +422,10 @@ const POSITIVELY_LIVE: Record<SessionState, boolean> = {
  */
 export function ownershipHeldByLiveHolder(own: CellOwnership): boolean {
   if (own.claimState !== 'held' || own.holderSessionState === null) return false;
+  // A live process can be wedged on this item. `held-stalled` is the explicit
+  // progress falsifier, so it must not retain the stand-down rail merely because
+  // the presence oracle still sees the holder alive.
+  if (own.assessment === 'held-stalled') return false;
   return POSITIVELY_LIVE[own.holderSessionState] ?? false;
 }
 
@@ -486,6 +510,7 @@ export async function readGateOwnership(
     findConditionObjects?: typeof findConditionObjects;
     resolveSessionStates?: typeof resolveSessionStates;
     readCellThread?: typeof readCellThread;
+    nowMs?: number;
   } = {},
 ): Promise<CellOwnership> {
   const harness = opts.harness?.trim() || operatorHomeHarnessSlug();
@@ -537,5 +562,5 @@ export async function readGateOwnership(
   const readThread = opts.readCellThread ?? readCellThread;
   const thread = await readThread(obj.workItem, { harness });
 
-  return toCellOwnership(obj, holderSessionState, thread);
+  return toCellOwnership(obj, holderSessionState, thread, opts.nowMs);
 }

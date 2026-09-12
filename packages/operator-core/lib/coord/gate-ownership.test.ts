@@ -21,8 +21,12 @@ import {
   readGateOwnership,
 } from './gate-ownership';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+import { CRITICAL_CLAIM_PROGRESS_LEASE_MS } from '../agent-tools/work_items/release-force-guard';
 import { noSubjectThread, silentThread, unmeasuredThread } from './cell-thread';
 import type { ConditionObject } from './condition-object';
+
+const OWNERSHIP_NOW_MS = 1_800_000_000_000;
+const ownershipAtAge = (ageMs: number): string => new Date(OWNERSHIP_NOW_MS - ageMs).toISOString();
 
 /** An injected presence oracle returning one verdict for one owner. */
 function oracle(sessionState: string) {
@@ -89,6 +93,21 @@ describe('toCellOwnership', () => {
     });
   });
 
+  it('projects an expired shared progress lease as stalled for a positively-live holder', () => {
+    const own = toCellOwnership(
+      mkObj({
+        claimState: 'held',
+        takenBy: 'su-abc',
+        takenAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+      }),
+      'recorded',
+      noSubjectThread('test thread'),
+      OWNERSHIP_NOW_MS,
+    );
+    expect(own.assessment).toBe('held-stalled');
+  });
+
   // The distinction that earns the enum: both states have a non-null takenBy, so a
   // caller null-testing takenBy reports a dead agent's abandoned lease as live
   // ownership — which suppresses the next agent from picking the work up.
@@ -109,7 +128,13 @@ describe('gate ownership assessment truth table', () => {
     ['unread claim', { claimState: null, holderSessionState: null, duplicates: [] }, null],
     [
       'duplicates outrank canonical row',
-      { claimState: 'held', holderSessionState: 'live', duplicates: ['WI-2'] },
+      {
+        claimState: 'held',
+        holderSessionState: 'live',
+        duplicates: ['WI-2'],
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      },
       'duplicate-owners',
     ],
     ['no object', { claimState: 'no-object', holderSessionState: null, duplicates: [] }, 'unowned'],
@@ -117,12 +142,78 @@ describe('gate ownership assessment truth table', () => {
     ['hold-blocked', { claimState: 'hold-blocked', holderSessionState: null, duplicates: [] }, 'hold-blocked'],
     ['expired', { claimState: 'lease-expired', holderSessionState: 'ended', duplicates: [] }, 'lease-expired'],
     ['live', { claimState: 'held', holderSessionState: 'live', duplicates: [] }, 'held-live'],
+    [
+      'live with expired item progress',
+      {
+        claimState: 'held',
+        holderSessionState: 'live',
+        duplicates: [],
+        takenAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      },
+      'held-stalled',
+    ],
     ['parked', { claimState: 'held', holderSessionState: 'parked', duplicates: [] }, 'held-live'],
     ['recorded', { claimState: 'held', holderSessionState: 'recorded', duplicates: [] }, 'held-live'],
+    [
+      'parked with expired item progress',
+      {
+        claimState: 'held',
+        holderSessionState: 'parked',
+        duplicates: [],
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      },
+      'held-stalled',
+    ],
+    [
+      'recorded with expired item progress',
+      {
+        claimState: 'held',
+        holderSessionState: 'recorded',
+        duplicates: [],
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      },
+      'held-stalled',
+    ],
     ['draining', { claimState: 'held', holderSessionState: 'draining', duplicates: [] }, 'held-needs-confirmation'],
     ['suspect', { claimState: 'held', holderSessionState: 'suspect', duplicates: [] }, 'held-needs-confirmation'],
+    [
+      'draining despite expired item progress',
+      {
+        claimState: 'held',
+        holderSessionState: 'draining',
+        duplicates: [],
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      },
+      'held-needs-confirmation',
+    ],
+    [
+      'suspect despite expired item progress',
+      {
+        claimState: 'held',
+        holderSessionState: 'suspect',
+        duplicates: [],
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      },
+      'held-needs-confirmation',
+    ],
     ['oracle unread', { claimState: 'held', holderSessionState: null, duplicates: [] }, 'held-needs-confirmation'],
-    ['ended', { claimState: 'held', holderSessionState: 'ended', duplicates: [] }, 'held-by-ended-session'],
+    [
+      'ended despite expired item progress',
+      {
+        claimState: 'held',
+        holderSessionState: 'ended',
+        duplicates: [],
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        nowMs: OWNERSHIP_NOW_MS,
+      },
+      'held-by-ended-session',
+    ],
   ])('%s → %s', (_label, input, expected) => {
     expect(assessGateOwnership(input)).toBe(expected);
   });

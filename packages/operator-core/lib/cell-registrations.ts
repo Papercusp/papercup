@@ -383,7 +383,7 @@ export const GATE_VERDICT_CELL: CellSpec = {
 
   shape:
     '{ gate: { consecutiveReds, stalled, lastGreenAtMs, fireStale, fireStaleReason, ' +
-    'ownership: { eventKey, workItem, claimState, takenBy, takenAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
+    'ownership: { eventKey, workItem, claimState, takenBy, takenAt, lastProgressAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
 };
 
 /**
@@ -591,7 +591,7 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   shape:
     '{ changeInCandidate: { judgingSha, judgingContainsPath, nextCandidateSha, nextContainsPath, missingReason, ' +
     'submodule: { path, relPath, judgingPin, nextPin } | null, detail }, ' +
-    'gate: { ownership: { eventKey, workItem, claimState, takenBy, takenAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
+    'gate: { ownership: { eventKey, workItem, claimState, takenBy, takenAt, lastProgressAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
 };
 
 /** P-007 — the durable logical qualification, not the mortal agent currently repairing it. */
@@ -1015,6 +1015,12 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
         safeAction:
           'Do not take over or duplicate `LIVE_GATE_OPS` — current-verdict reruns, deploy actions, current-red triage, repair-queue mutation, or monitoring. Coordinate with the holder (`coord:send`) if that live lane needs to move. This ownership does not reserve independently registered `GATE_SYSTEM_DEV`; continue cache, instrumentation, selection, retention, alerting, test, doc, or refactor work under its own work-item/plan lane and file locks.',
       },
+      'held-stalled': {
+        meaning:
+          'Held by a positively-live session, but the shared critical-claim progress lease has expired; presence alone is not evidence that this item is moving.',
+        safeAction:
+          'Use the checked claim/recovery path to take over this existing item after re-reading it. Do not stand down, file a duplicate owner, or start a parallel `LIVE_GATE_OPS` lane; the expired progress lease is the explicit stale-claim recovery signal.',
+      },
       'held-needs-confirmation': {
         meaning:
           "Held by a session whose liveness is AMBIGUOUS — draining, suspect, or unresolved. This is not a live holder and not a dead one.",
@@ -1031,6 +1037,8 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
     evidence: [
       'gate.ownership.holderSessionState',
       'gate.ownership.takenBy',
+      'gate.ownership.takenAt',
+      'gate.ownership.lastProgressAt',
       'gate.ownership.duplicates',
       'gate.ownership.expiresAt',
     ],
@@ -1068,7 +1076,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.ownership.claimState' },
   shape:
-    '{ gate: { ownership: { eventKey, workItem, claimState, unknown, takenBy, takenAt, expiresAt, holderSessionState, duplicates[], ' +
+    '{ gate: { ownership: { eventKey, workItem, claimState, unknown, takenBy, takenAt, lastProgressAt, expiresAt, holderSessionState, duplicates[], ' +
     'thread: { recent[{ at, author, text, chars, truncated }], shown, total, topics[{ slug, ref, since }], unknown } } }, verdictUnknown[] }',
 };
 

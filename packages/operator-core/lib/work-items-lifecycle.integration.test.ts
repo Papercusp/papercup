@@ -73,6 +73,13 @@ const WORK_ITEM_CLAIMS_DDL = `
     expires_ts timestamptz NOT NULL,
     last_activity_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT work_item_claims_pkey PRIMARY KEY (workspace_id, harness_slug, work_item_id))`;
+const HARNESS_PLANS_DDL = `
+  CREATE TABLE harness_shared.harness_plans (
+    workspace_id text NOT NULL,
+    harness_slug text NOT NULL,
+    plan_slug text NOT NULL,
+    goal_id text,
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug))`;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 // A spy over the change fan-out so deliver()'s notify_kind + actor-exclusion is
@@ -156,6 +163,7 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  await db.sql.unsafe(HARNESS_PLANS_DDL);
   // Terminal work-item transitions cancel lifecycle-bound awaits. Keep this
   // fixture on the same production schema chain as work-items.integration.test
   // so a missing event table cannot masquerade as a lifecycle regression.
@@ -353,19 +361,35 @@ describe('P-009 — terminal/release lifecycle retires cached goal refs', () => 
   });
 });
 
-describe('P-011 — post-claim own-thread freshness', () => {
-  it('snapshots the real post id on claim and exposes only later posts to turn-start orientation', async () => {
+describe('P-011 — post-claim context freshness', () => {
+  it('snapshots the real post id and exposes only later item/plan revisions', async () => {
     const feature = await wi.createWorkItem({
       kind: 'feature', title: 'history freshness', harness: 'papercup', createdBy: 'agA',
     });
     const threadId = `thread-history-${feature.id}`;
+    const planSlug = `history-plan-${feature.id}`;
+    const planThreadId = `thread-${planSlug}`;
+    await db.sql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+      VALUES ('default', 'papercup', ${planSlug})`;
+    await db.sql`
+      UPDATE harness_shared.work_items SET source_plan_slug = ${planSlug}
+       WHERE workspace_id = 'default' AND feature_id = ${feature.id}`;
     await db.sql`
       INSERT INTO harness_shared.coord_threads
         (workspace_id, thread_id, parent_kind, parent_ref, title)
-      VALUES ('default', ${threadId}, 'feature', ${`papercup#${feature.id}`}, 'history')`;
-    const [before] = await db.sql<{ id: number }[]>`
+      VALUES
+        ('default', ${threadId}, 'feature', ${`papercup#${feature.id}`}, 'history'),
+        ('default', ${planThreadId}, 'plan', ${`papercup:${planSlug}`}, 'plan history')`;
+    await db.sql`
       INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, body)
-      VALUES ('default', ${threadId}, 'before claim') RETURNING id`;
+      VALUES
+        ('default', ${threadId}, 'before claim'),
+        ('default', ${planThreadId}, 'plan before claim')`;
+    const [before] = await db.sql<{ id: number }[]>`
+      SELECT max(id)::bigint AS id
+        FROM harness_shared.coord_thread_posts
+       WHERE workspace_id = 'default'`;
 
     expect((await wi.claimWorkItem(feature.id, 'agHistory', { harness: 'papercup' }))?.assignee).toBe('agHistory');
     const [claimed] = await db.sql<{ watermark: string | null }[]>`
@@ -374,6 +398,7 @@ describe('P-011 — post-claim own-thread freshness', () => {
        WHERE workspace_id = 'default' AND feature_id = ${feature.id}`;
     expect(Number(claimed?.watermark)).toBe(Number(before?.id));
     expect(await defaultOrientationDeps().historyUpdates('agHistory', 'default')).toEqual([]);
+    expect(await defaultOrientationDeps().effortUpdates('agHistory', 'default')).toEqual([]);
 
     const [after] = await db.sql<{ id: number }[]>`
       INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, body)
@@ -385,6 +410,12 @@ describe('P-011 — post-claim own-thread freshness', () => {
         count: 1,
         newestPostId: Number(after?.id),
       },
+    ]);
+    const [planAfter] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, body)
+      VALUES ('default', ${planThreadId}, 'plan after claim') RETURNING id`;
+    expect(await defaultOrientationDeps().effortUpdates('agHistory', 'default')).toEqual([
+      { level: 'plan', ref: planSlug, count: 1, newestPostId: Number(planAfter?.id) },
     ]);
   });
 });

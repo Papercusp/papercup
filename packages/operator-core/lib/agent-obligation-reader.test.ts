@@ -91,6 +91,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     ),
     planAcceptance: vi.fn(
       async (): Promise<PlanAcceptanceGateVerdict> => ({
+        buildProvenance: { sha: null, version: 'test' },
         satisfied: false,
         code: 'acceptance_rubric_missing',
         message: 'author the rubric',

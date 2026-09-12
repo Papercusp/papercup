@@ -99,7 +99,10 @@ try {
       noDreamReview: dreams.filter(d=>d.verdict===null).length,
       blenderIdeas: blender.reduce((n,b)=>n+b.ideasGenerated,0),
       blenderRouted: blender.reduce((n,b)=>n+b.routed,0) },
-    historicalDiagnosticWarnings: ['Historical timeout notes claiming never-admitted/local-governor starvation were retracted in EI-22769219749818913: the Codex adapter did not emit onAdmitted. These raw persisted strings do not establish the cause or prove no generation occurred.'],
+    historicalDiagnosticWarnings: [
+      'Historical timeout notes claiming never-admitted/local-governor starvation were retracted in EI-22769219749818913: the Codex adapter did not emit onAdmitted. These raw persisted strings do not establish the cause or prove no generation occurred.',
+      'For the original Haiku cycle 36930ec0-0135-4c3d-8261-b9b8f8028545, the recovered driver log records four HTTP 429 rate_limit_error retries before the deadline. This contradicts its persisted never-admitted explanation. The responding hop, pool account, later retry progress and billed usage remain unestablished; retain the USD 0.039173 unknown-call reservation. Evidence is preserved in EI-22756328656642291 comment 203056; source /tmp/dream-study-pair-after-readiness-20260909.log, SHA-256 ea874cd3a74f97ec879eb9d490a8d1e257684a52f54dc487ccf716e080fe5e3c. This historical evidence does not prove current Haiku recovery.',
+    ],
     outstanding: ['Blinded human/domain review of stratified rejected/unverified sample', 'Flat versus faceted offline ablation',
       'Qualified family and feasibility adjudication', 'Bounded downstream trials where qualified candidates exist', 'Independent final acceptance and owner disposition'],
     limitations: ['Four source units and one source snapshot; no domain-general inference',
