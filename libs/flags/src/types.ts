@@ -1045,11 +1045,15 @@ export const FLAGS = {
   // WRITE/exec tools (Bash/Edit/Write/WebFetch) from `--allowed-tools` and route
   // them to the gated `capability:*` defineTools (B-05), keeping only the read-only
   // natives (Read/Glob/Grep/WebSearch) + the role-scoped `mcp__papercusp` wildcard.
-  // OFF by default — DELIBERATE (not the alpha default-on policy): it is the owner
-  // arming act (P-023 is an owner item) and removing native exec before capability:*
-  // ergonomics are validated on a live bee would strand the fleet. Pairs with
-  // CAPABILITY_ENVELOPE (the enforcement gate) + CAPABILITY_EXEC_SANDBOX (re-containment).
-  // OFF = today's allowlist (native tools granted), zero live-fleet change.
+  // DEFAULT ON — graduated 2026-06-23 (owner-directed arming of agent-capability-
+  // confinement B-18/P-020, WI-602). The fleet cutover drops native write/exec tools from
+  // autonomous spawns and routes them to the gated capability:* defineTools. Live-validated
+  // on this box (operator_flag_overrides ON for days): bees+queen made hundreds of
+  // successful capability:bash/edit/git/write calls with 0 errors — capability:* ergonomics
+  // confirmed on live agents. Pairs with CAPABILITY_ENVELOPE (enforcement) +
+  // CAPABILITY_EXEC_SANDBOX (re-containment, still default-OFF pending bwrap-host validation
+  // — WI-608; on a fresh bwrap host flip exec-sandbox too so capability:bash isn't
+  // unsandboxed). OFF = today's native-tool allowlist (kill-switch).
   FLEET_CAPABILITY_ONLY: "papercusp-fleet-capability-only",
   // agent-capability-confinement-2026-06-13 B-18 (P-022 / D-008): re-apply the OS
   // sandbox to the SERVER-SIDE capability exec path. The capability:bash / capability:git
