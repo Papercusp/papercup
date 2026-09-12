@@ -2922,7 +2922,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
     const approvalResult = `PUI-APPROVED-${randomUUID()}`;
     const approvalFixturePath = path.join(home, `approved-${randomUUID()}.txt`);
-    const approvalRequest = `Use your shell-command tool to execute exactly this harmless command against the test's temporary directory: printf '%s\\n' '${approvalResult}' > '${approvalFixturePath}' && cat '${approvalFixturePath}'. For Codex, request sandbox_permissions=require_escalated so the native approval request is exercised. Then reply with the command output exactly.`;
+    // Ask for the user outcome, not for a pre-authored privileged invocation.
+    // Real providers may correctly refuse a prompt that tells them to reproduce
+    // exact shell syntax or force an escalation flag; that yields zero cards and
+    // tests provider policy instead of the PUI approval transport. The owned temp
+    // path still requires the native shell tool, while its permission handshake
+    // remains the engine's responsibility.
+    const approvalRequest = `Create a text file at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline, using your shell-command tool. This path is in a temporary directory that I own, and I authorize this write. If the tool requires confirmation, ask me to approve it. After it succeeds, reply with exactly '${approvalResult}'.`;
     const first = await startOperatorProcess();
     const pane = new PuiPane(bin, first.port, home);
     const frames: Record<string, string> = {};
