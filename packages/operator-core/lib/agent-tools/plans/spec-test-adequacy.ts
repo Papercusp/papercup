@@ -774,11 +774,28 @@ function rerunRecipeFor(
   };
 }
 
+export function crossGenerationAuditProbeArgs(rerunRecipe: SpecTestAdequacyRerunRecipe) {
+  // The card-level recipe remains the exact, generation-pinned replay. Criterion
+  // evidence also needs a probe that a sweep-launched auditor can execute when
+  // its MCP surface is one green generation behind the staging emitter. Keep
+  // that inline probe on the long-standing public subset while preserving the
+  // exact selection/currentness contract in rerunRecipe itself.
+  const {
+    evaluatorBuild: _evaluatorBuild,
+    evidenceRefs: _evidenceRefs,
+    specRevision: _specRevision,
+    specFingerprint: _specFingerprint,
+    replaySnapshot: _replaySnapshot,
+    ...crossGenerationArgs
+  } = rerunRecipe.args;
+  return crossGenerationArgs;
+}
+
 function appendRatingRerunProbes(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rerunRecipe: SpecTestAdequacyRerunRecipe,
 ): void {
-  const args = JSON.stringify(rerunRecipe.args);
+  const args = JSON.stringify(crossGenerationAuditProbeArgs(rerunRecipe));
   for (const criterion of ADEQUACY_CRITERIA) {
     const rating = ratings[criterion];
     ratings[criterion] = {

@@ -6,6 +6,7 @@ import {
   ADEQUACY_CRITERIA,
   activeSpecEvidence,
   classifySpecEvidenceLineage,
+  crossGenerationAuditProbeArgs,
   evaluateSpecTestAdequacy,
   isNonCodeWorkItemKind,
   latestLogicalEvidence,
@@ -316,7 +317,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['correct-layer'].rating).toBe('pass');
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
     for (const [criterion, rating] of Object.entries(result.ratings)) {
-      expect(rating.evidence).toContain('surface:reconnect');
+      expect(rating.evidence).toMatch(/surface:reconnect|counterexample:reconnect/);
       expect(rating.evidence).not.toMatch(
         /^Every bound proof dimension is current\.?$|^Bound proof was collected, not skipped, executed, and produced a successful outcome\.?$/,
       );
@@ -369,7 +370,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         ...bound.fingerprints,
       },
     ]);
-    const args = JSON.stringify(recipe.args);
+    const args = JSON.stringify(crossGenerationAuditProbeArgs(recipe));
 
     for (const criterion of ADEQUACY_CRITERIA) {
       expect(result.ratings[criterion].evidence).toContain(
@@ -1362,6 +1363,60 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       replaySnapshot: true,
     });
     expect(recipe.args.includeDraft).toBe(true);
+  });
+
+  it('keeps each inline grading-audit probe runnable across evaluator generations', () => {
+    const current: EvidenceCurrentInput[] = [
+      {
+        evidenceKind: 'coverage-census',
+        evidenceRef: 'surface:reconnect',
+        ...evidence().fingerprints,
+      },
+    ];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence()],
+      harness: 'papercusp',
+      current,
+      classRef: 'plan-class-bugfix',
+      rerunSelection: { workItemIds: ['WI-101'] },
+    });
+    const inline = result.ratings.traceability.evidence.match(
+      /Re-run plans:evaluate-spec-test-adequacy with args=(\{.*\}); inspect rows\[0\]\.ratings\[/,
+    )?.[1];
+    expect(inline).toBeDefined();
+    const args = JSON.parse(inline!) as Record<string, unknown>;
+    const recipe = result.scorecardDraft.rerunRecipe;
+
+    expect(evaluatorArgsSchema.safeParse(args).success).toBe(true);
+    expect(args).toEqual(crossGenerationAuditProbeArgs(recipe));
+    expect(Object.keys(args).sort()).toEqual(
+      ['classRef', 'current', 'harness', 'includeDraft', 'slug', 'specIds', 'workItemIds'].sort(),
+    );
+    expect(args).toMatchObject({
+      harness: 'papercusp',
+      slug: 'reconnect-plan',
+      classRef: 'plan-class-bugfix',
+      specIds: ['SPEC-003-01'],
+      workItemIds: ['WI-101'],
+      current,
+      includeDraft: true,
+    });
+    expect(args).not.toHaveProperty('evaluatorBuild');
+    expect(args).not.toHaveProperty('evidenceRefs');
+    expect(args).not.toHaveProperty('specRevision');
+    expect(args).not.toHaveProperty('specFingerprint');
+    expect(args).not.toHaveProperty('replaySnapshot');
+
+    // The exact immutable replay is still retained on the card; only the
+    // criterion-local audit probe uses the compatibility subset.
+    expect(recipe.args).toMatchObject({
+      evaluatorBuild: getBuildInfo(),
+      evidenceRefs: ['surface:reconnect'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+    });
   });
 
   it('carries the classRef the verdicts were produced under, so no re-runner has to guess', () => {
