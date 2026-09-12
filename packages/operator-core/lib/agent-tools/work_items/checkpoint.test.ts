@@ -90,6 +90,7 @@ vi.mock('../../work-items', () => ({
   },
 }));
 import checkpoint from './checkpoint';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 // EI-19400299440742193: the guard asserts against the REAL caps, not literals, so a
 // future cap change moves the test with the code instead of silently un-pinning it.
 import { CARRY_CAP_HARD_MULTIPLE, CARRY_ROW_SOFT_CAPS } from '../../carry-note';
@@ -861,6 +862,41 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     setWorkItemCheckpoint.mockRejectedValue(new Error('pg down'));
     const r = await one({ id: 'WI-7', checkpoint: 'x' });
     expect(r).toEqual({ ok: false, id: 'WI-7', error: 'pg down' });
+  });
+
+  it('maps a bounded transaction timeout per item so a batch avoids an unknown transport outcome', async () => {
+    setWorkItemCheckpointWithPrior.mockRejectedValue(
+      new OrgTxnTimeoutError('57014', new Error('statement timeout'), 'likely blocked by pid 42'),
+    );
+
+    const out = await env({
+      items: [
+        { id: 'WI-A', checkpoint: 'append A', append: true },
+        { id: 'WI-B', checkpoint: 'append B', append: true },
+      ],
+    });
+
+    expect(out.results).toEqual([
+      expect.objectContaining({
+        ok: false,
+        id: 'WI-A',
+        error: 'timeout',
+        errorCode: 'timeout',
+        retryable: true,
+        pgCode: '57014',
+        message: expect.stringContaining('NOT saved'),
+      }),
+      expect.objectContaining({
+        ok: false,
+        id: 'WI-B',
+        error: 'timeout',
+        errorCode: 'timeout',
+        retryable: true,
+        pgCode: '57014',
+        message: expect.stringContaining('NOT saved'),
+      }),
+    ]);
+    expect(out.counts).toEqual({ ok: 0, failed: 2 });
   });
 
   it('items:[…] checkpoints many; per-item harness overrides; one bad item fails only itself', async () => {
