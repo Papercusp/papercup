@@ -414,6 +414,7 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     satisfied: boolean,
     code?: NonNullable<Parameters<typeof independentVerificationObligation>[0]['read']> extends never ? never : string,
   ) => ({
+    buildProvenance: { sha: null, version: 'test' },
     satisfied,
     ...(code ? { code: code as never } : {}),
     message: code ? `refused: ${code}` : 'accepted',
@@ -467,7 +468,12 @@ describe('shared agenda composition', () => {
           verifyInput({
             status: 'known',
             value: {
-              gate: { satisfied: false, code: 'acceptance_rubric_missing', message: 'author the rubric' },
+              gate: {
+                buildProvenance: { sha: null, version: 'test' },
+                satisfied: false,
+                code: 'acceptance_rubric_missing',
+                message: 'author the rubric',
+              },
               evidenceRef: 'gate:missing-rubric',
               gradeable: true,
             },
