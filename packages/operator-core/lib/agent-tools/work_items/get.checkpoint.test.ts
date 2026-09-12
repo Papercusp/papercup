@@ -477,7 +477,47 @@ describe('work_items:get — checkpoint field', () => {
 
     const r = await one({ id: 'WI-8b' });
 
-    expect(r.checkpointChecks).toEqual({ count: 10, cap: CARRY_NOTE_MAX_CHECKS, remaining: 2 });
+    expect(r.checkpointChecks).toEqual({
+      count: 10,
+      cap: CARRY_NOTE_MAX_CHECKS,
+      remaining: 2,
+      rows: Array.from({ length: 10 }, (_, i) => ({ claim: `check ${i + 1}` })),
+    });
+  });
+
+  it('keeps normal checkpoint identities valid against the registered output schema', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-normal-checks-schema',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'checkpoint ledger',
+      state: 'open',
+    });
+    getWorkItemDetail.mockResolvedValue({
+      id: 'WI-normal-checks-schema',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'checkpoint ledger',
+      state: 'open',
+    });
+    const checkpoint = withCarryNoteChecks('private narrative', [
+      { id: 'gate-green', claim: 'gate is green', recheck: 'probe gate' },
+    ]);
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint, updatedAtMs: 123 });
+
+    const raw = await env({ id: 'WI-normal-checks-schema', detail: true });
+    const shaped = shapeWorkItemsGet(raw, 'trimmed');
+    const schema = (get as unknown as {
+      result: { safeParse: (value: unknown) => { success: boolean } };
+    }).result;
+
+    expect(raw.results[0].checkpointChecks).toMatchObject({
+      rows: [{ id: 'gate-green', claim: 'gate is green' }],
+    });
+    const parsed = schema.safeParse(shaped);
+    expect(parsed.success, JSON.stringify(parsed)).toBe(true);
   });
 
   it.each(['rejected', 'in-band'] as const)('degrades explicitly when the checkpoint lookup fails (%s)', async (failure) => {

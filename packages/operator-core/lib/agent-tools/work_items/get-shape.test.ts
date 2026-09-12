@@ -164,6 +164,27 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     }
   });
 
+  it('bounds normal checkpoint identity claims without dropping the ledger qualifiers', () => {
+    const checkpointChecks = {
+      count: 1,
+      cap: 12,
+      remaining: 11,
+      rows: [{ id: 'gate-green', claim: 'C'.repeat(5_000) }],
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeWorkItemsGet(envelope([row({ checkpointChecks })]), tier) as Envelope;
+      expect(out.results[0].checkpointChecks).toMatchObject({
+        count: 1,
+        cap: 12,
+        remaining: 11,
+        rows: [{ id: 'gate-green' }],
+      });
+      const shapedChecks = out.results[0].checkpointChecks as { rows: Array<{ claim: string }> };
+      expect(shapedChecks.rows[0].claim).toMatch(/TRUNCATED/);
+      expect(out._shapeNote?.dropped).toContain('checkpointChecks.rows');
+    }
+  });
+
   // EI-22659954682164298. The BODY counterpart of the test above, and the reason it
   // exists: at the cap, `work_items:checkpoint` keeps succeeding and evicts the OLDEST
   // content, announcing it only with a marker written into the body AFTER the loss. This

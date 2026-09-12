@@ -218,7 +218,7 @@ export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown 
 export default defineTool({
   name: 'testing:runs',
   description:
-    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); rollups default to `source:"ci"` so local or mutation-probe rows cannot contaminate a gate verdict; ordinary row listings exclude mutation-probe evidence unless `source:"mutation-probe"` is explicit. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
+    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); rollups default to `source:"ci"` so local or mutation-probe rows cannot contaminate a gate verdict; ordinary row listings exclude mutation-probe evidence unless `source:"mutation-probe"` is explicit. Filter by `testRunIds` (exact durable numeric row IDs), filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
   capability: 'operator:read',
   guidance: {
     when: 'Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:"commit" answers "is this sha green" in one call.',
@@ -230,6 +230,7 @@ export default defineTool({
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
       'Each row: { id, workspaceId, harnessSlug, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. outputTail is populated only for fail/error rows and is truncated.',
+      '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
@@ -248,6 +249,12 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    testRunIds: z
+      .array(z.number().int().positive())
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Match exact durable test_runs row IDs (1–100). Use this for evidence-lineage lookups; no per-file collapse is applied by default.'),
     filePath: z
       .string()
       .max(400)
@@ -309,7 +316,7 @@ export default defineTool({
     latestPerFile: z
       .boolean()
       .optional()
-      .describe('Collapse to the most recent run per file. Defaults true, or false when `filePath` is given.'),
+      .describe('Collapse to the most recent run per file. Defaults true, or false when `filePath` or `testRunIds` is given.'),
     limit: z.number().int().min(1).max(200).optional().describe(`Max rows (default ${DEFAULT_LIMIT}).`),
   }),
   result: z
@@ -335,6 +342,7 @@ export default defineTool({
     trimmed: (data) => shapeTestingRuns(data, 'trimmed'),
   },
   async handler(args: {
+    testRunIds?: number[];
     filePath?: string;
     commitSha?: string;
     runGroup?: string;
@@ -352,6 +360,7 @@ export default defineTool({
     const limit = args.limit ?? DEFAULT_LIMIT;
     const pathLike = args.filePath ? toPathPattern(args.filePath) : null;
     const shaLike = args.commitSha ? toShaPattern(args.commitSha) : null;
+    const testRunIds = args.testRunIds ?? null;
     const runGroup = args.runGroup ?? null;
     const source = defaultRollupSource(args.rollup, args.source);
     const sourceFilter = args.source === undefined && args.rollup === undefined
@@ -365,11 +374,12 @@ export default defineTool({
       (args.sinceHours != null ? new Date(Date.now() - args.sinceHours * 3_600_000).toISOString() : null);
     // Naming a file means you want THAT FILE'S HISTORY; asking broadly means
     // you want the current picture, where a stale red would mislead.
-    const latestPerFile = args.latestPerFile ?? args.filePath === undefined;
+    const latestPerFile = args.latestPerFile ?? (args.filePath === undefined && args.testRunIds == null);
 
     const where = sql`
        WHERE (${pathLike}::text IS NULL OR file_path ILIKE ${pathLike} ESCAPE '\\')
          AND (${shaLike}::text IS NULL OR commit_sha ILIKE ${shaLike})
+         AND (${testRunIds}::bigint[] IS NULL OR id = ANY(${testRunIds}::bigint[]))
          AND (${runGroup}::text IS NULL OR run_group_id = ${runGroup})
          AND ${sourceFilter}
          AND (${workspace}::text IS NULL OR workspace_id = ${workspace})

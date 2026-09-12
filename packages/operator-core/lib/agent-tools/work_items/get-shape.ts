@@ -206,6 +206,35 @@ function clip(value: unknown, max: number): unknown {
 }
 
 /**
+ * Keep normal reads' checkpoint identities bounded just like checksOnly. The
+ * handler preserves exact claims for callers that need to build `retireIds`,
+ * while a shaped result must cap each claim so one verbose row cannot crowd the
+ * checkpoint body out of the result door.
+ */
+function projectCheckpointChecks(raw: unknown, caps: FieldCaps, dropped: Set<string>): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const checks = raw as Row;
+  if (!Array.isArray(checks.rows)) return raw;
+  const sourceRows = checks.rows;
+  const rows = sourceRows.slice(0, CARRY_NOTE_MAX_CHECKS).flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const value = entry as Row;
+    const claim = typeof value.claim === "string" ? value.claim.trim() : "";
+    if (!claim) return [];
+    if (claim.length > caps.checkpointMin) dropped.add("checkpointChecks.rows");
+    return [{ ...(typeof value.id === "string" && value.id ? { id: value.id } : {}), claim: clip(claim, caps.checkpointMin) }];
+  });
+  if (rows.length < sourceRows.length) dropped.add("checkpointChecks.rows");
+  return {
+    ...checks,
+    rows,
+    ...(rows.length < sourceRows.length && checks.rowsTruncated === undefined
+      ? { rowsTruncated: { shown: rows.length, total: sourceRows.length } }
+      : {}),
+  };
+}
+
+/**
  * EI-20106094931898818 / EI-20190481053365787. `detail:true` folds the coord
  * substrate ONTO the workItem — `getWorkItemDetail` returns
  * `{ ...wi, topics, posts, links }` (work-items.ts:1156) — and the allow-list
@@ -534,7 +563,9 @@ function compactSingleRow(
     // two-number object, so it never meaningfully competes for that budget.
     ...(r.threadLimitClamped !== undefined ? { threadLimitClamped: r.threadLimitClamped } : {}),
     checkpoint: clip(checkpoint, checkpointCap),
-    ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
+    ...(r.checkpointChecks !== undefined
+      ? { checkpointChecks: projectCheckpointChecks(r.checkpointChecks, caps, dropped) }
+      : {}),
     // EI-22659954682164298: a BOUNDEDNESS MARKER on the stored note, so it survives
     // every tier for the same reason `threadLimitClamped` above does — and with extra
     // force here, because the line above CLIPS. A reader handed a clipped checkpoint
@@ -875,7 +906,9 @@ function projectRow(
     // Keep `hasCompletionEvidence` even when the evidence body is clipped or
     // compacted, so a tier artifact cannot be read as a real absence.
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
-    ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
+    ...(r.checkpointChecks !== undefined
+      ? { checkpointChecks: projectCheckpointChecks(r.checkpointChecks, caps, dropped) }
+      : {}),
     // EI-22659954682164298 — see the sibling projection above. Kept at every tier for
     // the same reason, and conditional for the same reason.
     ...(r.checkpointBody !== undefined ? { checkpointBody: r.checkpointBody } : {}),

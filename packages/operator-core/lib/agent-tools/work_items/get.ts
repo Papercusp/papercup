@@ -483,6 +483,19 @@ const workItemsGetResultRowSchema = z.object({
   // states. Declare them so discovery teaches their real paths instead of
   // hiding the checkpoint and comment window behind passthrough.
   checkpoint: z.string().nullable().optional(),
+  checkpointChecks: z.object({
+    count: z.number().int().nonnegative(),
+    cap: z.number().int().positive(),
+    remaining: z.number().int().nonnegative(),
+    rows: z.array(z.object({
+      id: z.string().optional(),
+      claim: z.string(),
+    }).passthrough()).optional(),
+    rowsTruncated: z.object({
+      shown: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+    }).optional(),
+  }).passthrough().nullable().optional(),
   threadWindow: z.object({
     total: z.number().int().nonnegative(),
     posts: z.array(z.object({
@@ -537,7 +550,7 @@ export default defineTool({
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
       "\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker; do not infer checkpoint authorship from \`workItem.updatedAt\`, which also moves for state, assignment, dependency, payload, and other item writes.\\n\\n" +
       "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointBody?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` / `checkpointBody` — remaining capacity in the checkpoint: check ROWS ({ count, cap, remaining }) and the stored BODY ({ chars, cap, remaining }). `null` on either means the checkpoint read FAILED (count 0 / chars 0 means the read succeeded and nothing is stored). Read `checkpointBody.remaining` BEFORE an `append:true` write: at the cap the write keeps succeeding and silently evicts the OLDEST content, and its only notice is a marker written into the body AFTER the loss — so this is the only signal that arrives in time to act on. `chars` measures the STORED note, not the `checkpoint` string returned here, which is clipped per shape tier.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's." +
-      "With `checksOnly:true`, `checkpointChecks` also carries `rows:[{ id?, claim }]` and optional `rowsTruncated`; these are the exact caller-facing identities accepted by `work_items:checkpoint.retireIds`, without loading the checkpoint narrative or other enrichments.\\n\\n",
+      "When stored, `checkpointChecks` also carries bounded `rows:[{ id?, claim }]` and optional `rowsTruncated`; these are the caller-facing identities accepted by `work_items:checkpoint.retireIds`. `checksOnly:true` returns that ledger without loading the checkpoint narrative or other enrichments.\\n\\n",
     notWhen: 'Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).',
     chaining: 'work_items:list → work_items:get { ids:[…] } for detail on the ones you care about.',
     // P-002 (WI-2145856). These render into the `invalid_args` rejection itself,
@@ -882,11 +895,17 @@ export default defineTool({
               // The canonical reader fails soft IN BAND. Preserve that state
               // through the same unknown projection as a rejected read.
               if (r.readFailed) throw new Error('checkpoint_read_failed');
-              const count = r.checkpoint === null ? 0 : splitCarryNoteChecks(r.checkpoint).checks.length;
+              const checks = r.checkpoint === null ? [] : splitCarryNoteChecks(r.checkpoint).checks;
+              const count = checks.length;
               return {
                 checkpoint: r.checkpoint,
                 updatedAtMs: r.updatedAtMs,
-                checkpointChecks: { count, cap: CARRY_NOTE_MAX_CHECKS, remaining: CARRY_NOTE_MAX_CHECKS - count },
+                checkpointChecks: {
+                  count,
+                  cap: CARRY_NOTE_MAX_CHECKS,
+                  remaining: Math.max(0, CARRY_NOTE_MAX_CHECKS - count),
+                  ...(count > 0 ? checkpointCheckIdentities(checks) : {}),
+                },
                 // EI-22659954682164298: the BODY counterpart of the row headroom above,
                 // measured on `r.checkpoint` for the same reason the hash below is — this
                 // is the last point at which the UNCLIPPED stored note is in hand.

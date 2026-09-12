@@ -158,6 +158,11 @@ export interface ScorecardAcceptance {
  * distinguish an intentionally inapplicable dimension from a missing recipe.
  */
 export interface SpecTestAdequacyCurrentFingerprint {
+  /** Exact clause identity for scoped currentness; omitted on legacy recipes. */
+  planSlug?: string;
+  specId?: string;
+  specRevision?: number;
+  specFingerprint?: string;
   evidenceKind: string;
   evidenceRef: string;
   sourceFingerprint: string;
@@ -1187,6 +1192,21 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       ? rawFingerprints.map((entry) => {
           if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
           const e = entry as Record<string, unknown>;
+          const hasScopedIdentity = ['planSlug', 'specId', 'specRevision', 'specFingerprint'].some((key) =>
+            Object.prototype.hasOwnProperty.call(e, key),
+          );
+          const planSlug = typeof e.planSlug === 'string' && e.planSlug.trim() ? e.planSlug : undefined;
+          const specId = typeof e.specId === 'string' && e.specId.trim() ? e.specId : undefined;
+          const specRevision = Number.isInteger(e.specRevision) && Number(e.specRevision) > 0
+            ? Number(e.specRevision)
+            : undefined;
+          const specFingerprint =
+            typeof e.specFingerprint === 'string' && e.specFingerprint.trim() ? e.specFingerprint : undefined;
+          const hasCompleteScopedIdentity =
+            planSlug !== undefined &&
+            specId !== undefined &&
+            specRevision !== undefined &&
+            specFingerprint !== undefined;
           const nullable = (key: string): string | null | undefined => {
             const value = e[key];
             if (value === null || value === undefined) return null;
@@ -1205,8 +1225,12 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
             testFingerprint !== undefined &&
             fixtureFingerprint !== undefined &&
             rubricFingerprint !== undefined &&
-            environmentFingerprint !== undefined
+            environmentFingerprint !== undefined &&
+            (!hasScopedIdentity || hasCompleteScopedIdentity)
             ? {
+                ...(hasCompleteScopedIdentity
+                  ? { planSlug, specId, specRevision, specFingerprint }
+                  : {}),
                 evidenceKind: e.evidenceKind,
                 evidenceRef: e.evidenceRef,
                 sourceFingerprint: e.sourceFingerprint,

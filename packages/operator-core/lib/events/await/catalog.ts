@@ -85,6 +85,10 @@ export const SUBJECT_SCOPE_GLOSS: Record<SubjectScope, string> = {
 const SCOPE_PARAM_NAMES: ReadonlySet<string> = new Set([
   'slug',
   'scope',
+  // Named-resource keys identify a durable coordination resource (for example
+  // git-sync:<install>), not a transient event instance. Callers learn the exact
+  // resource from the held_exclusive outcome and can await its release boundary.
+  'resource',
   'workspace',
   'owner',
   'ownerId',
@@ -569,6 +573,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       '(WI-209800 / D-104); helper defined in packages/operator-core/lib/harness/git-sync/git-sync-events.ts',
     exists: true,
     payloadFiltered: true,
+  },
+  {
+    family: 'resource-released',
+    keyTemplate: 'resource:released:<resource>',
+    params: [{ name: 'resource', required: true, describe: 'the registered named resource that was released' }],
+    describe:
+      'A named resource exclusive hold was actually released at the release boundary. Await the exact resource key after a held_exclusive skip; this fires after the row is gone, never at refusal time, so retrying cannot wake into the same held state.',
+    emitter:
+      'named-resource release path (packages/operator-core/lib/agent-tools/locks/resource-broadcast.ts) via emitResourceReleasedEvent',
+    exists: true,
+    replacesPoll: 'polling locks:list or retrying git-sync after a held_exclusive refusal',
   },
   {
     family: 'session-compacted',
