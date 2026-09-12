@@ -1604,6 +1604,46 @@ describe('routines:set', () => {
     expect(written.cycleTimeoutMs).toBe(600000);
   });
 
+  it('name-only resolves a unique workspace singleton when the operator-home row is absent', async () => {
+    const singleton = {
+      trigger_config: { cron: '0 */30 * * * *' },
+      payload_template: { blueprintId: 'scout' },
+      active: true,
+      next_fire_at: null,
+    };
+    sqlMock.mockResolvedValueOnce([]); // no home-harness row
+    sqlMock.mockResolvedValueOnce([{ install_slug: '@singleton' }]); // unique name candidate
+    sqlMock.mockResolvedValueOnce([singleton]); // resolved singleton snapshot
+    sqlMock.mockResolvedValueOnce([singleton]); // apply() re-read
+    sqlMock.mockResolvedValueOnce([]); // UPDATE
+    sqlMock.mockResolvedValueOnce([singleton]); // verify() re-read
+
+    const b = body(
+      await setTool.handler(
+        { name: 'bp-singleton-scout-0', payloadTemplate: { payload: { budget: { maxIdeators: 4 } } } } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+
+    expect(b).toMatchObject({ ok: true, applied: true, routine: '@singleton/bp-singleton-scout-0' });
+  });
+
+  it('name-only refuses when the same routine name exists under multiple installs', async () => {
+    sqlMock.mockResolvedValueOnce([]); // no home-harness row
+    sqlMock.mockResolvedValueOnce([{ install_slug: '@singleton' }, { install_slug: 'another-harness' }]);
+
+    await expect(
+      setTool.handler(
+        { name: 'bp-singleton-scout-0', active: true } as never,
+        { role: 'operator' } as never,
+      ),
+    ).rejects.toThrow(/ambiguous.*@singleton.*another-harness.*installSlug/i);
+    // Ambiguity is rejected while resolving the target, before the control harness
+    // is constructed and before any UPDATE can be issued.
+    expect(controlMock).not.toHaveBeenCalled();
+    expect(sqlMock.mock.calls.some((call) => call.some((value) => typeof value === 'string' && value.includes('UPDATE harness_shared.routines')))).toBe(false);
+  });
+
   it('payload_template arrays and scalars REPLACE (a patched list is the new list, not a merge)', async () => {
     sqlMock.mockResolvedValue([
       { trigger_config: {}, payload_template: { payload: { lenses: ['a', 'b', 'c'], n: 1 } }, active: true, next_fire_at: null },

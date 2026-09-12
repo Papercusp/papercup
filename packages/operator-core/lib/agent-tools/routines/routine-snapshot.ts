@@ -88,6 +88,51 @@ export async function readRoutineSnap(
   };
 }
 
+export interface ResolvedRoutineSnap {
+  installSlug: string;
+  snapshot: RoutineSnap;
+}
+
+/**
+ * Resolve a name-only routines:set target without widening an ordinary home-harness
+ * lookup. The operator-home row remains the compatibility default; only when that
+ * exact row is absent do we search the workspace for a unique same-name row (for
+ * example a workspace singleton under `@singleton`). Multiple matches are refused
+ * so a name-only mutation can never silently choose the wrong install.
+ */
+export async function resolveRoutineSnap(
+  sql: Sql,
+  workspaceId: string,
+  defaultInstallSlug: string,
+  name: string,
+): Promise<ResolvedRoutineSnap> {
+  try {
+    return {
+      installSlug: defaultInstallSlug,
+      snapshot: await readRoutineSnap(sql, workspaceId, defaultInstallSlug, name),
+    };
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith('routine not found:')) throw error;
+    const candidates = await sql<Array<{ install_slug: string }>>`
+      SELECT install_slug
+        FROM harness_shared.routines
+       WHERE workspace_id = ${workspaceId} AND name = ${name}
+       ORDER BY install_slug`;
+    if (candidates.length === 0) throw error;
+    const slugs = [...new Set(candidates.map((row) => row.install_slug))];
+    if (slugs.length !== 1) {
+      throw new Error(
+        `routine name is ambiguous: ${name} exists under install slugs ${slugs.join(', ')}; pass installSlug to select one`,
+      );
+    }
+    const installSlug = slugs[0]!;
+    return {
+      installSlug,
+      snapshot: await readRoutineSnap(sql, workspaceId, installSlug, name),
+    };
+  }
+}
+
 export async function writeRoutineSnap(
   sql: Sql,
   workspaceId: string,

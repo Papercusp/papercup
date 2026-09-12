@@ -19,7 +19,9 @@ type MdxDeps = {
 type HookModule = {
   findMdxCompileError: (file: string, text: string, deps: MdxDeps) => Promise<Hit | null>;
   isCandidateFile: (file: string, root: string) => boolean;
+  isDocsAuthorTool: (tool: string) => boolean;
   loadMdxDeps: (root: string) => Promise<MdxDeps | null>;
+  mirrorNudgeFor: (payload: Record<string, unknown>, deps?: Record<string, unknown>) => Promise<string | null>;
   nudgeFor: (file: string, deps?: Record<string, unknown>) => Promise<string | null>;
 };
 
@@ -68,6 +70,53 @@ describe('posttooluse-mdx-nudge', () => {
     expect(message).toMatch(/does NOT COMPILE/);
     expect(message).toMatch(/git-sync will quarantine/);
     expect(message).toMatch(/inline code span split across a newline/);
+  });
+
+  it('nudges successful docs:author MCP variants only when the affected twin is missing', async () => {
+    const hook = await hookModule();
+    const payload = {
+      tool_name: 'mcp__papercusp-su__docs_author',
+      tool_input: { section: 'agent-insights', slug: 'mirror-probe' },
+      tool_response: {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              path: 'agent-insights/mirror-probe.mdx',
+              absPath: join(ROOT, 'apps/operator-docs/src/content/docs/agent-insights/mirror-probe.mdx'),
+            }),
+          },
+        ],
+      },
+    };
+    const scanDocsMirror = () => ({
+      missing: [
+        {
+          source: 'agent-insights/mirror-probe.mdx',
+          expected: { html: 'agent-insights/mirror-probe.html', markdown: 'agent-insights/mirror-probe.md' },
+          missing: ['html', 'markdown'],
+        },
+      ],
+    });
+
+    expect(hook.isDocsAuthorTool('docs:author')).toBe(true);
+    expect(hook.isDocsAuthorTool('mcp__papercusp-su__docs_author')).toBe(true);
+    expect(hook.isDocsAuthorTool('mcp__papercusp-su__docs-author')).toBe(true);
+    expect(hook.isDocsAuthorTool('mcp__papercusp-su__docs_get')).toBe(false);
+    await expect(hook.mirrorNudgeFor(payload, { repoRoot: ROOT, scanDocsMirror })).resolves.toMatch(
+      /DOCS_AUTHOR[\s\S]*missing generated served-doc twins|missing generated served-doc twins/,
+    );
+
+    await expect(
+      hook.mirrorNudgeFor(
+        { ...payload, tool_response: { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'rejected' }) }] } },
+        { repoRoot: ROOT, scanDocsMirror },
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      hook.mirrorNudgeFor({ ...payload, tool_name: 'mcp__papercusp-su__docs_get' }, { repoRoot: ROOT, scanDocsMirror }),
+    ).resolves.toBeNull();
   });
 
   it('stays silent outside the Astro docs corpus and on clean MDX', async () => {
@@ -135,6 +184,9 @@ describe('posttooluse-mdx-nudge', () => {
       expect(emitted.hookSpecificOutput.additionalContext).toMatch(/does NOT COMPILE/);
       expect(run(clean).trim()).toBe('');
       expect(run(broken, 'Read').trim()).toBe('');
+      expect(
+        run('missing.mdx', 'mcp__papercusp-su__docs_author').trim(),
+      ).toBe('');
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

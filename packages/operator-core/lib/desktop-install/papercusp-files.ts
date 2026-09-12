@@ -2706,13 +2706,13 @@ export function mergeClaudeHookSettings(
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-ts-parse-nudge.mjs'),
     });
-  // merge_mdx_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
-  // (EI-19450114644493388). Advisory only: the author may be between atomic edits,
-  // but the complete resulting file is now available and can be checked by the real
-  // MDX compiler before git-sync quarantines it.
+  // merge_mdx_nudge_hook — PostToolUse, matcher native edits + docs:author MCP variants
+  // (EI-19450114644493388 / EI-22997442030423826). Advisory only: native edits can be
+  // checked by the real MDX compiler, while a successful docs:author call can be checked
+  // against the affected source-to-served mirror mapping before git-sync sweeps the tree.
   if (has('posttooluse-mdx-nudge.mjs'))
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-mdx-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: 'Edit|Write|MultiEdit|docs:author|mcp__.*__docs[_:-]author',
       hooks: cmd('posttooluse-mdx-nudge.mjs'),
     });
   // merge_no_proc_path_fixture_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'

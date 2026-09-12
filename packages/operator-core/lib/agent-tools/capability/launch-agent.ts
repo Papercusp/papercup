@@ -978,7 +978,10 @@ export default defineTool({
         // evidence. Reuse the same fresh/staleness-aware pressure oracle the fleet
         // roster uses; a stale/unknown reading fails open, while a current CRITICAL
         // reading fails closed before we open a doomed process.
-        if (target.ownerId) {
+        // An exact native-session pin is a request to keep that transcript.
+        // Pressure may require the CLI to compact, but it is not permission
+        // to replace the conversation with a fresh successor (WI-10001085).
+        if (target.ownerId && !(args.resume?.sessionId && !fork && !target.live)) {
           try {
             const pressure = (await fetchContextPressure([target.ownerId])).get(target.ownerId);
             if (pressure === 'critical') {
@@ -1158,6 +1161,10 @@ export default defineTool({
         const savedLaunchSpec = await resolveSavedFleetLaunchSpec({
           workspaceId,
           fleetSlug,
+          // A guarded desktop restoration may explicitly restore the original
+          // session's placement/model after the fleet defaults have changed.
+          // This is a per-launch delta; the fleet profile remains canonical.
+          allowDeltas: args.restoreVisible ? ['headless', 'model'] : undefined,
           requested: {
             account: args.account,
             model: args.model,

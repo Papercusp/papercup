@@ -26,6 +26,7 @@ const FILE_WRITE_MATCHER = 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write
 const BASH_SHELL_MATCHER = 'Bash|mcp__.*__capability_bash';
 const FILE_EDIT_MATCHER = 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)';
 const FILE_OVERWRITE_MATCHER = 'Write|mcp__.*__capability_write';
+const MDX_NUDGE_MATCHER = 'Edit|Write|MultiEdit|docs:author|mcp__.*__docs[_:-]author';
 
 describe('mergeClaudeHookSettings — full install into empty settings', () => {
   it('registers every CC hook on its correct event(s) + the statusline', () => {
@@ -184,7 +185,12 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // have to get past, alongside orphaned-cc-hooks.test.ts's list sweep.
     expect(postMatcherOf('posttooluse-behavioural-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-ts-parse-nudge.mjs')).toBe('Edit|Write|MultiEdit');
-    expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe(MDX_NUDGE_MATCHER);
+    const mdxMatcher = new RegExp(MDX_NUDGE_MATCHER);
+    expect(mdxMatcher.test('docs:author')).toBe(true);
+    expect(mdxMatcher.test('mcp__papercusp-su__docs_author')).toBe(true);
+    expect(mdxMatcher.test('mcp__papercusp-su__docs-author')).toBe(true);
+    expect(mdxMatcher.test('mcp__papercusp-su__docs_get')).toBe(false);
     expect(postMatcherOf('posttooluse-no-proc-path-fixture-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-migration-fixture-drift-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-migration-forward-compat-nudge.mjs')).toBe('Edit|Write|MultiEdit');

@@ -29916,7 +29916,7 @@
           "POST"
         ]
       },
-      "description": "Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:\"commit\"|\"runGroup\"` aggregates (\"is this sha green\" — total/failed/failing-file counts); rollups default to `source:\"ci\"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.",
+      "description": "Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:\"commit\"|\"runGroup\"` aggregates (\"is this sha green\" — total/failed/failing-file counts); rollups default to `source:\"ci\"` so local or mutation-probe rows cannot contaminate a gate verdict; ordinary row listings exclude mutation-probe evidence unless `source:\"mutation-probe\"` is explicit. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.",
       "capabilities": [
         "operator:read"
       ],

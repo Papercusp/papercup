@@ -26,7 +26,10 @@ const H = vi.hoisted(() => ({
 
 vi.mock('../../../superuser-token', () => ({ isLoopbackRequest: H.isLoopbackRequest }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../../adv-sessions', () => ({ readSuLaunchSpecByOwner: H.readLaunchSpec }));
+vi.mock('../../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../adv-sessions')>()),
+  readSuLaunchSpecByOwner: H.readLaunchSpec,
+}));
 vi.mock('../../../su-persona-render', () => ({ parseSuLaunchSpecRecord: H.parseLaunchSpec }));
 vi.mock('../../../identity-management', () => ({ mutateIdentityStack: H.mutate }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: H.invalidate }));

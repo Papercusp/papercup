@@ -16,6 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
 const DOCS_PREFIX = 'apps/operator-docs/src/content/docs/';
+const DOCS_MIRROR_REL = 'apps/operator/public/internal/docs';
 const MAX_BYTES = 2_000_000;
 const REQUIRED_PACKAGES = [
   join('node_modules', '@mdx-js', 'mdx', 'package.json'),
@@ -32,6 +33,17 @@ async function main() {
   try {
     const hook = JSON.parse(await readStdin(250));
     const tool = hook.tool_name || '';
+    if (isDocsAuthorTool(tool)) {
+      const message = await mirrorNudgeFor(hook);
+      if (message) {
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message },
+          }) + '\n',
+        );
+      }
+      return done();
+    }
     if (tool !== 'Edit' && tool !== 'Write' && tool !== 'MultiEdit') return done();
     const filePath = (hook.tool_input || {}).file_path || '';
     if (!filePath) return done();
@@ -52,6 +64,163 @@ async function main() {
 
 function slash(path) {
   return path.split(/[\\/]/).join('/');
+}
+
+/** Match native and MCP projections of the canonical docs:author tool name. */
+export function isDocsAuthorTool(tool) {
+  return typeof tool === 'string' && /(?:^|__)docs(?:[:_-])author$/i.test(tool);
+}
+
+function parseJsonText(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text || (text[0] !== '{' && text[0] !== '[')) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Walk common Claude/MCP response envelopes without making response shape a contract. */
+function responseValues(value, out = [], seen = new Set()) {
+  if (value === null || value === undefined) return out;
+  if (typeof value === 'string') {
+    const parsed = parseJsonText(value);
+    if (parsed !== null) responseValues(parsed, out, seen);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) responseValues(entry, out, seen);
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+  if (seen.has(value)) return out;
+  seen.add(value);
+  out.push(value);
+  for (const key of ['content', 'structuredContent', 'result', 'output', 'data', 'text']) {
+    if (key in value) responseValues(value[key], out, seen);
+  }
+  return out;
+}
+
+function failedResponse(value) {
+  return (
+    value?.is_error === true ||
+    value?.isError === true ||
+    value?.ok === false ||
+    value?.success === false ||
+    value?.error !== undefined
+  );
+}
+
+/** Return the successful docs:author result, if the PostToolUse call really succeeded. */
+export function extractDocsAuthorResult(payload) {
+  if (!isDocsAuthorTool(payload?.tool_name ?? payload?.toolName)) return null;
+  const response = payload?.tool_response ?? payload?.toolResponse;
+  for (const value of responseValues(response)) {
+    if (failedResponse(value)) continue;
+    if (
+      value?.ok === true &&
+      [value.absPath, value.path, value.ref, value.slug].some((entry) => typeof entry === 'string' && entry.length > 0)
+    ) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function sourceRelativePath(filePath, sourceRoot) {
+  if (!filePath || !sourceRoot) return null;
+  const rel = slash(relative(sourceRoot, resolve(filePath)));
+  if (!rel || rel === '..' || rel.startsWith('../') || rel.startsWith('/') || rel.endsWith('/')) return null;
+  if (!/\.(?:md|mdx)$/i.test(rel)) return null;
+  return rel;
+}
+
+function authorPath(value, repoRoot, sourceRoot) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const raw = slash(value.trim());
+  const marker = `/${DOCS_PREFIX}`;
+  const markerIndex = raw.indexOf(DOCS_PREFIX);
+  if (raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) return resolve(raw);
+  if (markerIndex >= 0) return resolve(repoRoot, raw.slice(markerIndex + 1));
+  if (raw.startsWith(DOCS_PREFIX)) return resolve(repoRoot, raw);
+  return resolve(sourceRoot, raw);
+}
+
+function resolveAuthorPath(payload, result, repoRoot) {
+  const sourceRoot = join(repoRoot, DOCS_PREFIX);
+  const input = payload?.tool_input ?? payload?.toolInput ?? {};
+  const direct = [result?.absPath, result?.absolutePath, result?.path, result?.docPath, result?.ref];
+  for (const value of direct) {
+    const candidate = authorPath(value, repoRoot, sourceRoot);
+    if (sourceRelativePath(candidate, sourceRoot)) return candidate;
+  }
+
+  const section = result?.section ?? input.section ?? 'agent-insights';
+  const slug = result?.slug ?? input.slug;
+  if (typeof section !== 'string' || typeof slug !== 'string' || !slug.trim()) return null;
+  const docId = `${section.replace(/^\/+|\/+$/g, '')}/${slug.replace(/^\/+/, '')}`
+    .replace(/\.(?:md|mdx)$/i, '') + '.mdx';
+  const candidate = authorPath(docId, repoRoot, sourceRoot);
+  return sourceRelativePath(candidate, sourceRoot) ? candidate : null;
+}
+
+export function formatMirrorNudge(relPath, missing) {
+  const lines = [
+    'This docs:author write is missing generated served-doc twins:',
+    `  ${relPath} — missing ${missing.join(' + ')}`,
+    '',
+    'Agents read the served HTML/Markdown twins under apps/operator/public/internal/docs.',
+    'The canonical source was saved, but the served docs are incomplete until rebuilt.',
+    '',
+    'FIX: run `npm run docs:rebuild` before leaving the authoring turn.',
+    '',
+    'This is advisory: docs:author already succeeded, and this hook fails open if the',
+    'detector or response parsing cannot establish a precise affected page.',
+  ];
+  return lines.join('\n');
+}
+
+/**
+ * Check only the page just authored, so an unrelated pre-existing mirror defect does not
+ * turn every successful docs:author call into a noisy warning.
+ */
+export async function mirrorNudgeFor(payload, deps = {}) {
+  try {
+    const result = extractDocsAuthorResult(payload);
+    if (!result) return null;
+
+    const input = payload?.tool_input ?? payload?.toolInput ?? {};
+    const pathHint = result.absPath ?? result.absolutePath;
+    const findRoot = deps.findRepoRoot ?? findRepoRoot;
+    const repoHint = typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
+    const repoRoot =
+      deps.repoRoot ??
+      (pathHint ? findRoot(pathHint) : null) ??
+      findRoot(repoHint) ??
+      resolve(repoHint);
+    const absPath = resolveAuthorPath(payload, result, repoRoot);
+    const sourceRoot = join(repoRoot, DOCS_PREFIX);
+    const sourceRel = sourceRelativePath(absPath, sourceRoot);
+    if (!sourceRel) return null;
+
+    const scanDocsMirror =
+      deps.scanDocsMirror ??
+      (await import(pathToFileURL(join(repoRoot, 'scripts/check-docs-mirror.mjs')).href)).scanDocsMirror;
+    if (typeof scanDocsMirror !== 'function') return null;
+    const scan = await scanDocsMirror({
+      sourceRoot,
+      mirrorRoot: join(repoRoot, DOCS_MIRROR_REL),
+    });
+    const hit = (scan?.missing ?? []).find((entry) => slash(entry.source) === sourceRel);
+    return hit ? formatMirrorNudge(sourceRel, hit.missing) : null;
+  } catch {
+    // Fail open: docs:author already committed the canonical projection; the commit-path
+    // detector remains the final backstop when this advisory cannot establish its inputs.
+    return null;
+  }
 }
 
 export function isCandidateFile(filePath, repoRoot) {

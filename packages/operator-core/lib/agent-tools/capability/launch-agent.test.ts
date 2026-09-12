@@ -1266,6 +1266,24 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('DORMANT at CRITICAL context pressure');
   });
 
+  it('keeps an exact dormant transcript pin at critical pressure instead of creating a successor', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
+
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, brief: 'restore this exact conversation' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(spawnedCommand()).not.toContain('--fork');
+    expect(buildCarryBriefMock).not.toHaveBeenCalled();
+    expect(verifyResumeStartedMock).toHaveBeenCalled();
+    expect(verifyFreshLaunchStartedMock).not.toHaveBeenCalled();
+  });
+
   describe('successor predecessor reconciliation (EI-22446987530949437)', () => {
     const stale = { ...dead, endedAt: null, endedBy: null };
     const request = { successor: { agentId: dead.ownerId }, idempotencyKey: 'successor-cas' };
@@ -1665,6 +1683,31 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('capability:launch-agent resume/successor');
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('restores an exact desktop session with explicit placement and model while retaining its fleet', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-test', fleetSlug: 'target-fleet', target: 12,
+      config: { plan: 'recovery-plan', harness: 'papercusp', agent: 'claude',
+        model: 'haiku', account: 'default', headless: true, carry: 'warm' },
+      nextAttemptAt: null, backoffMs: 0, lastError: null,
+    });
+
+    const res = await launchAgent.handler({
+      resume: { sessionId: 'sid-dead' }, restoreVisible: true,
+      headless: false, model: 'sonnet', brief: 'restore the original desktop session',
+    }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(spawnedCommand()).toContain('--model=sonnet');
+    expect(spawnedCommand()).toContain('--fleet=target-fleet');
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
   });
 
   it('propagates the caller DRAIN overlay to a resume/fork command', async () => {

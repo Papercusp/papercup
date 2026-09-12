@@ -1124,9 +1124,10 @@ with open(path, 'w') as f:
 PYEOF
 }
 
-# merge_mdx_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
-# (EI-19450114644493388). Advisory only; the hook reads the complete resulting
-# file and invokes the same MDX compiler stack as the commit-path detector.
+# merge_mdx_nudge_hook — PostToolUse, matcher native edits + docs:author MCP variants
+# (EI-19450114644493388 / EI-22997442030423826). Advisory only; the hook reads the
+# complete resulting file for native edits and checks the affected source-to-served
+# mirror mapping after a successful docs:author write.
 merge_mdx_nudge_hook() {
   python3 - "$1" "$CC_MDX_NUDGE_HOOK" <<'PYEOF'
 import json, os, sys, time
@@ -1150,7 +1151,7 @@ def drop_ours(entry):
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
-arr.append({'matcher': 'Edit|Write|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+arr.append({'matcher': 'Edit|Write|MultiEdit|docs:author|mcp__.*__docs[_:-]author', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PostToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)

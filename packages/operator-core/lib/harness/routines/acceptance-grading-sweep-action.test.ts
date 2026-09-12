@@ -8,7 +8,10 @@ const h = vi.hoisted(() => ({
 vi.mock('./system-actions', () => ({
   registerSystemAction: (name: string, handler: (ctx: SystemActionCtx) => Promise<unknown>) => h.handlers.set(name, handler),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: vi.fn() }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: vi.fn() }),
+}));
 vi.mock('../../agent-tools/plans/rubric-template', () => ({ RUBRIC_TEMPLATE_NAME: 'rubric' }));
 vi.mock('../../plan-acceptance-gate', () => ({ evaluatePlanAcceptanceGate: vi.fn() }));
 vi.mock('../../acceptance-grader', () => ({

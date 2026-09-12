@@ -20,7 +20,7 @@ import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
-import { readRoutineSnap, writeRoutineSnap, stableJson, type RoutineSnap } from './routine-snapshot';
+import { readRoutineSnap, resolveRoutineSnap, writeRoutineSnap, stableJson, type RoutineSnap } from './routine-snapshot';
 import { DEFAULT_RELEASE_PAUSE_TTL_HOURS, resolvePauseExpiryMs } from '../../harness/routines/release-pause-ttl';
 
 /**
@@ -265,7 +265,7 @@ export default defineTool({
 
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
-    const slug = args.installSlug ?? operatorHomeHarnessSlug();
+    let slug = args.installSlug ?? operatorHomeHarnessSlug();
 
     // Guard before runControlMutation itself so dryRun cannot be used to probe or
     // bypass the same serializer-owned resume admission as a real write.
@@ -273,7 +273,26 @@ export default defineTool({
       await assertGreenCheckpointResumeAdmission(slug, args.name, pausedByFrom(ctx, ctx.role));
     }
 
-    const readSnap = (): Promise<RoutineSnap> => readRoutineSnap(sql, ws, slug, args.name);
+    // Name-only callers historically addressed the operator-home harness. Preserve
+    // that exact lookup first, but allow a unique workspace singleton (such as the
+    // Scout row under @singleton) when no home row exists. Resolve after the
+    // green-checkpoint admission guard so the guard remains the first refusal, then
+    // cache the resolved snapshot for the control harness's capture boundary.
+    let initialSnap: RoutineSnap | undefined;
+    if (args.installSlug === undefined) {
+      const resolved = await resolveRoutineSnap(sql, ws, slug, args.name);
+      slug = resolved.installSlug;
+      initialSnap = resolved.snapshot;
+    }
+
+    const readSnap = async (): Promise<RoutineSnap> => {
+      if (initialSnap !== undefined) {
+        const snap = initialSnap;
+        initialSnap = undefined;
+        return snap;
+      }
+      return readRoutineSnap(sql, ws, slug, args.name);
+    };
     const writeSnap = (snap: RoutineSnap): Promise<void> => writeRoutineSnap(sql, ws, slug, args.name, snap);
 
     // P-004: the stamped release-group pause expiry, captured so the CALLER is told
