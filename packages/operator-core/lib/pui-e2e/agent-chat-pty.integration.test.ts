@@ -866,13 +866,17 @@ async function waitForSavedTurn(content: string): Promise<PersistedChat> {
   }
 }
 
-async function waitForCorrelatedReply(prompt: string, reply: string | RegExp): Promise<PersistedChat> {
+async function waitForCorrelatedReply(
+  prompt: string,
+  reply: string | RegExp,
+  events: SuSessionEvent[] = scriptedEngine.events,
+): Promise<PersistedChat> {
   // The chat table stores accepted command receipts. Assistant text belongs to
   // the native transcript, exposed through the real adapter's SU event stream.
   const chat = await waitForSavedTurn(prompt);
   const command = chat.transcript.find((turn) => turn.content === prompt)?.su_command?.command;
   if (command?.type !== 'owner_turn') throw new Error('Greeting/follow-up lacks a durable owner-turn receipt');
-  await vi.waitFor(() => expect(scriptedEngine.events).toEqual(expect.arrayContaining([
+  await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
     expect.objectContaining({
       type: 'transcript', phase: 'completed', role: 'assistant', channel: 'text',
       content: typeof reply === 'string' ? reply : expect.stringMatching(reply),
@@ -2983,7 +2987,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           interval: 100,
         });
         expect(childCardReplies().at(-1)).toMatchObject({ status: 200 });
-        await waitForCorrelatedReply(approvalRequest, approvalResult);
+        await waitForCorrelatedReply(approvalRequest, approvalResult, first.events);
         await pane.waitForReply(approvalResult);
         expect(readFileSync(approvalFixturePath, 'utf8')).toBe(approvalResult + '\n');
         approvalStart = first.events.find(
@@ -3136,7 +3140,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
                 end: approvalEnd,
                 fixturePath: approvalFixturePath,
                 result: approvalResult,
-                replies: cardReplies,
+                replies: first.responses.filter(({ path: responsePath }) => responsePath.endsWith('/card-response')),
               }
             : null,
           diagnostics: [...first.diagnostics, ...second.diagnostics],
