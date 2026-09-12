@@ -3909,6 +3909,17 @@ async function amendAcceptanceBarRubric(
 export async function previewAcceptanceBarAmendment(
   input: AmendRubricInput,
 ): Promise<AcceptanceBarAmendmentPreview | null> {
+  const current = await getRubric(input.rubricId);
+  if (!current) return null;
+  if (current.kind !== 'acceptance' || !current.barContract || !current.barSetHash) {
+    const revisionHint = current.revision ? `:${current.revision}` : ':<current revision from rubrics:get>';
+    throw new Error(
+      `invalid_args: rubrics:amend dryRun previews only the cross-plan transaction for a started acceptance ` +
+        `BAR contract; rubric '${input.rubricId}' has no started barContract/barSetHash. This rubric uses the ` +
+        `ordinary revision-CAS amendment path, so a cross-plan preview would fabricate BAR hashes and subject ` +
+        `revision movement. Omit dryRun and guard the write with expectedRubricRevision${revisionHint}.`,
+    );
+  }
   const scope = await resolveRubricWriteScope(input.rubricId);
   return (await amendAcceptanceBarRubric(input, scope, true))?.preview ?? null;
 }

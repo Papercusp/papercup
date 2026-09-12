@@ -1628,6 +1628,36 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(applied?.classRef).toBe('plan-class-feature-ship');
   });
 
+  it('refuses a cross-plan dry-run for an unstarted legacy rubric instead of fabricating BAR hashes', async () => {
+    const seeded = await seedBarContract('unstarted-dry-run-preview', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = template_data - 'barContract' - 'barSetHash'
+       WHERE workspace_id = ${seeded.workspaceId}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${seeded.rubricSlug}`;
+
+    await expect(
+      rubrics.previewAcceptanceBarAmendment({
+        rubricId: seeded.rubricSlug,
+        actorId: 'legacy-preview-actor',
+        reason: 'Narrow the falsifier without inventing a started contract.',
+        criterion: {
+          key: before.criteria[0]!.key,
+          field: 'driftMarkers',
+          mode: 'replace',
+          text: 'The evidence package is incomplete or stale.',
+        },
+        expectedRubricRevision: before.revision,
+      }),
+    ).rejects.toThrow(/dryRun previews only the cross-plan transaction.*expectedRubricRevision/);
+
+    const after = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(after.revision).toBe(before.revision);
+    expect(after.criteria).toEqual(before.criteria);
+  });
+
   it('previews the semantic amendment that repairs an audited pending subject-revision pin', async () => {
     const seeded = await seedBarContract('pending-subject-revision-amendment', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
