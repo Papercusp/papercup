@@ -263,7 +263,7 @@ export function getNextTimeoutResult(
  */
 export function getNextPreflightTimeoutResult(
   budgetMs = GET_NEXT_BUDGET_MS,
-  reason: 'timeout' | 'error' = 'timeout',
+  reason: 'timeout' | 'aborted' | 'error' = 'timeout',
   errorMessage?: string,
 ): {
   ok: false;
@@ -276,7 +276,9 @@ export function getNextPreflightTimeoutResult(
   const detail =
     reason === 'error' && errorMessage
       ? ` failed before the claim path: ${errorMessage}`
-      : ` exceeded its ${budgetMs}ms internal budget`;
+      : reason === 'aborted'
+        ? ' was aborted before the claim path'
+        : ` exceeded its ${budgetMs}ms internal budget`;
   return {
     ok: false,
     error: 'timeout',
