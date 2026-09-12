@@ -47,6 +47,7 @@ function runFixture(
   release?: { root?: string; version?: string },
   sourceImage?: { ref: string; exists?: boolean },
   inhibitFails = false,
+  diskMetadata: 'pass' | 'bad-release-dir' | 'missing-root' = 'pass',
 ): {
   status: number;
   output: string;
@@ -167,6 +168,69 @@ if [ "\${1:-}" = "-n" ]; then shift; fi
 exec "$@"
 `, { mode: 0o755 });
   chmodSync(join(bin, 'sudo'), 0o755);
+  writeFileSync(join(bin, 'losetup'), `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "--find" ]; then
+  printf '/dev/loop-papercusp-test\\n'
+  exit 0
+fi
+if [ "\${1:-}" = "--detach" ]; then exit 0; fi
+printf 'unexpected fake losetup call: %s\\n' "$*" >&2
+exit 1
+`, { mode: 0o755 });
+  chmodSync(join(bin, 'losetup'), 0o755);
+  writeFileSync(join(bin, 'lsblk'), `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$BAKE_TEST_DISK_METADATA" = "missing-root" ]; then
+  printf '/dev/loop-papercusp-testp3 xfs boot\\n'
+else
+  printf '/dev/loop-papercusp-testp4 xfs root\\n'
+fi
+`, { mode: 0o755 });
+  chmodSync(join(bin, 'lsblk'), 0o755);
+  writeFileSync(join(bin, 'udevadm'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  chmodSync(join(bin, 'udevadm'), 0o755);
+  writeFileSync(join(bin, 'mount'), `#!/usr/bin/env bash
+set -euo pipefail
+mount_dir="\${@: -1}"
+release_dir="$mount_dir/ostree/deploy/default/deploy/test.0/opt/papercusp/releases/$BAKE_TEST_RELEASE_VERSION"
+mkdir -p "$release_dir/bin"
+printf 'fixture release\\n' > "$release_dir/serve.mjs"
+printf '#!/bin/sh\\n' > "$release_dir/bin/node"
+chmod 0640 "$release_dir/serve.mjs"
+chmod 0755 "$release_dir/bin/node"
+ln -s "releases/$BAKE_TEST_RELEASE_VERSION" "\${release_dir%/releases/*}/current"
+`, { mode: 0o755 });
+  chmodSync(join(bin, 'mount'), 0o755);
+  writeFileSync(join(bin, 'umount'), `#!/usr/bin/env bash
+set -euo pipefail
+mount_dir="\${1:?mount directory required}"
+rm -rf -- "$mount_dir/ostree"
+`, { mode: 0o755 });
+  chmodSync(join(bin, 'umount'), 0o755);
+  writeFileSync(join(bin, 'stat'), `#!/usr/bin/env bash
+set -euo pipefail
+target="\${@: -1}"
+case "$target" in
+  */ostree/deploy/*/opt/papercusp/releases/*/serve.mjs)
+    printf '0:912:640:regular file\\n'
+    ;;
+  */ostree/deploy/*/opt/papercusp/releases/*/bin/node)
+    printf '0:912:755:regular file\\n'
+    ;;
+  */ostree/deploy/*/opt/papercusp/releases/*)
+    if [ "$BAKE_TEST_DISK_METADATA" = "bad-release-dir" ]; then
+      printf '0:0:755:directory\\n'
+    else
+      printf '0:912:750:directory\\n'
+    fi
+    ;;
+  *)
+    exec /usr/bin/stat "$@"
+    ;;
+esac
+`, { mode: 0o755 });
+  chmodSync(join(bin, 'stat'), 0o755);
   writeFileSync(join(bin, 'udisks2-inhibit'), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$BAKE_TEST_UDISKS_INHIBIT_CALLS"
@@ -221,6 +285,8 @@ set -euo pipefail
         BAKE_TEST_SOURCE_EXISTS: sourceImage?.exists === false ? '0' : '1',
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
         BAKE_TEST_RENDER: render,
+        BAKE_TEST_RELEASE_VERSION: release?.version ?? '',
+        BAKE_TEST_DISK_METADATA: diskMetadata,
         RELEASE_STORAGE_DRIVER: 'overlay',
         UDISKS2_INHIBIT_BIN: join(bin, 'udisks2-inhibit'),
         PAPERCUSP_UDISKS2_INHIBIT_LOCK: inhibitLock,
@@ -342,6 +408,31 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(result.inhibitCalls[0]).toContain('podman run --rm --privileged');
   });
 
+  it('rejects a converted release disk that retained the earlier root:root directory header', () => {
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'p305-bad-disk-metadata-root-'));
+    try {
+      const result = runFixture(
+        SOURCE,
+        'raw',
+        { root: releaseRoot, version: '0.0.18-r21' },
+        undefined,
+        false,
+        'bad-release-dir',
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.output).toContain(
+        'release-directory-metadata:0:0:755:directory:expected=0:912:750:directory',
+      );
+      expect(result.output).toContain(
+        'converted disk did not preserve the immutable release metadata',
+      );
+      expect(result.manifest).toBeNull();
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when the host UDisks automount inhibitor cannot guard the renderer', () => {
     const result = runFixture(SOURCE, 'raw', undefined, undefined, true);
 
@@ -384,6 +475,9 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     try {
       const result = runFixture(SOURCE, 'raw', { root: releaseRoot, version: '0.0.18-r21' });
       expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain(
+        'BAKE_RELEASE_DISK_METADATA=PASS version=0.0.18-r21',
+      );
       expect(result.buildArgs).toEqual(
         expect.arrayContaining([
           '--target',
@@ -457,11 +551,16 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
   });
 
   it('keeps the OS-only target as the default and puts the release layer behind an explicit target', () => {
-    const releaseStage = CONTAINERFILE_SOURCE.indexOf('FROM workspace-host-os AS workspace-host-release');
+    const releaseStage = CONTAINERFILE_SOURCE.indexOf('FROM workspace-host-os AS workspace-host-release\n');
     const defaultStage = CONTAINERFILE_SOURCE.indexOf('FROM workspace-host-os AS workspace-host\n');
     expect(releaseStage).toBeGreaterThan(-1);
     expect(defaultStage).toBeGreaterThan(releaseStage);
-    expect(CONTAINERFILE_SOURCE).toContain('COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/');
+    expect(CONTAINERFILE_SOURCE).toContain(
+      'RUN --mount=type=bind,from=papercusp-release,source=/,target=/run/papercusp-release,ro',
+    );
+    expect(CONTAINERFILE_SOURCE).not.toContain(
+      'COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/',
+    );
     expect(SOURCE).toContain('--target workspace-host-release');
     expect(CONTAINERFILE_SOURCE).toContain('ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read');
     expect(CONTAINERFILE_SOURCE).toContain('install -d -o root -g "$PAPERCUSP_RUNTIME_READ_GROUP" -m 0750');
@@ -482,12 +581,16 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     const normalizeOwner = CONTAINERFILE_SOURCE.indexOf(
       'chown -R "root:${PAPERCUSP_RUNTIME_READ_GROUP}" "$RELEASE_DIR"',
     );
+    const releaseMount = CONTAINERFILE_SOURCE.indexOf(
+      'RUN --mount=type=bind,from=papercusp-release,source=/,target=/run/papercusp-release,ro',
+    );
 
     expect(lookup).toBeGreaterThan(-1);
     expect(snapshot).toBeGreaterThan(lookup);
     expect(freshCopy).toBeGreaterThan(snapshot);
     expect(noHardlinks).toBeGreaterThan(freshCopy);
     expect(normalizeOwner).toBeGreaterThan(noHardlinks);
+    expect(releaseMount).toBeLessThan(lookup);
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain('committed release hardlinks are five distinct 0:912/0640 inodes');
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain(
       'committed runtime readable by service+agent, hidden from SSH; state hidden from agent+SSH',

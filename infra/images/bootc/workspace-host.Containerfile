@@ -484,11 +484,19 @@ RUN bootc container lint
 # snapshot the hardlinked paths before changing any link counts, and atomically
 # replace each with a same-directory fresh inode so the normalized metadata has a
 # durable upper-layer entry. The NUL-delimited snapshot keeps arbitrary paths safe.
+#
+# A direct COPY to the final release path first records its destination directory
+# as root:root:0755 and only corrects it in the following RUN layer. The OCI merge
+# view looks right, but bootc/osbuild's container-to-OSTree conversion can retain
+# that earlier directory header. Mount the named context read-only instead: this
+# ONE RUN instruction first creates the final path, copies the payload, breaks
+# hardlinks, and applies every final uid/gid/mode before the layer is committed.
+# No earlier layer contains the version directory. D-334 / EI-23087105300112185.
 FROM workspace-host-os AS workspace-host-release
 ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 ARG PAPERCUSP_RELEASE_VERSION
-COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/
-RUN set -eux; \
+RUN --mount=type=bind,from=papercusp-release,source=/,target=/run/papercusp-release,ro \
+    set -eux; \
     case "${PAPERCUSP_RELEASE_VERSION}" in \
       [A-Za-z0-9]*) ;; \
       *) echo "FATAL: PAPERCUSP_RELEASE_VERSION must start with an alphanumeric" >&2; exit 1;; \
@@ -499,6 +507,8 @@ RUN set -eux; \
     [ "${#PAPERCUSP_RELEASE_VERSION}" -le 128 ] \
       || { echo "FATAL: PAPERCUSP_RELEASE_VERSION is longer than 128 characters" >&2; exit 1; }; \
     RELEASE_DIR="/opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}"; \
+    install -d -o root -g "$PAPERCUSP_RUNTIME_READ_GROUP" -m 0750 "$RELEASE_DIR"; \
+    cp -a /run/papercusp-release/. "$RELEASE_DIR"/; \
     find "$RELEASE_DIR" -mindepth 1 -print -quit | grep -q . \
       || { echo "FATAL: named papercusp-release build context is empty" >&2; exit 1; }; \
     find "$RELEASE_DIR" -type f -exec stat -c '%i' -- {} + >/dev/null; \
@@ -513,6 +523,11 @@ RUN set -eux; \
     chmod 0750 "$RELEASE_DIR"; \
     find "$RELEASE_DIR" -type f -exec chmod g+r {} +; \
     find "$RELEASE_DIR" -type f -perm /111 -exec chmod a+rx {} +; \
+    [ "$(stat -c '%u:%g:%a' "$RELEASE_DIR")" = '0:912:750' ]; \
+    [ -z "$(find "$RELEASE_DIR" \( ! -uid 0 -o ! -gid 912 \) -print -quit)" ]; \
+    [ -z "$(find "$RELEASE_DIR" -type d ! -perm -0050 -print -quit)" ]; \
+    [ -z "$(find "$RELEASE_DIR" -type f ! -perm -0040 -print -quit)" ]; \
+    [ -z "$(find "$RELEASE_DIR" -type f -links +1 -print -quit)" ]; \
     ln -s "releases/${PAPERCUSP_RELEASE_VERSION}" /opt/papercusp/current; \
     [ "$(readlink -f /opt/papercusp/current)" = "$RELEASE_DIR" ]; \
     bootc container lint

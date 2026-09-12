@@ -261,6 +261,107 @@ run_monitored() { # $1 log path, remaining args are the command
   return "$rc"
 }
 
+# D-334 / EI-23087105300112185 — inspect the CONVERTED artifact, not merely
+# the OCI merge view. A release directory that is introduced root:root:0755 in
+# one image layer and corrected in a later metadata-only layer looks healthy to
+# `podman run`, yet bootc/osbuild can commit the earlier header to the raw disk.
+# This read-only probe runs after the GCE exporter has produced disk.raw but
+# before the disk is hashed or admitted to bake-manifest.json (and therefore
+# before any publisher can upload it).
+verify_release_disk_metadata() (
+  set -euo pipefail
+  local disk="$1" version="$2" loopdev="" mount_dir="" mounted=0
+  local root_part release_dir deployment_root metadata uid gid mode kind mode_value required_value
+  local -a privilege=() root_parts=() release_dirs=()
+
+  disk_fail() {
+    echo "BAKE_RELEASE_DISK_METADATA=FAILED version=$version disk=$disk detail=$*" >&2
+    exit 1
+  }
+
+  cleanup_release_disk_probe() {
+    local rc=$?
+    set +e
+    if [ "$mounted" -eq 1 ] && [ -n "$mount_dir" ]; then
+      "${privilege[@]}" umount "$mount_dir" >/dev/null 2>&1
+    fi
+    if [ -n "$loopdev" ]; then
+      "${privilege[@]}" losetup --detach "$loopdev" >/dev/null 2>&1
+    fi
+    if [ -n "$mount_dir" ]; then rmdir "$mount_dir" >/dev/null 2>&1; fi
+    exit "$rc"
+  }
+  trap cleanup_release_disk_probe EXIT
+
+  [ -n "$version" ] || disk_fail 'release-version-empty'
+  [ -s "$disk" ] && [ -f "$disk" ] && [ ! -L "$disk" ] \
+    || disk_fail 'disk-missing-or-not-regular'
+  for tool in losetup lsblk mount umount udevadm find stat readlink awk; do
+    command -v "$tool" >/dev/null 2>&1 || disk_fail "tool-missing:$tool"
+  done
+  if [ "$(id -u)" -ne 0 ]; then
+    command -v sudo >/dev/null 2>&1 || disk_fail 'tool-missing:sudo'
+    privilege=(sudo -n)
+  fi
+
+  mount_dir="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-release-disk.XXXXXX")" \
+    || disk_fail 'mount-directory-create-failed'
+  loopdev="$("${privilege[@]}" losetup --find --show --partscan --read-only "$disk")" \
+    || disk_fail 'loop-attach-failed'
+  [ -n "$loopdev" ] || disk_fail 'loop-device-empty'
+  "${privilege[@]}" udevadm settle || disk_fail 'udev-settle-failed'
+
+  mapfile -t root_parts < <(
+    "${privilege[@]}" lsblk -nrpo PATH,FSTYPE,LABEL "$loopdev" \
+      | awk '$2 == "xfs" && $3 == "root" { print $1 }'
+  )
+  [ "${#root_parts[@]}" -eq 1 ] \
+    || disk_fail "expected-one-xfs-root-partition:found=${#root_parts[@]}"
+  root_part="${root_parts[0]}"
+  "${privilege[@]}" mount -o ro,norecovery,nouuid "$root_part" "$mount_dir" \
+    || disk_fail 'root-mount-failed'
+  mounted=1
+
+  mapfile -t release_dirs < <(
+    "${privilege[@]}" find "$mount_dir/ostree/deploy" \
+      -path "*/deploy/*.0/opt/papercusp/releases/$version" -type d -print
+  )
+  [ "${#release_dirs[@]}" -eq 1 ] \
+    || disk_fail "expected-one-active-release-directory:found=${#release_dirs[@]}"
+  release_dir="${release_dirs[0]}"
+  deployment_root="${release_dir%/opt/papercusp/releases/$version}"
+
+  metadata="$("${privilege[@]}" stat -c '%u:%g:%a:%F' -- "$release_dir")" \
+    || disk_fail 'release-directory-stat-failed'
+  [ "$metadata" = '0:912:750:directory' ] \
+    || disk_fail "release-directory-metadata:$metadata:expected=0:912:750:directory"
+
+  assert_release_file() {
+    local path="$1" label="$2" required="$3"
+    metadata="$("${privilege[@]}" stat -c '%u:%g:%a:%F' -- "$path")" \
+      || disk_fail "$label-stat-failed"
+    IFS=: read -r uid gid mode kind <<<"$metadata"
+    [ "$uid:$gid:$kind" = '0:912:regular file' ] \
+      || disk_fail "$label-metadata:$metadata:expected-owner=0:912:regular-file"
+    case "$mode" in
+      ''|*[!0-7]*) disk_fail "$label-mode-not-octal:$mode";;
+    esac
+    mode_value=$((8#$mode))
+    required_value=$((8#$required))
+    (( (mode_value & required_value) == required_value )) \
+      || disk_fail "$label-mode:$mode:required-bits=$required"
+  }
+  assert_release_file "$release_dir/serve.mjs" 'serve-mjs' 040
+  assert_release_file "$release_dir/bin/node" 'node-runtime' 150
+
+  metadata="$("${privilege[@]}" readlink -- "$deployment_root/opt/papercusp/current")" \
+    || disk_fail 'current-symlink-read-failed'
+  [ "$metadata" = "releases/$version" ] \
+    || disk_fail "current-symlink-target:$metadata:expected=releases/$version"
+
+  echo "BAKE_RELEASE_DISK_METADATA=PASS version=$version disk=$disk release=$release_dir"
+)
+
 # Requested clouds are validated UP FRONT, before the expensive build. A typo'd cloud name that
 # is only noticed in the render loop has already paid for a build and a supply-chain pass.
 IFS=',' read -r -a WANT <<< "$CLOUDS"
@@ -468,6 +569,12 @@ bake_one() { # $1 cloud  $2 pinned ref
     echo "  $cloud: FAILED — exited 0 but produced no disk at ${CLOUD_FILE[$cloud]}"
     return 1
   fi
+  if [ "$cloud" = gcp ] && [ -n "$RELEASE_VERSION" ]; then
+    verify_release_disk_metadata "$dest/${CLOUD_FILE[$cloud]}" "$RELEASE_VERSION" || {
+      echo "  $cloud: FAILED — converted disk did not preserve the immutable release metadata"
+      return 1
+    }
+  fi
   CLOUD_BYTES[$cloud]="$(stat -c%s "$dest/${CLOUD_FILE[$cloud]}")"
   CLOUD_SHA[$cloud]="$(sha256sum "$dest/${CLOUD_FILE[$cloud]}" | cut -d' ' -f1)"
   echo "  $cloud: ok (${CLOUD_BYTES[$cloud]} bytes; sha256:${CLOUD_SHA[$cloud]})"
@@ -479,6 +586,15 @@ failed=0; rendered=()
 for c in "${WANT[@]}"; do
   if bake_one "$c" "$PINNED"; then rendered+=("$c"); else failed=1; fi
 done
+
+# A manifest is an admission artifact, not a progress report. Never emit one for
+# a partial/failed render: an empty `clouds` array is syntactically valid and can
+# otherwise outlive the non-zero process status that was meant to disqualify it.
+if [ "$failed" -ne 0 ] || [ "${#rendered[@]}" -ne "${#WANT[@]}" ]; then
+  echo "BAKE_RENDERED=${rendered[*]:-none}"
+  echo "BAKE_RESULT=FAILED"
+  exit 1
+fi
 
 # The bake manifest the per-cloud PUBLISH adapters consume. It names ONE digest for every cloud,
 # which is what lets a publisher verify it is registering the same bytes its siblings registered
@@ -505,5 +621,5 @@ done
 
 echo "BAKE_MANIFEST=$OUT/bake-manifest.json"
 echo "BAKE_RENDERED=${rendered[*]:-none}"
-echo "BAKE_RESULT=$( [ $failed -eq 0 ] && echo PASS || echo FAILED )"
-exit $failed
+echo "BAKE_RESULT=PASS"
+exit 0
