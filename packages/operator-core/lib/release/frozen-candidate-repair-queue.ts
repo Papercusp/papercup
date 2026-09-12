@@ -450,15 +450,17 @@ export interface FrozenCandidateRepairQueue {
    */
   fixerStateChangedAtMs?: number;
   /**
-   * green-gate-zero-wait P-007 (R-7): the three clocks the latency projection reads, so idle
+   * green-gate-zero-wait P-007 (R-7): the four clocks the latency projection reads, so idle
    * time on the repair path is MEASURED rather than anecdotal. Each is optional + additive
    * (legacy rows stay readable) and is stamped only by the transition that owns the event:
    * `fixerSpawnedAtMs` by fixer dispatch, `lastAdmittedAtMs` by admission onto the head,
+   * `lastResumeRunStartedAtMs` when verification begins at the admitted repair head, and
    * `lastVerdictAtMs` by every verdict (candidate red, repair-head red, repair-head green).
    * Derive latencies with `frozenRepairLatency`; never hand-compute from `updatedAtMs`.
    */
   fixerSpawnedAtMs?: number;
   lastAdmittedAtMs?: number;
+  lastResumeRunStartedAtMs?: number;
   lastVerdictAtMs?: number;
   /** Current/last spawn. A completion from any other spawn is stale and rejected. */
   fixerSpawnId: string | null;
@@ -1823,10 +1825,14 @@ export interface FrozenRepairLatency {
   /** Newest fixer dispatch → the admission that followed it. An admission with NO fixer since the
    *  newest red (an auto-convergence such as P-008 / P-005) reports 0: the admission IS the fix. */
   fixToAdmitMs: number | null;
+  /** Newest admission → start of the run that verifies that admitted head. */
+  admitToResumeRunStartMs: number | null;
   /** Newest admission → the verdict that judged it; null while that verdict is still pending. */
   admitToVerdictMs: number | null;
   /** Live wait: ms the newest red has waited for a fixer dispatch; null once one was dispatched. */
   redAwaitingFixerMs: number | null;
+  /** Live wait: ms the newest admission has waited for its verification run to start. */
+  admitAwaitingResumeRunStartMs: number | null;
   /** Live wait: ms the newest admission has waited for its verdict; null once judged. */
   admitAwaitingVerdictMs: number | null;
   stamps: {
@@ -1834,6 +1840,7 @@ export interface FrozenRepairLatency {
     lastRedAtMs: number;
     fixerSpawnedAtMs: number | null;
     lastAdmittedAtMs: number | null;
+    lastResumeRunStartedAtMs: number | null;
     lastVerdictAtMs: number | null;
   };
 }
@@ -1842,7 +1849,7 @@ export type FrozenRepairLatencySource = Pick<FrozenCandidateRepairQueue, 'opened
   Partial<
     Pick<
       FrozenCandidateRepairQueue,
-      'convergenceRounds' | 'fixerSpawnedAtMs' | 'lastAdmittedAtMs' | 'lastVerdictAtMs'
+      'convergenceRounds' | 'fixerSpawnedAtMs' | 'lastAdmittedAtMs' | 'lastResumeRunStartedAtMs' | 'lastVerdictAtMs'
     >
   >;
 
@@ -1856,6 +1863,7 @@ export function frozenRepairLatency(queue: FrozenRepairLatencySource, nowMs: num
   const lastRedAtMs = redAt(null);
   const fixerSpawnedAtMs = queue.fixerSpawnedAtMs ?? null;
   const lastAdmittedAtMs = queue.lastAdmittedAtMs ?? null;
+  const lastResumeRunStartedAtMs = queue.lastResumeRunStartedAtMs ?? null;
   const lastVerdictAtMs = queue.lastVerdictAtMs ?? null;
   const redToFixerSpawnMs =
     fixerSpawnedAtMs === null ? null : Math.max(0, fixerSpawnedAtMs - redAt(fixerSpawnedAtMs));
@@ -1868,30 +1876,43 @@ export function frozenRepairLatency(queue: FrozenRepairLatencySource, nowMs: num
         : fixerSpawnedAtMs <= lastAdmittedAtMs
           ? lastAdmittedAtMs - fixerSpawnedAtMs
           : null;
+  const admissionStarted =
+    lastAdmittedAtMs !== null &&
+    lastResumeRunStartedAtMs !== null &&
+    lastResumeRunStartedAtMs >= lastAdmittedAtMs;
+  const admitToResumeRunStartMs = admissionStarted
+    ? (lastResumeRunStartedAtMs as number) - (lastAdmittedAtMs as number)
+    : null;
   const admissionJudged =
     lastAdmittedAtMs !== null && lastVerdictAtMs !== null && lastVerdictAtMs >= lastAdmittedAtMs;
   const admitToVerdictMs = admissionJudged ? (lastVerdictAtMs as number) - (lastAdmittedAtMs as number) : null;
   const redAwaitingFixerMs =
     queue.phase === 'awaiting-fixer' && !fixerSinceLastRed ? Math.max(0, nowMs - lastRedAtMs) : null;
+  const admitAwaitingResumeRunStartMs =
+    queue.phase === 'ready-to-verify' && lastAdmittedAtMs !== null && !admissionStarted
+      ? Math.max(0, nowMs - lastAdmittedAtMs)
+      : null;
   const admitAwaitingVerdictMs =
     lastAdmittedAtMs !== null && !admissionJudged ? Math.max(0, nowMs - lastAdmittedAtMs) : null;
   return {
     redToFixerSpawnMs,
     fixToAdmitMs,
+    admitToResumeRunStartMs,
     admitToVerdictMs,
     redAwaitingFixerMs,
+    admitAwaitingResumeRunStartMs,
     admitAwaitingVerdictMs,
-    stamps: { openedAtMs: queue.openedAtMs, lastRedAtMs, fixerSpawnedAtMs, lastAdmittedAtMs, lastVerdictAtMs },
+    stamps: { openedAtMs: queue.openedAtMs, lastRedAtMs, fixerSpawnedAtMs, lastAdmittedAtMs, lastResumeRunStartedAtMs, lastVerdictAtMs },
   };
 }
 
-/** P-007: the three optional latency clocks, each read only when it is a timestamp no newer
+/** P-007: the four optional latency clocks, each read only when it is a timestamp no newer
  *  than the row clock — the same admissibility rule as `fixerStateChangedAtMs`. */
 function parseRepairLatencyStamps(
   row: Record<string, unknown>,
-): Pick<FrozenCandidateRepairQueue, 'fixerSpawnedAtMs' | 'lastAdmittedAtMs' | 'lastVerdictAtMs'> {
+): Pick<FrozenCandidateRepairQueue, 'fixerSpawnedAtMs' | 'lastAdmittedAtMs' | 'lastResumeRunStartedAtMs' | 'lastVerdictAtMs'> {
   const out: Record<string, number> = {};
-  for (const key of ['fixerSpawnedAtMs', 'lastAdmittedAtMs', 'lastVerdictAtMs'] as const) {
+  for (const key of ['fixerSpawnedAtMs', 'lastAdmittedAtMs', 'lastResumeRunStartedAtMs', 'lastVerdictAtMs'] as const) {
     const value = row[key];
     if (validTimestamp(value) && value <= (row.updatedAtMs as number)) out[key] = value;
   }
@@ -2164,8 +2185,13 @@ export function markFrozenRepairAdmitted(
   if (entry.paths.length === 0) throw new Error('an admission with no changed paths is not an admission');
   const admissions = [...(queue.admissions ?? []), entry].slice(-FROZEN_REPAIR_ADMISSION_CAP);
   const phase: FrozenCandidateRepairPhase = queue.phase === 'ready-to-test' ? 'ready-to-test' : 'ready-to-verify';
-  const { blockedReason: _leavingBlocked, ...rest } = queue;
+  const {
+    blockedReason: _leavingBlocked,
+    lastResumeRunStartedAtMs: _priorResumeStart,
+    ...rest
+  } = queue;
   void _leavingBlocked;
+  void _priorResumeStart;
   return {
     ...rest,
     phase,
@@ -2178,6 +2204,34 @@ export function markFrozenRepairAdmitted(
     },
     updatedAtMs: Math.max(queue.updatedAtMs, entry.atMs),
     lastAdmittedAtMs: entry.atMs,
+  };
+}
+
+/** Record the first verification-run start for the current admitted repair head.
+ *
+ * The reducer is deliberately race-tolerant: a newer admission or phase transition returns
+ * the fresh row unchanged, so callers may apply it through the queue CAS seam without
+ * overwriting concurrent progress. Re-entry for the same admission preserves the first start.
+ */
+export function markFrozenRepairVerificationStarted(
+  queue: FrozenCandidateRepairQueue,
+  input: { repairHead: string; nowMs: number },
+): FrozenCandidateRepairQueue {
+  assertTimestamp(input.nowMs, 'nowMs');
+  if (queue.phase !== 'ready-to-verify' || queue.repairHead !== input.repairHead) return queue;
+  const admittedAt = queue.lastAdmittedAtMs;
+  if (admittedAt === undefined) return queue;
+  if (
+    queue.lastResumeRunStartedAtMs !== undefined &&
+    queue.lastResumeRunStartedAtMs >= admittedAt
+  ) {
+    return queue;
+  }
+  const startedAt = Math.max(admittedAt, input.nowMs);
+  return {
+    ...queue,
+    lastResumeRunStartedAtMs: startedAt,
+    updatedAtMs: Math.max(queue.updatedAtMs, startedAt),
   };
 }
 

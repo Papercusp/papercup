@@ -223,7 +223,7 @@ describe('projectFrozenRepairQueueRead — P-025', () => {
     expect(projected.freezeAndConverge?.reason).toContain('refusing to report');
   });
 
-  it('keeps true absence distinct and preserves the stored disposition', () => {
+  it('keeps true absence distinct and normalizes unavailable repair latency to null', () => {
     const stored = {
       freezeAndConverge: {
         enabled: true,
@@ -237,7 +237,10 @@ describe('projectFrozenRepairQueueRead — P-025', () => {
     };
     const projected = projectFrozenRepairQueueRead(null, stored, 123);
     expect(projected.read).toEqual({ status: 'absent' });
-    expect(projected.freezeAndConverge).toEqual(stored.freezeAndConverge);
+    expect(projected.freezeAndConverge).toEqual({
+      ...stored.freezeAndConverge,
+      repairLatency: null,
+    });
   });
 });
 

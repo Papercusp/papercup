@@ -1690,7 +1690,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(renewals).toBe(renewalsAfterSettlement);
   });
 
-  it("P-003/P-005: a post-suite-leg repair red is judged by the FULL gate at the repair head — never re-queued for staging alignment, never at tip", async () => {
+  it("P-003/P-005/P-007: a post-suite-leg repair starts and runs the FULL gate at the repair head", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
@@ -1718,6 +1718,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
+      lastAdmittedAtMs: now - 750,
       fixerSpawnId: "fixer-1",
       // P-003 reserves the full-gate route for a typed post-suite leg. A widened related
       // selector is handled by bounded affected workspace tasks instead (focused suite).
@@ -1729,6 +1730,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.runId = "verifier-run";
     deps.runGreen = async (_tree, _base, execution) => {
       calls.push("runGreen");
+      expect(queue?.lastResumeRunStartedAtMs).toBeTypeOf("number");
+      expect(queue!.lastResumeRunStartedAtMs!).toBeGreaterThanOrEqual(
+        queue!.lastAdmittedAtMs!,
+      );
       verificationExecution = execution;
       return { green: true, summary: "all pass", failingTests: [] };
     };

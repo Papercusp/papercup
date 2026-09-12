@@ -136,6 +136,12 @@ export interface HarnessScopeInheritanceInput {
    * Ordinary resolution remains fail-closed on stale durable bindings.
    */
   allowStalePlanFallback?: boolean;
+  /**
+   * An explicit MCP workspace scope is an isolation boundary. A stale ambient
+   * claim/plan/fleet/brief from another workspace must not reject that request;
+   * continue to any binding that is valid for the explicit workspace instead.
+   */
+  allowStaleAmbientFallback?: boolean;
 }
 
 export interface HarnessScopeInheritanceReaders {
@@ -421,6 +427,11 @@ export async function resolveInheritedHarnessScope(
     ].map((harnessSlug) => ({ source, harnessSlug, refs }));
     candidates.push(...sourceCandidates);
     if (read.stale) {
+      // An explicit workspace selected on the transport outranks ambient
+      // session bindings. Keep those bindings in the diagnostic candidate list,
+      // but do not let a binding from the caller's previous workspace block the
+      // explicitly selected workspace.
+      if (input.allowStaleAmbientFallback) continue;
       // coord:orient / fleet:leave / explicit self-clear are recovery surfaces
       // for a session whose launch-bound plan OR fleet was retired/moved. Let
       // those callers continue to a current lower-precedence binding; ordinary

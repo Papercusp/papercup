@@ -81,6 +81,22 @@ describe('selectResponders — selectability gate (liveness, D-008 §5)', () => 
     expect(vias(s)).toEqual(['floor', 'minimum']);
   });
 
+  it('skips owner-paused candidates in BOTH legs', () => {
+    const pausedQ = cand('paused-q', { score: 0.9, ownerPaused: true });
+    const liveQ = cand('live-q', { score: 0.8 });
+    const pausedFill = cand('paused-fill', { score: 0.5, ownerPaused: true });
+    const liveFill = cand('live-fill', { score: 0.4 });
+    const s = selectResponders({
+      qualified: [pausedQ, liveQ],
+      allCandidates: [pausedQ, liveQ, pausedFill, liveFill],
+      min: 2,
+      max: 3,
+      isSelectable: (c) => c.ownerPaused !== true,
+    });
+    expect(ids(s)).toEqual(['live-q', 'live-fill']);
+    expect(vias(s)).toEqual(['floor', 'minimum']);
+  });
+
   it('rejects unknown liveness from absent presence in BOTH legs', () => {
     const absentFloor = cand('absent-floor', { score: 0.9, liveness: 'unknown' });
     const liveFloor = cand('live-floor', { score: 0.8 });

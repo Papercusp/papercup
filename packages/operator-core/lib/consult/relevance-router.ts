@@ -83,6 +83,8 @@ export interface ConsultLiveness {
   sessionState: string | null;
   /** Heartbeat is fresh, but genuine activity is older than the warm-idle band. */
   warmIdle?: boolean;
+  /** The owner is under a currently active, verified loop stand-down pause. */
+  ownerPaused?: boolean;
 }
 
 /**
@@ -111,6 +113,8 @@ export interface RoutingCandidate {
   liveness: string;
   /** Presence oracle's non-fatal warm-idle signal, when measured. */
   warmIdle?: boolean;
+  /** Canonical owner-pause signal from the active loop stand-down reader. */
+  ownerPaused?: boolean;
   /** Present only when semantic discovery degraded to session_turns.text_tsv.
    * These candidates can be selected only as labeled minimum-fill reviewers. */
   fallback?: 'lexical';
@@ -314,11 +318,12 @@ const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
 function annotateLiveness(
   reading: ConsultLivenessReading | undefined,
-): Pick<RoutingCandidate, 'liveness' | 'warmIdle'> {
+): Pick<RoutingCandidate, 'liveness' | 'warmIdle' | 'ownerPaused'> {
   if (reading !== null && typeof reading === 'object') {
     return {
       liveness: reading.sessionState ?? 'unknown',
       ...(typeof reading.warmIdle === 'boolean' ? { warmIdle: reading.warmIdle } : {}),
+      ...(typeof reading.ownerPaused === 'boolean' ? { ownerPaused: reading.ownerPaused } : {}),
     };
   }
   return { liveness: reading ?? 'unknown' };

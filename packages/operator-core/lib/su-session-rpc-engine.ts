@@ -20,7 +20,7 @@ import { createCodexSuSessionAdapter, type CodexSuSessionAdapter } from './su-se
 import { createOmpSuSessionAdapter, type OmpSuSessionAdapter } from './su-session-omp-adapter';
 import { persistSuSessionDescriptor } from './su-session-persistence';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
-import type { SuSessionEventInput, SuSessionHost } from './su-session-host';
+import type { SuSessionEventInput, SuSessionHost, SuSessionServedAccountReader } from './su-session-host';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
 
@@ -30,6 +30,7 @@ export interface SuRpcEngineOptions {
   agentChatId: string;
   model?: string | null;
   accountRoute?: string | null;
+  servedAccountReader?: SuSessionServedAccountReader;
   /** Acceptance-only opt-in to the native permission request/card path. */
   toolApproval?: 'prompt';
   carry?: 'warm' | 'cold';
@@ -127,6 +128,7 @@ export function startSuRpcEngine(
   let ompReadinessFailure: string | undefined;
   let ownerTurnId = '';
   let nativeTurnId = '';
+  let turnCompletionSettled = false;
   let turnFinished: (() => void) | undefined;
   let turnCompletion: Promise<void> | undefined;
   let nativeStart: Promise<RpcFrame> | undefined;
@@ -144,6 +146,7 @@ export function startSuRpcEngine(
       inputTail = inputTail.then(async () => {
         if (!ready || closed) { acknowledged(unavailable('The engine closed before this saved turn was sent')); return; }
         ownerTurnId = turnId;
+        turnCompletionSettled = false;
         const finished = new Promise<void>((resolve) => { turnFinished = resolve; });
         turnCompletion = finished;
         try {
@@ -250,8 +253,15 @@ export function startSuRpcEngine(
     }
     if (completed) emit({ type: 'transcript', phase: 'completed', turnId: ownerTurnId, role: 'assistant', channel, content: streams.get(key) });
   }
-  function finish(status: string, error?: string): void {
+  async function finish(status: string, error?: string): Promise<void> {
+    if (turnCompletionSettled) return;
+    turnCompletionSettled = true;
     if (error) emit({ type: 'error', scope: 'turn', code: `${backend}_turn_failed`, message: error, recoverable: true });
+    // The native transcript/RPC frame carries completion, but not the account
+    // selected by Papercusp's inference gateway. Refresh that provenance before
+    // resolving the owner command so success and known failure both publish a
+    // settled descriptor. The adapter's reader is injectable and null-safe.
+    await adapter.refreshAccountServed();
     host.transition(status === 'interrupted' ? 'interrupted' : 'waiting-for-owner', error ?? `${backend} turn ${status}`);
     turnFinished?.();
   }
@@ -282,7 +292,7 @@ export function startSuRpcEngine(
       } else if (method === 'turn/started') {
         nativeTurnId = string(object(params.turn).id); host.transition('running', 'Codex native turn started');
       } else if (method === 'turn/completed') {
-        const turn = object(params.turn); finish(string(turn.status), string(object(turn.error).message) || undefined);
+        const turn = object(params.turn); void finish(string(turn.status), string(object(turn.error).message) || undefined);
       } else if (method === 'item/agentMessage/delta') {
         transcript(string(params.itemId), 'text', string(params.delta));
       } else if (method === 'item/reasoning/summaryTextDelta') {
@@ -302,7 +312,7 @@ export function startSuRpcEngine(
             tools.delete(id);
           }
         }
-      } else if (method === 'error') finish('failed', string(object(params.error).message) || 'Codex reported an error');
+      } else if (method === 'error') void finish('failed', string(object(params.error).message) || 'Codex reported an error');
     } else {
       const type = string(frame.type);
       if (type === 'message_update') {
@@ -320,16 +330,16 @@ export function startSuRpcEngine(
             transcript(key, channel, streams.has(key) ? '' : string(block.text ?? block.thinking), true);
           }
         }
-        if (message.errorMessage) finish('failed', string(message.errorMessage));
+        if (message.errorMessage) void finish('failed', string(message.errorMessage));
         streams.clear();
       } else if ((type === 'tool_execution_start' || type === 'tool_execution_end') && ownerTurnId) {
         const callId = string(frame.toolCallId), name = string(frame.toolName);
         if (type === 'tool_execution_start') emit({ type: 'tool', phase: 'started', turnId: ownerTurnId, callId, name, input: frame.args as SuSessionJsonValue });
         else emit({ type: 'tool', phase: 'completed', turnId: ownerTurnId, callId, name, output: frame.result as SuSessionJsonValue, isError: frame.isError === true });
-      } else if (type === 'agent_end' || type === 'prompt_result' && frame.agentInvoked === false) finish('completed');
+      } else if (type === 'agent_end' || type === 'prompt_result' && frame.agentInvoked === false) void finish('completed');
       else if (type === 'agent_start') host.transition('running', 'OMP native turn started');
       else if (type === 'auto_compaction_start') host.transition('compacting', 'OMP is compacting its native context');
-      else if (type === 'response' && frame.success === false) finish('failed', string(frame.error));
+      else if (type === 'response' && frame.success === false) void finish('failed', string(frame.error));
     }
   }
   let done: Promise<void> = Promise.resolve();

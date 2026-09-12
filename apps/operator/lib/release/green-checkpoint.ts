@@ -132,6 +132,7 @@ import {
   frozenRepairAgeEscalationRung,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
+  markFrozenRepairVerificationStarted,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   recordFrozenRepairSupersededRed,
@@ -10631,6 +10632,20 @@ async function runGreenCheckpointInner(
           candidate = repairQueue.repairHead;
         }
       }
+      // R-7: the queue already records admission and verdict clocks. Stamp the missing
+      // admission→resume-start boundary through the fresh-row transition immediately before
+      // verification begins. A concurrent admission returns the fresh row unchanged; a retry
+      // of the same head preserves the first start for that admission.
+      repairQueue = await commitFrozenRepairQueueTransition(
+        deps,
+        repairQueue,
+        (fresh) =>
+          markFrozenRepairVerificationStarted(fresh, {
+            repairHead: candidate,
+            nowMs: Date.now(),
+          }),
+        "verification-started",
+      );
       // P-005 / D-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the repair
       // head is verified AT ITS OWN SHA — the frozen candidate plus the admitted fix blobs —
       // never at the integration tip. `verifyRepairHead` re-runs the signature (and the admitted

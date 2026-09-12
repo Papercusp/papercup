@@ -177,6 +177,29 @@ describe('resolveInheritedHarnessScope (P-006)', () => {
     });
   });
 
+  it('lets an explicit workspace bypass stale ambient bindings without weakening ordinary resolution', async () => {
+    const readers = emptyReaders();
+    readers.plan.mockResolvedValue({
+      harnesses: ['papercusp'],
+      refs: ['old-plan'],
+      stale: true,
+      detail: 'bound plan belongs to another workspace',
+    });
+    readers.brief.mockResolvedValue({ harnesses: ['scratch-harness'], refs: ['scratch-brief'] });
+
+    await expect(
+      resolveInheritedHarnessScope({ ownerId: 'su-1', workspaceId: 'scratch' }, readers),
+    ).resolves.toMatchObject({ kind: 'none', reason: 'stale', source: 'plan' });
+
+    await expect(
+      resolveInheritedHarnessScope(
+        { ownerId: 'su-1', workspaceId: 'scratch', allowStaleAmbientFallback: true },
+        readers,
+      ),
+    ).resolves.toMatchObject({ kind: 'harness', slug: 'scratch-harness', source: 'brief' });
+    expect(readers.brief).toHaveBeenCalledOnce();
+  });
+
   it('lets the explicit stale-plan recovery path reach the current fleet binding', async () => {
     const stalePlanReaders = emptyReaders();
     stalePlanReaders.plan.mockResolvedValue({

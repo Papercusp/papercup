@@ -1001,9 +1001,13 @@ export async function getFeedbackCore(
     // warmIdle is deliberately distinct from "dead": a parked owner with a
     // fresh heartbeat may still wake, but a long-silent owner must not consume
     // the minimum-fill slot ahead of a live cascade candidate. Fresh parked
-    // responders remain selectable.
+    // responders remain selectable. An active owner pause is a separate,
+    // authoritative stop signal: it must suppress delivery even when the
+    // session's liveness oracle still reports it as live or parked.
     isSelectable: (c) =>
-      !UNSELECTABLE_RESPONDER_STATES.has(c.liveness) && !(c.liveness === 'parked' && c.warmIdle === true),
+      !UNSELECTABLE_RESPONDER_STATES.has(c.liveness) &&
+      !(c.liveness === 'parked' && c.warmIdle === true) &&
+      c.ownerPaused !== true,
   });
   route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
   const chosenSel = selected[0] ?? null;

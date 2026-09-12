@@ -464,6 +464,27 @@ describe('getFeedbackCore — routed', () => {
     expect(r.remaining_candidates).toEqual([]);
   });
 
+  it('liveness gate: a verified owner-paused candidate is skipped for a live fallback', async () => {
+    const pausedTop = cand('agent-owner-paused', { score: 0.9, liveness: 'live', ownerPaused: true });
+    const liveFallback = cand('agent-live-owner-pause-fallback', {
+      score: 0.2,
+      liveness: 'live',
+      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+    });
+    const { deps, opened } = makeDeps(
+      routeOf([pausedTop], { all: [pausedTop, liveFallback] }),
+    );
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r.responder?.ownerId).toBe('agent-live-owner-pause-fallback');
+    expect(r.responder_via).toBe('minimum');
+    expect(opened[0].direct_to).toEqual(['agent-live-owner-pause-fallback']);
+
+    const row = await stateRow(r.conversation_id);
+    expect((row.routing as RoutingSnapshot).candidates).toContainEqual(
+      expect.objectContaining({ ownerId: 'agent-owner-paused', ownerPaused: true }),
+    );
+  });
+
   it('liveness gate: warm-idle parked minimum is skipped for a live fallback', async () => {
     const warmIdle = cand('agent-warm-idle', { score: 0.9, liveness: 'parked', warmIdle: true });
     const liveFallback = cand('agent-live-fallback', {

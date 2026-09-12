@@ -42,6 +42,7 @@ afterEach(async () => {
 
 function fixture(backend: 'codex' | 'omp', overrides: {
   nativeId?: string; tools?: boolean; model?: string;
+  servedAccountReader?: (ownerId: string) => Promise<string | null>;
   request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
   resume?: boolean;
   history?: RpcFrame[];
@@ -99,6 +100,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     agentChatId: `chat-${backend}`, model: backend === 'codex' ? 'codex-model' : 'openai/omp-model',
     startupTimeoutMs: 500,
     deliveryTimeoutMs: overrides.deliveryTimeoutMs,
+    servedAccountReader: overrides.servedAccountReader,
     beforeReady: overrides.beforeReady,
     toolApproval: overrides.toolApproval,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
@@ -223,7 +225,8 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
   });
 
   it('correlates streaming replies and tools to the submitted owner turn', async () => {
-    const f = fixture(backend);
+    const servedAccountReader = vi.fn(async (_ownerId: string) => `pool-${backend}-success`);
+    const f = fixture(backend, { servedAccountReader });
     await f.engine.ready;
     const dispatch = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
     await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
@@ -251,7 +254,33 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       expect.objectContaining({ phase: 'started', turnId: 'owner-owner_turn', callId: 'call' }),
       expect.objectContaining({ phase: 'completed', turnId: 'owner-owner_turn', callId: 'call', isError: false }),
     ]);
-    expect(f.engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner');
+    await vi.waitFor(() => expect(f.engine.adapter.host.descriptor()).toMatchObject({
+      lifecycle: 'waiting-for-owner', accountServed: `pool-${backend}-success`,
+    }));
+    expect(servedAccountReader).toHaveBeenCalledWith('su-rpc-fixture');
+  });
+
+  it('refreshes the served account after a known native turn failure', async () => {
+    const servedAccountReader = vi.fn(async (_ownerId: string) => `pool-${backend}-failure`);
+    const f = fixture(backend, { servedAccountReader });
+    await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    if (backend === 'codex') {
+      f.emit({ method: 'turn/completed', params: {
+        threadId: 'native-codex', turn: { id: 'native-turn', status: 'failed', error: { message: 'no available account' } },
+      } });
+    } else {
+      f.emit({ type: 'response', success: false, error: 'no available account' });
+    }
+    await vi.waitFor(() => {
+      expect(f.engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+        type: 'error', scope: 'turn', code: `${backend}_turn_failed`, message: 'no available account',
+      }));
+      expect(f.engine.adapter.host.descriptor()).toMatchObject({
+        lifecycle: 'waiting-for-owner', accountServed: `pool-${backend}-failure`,
+      });
+    });
+    expect(servedAccountReader).toHaveBeenCalledWith('su-rpc-fixture');
   });
 
   it('interrupts the native turn and keeps the connection usable', async () => {

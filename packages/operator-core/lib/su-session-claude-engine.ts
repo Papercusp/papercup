@@ -422,6 +422,12 @@ export function startClaudeSuEngine(
                   message: `Claude completed this turn without sending any assistant content; the turn produced no reply.${childStderrSuffix(childStderr.read())}`,
                 });
               }
+              // The gateway resolves the account that actually served this
+              // native turn outside Claude's transcript. Read it only after
+              // Claude has emitted its terminal result (success or failure),
+              // so the descriptor never claims a route before inference has
+              // settled and the command receipt is not completed first.
+              await adapter.refreshAccountServed();
             }
             finishActiveTurn?.();
           }

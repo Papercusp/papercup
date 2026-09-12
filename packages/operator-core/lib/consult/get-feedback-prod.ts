@@ -12,10 +12,11 @@ export async function getFeedbackProd(
 ) {
   const [
     { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedder },
-    { resolveSessionStates }, conversations, { notifyAgents }, { makeConsultReviver },
+    { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { notifyAgents }, { makeConsultReviver },
   ] = await Promise.all([
     import('@papercusp/db-org'), import('./get-feedback-core'), import('./relevance-router'),
     import('../agent-tools/search/embedder'), import('../agent-tools/coordination/liveness-oracle'),
+    import('../harness/routines/release-pause-ttl'),
     import('../agent-tools/coordination/conversations'), import('../agent-tools/coordination/notify-agents'),
     import('./revive-responder'),
   ]);
@@ -27,13 +28,17 @@ export async function getFeedbackProd(
         getSql: () => getOrgPg().sql,
         embed,
         getLiveness: async (ownerIds) => {
-          const verdicts = await resolveSessionStates(ownerIds.map((ownerId) => ({ ownerId })), {
-            hydratePerId: true,
-            psuHostPositiveAuthority: true,
-          });
+          const [verdicts, pausedOwners] = await Promise.all([
+            resolveSessionStates(ownerIds.map((ownerId) => ({ ownerId })), {
+              hydratePerId: true,
+              psuHostPositiveAuthority: true,
+            }),
+            listLoopStanddownOwners(getOrgPg().sql, { workspaceId: request.workspaceId }),
+          ]);
           return Object.fromEntries([...verdicts.values()].map((v) => [v.ownerId, {
             sessionState: v.sessionState,
             ...(typeof v.warmIdle === 'boolean' ? { warmIdle: v.warmIdle } : {}),
+            ...(pausedOwners.has(v.ownerId) ? { ownerPaused: true } : {}),
           }]));
         },
       });

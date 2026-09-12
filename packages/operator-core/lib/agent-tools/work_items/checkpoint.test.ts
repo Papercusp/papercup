@@ -4286,6 +4286,22 @@ describe('work_items:checkpoint — unchanged attestation surface (P-007/R-06)',
     expect(attestWorkItemCheckpointUnchanged).not.toHaveBeenCalled();
   });
 
+  it('EI-23074991388482969: treats blank contentHash as omitted in shorthand and items[] schemas', async () => {
+    const shorthand = parse({ id: 'WI-ATT', unchanged: true, contentHash: '' }) as { contentHash?: string };
+    const batch = parse({
+      items: [{ id: 'WI-ATT', unchanged: true, contentHash: '   ' }],
+    }) as { items: Array<{ contentHash?: string }> };
+
+    expect(shorthand.contentHash).toBeUndefined();
+    expect(batch.items[0].contentHash).toBeUndefined();
+
+    const shorthandResult = await one({ id: 'WI-ATT', unchanged: true, contentHash: '' });
+    const batchResult = await one({ items: [{ id: 'WI-ATT', unchanged: true, contentHash: '   ' }] });
+    expect(shorthandResult.errorCode).toBe('attestation_hash_required');
+    expect(batchResult.errorCode).toBe('attestation_hash_required');
+    expect(attestWorkItemCheckpointUnchanged).not.toHaveBeenCalled();
+  });
+
   it('on success reports the remaining budget and writes NO body', async () => {
     attestWorkItemCheckpointUnchanged.mockResolvedValue({
       ok: true,

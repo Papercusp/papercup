@@ -1,6 +1,6 @@
 /**
  * P-007 (R-7, green-gate-zero-wait-convergence-2026-09-08): the frozen repair queue keeps
- * three latency clocks — newest fixer dispatch, newest admission, newest verdict — and
+ * four latency clocks — newest fixer dispatch, newest admission, verification start, newest verdict — and
  * `frozenRepairLatency` projects them into the red→fix→admit→verdict figures that
  * `gate_health.freezeAndConverge.repairLatency` publishes every tick.
  *
@@ -18,6 +18,7 @@ import {
   frozenRepairLatency,
   markFrozenRepairAdmitted,
   markFrozenRepairFixerDispatched,
+  markFrozenRepairVerificationStarted,
   markFrozenRepairVerificationGreen,
   parseFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
@@ -62,14 +63,17 @@ describe('frozenRepairLatency — P-007 red→fix→admit→verdict clocks', () 
     expect(latency).toEqual({
       redToFixerSpawnMs: null,
       fixToAdmitMs: null,
+      admitToResumeRunStartMs: null,
       admitToVerdictMs: null,
       redAwaitingFixerMs: 5 * MIN,
+      admitAwaitingResumeRunStartMs: null,
       admitAwaitingVerdictMs: null,
       stamps: {
         openedAtMs: T0,
         lastRedAtMs: T0,
         fixerSpawnedAtMs: null,
         lastAdmittedAtMs: null,
+        lastResumeRunStartedAtMs: null,
         // The opening red IS a verdict (the candidate's), so the clock starts stamped; it only
         // becomes an admit→verdict figure once a verdict lands AFTER an admission.
         lastVerdictAtMs: T0,
@@ -84,7 +88,9 @@ describe('frozenRepairLatency — P-007 red→fix→admit→verdict clocks', () 
     expect(latency.redToFixerSpawnMs).toBe(2 * MIN);
     expect(latency.redAwaitingFixerMs).toBeNull();
     expect(latency.fixToAdmitMs).toBeNull();
+    expect(latency.admitToResumeRunStartMs).toBeNull();
     expect(latency.admitToVerdictMs).toBeNull();
+    expect(latency.admitAwaitingResumeRunStartMs).toBeNull();
     expect(latency.admitAwaitingVerdictMs).toBeNull();
   });
 
@@ -95,6 +101,8 @@ describe('frozenRepairLatency — P-007 red→fix→admit→verdict clocks', () 
     const latency = frozenRepairLatency(admitted, T0 + 12 * MIN);
     expect(latency.redToFixerSpawnMs).toBe(2 * MIN);
     expect(latency.fixToAdmitMs).toBe(7 * MIN);
+    expect(latency.admitToResumeRunStartMs).toBeNull();
+    expect(latency.admitAwaitingResumeRunStartMs).toBe(3 * MIN);
     expect(latency.admitToVerdictMs).toBeNull();
     expect(latency.admitAwaitingVerdictMs).toBe(3 * MIN);
     expect(latency.redAwaitingFixerMs).toBeNull();
@@ -105,15 +113,43 @@ describe('frozenRepairLatency — P-007 red→fix→admit→verdict clocks', () 
     const latency = frozenRepairLatency(admitted, T0 + 4 * MIN);
     expect(latency.redToFixerSpawnMs).toBeNull();
     expect(latency.fixToAdmitMs).toBe(0);
+    expect(latency.admitAwaitingResumeRunStartMs).toBe(0);
     expect(latency.admitAwaitingVerdictMs).toBe(0);
+  });
+
+  it('records the first resume-run start and clears the live start wait', () => {
+    const admitted = admit(fresh(), T0 + 9 * MIN);
+    const started = markFrozenRepairVerificationStarted(admitted, {
+      repairHead: C1,
+      nowMs: T0 + 12 * MIN,
+    });
+    const retry = markFrozenRepairVerificationStarted(started, {
+      repairHead: C1,
+      nowMs: T0 + 20 * MIN,
+    });
+    expect(retry).toBe(started);
+    expect(frozenRepairLatency(started, T0 + 13 * MIN)).toMatchObject({
+      admitToResumeRunStartMs: 3 * MIN,
+      admitAwaitingResumeRunStartMs: null,
+      admitAwaitingVerdictMs: 4 * MIN,
+      stamps: { lastResumeRunStartedAtMs: T0 + 12 * MIN },
+    });
+  });
+
+  it('leaves a newer repair head unchanged when a stale run tries to stamp its start', () => {
+    const admitted = admit(fresh(), T0 + 9 * MIN);
+    expect(markFrozenRepairVerificationStarted(admitted, { repairHead: C, nowMs: T0 + 12 * MIN })).toBe(admitted);
   });
 
   it('a green verdict settles admit→verdict and clears the live verdict wait', () => {
     const admitted = admit(markFrozenRepairFixerDispatched(fresh(), { spawnId: 'spawn-1', nowMs: T0 + 2 * MIN }), T0 + 9 * MIN);
-    const green = markFrozenRepairVerificationGreen(admitted, { repairHead: C1, nowMs: T0 + 40 * MIN });
+    const started = markFrozenRepairVerificationStarted(admitted, { repairHead: C1, nowMs: T0 + 12 * MIN });
+    const green = markFrozenRepairVerificationGreen(started, { repairHead: C1, nowMs: T0 + 40 * MIN });
     expect(green.lastVerdictAtMs).toBe(T0 + 40 * MIN);
     const latency = frozenRepairLatency(green, T0 + 41 * MIN);
     expect(latency.admitToVerdictMs).toBe(31 * MIN);
+    expect(latency.admitToResumeRunStartMs).toBe(3 * MIN);
+    expect(latency.admitAwaitingResumeRunStartMs).toBeNull();
     expect(latency.admitAwaitingVerdictMs).toBeNull();
     expect(latency.redAwaitingFixerMs).toBeNull();
     expect(latency.stamps).toEqual({
@@ -121,6 +157,7 @@ describe('frozenRepairLatency — P-007 red→fix→admit→verdict clocks', () 
       lastRedAtMs: T0,
       fixerSpawnedAtMs: T0 + 2 * MIN,
       lastAdmittedAtMs: T0 + 9 * MIN,
+      lastResumeRunStartedAtMs: T0 + 12 * MIN,
       lastVerdictAtMs: T0 + 40 * MIN,
     });
   });
@@ -132,22 +169,25 @@ describe('frozenRepairLatency — P-007 red→fix→admit→verdict clocks', () 
 });
 
 describe('latency clocks — persistence', () => {
-  it('round-trips the three clocks through JSON and drops a clock newer than the row clock', () => {
+  it('round-trips the four clocks through JSON and drops a clock newer than the row clock', () => {
     const admitted = admit(markFrozenRepairFixerDispatched(fresh(), { spawnId: 'spawn-1', nowMs: T0 + 2 * MIN }), T0 + 9 * MIN);
-    const green = markFrozenRepairVerificationGreen(admitted, { repairHead: C1, nowMs: T0 + 40 * MIN });
+    const started = markFrozenRepairVerificationStarted(admitted, { repairHead: C1, nowMs: T0 + 12 * MIN });
+    const green = markFrozenRepairVerificationGreen(started, { repairHead: C1, nowMs: T0 + 40 * MIN });
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(green)));
     expect(parsed).toMatchObject({
       fixerSpawnedAtMs: T0 + 2 * MIN,
       lastAdmittedAtMs: T0 + 9 * MIN,
+      lastResumeRunStartedAtMs: T0 + 12 * MIN,
       lastVerdictAtMs: T0 + 40 * MIN,
     });
     // A stamp from the future relative to updatedAtMs is inadmissible — same rule as fixerStateChangedAtMs.
     const skewed = parseFrozenCandidateRepairQueue({
       ...JSON.parse(JSON.stringify(green)),
-      lastVerdictAtMs: green.updatedAtMs + 1,
+      lastResumeRunStartedAtMs: green.updatedAtMs + 1,
     });
     expect(skewed).not.toBeNull();
-    expect(skewed?.lastVerdictAtMs).toBeUndefined();
+    expect(skewed?.lastResumeRunStartedAtMs).toBeUndefined();
+    expect(skewed?.lastVerdictAtMs).toBe(T0 + 40 * MIN);
     expect(skewed?.lastAdmittedAtMs).toBe(T0 + 9 * MIN);
   });
 });

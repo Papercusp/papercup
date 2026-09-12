@@ -232,6 +232,19 @@ describe('routeConsult — routing + blend', () => {
     expect(alpha).toMatchObject({ liveness: 'parked', warmIdle: true });
   });
 
+  it('carries the canonical ownerPaused signal into the routing snapshot', async () => {
+    const r = await routeConsult(
+      baseParams,
+      deps(0, {
+        getLiveness: async () => ({
+          'agent-alpha': { sessionState: 'live', ownerPaused: true },
+        }),
+      }),
+    );
+    const alpha = r.snapshot.candidates.find((c) => c.ownerId === 'agent-alpha');
+    expect(alpha).toMatchObject({ liveness: 'live', ownerPaused: true });
+  });
+
   it('authorship: a question naming a path boosts the owner whose completed work touched it', async () => {
     const r = await routeConsult(
       { ...baseParams, question: 'who understands packages/operator-core/lib/consult/relevance-router.ts?' },

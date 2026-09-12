@@ -695,6 +695,35 @@ describe('applyResultDoor', () => {
     expect(spill).toContain(`# advisory-text-items-json: ${JSON.stringify([advisory])}`);
   });
 
+  it('preserves typed evidence selectors on ordinary JSON spill references', () => {
+    const original = JSON.stringify({
+      ok: true,
+      results: Array.from({ length: 300 }, (_, i) => ({
+        id: `EI-${i}`,
+        workItem: { id: `EI-${i}`, state: 'open' },
+        detail: 'x'.repeat(120),
+      })),
+    });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const spillPath = (doored._meta!.resultDoor as { spillPath: string }).spillPath;
+    const parsed = parseScratchReference(readFileSync(spillPath))!;
+
+    expect(parsed.manifest.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          evidenceClass: 'work-item',
+          contentIndex: 0,
+          jsonPointers: expect.arrayContaining(['/results/0/workItem']),
+        }),
+      ]),
+    );
+  });
+
   it('preserves a degraded projection warning when structurally bounding its oversized JSON body', () => {
     const original = JSON.stringify({
       results: Array.from({ length: 300 }, (_, i) => ({

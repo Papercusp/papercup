@@ -633,6 +633,20 @@ function checkpointBodySpec(): z.ZodType<string | null | undefined> {
 const checkpointBodySchema = checkpointBodySpec().meta({ id: 'work-items-checkpoint-body-v1' });
 
 /**
+ * EI-23074991388482969: some transports materialize an omitted optional string as
+ * an empty string. `contentHash` is ignored for ordinary writes and is already
+ * checked as missing by the attestation branch, so a blank value must follow the
+ * omitted path instead of failing the hash-length validation before the handler.
+ * Preserve the minimum length requirement for actual hashes.
+ */
+function contentHashSpec() {
+  return z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().min(6).max(64).optional(),
+  );
+}
+
+/**
  * P-013 compatibility: `rowsMode` controls only supplied check rows. The
  * default is merge so a subset update cannot silently retire carried rows;
  * explicit `replace` remains the retirement path. `merge` makes an additive
@@ -990,12 +1004,7 @@ const itemSpec = z.object({
       'written (attestation_state_changed), or once the chain/age budget is spent (attestation_exhausted) — at ' +
       'which point a real checkpoint is required. A genuine write resets the budget.',
   ),
-  contentHash: z
-    .string()
-    .min(6)
-    .max(64)
-    .optional()
-    .describe(
+  contentHash: contentHashSpec().describe(
       'The stored checkpoint hash you are attesting to (the `contentHash` a prior write returned). Required with ' +
         '`unchanged:true` and ignored otherwise. Binds the attestation to a body you have actually read, so a ' +
         'checkpoint someone else replaced fails the check instead of being silently re-blessed.',
@@ -1138,12 +1147,9 @@ export default defineTool({
         'single shorthand default for `unchanged`; also the items[] default. ATTEST that the stored checkpoint ' +
           'is still current instead of rewriting it. Requires `contentHash`.',
       ),
-      contentHash: z
-        .string()
-        .min(6)
-        .max(64)
-        .optional()
-        .describe('single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.'),
+      contentHash: contentHashSpec().describe(
+        'single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.',
+      ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',

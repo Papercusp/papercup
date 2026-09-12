@@ -150,6 +150,34 @@ describe('planRowToRubric', () => {
     });
   });
 
+  it('does not hide a rubric when a newer server added a BAR contract field', () => {
+    const r = planRowToRubric(
+      planRow({
+        template_data: {
+          ...baseData,
+          kind: 'acceptance',
+          subjectPlan: 'some-plan-2026-09-04',
+          barSetHash: 'a'.repeat(64),
+          barContract: {
+            schemaVersion: 1,
+            adoptionEpoch: 1,
+            cohort: 'post-epoch',
+            subjectPlanRevision: 3,
+            seededAt: '2026-09-04T12:00:00.000Z',
+            seededBy: 'su-author',
+            futureServerField: { revision: 4 },
+          },
+        },
+      }),
+    );
+
+    expect(r).not.toBeNull();
+    expect(r?.barContract).toMatchObject({
+      subjectPlanRevision: 3,
+      futureServerField: { revision: 4 },
+    });
+  });
+
   it('projects only finite plan versions as the optional rubric revision', () => {
     expect(planRowToRubric(planRow({ version: '42' }))?.revision).toBe(42);
     expect(planRowToRubric(planRow({ version: null }))).not.toHaveProperty('revision');

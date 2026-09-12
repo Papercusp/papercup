@@ -1433,6 +1433,11 @@ export async function tryBuildSpawnContext(
     const headerHarness = (headers.get('x-papercusp-harness') ?? '').trim();
     const explicitHarness = headerHarness || harnessUrlParam;
     let harnessParam = explicitHarness;
+    // A workspace supplied on the MCP URL is an explicit isolation boundary.
+    // Do not let an ambient plan/claim from the session's previous workspace
+    // make the new workspace unusable; the resolver may still retain any
+    // binding that is valid in the selected workspace.
+    const explicitWorkspaceScope = Boolean(headerWs || wsParam);
     if (!workspaceId && sidForLookup) {
       workspaceId = (await workspaceForCoordOwner(sidForLookup)) ?? '';
     }
@@ -1487,6 +1492,7 @@ export async function tryBuildSpawnContext(
         ownerId: sidForLookup,
         workspaceId: workspaceId || '*',
         sessionHarness: null,
+        allowStaleAmbientFallback: explicitWorkspaceScope,
         // coord:orient is the one transport call that can re-declare intent and
         // clear a retired launch-bound plan. Keep the recovery opt-in so all
         // ordinary calls remain fail-closed on stale durable bindings.

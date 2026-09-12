@@ -163,14 +163,17 @@ function readRepairLatency(value: unknown): FrozenRepairLatency | null {
   return {
     redToFixerSpawnMs: numOrNull(r['redToFixerSpawnMs']),
     fixToAdmitMs: numOrNull(r['fixToAdmitMs']),
+    admitToResumeRunStartMs: numOrNull(r['admitToResumeRunStartMs']),
     admitToVerdictMs: numOrNull(r['admitToVerdictMs']),
     redAwaitingFixerMs: numOrNull(r['redAwaitingFixerMs']),
+    admitAwaitingResumeRunStartMs: numOrNull(r['admitAwaitingResumeRunStartMs']),
     admitAwaitingVerdictMs: numOrNull(r['admitAwaitingVerdictMs']),
     stamps: {
       openedAtMs: stamps['openedAtMs'],
       lastRedAtMs: stamps['lastRedAtMs'],
       fixerSpawnedAtMs: numOrNull(stamps['fixerSpawnedAtMs']),
       lastAdmittedAtMs: numOrNull(stamps['lastAdmittedAtMs']),
+      lastResumeRunStartedAtMs: numOrNull(stamps['lastResumeRunStartedAtMs']),
       lastVerdictAtMs: numOrNull(stamps['lastVerdictAtMs']),
     },
   };

@@ -1033,6 +1033,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? textItems[jsonItemIndex].text
         : fullText;
     const spillAdvisoryPrefix = buildSpillAdvisoryPrefix(textItems, jsonItemIndex, jsonSlice);
+    // Preserve the same typed evidence index on ordinary text spills as on the
+    // hard-overflow reference envelope. A result can reach this branch when the
+    // outer result door caps a JSON `work_items:get` response; without the index,
+    // capability:read's evidence_class selector sees a valid scratch reference
+    // but cannot resolve its work-item/event/fleet evidence (EI-22586299911603348).
+    const spillEvidence = detectResultEvidence(items);
     // WI-36047 (borrow item 9, opencode/OMP research): THE SPILL GETS ITS OWN
     // FAIL-SOFT BOUNDARY, SEPARATE FROM THE CAP.
     //
@@ -1152,6 +1158,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           audience: opts.ownerId ? 'owner' : 'workspace',
           mediaType: 'text/plain',
           content: contentMetadata(items),
+          evidence: spillEvidence,
           // EI-21949915395361184: put the boundary IN THE FILE, not only in the cursor
           // this call returns. Ten reports across five months all describe the same
           // consumer — one holding the path and nothing else — and every guess that

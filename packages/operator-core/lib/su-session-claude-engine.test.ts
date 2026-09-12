@@ -198,10 +198,15 @@ describe('structured Claude SU engine', () => {
   });
 
   it('delivers exact owner text and correlates the reply with the PUI turn', async () => {
-    const p = peer(); const engine = open(p); await engine.ready;
+    const p = peer();
+    const servedAccountReader = vi.fn(async (_ownerId: string) => 'pool-claude-success');
+    const engine = open(p, { servedAccountReader }); await engine.ready;
     const result = await engine.adapter.host.startCommand(command(engine)).terminal;
     expect(result.status).toBe('completed');
-    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor()).toMatchObject({
+      lifecycle: 'waiting-for-owner', accountServed: 'pool-claude-success',
+    }));
+    expect(servedAccountReader).toHaveBeenCalledWith('su-test');
     expect(p.prompts[0].message.content).toBe('  hi 雪\n\n');
     expect(p.prompts[0].origin).toEqual({ kind: 'human' });
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
@@ -219,14 +224,22 @@ describe('structured Claude SU engine', () => {
   });
 
   it('reports a failing native result subtype with the reason the turn stopped', async () => {
-    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    const p = peer({ holdResult: true });
+    const servedAccountReader = vi.fn(async (_ownerId: string) => 'pool-claude-failure');
+    const engine = open(p, { servedAccountReader }); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;
     p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId,
       is_error: true, stop_reason: 'api_error', errors: ['no available account'] });
-    await vi.waitFor(() => expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
-      type: 'error', scope: 'transport', code: 'claude_turn_failed',
-      message: expect.stringContaining('no available account'),
-    })));
+    await vi.waitFor(() => {
+      expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+        type: 'error', scope: 'transport', code: 'claude_turn_failed',
+        message: expect.stringContaining('no available account'),
+      }));
+      expect(engine.adapter.host.descriptor()).toMatchObject({
+        lifecycle: 'waiting-for-owner', accountServed: 'pool-claude-failure',
+      });
+    });
+    expect(servedAccountReader).toHaveBeenCalledWith('su-test');
   });
 
   it('reports an API error carried on a success result instead of reading it as a reply', async () => {
