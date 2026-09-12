@@ -420,13 +420,11 @@ describe('git-sync:run', () => {
     return parse((await tool.handler({}, MAKE_CTX())) as never);
   };
 
-  // EI-21914064913503090: `held_exclusive` is the ONE skip class whose retry signal is
-  // deliberately never emitted — git-sync-action.ts guards the sole emitter with
-  // `reason !== 'held_exclusive'` (WI-209800 / D-104). Advertising a completion_event
-  // here handed callers an events:await on a key with no reachable emitter, so the
-  // response must promise no event at all. It must NOT substitute git-sync:committed:
-  // the holder is not necessarily the system routine (any peer may hold git-sync:<slug>).
-  it('promises NO completion event when the skip is held_exclusive, since none is ever emitted for that class', async () => {
+  // EI-22726196301284168: `held_exclusive` still must not advertise the global
+  // lock-retry key, whose emitter deliberately excludes this refusal class. The
+  // release path now emits an exact resource key after the exclusive row is gone,
+  // so callers can await a truthful release boundary and retry safely.
+  it('advertises the exact resource release event for a held_exclusive skip', async () => {
     const outcome = {
       status: 'skipped' as const,
       reason: 'held_exclusive',
@@ -444,6 +442,11 @@ describe('git-sync:run', () => {
       outcome,
       // Live holder state is still genuinely useful and is retained.
       continuation: {
+        completion_event: {
+          key: 'resource:released:git-sync:papercusp',
+          payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+        },
+        await_tool: 'events:await',
         progress_ref: {
           surface: 'agent_resource_locks',
           workspace_id: 'default',
@@ -453,16 +456,15 @@ describe('git-sync:run', () => {
         },
       },
     });
-    // The dead-drop: no awaitable event may be advertised for this class.
-    // (`parse` returns Record<string, unknown>, so narrow before indexing.)
+    // The global retry key remains a dead drop for this class and must not be
+    // substituted for the exact release-boundary key.
     const { continuation } = result as { continuation: Record<string, unknown> };
-    expect(continuation.completion_event).toBeUndefined();
-    expect(continuation.await_tool).toBeUndefined();
-    // ...and the prose must not name the key AT ALL. Mentioning it even to negate it
-    // ("do NOT await git-sync:lock-retry") is what a skimming caller or a substring
-    // match turns straight back into the dead-drop await. Caught by this assertion.
+    expect(continuation.completion_event).toMatchObject({
+      key: 'resource:released:git-sync:papercusp',
+    });
+    expect(continuation.completion_event).not.toMatchObject({ key: 'git-sync:lock-retry' });
+    expect(result.note).toMatch(/exact resource release event/);
     expect(result.note).not.toMatch(/git-sync:lock-retry/);
-    expect(result.note).toMatch(/NO targeted retry event fires/);
   });
 
   it('names an in-flight git-sync auto-commit instead of calling it a peer', async () => {
@@ -487,8 +489,13 @@ describe('git-sync:run', () => {
     expect(result.note).toMatch(/an in-flight git-sync auto-commit holds git-sync:papercusp/);
     expect(result.note).not.toMatch(/a peer holds git-sync:papercusp/);
     const { continuation } = result as { continuation: Record<string, unknown> };
-    expect(continuation.completion_event).toBeUndefined();
-    expect(continuation.await_tool).toBeUndefined();
+    expect(continuation).toMatchObject({
+      completion_event: {
+        key: 'resource:released:git-sync:papercusp',
+        payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+      },
+      await_tool: 'events:await',
+    });
   });
 
   // POSITIVE CONTROL for the case above: the fix must be scoped to `held_exclusive`
