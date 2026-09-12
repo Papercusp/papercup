@@ -129,6 +129,9 @@ vi.mock('../../carry-note', async (importOriginal) => ({
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller', workspaceId: 'ws-1' })),
+  resolveSelfLiteral: vi.fn((value: string | undefined, callerOwnerId: string) =>
+    value === 'self' ? callerOwnerId : value,
+  ),
 }));
 vi.mock('../coordination/presence', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -1037,6 +1040,16 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     await call({ next: 'x', ownerId: 'su-other-session' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ ownerId: 'su-other-session', harness: 'papercusp' }),
+      expect.any(String),
+    );
+  });
+
+  it('resolves ownerId:self to the caller instead of writing a shadow carry-note', async () => {
+    await call({ next: 'x', ownerId: 'self' });
+
+    expect(getLoopStatus).toHaveBeenCalledWith('su-caller');
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-caller', harness: 'papercusp' }),
       expect.any(String),
     );
   });

@@ -25,7 +25,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPgContentionRetry } from '@papercusp/coordination/event-log';
 import { DbCallDeadlineError } from '@papercusp/db-org';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
@@ -884,7 +884,10 @@ export default defineTool({
     ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const ownerId = args.ownerId ?? identity.ownerId;
+    // Keep the documented `self` selector aligned with loop:arm/end/status. A
+    // literal ownerId of "self" would otherwise create/read a shadow carry-note
+    // that the caller's loop never consumes (EI-23090548123254420).
+    const ownerId = resolveSelfLiteral(args.ownerId, identity.ownerId) ?? identity.ownerId;
     // WI-2148: the carry-note scope key MUST match what the cold-wake READER resolves —
     // and the reader gets `harness` from the ColdLoopMarker the FIRE stamped on the wake
     // payload, which is the ARMED ROUTINE's fixed `install_slug` (loop.ts's getLoopStatus),
