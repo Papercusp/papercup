@@ -3935,9 +3935,10 @@ impl App {
 
     fn chat_cursor_for_line_column(line: &str, wanted: usize) -> usize {
         let mut offset = 0;
-        for (next, ch) in line.char_indices().map(|(offset, ch)| {
-            (offset + ch.len_utf8(), ch)
-        }) {
+        for next in line
+            .char_indices()
+            .map(|(offset, ch)| offset + ch.len_utf8())
+        {
             let width = ratatui::text::Line::from(line[..next].to_string()).width();
             if width > wanted {
                 break;

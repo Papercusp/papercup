@@ -3234,6 +3234,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Theme::dim(),
         )
     };
+    let selection_row_count = selection_rows.len();
     let mut composer_lines: Vec<Line> = selection_rows
         .into_iter()
         .map(|row| Line::from(Span::styled(row, Theme::dim())))
@@ -3288,9 +3289,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         let y = composer_area
             .y
             .saturating_add(1)
-            .saturating_add(selection_rows.len() as u16)
+            .saturating_add(selection_row_count as u16)
             .saturating_add(app.attachments.len() as u16)
-            .saturating_add(row)
+            .saturating_add(row.min(u16::MAX as usize) as u16)
             .min(composer_area.y.saturating_add(composer_area.height.saturating_sub(2)));
         f.set_cursor_position(Position::new(x, y));
     }
