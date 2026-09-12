@@ -1640,7 +1640,20 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
-      expect(pane.screen()).toMatch(/PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/);
+      // The retained-draft banner and the failure REASON are driven by two
+      // different signals, and the reason itself has two racing sources: the
+      // fixture calls output.end() (surfaced as "Claude event stream closed
+      // unexpectedly") immediately BEFORE it throws (surfaced as "PUI-E2E
+      // engine exited during initialization"). The regex accepts either
+      // because whichever lands first is legitimate — but either can paint a
+      // frame or more after the banner the wait above keys on, so sampling the
+      // screen once at exactly that moment made this assertion a race.
+      // Poll for the SAME regex until a deadline instead: nothing is loosened,
+      // and a reason that never arrives still fails, with the rendered screen
+      // attached by the matcher.
+      await vi.waitFor(() => {
+        expect(pane.screen()).toMatch(/PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/);
+      }, { timeout: 30_000, interval: 100 });
       expect(pane.screen()).toContain(`> ${prompt}`);
       expect(pane.screen()).not.toContain('Sending — awaiting acceptance');
       expect(scriptedEngine.requests).toHaveLength(0);
