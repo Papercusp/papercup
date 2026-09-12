@@ -70,3 +70,18 @@ For gate/control-plane behavior, the audit plan's D-002 requires actual controll
 The default MCP runtime reported the zero-wait rubric missing, while `plans:get` showed its active rubric-template row at revision 3. The same `rubrics:get` call, caller identity, workspace, and harness through `scripts/mcp-call.mjs --port 3170` resolved it successfully. Thus the missing-rubric/empty-BAR result from the older reader is not evidence to recreate the rubric. Continue acceptance work against the current-build endpoint and preserve the existing contract.
 
 References: `WI-10001019`, source fix `EI-22439598382266201`, occurrence `EI-23068418278812557`. The real current-build blockers are incomplete checks/evidence, rubric vetting, independent grading, and author acceptance. No plan was newly marked shipped during this inventory pass.
+
+## Fresh source verification
+
+`testing:run` run `c8f1c8a0-8c75-4e45-9ced-262476fdee7c` passed **98 tests across four files**, with no failures, skips, or collection failures:
+
+| Test file | Passed |
+| --- | ---: |
+| `apps/operator/lib/release/green-checkpoint-gen-check-self-heal.test.ts` | 13 |
+| `packages/operator-core/lib/release/admission-fix-precheck.test.ts` | 19 |
+| `packages/operator-core/lib/agent-tools/release/repair-queue.test.ts` | 56 |
+| `apps/operator/lib/release/green-checkpoint-lockfile-convergence.test.ts` | 10 |
+
+Source inspection confirmed that the generated-artifact repair path runs the paired writer, reruns its check, and admits the measured writer delta with the frozen repair head as its source base. The admission precheck distinguishes signature tests from newly admitted tests, refuses measured no-fix/imported-red results, and exposes an unmeasured runner failure as a loud fallback. Its wiring tests explicitly cover build-before-publish, canonical-root selection, refusal without publication, and the runner-failure fallback. These are current-tree proofs, not evidence of a correlated live gate cycle.
+
+Next acceptance unit: read the exact current spec revisions and bind the fresh test evidence with correct source/test fingerprints and test-layer metadata; supply the existing rubric's missing methods/checks without weakening its outcome or live-evidence requirements. The mechanism is `plans:bind-spec-evidence`, followed by `plans:evaluate-spec-test-adequacy`; the snapshot writer requires `requiredTestLayers` and matching `details.adequacy.testLayer`. Full rubric/grade work remains open.
