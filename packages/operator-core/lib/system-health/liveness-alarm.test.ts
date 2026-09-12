@@ -2353,6 +2353,26 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
     expect(r.resolved).toEqual([]);
   });
 
+  it('EI-22806259337076005 calibration: fresh serviceability evidence still resolves accounts-starved', async () => {
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: {
+        tokens: {
+          data: {
+            accountsTotal: 12,
+            accountsAvailable: 12,
+            spendUsd: 1,
+            poolProjectionFreshestAgeMs: 29 * 60_000,
+          },
+        },
+      },
+    });
+    const t = tickWith(health, [openRec('accounts-starved', 'esc-accounts')]);
+    const r = await t.run();
+    expect(t.resolvedIds).toEqual(['esc-accounts']);
+    expect(r.resolved).toEqual(['esc-accounts']);
+  });
+
   it('CALIBRATION: a genuine, OBSERVED recovery still auto-resolves (the fix is not a blanket freeze)', async () => {
     // The load-bearing control. Without it, the two tests above would pass if the fix
     // simply stopped auto-resolving anything — which would break recovery entirely.
