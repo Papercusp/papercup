@@ -167,6 +167,8 @@ const h = vi.hoisted(() => {
     resolveBearer: vi.fn(async (_bearer: string | null): Promise<Principal | null> => null),
     /** SID→adv-row workspace fallback seam (psu-workspace-scoping fix). */
     workspaceForCoordOwner: vi.fn(async (_sid: string): Promise<string | null> => null),
+    /** Ambient presence seam for transport harness-scope inheritance tests. */
+    getPresence: vi.fn(async (_ownerId: string): Promise<Record<string, unknown> | null> => null),
     /** Durable session-brief harness fallback seam for resumed SU sessions. */
     getSessionBrief: vi.fn(
       async (_query: { ownerId?: string | null }): Promise<{ harnessSlug?: string | null } | null> => null,
@@ -325,6 +327,10 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, workspaceForCoordOwner: h.workspaceForCoordOwner };
+});
+vi.mock('../../agent-tools/coordination/presence', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, getPresence: h.getPresence };
 });
 vi.mock('../../session-brief', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -1490,6 +1496,7 @@ beforeEach(() => {
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
   h.workspaceAcquireError = null;
+  h.getPresence.mockResolvedValue(null);
   h.rubricGet.mockResolvedValue(null);
   h.pluginHostWarm.mockResolvedValue({});
   h.commitFailure = null;
@@ -3851,6 +3858,24 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(call.ctx.workspaceId).toBe('*');
     expect(() => call.ctx.tx).toThrowError('workspace_tx_unavailable');
     expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
+  it('explicit workspace scope does not inherit a stale ambient plan binding', async () => {
+    h.getPresence.mockResolvedValueOnce({
+      currentPlanSlug: 'identities-v1-2026-08-30',
+      workspaceId: 'papercusp',
+    });
+
+    const result = await tryBuildSpawnContext(
+      superuserExtra('&workspace=scratch&client=stale-plan-sid'),
+    );
+
+    expect(result).toMatchObject({ kind: 'ok', ctx: { workspaceId: 'scratch' } });
+    expect(result).not.toEqual(expect.objectContaining({
+      kind: 'failed',
+      reason: expect.stringContaining('harness_scope_stale'),
+    }));
+    expect(h.getPresence).toHaveBeenCalledWith('stale-plan-sid');
   });
 
   it('x-papercusp-profile header gates like ?profile=power (psu --profile per-launch carrier)', async () => {
