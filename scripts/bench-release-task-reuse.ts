@@ -32,6 +32,7 @@ import type {
   TaskReleaseReceipt,
 } from '../packages/operator-core/lib/task-manager/store';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
+import { redactIdentityLeaks } from './lib/identity-leak-patterns.mjs';
 import {
   beginReleaseTaskStage,
   inspectReleaseTaskStage,
@@ -205,6 +206,11 @@ function context(
 function median(values: number[]): number {
   const sorted = [...values].sort((left, right) => left - right);
   return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+/** Keep captured benchmark evidence safe to commit without changing its measurements. */
+export function serializeBenchmarkReport(report: unknown, identityEntries?: [string, string][]): string {
+  return `${redactIdentityLeaks(JSON.stringify(report, null, 2), identityEntries)}\n`;
 }
 
 async function main(): Promise<void> {
@@ -525,7 +531,7 @@ async function main(): Promise<void> {
       evidenceRefs: finalHitReceipt.evidenceRefs,
     },
   };
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  process.stdout.write(serializeBenchmarkReport(report));
 }
 
 if (isCliEntry(import.meta.url)) {
