@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal tab performance P-004 current-tree typecheck",
+  "framework": "node",
+  "command": [
+    "cd /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "npm run typecheck"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-09T14:04:33.385Z",
+  "finishedAt": "2026-09-09T14:04:44.376Z",
+  "summary": "Portal typecheck completed successfully on the P-004 current working tree: 2,576 files checked, 0 errors, exit 0.",
+  "assertions": [
+    {
+      "id": "typecheck-exit-zero",
+      "passed": true,
+      "evidence": "The canonical scripts/typecheck.mjs process exited 0 and printed TYPECHECK_RESULT status=clean exit=0."
+    },
+    {
+      "id": "typecheck-non-vacuous",
+      "passed": true,
+      "evidence": "The compiler reported Files: 2576, Lines of TypeScript: 149637, and 0 errors; this was not a zero-file success."
+    },
+    {
+      "id": "typecheck-current-tree",
+      "passed": true,
+      "evidence": "The run executed from the canonical Portal staging checkout after the P-004 lazy-boundary fix and the three full-suite blocker repairs were present in the working tree."
+    }
+  ],
+  "subject": {
+    "workItem": "WI-10000657",
+    "planItem": "papercup-owner-reports-and-ledger-recovery-2026-09-09#P-004",
+    "portalHead": "7ebab6a7105ab8d875f063475024745b3e912b94"
+  }
+}

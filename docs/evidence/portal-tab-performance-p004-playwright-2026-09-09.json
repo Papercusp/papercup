@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal tab performance P-004 current-tree Playwright acceptance",
+  "framework": "playwright",
+  "command": [
+    "cd /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "npm run test:e2e:browser"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-09T14:09:38.948Z",
+  "finishedAt": "2026-09-09T14:10:13.848Z",
+  "summary": "The unchanged-tree canonical Portal Playwright rerun passed 24/24 in 34.9s. An immediately preceding run passed 23/24 with one 1440px chat-history click-stability timeout; the exact case then passed 3/3 with tracing. That intermittent remains tracked as WI-10000954 and is not erased by this passing record.",
+  "assertions": [
+    {
+      "id": "playwright-suite-green",
+      "passed": true,
+      "evidence": "Canonical playwright.config.ts run: 24 passed, 0 failed, duration 34.9s, one worker."
+    },
+    {
+      "id": "chat-history-desktop-mobile",
+      "passed": true,
+      "evidence": "History search, reopen, saved-transcript visibility, continuation, and composer geometry passed at both 1440px and 390px in the final run; the 1440px test also passed three traced isolated repetitions immediately beforehand."
+    },
+    {
+      "id": "surface-retention-controls",
+      "passed": true,
+      "evidence": "All eight keep-alive/error-isolation journeys passed, including the shipped retention-off default, bounded retention, hidden-surface no-work behavior, and crash containment/retry controls."
+    },
+    {
+      "id": "mounted-surface-layout",
+      "passed": true,
+      "evidence": "Desktop and narrow-host layout journeys passed for More destinations, Home cards, and Phone views in both light and dark themes."
+    },
+    {
+      "id": "intermittent-not-concealed",
+      "passed": true,
+      "evidence": "The prior 1440px click-stability timeout is preserved in WI-10000954 with its DOM snapshot and clean 3/3 plus 24/24 reproductions; no forced click, retry wrapper, or source change was used to manufacture this pass."
+    }
+  ],
+  "subject": {
+    "workItem": "WI-10000657",
+    "planItem": "papercup-owner-reports-and-ledger-recovery-2026-09-09#P-004",
+    "portalHead": "7ebab6a7105ab8d875f063475024745b3e912b94",
+    "intermittentFollowup": "WI-10000954"
+  }
+}
