@@ -191,6 +191,30 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'immutable per-call audit log row — attribution, not a claim any reaper acts on.',
   },
+  // Migration 1149 (P-009 / D-028 / D-030) — active-identity attribution. Same shape as
+  // agent_mode_changes.owner_id below: the LIVE authority is session_briefs.control_state.activation,
+  // and these are its temporal flight record. Verified 2026-09-12 against pg_class: the events row
+  // is the only TABLE; the other three are VIEWS derived from it.
+  'session_identity_activation_events.owner_id': {
+    status: 'exempt',
+    reason:
+      'append-only immutable activation-event ledger (migration 1149) — one row per desired/prepared/applied/failed transition phase. The CURRENT activation lives in session_briefs.control_state.activation, which the migration header names as the sole live authority; this is history. A stranded row loses a past transition from the flight record and can never mis-deliver a live claim.',
+  },
+  'session_identity_activation_spans.owner_id': {
+    status: 'exempt',
+    reason:
+      'VIEW derived from session_identity_activation_events (verified relkind=v) — holds no state of its own, so a rebind has nothing to rewrite here; classification follows the base ledger above.',
+  },
+  'session_identity_layer_spans.owner_id': {
+    status: 'exempt',
+    reason:
+      'VIEW derived from session_identity_activation_events (verified relkind=v) — holds no state of its own; classification follows the base ledger above.',
+  },
+  'tool_invocations_identity_attribution.coord_owner_id': {
+    status: 'exempt',
+    reason:
+      'VIEW joining the activation ledger to existing tool/inference meters (verified relkind=v) — holds no state of its own, and its base column tool_invocations.coord_owner_id is already exempt above as per-call audit attribution.',
+  },
   'agent_mode_changes.owner_id': {
     status: 'exempt',
     reason: 'append-only mode-change event log — the CURRENT mode lives in agent_modes.owner_id (see below), this is history.',
