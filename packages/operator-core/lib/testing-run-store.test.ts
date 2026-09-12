@@ -16,6 +16,7 @@ interface FakeChild {
   kill: ReturnType<typeof vi.fn>;
   killed: boolean;
   _emitError: (error: Error) => void;
+  _emitStdout: (chunk: string) => void;
   _emitClose: (code: number) => void;
 }
 let lastChild: FakeChild;
@@ -23,8 +24,9 @@ let lastChild: FakeChild;
 function makeChild(): FakeChild {
   const closeCbs: Array<(c: number) => void> = [];
   const errorCbs: Array<(error: Error) => void> = [];
+  const stdoutCbs: Array<(b: Buffer) => void> = [];
   const child: FakeChild = {
-    stdout: { on: () => {} },
+    stdout: { on: (_e, cb) => stdoutCbs.push(cb) },
     stderr: { on: () => {} },
     on: (e, cb) => {
       if (e === 'close') closeCbs.push(cb as (c: number) => void);
@@ -34,6 +36,7 @@ function makeChild(): FakeChild {
     kill: vi.fn(),
     killed: false,
     _emitError: (error) => errorCbs.forEach((cb) => cb(error)),
+    _emitStdout: (chunk) => stdoutCbs.forEach((cb) => cb(Buffer.from(chunk))),
     _emitClose: (code) => closeCbs.forEach((cb) => cb(code)),
   };
   return child;
@@ -250,6 +253,9 @@ describe('task lifecycle handlers', () => {
   it('ingests a detached reporter-less JSON artifact on close and cleans it up', async () => {
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-store-report-');
     const reportPath = join(reportDir, 'report.json');
+    const failureDetailsPath = join(reportDir, 'failure-details.json');
+    const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
     try {
       // Warm the mocked database module before the close handler starts its
       // fail-soft dynamic import; cold import resolution can exceed the
@@ -261,12 +267,27 @@ describe('task lifecycle handlers', () => {
           testResults: [
             {
               name: '/tmp/packages/external/example.test.ts',
-              status: 'passed',
+              status: 'failed',
               startTime: 1_700_000_000_000,
               endTime: 1_700_000_000_025,
-              assertionResults: [{ status: 'passed', title: 'works' }],
+              assertionResults: [{
+                status: 'failed',
+                fullName: 'suite > works',
+                failureMessages: ['expected a structured diff'],
+              }],
             },
           ],
+        }),
+      );
+      await writeFile(
+        failureDetailsPath,
+        JSON.stringify({
+          failures: [{
+            file: '/tmp/packages/external/example.test.ts',
+            test: 'suite > works',
+            actual: 'actual-value',
+            expected: 'expected-value',
+          }],
         }),
       );
       execFileSyncMock.mockImplementation((_command: string, args: string[]) =>
@@ -279,27 +300,54 @@ describe('task lifecycle handlers', () => {
           detachedReportArtifacts: [
             {
               reportPath,
+              failureDetailsPath,
               root: '/tmp',
               scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
             },
           ],
         }),
       );
-      lastChild._emitClose(0);
+      lastChild._emitStdout('x'.repeat(16 * 1024));
+      lastChild._emitClose(1);
 
-      await vi.waitFor(() => expect(persistSqlMock).toHaveBeenCalled());
+      await vi.waitFor(() => {
+        const snapshots = persistSqlMock.mock.calls.filter((call) =>
+          call[0]?.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots'),
+        );
+        expect(snapshots.some((call) => call[6] === 'fail')).toBe(true);
+      });
       const [strings, ...values] = persistSqlMock.mock.calls.find((call) =>
         call[0]?.join(' ').includes('INSERT INTO harness_shared.test_runs'),
       ) ?? [];
       expect(strings?.join(' ')).toContain('INSERT INTO harness_shared.test_runs');
       expect(values[0]).toBe('packages/external/example.test.ts');
-      expect(values[2]).toBe('pass');
+      expect(values[2]).toBe('fail');
       expect(values[7]).toBe(snapshot.runId);
       expect(values[8]).toBe('local');
       expect(values[11]).toBe('papercusp');
       expect(values[12]).toBe('papercusp-workspace');
+      const snapshotCalls = persistSqlMock.mock.calls.filter((call) =>
+        call[0]?.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots'),
+      );
+      const finalSnapshotValues = snapshotCalls.at(-1)?.slice(1) ?? [];
+      expect(finalSnapshotValues[5]).toBe('fail');
+      expect(finalSnapshotValues[9]).toContain('suite > works');
+      expect(finalSnapshotValues[9]).toContain('actual: actual-value');
+      expect(finalSnapshotValues[9]).toContain('expected: expected-value');
+      expect(finalSnapshotValues[9]).toHaveLength(16 * 1024);
+      expect(finalSnapshotValues[10]).toBe(true);
+      const testRunCallIndex = persistSqlMock.mock.calls.findIndex((call) =>
+        call[0]?.join(' ').includes('INSERT INTO harness_shared.test_runs'),
+      );
+      const finalSnapshotCallIndex = persistSqlMock.mock.calls.findIndex((call) =>
+        call[0]?.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots') && call[6] === 'fail',
+      );
+      expect(finalSnapshotCallIndex).toBeGreaterThan(testRunCallIndex);
       await vi.waitFor(async () => expect(readFile(reportPath)).rejects.toThrow());
+      await vi.waitFor(async () => expect(readFile(failureDetailsPath)).rejects.toThrow());
     } finally {
+      if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+      else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;
       await rm(reportDir, { recursive: true, force: true });
     }
   });

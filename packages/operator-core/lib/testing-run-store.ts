@@ -528,12 +528,16 @@ function evictOldRuns(): void {
 }
 
 function appendOutput(state: RunState, chunk: string): void {
-  const next = state.snapshot.output + chunk;
+  appendSnapshotOutput(state.snapshot, chunk);
+}
+
+function appendSnapshotOutput(snapshot: RunSnapshot, chunk: string): void {
+  const next = snapshot.output + chunk;
   if (next.length > OUTPUT_CAP_BYTES) {
-    state.snapshot.output = next.slice(-OUTPUT_CAP_BYTES);
-    state.snapshot.truncated = true;
+    snapshot.output = next.slice(-OUTPUT_CAP_BYTES);
+    snapshot.truncated = true;
   } else {
-    state.snapshot.output = next;
+    snapshot.output = next;
   }
 }
 
@@ -565,6 +569,8 @@ export interface SpawnRequest {
 export interface DetachedReportArtifact {
   /** Absolute path to the child command's Vitest JSON output file. */
   reportPath: string;
+  /** Optional reporter sidecar with structured actual/expected assertion values. */
+  failureDetailsPath?: string;
   /** Worktree root used to relativize file names from the report. */
   root: string;
   /** Concrete tenant scope for the operator-side ledger write, when available. */
@@ -702,6 +708,34 @@ async function persistDetachedReportArtifacts(
     artifacts.map(async (artifact) => {
       try {
         const reportText = await readFile(artifact.reportPath, 'utf8');
+        let failureDetails: TestFailureDetail[] = [];
+        if (artifact.failureDetailsPath) {
+          try {
+            failureDetails = parseFailureDetailsSidecar(
+              await readFile(artifact.failureDetailsPath, 'utf8'),
+              artifact.root,
+            );
+          } catch {
+            /* swallow — the JSON report remains authoritative */
+          }
+        }
+        const distilled = distillVitestRun(reportText, artifact.root, { failureDetails });
+        if (distilled.failed > 0) {
+          const lines = [
+            `\n[detached-recovery] Vitest reported ${distilled.failed} failing test(s) in ${distilled.files} file(s):`,
+          ];
+          for (const failure of distilled.failures) {
+            lines.push(`- file: ${failure.file}`);
+            lines.push(`  test: ${failure.test}`);
+            lines.push(`  message: ${failure.message}`);
+            if (failure.actual !== undefined) lines.push(`  actual: ${failure.actual}`);
+            if (failure.expected !== undefined) lines.push(`  expected: ${failure.expected}`);
+          }
+          if (distilled.failuresTruncated) {
+            lines.push(`- additional failures omitted from the bounded detail list (total: ${distilled.failed})`);
+          }
+          appendSnapshotOutput(snapshot, `${lines.join('\n')}\n`);
+        }
         const rows = parseVitestJsonForHarnessRows(reportText, artifact.root);
         if (rows.length > 0 && artifact.scope) {
           const after = captureWorktreeSnapshot(artifact.root);
@@ -721,6 +755,11 @@ async function persistDetachedReportArtifacts(
         await rm(artifact.reportPath, { force: true }).catch(() => {
           /* swallow — report cleanup is best-effort */
         });
+        if (artifact.failureDetailsPath && artifact.failureDetailsPath !== artifact.reportPath) {
+          await rm(artifact.failureDetailsPath, { force: true }).catch(() => {
+            /* swallow — sidecar cleanup is best-effort */
+          });
+        }
       }
     }),
   );
@@ -738,11 +777,22 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     wrapped,
     detachedReportArtifacts,
   } = prepared;
-  let detachedReportsSettled = false;
-  const settleDetachedReports = (): void => {
-    if (detachedReportsSettled || detachedReportArtifacts.length === 0) return;
-    detachedReportsSettled = true;
-    void persistDetachedReportArtifacts(snapshot, detachedReportArtifacts);
+  let terminalFinalizationStarted = false;
+  const finalizeTerminalRun = (): void => {
+    if (terminalFinalizationStarted) return;
+    terminalFinalizationStarted = true;
+    void (async () => {
+      try {
+        // The final snapshot must be written only after detached report rows and
+        // failure details have been reconciled; otherwise testing:run-status can
+        // observe a terminal run while its Vitest evidence is still in flight.
+        await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts);
+        await persistFallbackRow(snapshot, worktreeBefore, cwd);
+        await persistRunSnapshot(snapshot);
+      } catch {
+        /* swallow — terminal observability remains fail-soft (D-007) */
+      }
+    })();
   };
   let enrolmentFinished = false;
   const finishEnrolment = (outcome: Parameters<typeof finishSyncEnrolment>[1]): void => {
@@ -770,8 +820,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     snapshot.finishedAt = Date.now();
     snapshot.output = e instanceof Error ? e.message : String(e);
     _runs.set(snapshot.runId, { snapshot, proc: null, cwd, worktreeBefore });
-    void persistRunSnapshot(snapshot);
-    settleDetachedReports();
+    finalizeTerminalRun();
     finishEnrolment({
       state: 'exited',
       exitCode: null,
@@ -790,9 +839,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     appendOutput(state, `\n[spawn-error] ${e.message}\n`);
     state.snapshot.status = 'error';
     if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
-    void persistRunSnapshot(state.snapshot);
-    void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
-    settleDetachedReports();
+    finalizeTerminalRun();
     finishEnrolment({
       state: 'exited',
       exitCode: null,
@@ -800,14 +847,17 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     });
   });
   proc.on('close', (code) => {
-    state.snapshot.exitCode = code;
-    state.snapshot.finishedAt = Date.now();
-    if (state.snapshot.status !== 'cancelled' && state.snapshot.status !== 'error') {
-      state.snapshot.status = code === 0 ? 'pass' : 'fail';
+    // An asynchronous spawn failure emits `error` followed by `close`; preserve
+    // that first terminal outcome and let the finalization guard suppress the
+    // duplicate snapshot/ledger work.
+    if (state.snapshot.finishedAt === null) {
+      state.snapshot.exitCode = code;
+      state.snapshot.finishedAt = Date.now();
+      if (state.snapshot.status !== 'cancelled' && state.snapshot.status !== 'error') {
+        state.snapshot.status = code === 0 ? 'pass' : 'fail';
+      }
     }
-    void persistRunSnapshot(state.snapshot);
-    void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
-    settleDetachedReports();
+    finalizeTerminalRun();
     finishEnrolment({
       state: state.snapshot.status === 'cancelled' ? 'killed' : 'exited',
       exitCode: code,
