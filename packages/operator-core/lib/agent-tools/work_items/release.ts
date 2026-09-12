@@ -960,10 +960,19 @@ export default defineTool({
                   `having parked or unparked it.`,
               }
             : {};
+        // EI-23083530583845382: `workItem` was captured by releaseWorkItem BEFORE the
+        // separate claim-hold write above. Returning it unchanged made a successful
+        // claimHold:false response contradict itself: `claimHold:false` sat beside a
+        // workItem.payload that still contained `_claimHold` and `claim_hold_release`.
+        // Refresh only after a successful hold write so the response describes the
+        // post-write row. A null means the write missed and claimHoldFailure above is
+        // authoritative; keep the released snapshot in that failure case.
+        const postClaimHoldWorkItem =
+          held === null ? workItem : ((await getWorkItem(it.id, workItem.harness ?? harness)) ?? workItem);
         return {
           ok: true as const,
           id: it.id,
-          workItem,
+          workItem: postClaimHoldWorkItem,
           forced,
           ...delta,
           ...stranding,

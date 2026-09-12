@@ -590,6 +590,28 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimHold: false });
   });
 
+  it('returns the post-write workItem snapshot after clearing a prior hold', async () => {
+    releaseM.mockResolvedValue({
+      id: 'WI-1',
+      assignee: null,
+      harness: 'h1',
+      payload: {
+        _claimHold: true,
+        claim_hold_by: 'me',
+        claim_hold_release: { condition: 'gate opens', trigger: 'gate:open' },
+        other: 'kept',
+      },
+    } as never);
+    getM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h1', payload: { other: 'kept' } } as never);
+
+    const b = await body({ id: 'WI-1', claimHold: false });
+
+    expect(getM).toHaveBeenCalledWith('WI-1', 'h1');
+    expect(b.results[0].workItem.payload).toEqual({ other: 'kept' });
+    expect(b.results[0].workItem.payload).not.toHaveProperty('_claimHold');
+    expect(b.results[0].workItem.payload).not.toHaveProperty('claim_hold_release');
+  });
+
   it('a hold-engine miss (null — item vanished between release and hold) omits claimHold rather than reporting a false hold', async () => {
     holdM.mockResolvedValue(null);
     const b = await body({ id: 'F-1', claimHold: true });
