@@ -704,19 +704,21 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
       barHash: computeAcceptanceBarHash(legacyCriterion),
     };
     const repairedSetHash = computeAcceptanceBarSetHash([repairedCriterion]);
-    const candidateArgs = [
-      snapshot,
-      [repairedCriterion],
-      new Map([['R-1', { planItemIds: ['P-001'] }]]),
-      new Map([['P-001', 'done']]),
-    ] as const;
+    const desiredMappings = new Map([['R-1', { planItemIds: ['P-001'] }]]);
+    const itemStatuses = new Map([['P-001', 'done']]);
     const contract = {
       rubricRevision: 3,
       subjectPlanRevision: 8,
       barSetHash: repairedSetHash,
       barContract: { ...stored.barContract!, subjectPlanRevision: 8 },
     };
-    const repaired = buildAcceptanceBarAmendmentCandidate(...candidateArgs, contract);
+    const repaired = buildAcceptanceBarAmendmentCandidate(
+      snapshot,
+      [repairedCriterion],
+      desiredMappings,
+      itemStatuses,
+      contract,
+    );
     expect(repaired.completeness.problems).not.toContainEqual(
       expect.objectContaining({ code: 'bar_snapshot_bar_hash_mismatch' }),
     );
@@ -726,8 +728,8 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     const malformed = buildAcceptanceBarAmendmentCandidate(
       snapshot,
       [malformedCriterion],
-      candidateArgs[2],
-      candidateArgs[3],
+      desiredMappings,
+      itemStatuses,
       { ...contract, barSetHash: computeAcceptanceBarSetHash([malformedCriterion]) },
     );
     expect(malformed.completeness.problems).toContainEqual(
