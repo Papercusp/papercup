@@ -290,6 +290,14 @@ describe('ptool call deadlines', () => {
       name: 'coord:declare-intent',
       args: { intent: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-22810897251728336: publish has three bounded network stages whose
+    // combined latency can legitimately cross the flat 30s client deadline.
+    // Cover both transports so ptool observes the server's typed result.
+    expect(timeoutForTool('blueprint:publish')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'blueprint:publish',
+      args: { blueprintId: 'papercusp-engineer' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
