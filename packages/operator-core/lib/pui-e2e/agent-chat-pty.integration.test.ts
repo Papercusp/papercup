@@ -3068,14 +3068,18 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           modes: process.env.PUI_REAL_MODE ? [process.env.PUI_REAL_MODE] : [],
         });
         expect(saved?.model, 'the selected model must be the one that actually answered').toBeTruthy();
-        expect(first.responses.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toEqual([
+        const launchResponses = first.responses.filter((entry) => entry.path === '/api/adv/sessions/launch-su');
+        expect(launchResponses).toEqual([
           expect.objectContaining({
             model: process.env.PUI_REAL_MODEL,
             mode: process.env.PUI_REAL_MODE,
-            planSlug: process.env.PUI_REAL_PLAN === '1' ? REAL_PLAN : undefined,
             account: process.env.PUI_REAL_ACCOUNT ?? 'default',
+            carry: 'warm',
           }),
         ]);
+        expect(launchResponses[0]?.planSlug ?? undefined).toBe(
+          process.env.PUI_REAL_PLAN === '1' ? REAL_PLAN : undefined,
+        );
       }
       frames.beforeRestart = pane.screen();
     } catch (error) {
