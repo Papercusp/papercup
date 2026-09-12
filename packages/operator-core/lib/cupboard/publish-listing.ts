@@ -160,6 +160,47 @@ export type CupboardPublishResult =
   | { ok: true; status: number; data: unknown }
   | { ok: false; status: number; error: string; detail?: unknown; upstream_status?: number };
 
+const DEFAULT_PUBLISHER_ATTESTATION_TIMEOUT_MS = 10_000;
+const DEFAULT_CUPBOARD_POST_TIMEOUT_MS = 15_000;
+
+export interface CupboardPublishTimeouts {
+  /** Test/diagnostic override. Production callers use the bounded default. */
+  attestationMs?: number;
+  /** Covers the complete worker request, including response-body consumption. */
+  upstreamMs?: number;
+}
+
+class PublishStageTimeoutError extends Error {
+  constructor(
+    readonly stage: 'publisher_attestation' | 'cupboard_post',
+    readonly timeoutMs: number,
+  ) {
+    super(`publish_stage_timeout:${stage}`);
+    this.name = 'PublishStageTimeoutError';
+  }
+}
+
+async function runPublishStage<T>(
+  stage: PublishStageTimeoutError['stage'],
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new PublishStageTimeoutError(stage, timeoutMs);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Publish a listing of any kind to the Cupboard `/listings` surface. Adds the
  * caller's gh-token (the browser/agent never holds it) + a best-effort channel-2
@@ -169,6 +210,7 @@ export type CupboardPublishResult =
  */
 export async function publishListingToCupboard(
   input: CupboardListingInput,
+  timeouts: CupboardPublishTimeouts = {},
 ): Promise<CupboardPublishResult> {
   // Strip the publisher-only release block up front, so no later edit can leak
   // plaintext or the content key into the request body by adding a spread.
@@ -213,7 +255,18 @@ export async function publishListingToCupboard(
 
   // Best-effort channel-2 attestation (idempotent device-binding gist). null on
   // any failure → publish proceeds unattributed.
-  const attestation = await resolvePublisherAttestation();
+  let attestation: Awaited<ReturnType<typeof resolvePublisherAttestation>> = null;
+  try {
+    attestation = await runPublishStage(
+      'publisher_attestation',
+      timeouts.attestationMs ?? DEFAULT_PUBLISHER_ATTESTATION_TIMEOUT_MS,
+      async () => resolvePublisherAttestation(),
+    );
+  } catch {
+    // Channel 2 is deliberately best-effort. A slow GitHub/keychain path must
+    // not consume the enclosing MCP call's entire 60-second budget.
+    attestation = null;
+  }
   const publishBody = {
     ...listing,
     ...releasePins,
@@ -229,23 +282,38 @@ export async function publishListingToCupboard(
   const payload = JSON.stringify(publishBody);
 
   let upstream: Response;
+  let responseText: string;
   try {
-    upstream = await fetch(`${base}/listings`, { method: 'POST', headers, body: payload });
-    // Transitional: a worker not yet on migration 004 has no /listings. Only a
-    // harness publish can fall back to /harnesses; non-harness kinds surface 404.
-    if (upstream.status === 404 && input.listing_kind === 'harness') {
-      upstream = await fetch(`${base}/harnesses`, { method: 'POST', headers, body: payload });
-    }
+    ({ upstream, responseText } = await runPublishStage(
+      'cupboard_post',
+      timeouts.upstreamMs ?? DEFAULT_CUPBOARD_POST_TIMEOUT_MS,
+      async (signal) => {
+        let response = await fetch(`${base}/listings`, { method: 'POST', headers, body: payload, signal });
+        // Transitional: a worker not yet on migration 004 has no /listings. Only a
+        // harness publish can fall back to /harnesses; non-harness kinds surface 404.
+        if (response.status === 404 && input.listing_kind === 'harness') {
+          response = await fetch(`${base}/harnesses`, { method: 'POST', headers, body: payload, signal });
+        }
+        return { upstream: response, responseText: await response.text() };
+      },
+    ));
   } catch (e) {
+    if (e instanceof PublishStageTimeoutError) {
+      return {
+        ok: false,
+        status: 504,
+        error: 'cupboard_timeout',
+        detail: { stage: e.stage, timeoutMs: e.timeoutMs },
+      };
+    }
     return { ok: false, status: 502, error: 'cupboard_unreachable', detail: (e as Error).message.slice(0, 200) };
   }
 
-  const text = await upstream.text();
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(responseText);
   } catch {
-    return { ok: false, status: 502, error: 'cupboard_bad_response', detail: text.slice(0, 200), upstream_status: upstream.status };
+    return { ok: false, status: 502, error: 'cupboard_bad_response', detail: responseText.slice(0, 200), upstream_status: upstream.status };
   }
   if (!upstream.ok) {
     return { ok: false, status: upstream.status, error: 'cupboard_error', detail: parsed, upstream_status: upstream.status };

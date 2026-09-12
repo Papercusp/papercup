@@ -7,14 +7,14 @@
     "npx tsx scripts/bench-release-task-reuse.ts >/tmp/p006-reuse-benchmark-current.json"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-09T13:16:39.046Z",
-  "finishedAt": "2026-09-09T13:16:40.369Z",
-  "summary": "Five same-host paired release-preparation runs reduced median preparation from 186.041 ms to 30.13 ms (83.805%), above the 30% bar. Every hit re-verified artifact bytes, Ed25519 signature, manifest, offline payload and tenant identity; all eight identity mutations and the exact audit-expiry boundary invalidated reuse.",
+  "startedAt": "2026-09-12T15:11:17.957Z",
+  "finishedAt": "2026-09-12T15:11:19.279Z",
+  "summary": "Five same-host paired release-preparation runs reduced median preparation from 211.428 ms to 33.726 ms (84.048%), above the 30% bar. Every hit re-verified artifact bytes, Ed25519 signature, manifest, offline payload and tenant identity; all eight identity mutations and the exact audit-expiry boundary invalidated reuse.",
   "assertions": [
     {
       "id": "preparation-reduction",
       "passed": true,
-      "evidence": "cold median 186.041 ms; verified-hit median 30.13 ms; reduction 83.805% >= 30% across 5 paired runs"
+      "evidence": "cold median 211.428 ms; verified-hit median 33.726 ms; reduction 84.048% >= 30% across 5 paired runs"
     },
     {
       "id": "receipt-transition",
@@ -24,7 +24,7 @@
     {
       "id": "artifact-trust",
       "passed": true,
-      "evidence": "All hit arms reproduced artifact 5c336f3595c2f7db9657de55f85a75801b92dc2ee6919e35b1b3216f43639e61 and manifest 0c7f82fec4ef2b218eacf6eca2ca9632daddea52f2fa15f95de3c7a9ae5d4d84, verified Ed25519 signatures, and gunzipped to source eb5d7cf536feaa2d89011e47d8c767381adb01f7eb13e62d9b05f1b516405bce."
+      "evidence": "All hit arms reproduced artifact 5c336f3595c2f7db9657de55f85a75801b92dc2ee6919e35b1b3216f43639e61 and manifest 0fd221cec38ca1bd0ed577e26b4a615aa0c9699c65d2b7301a91959432b043e5, verified Ed25519 signatures, and gunzipped to source eb5d7cf536feaa2d89011e47d8c767381adb01f7eb13e62d9b05f1b516405bce."
     },
     {
       "id": "identity-invalidation",
@@ -43,7 +43,7 @@
     }
   ],
   "benchmark": "BYOC-ACCEL-P006-CACHE@2 controlled release preparation",
-  "observedAtUtc": "2026-09-09T13:16:40.369Z",
+  "observedAtUtc": "2026-09-12T15:11:19.279Z",
   "host": "buildhost",
   "runtime": {
     "node": "v25.9.0",
@@ -51,23 +51,23 @@
     "arch": "x64"
   },
   "pinnedSource": {
-    "sourceSha": "765418ba63bf2ddfdd06671b0fff86d5219f6de3",
+    "sourceSha": "7d7f83f6274988462a92df173308e34bb4194d25",
     "gitlinks": {
-      "papercusp-desktop": "9ae6984219a9e1e120f13696d05a9cea860d8e6e"
+      "papercusp-desktop": "d8d84072744359ce945961fc61969c3f0057b476"
     },
     "sourceFingerprints": {
       "packages/operator-core/lib/task-manager/store.ts": "fe4e6a9a8f1542ab97a5a2a9dce28fadefd642dec260b3dc45b4fabe846d61c7",
       "scripts/lib/release-task-journal.ts": "d710bd1f9bac33013999e68f545d9d4428e6a2ef0dc98b0ec63e06974585fbca",
       "packages/operator-core/lib/harness/routines/nightly-release-cut-action.ts": "0d2a1bf28f46fe2a4524cc3b24ff59d4ec541de792c755f9cf9e5f3814b85a7c",
       "papercusp-desktop/bin/release-local.sh": "15ca3c4eee078bc8452ff78d0ed806a1a740a860ed3c96781a8a8b3130f11a91",
-      "scripts/bench-release-task-reuse.ts": "32e2a4b1ba86f4ca77928cc4b178845ab0bd9c323988710e09f9ae514a67fa9c"
+      "scripts/bench-release-task-reuse.ts": "84d4532f812c131419a68cc9632dc2eefcab6eba281005a487961ee12489f00d"
     }
   },
   "fixture": {
     "bytes": 8388608,
     "sourceSha256": "eb5d7cf536feaa2d89011e47d8c767381adb01f7eb13e62d9b05f1b516405bce",
     "artifactSha256": "5c336f3595c2f7db9657de55f85a75801b92dc2ee6919e35b1b3216f43639e61",
-    "manifestSha256": "0c7f82fec4ef2b218eacf6eca2ca9632daddea52f2fa15f95de3c7a9ae5d4d84",
+    "manifestSha256": "0fd221cec38ca1bd0ed577e26b4a615aa0c9699c65d2b7301a91959432b043e5",
     "signingIdentitySha256": "fa109b19997e15ec9b6e4a30188486b042d33bb0e43c5f76f963a7923dd4335b",
     "tenant": {
       "workspaceId": "papercusp-workspace",
@@ -89,28 +89,8 @@
   "samples": [
     {
       "run": 0,
-      "coldPreparationMs": 200.822,
-      "hitPreparationMs": 30.13,
-      "lookupMs": 0.008,
-      "queueWaitMs": 0,
-      "coldAction": "run",
-      "hitAction": "reconcile",
-      "committedAction": "reuse"
-    },
-    {
-      "run": 1,
-      "coldPreparationMs": 182.707,
-      "hitPreparationMs": 33.146,
-      "lookupMs": 0.008,
-      "queueWaitMs": 0,
-      "coldAction": "run",
-      "hitAction": "reconcile",
-      "committedAction": "reuse"
-    },
-    {
-      "run": 2,
-      "coldPreparationMs": 186.041,
-      "hitPreparationMs": 27.204,
+      "coldPreparationMs": 214.035,
+      "hitPreparationMs": 33.203,
       "lookupMs": 0.009,
       "queueWaitMs": 0,
       "coldAction": "run",
@@ -118,9 +98,29 @@
       "committedAction": "reuse"
     },
     {
+      "run": 1,
+      "coldPreparationMs": 224.483,
+      "hitPreparationMs": 46.234,
+      "lookupMs": 0.009,
+      "queueWaitMs": 0,
+      "coldAction": "run",
+      "hitAction": "reconcile",
+      "committedAction": "reuse"
+    },
+    {
+      "run": 2,
+      "coldPreparationMs": 211.427,
+      "hitPreparationMs": 33.726,
+      "lookupMs": 0.01,
+      "queueWaitMs": 0,
+      "coldAction": "run",
+      "hitAction": "reconcile",
+      "committedAction": "reuse"
+    },
+    {
       "run": 3,
-      "coldPreparationMs": 180.859,
-      "hitPreparationMs": 30.717,
+      "coldPreparationMs": 205.952,
+      "hitPreparationMs": 34.874,
       "lookupMs": 0.009,
       "queueWaitMs": 0,
       "coldAction": "run",
@@ -129,9 +129,9 @@
     },
     {
       "run": 4,
-      "coldPreparationMs": 216.202,
-      "hitPreparationMs": 29.991,
-      "lookupMs": 0.024,
+      "coldPreparationMs": 211.428,
+      "hitPreparationMs": 27.292,
+      "lookupMs": 0.03,
       "queueWaitMs": 0,
       "coldAction": "run",
       "hitAction": "reconcile",
@@ -139,9 +139,9 @@
     }
   ],
   "result": {
-    "coldMedianMs": 186.041,
-    "hitMedianMs": 30.13,
-    "reductionPct": 83.805,
+    "coldMedianMs": 211.428,
+    "hitMedianMs": 33.726,
+    "reductionPct": 84.048,
     "requiredReductionPct": 30,
     "passed": true,
     "artifactBytesIdentical": true,
@@ -163,7 +163,7 @@
   },
   "receiptEvidence": {
     "queueWaitMs": 0,
-    "preparationElapsedMs": 29.990772000000106,
+    "preparationElapsedMs": 27.291715000000295,
     "reuseExpiresAt": "2026-09-10T12:40:00.000Z",
     "reuseSource": {
       "taskId": "p006-cold-task-4",
@@ -173,7 +173,7 @@
     "evidenceRefs": [
       "artifact-set:hash-signature-verified",
       "artifact:sha256:5c336f3595c2f7db9657de55f85a75801b92dc2ee6919e35b1b3216f43639e61",
-      "manifest:sha256:0c7f82fec4ef2b218eacf6eca2ca9632daddea52f2fa15f95de3c7a9ae5d4d84",
+      "manifest:sha256:0fd221cec38ca1bd0ed577e26b4a615aa0c9699c65d2b7301a91959432b043e5",
       "offline-assets:verified",
       "tenant:papercusp-workspace/papercusp"
     ]

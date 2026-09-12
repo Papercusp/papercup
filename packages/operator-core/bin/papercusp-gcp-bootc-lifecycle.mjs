@@ -28,7 +28,7 @@ import {
   parseP305HostPrepareDiagnostics,
   parseP305PhaseMarker,
 } from './gcp-bootc-lifecycle-args.mjs';
-import { openPrivateVmSession } from './gcp-private-vm-session.mjs';
+import { assertCleanRoomIapReachable, openPrivateVmSession } from './gcp-private-vm-session.mjs';
 
 const REGISTRY_PORT = 5096;
 const BOOT_BUDGET_MS = 15 * 60 * 1000;
@@ -134,6 +134,9 @@ async function lifecycle(input) {
     request.updateRepository,
     request.updateDigest,
   );
+  // The VM helper checks again before boot, but uploads and image imports are also
+  // billable mutations. Reject missing IAP ingress or NAT before creating either.
+  await assertCleanRoomIapReachable(request.projectId, request.subnetwork, request.zone);
 
   const suffix = randomBytes(4).toString('hex');
   const imageName = `p305-lifecycle-r21-${suffix}`;

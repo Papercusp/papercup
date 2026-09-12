@@ -40,7 +40,10 @@ beforeEach(() => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true, id: 'listing-1' }), { status: 200 }));
   global.fetch = fetchMock as unknown as typeof fetch;
 });
-afterEach(() => { global.fetch = originalFetch; });
+afterEach(() => {
+  vi.useRealTimers();
+  global.fetch = originalFetch;
+});
 
 describe('publishListingToCupboard', () => {
   it('returns 401 when gh auth is unavailable', async () => {
@@ -72,6 +75,39 @@ describe('publishListingToCupboard', () => {
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
     expect(body.attestation_gist_id).toBe('gist1');
     expect(body.publisher_device_pubkey).toBe('pk1');
+  });
+
+  it('bounds a hung best-effort publisher attestation and still posts the listing', async () => {
+    vi.useFakeTimers();
+    vi.mocked(cupboardPublish.resolvePublisherAttestation).mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+
+    const pending = publishListingToCupboard(baseInput, { attestationMs: 25 });
+    await vi.runAllTimersAsync();
+    const r = await pending;
+
+    expect(r.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body).not.toHaveProperty('attestation_gist_id');
+    expect(body).not.toHaveProperty('publisher_device_pubkey');
+  });
+
+  it('returns a structured stage timeout when the Cupboard POST never settles', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(() => new Promise(() => {}));
+
+    const pending = publishListingToCupboard(baseInput, { upstreamMs: 25 });
+    await vi.runAllTimersAsync();
+    const r = await pending;
+
+    expect(r).toEqual({
+      ok: false,
+      status: 504,
+      error: 'cupboard_timeout',
+      detail: { stage: 'cupboard_post', timeoutMs: 25 },
+    });
   });
 
   it('surfaces a non-2xx upstream as cupboard_error', async () => {

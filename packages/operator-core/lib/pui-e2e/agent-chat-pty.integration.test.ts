@@ -1956,16 +1956,21 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       }
       expect(copied.some((payload) => payload.trim().length > 0)).toBe(true);
 
-      console.info('PUI_EDITOR_COPY_ACCEPTANCE', JSON.stringify({
-        binary: bin,
-        binarySha256,
-        copiedBlocks: copied.length,
-        renderedBlocks: renderedCopies.length,
-        rawBlocks: rawCopies.length,
-        carriedSelectedResult: rawCopies.some((payload) => payload.includes('scripted engine tool result')),
-        carriedRenderedReply: renderedCopies.some((payload) => payload.includes(scriptedEngine.successText)),
-      }));
-    } finally { await pane.stop().catch(() => {}); }
+      console.info(
+        'PUI_EDITOR_COPY_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          copiedBlocks: copied.length,
+          renderedBlocks: renderedCopies.length,
+          rawBlocks: rawCopies.length,
+          carriedSelectedResult: rawCopies.some((payload) => payload.includes('scripted engine tool result')),
+          carriedRenderedReply: renderedCopies.some((payload) => payload.includes(scriptedEngine.successText)),
+        }),
+      );
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 
   // PUI-EDITOR-UNDO — "Undo restores the pre-paste draft." Falsifier: "Undo
@@ -2039,14 +2044,19 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(screen).not.toContain('Sending — awaiting acceptance');
       expect(commandPosts).toHaveLength(0);
 
-      console.info('PUI_EDITOR_UNDO_ACCEPTANCE', JSON.stringify({
-        binary: bin,
-        binarySha256,
-        draftRestored: screenContains(screen, `> ${draft}`),
-        pastedTextGone: !screen.includes(pasted),
-        submitted: commandPosts.length,
-      }));
-    } finally { await pane.stop().catch(() => {}); }
+      console.info(
+        'PUI_EDITOR_UNDO_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          draftRestored: screenContains(screen, `> ${draft}`),
+          pastedTextGone: !screen.includes(pasted),
+          submitted: commandPosts.length,
+        }),
+      );
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 
   // PUI-EDITOR-HISTORY — Falsifier: "History navigation destroys the draft being
@@ -2165,15 +2175,20 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(commandPosts, screen).toHaveLength(2);
       expect(screen, screen).not.toContain('Sending — awaiting acceptance');
 
-      console.info('PUI_EDITOR_HISTORY_ACCEPTANCE', JSON.stringify({
-        binary: bin,
-        binarySha256,
-        draftRestored: screen.includes(`> ${draft}`),
-        recalledNewest: true,
-        recalledOlder: true,
-        submittedDuringNavigation: commandPosts.length - 2,
-      }));
-    } finally { await pane.stop().catch(() => {}); }
+      console.info(
+        'PUI_EDITOR_HISTORY_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          draftRestored: screen.includes(`> ${draft}`),
+          recalledNewest: true,
+          recalledOlder: true,
+          submittedDuringNavigation: commandPosts.length - 2,
+        }),
+      );
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 
   // PUI-FILE-CONTEXT — the selected project-scoped stable reference reaches
@@ -2236,15 +2251,18 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(saved.transcript.some((turn) => turn.role === 'user' && turn.content === accepted)).toBe(true);
       expect(scriptedEngine.requests[0]).not.toContain(outsidePath);
 
-      console.info('PUI_FILE_CONTEXT_ACCEPTANCE', JSON.stringify({
-        binary: bin,
-        binarySha256,
-        project: REPO_ROOT,
-        selected: relativePath,
-        stableReference,
-        refusedOutsideProject: true,
-        acceptedTurn: accepted,
-      }));
+      console.info(
+        'PUI_FILE_CONTEXT_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          project: REPO_ROOT,
+          selected: relativePath,
+          stableReference,
+          refusedOutsideProject: true,
+          acceptedTurn: accepted,
+        }),
+      );
     } finally {
       await pane.stop().catch(() => {});
     }
@@ -2289,12 +2307,16 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // handleClaude appends its own free-text escape hatch, so the card carries
       // one more option than the model offered. Pinning an exact length here
       // would be asserting that detail rather than this clause.
-      expect(card.presentation.options.map((option) => option.label))
-        .toEqual(expect.arrayContaining(scriptedEngine.questionOptions));
+      expect(card.presentation.options.map((option) => option.label)).toEqual(
+        expect.arrayContaining(scriptedEngine.questionOptions),
+      );
 
       // Still parked — nothing may have closed this card before the owner acted.
-      expect(scriptedEngine.events.some((event) => event.type === 'card'
-        && event.phase === 'closed' && event.correlationId === card.correlationId)).toBe(false);
+      expect(
+        scriptedEngine.events.some(
+          (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
+        ),
+      ).toBe(false);
       expect(scriptedEngine.questionVerdicts).toHaveLength(0);
 
       // Answer it from the PUI, by keystroke — the same way an owner would.
@@ -2307,7 +2329,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // Falsifier half 2 — "answer lost". The selection has to arrive back at
       // the model, not merely close the card. The verdict below is what the
       // engine actually handed the provider.
-      await vi.waitFor(() => expect(scriptedEngine.questionVerdicts).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      await vi.waitFor(() => expect(scriptedEngine.questionVerdicts).toHaveLength(1), {
+        timeout: 30_000,
+        interval: 100,
+      });
       const verdict = scriptedEngine.questionVerdicts[0];
       expect(verdict.behavior, JSON.stringify(verdict)).toBe('allow');
       // Keyed by the exact question text: this is simultaneously the
@@ -2318,12 +2343,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // that asked. correlationId is minted by registerCard and is NOT the tool
       // call id, so attribution is carried by turnId, which must agree across
       // the asking tool event and both card phases.
-      const opened = scriptedEngine.events.find((event) => event.type === 'card'
-        && event.phase === 'opened' && event.card.correlationId === card.correlationId);
-      const closed = scriptedEngine.events.find((event) => event.type === 'card'
-        && event.phase === 'closed' && event.correlationId === card.correlationId);
-      const askedBy = scriptedEngine.events.find((event) => event.type === 'tool'
-        && event.phase === 'started' && event.name === 'AskUserQuestion');
+      const opened = scriptedEngine.events.find(
+        (event) => event.type === 'card' && event.phase === 'opened' && event.card.correlationId === card.correlationId,
+      );
+      const closed = scriptedEngine.events.find(
+        (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
+      );
+      const askedBy = scriptedEngine.events.find(
+        (event) => event.type === 'tool' && event.phase === 'started' && event.name === 'AskUserQuestion',
+      );
       if (opened?.type !== 'card' || closed?.type !== 'card' || askedBy?.type !== 'tool') {
         throw new Error('The question did not produce a matched tool/card open/close triple');
       }
@@ -2332,29 +2360,42 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(closed.turnId).toBe(askedBy.turnId);
       // Exactly one card: a second one would mean the answer could have been
       // applied to the wrong prompt.
-      expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+      expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(
+        1,
+      );
 
       // The parked turn resumes only after the answer, and finishes in the PUI.
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
       expect(scriptedEngine.requests).toEqual([prompt]);
 
-      console.info('PUI_QUESTION_ACCEPTANCE', JSON.stringify({
-        binary: bin,
-        binarySha256,
-        prompt: card.prompt,
-        options: card.presentation.options.map((option) => option.label),
-        selected: 'Change',
-        answers: verdict.updatedInput?.answers,
-        turnId: opened.turnId,
-        correlationId: card.correlationId,
-        cardReplies,
-      }));
+      console.info(
+        'PUI_QUESTION_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          prompt: card.prompt,
+          options: card.presentation.options.map((option) => option.label),
+          selected: 'Change',
+          answers: verdict.updatedInput?.answers,
+          turnId: opened.turnId,
+          correlationId: card.correlationId,
+          cardReplies,
+        }),
+      );
     } catch (error) {
-      console.info('PUI_QUESTION_FAILURE', JSON.stringify({ ...pane.failureEvidence(), cardReplies,
-        verdicts: scriptedEngine.questionVerdicts,
-        cardEvents: scriptedEngine.events.filter((event) => event.type === 'card') }));
+      console.info(
+        'PUI_QUESTION_FAILURE',
+        JSON.stringify({
+          ...pane.failureEvidence(),
+          cardReplies,
+          verdicts: scriptedEngine.questionVerdicts,
+          cardEvents: scriptedEngine.events.filter((event) => event.type === 'card'),
+        }),
+      );
       throw error;
-    } finally { await pane.stop().catch(() => {}); }
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 
   // PUI-TOOLS-DIFF — a file edit is reviewable as a diff inside the PUI.
@@ -2406,7 +2447,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       for (let step = 0; step < 6 && !opened; step += 1) {
         pane.enter();
         await new Promise((resolve) => setTimeout(resolve, 300));
-        if (pane.screen().includes('@@ hunk')) { opened = true; break; }
+        if (pane.screen().includes('@@ hunk')) {
+          opened = true;
+          break;
+        }
         if (pane.screen().includes('Message — Enter send')) {
           pane.escape();
           await pane.waitFor('i type · v speak');
@@ -2430,8 +2474,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // cannot disagree about what was reviewed.
       const before = pane.clipboardWrites().length;
       pane.write('y');
-      await vi.waitFor(() => expect(pane.clipboardWrites().length).toBeGreaterThan(before),
-        { timeout: 15_000, interval: 100 });
+      await vi.waitFor(() => expect(pane.clipboardWrites().length).toBeGreaterThan(before), {
+        timeout: 15_000,
+        interval: 100,
+      });
       const payload = pane.clipboardWrites().slice(before).join('\n');
 
       // Title states the file and the shape of the change.
@@ -2447,17 +2493,24 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // makes the hunk reviewable rather than a bare pair of edits.
       expect(payload).toContain('     let kept = 1;');
 
-      console.info('PUI_TOOLS_DIFF_ACCEPTANCE', JSON.stringify({
-        binary: bin,
-        binarySha256,
-        path: scriptedEngine.editPath,
-        payload,
-      }));
+      console.info(
+        'PUI_TOOLS_DIFF_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          path: scriptedEngine.editPath,
+          payload,
+        }),
+      );
     } catch (error) {
-      console.info('PUI_TOOLS_DIFF_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
-        clipboard: pane.clipboardWrites() }));
+      console.info(
+        'PUI_TOOLS_DIFF_FAILURE',
+        JSON.stringify({ ...pane.failureEvidence(), clipboard: pane.clipboardWrites() }),
+      );
       throw error;
-    } finally { await pane.stop().catch(() => {}); }
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 
   // AUTO-BAR-R-05-P-007 — editing a draft while a turn streams must disturb
@@ -2525,23 +2578,33 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // and it is decided against what the engine received rather than against
       // the screen, which cannot show trailing or duplicated whitespace.
       pane.enter();
-      await vi.waitFor(() => expect(scriptedEngine.requests).toHaveLength(2),
-        { timeout: 60_000, interval: 100 });
+      await vi.waitFor(() => expect(scriptedEngine.requests).toHaveLength(2), { timeout: 60_000, interval: 100 });
       expect(scriptedEngine.requests[1]).toBe(`${draft}${appended}`);
 
-      console.info('AUTO_BAR_R_05_ACCEPTANCE', JSON.stringify({
-        binary: bin,
-        binarySha256,
-        streamed,
-        submitted: scriptedEngine.requests[1],
-        draftIntact: scriptedEngine.requests[1] === `${draft}${appended}`,
-        turnsDispatched: scriptedEngine.requests.length,
-      }));
+      console.info(
+        'AUTO_BAR_R_05_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          streamed,
+          submitted: scriptedEngine.requests[1],
+          draftIntact: scriptedEngine.requests[1] === `${draft}${appended}`,
+          turnsDispatched: scriptedEngine.requests.length,
+        }),
+      );
     } catch (error) {
-      console.info('AUTO_BAR_R_05_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
-        requests: scriptedEngine.requests, commandPosts: commandPosts.length }));
+      console.info(
+        'AUTO_BAR_R_05_FAILURE',
+        JSON.stringify({
+          ...pane.failureEvidence(),
+          requests: scriptedEngine.requests,
+          commandPosts: commandPosts.length,
+        }),
+      );
       throw error;
-    } finally { await pane.stop().catch(() => {}); }
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 
   // Shared setup for the two approval clauses: raise BOTH requests, then work
@@ -2558,15 +2621,18 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     pane.write(prompt);
     pane.enter();
     await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(2), { timeout: 60_000, interval: 100 });
-    const focusedTag = await vi.waitFor(() => {
-      const screen = pane.screen();
-      const shown = scriptedEngine.approvalRequests.filter((r) => screen.includes(String(r.input.command)));
-      // Exactly one focused request must be legible, or "which one did the
-      // owner authorise" is not a well-posed question and the assertions below
-      // would be deciding nothing.
-      expect(shown, screen).toHaveLength(1);
-      return shown[0].tag;
-    }, { timeout: 30_000, interval: 200 });
+    const focusedTag = await vi.waitFor(
+      () => {
+        const screen = pane.screen();
+        const shown = scriptedEngine.approvalRequests.filter((r) => screen.includes(String(r.input.command)));
+        // Exactly one focused request must be legible, or "which one did the
+        // owner authorise" is not a well-posed question and the assertions below
+        // would be deciding nothing.
+        expect(shown, screen).toHaveLength(1);
+        return shown[0].tag;
+      },
+      { timeout: 30_000, interval: 200 },
+    );
     const peer = scriptedEngine.approvalRequests.find((r) => r.tag !== focusedTag);
     if (!peer) throw new Error('The approval fixture must raise two distinct requests');
     const focused = scriptedEngine.approvalRequests.find((r) => r.tag === focusedTag);
@@ -2595,8 +2661,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       pane.write('1'); // Approve
       await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 30_000, interval: 100 });
       expect(cardReplies[0]).toMatchObject({ status: 200 });
-      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1),
-        { timeout: 30_000, interval: 100 });
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1), {
+        timeout: 30_000,
+        interval: 100,
+      });
 
       // Falsifier half 1 — EXACT execution. The authorised call must be the one
       // that was shown, carrying the arguments that were shown: not a widened
@@ -2612,25 +2680,47 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // open. All three, because each fails differently.
       expect(scriptedEngine.approvalVerdicts.map((v) => v.tag)).not.toContain(peer.tag);
       expect(scriptedEngine.approvalExecuted.map((e) => e.tag)).not.toContain(peer.tag);
-      expect(scriptedEngine.events.some((event) => event.type === 'card'
-        && event.phase === 'closed' && event.correlationId === peerCard?.correlationId)).toBe(false);
+      expect(
+        scriptedEngine.events.some(
+          (event) =>
+            event.type === 'card' && event.phase === 'closed' && event.correlationId === peerCard?.correlationId,
+        ),
+      ).toBe(false);
       expect(pendingNativeCards().map((card) => card.correlationId)).toContain(peerCard?.correlationId);
 
-      console.info('PUI_APPROVAL_ALLOW_ACCEPTANCE', JSON.stringify({
-        binary: bin, binarySha256, approved: focused.tag, executed: scriptedEngine.approvalExecuted,
-        peerStillPending: true, peerCorrelationId: peerCard?.correlationId,
-      }));
+      console.info(
+        'PUI_APPROVAL_ALLOW_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          approved: focused.tag,
+          executed: scriptedEngine.approvalExecuted,
+          peerStillPending: true,
+          peerCorrelationId: peerCard?.correlationId,
+        }),
+      );
 
       // Settle the peer so the turn can finish rather than being torn down
       // mid-flight, which would leave the engine cancelling a live card.
       pane.write('2');
-      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2),
-        { timeout: 30_000, interval: 100 });
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2), {
+        timeout: 30_000,
+        interval: 100,
+      });
     } catch (error) {
-      console.info('PUI_APPROVAL_ALLOW_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
-        verdicts: scriptedEngine.approvalVerdicts, executed: scriptedEngine.approvalExecuted, cardReplies }));
+      console.info(
+        'PUI_APPROVAL_ALLOW_FAILURE',
+        JSON.stringify({
+          ...pane.failureEvidence(),
+          verdicts: scriptedEngine.approvalVerdicts,
+          executed: scriptedEngine.approvalExecuted,
+          cardReplies,
+        }),
+      );
       throw error;
-    } finally { await pane.stop().catch(() => {}); }
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 
   // PUI-APPROVAL-DENY — declining a request stops exactly that action.
@@ -2647,8 +2737,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       pane.write('2'); // Decline
       await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 30_000, interval: 100 });
       expect(cardReplies[0]).toMatchObject({ status: 200 });
-      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1),
-        { timeout: 30_000, interval: 100 });
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1), {
+        timeout: 30_000,
+        interval: 100,
+      });
 
       // Falsifier half 1 — "the denied action executes". The verdict must
       // refuse, and nothing may have run: the executed list is what the fixture
@@ -2662,27 +2754,49 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // Falsifier half 2 — "affects a different request". A denial must not
       // cascade: the peer keeps its own undecided state.
       expect(scriptedEngine.approvalVerdicts.map((v) => v.tag)).not.toContain(peer.tag);
-      expect(scriptedEngine.events.some((event) => event.type === 'card'
-        && event.phase === 'closed' && event.correlationId === peerCard?.correlationId)).toBe(false);
+      expect(
+        scriptedEngine.events.some(
+          (event) =>
+            event.type === 'card' && event.phase === 'closed' && event.correlationId === peerCard?.correlationId,
+        ),
+      ).toBe(false);
       expect(pendingNativeCards().map((card) => card.correlationId)).toContain(peerCard?.correlationId);
 
-      console.info('PUI_APPROVAL_DENY_ACCEPTANCE', JSON.stringify({
-        binary: bin, binarySha256, declined: focused.tag, executed: scriptedEngine.approvalExecuted,
-        peerStillPending: true, peerCorrelationId: peerCard?.correlationId,
-      }));
+      console.info(
+        'PUI_APPROVAL_DENY_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          declined: focused.tag,
+          executed: scriptedEngine.approvalExecuted,
+          peerStillPending: true,
+          peerCorrelationId: peerCard?.correlationId,
+        }),
+      );
 
       // Now APPROVE the peer. This is the sharpest evidence the two requests are
       // genuinely independent: the same pair of cards yields opposite outcomes,
       // so neither verdict can have been a property of the batch.
       pane.write('1');
-      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2),
-        { timeout: 30_000, interval: 100 });
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2), {
+        timeout: 30_000,
+        interval: 100,
+      });
       expect(scriptedEngine.approvalExecuted).toEqual([{ tag: peer.tag, input: peer.input }]);
     } catch (error) {
-      console.info('PUI_APPROVAL_DENY_FAILURE', JSON.stringify({ ...pane.failureEvidence(),
-        verdicts: scriptedEngine.approvalVerdicts, executed: scriptedEngine.approvalExecuted, cardReplies }));
+      console.info(
+        'PUI_APPROVAL_DENY_FAILURE',
+        JSON.stringify({
+          ...pane.failureEvidence(),
+          verdicts: scriptedEngine.approvalVerdicts,
+          executed: scriptedEngine.approvalExecuted,
+          cardReplies,
+        }),
+      );
       throw error;
-    } finally { await pane.stop().catch(() => {}); }
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   });
 });
 
@@ -2690,68 +2804,117 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
   // The installed Codex Default mode excludes request_user_input. Its native
   // Plan-mode controls still need their own PUI acceptance before this case
   // can claim a positive Codex question result.
-  test.skipIf(scriptedEngine.backend === 'codex')('answers an actual native question through an installed PUI card', async () => {
-    const manifest = installedManifest();
-    const question = 'Would you like to keep or change the draft title?';
-    const expected = 'You chose: Change.';
-    const questionTool = { claude: 'AskUserQuestion', codex: 'request_user_input', omp: 'ask' }[scriptedEngine.backend];
-    if (!questionTool) throw new Error(`No native question scenario for ${scriptedEngine.backend}`);
-    const questionShape = scriptedEngine.backend === 'claude' ? 'Use multiSelect false.'
-      : 'Use question id choice, with one selection allowed.';
-    const request = `I want to try the choice dialog in this conversation. Please use ${questionTool} to ask me: ${question} Give me two choices, Keep and Change, under the header Choice. ${questionShape} Wait for me to choose. Then confirm my choice with the sentence "You chose: <selected label>."`;
-    const pane = new PuiPane(bin, operatorPort, home);
-    try {
-      await openComposer(pane);
-      pane.write(request); pane.enter();
-      await waitForSavedTurn(request);
-      const cardDeadline = Date.now() + 120_000;
-      while (pendingNativeCards().length === 0 && Date.now() < cardDeadline) {
-        const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
-        if (lifecycle && ['waiting-for-owner', 'failed', 'ended'].includes(lifecycle)) {
-          throw new Error(`The native turn reached ${lifecycle} without opening the requested question`);
+  test.skipIf(scriptedEngine.backend === 'codex')(
+    'answers an actual native question through an installed PUI card',
+    async () => {
+      const manifest = installedManifest();
+      const question = 'Would you like to keep or change the draft title?';
+      const expected = 'You chose: Change.';
+      const questionTool = { claude: 'AskUserQuestion', codex: 'request_user_input', omp: 'ask' }[
+        scriptedEngine.backend
+      ];
+      if (!questionTool) throw new Error(`No native question scenario for ${scriptedEngine.backend}`);
+      const questionShape =
+        scriptedEngine.backend === 'claude'
+          ? 'Use multiSelect false.'
+          : 'Use question id choice, with one selection allowed.';
+      const request = `I want to try the choice dialog in this conversation. Please use ${questionTool} to ask me: ${question} Give me two choices, Keep and Change, under the header Choice. ${questionShape} Wait for me to choose. Then confirm my choice with the sentence "You chose: <selected label>."`;
+      const pane = new PuiPane(bin, operatorPort, home);
+      try {
+        await openComposer(pane);
+        pane.write(request);
+        pane.enter();
+        await waitForSavedTurn(request);
+        const cardDeadline = Date.now() + 120_000;
+        while (pendingNativeCards().length === 0 && Date.now() < cardDeadline) {
+          const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
+          if (lifecycle && ['waiting-for-owner', 'failed', 'ended'].includes(lifecycle)) {
+            throw new Error(`The native turn reached ${lifecycle} without opening the requested question`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(pendingNativeCards()).toHaveLength(1);
+        const engine = scriptedEngine.engines[0];
+        const card = pendingNativeCards()[0];
+        expect(card.prompt).toBe(question);
+        if (card.presentation?.kind !== 'radio' || !card.presentation.options)
+          throw new Error('The native question did not produce a PUI choice card');
+        const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
+        expect(choiceIndex).toBeGreaterThanOrEqual(0);
+        await pane.waitFor(question);
+        await pane.waitFor('Operator asks');
+        await pane.waitFor('Change');
+        const questionFrame = pane.screen();
+        expect(
+          scriptedEngine.events.some(
+            (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
+          ),
+        ).toBe(false);
+        pane.write(String(choiceIndex + 1));
+        await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 15_000, interval: 100 });
+        expect(cardReplies[0]).toMatchObject({ status: 200 });
+        const chat = await waitForCorrelatedReply(request, expected);
+        await pane.waitForReply(expected);
+        const start = scriptedEngine.events.find(
+          (event) => event.type === 'tool' && event.phase === 'started' && event.name === questionTool,
+        );
+        expect(scriptedEngine.events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'card',
+              phase: 'closed',
+              correlationId: card.correlationId,
+              resolution: 'submitted',
+            }),
+          ]),
+        );
+        // Codex exposes this built-in as a server request, without tool-item
+        // start/completion notifications. Claude and OMP also expose tool events.
+        if (scriptedEngine.backend !== 'codex') {
+          if (!start || start.type !== 'tool') throw new Error('No actual native question tool was observed');
+          expect(scriptedEngine.events).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ type: 'tool', phase: 'completed', callId: start.callId, isError: false }),
+            ]),
+          );
+        }
+        expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(
+          1,
+        );
+        console.info(
+          'PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE',
+          JSON.stringify({
+            binary: bin,
+            binarySha256,
+            manifest,
+            identity: engine.adapter.host.descriptor().identity,
+            descriptor: engine.adapter.host.descriptor(),
+            chatId: chat.id,
+            question,
+            selected: 'Change',
+            card,
+            cardReplies,
+            expected,
+            questionFrame,
+            answeredFrame: pane.screen(),
+            toolEvents:
+              start?.type === 'tool'
+                ? scriptedEngine.events.filter((event) => event.type === 'tool' && event.callId === start.callId)
+                : [],
+          }),
+        );
+      } catch (error) {
+        console.info(
+          'PUI_INSTALLED_NATIVE_QUESTION_FAILURE',
+          JSON.stringify({ ...pane.failureEvidence(), cardReplies }),
+        );
+        throw error;
+      } finally {
+        await pane.stop().catch(() => {});
       }
-      expect(pendingNativeCards()).toHaveLength(1);
-      const engine = scriptedEngine.engines[0];
-      const card = pendingNativeCards()[0];
-      expect(card.prompt).toBe(question);
-      if (card.presentation?.kind !== 'radio' || !card.presentation.options) throw new Error('The native question did not produce a PUI choice card');
-      const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
-      expect(choiceIndex).toBeGreaterThanOrEqual(0);
-      await pane.waitFor(question);
-      await pane.waitFor('Operator asks');
-      await pane.waitFor('Change');
-      const questionFrame = pane.screen();
-      expect(scriptedEngine.events.some((event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId)).toBe(false);
-      pane.write(String(choiceIndex + 1));
-      await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 15_000, interval: 100 });
-      expect(cardReplies[0]).toMatchObject({ status: 200 });
-      const chat = await waitForCorrelatedReply(request, expected);
-      await pane.waitForReply(expected);
-      const start = scriptedEngine.events.find((event) => event.type === 'tool' && event.phase === 'started' && event.name === questionTool);
-      expect(scriptedEngine.events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: 'card', phase: 'closed', correlationId: card.correlationId, resolution: 'submitted' }),
-      ]));
-      // Codex exposes this built-in as a server request, without tool-item
-      // start/completion notifications. Claude and OMP also expose tool events.
-      if (scriptedEngine.backend !== 'codex') {
-        if (!start || start.type !== 'tool') throw new Error('No actual native question tool was observed');
-        expect(scriptedEngine.events).toEqual(expect.arrayContaining([
-          expect.objectContaining({ type: 'tool', phase: 'completed', callId: start.callId, isError: false }),
-        ]));
-      }
-      expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
-      console.info('PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
-        identity: engine.adapter.host.descriptor().identity, descriptor: engine.adapter.host.descriptor(), chatId: chat.id,
-        question, selected: 'Change', card, cardReplies, expected, questionFrame, answeredFrame: pane.screen(),
-        toolEvents: start?.type === 'tool' ? scriptedEngine.events.filter((event) => event.type === 'tool' && event.callId === start.callId) : [],
-      }));
-    } catch (error) {
-      console.info('PUI_INSTALLED_NATIVE_QUESTION_FAILURE', JSON.stringify({ ...pane.failureEvidence(), cardReplies }));
-      throw error;
-    } finally { await pane.stop().catch(() => {}); }
-  }, 300_000);
+    },
+    300_000,
+  );
 
   test('restores the same native conversation after the operator OS process exits', async () => {
     const manifest = installedManifest();
@@ -2772,7 +2935,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     try {
       await openComposer(pane);
       if (approvalEnabled) {
-        pane.write(approvalRequest); pane.enter();
+        pane.write(approvalRequest);
+        pane.enter();
         await waitForSavedTurn(approvalRequest);
         await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(1), { timeout: 120_000, interval: 100 });
         approvalCard = pendingNativeCards()[0];
@@ -2791,19 +2955,32 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await waitForCorrelatedReply(approvalRequest, approvalResult);
         await pane.waitForReply(approvalResult);
         expect(readFileSync(approvalFixturePath, 'utf8')).toBe(approvalResult + '\n');
-        approvalStart = scriptedEngine.events.find((event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
-          event.type === 'tool' && event.phase === 'started' && JSON.stringify(event.input).includes(approvalFixturePath));
+        approvalStart = scriptedEngine.events.find(
+          (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
+            event.type === 'tool' &&
+            event.phase === 'started' &&
+            JSON.stringify(event.input).includes(approvalFixturePath),
+        );
         expect(approvalStart, 'the approved native command must be visible as a tool start').toBeDefined();
-        approvalEnd = scriptedEngine.events.find((event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
-          event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId);
+        approvalEnd = scriptedEngine.events.find(
+          (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
+            event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId,
+        );
         expect(approvalEnd, 'the approved native command must finish successfully').toMatchObject({ isError: false });
-        expect(scriptedEngine.events).toEqual(expect.arrayContaining([
-          expect.objectContaining({ type: 'card', phase: 'closed', correlationId: approvalCard.correlationId,
-            resolution: 'submitted' }),
-        ]));
+        expect(scriptedEngine.events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'card',
+              phase: 'closed',
+              correlationId: approvalCard.correlationId,
+              resolution: 'submitted',
+            }),
+          ]),
+        );
         frames.approved = pane.screen();
       }
-      pane.write(greeting); pane.enter();
+      pane.write(greeting);
+      pane.enter();
       await pane.waitForReply(greetingReply);
       const chat = await waitForSavedTurn(greeting);
       chatId = chat.id;
@@ -2811,24 +2988,40 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(saved?.identity.backend).toBe(scriptedEngine.backend);
       expect(saved?.identity.nativeSessionId).toBeTruthy();
       if (process.env.PUI_REAL_MODEL || process.env.PUI_REAL_MODE || process.env.PUI_REAL_PLAN === '1') {
-        expect(saved).toMatchObject({ accountRoute: process.env.PUI_REAL_ACCOUNT ?? 'default', carry: 'warm',
-          modes: process.env.PUI_REAL_MODE ? [process.env.PUI_REAL_MODE] : [] });
+        expect(saved).toMatchObject({
+          accountRoute: process.env.PUI_REAL_ACCOUNT ?? 'default',
+          carry: 'warm',
+          modes: process.env.PUI_REAL_MODE ? [process.env.PUI_REAL_MODE] : [],
+        });
         expect(saved?.model, 'the selected model must be the one that actually answered').toBeTruthy();
-        expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su'))
-          .toEqual([expect.objectContaining({
+        expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toEqual([
+          expect.objectContaining({
             model: process.env.PUI_REAL_MODEL,
             mode: process.env.PUI_REAL_MODE,
             planSlug: process.env.PUI_REAL_PLAN === '1' ? REAL_PLAN : undefined,
             account: process.env.PUI_REAL_ACCOUNT ?? 'default',
-          })]);
+          }),
+        ]);
       }
       frames.beforeRestart = pane.screen();
     } catch (error) {
-      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: first.output(), diagnostics: first.diagnostics,
-        descriptors: [...first.descriptors.values()], events: first.events.slice(-30),
-        readiness: first.readiness.slice(-10), responses: first.responses.slice(-20), screen: pane.screen() }));
+      console.info(
+        'PUI_OPERATOR_PROCESS_FAILURE',
+        JSON.stringify({
+          output: first.output(),
+          diagnostics: first.diagnostics,
+          descriptors: [...first.descriptors.values()],
+          events: first.events.slice(-30),
+          readiness: first.readiness.slice(-10),
+          responses: first.responses.slice(-20),
+          screen: pane.screen(),
+        }),
+      );
       throw error;
-    } finally { await pane.stop(); await first.stop({ endSessions: false }); }
+    } finally {
+      await pane.stop();
+      await first.stop({ endSessions: false });
+    }
     expect(first.shutdownStages).toContain('os-hard-exit-ready');
     // A process exit is observed before a NEW OS process binds the SAME port.
     // No in-memory host, registry, mock or JavaScript closure crosses this seam.
@@ -2839,8 +3032,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(second.pid).not.toBe(first.pid);
       expect(second.instanceId).not.toBe(first.instanceId);
       await openAgentChat(resumedPane);
-      resumedPane.escape(); await resumedPane.waitFor('i type · v speak');
-      resumedPane.write('l'); await resumedPane.waitFor('Conversation — Enter select');
+      resumedPane.escape();
+      await resumedPane.waitFor('i type · v speak');
+      resumedPane.write('l');
+      await resumedPane.waitFor('Conversation — Enter select');
       frames.conversationPicker = resumedPane.screen();
       // Select the saved identity explicitly. The picker starts at row zero,
       // which can be another (empty) conversation in the production inventory.
@@ -2849,7 +3044,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const rows = resumedPane.screen().split('\n');
         const title = rows.findIndex((row) => row.includes('Conversation — Enter select'));
         const index = rows.findIndex((row, index) => index > title && row.includes('│> '));
-        return index >= 0 ? rows[index + 1] ?? '' : '';
+        return index >= 0 ? (rows[index + 1] ?? '') : '';
       };
       for (let row = 0; row < 100 && !selectedHint().includes(chatId!); row++) {
         const previous = selectedHint();
@@ -2860,31 +3055,81 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(selectedHint()).toContain(chatId!);
       frames.selectedConversation = resumedPane.screen();
       resumedPane.enter();
-      resumedPane.write('i'); await resumedPane.waitForReply(greetingReply);
+      resumedPane.write('i');
+      await resumedPane.waitForReply(greetingReply);
       frames.history = resumedPane.screen();
       await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
       const resumedReply = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
-      resumedPane.write('Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.');
+      resumedPane.write(
+        'Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.',
+      );
       frames.beforeSubmit = resumedPane.screen();
-      resumedPane.enter(); await resumedPane.waitForReply(resumedReply);
+      resumedPane.enter();
+      await resumedPane.waitForReply(resumedReply);
       const resumed = second.descriptors.get(chatId!);
-      expect(resumed).toMatchObject({ identity: saved!.identity, model: saved!.model, accountRoute: saved!.accountRoute,
-        carry: saved!.carry, modes: saved!.modes, runtimeGeneration: saved!.runtimeGeneration + 1 });
+      expect(resumed).toMatchObject({
+        identity: saved!.identity,
+        model: saved!.model,
+        accountRoute: saved!.accountRoute,
+        carry: saved!.carry,
+        modes: saved!.modes,
+        runtimeGeneration: saved!.runtimeGeneration + 1,
+      });
       frames.resumed = resumedPane.screen();
-      expect(second.events.some((event) => event.type === 'transcript' && event.role === 'assistant'
-        && event.phase === 'completed' && resumedReply.test(event.content ?? ''))).toBe(true);
-      console.info('PUI_OPERATOR_PROCESS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
-        first: { pid: first.pid, instanceId: first.instanceId }, second: { pid: second.pid, instanceId: second.instanceId },
-        port: second.port, saved, resumed, frames, readiness: second.readiness,
-        approval: approvalCard ? { card: approvalCard, start: approvalStart, end: approvalEnd,
-          fixturePath: approvalFixturePath, result: approvalResult, replies: cardReplies } : null,
-        diagnostics: [...first.diagnostics, ...second.diagnostics] }));
+      expect(
+        second.events.some(
+          (event) =>
+            event.type === 'transcript' &&
+            event.role === 'assistant' &&
+            event.phase === 'completed' &&
+            resumedReply.test(event.content ?? ''),
+        ),
+      ).toBe(true);
+      console.info(
+        'PUI_OPERATOR_PROCESS_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          manifest,
+          first: { pid: first.pid, instanceId: first.instanceId },
+          second: { pid: second.pid, instanceId: second.instanceId },
+          port: second.port,
+          saved,
+          resumed,
+          frames,
+          readiness: second.readiness,
+          approval: approvalCard
+            ? {
+                card: approvalCard,
+                start: approvalStart,
+                end: approvalEnd,
+                fixturePath: approvalFixturePath,
+                result: approvalResult,
+                replies: cardReplies,
+              }
+            : null,
+          diagnostics: [...first.diagnostics, ...second.diagnostics],
+        }),
+      );
     } catch (error) {
-      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: second.output(), diagnostics: second.diagnostics,
-        descriptors: [...second.descriptors.values()], events: second.events.slice(-30), responses: second.responses.slice(-20),
-        frames, readiness: second.readiness, screen: resumedPane.screen() }));
+      console.info(
+        'PUI_OPERATOR_PROCESS_FAILURE',
+        JSON.stringify({
+          output: second.output(),
+          diagnostics: second.diagnostics,
+          descriptors: [...second.descriptors.values()],
+          events: second.events.slice(-30),
+          responses: second.responses.slice(-20),
+          frames,
+          readiness: second.readiness,
+          screen: resumedPane.screen(),
+        }),
+      );
       throw error;
-    } finally { await resumedPane.stop(); await second.stop(); }
+    } finally {
+      await resumedPane.stop();
+      await second.stop();
+    }
     expect(second.shutdownStages).toContain('os-hard-exit-ready');
   }, 600_000);
 
@@ -2928,13 +3173,19 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await pane.waitFor(fileResult, { timeoutMs: 120_000 });
       await pane.waitFor('Message — Enter send', { timeoutMs: 120_000 });
       frames.file = pane.screen();
-      const readStart = scriptedEngine.events.find((event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> => event.type === 'tool'
-        && event.phase === 'started' && JSON.stringify(event.input).includes(fixturePath));
+      const readStart = scriptedEngine.events.find(
+        (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
+          event.type === 'tool' && event.phase === 'started' && JSON.stringify(event.input).includes(fixturePath),
+      );
       expect(readStart, 'the model must actually request the generated fixture').toBeDefined();
       expect(pane.screen()).toContain(readStart!.name);
-      const readEnd = scriptedEngine.events.find((event) => event.type === 'tool'
-        && event.phase === 'completed' && event.callId === readStart?.callId
-        && JSON.stringify(event.output).includes(fileResult));
+      const readEnd = scriptedEngine.events.find(
+        (event) =>
+          event.type === 'tool' &&
+          event.phase === 'completed' &&
+          event.callId === readStart?.callId &&
+          JSON.stringify(event.output).includes(fileResult),
+      );
       expect(readEnd, 'the real tool result must return in the same turn').toMatchObject({ turnId: readStart?.turnId });
 
       pane.write(longRequest);
@@ -2945,50 +3196,102 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       // The engine's completed owner-turn receipt follows the native input
       // acknowledgement, not model completion. Interrupt real inference after
       // that receipt; a refused sleep command cannot stand in for running work.
-      await vi.waitFor(() => expect(scriptedEngine.events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: 'command_result', commandId: longCommand.commandId,
-          commandType: 'owner_turn', status: 'completed', session: longCommand.target }),
-      ])), { timeout: 120_000, interval: 100 });
+      await vi.waitFor(
+        () =>
+          expect(scriptedEngine.events).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: 'command_result',
+                commandId: longCommand.commandId,
+                commandType: 'owner_turn',
+                status: 'completed',
+                session: longCommand.target,
+              }),
+            ]),
+          ),
+        { timeout: 120_000, interval: 100 },
+      );
       // The running-state bar read " Running — input locked " until P-007 draft
       // queuing made Enter QUEUE the next message instead of being swallowed
       // (ui.rs:3126, pinned there by `assert!(!text.contains("input locked"))`).
       // This waits for the running state; the assertion that input is not
       // send-ready is the `not.toContain('Message — Enter send')` below.
       await pane.waitFor('Running — Enter queues your next message');
-      await vi.waitFor(() => {
-        const partialText = scriptedEngine.events.flatMap((event) => event.type === 'transcript'
-          && event.role === 'assistant' && event.phase === 'delta' && event.turnId === longCommand.turnId
-          ? [event.content] : []).join('');
-        expect(partialText, 'native text must reach the host before completion').toMatch(/\b1\s+2\s+3\b/);
-        // Read the FIRST pane column, not one bar off each end: the agent-chat pane
-        // is rendered beside the Presence rail (`│5302 …││● claude  su │`), so
-        // stripping a single leading/trailing `│` leaves the rail's text attached and
-        // NO line can ever match /^\d+$/. Splitting on `│` takes the agent-chat cell in
-        // both the railed and the narrow single-pane layout (apps/tui/src/ui.rs).
-        const visibleNumbers = pane.screen().split('\n')
-          .map((line) => (line.split('│')[1] ?? '').trim())
-          .filter((line) => /^\d+$/.test(line)).map(Number);
-        // Positive control: an EMPTY scrape makes the .some() below false, which is
-        // indistinguishable from "the PUI painted nothing". Fail on the real cause —
-        // the scrape measured nothing — instead of blaming the product for a layout change.
-        expect(visibleNumbers.length,
-          'screen scrape found no numeric lines: the pane layout changed and this assertion is measuring nothing').toBeGreaterThan(0);
-        expect(visibleNumbers.some((value, index) => visibleNumbers[index + 1] === value + 1
-          && visibleNumbers[index + 2] === value + 2), 'the installed PUI must paint incremental assistant text').toBe(true);
-        expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
-        expect(scriptedEngine.events.some((event) => event.type === 'transcript' && event.role === 'assistant'
-          && event.phase === 'completed' && event.turnId === longCommand.turnId)).toBe(false);
-        streamingEvidence = { turnId: longCommand.turnId, observedAt: new Date().toISOString(),
-          partialText: partialText.slice(0, 200), visibleNumbers: visibleNumbers.slice(0, 8), lifecycle: 'running', completed: false };
-      }, { timeout: 120_000, interval: 50 });
+      await vi.waitFor(
+        () => {
+          const partialText = scriptedEngine.events
+            .flatMap((event) =>
+              event.type === 'transcript' &&
+              event.role === 'assistant' &&
+              event.phase === 'delta' &&
+              event.turnId === longCommand.turnId
+                ? [event.content]
+                : [],
+            )
+            .join('');
+          expect(partialText, 'native text must reach the host before completion').toMatch(/\b1\s+2\s+3\b/);
+          // Read the FIRST pane column, not one bar off each end: the agent-chat pane
+          // is rendered beside the Presence rail (`│5302 …││● claude  su │`), so
+          // stripping a single leading/trailing `│` leaves the rail's text attached and
+          // NO line can ever match /^\d+$/. Splitting on `│` takes the agent-chat cell in
+          // both the railed and the narrow single-pane layout (apps/tui/src/ui.rs).
+          const visibleNumbers = pane
+            .screen()
+            .split('\n')
+            .map((line) => (line.split('│')[1] ?? '').trim())
+            .filter((line) => /^\d+$/.test(line))
+            .map(Number);
+          // Positive control: an EMPTY scrape makes the .some() below false, which is
+          // indistinguishable from "the PUI painted nothing". Fail on the real cause —
+          // the scrape measured nothing — instead of blaming the product for a layout change.
+          expect(
+            visibleNumbers.length,
+            'screen scrape found no numeric lines: the pane layout changed and this assertion is measuring nothing',
+          ).toBeGreaterThan(0);
+          expect(
+            visibleNumbers.some(
+              (value, index) => visibleNumbers[index + 1] === value + 1 && visibleNumbers[index + 2] === value + 2,
+            ),
+            'the installed PUI must paint incremental assistant text',
+          ).toBe(true);
+          expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
+          expect(
+            scriptedEngine.events.some(
+              (event) =>
+                event.type === 'transcript' &&
+                event.role === 'assistant' &&
+                event.phase === 'completed' &&
+                event.turnId === longCommand.turnId,
+            ),
+          ).toBe(false);
+          streamingEvidence = {
+            turnId: longCommand.turnId,
+            observedAt: new Date().toISOString(),
+            partialText: partialText.slice(0, 200),
+            visibleNumbers: visibleNumbers.slice(0, 8),
+            lifecycle: 'running',
+            completed: false,
+          };
+        },
+        { timeout: 120_000, interval: 50 },
+      );
       expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
-      expect(scriptedEngine.events.some((event) => event.type === 'transcript'
-        && event.role === 'assistant' && event.phase === 'completed' && event.turnId === longCommand.turnId),
-      'the native long reply must still be running before the PUI interrupt').toBe(false);
+      expect(
+        scriptedEngine.events.some(
+          (event) =>
+            event.type === 'transcript' &&
+            event.role === 'assistant' &&
+            event.phase === 'completed' &&
+            event.turnId === longCommand.turnId,
+        ),
+        'the native long reply must still be running before the PUI interrupt',
+      ).toBe(false);
       frames.running = pane.screen();
       pane.interrupt();
-      await vi.waitFor(() => expect(commandPosts.some((command) => command.type === 'interrupt')).toBe(true),
-        { timeout: 15_000, interval: 100 });
+      await vi.waitFor(() => expect(commandPosts.some((command) => command.type === 'interrupt')).toBe(true), {
+        timeout: 15_000,
+        interval: 100,
+      });
       await pane.waitFor('Message — Enter send', { timeoutMs: 30_000 });
       frames.interrupted = pane.screen();
       pane.write(followup);
@@ -2999,20 +3302,22 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(finalChat.id).toBe(firstChat.id);
       expect(engine.adapter.host.descriptor().identity).toEqual(identity);
       expect(scriptedEngine.engines).toHaveLength(1);
-      expect(commandPosts.filter((command) => command.type === 'owner_turn').map((command) => command.content))
-        .toEqual([greeting, fileRequest, longRequest, followup]);
+      expect(commandPosts.filter((command) => command.type === 'owner_turn').map((command) => command.content)).toEqual(
+        [greeting, fileRequest, longRequest, followup],
+      );
       expect(commandReplies.every((reply) => reply.status === 202 && !reply.replayed)).toBe(true);
       // RPC backends obtain their native identity asynchronously after the
       // launch response. The real greeting above proves the later handshake
       // and persisted native resume handle, independently of response timing.
-      expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su'))
-        .toEqual([expect.objectContaining({ count: 1, attachedEngine: true, transport: 'structured' })]);
+      expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toEqual([
+        expect.objectContaining({ count: 1, attachedEngine: true, transport: 'structured' }),
+      ]);
 
       // Inspect this launch's process family only, without printing argv or
       // touching an existing human/peer terminal. The real CLI has pipe stdio;
       // only the PUI process is attached to our allocated terminal.
       const processes: Array<{ pid: number; tty: string; name: string }> = [];
-      const pending = [engine.pid()!, ...await childPids(pane.pty.pid)];
+      const pending = [engine.pid()!, ...(await childPids(pane.pty.pid))];
       const seen = new Set<number>();
       while (pending.length) {
         const pid = pending.pop()!;
@@ -3023,11 +3328,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           const [tty, ...name] = rows.trim().split(/\s+/);
           processes.push({ pid, tty, name: name.join(' ') });
         }
-        pending.push(...await childPids(pid));
+        pending.push(...(await childPids(pid)));
       }
       expect(processes.length).toBeGreaterThan(0);
       expect(processes.every((proc) => proc.tty === '?')).toBe(true);
-      expect(processes.some((proc) => /zellij|tmux|xterm|gnome-terminal|konsole|wezterm|alacritty|kitty/.test(proc.name))).toBe(false);
+      expect(
+        processes.some((proc) => /zellij|tmux|xterm|gnome-terminal|konsole|wezterm|alacritty|kitty/.test(proc.name)),
+      ).toBe(false);
       // Lose the native process and its in-memory host, then reconnect using
       // the installed PUI's conversation picker. This tests the production
       // resume door; the Hono fixture itself remains in the same process.
@@ -3052,7 +3359,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await putViewState('Plans');
       const resumedPane = new PuiPane(bin, operatorPort, home);
       let resumedDescriptor;
-      const resumePrompt = 'Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.';
+      const resumePrompt =
+        'Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.';
       const resumedReply = `RESUMED:${greetingReply}`;
       // Recall of the unknown marker is the assertion, not whether a model
       // inserts whitespace after the label. The marker itself stays exact.
@@ -3071,16 +3379,28 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await vi.waitFor(() => expect(scriptedEngine.engines).toHaveLength(2), { timeout: 120_000, interval: 100 });
         const resumedEngine = scriptedEngine.engines[1];
         await resumedEngine.ready;
-        expect(resumedEngine.adapter.host.recent.map(({ event }) => event)).toEqual(expect.arrayContaining([
-          expect.objectContaining({ type: 'transcript', phase: 'completed', role: 'assistant', content: followupReply }),
-        ]));
+        expect(resumedEngine.adapter.host.recent.map(({ event }) => event)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'transcript',
+              phase: 'completed',
+              role: 'assistant',
+              content: followupReply,
+            }),
+          ]),
+        );
         resumedPane.write('i');
         await resumedPane.waitForReply(followupReply);
         frames.history = resumedPane.screen();
         resumedDescriptor = resumedEngine.adapter.host.descriptor();
-        expect(resumedDescriptor).toMatchObject({ identity, carry: savedDescriptor.carry,
-          modes: savedDescriptor.modes, accountRoute: savedDescriptor.accountRoute, model: savedDescriptor.model,
-          runtimeGeneration: savedDescriptor.runtimeGeneration + 1 });
+        expect(resumedDescriptor).toMatchObject({
+          identity,
+          carry: savedDescriptor.carry,
+          modes: savedDescriptor.modes,
+          accountRoute: savedDescriptor.accountRoute,
+          model: savedDescriptor.model,
+          runtimeGeneration: savedDescriptor.runtimeGeneration + 1,
+        });
         resumedPane.write(resumePrompt);
         resumedPane.enter();
         const resumedChat = await waitForCorrelatedReply(resumePrompt, resumedReplyPattern);
@@ -3090,24 +3410,63 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       } catch (cause) {
         console.info('PUI_INSTALLED_RESUME_FAILURE', JSON.stringify(resumedPane.failureEvidence()));
         throw cause;
-      } finally { await resumedPane.stop(); }
+      } finally {
+        await resumedPane.stop();
+      }
       expect(namedQueryRequests).not.toContain('network.board');
       expect(pipelineCellRequests).toEqual([]);
-      console.info('PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE', JSON.stringify({
-        binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
-        greetingReply, fileResult, followupReply, resumedReply, resumedDescriptor, readStart, readEnd, streamingEvidence,
-        commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
-        initializeWarnings, optionalMemoryWarnings, configurationWarnings, intentPivotWarnings,
-        nativeFrames: nativeFrameDiagnostics, nativeProviderEvents,
-        assistantReplies: scriptedEngine.events.filter((event) => event.type === 'transcript'
-          && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'),
-      }));
+      console.info(
+        'PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE',
+        JSON.stringify({
+          binary: bin,
+          binarySha256,
+          manifest,
+          chatId: finalChat.id,
+          identity,
+          frames,
+          greetingReply,
+          fileResult,
+          followupReply,
+          resumedReply,
+          resumedDescriptor,
+          readStart,
+          readEnd,
+          streamingEvidence,
+          commandTypes: commandPosts.map((command) => command.type),
+          processes,
+          traffic: sessionTraffic,
+          initializeWarnings,
+          optionalMemoryWarnings,
+          configurationWarnings,
+          intentPivotWarnings,
+          nativeFrames: nativeFrameDiagnostics,
+          nativeProviderEvents,
+          assistantReplies: scriptedEngine.events.filter(
+            (event) =>
+              event.type === 'transcript' &&
+              event.phase === 'completed' &&
+              event.role === 'assistant' &&
+              event.channel === 'text',
+          ),
+        }),
+      );
     } catch (cause) {
       const nativeState = await readOmpDiagnosticState?.().catch((error: Error) => ({ stateReadError: error.message }));
-      console.info('PUI_INSTALLED_REAL_ENGINE_FAILURE', JSON.stringify({
-        backend: scriptedEngine.backend, binary: bin, binarySha256, frames, nativeState, intentPivotWarnings, ...pane.failureEvidence(),
-      }));
+      console.info(
+        'PUI_INSTALLED_REAL_ENGINE_FAILURE',
+        JSON.stringify({
+          backend: scriptedEngine.backend,
+          binary: bin,
+          binarySha256,
+          frames,
+          nativeState,
+          intentPivotWarnings,
+          ...pane.failureEvidence(),
+        }),
+      );
       throw cause;
-    } finally { await pane.stop().catch(() => {}); }
+    } finally {
+      await pane.stop().catch(() => {});
+    }
   }, 600_000);
 });

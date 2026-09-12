@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -87,6 +89,88 @@ describe('P-305 lifecycle input contract', () => {
       /gs:\/\/ bucket URI/,
     );
   });
+});
+
+describe('P-305 provider preflight boundary', () => {
+  it.each(['missing-iap', 'missing-nat', 'ready'])(
+    'checks private network readiness before uploading an image: %s',
+    (scenario) => {
+      const fixtureDir = mkdtempSync(join(tmpdir(), 'p305-network-preflight-'));
+      try {
+        const artifact = Buffer.from('hermetic GCE archive fixture');
+        const artifactPath = join(fixtureDir, 'image.tar.gz');
+        const callsPath = join(fixtureDir, 'calls.jsonl');
+        writeFileSync(artifactPath, artifact);
+        writeFileSync(callsPath, '');
+        // Run the actual CLI with a hermetic provider executable. Every command is recorded;
+        // even the ready control stops at upload, so this test can never create cloud resources.
+        writeFileSync(join(fixtureDir, 'gcloud'), `#!${process.execPath}
+const { appendFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+appendFileSync(process.env.P305_TEST_CALLS, JSON.stringify(args) + '\\n');
+const scenario = process.env.P305_TEST_SCENARIO;
+let result;
+if (args.slice(0, 4).join(' ') === 'compute networks subnets describe') {
+  result = { network: 'projects/test/global/networks/test-network' };
+} else if (args.slice(0, 3).join(' ') === 'compute firewall-rules list') {
+  result = scenario === 'missing-iap' ? [] : [{
+    direction: 'INGRESS', allowed: [{ IPProtocol: 'tcp', ports: ['22'] }],
+    sourceRanges: ['35.235.240.0/20'], targetTags: ['papercusp-clean-room']
+  }];
+} else if (args.slice(0, 3).join(' ') === 'compute routers list') {
+  result = [{ name: 'test-router', network: 'projects/test/global/networks/test-network', region: 'us-central1' }];
+} else if (args.slice(0, 4).join(' ') === 'compute routers nats list') {
+  result = scenario === 'missing-nat' ? [] : [{ sourceSubnetworkIpRangesToNat: 'ALL_SUBNETWORKS_ALL_IP_RANGES' }];
+} else if (args.slice(0, 3).join(' ') === 'storage buckets describe') {
+  result = {};
+} else if (args.slice(0, 2).join(' ') === 'storage cp') {
+  console.error('hermetic-upload-boundary');
+  process.exit(17);
+} else if (args.slice(0, 2).join(' ') === 'storage rm') {
+  result = {};
+} else {
+  console.error('unexpected-provider-command:' + JSON.stringify(args));
+  process.exit(18);
+}
+console.log(JSON.stringify(result));
+`, { mode: 0o700 });
+        const result = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+          globalThis.fetch = async () => new Response(null, {
+            status: 200, headers: { 'docker-content-digest': ${JSON.stringify(DIGEST)} }
+          });
+          process.argv = [process.execPath, 'p305-test-cli', '--json-stdin'];
+          await import(${JSON.stringify(pathToFileURL(RUNNER_SOURCE).href)});
+        `], {
+          input: JSON.stringify({
+            ...BASE,
+            initialGceTarPath: artifactPath,
+            initialGceTarSha256: createHash('sha256').update(artifact).digest('hex'),
+          }),
+          env: { ...process.env, PATH: fixtureDir, P305_TEST_CALLS: callsPath, P305_TEST_SCENARIO: scenario },
+          encoding: 'utf8',
+          timeout: 15_000,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        const calls = readFileSync(callsPath, 'utf8').trim().split('\n').filter(Boolean)
+          .map((line) => JSON.parse(line) as string[]);
+        const commands = calls.map((args) => args.join(' '));
+        expect(commands.some((command) => command.startsWith('compute firewall-rules list')), result.stderr).toBe(true);
+        if (scenario === 'ready') {
+          expect(result.stderr).toContain('hermetic-upload-boundary');
+          const natIndex = commands.findIndex((command) => command.startsWith('compute routers nats list'));
+          const uploadIndex = commands.findIndex((command) => command.startsWith('storage cp '));
+          expect(natIndex).toBeGreaterThanOrEqual(0);
+          expect(uploadIndex).toBeGreaterThan(natIndex);
+        } else {
+          expect(result.stderr).toContain(scenario === 'missing-iap' ? 'no INGRESS firewall rule' : 'no Cloud NAT');
+          expect(calls.filter((args) => args.some((arg) => ['cp', 'create', 'delete', 'rm'].includes(arg)))).toEqual([]);
+        }
+      } finally {
+        rmSync(fixtureDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('private IAP argv', () => {
