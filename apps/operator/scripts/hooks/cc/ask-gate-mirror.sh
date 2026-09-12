@@ -45,7 +45,10 @@
 #          hook-triggered continuation that follows a block — we check it
 #          FIRST and never bounce twice in the same turn no matter what the
 #          re-emitted ending looks like.
-#       3. neither → allow, empty stdout, exactly like every sibling Stop
+#       3. no <ask>, but the ending CLAIMS an imminent action ("Compacting now")
+#          without a tool call in the current turn → BOUNCE: the assertion is not
+#          an action, and silently ending here strands the session.
+#       4. neither → allow, empty stdout, exactly like every sibling Stop
 #          hook in this directory.
 #
 # Deliberately SYNCHRONOUS (unlike the per-tool-call activity/lock hooks,
@@ -511,12 +514,179 @@ HANDBACK_REASON = (
 )
 
 
-def last_assistant_text(transcript_path):
-    """Tail-read the transcript JSONL and return the LAST assistant turn's
-    concatenated text blocks (skipping pure tool_use turns with no text),
-    or '' when unreadable / no assistant text is found in the tail window."""
-    if not transcript_path or not os.path.isfile(transcript_path):
+# A Stop payload can contain the final assistant text directly, but the payload does
+# not say which tool calls an earlier assistant frame in the SAME model turn made.
+# The transcript is the source for that distinction. Resolve only narrow imminent
+# claims to a concrete tool so an unrelated call cannot satisfy the assertion.
+_IMMEDIATE_RE = re.compile(r"\b(?:now|immediately|right\s+now|this\s+turn)\b", re.I)
+_FIRST_PERSON_RE = r"(?:i(?:'m| am|'ll| will)|we(?:'re| are|'ll| will))"
+_ACTION_BOUNDARY = r"(?=$|[\s,.;:!?—-])"
+_COMPACTION_ACTION_RE = r"(?:compact(?:ing)?|request(?:ing)?\s+compaction|go(?:ing)?\s+(?:quiet|silent))"
+_LOOP_ACTION_RE = r"(?:arm(?:ing)?|start(?:ing)?|set(?:ting)\s+up)\s+(?:an?\s+)?loop"
+_TOOL_NAME_TOKEN = r"(?:[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*(?:[:][A-Za-z0-9_-]+)*|mcp__[A-Za-z0-9_]+(?:__[A-Za-z0-9_]+)+)"
+_TOOL_CALL_VERB_RE = r"(?:call(?:ing)?|invoke(?:ing)?|run(?:ning)?|fire(?:ing)?|trigger(?:ing)?|execute(?:ing)?)"
+
+
+def _imminent_action_claim(line, action_re, tool):
+    """Resolve one action phrase when it is first-person and imminent."""
+    candidate = line.strip()
+    action = (
+        r"(?:^\s*(?:now\s+)?" + action_re + _ACTION_BOUNDARY + r")"
+        r"|(?:\b" + _FIRST_PERSON_RE + r"\s+(?:(?:now|right\s+now)\s+)?"
+        + action_re + _ACTION_BOUNDARY + r")"
+        r"|(?:\b" + _FIRST_PERSON_RE + r"\s+going\s+to\s+" + action_re + _ACTION_BOUNDARY + r")"
+    )
+    match = re.search(action, candidate, re.I)
+    if not match:
+        return None
+    # The bare form must carry its own immediacy ("Compacting now"); the
+    # first-person forms may place "now" after the action.
+    if not _IMMEDIATE_RE.search(candidate[match.start():]):
+        return None
+    return {'tool': tool, 'label': candidate[:240]}
+
+
+def _named_tool_claim(line):
+    """Resolve a first-person or bare imperative claim naming a tool."""
+    candidate = line.strip()
+    pattern = (
+        r"(?:^\s*|\b" + _FIRST_PERSON_RE + r"\s+(?:(?:now|right\s+now)\s+)?)"
+        + _TOOL_CALL_VERB_RE
+        + r"\s+(?:the\s+)?[\"']?(?P<tool>" + _TOOL_NAME_TOKEN + r")"
+    )
+    match = re.search(pattern, candidate, re.I)
+    if not match or not _IMMEDIATE_RE.search(candidate[match.end():]):
+        return None
+    return {'tool': match.group('tool'), 'label': candidate[:240]}
+
+
+def claimed_action_ending(text, tail_lines=3):
+    """Resolve one narrow imminent first-person claim in the turn's tail."""
+    lines = [ln.replace('’', "'") for ln in (text or '').rstrip().splitlines() if ln.strip()]
+    for line in lines[-tail_lines:]:
+        candidate = line.strip()
+        if not candidate or len(candidate) > 300:
+            continue
+        for action_re, tool in (
+            (_COMPACTION_ACTION_RE, 'session:request-compaction'),
+            (_LOOP_ACTION_RE, 'loop:arm'),
+        ):
+            claim = _imminent_action_claim(candidate, action_re, tool)
+            if claim:
+                return claim
+        claim = _named_tool_claim(candidate)
+        if claim:
+            return claim
+    return None
+
+
+def _tool_name_key(name):
+    return re.sub(r'[^a-z0-9]', '', str(name or '').lower())
+
+
+def tool_names_match(expected, actual):
+    """Match colon/dash/underscore spellings and MCP-prefixed tool names."""
+    expected_key = _tool_name_key(expected)
+    actual_key = _tool_name_key(actual)
+    return bool(expected_key and actual_key and (
+        expected_key == actual_key
+        or expected_key.endswith(actual_key)
+        or actual_key.endswith(expected_key)
+    ))
+
+
+def claimed_action_reason(claim):
+    return (
+        "This turn ends by CLAIMING that an imminent action is happening "
+        f"({claim['label']}) without a matching {claim['tool']} tool call in this turn. "
+        "A sentence asserting an action does not execute that action, and ending here "
+        "can silently halt the session. Perform the action now through its real tool, "
+        "or state the blocker and continue with a verified wake source; do not announce "
+        "that you did something you did not do."
+    )
+
+
+_TOOL_CALL_BLOCK_TYPES = frozenset(('tool_use', 'tool_call', 'function_call'))
+_TOOL_RESULT_BLOCK_TYPES = frozenset(('tool_result', 'tool_return', 'tool_response', 'function_result'))
+
+
+def _message_content(obj):
+    msg = obj.get('message') if isinstance(obj, dict) else None
+    if not isinstance(msg, dict):
+        return None
+    return msg.get('content')
+
+
+def _content_blocks(obj):
+    content = _message_content(obj)
+    return content if isinstance(content, list) else []
+
+
+def _contains_tool_call(obj):
+    if not isinstance(obj, dict):
+        return False
+    if obj.get('type') in _TOOL_CALL_BLOCK_TYPES:
+        return True
+    return any(
+        isinstance(block, dict) and block.get('type') in _TOOL_CALL_BLOCK_TYPES
+        for block in _content_blocks(obj)
+    )
+
+
+def _tool_call_names(obj):
+    if not isinstance(obj, dict):
+        return []
+    blocks = []
+    if obj.get('type') in _TOOL_CALL_BLOCK_TYPES:
+        blocks.append(obj)
+    blocks.extend(
+        block for block in _content_blocks(obj)
+        if isinstance(block, dict) and block.get('type') in _TOOL_CALL_BLOCK_TYPES
+    )
+    names = []
+    for block in blocks:
+        name = block.get('name') or block.get('tool_name') or block.get('toolName')
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    # A nameless tool-use block still proves that a call occurred, but cannot
+    # satisfy a claim that names a different concrete tool.
+    return names
+
+
+def _is_tool_result_only_user(obj):
+    if not isinstance(obj, dict) or obj.get('type') != 'user':
+        return False
+    blocks = _content_blocks(obj)
+    return bool(blocks) and all(
+        isinstance(block, dict) and block.get('type') in _TOOL_RESULT_BLOCK_TYPES
+        for block in blocks
+    )
+
+
+def _assistant_text_from_message(obj):
+    if not isinstance(obj, dict) or obj.get('type') != 'assistant':
         return ''
+    content = _message_content(obj)
+    if isinstance(content, str):
+        return content
+    texts = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get('type') == 'text' and isinstance(block.get('text'), str):
+                texts.append(block['text'])
+    return '\n'.join(texts)
+
+
+def last_assistant_turn(transcript_path):
+    """Return final assistant text plus current-turn tool-call evidence.
+
+    Result keys are text, tool_call_seen (bool or None), and known. known is
+    false when the transcript cannot be read or has no assistant text; callers
+    must fail open in that case. The last non-tool-result user frame marks the
+    beginning of the current model turn.
+    """
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return {'text': '', 'tool_call_seen': None, 'known': False}
     try:
         size = os.path.getsize(transcript_path)
         with open(transcript_path, 'rb') as f:
@@ -524,12 +694,13 @@ def last_assistant_text(transcript_path):
                 f.seek(size - TRANSCRIPT_TAIL_BYTES)
             raw_bytes = f.read()
     except Exception:
-        return ''
+        return {'text': '', 'tool_call_seen': None, 'known': False}
     text = raw_bytes.decode('utf-8', 'replace')
     lines = text.split('\n')
     if size > TRANSCRIPT_TAIL_BYTES:
         lines = lines[1:]  # drop a possibly-torn first line from the seek
-    for line in reversed(lines):
+    entries = []
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -537,23 +708,54 @@ def last_assistant_text(transcript_path):
             obj = json.loads(line)
         except Exception:
             continue
-        if not isinstance(obj, dict) or obj.get('type') != 'assistant':
-            continue
-        msg = obj.get('message')
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get('content')
-        texts = []
+        if isinstance(obj, dict):
+            entries.append(obj)
+
+    current_start = 0
+    for index in range(len(entries) - 1, -1, -1):
+        if entries[index].get('type') == 'user' and not _is_tool_result_only_user(entries[index]):
+            current_start = index + 1
+            break
+
+    current_entries = entries[current_start:]
+    tool_call_names = [
+        name for entry in current_entries for name in _tool_call_names(entry)
+    ]
+    tool_call_seen = any(_contains_tool_call(entry) for entry in current_entries)
+    for entry in reversed(current_entries):
+        candidate = _assistant_text_from_message(entry)
+        if candidate:
+            return {
+                'text': candidate,
+                'tool_call_seen': tool_call_seen,
+                'tool_call_names': tool_call_names,
+                'known': True,
+            }
+    return {'text': '', 'tool_call_seen': None, 'known': False}
+
+
+def explicit_assistant_text(value):
+    """Read Claude's documented last_assistant_message Stop field when present."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get('text'), str):
+            return value['text']
+        content = value.get('content')
+        if isinstance(content, str):
+            return content
         if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get('type') == 'text' and isinstance(block.get('text'), str):
-                    texts.append(block['text'])
-        elif isinstance(content, str):
-            texts.append(content)
-        if texts:
+            texts = [
+                block.get('text') for block in content
+                if isinstance(block, dict) and isinstance(block.get('text'), str)
+            ]
             return '\n'.join(texts)
-        continue  # a tool-only assistant turn — keep scanning further back
     return ''
+
+
+def last_assistant_text(transcript_path):
+    """Compatibility wrapper returning only the final assistant text."""
+    return last_assistant_turn(transcript_path)['text']
 
 
 # ── PreToolUse: open the blocked-session gate before the dialog renders ────────
@@ -629,7 +831,8 @@ call_tool('sessions:ingest-gate-event', {
 }, timeout=2, retries=1, label='stop-notify-clear')
 
 transcript_path = first('transcript_path', 'transcriptPath') or ''
-final_text = last_assistant_text(transcript_path)
+turn = last_assistant_turn(transcript_path)
+final_text = explicit_assistant_text(first('last_assistant_message', 'lastAssistantMessage')) or turn['text']
 # EI-19412167276099357 defect 3: scan a QUOTE-STRIPPED copy so citing the
 # banned pattern (a fixture, a table row, someone else's message) can never
 # itself trip the bounce. `final_text` (unstripped) is kept for the <ask> tag
@@ -685,6 +888,12 @@ if question_shaped_ending(scan_text):
         "in a terminal session. Re-emit through one of the above, then stop."
     )
     print(json.dumps({'decision': 'block', 'reason': reason}))
+    sys.exit(0)
+
+claim = claimed_action_ending(scan_text)
+if (turn['known'] and claim
+        and not any(tool_names_match(claim['tool'], actual) for actual in turn.get('tool_call_names', []))):
+    print(json.dumps({'decision': 'block', 'reason': claimed_action_reason(claim)}))
     sys.exit(0)
 
 if handback_ending(scan_text):
