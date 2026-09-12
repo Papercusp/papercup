@@ -1442,12 +1442,17 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await openComposer(pane);
       const prompt = `saved reconnect ${randomUUID()}`;
       pane.write(prompt); pane.enter();
+      // Seeding includes asynchronous session launch. Start the persistence
+      // oracle only after the real UI observes its completed turn, as the
+      // composer journey below does; its short DB deadline is not a startup
+      // deadline. No refusal or reconnect assertion is relaxed.
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor('Message — Enter send');
       try {
         saved = await waitForSavedTurn(prompt);
       } catch (cause) {
         throw new Error(`Reconnect seed turn did not persist on the rendered screen:\n${pane.screen()}`, { cause });
       }
-      await pane.waitFor(scriptedEngine.successText);
     } finally { await pane.stop(); }
     await stopEngines();
     await putViewState('Plans');
