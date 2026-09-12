@@ -73,6 +73,8 @@ import { buildGoalFeedbackConsultPort, readResolvedGoalConsultProposals } from '
 export interface BuildScoutCycleDepsOptions {
   /** Harness this cycle runs for — scopes the concrete-rail improvement capture. */
   harnessSlug: string;
+  /** Workspace that owns this Scout cycle (threaded into goal create+start). */
+  workspaceId?: string;
   /** Real stateless LLM client (the gym:judge pattern); the action/scheduler supplies it. */
   llmCall: ScoutCycleDeps['llmCall'];
   /** Ctx-bound `plans:new` draft creator (the broad rail) — the action supplies it. */
@@ -404,7 +406,9 @@ export function buildScoutCycleDeps(
     instanceDispatch: buildInstanceDispatchPort(),
     // goal-scale → goals create+start (P-013 / D-005): the full-auto goal rail. The
     // BLENDER_GOAL_RAIL flag gates it at route time (goalEnabled below), not here.
-    goalDispatch: opts.goalDispatch ?? buildGoalDispatchPort({ harnessSlug: opts.harnessSlug }),
+    goalDispatch:
+      opts.goalDispatch ??
+      buildGoalDispatchPort({ harnessSlug: opts.harnessSlug, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) }),
     // goal-with-target → goals:update (D-004/D-013): zero spend and no launch.
     // This is deliberately a sibling port on the SAME rail, not a sixth rail.
     goalAmendmentDispatch:

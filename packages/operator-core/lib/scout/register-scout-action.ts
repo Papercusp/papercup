@@ -421,6 +421,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   onPhase?.('build-cycle-deps');
   const deps = buildScoutCycleDeps({
     harnessSlug,
+    workspaceId,
     llmCall,
     deferDispatch,
     // Draft plans are pinned to the DEFAULT workspace, NOT the routine's ctx
