@@ -1640,17 +1640,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
-      // The retained-draft banner and the failure REASON are driven by separate
-      // signals. When the authoritative startup snapshot is already terminal,
-      // the TUI releases the pending turn with its stable actionable fallback
-      // before the stream can replay either provider detail. In the other two
-      // orderings the closed stream or fixture error wins. All three are real
-      // failure reasons; requiring only the provider detail makes this test
-      // reject the intentional terminal-snapshot path while the draft-safety
-      // behavior it names is working.
+      // Draft retention alone is insufficient: the failure cause must survive
+      // both live delivery and a terminal snapshot followed by stream replay.
+      // Generic readiness copy loses the cause and cannot satisfy this guard.
       await vi.waitFor(() => {
         expect(pane.screen()).toMatch(
-          /Session executor\/stream is not ready for this project|PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/,
+          /PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/,
         );
       }, { timeout: 30_000, interval: 100 });
       expect(pane.screen()).toContain(`> ${prompt}`);
