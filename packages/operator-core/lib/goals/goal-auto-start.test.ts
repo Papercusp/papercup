@@ -21,6 +21,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnConsoleResult } from '../console-spawn';
+import { buildConsoleEnvelope } from '../console-launcher';
+import { drainFleetAutoMintEnabled, mintDrainFleetForGoal } from './drain-fleet-mint';
 
 /** Every side effect, in the order it happened — the gate's placement is an ORDER claim. */
 const order: string[] = [];
@@ -116,7 +118,7 @@ vi.mock('../modes/store', () => ({ setMode: (o: SetModeCall) => setModeMock(o) }
 // Drain-fleet wiring is pinned in the tool door's suite + drain-fleet-mint.test.ts;
 // OFF here so the order log carries only what this file is about.
 vi.mock('./drain-fleet-mint', () => ({
-  drainFleetAutoMintEnabled: async () => false,
+  drainFleetAutoMintEnabled: vi.fn(async () => false),
   mintDrainFleetForGoal: vi.fn(),
   teardownDrainFleetMint: vi.fn(),
 }));
@@ -171,6 +173,7 @@ const pendingReadiness = (): Readiness => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(drainFleetAutoMintEnabled).mockResolvedValue(false);
   goalLaunchMocks.buildBrief.mockImplementation(
     (o: { goalId: string; portfolio?: unknown }) => `kickoff for ${o.goalId}`,
   );
@@ -202,6 +205,60 @@ beforeEach(() => {
   });
   replaceBlockedByMock.mockImplementation(async () => {
     order.push('deps-clear');
+  });
+});
+
+describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', () => {
+  it('keeps the workspace ledger key but launches without a fabricated harness', async () => {
+    await call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' });
+
+    expect(sqlLog.find((entry) => /INSERT/i.test(entry.text))?.values).toContain('ws-test');
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-test', slug: null }),
+    );
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    const spawn = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
+    expect(spawn.envelope.greetingCmd).not.toContain('--harness=');
+  });
+
+  it('preserves a concrete per-harness launch instead of broadening every Scout goal', async () => {
+    await call({ workspaceId: 'ws-test', harnessSlug: 'papercusp' });
+
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-test', slug: 'papercusp' }),
+    );
+    const spawn = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
+    expect(spawn.envelope.greetingCmd).toContain('--harness=papercusp');
+  });
+
+  it('also keeps the optional drain member workspace-scoped', async () => {
+    vi.mocked(drainFleetAutoMintEnabled).mockResolvedValue(true);
+    vi.mocked(mintDrainFleetForGoal).mockResolvedValue({
+      fleetSlug: 'drain-test',
+    } as Awaited<ReturnType<typeof mintDrainFleetForGoal>>);
+
+    const result = await call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.drainFleet).toBe('drain-test');
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
+    for (const [args] of spawnHeadlessMock.mock.calls) {
+      const spawn = args as { envelope: { greetingCmd: string } };
+      expect(spawn.envelope.greetingCmd).not.toContain('--harness=');
+    }
+  });
+
+  it('still rolls back a workspace goal when its launch fails', async () => {
+    spawnHeadlessMock.mockResolvedValue({
+      status: 'error',
+      error: 'simulated launch refusal',
+    } as unknown as SpawnConsoleResult);
+
+    await expect(call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' })).rejects.toThrow(/goal rolled back/);
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ slug: null }));
+    expect(replaceBlockedByMock).toHaveBeenCalled();
+    expect(setModeCalls.some((entry) => entry.enabled === false)).toBe(true);
+    expect(order).toContain('delete');
   });
 });
 

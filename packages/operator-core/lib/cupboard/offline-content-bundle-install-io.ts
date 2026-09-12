@@ -32,6 +32,7 @@ import {
   installRubricFromCupboardCore,
   InstallRubricError,
 } from './install-rubric-core';
+import { createTextCollector } from '../child-output';
 import type {
   InstallBundleAppInput,
   InstallBundleAppOptions,
@@ -91,13 +92,12 @@ function gitCloneShallow(url: string, dest: string): Promise<void> {
     const child = spawn('git', ['clone', '--depth', '1', '--', url, dest], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let error = '';
-    child.stderr.on('data', (chunk) => (error += chunk.toString()));
+    const error = createTextCollector(child.stderr);
     child.on('error', reject);
     child.on('close', (code) =>
       code === 0
         ? resolveClone()
-        : reject(new Error(`git clone failed (exit ${code}): ${error.slice(0, 300)}`)),
+        : reject(new Error(`git clone failed (exit ${code}): ${error.text().slice(0, 300)}`)),
     );
   });
 }

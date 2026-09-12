@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-007 current guardrail battery after September 11 PTY changes",
+  "framework": "operational",
+  "command": [
+    "npm run test:file -- packages/operator-core/lib/agent-config-constants.test.ts packages/operator-core/lib/agent-tools/config/set-compaction-limit-core.test.ts packages/operator-core/lib/system-health/compaction-compliance-watchdog.test.ts packages/operator-core/lib/memory/insights-index.test.ts apps/operator/lib/release/release-history-page.test.ts apps/operator/lib/psu-launcher.test.ts apps/operator/lib/psu-pty-host.test.ts apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+    "Continuation of the same argv: packages/operator-core/lib/events/await/wake-executor.test.ts packages/operator-core/lib/fleet-repeated-recovery.test.ts packages/operator-core/lib/fleet-repeated-recovery.integration.test.ts packages/operator-core/lib/fleet-transition-events.test.ts packages/operator-core/lib/harness/routines/fleet-transition-sweep-action.test.ts",
+    "Continuation of the same argv: packages/operator-core/lib/agent-tools/fleet/leader-brief.test.ts packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.test.ts packages/operator-core/lib/events/await/catalog.test.ts packages/operator-core/lib/events/await/emitter-pin.test.ts packages/operator-core/lib/acceptance-bar-contract-snapshot.integration.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-12T15:32:51.724Z",
+  "finishedAt": "2026-09-12T15:35:41.719Z",
+  "summary": "All 2,062 tests across the four original P-007 guardrail groups passed, with no failures or skips. HEAD and all 19 declared source / 18 declared test file hashes were unchanged across execution. This verifies the declared tree scope, not deployment, a measured productivity gain, or P2P release acceptance.",
+  "assertions": [
+    {
+      "id": "core-unit",
+      "passed": true,
+      "evidence": "12 files, 826 tests passed; router group 0, packages/operator-core/vitest.config.ts; child exit status 0."
+    },
+    {
+      "id": "app-unit",
+      "passed": true,
+      "evidence": "3 files, 1,215 tests passed: release-history-page 83, psu-launcher 783, psu-pty-host 349; router group 1, apps/operator/vitest.config.ts; child exit status 0."
+    },
+    {
+      "id": "app-integration",
+      "passed": true,
+      "evidence": "All 17 real-PTY turn integration tests passed in 75,618 ms, including the emitting-child mid-turn injection refusal and the same-owner quota recovery test; router group 2, apps/operator/vitest.integration.config.ts; child exit status 0."
+    },
+    {
+      "id": "core-integration",
+      "passed": true,
+      "evidence": "2 files, 4 tests passed: fleet-repeated-recovery 3 and acceptance-bar-contract-snapshot 1; router group 3, packages/operator-core/vitest.integration.config.ts; child exit status 0."
+    },
+    {
+      "id": "stable-declared-bytes",
+      "passed": true,
+      "evidence": "The wrapper hashed every declared file before and after the complete battery using the file-set algorithm in spec-evidence-store.ts. Both tuples matched. The router independently reported requested=18 executed=18 matched=18 status=passed provenance=stamped skippedTests=0, with no uncommitted named test paths."
+    },
+    {
+      "id": "queued-output-fix-preserved",
+      "passed": true,
+      "evidence": "Inspection of b4f4de530668d82a0a8100c2bc04756592f7de62 shows changes to quota advisory matching only. makeAgentBusyGate.waitAtPrompt still yields through setImmediate and re-reads lastOutputAt before accepting quiet. The deterministic regression and full real-PTY suite passed in this run."
+    },
+    {
+      "id": "rollout-disposition-preserved",
+      "passed": true,
+      "evidence": "No policy or cohort mutation was made. D-009/D-010 remain controlling: fixed terminal distribution [0,7,0], unmatched baseline, five of seven latency values unknown, actual billed cost unavailable, and HOLD/no broader rollout. The experiment does not establish a productivity benefit."
+    }
+  ],
+  "testedHead": "55171b4dffa3bdba24d7ecb5c323e008850074b2",
+  "sourceFingerprint": "sha256-file-set-v1:36859fb69dafbb4c29100d99ecdf675f49974b33162ed62ea6ced9798dc58ba0",
+  "testFingerprint": "sha256-file-set-v1:85aad6e3a39ff7a0dde4b72d8d7957336a50abdbc924f4635eb8af6b764b547f",
+  "measurement": {
+    "schemaVersion": 1,
+    "kind": "repo-files",
+    "sourcePaths": [
+      "packages/operator-core/lib/agent-config-constants.ts",
+      "packages/operator-core/lib/model-context-budget.mjs",
+      "packages/operator-core/lib/agent-tools/config/set-compaction-limit-core.ts",
+      "packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts",
+      "packages/operator-core/lib/memory/insights-index.ts",
+      "apps/operator/scripts/psu-launcher.mjs",
+      "apps/operator/scripts/psu-pty-host.mjs",
+      "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+      "packages/operator-core/lib/events/await/wake-executor.ts",
+      "packages/operator-core/lib/fleet-repeated-recovery.ts",
+      "packages/operator-core/lib/fleet-transition-events.ts",
+      "packages/operator-core/lib/harness/routines/fleet-transition-sweep-action.ts",
+      "packages/operator-core/lib/agent-tools/fleet/leader-brief.ts",
+      "packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.ts",
+      "packages/operator-core/lib/events/await/catalog.ts",
+      "packages/operator-core/lib/events/await/emitter-pin.ts",
+      "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts",
+      "libs/papercusp/libs/db/sql/1037-work-item-first-claim-stamp.sql",
+      "packages/operator-core/lib/agent-usage-telemetry.ts"
+    ],
+    "testPaths": [
+      "packages/operator-core/lib/agent-config-constants.test.ts",
+      "packages/operator-core/lib/agent-tools/config/set-compaction-limit-core.test.ts",
+      "packages/operator-core/lib/system-health/compaction-compliance-watchdog.test.ts",
+      "packages/operator-core/lib/memory/insights-index.test.ts",
+      "apps/operator/lib/release/release-history-page.test.ts",
+      "apps/operator/lib/psu-launcher.test.ts",
+      "apps/operator/lib/psu-pty-host.test.ts",
+      "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+      "packages/operator-core/lib/events/await/wake-executor.test.ts",
+      "packages/operator-core/lib/fleet-repeated-recovery.test.ts",
+      "packages/operator-core/lib/fleet-repeated-recovery.integration.test.ts",
+      "packages/operator-core/lib/fleet-transition-events.test.ts",
+      "packages/operator-core/lib/harness/routines/fleet-transition-sweep-action.test.ts",
+      "packages/operator-core/lib/agent-tools/fleet/leader-brief.test.ts",
+      "packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.test.ts",
+      "packages/operator-core/lib/events/await/catalog.test.ts",
+      "packages/operator-core/lib/events/await/emitter-pin.test.ts",
+      "packages/operator-core/lib/acceptance-bar-contract-snapshot.integration.test.ts"
+    ]
+  },
+  "rawReportDirectory": "/dev/shm/pcv/papercusp-test-files-report-vwdytk",
+  "rawReportDurability": "Ephemeral runner reports; the durable summary and declared measurement recipe are in this committed artifact.",
+  "nativeExecSession": 80272,
+  "workItem": "WI-10000336",
+  "incident": "EI-22806311344295685",
+  "supersedesBindingId": 3401
+}
