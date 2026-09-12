@@ -198,7 +198,7 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
 
     const r = await emitScorecard(acceptanceArgs(independentId) as never, asAuthor as never);
 
-    expect(r).toMatchObject({ ok: true, created: true });
+    expect(r, JSON.stringify(r)).toMatchObject({ ok: true, created: true });
 
     // THE READBACK. Everything above this line could be satisfied by a writer that
     // returned ok:true and persisted nothing; only a real SELECT can tell.

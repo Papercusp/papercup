@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Shared agent obligations real goal-cockpit parity journey",
+  "framework": "operational",
+  "command": [
+    "desktop-journey",
+    "open-goal-from-card",
+    "compare-server-goal-mode-state-to-rendered-dom",
+    "close-and-confirm-hudgoal-cleared",
+    "reopen-from-card",
+    "capture-screenshot"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-07T09:13:46.539Z",
+  "finishedAt": "2026-09-07T09:15:11.225Z",
+  "summary": "The existing real desktop journey opened the goal cockpit, matched the server-selected degraded obligation projection to the rendered DOM, verified omission recovery and no false all-clear, closed and reopened the cockpit, and captured the rendered state.",
+  "assertions": [
+    {
+      "id": "status-parity",
+      "passed": true,
+      "evidence": "Source artifact checks.status=true; payload.status and rendered.status are both degraded."
+    },
+    {
+      "id": "generation-parity",
+      "passed": true,
+      "evidence": "Source artifact checks.generation=true; payload sourceGeneration 9fdb18df0f498e361ca3 appears in rendered provenance."
+    },
+    {
+      "id": "observation-time-parity",
+      "passed": true,
+      "evidence": "Source artifact checks.time=true; payload and rendered provenance carry 2026-09-07T09:13:46.539Z."
+    },
+    {
+      "id": "action-parity",
+      "passed": true,
+      "evidence": "Source artifact checks.actions=true; the server-selected refresh action is rendered as the primary Next instruction."
+    },
+    {
+      "id": "omission-receipt",
+      "passed": true,
+      "evidence": "Source artifact checks.omissions=true; rendered text says Showing 1 of 8 primary obligations; 7 omitted."
+    },
+    {
+      "id": "recovery-path",
+      "passed": true,
+      "evidence": "Source artifact checks.recovery=true; rendered text exposes coord:orient as the complete-agenda detail path."
+    },
+    {
+      "id": "no-false-all-clear",
+      "passed": true,
+      "evidence": "Source artifact checks.noFalseAllClear=true; degraded/unknown provider state remains visible and is not rendered as measured no-demand."
+    },
+    {
+      "id": "open-close-reopen",
+      "passed": true,
+      "evidence": "Source artifact journey records openedFromCard=true, closeRemovedHudgoal=true, and reopenedFromCard=true."
+    },
+    {
+      "id": "goal-state-stability",
+      "passed": true,
+      "evidence": "Source artifact journey.goalRemainedKilled=true throughout the read-only verification."
+    }
+  ],
+  "sourceArtifact": "docs/evidence/shared-agent-obligations-2026-09-07-gui-journey.json",
+  "screenshot": "docs/evidence/shared-agent-obligations-2026-09-07-goal-mode-state.png",
+  "testedSha": "ddb59a866e"
+}
