@@ -115,7 +115,11 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
     pid: child.pid, operatorUrl: options.env.PAPERCUSP_OPERATOR_URL,
     onTerminalSession: () => { void close().catch((error) => console.warn('[su-session] terminal cleanup failed', error)); },
     setIntervalImpl: (callback: () => void, ms: number) => {
-      heartbeat = managedSetInterval('su-session-engine-heartbeat', ms, callback, { category: 'liveness', instanced: true });
+      // D-004: 'must-sample' — this proves the engine PROCESS is still alive, and
+      // there is no event source to subscribe to for that (the doc names PID
+      // liveness as the canonical must-sample case). A dead process emits nothing,
+      // which is precisely why its absence can only be sampled.
+      heartbeat = managedSetInterval('su-session-engine-heartbeat', ms, callback, { category: 'liveness', instanced: true, classification: 'must-sample' });
       return {};
     },
   });
