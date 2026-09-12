@@ -1849,6 +1849,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
       })),
       barSetHash: legacyBarSetHash,
     };
+    const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+    const clauses = await listSpecClauses({ harnessSlug: 'papercusp', planSlug: subject });
     await db.adminSql.begin(async (tx) => {
       await tx`
         UPDATE harness_shared.harness_plans
@@ -1860,20 +1862,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
            SET acceptance_bar_set_hash=${legacyBarSetHash}
          WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
            AND plan_slug=${subject}`;
-      await tx`
-        UPDATE harness_shared.plan_spec_clause_revisions r
-           SET source_bar_hash=CASE r.source_bar_key
-                 WHEN 'R-1' THEN ${legacyHashByBar.get('R-1')!}
-                 WHEN 'R-2' THEN ${legacyHashByBar.get('R-2')!}
-                 ELSE r.source_bar_hash
-               END,
-               source_bar_set_hash=${legacyBarSetHash}
-          FROM harness_shared.plan_spec_clauses c
-         WHERE c.workspace_id=r.workspace_id AND c.harness_slug=r.harness_slug
-           AND c.plan_slug=r.plan_slug AND c.spec_id=r.spec_id
-           AND c.current_revision=r.revision
-           AND c.workspace_id=${workspaceId} AND c.harness_slug='papercusp'
-           AND c.plan_slug=${subject}`;
+      for (const clause of clauses) {
+        const result = await setSpecClause({
+          ...clause,
+          planSlug: subject,
+          expectedRevision: clause.revision,
+          sourceBar: {
+            ...clause.sourceBar!,
+            barHash: legacyHashByBar.get(clause.sourceBar!.barKey)!,
+            barSetHash: legacyBarSetHash,
+          },
+          actorId: 'legacy-hash-fixture',
+        }, { executor: tx as never, workspaceId, harnessSlug: 'papercusp' });
+        expect(result.status).toBe('revised');
+      }
     });
 
     const legacy = (await rubrics.getRubric(seeded.rubricSlug))!;

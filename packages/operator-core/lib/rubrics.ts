@@ -3927,19 +3927,15 @@ export async function previewAcceptanceBarAmendment(
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
   const scope = await resolveRubricWriteScope(input.rubricId);
   let methodOnlyRevision: number | undefined;
-  // A started acceptance BAR is a cross-plan contract: changing its MODEL or
-  // falsifier must update the subject plan, projection revisions, and open
-  // work-item contracts in the same transaction.  METHOD/title/criterion-class
-  // edits remain on the ordinary single-plan path.
+  // A started acceptance BAR is a cross-plan contract. Route every amendment
+  // through the locked classifier before deciding it is METHOD-only: rebuilding
+  // an otherwise identical criterion can expose hashes persisted by an older
+  // canonical algorithm, which is a real BAR change that must update the subject
+  // plan, projections, and open work-item contracts atomically. The classifier
+  // returns methodOnly only after comparing the rebuilt hashes, and those writes
+  // then continue on the ordinary single-plan path below.
   const currentForRouting = await getRubric(input.rubricId);
-  if (
-    currentForRouting?.kind === 'acceptance' &&
-    currentForRouting.barContract &&
-    (input.criteria ||
-      input.requirement ||
-      input.criterionEvidencePlane ||
-      (input.criterion && (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')))
-  ) {
+  if (currentForRouting?.kind === 'acceptance' && currentForRouting.barContract) {
     const amended = await amendAcceptanceBarRubric(input, scope);
     // A null reread still refuses. Only an explicit, locked method-only result
     // may use the ordinary writer, which refreshes the dependent revision pins.
