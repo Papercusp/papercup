@@ -30,7 +30,11 @@ import path from 'node:path';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
 
-export const ADMISSION_PRECHECK_REFUSALS = Object.freeze(['admission-does-not-fix', 'admission-imports-red'] as const);
+export const ADMISSION_PRECHECK_REFUSALS = Object.freeze([
+  'admission-does-not-fix',
+  'admission-imports-red',
+  'admission-precheck-unavailable',
+] as const);
 export type AdmissionPrecheckRefusalCode = (typeof ADMISSION_PRECHECK_REFUSALS)[number];
 
 /** A repo-relative path the test router would run as a test file. */
@@ -132,7 +136,14 @@ export type FixPrecheckVerdict =
       population: FixPrecheckPopulation;
       holder?: { pid?: number; elapsedSec: number | null };
     }
-  | { ok: true; ran: false; reason: 'runner-failed'; detail: string; population: FixPrecheckPopulation }
+  | {
+      ok: false;
+      ran: false;
+      code: 'admission-precheck-unavailable';
+      reason: 'runner-failed';
+      detail: string;
+      population: FixPrecheckPopulation;
+    }
   | {
       ok: false;
       ran: true;
@@ -158,7 +169,16 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
   if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
   if (!run.ran) {
     return run.reason === 'runner-failed'
-      ? { ok: true, ran: false, reason: 'runner-failed', detail: run.detail, population }
+      ? {
+          ok: false,
+          ran: false,
+          code: 'admission-precheck-unavailable',
+          reason: 'runner-failed',
+          detail:
+            `the admission pre-check runner failed before it could measure the built commit: ${run.detail}; ` +
+            'nothing may be published without either a measured result, the checkpoint-tree-busy exception, or an explicit reasoned skipPrecheck opt-out',
+          population,
+        }
       : { ok: true, ran: false, reason: run.reason, detail: run.detail, population, ...(run.holder ? { holder: run.holder } : {}) };
   }
   const byPath = new Map(run.results.map((r) => [normalize(r.path), r] as const));

@@ -72,7 +72,7 @@ describe('evaluateFixPrecheck (P-006 / R6)', () => {
   it('refuses admission-does-not-fix when no signature test file passes — an unmeasured file never counts as passing', () => {
     const v = evaluateFixPrecheck(pop, ran([['lib/red.test.ts', 'fail'], ['lib/new.test.ts', 'pass']]));
     expect(v).toMatchObject({ ok: false, code: 'admission-does-not-fix', alsoImportsRed: false, importedRed: [] });
-    if (v.ok) throw new Error('expected refusal');
+    if (v.ok || !v.ran) throw new Error('expected a measured refusal');
     expect(v.unmeasured).toEqual(['lib/red2.test.ts']);
     expect(v.detail).toContain('unmeasured');
     expect(v.detail).toContain(C.slice(0, 12));
@@ -104,11 +104,17 @@ describe('evaluateFixPrecheck (P-006 / R6)', () => {
     expect(evaluateFixPrecheck(p, ran([['lib/red.test.ts', 'fail']]))).toMatchObject({ ok: false, code: 'admission-does-not-fix' });
   });
 
-  it('fail-open-and-loud: a busy checkpoint tree or a runner failure is ok:true ran:false with the reason', () => {
+  it('accepts only the busy-tree exception; a runner failure refuses as unmeasured', () => {
     const busy: FixPrecheckRunResult = { ran: false, reason: 'checkpoint-tree-busy', detail: 'gate run holds it', holder: { pid: 7, elapsedSec: 30 } };
     expect(evaluateFixPrecheck(pop, busy)).toMatchObject({ ok: true, ran: false, reason: 'checkpoint-tree-busy', holder: { pid: 7 } });
     const failed: FixPrecheckRunResult = { ran: false, reason: 'runner-failed', detail: 'setup exited 1' };
-    expect(evaluateFixPrecheck(pop, failed)).toMatchObject({ ok: true, ran: false, reason: 'runner-failed', detail: 'setup exited 1' });
+    expect(evaluateFixPrecheck(pop, failed)).toMatchObject({
+      ok: false,
+      ran: false,
+      code: 'admission-precheck-unavailable',
+      reason: 'runner-failed',
+      detail: expect.stringContaining('setup exited 1'),
+    });
   });
 });
 

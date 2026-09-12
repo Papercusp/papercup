@@ -600,15 +600,38 @@ describe('release:repair-queue', () => {
       expect(mocks.write).not.toHaveBeenCalled();
     });
 
-    it('a runner failure fails OPEN and loud: the admission still publishes and the precheck record carries the reason', async () => {
+    it('a runner failure refuses publication; the busy-tree exception remains a separate accepted branch', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.precheckFactory.mockReturnValue(async () => ({ ran: false as const, reason: 'runner-failed' as const, detail: 'setup-release-checkout exited 1' }));
       const result = body(
         await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
       );
+      expect(result).toMatchObject({
+        ok: false,
+        admitted: false,
+        refused: true,
+        reason: 'admission-precheck-unavailable',
+        builtCommit: NEW_HEAD,
+      });
+      expect(dryRuns()).toEqual([true]);
+      expect(JSON.stringify(result.precheck)).toContain('runner-failed');
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('checkpoint-tree-busy remains the explicit fail-open exception and publishes loud', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      mocks.precheckFactory.mockReturnValue(async () => ({
+        ran: false as const,
+        reason: 'checkpoint-tree-busy' as const,
+        detail: 'gate run holds the checkpoint tree',
+        holder: { pid: 7, elapsedSec: 30 },
+      }));
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
       expect(result).toMatchObject({ ok: true, admitted: true });
       expect(dryRuns()).toEqual([true, false]);
-      expect(JSON.stringify(result.precheck)).toContain('runner-failed');
+      expect(JSON.stringify(result.precheck)).toContain('checkpoint-tree-busy');
     });
 
     it('a dry run never creates the runner', async () => {

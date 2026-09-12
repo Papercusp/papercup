@@ -851,9 +851,10 @@ export default defineTool({
       // are measured AT that commit in the checkpoint tree, and only a non-red result reaches
       // phase 2 (the publishing build of the same tree onto the same parent; the lineage-ref
       // CAS still guards races). A gate run holding the checkpoint tree makes the pre-check
-      // fail OPEN AND LOUD (`precheck.ran:false, reason:'checkpoint-tree-busy'`) — the R-1
-      // re-judge measures it; a fail-closed door here would stall every fixer admission for
-      // the length of a gate run. `skipPrecheck:true` + `precheckReason` is the ledgered opt-out.
+      // accepts ONLY the explicit checkpoint-tree-busy exception
+      // (`precheck.ran:false, reason:'checkpoint-tree-busy'`) — the R-1 re-judge measures it.
+      // Any other runner/setup failure refuses publication because an unmeasured result never
+      // counts as passing. `skipPrecheck:true` + `precheckReason` is the deliberate ledgered opt-out.
       const population = precheckPopulation({ signature: queue.signature ?? [], admittedPaths: paths });
       const skipPrecheck = args.skipPrecheck === true;
       const precheckReason = typeof args.precheckReason === 'string' ? args.precheckReason.trim() : '';
@@ -917,14 +918,16 @@ export default defineTool({
             reason: precheck.code,
             detail: precheck.detail,
             precheck: precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population }),
-            precheckResults: precheck.results,
+            precheckResults: precheck.ran ? precheck.results : [],
             builtCommit,
             judgedSha: queue.repairHead,
             containment: containmentAt(queue.repairHead),
             mode,
-            note:
-              'R6: nothing was published — the admission commit was built and measured but the lineage ref did not move. ' +
-              'Fix the red at the built commit (or, for a deliberate wide admission, re-run with skipPrecheck:true + precheckReason).',
+            note: precheck.ran
+              ? 'R6: nothing was published — the admission commit was built and measured but the lineage ref did not move. ' +
+                'Fix the red at the built commit (or, for a deliberate wide admission, re-run with skipPrecheck:true + precheckReason).'
+              : 'R6: nothing was published — the admission commit was built, but the pre-check runner could not measure it. ' +
+                'Repair the runner/setup failure, or deliberately opt out with skipPrecheck:true + precheckReason.',
           });
         }
         // Phase 2: publish. Same inputs ⇒ the same tree onto the same parent; a peer's
