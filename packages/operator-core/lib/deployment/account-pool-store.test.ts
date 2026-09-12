@@ -167,6 +167,29 @@ describe('poolVerdictByProvider (P-002)', () => {
     expect(v!.reason).toContain('does not stop them serving');
   });
 
+  it('does not call a fresh but live edge-throttled account serviceable', () => {
+    const rows = [
+      row({ id: 'edge', provider: 'claude', edgeThrottled: true }),
+      row({ id: 'healthy', provider: 'claude' }),
+    ];
+    const [v] = poolVerdictByProvider(rows, NOW);
+
+    expect(v!.serviceable).toBe(1);
+    expect(v!.edgeThrottled).toBe(1);
+    expect(v!.atCapacity).toBe(false);
+    expect(v!.reason).toContain("1 of 2 'claude' account(s) can serve right now");
+    expect(v!.reason).toContain('1 live edge-throttled account(s) excluded');
+  });
+
+  it('names an edge-throttle wall when it is the only reason a fresh account cannot serve', () => {
+    const [v] = poolVerdictByProvider([row({ id: 'edge', provider: 'claude', edgeThrottled: true })], NOW);
+
+    expect(v!.serviceable).toBe(0);
+    expect(v!.edgeThrottled).toBe(1);
+    expect(v!.atCapacity).toBe(true);
+    expect(v!.reason).toContain('0 usage-walled, 0 rate-paused, 1 edge-throttled of 1');
+  });
+
   it('a partial answer is not a measured verdict: walled + one stale row ⇒ atCapacity false', () => {
     const rows = [
       row({ id: 'c1', provider: 'claude', available: false, usageWalled: true }),

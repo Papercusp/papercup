@@ -910,14 +910,17 @@ export type CapacityBinding = 'usage-wall' | 'admission-concurrency' | 'pacing-p
  *
  * COUNTS OVERLAP — they are tallies, not a partition: a row can be both `walledFresh` and
  * `paused`, and a `paused` row may also be `unknown`. `serviceable` alone is disjoint from
- * `walledFresh`/`paused` (it requires `available`, which is pause-clear AND headroom-clear).
+ * `walledFresh`/`paused`/`edgeThrottled` (it requires `available`, which is pause-clear AND
+ * headroom-clear, plus a live egress path that is not edge-throttled).
  */
 export interface ProviderPoolVerdict {
   provider: AccountProvider;
   /** Accounts registered for this provider. */
   total: number;
-  /** Fresh reading AND `available` — can serve right now, on a measurement rather than a guess. */
+  /** Fresh reading, `available`, AND no live edge throttle — can serve right now on a measurement. */
   serviceable: number;
+  /** Accounts currently excluded from `serviceable` by a live per-account edge throttle. */
+  edgeThrottled?: number;
   /** Fresh reading AND `usageWalled` — a MEASURED exhausted usage window. */
   walledFresh: number;
   /** Inside a local rate-limit pause window right now (a clock fact, known regardless of freshness). */
@@ -958,12 +961,16 @@ export function poolVerdictByProvider(rows: readonly AccountStatusRow[], now = D
       const measured = (r: AccountStatusRow): boolean =>
         r.readingStatus === 'fresh' && r.lastProbeFailedAt === undefined;
       const total = group.length;
-      const serviceable = group.filter((r) => measured(r) && r.available).length;
+      // `available` only covers the local pause/usage projection. A live edge throttle is a
+      // separate egress wall: the pinned launch path can still receive an upstream 429 even
+      // when that projection is healthy (EI-22808722843916932).
+      const serviceable = group.filter((r) => measured(r) && r.available && !r.edgeThrottled).length;
+      const edgeThrottled = group.filter((r) => r.edgeThrottled).length;
       const walledFresh = group.filter((r) => measured(r) && r.usageWalled).length;
       const paused = group.filter((r) => r.rate.pausedUntil > now).length;
       const pacing = group.filter((r) => r.burn.disposition === 'pacing-projection').length;
       const unknown = group.filter((r) => !measured(r)).length;
-      const base = { provider, total, serviceable, walledFresh, paused, pacing, unknown };
+      const base = { provider, total, serviceable, edgeThrottled, walledFresh, paused, pacing, unknown };
 
       if (total === 0) {
         return { ...base, atCapacity: false, binding: 'none' as const, reason: `no '${provider}' accounts registered` };
@@ -975,6 +982,7 @@ export function poolVerdictByProvider(rows: readonly AccountStatusRow[], now = D
           binding: 'none' as const,
           reason:
             `${serviceable} of ${total} '${provider}' account(s) can serve right now — this provider is NOT at capacity` +
+            (edgeThrottled > 0 ? ` (${edgeThrottled} live edge-throttled account(s) excluded)` : '') +
             (pacing > 0
               ? ` (${pacing} under a burn PACING PROJECTION, which does not stop them serving — see burn.disposition)`
               : ''),
@@ -998,7 +1006,8 @@ export function poolVerdictByProvider(rows: readonly AccountStatusRow[], now = D
         atCapacity: unknown === 0,
         binding,
         reason:
-          `no '${provider}' account can serve on a fresh reading (${walledFresh} usage-walled, ${paused} rate-paused of ${total})` +
+          `no '${provider}' account can serve on a fresh reading (${walledFresh} usage-walled, ${paused} rate-paused, ` +
+          `${edgeThrottled} edge-throttled of ${total})` +
           (unknown > 0
             ? ` — but ${unknown} reading(s) are stale/never-observed, so this is NOT a measured at-capacity verdict`
             : ' — every reading is fresh, so this provider IS measurably at capacity'),
