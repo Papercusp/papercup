@@ -159,7 +159,15 @@ vi.mock('../su-session-claude-engine', async (original) => {
               // fired together so both cards are open at once, which is the only
               // arrangement in which isolation is observable.
               void Promise.all(scriptedEngine.approvalRequests.map(({ tag, input }) =>
-                Promise.resolve(sdkOptions.canUseTool?.('Bash', input, { signal: new AbortController().signal }))
+                // Each request carries its OWN `toolUseID`/`requestId` (both
+                // required members of the permission context). Distinct ids per
+                // request are what let the two open cards be told apart — the
+                // isolation this case exists to observe.
+                Promise.resolve(sdkOptions.canUseTool?.('Bash', input, {
+                  signal: new AbortController().signal,
+                  toolUseID: tag,
+                  requestId: `${tag}-request`,
+                }))
                   .then((verdict) => {
                     const settled = verdict ?? { behavior: 'no-permission-callback' };
                     scriptedEngine.approvalVerdicts.push({ tag, verdict: settled });
@@ -251,11 +259,17 @@ vi.mock('../su-session-claude-engine', async (original) => {
               output.write({ type: 'assistant', session_id: nativeId, message: { content: [
                 { type: 'tool_use', id: scriptedEngine.questionCallId, name: 'AskUserQuestion', input: { questions } },
               ] } });
-              // `signal` is the only required member of the permission context
-              // (sdk.d.ts:209); handleClaude reads nothing else on the
-              // AskUserQuestion path.
+              // `signal`, `toolUseID` and `requestId` are the required members
+              // of the permission context; handleClaude reads nothing else on
+              // the AskUserQuestion path. `toolUseID` is deliberately the SAME
+              // id as the tool_use emitted just above — that is how the real
+              // provider correlates the two halves, so the fixture must too.
               const controller = new AbortController();
-              void Promise.resolve(sdkOptions.canUseTool?.('AskUserQuestion', { questions }, { signal: controller.signal }))
+              void Promise.resolve(sdkOptions.canUseTool?.('AskUserQuestion', { questions }, {
+                signal: controller.signal,
+                toolUseID: scriptedEngine.questionCallId,
+                requestId: `${scriptedEngine.questionCallId}-request`,
+              }))
                 .then((verdict) => {
                   scriptedEngine.questionVerdicts.push(verdict ?? { behavior: 'no-permission-callback' });
                   const answers = verdict && 'updatedInput' in verdict
