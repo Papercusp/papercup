@@ -177,11 +177,52 @@ export function carryNoteStartsWithSelfCompaction(next: string): boolean {
 }
 
 /**
+ * A carry writer that landed immediately before this boundary is positive
+ * evidence that the owner did productive work even when the post-note tool
+ * ledger is zero. The ledger deliberately excludes `loop:checkpoint` and
+ * `work_items:checkpoint`, so those writes cannot be inferred from its count.
+ *
+ * Keep this window deliberately short: an old note/checkpoint must not let an
+ * ordinary cold successor skip the no-progress tripwire. Timestamps are
+ * accepted only from a readable, non-empty writer value, must be finite, and
+ * may not be from the future. An absent/unknown/read-failed writer therefore
+ * never proves a same-turn flush.
+ */
+export const SAME_TURN_CHECKPOINT_FRESHNESS_MS = 2 * 60_000;
+
+export function hasFreshCheckpointWriterEvidence(
+  brief: CarryBrief | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!brief || !Number.isFinite(nowMs)) return false;
+
+  const writerTimestamps: Array<number | null | undefined> = [];
+  const loop = brief.loop;
+  if (loop && loop.carryNoteReadFailed !== true && (loop.carryNote ?? '').trim()) {
+    writerTimestamps.push(loop.carryNoteUpdatedAtMs);
+  }
+  for (const item of brief.heldItems) {
+    if (item.checkpointReadFailed === true || !(item.checkpoint ?? '').trim()) continue;
+    writerTimestamps.push(item.checkpointUpdatedAtMs);
+  }
+
+  return writerTimestamps.some(
+    (writtenAtMs) =>
+      typeof writtenAtMs === 'number' &&
+      Number.isFinite(writtenAtMs) &&
+      writtenAtMs <= nowMs &&
+      nowMs - writtenAtMs <= SAME_TURN_CHECKPOINT_FRESHNESS_MS,
+  );
+}
+
+/**
  * The flush tripwires present at a boundary: missing/stale held-item checkpoints
  * (via {@link staleCheckpointWarnings}) plus an armed COLD loop carrying no
  * loop:checkpoint note ({@link armedLoopNeedsCarryNote}). Warm loops carry their
- * transcript and are not flagged. Pure; empty when the brief is clean or
- * unavailable.
+ * transcript and are not flagged. A current compaction boundary also accepts a
+ * fresh writer-backed carry note/item checkpoint as proof that the zero-count
+ * bookkeeping tail followed productive work. Pure; empty when the brief is
+ * clean or unavailable.
  */
 export function detectFlushTripwires(
   brief: CarryBrief | null,
@@ -254,7 +295,9 @@ export function detectFlushTripwires(
     const next = parseCarryNote(brief.loop.carryNote ?? '').next?.trim();
     const currentCompactionIsNextAction =
       boundary === 'compaction' && next && carryNoteStartsWithSelfCompaction(next);
-    if (next && !currentCompactionIsNextAction) {
+    const currentCompactionHasFreshCheckpoint =
+      boundary === 'compaction' && hasFreshCheckpointWriterEvidence(brief, nowMs);
+    if (next && !currentCompactionIsNextAction && !currentCompactionHasFreshCheckpoint) {
       out.push({
         kind: 'cold-successor-no-progress',
         subject: brief.loop.harness,
