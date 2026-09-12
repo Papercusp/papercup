@@ -152,7 +152,10 @@ async function readHindsightNotifyEnvelopes(ownerId: string): Promise<CoordEnvel
          AND surface = 'messages'
          AND (body ->> 'notify_kind') = ${HINDSIGHT_NOTIFY_KIND}
          AND jsonb_typeof(body->'to') = 'array'
-         AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+         -- Keep recipient membership in PostgreSQL's native JSONB "?" form so
+         -- coord_event_log_msgs_to_gin can answer this predicate without a
+         -- parallel sequential scan of the whole messages surface.
+         AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
        ORDER BY id DESC
        LIMIT 2000
     `;

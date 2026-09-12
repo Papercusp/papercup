@@ -3160,11 +3160,39 @@ export function buildAcceptanceBarAmendmentCandidate(
     snapshot.rubric !== null &&
     snapshot.plan.rubricSlug === snapshot.rubric.rubricId &&
     nextContract.barContract?.subjectPlanRevision === nextContract.subjectPlanRevision;
-  const problems = revisionPinsRepairable
-    ? snapshot.completeness.problems.filter(
-        (problem) => problem.code !== 'bar_snapshot_rubric_revision_mismatch',
-      )
-    : snapshot.completeness.problems;
+  // The hash algorithm is part of the BAR contract's persistence format. When
+  // new hash material is introduced (for example `check`, EI-22795002901203049),
+  // a contract written by an older process can be internally consistent under
+  // the old format while the current snapshot correctly reports a hash mismatch.
+  // `rubrics:amend` is the reviewed migration door for that row, but carrying the
+  // SOURCE mismatch into the CANDIDATE made the door self-deadlock before it could
+  // return an approval preview. Clear only the hash codes that this exact candidate
+  // proves it repairs: every next BAR must match the current hash function and the
+  // complete next set must match the pin this same transaction will write. Any
+  // malformed/incomplete candidate retains the source blocker and still refuses.
+  const candidateBarCriteria = nextCriteria.filter((criterion) => criterion.barKey || criterion.barHash);
+  let candidateHashesRepairable = candidateBarCriteria.length > 0;
+  try {
+    candidateHashesRepairable =
+      candidateHashesRepairable &&
+      candidateBarCriteria.every(
+        (criterion) => Boolean(criterion.barHash) && computeAcceptanceBarHash(criterion) === criterion.barHash,
+      ) &&
+      computeAcceptanceBarSetHash(candidateBarCriteria) === nextContract.barSetHash;
+  } catch {
+    candidateHashesRepairable = false;
+  }
+  const problems = snapshot.completeness.problems.filter((problem) => {
+    if (revisionPinsRepairable && problem.code === 'bar_snapshot_rubric_revision_mismatch') return false;
+    if (
+      candidateHashesRepairable &&
+      (problem.code === 'bar_snapshot_bar_hash_mismatch' ||
+        problem.code === 'bar_snapshot_bar_set_hash_mismatch')
+    ) {
+      return false;
+    }
+    return true;
+  });
   return {
     ...snapshot,
     plan: snapshot.plan

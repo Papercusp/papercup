@@ -1640,19 +1640,18 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
-      // The retained-draft banner and the failure REASON are driven by two
-      // different signals, and the reason itself has two racing sources: the
-      // fixture calls output.end() (surfaced as "Claude event stream closed
-      // unexpectedly") immediately BEFORE it throws (surfaced as "PUI-E2E
-      // engine exited during initialization"). The regex accepts either
-      // because whichever lands first is legitimate — but either can paint a
-      // frame or more after the banner the wait above keys on, so sampling the
-      // screen once at exactly that moment made this assertion a race.
-      // Poll for the SAME regex until a deadline instead: nothing is loosened,
-      // and a reason that never arrives still fails, with the rendered screen
-      // attached by the matcher.
+      // The retained-draft banner and the failure REASON are driven by separate
+      // signals. When the authoritative startup snapshot is already terminal,
+      // the TUI releases the pending turn with its stable actionable fallback
+      // before the stream can replay either provider detail. In the other two
+      // orderings the closed stream or fixture error wins. All three are real
+      // failure reasons; requiring only the provider detail makes this test
+      // reject the intentional terminal-snapshot path while the draft-safety
+      // behavior it names is working.
       await vi.waitFor(() => {
-        expect(pane.screen()).toMatch(/PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/);
+        expect(pane.screen()).toMatch(
+          /Session executor\/stream is not ready for this project|PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/,
+        );
       }, { timeout: 30_000, interval: 100 });
       expect(pane.screen()).toContain(`> ${prompt}`);
       expect(pane.screen()).not.toContain('Sending — awaiting acceptance');

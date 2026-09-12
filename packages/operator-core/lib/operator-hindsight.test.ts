@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   // default; individual tests flip it to prove the readInbox fallback.
   coordHasPgFastPath: vi.fn(() => true),
   coordWorkspaceId: vi.fn(() => 'ws-1'),
+  sqlTexts: [] as string[],
   // A fake postgres.js tagged-template client: distinguishes the CANDIDATE
   // query from the RETRACT-lookup query by which string literal segment each
   // call's template strings contain, so a test can script each independently
@@ -34,6 +35,7 @@ const h = vi.hoisted(() => ({
 
 function fakeSql(strings: TemplateStringsArray): Promise<{ body: unknown }[]> {
   const text = strings.join('');
+  h.sqlTexts.push(text);
   if (text.includes("body ->> 'retracts'") || text.includes('body ? \'retracts\'')) {
     return Promise.resolve(h.sqlRows.retracts);
   }
@@ -140,6 +142,7 @@ describe('peekOperatorHindsight / drainOperatorHindsight — bounded notify_kind
     h.appendAck.mockClear();
     h.coordHasPgFastPath.mockClear();
     h.coordHasPgFastPath.mockReturnValue(true);
+    h.sqlTexts.length = 0;
     h.sqlRows.candidates = [];
     h.sqlRows.retracts = [];
     h.readAckedMsgIds.mockResolvedValue(new Set());
@@ -150,6 +153,15 @@ describe('peekOperatorHindsight / drainOperatorHindsight — bounded notify_kind
     h.sqlRows.candidates = [{ body: hindsightEnvelope('m1', '2026-08-02T00:00:01Z', 'one') }];
     await peekOperatorHindsight();
     expect(h.readInbox).not.toHaveBeenCalled();
+  });
+
+  it('uses the native JSONB recipient operator for the GIN-indexed fast path', async () => {
+    h.sqlRows.candidates = [{ body: hindsightEnvelope('m1', '2026-08-02T00:00:01Z', 'one') }];
+
+    await peekOperatorHindsight();
+
+    expect(h.sqlTexts[0]).toContain("(body->'to') ?");
+    expect(h.sqlTexts[0]).not.toContain('jsonb_exists');
   });
 
   it('peek counts unacked candidates from the SQL push-down, acked ones excluded', async () => {

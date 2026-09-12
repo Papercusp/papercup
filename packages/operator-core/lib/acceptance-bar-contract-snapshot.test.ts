@@ -17,7 +17,13 @@ import {
   type AcceptanceBarWorkContractSource,
   type BoundedAcceptanceBarRows,
 } from './acceptance-bar-contract-snapshot';
-import { computeAcceptanceBarHash, computeAcceptanceBarSetHash, type Rubric, type RubricCriterion } from './rubrics';
+import {
+  buildAcceptanceBarAmendmentCandidate,
+  computeAcceptanceBarHash,
+  computeAcceptanceBarSetHash,
+  type Rubric,
+  type RubricCriterion,
+} from './rubrics';
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import type { ScorecardRow } from './scorecards';
 import { evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
@@ -675,6 +681,61 @@ describe('AcceptanceBarContractSnapshot — fixed-call loader', () => {
 });
 
 describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
+  it('lets the canonical amendment candidate repair a legacy structured-check hash only when next hashes validate', () => {
+    const input = fixture(1);
+    const stored = input.rubrics.rows[0]!;
+    const prior = stored.criteria[0]!;
+    const legacyHash = prior.barHash!;
+    const legacyCriterion: RubricCriterion = {
+      ...prior,
+      check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      // Models a row written by the pre-EI-22795002901203049 hash function,
+      // which did not bind the already-persisted structured check.
+      barHash: legacyHash,
+    };
+    stored.criteria[0] = legacyCriterion;
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.completeness.problems).toContainEqual(
+      expect.objectContaining({ code: 'bar_snapshot_bar_hash_mismatch', barKey: 'R-1' }),
+    );
+
+    const repairedCriterion = {
+      ...legacyCriterion,
+      barHash: computeAcceptanceBarHash(legacyCriterion),
+    };
+    const repairedSetHash = computeAcceptanceBarSetHash([repairedCriterion]);
+    const candidateArgs = [
+      snapshot,
+      [repairedCriterion],
+      new Map([['R-1', { planItemIds: ['P-001'] }]]),
+      new Map([['P-001', 'done']]),
+    ] as const;
+    const contract = {
+      rubricRevision: 3,
+      subjectPlanRevision: 8,
+      barSetHash: repairedSetHash,
+      barContract: { ...stored.barContract!, subjectPlanRevision: 8 },
+    };
+    const repaired = buildAcceptanceBarAmendmentCandidate(...candidateArgs, contract);
+    expect(repaired.completeness.problems).not.toContainEqual(
+      expect.objectContaining({ code: 'bar_snapshot_bar_hash_mismatch' }),
+    );
+    expect(evaluateAcceptanceBarLifecycle(repaired, 'pre-vetting').satisfied).toBe(true);
+
+    const malformedCriterion = { ...repairedCriterion, barHash: '0'.repeat(64) };
+    const malformed = buildAcceptanceBarAmendmentCandidate(
+      snapshot,
+      [malformedCriterion],
+      candidateArgs[2],
+      candidateArgs[3],
+      { ...contract, barSetHash: computeAcceptanceBarSetHash([malformedCriterion]) },
+    );
+    expect(malformed.completeness.problems).toContainEqual(
+      expect.objectContaining({ code: 'bar_snapshot_bar_hash_mismatch' }),
+    );
+    expect(evaluateAcceptanceBarLifecycle(malformed, 'pre-vetting').satisfied).toBe(false);
+  });
+
   it('keeps a METHOD-only edit distinct and does not require BAR amendment', () => {
     const before = projectAcceptanceBarContractSnapshot(fixture(1));
     const after = structuredClone(before);
