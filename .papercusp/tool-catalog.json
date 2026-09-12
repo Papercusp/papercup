@@ -452,7 +452,7 @@
           "POST"
         ]
       },
-      "description": "Read or set the account scale-out trigger policy: windowMs (penalty accumulation window) + sustainedPenaltyThreshold (≥N penalties in the window ⇒ \"sustainedly limited\", which gates PAID auto-scale-out). Default 15min / 3. set is audited + one-call-revertible. Tunes WHEN scale-out fires; provisioning stays owner-gated (accounts:scale_out).",
+      "description": "Read or set the account scale-out trigger policy: windowMs (penalty accumulation window, minimum 60min to cover account re-probes) + sustainedPenaltyThreshold (≥N penalties in the window ⇒ \"sustainedly limited\", which gates PAID auto-scale-out). Default 60min / 3. set is audited + one-call-revertible. Tunes WHEN scale-out fires; provisioning stays owner-gated (accounts:scale_out).",
       "capabilities": [
         "operator:write"
       ],

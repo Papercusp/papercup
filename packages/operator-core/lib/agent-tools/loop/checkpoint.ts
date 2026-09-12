@@ -2193,7 +2193,8 @@ export default defineTool({
                           `${effectiveChecks?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
                           `${CARRY_NOTE_MAX_CHECKS}-row cap, and ${droppedChecks.length} CARRIED row(s) were ` +
                           `evicted from the tail (supplied rows are kept first, PREDICTED rows yield before ` +
-                          `VERIFIED ones). This is EXACTLY what the pre-write refusal named and you confirmed. To ` +
+                          `VERIFIED ones). This is the actual eviction computed for this confirmed write; an earlier ` +
+                          `refusal with different supplied rows or carried state may name a different drop set. To ` +
                           `avoid future evictions: retire rows you no longer need in a separate plain write ` +
                           `(rowsMode:'replace'), or pass no \`checks\` at all to leave the stored rows untouched.`
                       : `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
@@ -2214,8 +2215,9 @@ export default defineTool({
                       ? `CAP EVICTION, confirmed via confirmRetire:true: rowsMode:'merge' UNIONED your ` +
                         `${effectiveWalls?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
                         `${CARRY_NOTE_MAX_WALLS}-row cap, and ${droppedWalls.length} CARRIED owner-gated ` +
-                        `commitment(s) were evicted from the tail (supplied rows are kept first). This is EXACTLY ` +
-                        `what the pre-write refusal named and you confirmed. To avoid future evictions: retire ` +
+                        `commitment(s) were evicted from the tail (supplied rows are kept first). This is the actual ` +
+                        `eviction computed for this confirmed write; an earlier refusal with different supplied rows ` +
+                        `or carried state may name a different drop set. To avoid future evictions: retire ` +
                         `rows you no longer need in a separate plain write (rowsMode:'replace'), or pass no ` +
                         '`walls` at all to leave the stored rows untouched.'
                       : `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +

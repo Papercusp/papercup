@@ -2763,6 +2763,49 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(written).not.toContain(`carried ${CARRY_NOTE_MAX_CHECKS} `);
   });
 
+  it('reports the actual confirmed eviction when a retry supplies fewer rows than its preview', async () => {
+    const prior = buildPrior(
+      Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` })),
+    );
+    getLoopCarryNote.mockResolvedValue(prior);
+
+    const refused = body(
+      await call({
+        did: 'preview the two-row retry',
+        checks: [{ claim: 'preview row one' }, { claim: 'preview row two' }],
+        rowsMode: 'merge',
+      }),
+    );
+
+    expect(refused).toMatchObject({
+      ok: false,
+      error: 'checkpoint_merge_would_evict_rows',
+      checksDropped: [`carried ${CARRY_NOTE_MAX_CHECKS - 1}`, `carried ${CARRY_NOTE_MAX_CHECKS}`],
+    });
+    // The refusal persists the fresh narrative but leaves the carried rows intact.
+    const refusalWrite = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    expect(refusalWrite).toContain('preview the two-row retry');
+    expect(splitCarryNoteChecks(refusalWrite).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+
+    setLoopCarryNote.mockClear();
+    getLoopCarryNote.mockResolvedValue(refusalWrite);
+    const confirmed = body(
+      await call({
+        did: 'confirm the one-row retry',
+        checks: [{ claim: 'confirmed row' }],
+        rowsMode: 'merge',
+        confirmRetire: true,
+      }),
+    );
+
+    expect(confirmed).toMatchObject({
+      ok: true,
+      checksDropped: [`carried ${CARRY_NOTE_MAX_CHECKS}`],
+    });
+    expect(confirmed.checksDroppedNote).toContain('actual eviction');
+    expect(confirmed.checksDroppedNote).not.toContain('EXACTLY');
+  });
+
   it("honors confirmRetire:true under rowsMode:'merge' to let a wall cap eviction proceed", async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior(

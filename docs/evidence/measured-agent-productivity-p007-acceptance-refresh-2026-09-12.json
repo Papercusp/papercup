@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "kind": "acceptance-proof-refresh",
+  "name": "P-007 acceptance proof refresh after the September 12 PTY delta",
+  "plan": "measured-agent-productivity-2026-09-06",
+  "workItem": "WI-10000336",
+  "recordedAt": "2026-09-12T16:30:00Z",
+  "scope": "tree",
+  "summary": "The original 2,062-test guardrail battery remains the broad proof base. Only the PTY host source and real-PTY integration test changed afterward; both changed paths have fresh passing receipts against byte-identical current files. This refresh proves the declared current tree scope. It does not prove a productivity gain, a matched baseline, actual billed cost, complete latency, broader-rollout readiness, physical acceptance, a 72-hour canary, or final shipment.",
+  "baseBattery": {
+    "artifact": "docs/evidence/measured-agent-productivity-p007-guardrail-refresh-2026-09-12.json",
+    "artifactSha256": "53635a1842456507a5d6bcbe1da13500855c207b6aeed3110365eab31a243ef5",
+    "commit": "8f2a5df00acbc2f55be079cbcbb013adebd106c7",
+    "testedHead": "55171b4dffa3bdba24d7ecb5c323e008850074b2",
+    "testRunId": 17813683,
+    "verdict": "2062 passed: 826 operator-core unit, 1215 operator app unit, 17 real-PTY integration, and 4 operator-core integration tests; zero failures and zero skips",
+    "focusedRaceRepetitions": 5,
+    "declaredFilesStableDuringRun": true
+  },
+  "postBatteryDelta": {
+    "changedDeclaredPaths": [
+      "apps/operator/scripts/psu-pty-host.mjs",
+      "apps/operator/lib/psu-pty-host-turn.integration.test.ts"
+    ],
+    "unchangedDeclaredPathCount": 35,
+    "sourceCommit": "b400b023dbc1e8b32de1506cc67dd85c49279de6",
+    "tests": [
+      {
+        "testRunId": 17815299,
+        "file": "apps/operator/lib/psu-pty-host.test.ts",
+        "layer": "unit",
+        "status": "pass",
+        "durationMs": 1120,
+        "testedCommit": "a2e6105f2a6e8d80de761bad7fc65a386d991fb1",
+        "currentSourceAndTestBytesMatchTestedCommit": true
+      },
+      {
+        "testRunId": 17814367,
+        "file": "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+        "layer": "integration",
+        "status": "pass",
+        "durationMs": 1972,
+        "testedCommit": "b400b023dbc1e8b32de1506cc67dd85c49279de6",
+        "currentSourceAndTestBytesMatchTestedCommit": true
+      }
+    ]
+  },
+  "currentTree": {
+    "observedHead": "e3cf35dcbb58cc3b022e160b17da704be1ec7115",
+    "sourceFingerprint": "sha256-file-set-v1:7176d61dc379401076198a5e986154278995444742a17fc0fa5e853deda09519",
+    "testFingerprint": "sha256-file-set-v1:b31c11192e1b74507b424e6cc3cf0d40ed69675f296c2c262868e910251513ef",
+    "measurement": {
+      "schemaVersion": 1,
+      "kind": "repo-files",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-config-constants.ts",
+        "packages/operator-core/lib/model-context-budget.mjs",
+        "packages/operator-core/lib/agent-tools/config/set-compaction-limit-core.ts",
+        "packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts",
+        "packages/operator-core/lib/memory/insights-index.ts",
+        "apps/operator/scripts/psu-launcher.mjs",
+        "apps/operator/scripts/psu-pty-host.mjs",
+        "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet-repeated-recovery.ts",
+        "packages/operator-core/lib/fleet-transition-events.ts",
+        "packages/operator-core/lib/harness/routines/fleet-transition-sweep-action.ts",
+        "packages/operator-core/lib/agent-tools/fleet/leader-brief.ts",
+        "packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.ts",
+        "packages/operator-core/lib/events/await/catalog.ts",
+        "packages/operator-core/lib/events/await/emitter-pin.ts",
+        "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts",
+        "libs/papercusp/libs/db/sql/1037-work-item-first-claim-stamp.sql",
+        "packages/operator-core/lib/agent-usage-telemetry.ts"
+      ],
+      "testPaths": [
+        "packages/operator-core/lib/agent-config-constants.test.ts",
+        "packages/operator-core/lib/agent-tools/config/set-compaction-limit-core.test.ts",
+        "packages/operator-core/lib/system-health/compaction-compliance-watchdog.test.ts",
+        "packages/operator-core/lib/memory/insights-index.test.ts",
+        "apps/operator/lib/release/release-history-page.test.ts",
+        "apps/operator/lib/psu-launcher.test.ts",
+        "apps/operator/lib/psu-pty-host.test.ts",
+        "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+        "packages/operator-core/lib/events/await/wake-executor.test.ts",
+        "packages/operator-core/lib/fleet-repeated-recovery.test.ts",
+        "packages/operator-core/lib/fleet-repeated-recovery.integration.test.ts",
+        "packages/operator-core/lib/fleet-transition-events.test.ts",
+        "packages/operator-core/lib/harness/routines/fleet-transition-sweep-action.test.ts",
+        "packages/operator-core/lib/agent-tools/fleet/leader-brief.test.ts",
+        "packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.test.ts",
+        "packages/operator-core/lib/events/await/catalog.test.ts",
+        "packages/operator-core/lib/events/await/emitter-pin.test.ts",
+        "packages/operator-core/lib/acceptance-bar-contract-snapshot.integration.test.ts"
+      ]
+    }
+  },
+  "rolloutDisposition": {
+    "decision": "measured-agent-productivity-2026-09-06#D-010",
+    "cohort": [0, 7, 0],
+    "matchedBaseline": false,
+    "usableLatencyValues": 2,
+    "unknownLatencyValues": 5,
+    "actualBilledCost": "unknown",
+    "productivityGainEstablished": false,
+    "verdict": "HOLD — no broader rollout; preserve the 250k member baseline and original preload"
+  }
+}
