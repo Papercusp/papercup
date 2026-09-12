@@ -38,6 +38,7 @@ import {
   makeOwnerInputDetector,
   makeActivityTracker,
   makeAgentBusyGate,
+  codexCarryTurnCompleted,
   makeCarryRearmController,
   makeSubmitVerifier,
   submitExhaustionTerminatesHost,
@@ -1734,6 +1735,48 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
  * NOW (a generating TUI repaints constantly); lastActivityAt = max(in, out).
  * Annotate-only (plan D-002) — display/triage, never claim release.
  */
+describe('Codex carry completion boundary', () => {
+  it('accepts only this post-request completed turn in the configured native home', async () => {
+    const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'codex-carry-boundary-'));
+    const sessions = pathJoin(root, 'sessions');
+    nodeFs.mkdirSync(sessions);
+    const path = pathJoin(sessions, 'rollout.jsonl');
+    const receivedAtMs = Date.now() - 1000;
+    const row = (type: string, at = Date.now()) => JSON.stringify({
+      type: 'event_msg', timestamp: new Date(at).toISOString(), payload: { type, turn_id: 'turn-1' },
+    }) + '\n';
+    const probe = () => codexCarryTurnCompleted({ agent: 'codex', env: { CODEX_HOME: root },
+      transcriptPath: path, receivedAtMs });
+    try {
+      nodeFs.writeFileSync(path, row('task_complete', receivedAtMs - 1));
+      expect(probe()).toBe(false);
+      nodeFs.writeFileSync(path, row('task_started') + row('task_complete'));
+      expect(probe()).toBe(true);
+      const gate = makeAgentBusyGate({ lastOutputAt: Date.now, quietMs: 1000, capMs: 50 });
+      expect(await gate.waitAtPrompt(undefined, probe)).toMatchObject({ deferred: false, boundary: 'native-turn-complete' });
+      nodeFs.appendFileSync(path, row('task_started'));
+      expect(probe()).toBe(false);
+      expect(await gate.waitAtPrompt(undefined, probe)).toMatchObject({ deferred: true });
+      nodeFs.writeFileSync(path, row('task_complete') + '{"type":');
+      expect(probe()).toBe(false);
+      const outside = pathJoin(root, 'outside.jsonl');
+      nodeFs.writeFileSync(outside, row('task_complete'));
+      expect(codexCarryTurnCompleted({ agent: 'codex', env: { CODEX_HOME: root },
+        transcriptPath: outside, receivedAtMs })).toBe(false);
+      nodeFs.writeFileSync(path, row('task_complete'));
+      expect(codexCarryTurnCompleted({ agent: 'claude', env: { CODEX_HOME: root },
+        transcriptPath: path, receivedAtMs })).toBe(false);
+    } finally { nodeFs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('carries the exact source transcript through the existing control envelope', () => {
+    expect(decodeControl(encodeControl({ mode: 'carry-respawn', data: 'resume',
+      sourceTranscriptPath: '/fixture/sessions/current.jsonl' }))).toMatchObject({
+      mode: 'carry-respawn', gated: true, sourceTranscriptPath: '/fixture/sessions/current.jsonl',
+    });
+  });
+});
+
 describe('makeActivityTracker (P-006 mid-turn activity)', () => {
   it('starts with null activity (never seen)', () => {
     const a = makeActivityTracker({ now: () => 123 });
