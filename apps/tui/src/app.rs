@@ -20691,6 +20691,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn composer_moves_within_multiline_draft_before_recalling_history() {
+        fn arrow(code: KeyCode) -> Event {
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+        }
+
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.chat_history.push("previous turn".into());
+        a.update(key('i', KeyModifiers::NONE));
+        a.update(Event::Paste("first\nsecond".into()));
+
+        // The draft starts on its last logical row. Up moves to that row's
+        // same display column, rather than entering history immediately.
+        a.update(arrow(KeyCode::Up));
+        assert_eq!(a.chat_input, "first\nsecond");
+        assert_eq!(a.chat_cursor_line_col(), (0, 5));
+        assert!(a.chat_history_idx.is_none());
+
+        // Only a second Up, from the first logical row, may recall history.
+        a.update(arrow(KeyCode::Up));
+        assert_eq!(a.chat_input, "previous turn");
+        assert_eq!(a.chat_history_idx, Some(0));
+    }
+
     /// `Ctrl-Z` — the "undo" half of PUBLIC_RELEASE_UX.md:372's composer
     /// promise ("Unicode bracketed paste, undo/history, and draft
     /// preservation"). History and draft preservation shipped; undo did not,
