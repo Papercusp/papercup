@@ -244,6 +244,27 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     proposedBy: 'seed-author',
   });
 
+  it('fails closed when an adopted subject points at a rubric whose server contract is missing', () => {
+    const { barContract: _contract, barSetHash: _setHash, ...orphaned } = started();
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: orphaned,
+        nextTemplateData: orphaned,
+        subjectPlan: { adoptionEpoch: 1 },
+      }),
+    ).toThrow(/already adopted an acceptance BAR contract.*missing its server-owned barContract/);
+
+    expect(
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: orphaned,
+        nextTemplateData: orphaned,
+        subjectPlan: { adoptionEpoch: null },
+      }).started,
+    ).toBe(false);
+  });
+
   it('refuses BAR meaning changes through a generic writer', () => {
     expect(() =>
       guardAcceptanceBarTemplateDataWrite({

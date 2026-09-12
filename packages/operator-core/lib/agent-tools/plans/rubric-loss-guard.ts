@@ -423,6 +423,19 @@ export function guardAcceptanceBarTemplateDataWrite(
     return { data: (args.nextTemplateData ?? {}) as Record<string, unknown>, started: false, changed: false, changes: [] };
   }
   const next = nextParsed.data as unknown as Record<string, unknown>;
+  const adoptedSubjectHasOrphanedContract =
+    storedParsed.success &&
+    storedParsed.data.kind === 'acceptance' &&
+    !storedParsed.data.barContract &&
+    args.subjectPlan?.adoptionEpoch != null &&
+    args.subjectPlan.adoptionEpoch > 0;
+  if (adoptedSubjectHasOrphanedContract) {
+    throw new Error(
+      `invalid_args: rubric '${args.slug}' belongs to a subject that already adopted an acceptance BAR ` +
+        `contract, but the stored rubric is missing its server-owned barContract; generic template_data ` +
+        `writes are refused until the orphaned contract is repaired through the acceptance BAR recovery path`,
+    );
+  }
   if (!storedParsed.success || storedParsed.data.kind !== 'acceptance' || !storedParsed.data.barContract) {
     return { data: next, started: false, changed: false, changes: [] };
   }

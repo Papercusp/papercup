@@ -29,6 +29,59 @@ export interface GoogleWorkspaceProviderAccount {
   displayName: string;
 }
 
+type GoogleWorkspaceSourceIdentity = Pick<
+  ExternalTriggerSourceRow,
+  'kind' | 'providerAccountId' | 'cursor' | 'config'
+>;
+
+/** Legacy OAuth/source rows used the credential slot as their account id. */
+export function isGoogleWorkspaceProvisionalProviderAccountId(value: string | null | undefined): boolean {
+  const normalized = value?.trim() ?? '';
+  return (
+    normalized.startsWith(`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:`) || normalized.startsWith('legacy-owner:')
+  );
+}
+
+function normalizedEmail(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized && normalized.includes('@') ? normalized : null;
+}
+
+/** Read the canonical mailbox identity persisted by the Gmail adapter. */
+export function googleWorkspaceSourceEmail(source: GoogleWorkspaceSourceIdentity): string | null {
+  if (source.kind !== 'gmail') return null;
+  return (
+    normalizedEmail(source.cursor.emailAddress) ??
+    normalizedEmail(source.cursor.email_address) ??
+    normalizedEmail(source.config.emailAddress) ??
+    normalizedEmail(source.config.email_address)
+  );
+}
+
+/**
+ * Resolve the account identity exposed to OAuth/status callers. Legacy source
+ * rows may carry a provisional account id on every surface, while their Gmail
+ * cursor already records the provider's canonical email. Sibling source rows
+ * inherit that Gmail identity so one old connection cannot render as a ghost
+ * account beside its canonical row.
+ */
+export function googleWorkspaceSourceAccountId(
+  source: GoogleWorkspaceSourceIdentity,
+  sources: readonly GoogleWorkspaceSourceIdentity[] = [source],
+): string | null {
+  const providerAccountId = source.providerAccountId?.trim() ?? '';
+  if (!providerAccountId) return null;
+  if (!isGoogleWorkspaceProvisionalProviderAccountId(providerAccountId)) return providerAccountId;
+  const normalizedProviderAccountId = providerAccountId.toLowerCase();
+  const gmailSource = sources.find(
+    (candidate) =>
+      candidate.kind === 'gmail' &&
+      candidate.providerAccountId?.trim().toLowerCase() === normalizedProviderAccountId,
+  );
+  return googleWorkspaceSourceEmail(gmailSource ?? source) ?? providerAccountId;
+}
+
 /** Resolve the provider-native identity behind a freshly exchanged token. */
 export async function resolveGoogleWorkspaceProviderAccount(
   accessToken: string,

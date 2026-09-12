@@ -22,6 +22,7 @@ import {
   GOOGLE_WORKSPACE_OAUTH_PLUGIN,
   GOOGLE_WORKSPACE_SOURCE_KINDS,
   googleWorkspaceOAuthField,
+  googleWorkspaceSourceAccountId,
 } from '../../../external-triggers/google-workspace';
 import {
   FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
@@ -483,13 +484,19 @@ async function integrationStatuses(
     fsTokenStorage.read(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp'),
   ]);
   const accounts = [
-    ...new Set(googleSources.map((source) => source.providerAccountId?.trim() ?? '').filter(Boolean)),
+    ...new Set(
+      googleSources
+        .map((source) => googleWorkspaceSourceAccountId(source, googleSources))
+        .filter((providerAccountId): providerAccountId is string => Boolean(providerAccountId)),
+    ),
   ].map((providerAccountId) =>
     googleAccountStatus(
       providerAccountId,
       googleConfigured,
       providerLoadFailed,
-      googleSources.filter((source) => source.providerAccountId === providerAccountId),
+      googleSources.filter(
+        (source) => googleWorkspaceSourceAccountId(source, googleSources) === providerAccountId,
+      ),
       tokenConfig,
     ),
   );

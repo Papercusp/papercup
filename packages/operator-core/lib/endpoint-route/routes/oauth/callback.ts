@@ -17,6 +17,8 @@ import {
   GOOGLE_WORKSPACE_OAUTH_PLUGIN,
   assertGoogleWorkspaceOwnerUserId,
   googleWorkspaceOAuthField,
+  googleWorkspaceSourceAccountId,
+  isGoogleWorkspaceProvisionalProviderAccountId,
   provisionOwnedGoogleWorkspaceSources,
   resolveGoogleWorkspaceProviderAccount,
 } from '../../../external-triggers/google-workspace';
@@ -268,16 +270,57 @@ export default defineTool({
             providerAccountId: resolved.providerAccountId,
           });
         }
-        const owned = await listOwnedExternalTriggerSources(
+        let owned = await listOwnedExternalTriggerSources(
           getOrgPg().sql,
           googleOwner.workspaceId,
           googleOwner.ownerUserId,
         );
+        let reconciledProvisionalAccount = false;
+        const provisionalAccountIds = [
+          ...new Set(
+            owned
+              .filter((source) => {
+                const providerAccountId = source.providerAccountId?.trim() ?? '';
+                return (
+                  Boolean(providerAccountId) &&
+                  providerAccountId !== resolved.providerAccountId &&
+                  isGoogleWorkspaceProvisionalProviderAccountId(providerAccountId) &&
+                  googleWorkspaceSourceAccountId(source, owned) === resolved.providerAccountId
+                );
+              })
+              .map((source) => source.providerAccountId!.trim()),
+          ),
+        ];
+        const directCanonicalSources = owned.filter(
+          (source) =>
+            source.providerAccountId?.trim() === resolved.providerAccountId && source.credentialRef !== null,
+        );
+        // Older rows may have persisted the Gmail cursor's canonical email while
+        // retaining `google-workspace:<field>` as providerAccountId. Adopt that
+        // identity before provisioning the new OAuth field; otherwise upsert
+        // creates a second canonical row and Personal Vault exposes the old row
+        // as a ghost account. Only reconcile an unambiguous provisional group.
+        if (!expected && directCanonicalSources.length === 0 && provisionalAccountIds.length === 1) {
+          await renameOwnedExternalTriggerSourceAccount(getOrgPg().sql, {
+            workspaceId: googleOwner.workspaceId,
+            ownerUserId: googleOwner.ownerUserId,
+            previousProviderAccountId: provisionalAccountIds[0]!,
+            providerAccountId: resolved.providerAccountId,
+          });
+          reconciledProvisionalAccount = true;
+          owned = await listOwnedExternalTriggerSources(
+            getOrgPg().sql,
+            googleOwner.workspaceId,
+            googleOwner.ownerUserId,
+          );
+        }
         googlePreviousFields = [
           ...new Set(
             owned
               .filter(
-                (source) => source.providerAccountId === resolved.providerAccountId && source.credentialRef !== null,
+                (source) =>
+                  googleWorkspaceSourceAccountId(source, owned) === resolved.providerAccountId &&
+                  source.credentialRef !== null,
               )
               .map((source) => googleWorkspaceOAuthField(source.credentialRef)),
           ),
@@ -289,7 +332,7 @@ export default defineTool({
         // oauth/start — a second credential slot pointing at the same mailbox, with
         // no error surfaced to the owner. Refuse instead: the owner picked the wrong
         // account in the chooser, and the honest repair is to run it again.
-        if (!expected && googlePreviousFields.length > 0) {
+        if (!expected && googlePreviousFields.length > 0 && !reconciledProvisionalAccount) {
           return oauthResultResponse(
             req.url,
             returnPath,
