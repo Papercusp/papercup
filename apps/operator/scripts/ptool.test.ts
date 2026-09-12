@@ -363,6 +363,14 @@ describe('ptool call deadlines', () => {
       name: 'dev:pg_query',
       args: { sql: 'SELECT 1', timeoutMs: 10_000, maxRows: 1 },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-23079930157206205: service-health's fixed-endpoint/systemd fan-out
+    // can outlive ptool's ordinary 30s client cutoff. Cover both transport
+    // routes so a valid read is not surfaced as outcome-unknown.
+    expect(timeoutForTool('dev:service_health')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'dev:service_health',
+      args: { target: 'staging' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21562635786542847: carry-respawn's 120s server budget must also
     // apply when the call is wrapped by tools:invoke.
     expect(timeoutForTool('session:request-compaction')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
