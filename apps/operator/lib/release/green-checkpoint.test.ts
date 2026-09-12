@@ -1136,6 +1136,69 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(cell.queue?.retestRequested).toBeUndefined();
   });
 
+  it.each(["red", "superseded", "unavailable"] as const)("EI-23071029479486567: selective %s verification consumes only the measured repair head while preserving the frozen public identity", async (outcome) => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const admitted = await commit("b", "still broken", "admitted repair");
+    const newer = await commit("b", "another repair", "newer admission");
+    const requestedAtMs = Date.now();
+    const cell = {
+      queue: {
+        ...p027Queue(frozen, ready),
+        repairHead: admitted,
+        failingTests: ["lint:tsc"],
+        signature: [{
+          id: "lint:tsc", kind: "lint-leg", recipe: "npm run lint:tsc",
+          admittedRound: 1, measuredHead: frozen,
+        }],
+        retestRequested: { candidate: frozen, repairHead: admitted, requestedAtMs },
+      } as FrozenCandidateRepairQueue | null,
+    };
+    const { deps, calls } = stubDeps(false);
+    wireP027Transition(deps, cell);
+    const measured: string[] = [];
+    deps.runGateAtRef = async (head) => {
+      measured.push(head);
+      if (outcome === "unavailable") return null;
+      if (outcome === "superseded" && measured.length === 1 && cell.queue) {
+        cell.queue = {
+          ...cell.queue, repairHead: newer,
+          retestRequested: { candidate: frozen, repairHead: newer, requestedAtMs },
+        };
+      }
+      return { pass: false, summary: "lint:tsc FAIL at the requested head" };
+    };
+    const consumed: Array<{ judgedRepairHead: string; settleJudgedHead: boolean }> = [];
+    deps.consumeFrozenRepairRetestRequest = async (input) => {
+      consumed.push(input);
+      if (!cell.queue) return { kind: "absent", queue: null, request: null };
+      if (cell.queue.retestRequested?.repairHead === input.judgedRepairHead && !input.settleJudgedHead) {
+        return { kind: "none", queue: cell.queue, request: null };
+      }
+      const decision = settleFrozenRepairRetestRequest(cell.queue, input.judgedRepairHead);
+      cell.queue = decision.queue;
+      return decision;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(measured).toEqual(outcome === "superseded" ? [admitted, newer] : [admitted]);
+    expect(calls).not.toContain("runGreen");
+    expect(result).toMatchObject({
+      candidate: frozen, frozenCandidate: frozen, green: null,
+      repairHead: outcome === "superseded" ? newer : admitted,
+    });
+    if (outcome === "unavailable") {
+      expect(cell.queue?.retestRequested?.repairHead).toBe(admitted);
+      expect(consumed.every((input) => !input.settleJudgedHead)).toBe(true);
+    } else {
+      expect(consumed).toEqual(measured.map((judgedRepairHead) => ({ judgedRepairHead, settleJudgedHead: true })));
+      expect(cell.queue?.retestRequested).toBeUndefined();
+      expect(cell.queue?.convergenceRounds?.map((round) => round.head)).toEqual(measured);
+    }
+  });
+
   it("P-001 leaves the durable marker intact when the independent admission-refire bound is exhausted", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);

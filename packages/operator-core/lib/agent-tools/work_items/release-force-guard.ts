@@ -53,8 +53,8 @@ export type ForceTransitionSurface = 'work_items' | 'plan_items';
  * signals (lastActiveAt, itemLastProgressAt) have sat unmoved for hours (hit live:
  * heartbeat 44s old, lastActiveAt ~2h51m old, itemLastProgressAt ~3h old — all three
  * were fed into a bare `Math.max`, so the freshest one alone certified "live" and
- * blocked a force-release of an abandoned claim). This bounds how long BOTH activity
- * signals may go stale before a fresh-heartbeat-only holder is reclassified from
+ * blocked a force-release of an abandoned claim). This bounds how long available
+ * activity signals may go stale before a fresh-heartbeat-only holder is reclassified from
  * "live" to "warm-idle" (the reaper case, WI-4198 leg (a)). An item that has not
  * recorded its first checkpoint has no item-progress signal yet; that explicit
  * absence must not protect an abandoned claim, while a present lastActiveAt remains
@@ -338,7 +338,8 @@ export async function assessForceRelease(
   // even when presence.lastActiveAt and work-item checkpoints do not move. The
   // exact incident was force-released as warm-idle while this ledger advanced
   // every ~60s. A fresh tool row therefore vetoes warm-idle; an absent row remains
-  // unknown and preserves the pre-existing two-signal rule.
+  // unknown and does not add evidence either way. The explicit NULL item-progress
+  // case is handled above as no recorded progress, not as a fresh activity signal.
   const recentToolInvocation =
     Number.isFinite(lastToolInvocationTs) && now - lastToolInvocationTs < WARM_IDLE_ACTIVITY_STALE_MS;
   const warmIdle = presenceLive && heartbeatFresh && activitySignalsStale && !recentToolInvocation;
