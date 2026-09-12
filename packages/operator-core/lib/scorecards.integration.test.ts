@@ -79,7 +79,7 @@ const CRITERIA = [
     key: 'ideation-quality',
     title: 'Ideation quality',
     model: 'good ideas',
-    method: 'grade ideas',
+    method: 'assess idea quality',
     driftMarkers: 'stale ideas',
   },
   {

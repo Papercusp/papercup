@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "command": "node --import tsx --input-type=module < inline validator driver",
+  "startedAt": "2026-09-12T20:30:02Z",
+  "finishedAt": "2026-09-12T20:30:04Z",
+  "exitCode": 0,
+  "summary": "The bound portal validator accepted the regenerated current-release R-5 and R-10 artifacts with zero structural, teardown, broker/tenant, picker, safeguard, or redaction failures.",
+  "subjectRelease": {
+    "buildId": "5-sc_mNg-ARSpNh1zvMXt",
+    "sourceSha": "cd79d14615b61538eceebae953f259d06f0a9fc4",
+    "sourceRootDigest": "992e73d958ca64fc2d9e0488fba438d4fd616ef7b5d2c84ede6b54d14cb92d6a"
+  },
+  "validator": {
+    "path": "portal/tests/support/portal-voice-evidence-contract.ts",
+    "sha256": "48afb810ad77966d52d58e48c5f12b508e181d79cece0f1043cd1ed38149885c",
+    "boundTest": "portal/tests/voice-public-release-readiness.test.ts",
+    "boundTestSha256": "40d921178a29b1ba68965deef80ad4dd67cb18af8acb6bdd8d8deb16e14c25ea"
+  },
+  "artifacts": [
+    {
+      "bar": "R-5",
+      "path": "docs/evidence/portal-voice-p030-r5-voice-safety-lifecycle-2026-09-12.json",
+      "sha256": "6a4a80ca7fcc99f541ab942f563c7a4e6a6a92505b77b10335a642bdb5002086"
+    },
+    {
+      "bar": "R-10",
+      "path": "docs/evidence/portal-voice-p030-r10-hosted-voice-readiness-2026-09-12.json",
+      "sha256": "c16600979ef5a70d232e5cb39e7e591e21b9764efb4aa50bb49d9690eb696bd8"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "r5-five-named-observables",
+      "passed": true,
+      "evidence": "preConsentClosed, consentedOpenAndVisible, chatChangeClosed, hiddenPausedVisibleResumed, and disconnectClosed each carry event, predicate, structured result, and raw measured observations."
+    },
+    {
+      "id": "r5-teardown-and-recovery",
+      "passed": true,
+      "evidence": "The validator proved pre-consent closure, consented capture visibility, chat-change teardown without late recapture, hidden false to visible true capture transitions, and disconnect closure with an explicit recovery control."
+    },
+    {
+      "id": "r10-four-required-groups",
+      "passed": true,
+      "evidence": "boundaryControl, brokerTenant, pickerNoFallback, and releaseSafeguards are all present and independently pass their required predicates."
+    },
+    {
+      "id": "r10-hosted-broker-tenant-isolation",
+      "passed": true,
+      "evidence": "A current-release source-runtime probe observed two hosted callers in one organization receiving distinct caller and route-budget scopes, two provider mints, and distinct short-lived conversations; another tenant remained admitted while the first caller was cooling down."
+    },
+    {
+      "id": "r10-picker-and-no-fallback",
+      "passed": true,
+      "evidence": "The deployed picker exposes the explicit unavailable ElevenLabs choice, reports elevenlabs=false and livekit=true, names the denial, and records zero LiveKit fallback calls."
+    },
+    {
+      "id": "r10-release-safeguards-and-redaction",
+      "passed": true,
+      "evidence": "Both public provider-start routes record a portal_voice_start_rate_limited 429 with Retry-After, and the artifact serializes no API key, auth secret, conversation token, provider token, or secret-bearing URL."
+    },
+    {
+      "id": "malformed-artifact-negative-controls",
+      "passed": true,
+      "evidence": "The bound readiness test rejects a false chat teardown, a missing brokerTenant group, and a serialized token field."
+    },
+    {
+      "id": "exact-acceptance-cohort",
+      "passed": true,
+      "evidence": "The current ten-file portal acceptance cohort passed 10 of 10 files and 223 of 223 tests after the validator and artifact regeneration; portal typecheck was clean."
+    }
+  ]
+}
