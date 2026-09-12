@@ -1182,6 +1182,36 @@ export function applyOmpToolsAllowlist(mcpJsonText: any, toolNames: any): any;
  *  that spawned it (root-caused 2026-07-02, P-030: a :3170-pinned relaunch still hit :3070).
  *  Pure string→string; returns the input unchanged on any parse failure. Exported for tests. */
 export function applyOmpOperatorOrigin(mcpJsonText: any, operatorUrl: any): any;
+/**
+ * Probe an OMP session's operator MCP endpoint without requiring auth or a
+ * valid MCP request. Any HTTP response proves that a listener is serving the
+ * route; connection and timeout failures are the only unavailable states.
+ * The async probe keeps native OMP materialization from blocking on a stale
+ * PAPERCUSP_HONO_PORT while preserving the sync writer below for pure callers.
+ */
+export function probeOmpOperatorMcp(operatorMcpUrl: any, timeoutMs?: number, fetchImpl?: typeof fetch): Promise<boolean>;
+/**
+ * Resolve the operator origin for native OMP's per-session mcp.json. This is
+ * the launcher-side counterpart to orchestrator spawn-mcp's async resolver:
+ * probe the runtime-selected local route, then recover on canonical :3070
+ * when a copied PAPERCUSP_HONO_PORT is stale. A live non-green port remains
+ * authoritative, so staging :3170 never silently falls through to green.
+ *
+ * No runtime port hint means there is no stale local-port claim to validate;
+ * preserve the already-resolved proxy/discovery target without adding a
+ * network request to ordinary launches. Caller-supplied writer pins bypass
+ * this helper in writeOmpSessionConfigDirAsync.
+ */
+export function resolveOmpOperatorUrl(operatorUrl?: any, { env, probe, onRecovery, probeTimeoutMs, }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    probe?: typeof probeOmpOperatorMcp | undefined;
+    onRecovery?: (({ configuredBase, recoveredBase, configuredPort }: {
+        configuredBase: any;
+        recoveredBase: any;
+        configuredPort: any;
+    }) => void) | undefined;
+    probeTimeoutMs?: number | undefined;
+}): Promise<any>;
 /** Stamp fixed query params (`agent`, `model`) onto every papercusp `/api/mcp` server URL in an
  *  OMP mcp.json, so the operator learns the CALLING agent's backend + model PER REQUEST. This is
  *  the "current calling agent" signal fleet:launch-on-plan reads to default a spawned fleet's

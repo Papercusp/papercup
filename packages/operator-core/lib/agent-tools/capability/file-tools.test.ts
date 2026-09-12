@@ -220,6 +220,15 @@ describe('capability:read', () => {
   it('rejects raw text mode mixed with exact byte pages', async () => {
     const f = join(DIR, 'r-raw-mixed.txt');
     writeFileSync(f, 'alpha\n');
+
+    // The transport schema must admit the field long enough for the handler to
+    // return its actionable mutual-exclusion diagnostic. A z.never() field in
+    // the byte branch instead leaks `expected never` before the handler runs.
+    const argsSchema = readTool.args as unknown as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    expect(argsSchema.safeParse({ file_path: f, raw: true, byte_offset: 0, byte_limit: 32 }).success).toBe(true);
+
     const r = (await readTool.handler!({ file_path: f, raw: true, byte_offset: 0, byte_limit: 32 } as never, ctx)) as {
       content: Array<{ text: string }>;
       isError?: boolean;
@@ -227,6 +236,7 @@ describe('capability:read', () => {
 
     expect(r.isError).toBe(true);
     expect(parse(r).reason).toBe('mixed_window_modes');
+    expect(parse(r).message).toContain('raw text windows cannot be combined with byte_offset/byte_limit');
   });
 
   it('honors offset + limit', async () => {

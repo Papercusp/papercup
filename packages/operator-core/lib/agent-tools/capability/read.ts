@@ -211,7 +211,10 @@ const byteWindowArgs = z.object({
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
-  raw: z.never().optional().describe('Raw text windows are mutually exclusive with byte windows (byte_offset, byte_limit).'),
+  // Keep this field parseable so callers that accidentally combine modes reach
+  // the handler's explicit `mixed_window_modes` diagnostic instead of Zod's
+  // opaque `expected never` error at the transport boundary.
+  raw: z.boolean().optional().describe('Raw text windows are mutually exclusive with byte windows (byte_offset, byte_limit).'),
   byte_offset: z.number().int().nonnegative().describe(`0-based byte offset for an exact base64 page. Use with byte_limit. ${BYTE_WINDOW_EXCLUSIVITY}`),
   byte_limit: z
     .number()
