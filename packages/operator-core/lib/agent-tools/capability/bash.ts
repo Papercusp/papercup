@@ -1055,6 +1055,14 @@ export default defineTool({
     const childEnv = {
       ...(desktopEnv ?? {}),
       ...integrationEnv,
+      // WI-22952438885573520: local test runs launched through capability:bash
+      // already execute in a caller-scoped harness/workspace, but the reporter
+      // learns that identity only from these two child environment variables.
+      // Stamp concrete scope here so the resulting local test_runs row remains
+      // bindable as spec evidence. Keep wildcard/unscoped calls unattributed;
+      // inventing a tenant would be worse than an explicit NULL attribution.
+      ...(hive && hive !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: hive } : {}),
+      ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: ctx.workspaceId } : {}),
       PAPERCUSP_SID: callerSid,
       // The marker is owned by this handler, not by caller-provided env. A
       // foreground timeout kills the entire process tree, so mutation probes

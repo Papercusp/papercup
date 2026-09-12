@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal P-004 current-head unit, typecheck, and Playwright correctness",
+  "framework": "operational",
+  "command": [
+    "cd /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "npm run test",
+    "npm run typecheck",
+    "npm run test:e2e:browser"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-12T16:12:39.512Z",
+  "finishedAt": "2026-09-12T16:17:59.061Z",
+  "summary": "Portal HEAD 87f91ca8675db0b31608085a0c11ed651f193dbf passed the complete current unit suite, canonical typecheck, and full Playwright browser suite without a retry or source change between legs.",
+  "assertions": [
+    {
+      "id": "unit-suite-green-and-non-vacuous",
+      "passed": true,
+      "evidence": "npm run test discovered 133 files: 131 passed and 2 environment-skipped; 1,385 tests passed and 15 skipped; zero failed; duration 239.64 seconds."
+    },
+    {
+      "id": "new-head-delta-covered",
+      "passed": true,
+      "evidence": "tests/start-web-readiness.test.ts, added with the only source delta since the prior accepted Portal head, executed 3/3 tests successfully."
+    },
+    {
+      "id": "typecheck-green-and-non-vacuous",
+      "passed": true,
+      "evidence": "npm run typecheck printed TYPECHECK_RESULT status=clean exit=0 errors=0 files=2577."
+    },
+    {
+      "id": "playwright-full-suite-green",
+      "passed": true,
+      "evidence": "npm run test:e2e:browser executed all 24 configured tests with one worker: 24 passed in 34.2 seconds."
+    },
+    {
+      "id": "unit-log-integrity",
+      "passed": true,
+      "evidence": "Captured unit log SHA-256 d50c6a62e47a11e1c6d929137bde1b11958fe3d3f97e1a700edc93b407d4e866."
+    },
+    {
+      "id": "typecheck-log-integrity",
+      "passed": true,
+      "evidence": "Captured typecheck log SHA-256 c18c928f5c15b8396643de34555eba82e8f1a1cffaa5bea65e7634d72ff0d052."
+    },
+    {
+      "id": "playwright-log-integrity",
+      "passed": true,
+      "evidence": "Captured Playwright log SHA-256 a1d396d009a153f0ab2fac5b48e486b8caa0cb6ad91b42b682d77a5581256875."
+    }
+  ],
+  "subject": {
+    "workItem": "WI-10000657",
+    "planItem": "papercup-owner-reports-and-ledger-recovery-2026-09-09#P-004",
+    "portalHead": "87f91ca8675db0b31608085a0c11ed651f193dbf",
+    "acceptanceRubric": "acceptance-portal-tab-performance-2026-09-07@6",
+    "barSetHash": "704f4eaa1ed8bd3e185279b8061b34fe8e444836339ff4d26f8d24e43d107863"
+  }
+}

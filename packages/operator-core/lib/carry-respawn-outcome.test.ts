@@ -199,7 +199,8 @@ describe('lostRespawnAmbientLine', () => {
     expect(line).toContain('busy-gate-expired');
     // The observable is what makes this actionable rather than merely alarming:
     // the agent can confirm it without any tool call.
-    expect(line).toContain('still the same session');
+    expect(line).toContain('verify which native session is running');
+    expect(line).not.toContain('still the same session');
     expect(line).toContain('session:request-compaction');
   });
 
@@ -316,7 +317,8 @@ describe('lostRespawnAmbientLine — orphaned pending (P-009)', () => {
     const line = lostRespawnAmbientLine(orphan);
     expect(line).toContain('carry-respawn ORPHANED');
     expect(line).toContain('NEVER recorded an outcome');
-    expect(line).toContain('still the same session');
+    expect(line).toContain('verify which native session is running');
+    expect(line).not.toContain('still the same session');
     // A drop has a verdict row to quote; an orphan does not. Reporting one as the
     // other manufactures certainty the host never produced.
     expect(line).not.toContain('DROPPED');

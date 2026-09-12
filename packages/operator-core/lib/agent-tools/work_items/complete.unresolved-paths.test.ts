@@ -29,12 +29,14 @@
  *
  * PURE: the filesystem is injected, so this never touches a real tree.
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 import {
   COMPLETION_REGISTRY_ROOTS_TIMEOUT_MS,
+  completionCheckoutRootForPath,
   completionRepoRootsFromRegistry,
   completionRepoRootsForWorkspace,
   unresolvedPathsInCompletion,
@@ -295,6 +297,24 @@ describe('completionRepoRootsForWorkspace — bounded registry enrichment', () =
         }),
       }),
     ).resolves.toEqual([ROOT, SIDESTAGE_ROOT]);
+  });
+});
+
+describe('completionCheckoutRootForPath — unsupported absolute paths stay off the enrichment path (EI-22840486197509906)', () => {
+  it('does not classify an absolute path outside a valid checkout as a supported repository path', () => {
+    const fixtureRoot = mkdtempSync(nodePath.join(tmpdir(), 'complete-external-path-'));
+    try {
+      expect(completionCheckoutRootForPath(nodePath.join(fixtureRoot, 'interview-prep', 'answer.html'))).toBeUndefined();
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the complete handler wired to supported checkout detection, not absolute-path presence alone', () => {
+    const source = readFileSync(nodePath.join(__dirname, 'complete.ts'), 'utf8');
+    expect(source).toMatch(
+      /const hasAbsoluteCheckoutPath = declaredCompletionPaths\.some\(\s*\(path\) => Boolean\(completionCheckoutRootForPath\(path\) \?\? checkoutRootForPath\(path\)\),/,
+    );
   });
 });
 

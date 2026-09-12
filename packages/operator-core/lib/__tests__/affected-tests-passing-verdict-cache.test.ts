@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -398,7 +399,20 @@ describe('gate wiring safety contract', () => {
     expect(persist).toBeGreaterThan(-1);
     expect(pool).toBeGreaterThan(-1);
     expect(persist).toBeLessThan(pool);
-    expect(AFFECTED_TESTS_SRC).toContain('onTaskSettled: persistCleanFirstPassTaskVerdict');
+    const callback = AFFECTED_TESTS_SRC.slice(pool).match(
+      /onTaskSettled:\s*(\(scheduled\)\s*=>\s*\{[\s\S]*?\n  \}),/,
+    );
+    expect(callback, 'the task settlement callback must be wired').not.toBeNull();
+    const persisted: unknown[] = [];
+    const coverage: unknown[] = [];
+    const onTaskSettled = runInNewContext(`(${callback![1]})`, {
+      foldSettledTaskCoverage: (task: unknown) => coverage.push(task),
+      persistCleanFirstPassTaskVerdict: (task: unknown) => persisted.push(task),
+    });
+    const settledTask = { task: { key: 'test-task' }, value: { code: 0 } };
+    onTaskSettled(settledTask);
+    expect(persisted).toEqual([settledTask]);
+    expect(coverage).toEqual([settledTask]);
     expect(AFFECTED_TESTS_SRC).not.toContain('taskVerdictCacheUpdates');
   });
 

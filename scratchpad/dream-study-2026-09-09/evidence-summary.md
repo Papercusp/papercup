@@ -1,6 +1,6 @@
 # Dream study evidence — interim
 
-Measured 2026-09-09T10:29:09.071Z. **Inconclusive; final acceptance remains open.**
+Measured 2026-09-12T16:17:53.441Z. **Inconclusive; final acceptance remains open.**
 
 19 governed study attempts; $1.614729 accounted, including conservative reservations. This is not invoice cost.
 

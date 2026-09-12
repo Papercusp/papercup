@@ -104,6 +104,18 @@ describe('capability:bash integration_env', () => {
     }
   });
 
+  it('stamps concrete caller tenant identity into local test-run children', async () => {
+    const { ctx } = makeCtx({ harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' });
+    const result = await bash.handler(
+      {
+        command: 'printf "%s|%s" "$PAPERCUSP_TEST_RUN_HARNESS" "$PAPERCUSP_WORKSPACE_ID"',
+      },
+      ctx,
+    );
+
+    expect(result.content[0]!.text).toContain('papercusp|papercusp-workspace');
+  });
+
   it('injects by saved name into only the child and returns names/masks while redacting output', async () => {
     const { ctx, emitted } = makeCtx({ codeMode: true });
     const result = await bash.handler(

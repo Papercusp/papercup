@@ -222,17 +222,14 @@ export function lostRespawnAmbientLine(
       ` — your last session:request-compaction was acknowledged and the host queued a re-poll` +
       `${prior.reason ? ` (${prior.reason})` : ''}, then NEVER recorded an outcome. That re-poll window` +
       ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) has long expired, so the` +
-      ` cut is not coming — it was pre-empted (an internal claude re-exec, a host restart) rather than` +
-      ` refused.`
+      ` continuation has no verified delivery. Inspect the current host and native transcript before retrying.`
     : `⚠ carry-respawn DROPPED ${humanAge(prior.ageMs)}` +
       `${prior.reason ? ` (reason: ${prior.reason})` : ''} — your last session:request-compaction was` +
-      ` acknowledged but NEVER CUT, and no successor was spawned.`;
+      ` acknowledged but its continuation was not delivered. The process may already have respawned.`;
   return (
-    `${head} You are still the same session, still` +
-    ` carrying the full transcript. Do not wait for a compaction that is not coming: flush durable state` +
-    ` (work_items:checkpoint / loop:checkpoint / facts:assert), then call session:request-compaction` +
-    ` again at a clean stopping point — and note the cut only lands once your pty goes quiet, so an` +
-    ` interactive back-and-forth can supersede it indefinitely.`
+    `${head} Flush durable state (work_items:checkpoint / loop:checkpoint / facts:assert),` +
+    ` verify which native session is running and whether a recovery already owns the next action,` +
+    ` then retry session:request-compaction at a clean stopping point only if still needed.`
   );
 }
 
@@ -257,11 +254,10 @@ export function priorRespawnNote(prior: PriorRespawn | null | undefined): string
   if (!prior) return '';
   if (prior.outcome === 'dropped') {
     return (
-      ` ⚠ prior-respawn-DROPPED: your PREVIOUS carry-respawn on this session never cut —` +
+      ` ⚠ prior-respawn-DROPPED: your PREVIOUS carry continuation was not delivered —` +
       ` the host recorded \`respawn-carry-dropped\`${prior.reason ? ` (reason: ${prior.reason})` : ''}` +
-      ` ${humanAge(prior.ageMs)}. An acknowledged request is NOT a landed cut: the host still has to` +
-      ` win a busy-gate (your pty must go quiet), and it can give up. So do NOT assume this one lands —` +
-      ` if your next turn still has your full transcript, the cut did not happen; keep flushing state` +
+      ` ${humanAge(prior.ageMs)}. The successor process may already exist: spawning and submitting its` +
+      ` first turn are separate steps. Verify the native continuation rather than the acknowledgement; keep flushing state` +
       ` durably (work_items:checkpoint / loop:checkpoint) rather than relying on the carry.`
     );
   }
@@ -274,14 +270,14 @@ export function priorRespawnNote(prior: PriorRespawn | null | undefined): string
         ` ${humanAge(prior.ageMs)} (host recorded \`${prior.reason ? `${prior.reason}` : 'respawn-rearm-queued'}\`)` +
         ` and NEVER produced an outcome — no delivered row, no dropped row. Its re-poll window` +
         ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) expired long ago, so that` +
-        ` attempt was pre-empted rather than refused (an internal claude re-exec or a host restart drops the` +
-        ` pending cut with no verdict). This request does NOT inherit it — it is a fresh attempt, and the` +
+        ` attempt has no verified continuation. Inspect the current host before inferring whether it cut.` +
+        ` This request does NOT inherit it — it is a fresh attempt, and the` +
         ` same pre-emption can take this one too, so keep flushing state durably rather than relying on the carry.`
       );
     }
     return (
-      ` ⚠ prior-respawn-STILL-PENDING: an earlier carry-respawn on this session is still re-polling for` +
-      ` an idle window (host recorded \`${prior.reason ? `${prior.reason}` : 'respawn-rearm-queued'}\`` +
+      ` ⚠ prior-respawn-STILL-PENDING: an earlier carry-respawn is still awaiting its cut or first-turn delivery` +
+      ` (host recorded \`${prior.reason ? `${prior.reason}` : 'pending'}\`` +
       ` ${humanAge(prior.ageMs)}). This request SUPERSEDES it — the in-flight re-poll adopts this newer` +
       ` carry document — but the cut still only fires once your pty actually goes quiet.`
     );
