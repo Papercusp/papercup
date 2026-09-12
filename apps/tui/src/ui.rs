@@ -12,7 +12,7 @@ use crate::models::{
 use crate::semantic_tool_cards::SemanticTone;
 use crate::theme::Theme;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::Style,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
@@ -2763,7 +2763,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     selection_rows.truncate(selection_limit);
     // Attachments occupy one row each ABOVE the draft, so the composer has to
     // grow by exactly that many or the draft line is pushed out of its own box.
-    let composer_h = 3
+    // The draft is a real multiline editor now. Reserve one row per logical
+    // line plus the two composer borders; the old fixed three-row allocation
+    // clipped every line after the first and made a cursor row impossible to
+    // place reliably.
+    let composer_h = 2
+        + ctext_line_count(app)
         + selection_rows.len() as u16
         + app.attachments.len() as u16
         + turn_error.len() as u16;
@@ -3109,13 +3114,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     } else if app.su_pending_turn.is_some() {
         (
             " Message not accepted — draft retained · Enter retries ",
-            format!("> {}", app.chat_input.replace('\n', "⏎")),
+            format!("> {}", app.chat_input),
             Theme::notify(),
         )
     } else if app.su_connection_error.is_some() {
         (
             " Session unavailable — Esc, then l: choose session to reconnect ",
-            format!("> {}", app.chat_input.replace('\n', "⏎")),
+            format!("> {}", app.chat_input),
             Theme::warn(),
         )
     } else if app.chat_streaming {
@@ -3133,7 +3138,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             " Running — Enter queues your next message ",
             format!(
                 "> {}{queued_note} · Ctrl+X cancels (clears the queue)",
-                app.chat_input.replace('\n', "⏎")
+                app.chat_input
             ),
             Theme::notify(),
         )
@@ -3176,7 +3181,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             " Read-only — Esc, then s:Sessions for a new session ",
             format!(
                 "> {} · {} · nothing typed here can be sent",
-                app.chat_input.replace('\n', "⏎"),
+                app.chat_input,
                 chat_dispatch.reason.note()
             ),
             Theme::notify(),
@@ -3188,7 +3193,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             // the model keeps the text verbatim (D-017 #1), and a raw \n inside a
             // single-line Span would render as a blank or a tofu box, hiding from
             // the user that their paste spans several lines.
-            format!("> {}", app.chat_input.replace('\n', "⏎")),
+            format!("> {}", app.chat_input),
             Theme::selected(),
         )
     } else if app.convai_phase != crate::app::ConvAiPhase::Off {
@@ -3241,7 +3246,18 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     for row in app.attachments.rows() {
         composer_lines.push(Line::from(Span::styled(row, Theme::selected())));
     }
-    composer_lines.push(Line::from(Span::styled(ctext, cstyle)));
+    // `Paragraph` does not split embedded newlines into independently
+    // addressable cursor rows, so expand them into Lines explicitly. The two
+    // leading cells (`> ` / `  `) keep the insertion column stable across the
+    // first and continuation rows.
+    composer_lines.extend(ctext.split('\n').enumerate().map(|(row, text)| {
+        let rendered = if row == 0 {
+            text.to_string()
+        } else {
+            format!("  {text}")
+        };
+        Line::from(Span::styled(rendered, cstyle))
+    }));
     composer_lines.extend(
         turn_error
             .into_iter()
@@ -3253,6 +3269,39 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             .title(Line::from(ctitle)),
     );
     f.render_widget(cpara, composer_area);
+
+    // Ratatui 0.29 exposes the terminal cursor on Frame. Keep it in the same
+    // coordinate system as the rendered draft: composer border + settings /
+    // attachment rows + a two-cell prompt gutter + display-cell column.
+    let composer_editable = app.chat_composing
+        && !app.card_state.has_card()
+        && !app.voice_phase.is_active()
+        && app.pending_approvals.is_empty();
+    if composer_editable && composer_area.height > 2 && composer_area.width > 2 {
+        let (row, column) = app.chat_cursor_line_col();
+        let x = composer_area
+            .x
+            .saturating_add(1)
+            .saturating_add(2)
+            .saturating_add(column as u16)
+            .min(composer_area.x.saturating_add(composer_area.width.saturating_sub(2)));
+        let y = composer_area
+            .y
+            .saturating_add(1)
+            .saturating_add(selection_rows.len() as u16)
+            .saturating_add(app.attachments.len() as u16)
+            .saturating_add(row)
+            .min(composer_area.y.saturating_add(composer_area.height.saturating_sub(2)));
+        f.set_cursor_position(Position::new(x, y));
+    }
+}
+
+fn ctext_line_count(app: &App) -> u16 {
+    if app.chat_composing {
+        app.chat_input.split('\n').count().max(1) as u16
+    } else {
+        1
+    }
 }
 
 /// The height (rows, incl. borders) to reserve for the inline card strip, or 0

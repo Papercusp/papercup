@@ -2304,6 +2304,20 @@ pub struct App {
     pub project_root: std::path::PathBuf,
     pub chat_input: String,
     pub chat_composing: bool,
+    /// Byte offset of the insertion point in `chat_input`. The offset always
+    /// lands on a UTF-8 character boundary; keeping it as a byte offset lets
+    /// edits remain lossless for arbitrary Unicode without rebuilding the
+    /// draft on every keystroke.
+    pub chat_cursor: usize,
+    /// The input length last observed by the reducer. Tests and a few startup
+    /// restore paths populate the public `chat_input` field directly; when
+    /// that happens, the next edit treats the cursor as an end-of-draft cursor
+    /// instead of applying an old offset to a new string.
+    chat_cursor_input_len: usize,
+    /// Preferred character column while moving vertically through a
+    /// multi-line draft. `None` means the next Up/Down establishes it from the
+    /// current line, matching normal terminal-editor behavior.
+    chat_vertical_column: Option<usize>,
     /// Submitted composer lines, oldest last — the Up/Down recall ring.
     pub chat_history: Vec<String>,
     /// Cursor into `chat_history` while recalling. `None` means "editing a fresh
@@ -2704,6 +2718,9 @@ impl App {
             project_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             chat_input: String::new(),
             chat_composing: false,
+            chat_cursor: 0,
+            chat_cursor_input_len: 0,
+            chat_vertical_column: None,
             chat_history: Vec::new(),
             chat_history_idx: None,
             chat_draft: String::new(),
@@ -3862,12 +3879,195 @@ impl App {
     /// arrives twice (our own POST's confirmation and the loop's own
     /// `approval_resolved` frame), and a call decided on another surface arrives
     /// with no local pending row at all.
+    /// Bring the reducer's cursor back in sync after a test or restore path
+    /// populated the public draft field directly. The cursor is a byte offset,
+    /// but it must always point at a UTF-8 boundary before any String edit.
+    fn sync_chat_cursor(&mut self) {
+        let input_len = self.chat_input.len();
+        if self.chat_cursor_input_len != input_len
+            || self.chat_cursor > input_len
+            || !self.chat_input.is_char_boundary(self.chat_cursor)
+        {
+            self.chat_cursor = input_len;
+            self.chat_vertical_column = None;
+        }
+        self.chat_cursor_input_len = input_len;
+    }
+
+    /// Return the byte ranges of the draft's logical lines, excluding each
+    /// separator. `split('\n')` alone loses the offsets needed for cursor edits
+    /// and makes a trailing newline indistinguishable from an empty last line.
+    fn chat_line_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        for (offset, ch) in self.chat_input.char_indices() {
+            if ch == '\n' {
+                ranges.push((start, offset));
+                start = offset + ch.len_utf8();
+            }
+        }
+        ranges.push((start, self.chat_input.len()));
+        ranges
+    }
+
+    /// The reducer-facing cursor location: logical row plus terminal-cell
+    /// column. When a caller changed `chat_input` directly, report the safe
+    /// end-of-draft position until the next key synchronizes the stored cursor.
+    pub(crate) fn chat_cursor_line_col(&self) -> (usize, usize) {
+        let cursor = if self.chat_cursor_input_len == self.chat_input.len()
+            && self.chat_cursor <= self.chat_input.len()
+            && self.chat_input.is_char_boundary(self.chat_cursor)
+        {
+            self.chat_cursor
+        } else {
+            self.chat_input.len()
+        };
+        let ranges = self.chat_line_ranges();
+        let (row, start) = ranges
+            .iter()
+            .enumerate()
+            .find(|(_, (_, end))| cursor <= *end)
+            .map(|(row, (start, _))| (row, *start))
+            .unwrap_or_else(|| (ranges.len().saturating_sub(1), 0));
+        let prefix = &self.chat_input[start..cursor];
+        (row, ratatui::text::Line::from(prefix.to_string()).width())
+    }
+
+    fn chat_cursor_for_line_column(line: &str, wanted: usize) -> usize {
+        let mut offset = 0;
+        for (next, ch) in line.char_indices().map(|(offset, ch)| {
+            (offset + ch.len_utf8(), ch)
+        }) {
+            let width = ratatui::text::Line::from(line[..next].to_string()).width();
+            if width > wanted {
+                break;
+            }
+            offset = next;
+        }
+        offset
+    }
+
+    fn chat_cursor_row(&self) -> usize {
+        self.chat_cursor_line_col().0
+    }
+
+    fn chat_move_vertical(&mut self, delta: isize) {
+        self.sync_chat_cursor();
+        let ranges = self.chat_line_ranges();
+        let (row, column) = self.chat_cursor_line_col();
+        let target = if delta < 0 {
+            row.checked_sub(delta.unsigned_abs())
+        } else {
+            row.checked_add(delta as usize)
+        };
+        let Some(target) = target.filter(|target| *target < ranges.len()) else {
+            return;
+        };
+        let wanted = self.chat_vertical_column.unwrap_or(column);
+        let (start, end) = ranges[target];
+        let line = self.chat_input[start..end].to_string();
+        self.chat_cursor = start + Self::chat_cursor_for_line_column(&line, wanted);
+        self.chat_cursor_input_len = self.chat_input.len();
+        self.chat_vertical_column = Some(wanted);
+    }
+
+    fn chat_move_horizontal(&mut self, delta: isize) {
+        self.sync_chat_cursor();
+        let next = if delta < 0 {
+            self.chat_input[..self.chat_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(offset, _)| offset)
+                .unwrap_or(0)
+        } else {
+            self.chat_input[self.chat_cursor..]
+                .chars()
+                .next()
+                .map(|ch| self.chat_cursor + ch.len_utf8())
+                .unwrap_or(self.chat_input.len())
+        };
+        self.chat_cursor = next;
+        self.chat_vertical_column = None;
+    }
+
+    fn chat_move_line_edge(&mut self, end: bool) {
+        self.sync_chat_cursor();
+        let ranges = self.chat_line_ranges();
+        let row = self.chat_cursor_row();
+        let (start, line_end) = ranges[row.min(ranges.len().saturating_sub(1))];
+        self.chat_cursor = if end { line_end } else { start };
+        self.chat_vertical_column = None;
+    }
+
+    fn chat_leave_history_for_edit(&mut self) {
+        self.chat_history_idx = None;
+        self.chat_draft.clear();
+        self.chat_vertical_column = None;
+    }
+
+    fn chat_insert_text(&mut self, text: &str) -> Action {
+        self.sync_chat_cursor();
+        self.chat_leave_history_for_edit();
+        if !text.is_empty() {
+            self.chat_input.insert_str(self.chat_cursor, text);
+            self.chat_cursor += text.len();
+            self.chat_cursor_input_len = self.chat_input.len();
+        }
+        Action::Render
+    }
+
+    fn chat_delete_backward(&mut self) -> Action {
+        self.sync_chat_cursor();
+        if self.chat_cursor == 0 {
+            return Action::Render;
+        }
+        self.chat_leave_history_for_edit();
+        let previous = self.chat_input[..self.chat_cursor]
+            .char_indices()
+            .next_back()
+            .map(|(offset, _)| offset)
+            .unwrap_or(0);
+        self.chat_input.replace_range(previous..self.chat_cursor, "");
+        self.chat_cursor = previous;
+        self.chat_cursor_input_len = self.chat_input.len();
+        Action::Render
+    }
+
+    fn chat_delete_forward(&mut self) -> Action {
+        self.sync_chat_cursor();
+        let Some(ch) = self.chat_input[self.chat_cursor..].chars().next() else {
+            return Action::Render;
+        };
+        self.chat_leave_history_for_edit();
+        let end = self.chat_cursor + ch.len_utf8();
+        self.chat_input.replace_range(self.chat_cursor..end, "");
+        self.chat_cursor_input_len = self.chat_input.len();
+        Action::Render
+    }
+
+    fn chat_history_or_vertical(&mut self, delta: isize) {
+        let row = self.chat_cursor_row();
+        let line_count = self.chat_line_ranges().len();
+        if delta < 0 {
+            if row == 0 {
+                self.chat_history_prev();
+            } else {
+                self.chat_move_vertical(delta);
+            }
+        } else if row + 1 >= line_count {
+            self.chat_history_next();
+        } else {
+            self.chat_move_vertical(delta);
+        }
+    }
+
     /// Step BACK through submitted composer lines (Up).
     ///
     /// The first step stashes whatever is half-typed, so walking forward again
     /// gives it back rather than destroying unsent work — the one behaviour a
     /// recall ring must never get wrong.
     fn chat_history_prev(&mut self) {
+        self.sync_chat_cursor();
         if self.chat_history.is_empty() {
             return;
         }
@@ -3883,11 +4083,15 @@ impl App {
         };
         self.chat_history_idx = Some(next);
         self.chat_input = self.chat_history[next].clone();
+        self.chat_cursor = self.chat_input.len();
+        self.chat_cursor_input_len = self.chat_input.len();
+        self.chat_vertical_column = None;
     }
 
     /// Step FORWARD (Down). Walking past the newest entry restores the stashed
     /// draft instead of clearing the line.
     fn chat_history_next(&mut self) {
+        self.sync_chat_cursor();
         let Some(i) = self.chat_history_idx else {
             return; // not recalling — Down is inert, never destructive
         };
@@ -3898,6 +4102,9 @@ impl App {
             self.chat_history_idx = None;
             self.chat_input = std::mem::take(&mut self.chat_draft);
         }
+        self.chat_cursor = self.chat_input.len();
+        self.chat_cursor_input_len = self.chat_input.len();
+        self.chat_vertical_column = None;
     }
 
     /// Record a submitted line and leave recall mode.
@@ -3925,12 +4132,11 @@ impl App {
     /// The single-line composer renders them as `⏎` at draw time (D-017 #1:
     /// decorate at render, never rewrite the model).
     fn chat_paste(&mut self, text: &str) {
-        self.chat_history_idx = None; // a paste is an edit — leave recall mode
         // A paste is the bulk edit undo exists for: it can replace a carefully
         // typed line with an arbitrary amount of text in one keystroke, and it
         // is the one composer edit a human cannot walk back with Backspace.
         self.chat_snapshot_for_undo();
-        self.chat_input.push_str(text);
+        self.chat_insert_text(text);
     }
 
     /// Stash the current composer contents so the next `Ctrl-Z` can restore it.
@@ -3959,6 +4165,9 @@ impl App {
         // paste does: otherwise a later Down could overwrite what we restored.
         self.chat_history_idx = None;
         self.chat_input = previous;
+        self.chat_cursor = self.chat_input.len();
+        self.chat_cursor_input_len = self.chat_input.len();
+        self.chat_vertical_column = None;
         Action::Render
     }
 
@@ -10483,6 +10692,14 @@ impl App {
             if code == KeyCode::Char('z') && mods.contains(KeyModifiers::CONTROL) {
                 return self.chat_undo();
             }
+            // Alt-Enter and Ctrl-J are the explicit multiline affordances;
+            // plain Enter remains send, even when the cursor sits in a middle
+            // logical line.
+            if (code == KeyCode::Enter && mods.contains(KeyModifiers::ALT))
+                || (code == KeyCode::Char('j') && mods.contains(KeyModifiers::CONTROL))
+            {
+                return self.chat_insert_text("\n");
+            }
             return match code {
                 KeyCode::Esc => {
                     self.chat_composing = false;
@@ -10498,21 +10715,35 @@ impl App {
                     let text = self.chat_input.clone();
                     self.dispatch_chat_turn(text).unwrap_or(Action::Render)
                 }
-                // Up/Down recall submitted lines. They were previously inert here
-                // (the composer captures all input, so they fell to Action::None).
+                // Up/Down move within a multiline draft first. History is only
+                // reachable from the first/last logical line, matching the
+                // public composer contract.
                 KeyCode::Up => {
-                    self.chat_history_prev();
+                    self.chat_history_or_vertical(-1);
                     Action::Render
                 }
                 KeyCode::Down => {
-                    self.chat_history_next();
+                    self.chat_history_or_vertical(1);
                     Action::Render
                 }
                 KeyCode::Backspace => {
-                    // Editing leaves recall mode, so Down can never overwrite the
-                    // edit with the next history entry.
-                    self.chat_history_idx = None;
-                    self.chat_input.pop();
+                    self.chat_delete_backward()
+                }
+                KeyCode::Delete => self.chat_delete_forward(),
+                KeyCode::Left => {
+                    self.chat_move_horizontal(-1);
+                    Action::Render
+                }
+                KeyCode::Right => {
+                    self.chat_move_horizontal(1);
+                    Action::Render
+                }
+                KeyCode::Home => {
+                    self.chat_move_line_edge(false);
+                    Action::Render
+                }
+                KeyCode::End => {
+                    self.chat_move_line_edge(true);
                     Action::Render
                 }
                 // `@` opens the project-scoped file/attachment picker
@@ -10521,11 +10752,7 @@ impl App {
                 // while the composer is focused, so the contract's "when the
                 // composer is focused" needs no separate focus test.
                 KeyCode::Char('@') => self.open_file_picker(),
-                KeyCode::Char(c) => {
-                    self.chat_history_idx = None;
-                    self.chat_input.push(c);
-                    Action::Render
-                }
+                KeyCode::Char(c) => self.chat_insert_text(&c.to_string()),
                 _ => Action::None,
             };
         }
