@@ -2241,6 +2241,38 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(b.logical_attempt_id).toEqual(expect.any(String));
   });
 
+  it('uses the store-derived repair attempt id for eligibility and the physical runner', async () => {
+    const storeAttemptId = 'repair-target-attempt';
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: PRELAUNCH_OPEN });
+    qualificationMocks.begin.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
+      status: 'updated',
+      transaction: qualificationTransaction({ ...input, attemptId: storeAttemptId }),
+    }));
+    qualificationMocks.eligibility.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => {
+      const snapshot = input.snapshot as { attemptId: string };
+      return {
+        status: input.attemptId === storeAttemptId && snapshot.attemptId === storeAttemptId
+          ? 'updated' : 'conflict',
+        transaction: qualificationTransaction({ attemptId: storeAttemptId }),
+      };
+    });
+    const { default: tool } = await import('./checkpoint-run');
+    const result = parse((await tool.handler({ paths: [MINE] }, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({ ok: true, logical_attempt_id: storeAttemptId });
+    expect(qualificationMocks.eligibility).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        attemptId: storeAttemptId,
+        snapshot: expect.objectContaining({ attemptId: storeAttemptId }),
+      }),
+    );
+    expect(qualificationMocks.reserve).toHaveBeenCalledWith(
+      expect.any(Object), expect.objectContaining({ attemptId: storeAttemptId }),
+    );
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({ logicalAttemptId: storeAttemptId }));
+  });
+
   it('force:true bypasses the gate and launches', async () => {
     // Deliberately NOT mocking the assessor: under `force` the real one short-circuits before
     // it touches git or systemd, so this exercises the actual wiring rather than a stand-in.

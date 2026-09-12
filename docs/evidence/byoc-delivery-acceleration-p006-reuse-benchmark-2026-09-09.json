@@ -4,7 +4,7 @@
   "name": "BYOC P-006 controlled trusted artifact reuse benchmark",
   "framework": "operational",
   "command": [
-    "npx tsx scripts/bench-release-task-reuse.ts >/tmp/p006-reuse-benchmark-current.json"
+    "npx tsx scripts/bench-release-task-reuse.ts > /tmp/p006-benchmark-2026-09-12.json"
   ],
   "exitCode": 0,
   "startedAt": "2026-09-12T15:11:17.957Z",
