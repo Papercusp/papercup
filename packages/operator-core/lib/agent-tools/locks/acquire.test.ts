@@ -15,7 +15,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/acquire.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -134,6 +134,14 @@ describe('locks:acquire — outcome branches', () => {
   it('documents the required intent argument for blocked peers', () => {
     expect(tool.description).toMatch(/required short `intent`/);
     expect(tool.args.shape).toHaveProperty('intent');
+  });
+
+  it('keeps the README smoke-test payloads aligned with the required intent argument', () => {
+    const readme = readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+    expect(readme).toContain(
+      "paths: ['apps/operator/lib/foo.ts'], ttl_sec: 60, intent: 'hold foo.ts for smoke test'",
+    );
+    expect(readme).toContain("paths: ['apps/operator/lib/foo.ts'], intent: 'contend for foo.ts'");
   });
 
   it('documents that harness/workspace slugs are not acquire arguments', () => {

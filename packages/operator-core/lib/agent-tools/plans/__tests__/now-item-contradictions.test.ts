@@ -128,6 +128,31 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(parsed)).toEqual([]);
   });
 
+  it('allows a terminal item named only by an explicit do-not-reopen guard', () => {
+    const proposed = parsePlan(
+      CURRENT
+        .replace('**Next:** Continue with P-002.', '**Next:** Claim P-007 ...; do not reopen completed Phone or P-002.')
+        .replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.'),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it('still flags a later positive reopen after a do-not-reopen guard', () => {
+    const proposed = parsePlan(
+      CURRENT
+        .replace(
+          '**Next:** Continue with P-002.',
+          '**Next:** do not reopen completed Phone or P-002, but reopen P-002.',
+        )
+        .replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.'),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-002', status: 'done' }),
+    ]);
+  });
+
   it('ignores a quoted stale trigger and accepts the explicit dropped status that corrects it', () => {
     expect(detectNowItemContradictions(parsePlan(DROPPED_ITEM_EXPLANATION))).toEqual([]);
   });
@@ -594,6 +619,36 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
 
     expect(result.value).toEqual({ ok: true });
     expect(result.newBody).toContain('**Next:** Continue with P-002.');
+  });
+
+  it('accepts a structured Now write with an explicit do-not-reopen terminal guard', () => {
+    const current = CURRENT.replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.');
+    const result = evaluateNowUpdate(
+      current,
+      'Work remains.',
+      'Claim P-007 ...; do not reopen completed Phone or P-002.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+    expect(result.newBody).toContain('do not reopen completed Phone or P-002.');
+  });
+
+  it('rejects a positive reopen that follows a do-not-reopen terminal guard', () => {
+    const current = CURRENT.replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.');
+    const result = evaluateNowUpdate(
+      current,
+      'Work remains.',
+      'do not reopen completed Phone or P-002, but reopen P-002.',
+      SLUG,
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-002', status: 'done' })],
+    });
   });
 
   it('accepts a structured Now write that references an item range', () => {

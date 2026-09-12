@@ -461,7 +461,17 @@ function scalarSchemaValues(raw: unknown): Array<string | number | boolean | nul
 export function mergeRepeatedPropertySchema(prior: unknown, next: unknown): unknown {
   const left = scalarSchemaValues(prior);
   const right = scalarSchemaValues(next);
-  if (!left || !right) return prior;
+  if (!left || !right) {
+    // A root union repeats fields that are callable in one branch and
+    // explicitly forbidden (`not: {}`) in the others. Keeping the first
+    // forbidden schema loses the callable field's type and bounds from the
+    // compact discovery projection (for example capability:read's
+    // byte_limit max of 4096). Preserve the non-forbidden schema; the
+    // unionConditionalHint still records which discriminator permits it.
+    if (explicitlyForbiddenSchema(prior) && !explicitlyForbiddenSchema(next)) return next;
+    if (!explicitlyForbiddenSchema(prior) && explicitlyForbiddenSchema(next)) return prior;
+    return prior;
+  }
   return { enum: [...new Set([...left, ...right])] };
 }
 

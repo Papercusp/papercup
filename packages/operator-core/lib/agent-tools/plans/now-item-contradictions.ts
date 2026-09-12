@@ -129,6 +129,12 @@ const NOW_METADATA_STATUS_RE =
 const NOW_ACTION_RE =
   /\b(?:address|audit|claim|close|complete|continue|finish|fix|handle|implement|investigate|pick(?:\s+up)?|reopen|repair|revisit|review|resume|retry|run|start|validate|verify|work)\b/i;
 const NOW_ACTIVE_RE = /\b(?:active|assigned|in\s+progress|ongoing|open|pending|underway)\b/i;
+// A terminal item can be named in an explicit negative guard, e.g. `do not
+// reopen completed Phone or P-002`. That mention describes what must NOT be
+// resumed, rather than presenting P-002 as current/future work. Keep the
+// exemption occurrence- and clause-local; a later action in the same clause
+// must still make the terminal mention contradictory.
+const NOW_NEGATIVE_REOPEN_GUARD_RE = /\b(?:do|does|did)\s+not\s+reopen\b/i;
 const NOW_CROSS_LEDGER_REF_BEFORE_RE = /\bWI-\d+\s*\/\s*$/i;
 const NOW_CROSS_LEDGER_REF_AFTER_RE = /^\s*\/\s*WI-\d+\b/i;
 // EI-22299775069357894: a decision can cite a terminal plan item as neutral
@@ -184,6 +190,22 @@ function hasAffirmativeResolution(text: string): boolean {
 
 function isStagingOnlyCompletion(text: string): boolean {
   return NOW_STAGING_COMPLETION_RE.test(text) && NOW_RELEASE_PLANE_ABSENCE_RE.test(text);
+}
+
+function hasNegativeReopenGuard(before: string, after: string): boolean {
+  for (const match of before.matchAll(new RegExp(NOW_NEGATIVE_REOPEN_GUARD_RE.source, 'gi'))) {
+    const guardTail = before.slice((match.index ?? 0) + match[0].length);
+    if (
+      !NOW_ACTION_RE.test(guardTail) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(guardTail) &&
+      !NOW_ACTION_RE.test(after) &&
+      !NOW_ACTIVE_RE.test(after) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(after)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasNeutralResidueReference(before: string, after: string): boolean {
@@ -377,6 +399,7 @@ export function detectNowItemContradictions(
       !NOW_NEGATED_OR_FUTURE_RE.test(after) &&
       !NOW_ACTIVE_RE.test(before) &&
       !NOW_ACTIVE_RE.test(after);
+    const negativeReopenGuard = hasNegativeReopenGuard(before, after);
     // An explicit "<other-plan-slug> P-NNN" citation scopes the id to that
     // OTHER plan, never this one — see PLAN_SLUG_PREFIX_RE above. Tense/action
     // wording after the id is irrelevant here: the id itself does not name an
@@ -397,6 +420,7 @@ export function detectNowItemContradictions(
       neutralDecisionReference ||
       neutralResidueReference ||
       neutralPromotionProvenanceReference ||
+      negativeReopenGuard ||
       explicitForeignPlanReference ||
       retrospectiveResolution ||
       neutralMetadataReference

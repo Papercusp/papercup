@@ -26,6 +26,7 @@ import workItemsGet from '../work_items/get';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
+import capabilityRead from '../capability/read';
 import agentReview from '../improvements/agent-review';
 import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
@@ -1137,6 +1138,19 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
 
     expect(entry?.argSchema).toContain('timeout_sec?:integer');
     expect(compact).toContain('timeout_sec?:integer(>0-604800)');
+  });
+
+  it('preserves callable branch bounds when another union branch forbids the field', () => {
+    expect(capabilityRead.name).toBe('capability:read');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'capability:read');
+    const compact = compactSchemaForResult(schemaByTool.get('capability:read'));
+
+    // The line/content/evidence branches explicitly forbid byte_limit, while
+    // the byte-window branch accepts it as an integer capped at 4096. Both
+    // discovery surfaces must teach the callable branch's actual ceiling.
+    expect(entry?.argSchema).toContain('byte_limit?:integer(>0-4096)');
+    expect(compact).toContain('byte_limit?:integer(>0-4096)');
   });
 
   it('keeps the required progress_lease remedy visible in bounded events:await discovery', () => {

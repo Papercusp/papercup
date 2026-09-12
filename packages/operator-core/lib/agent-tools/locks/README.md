@@ -186,11 +186,11 @@ DELETE FROM agent_file_locks WHERE owner_label LIKE '%<some-substring>%';
 ```
 # Terminal A
 omp
-> use locks:acquire to claim apps/operator/lib/foo.ts for 60s
+> use locks:acquire { paths: ['apps/operator/lib/foo.ts'], ttl_sec: 60, intent: 'hold foo.ts for smoke test' }
 
 # Terminal B (within 60s)
 omp
-> use locks:acquire to claim apps/operator/lib/foo.ts
+> use locks:acquire { paths: ['apps/operator/lib/foo.ts'], intent: 'contend for foo.ts' }
 
 # Expect: B sees ok=false, busy=[{path: 'apps/operator/lib/foo.ts', owner_label: '...', expires_ts: '...'}]
 # After 60s of waiting on B + re-trying: should succeed.
