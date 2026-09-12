@@ -529,6 +529,12 @@ describe('dispatchPendingGradingAudits', () => {
         'throttled; retry after 60s\u001b[0m\r\n\r\n✻ Worked for 13m 45s · done 9:09 AM\r\n❯',
     },
     {
+      screen: 'gateway 429 without a completed-turn footer',
+      gatewayLog:
+        '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +
+        'throttled; retry after 60s\u001b[0m',
+    },
+    {
       screen: 'account-scoped gateway 429',
       gatewayLog:
         '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429)\r\n' +
@@ -541,7 +547,7 @@ describe('dispatchPendingGradingAudits', () => {
         "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
         'paced/paused; retry after 60s\u001b[0m\r\n\r\n✻ Cooked for 13m 41s · done 9:33 AM\r\n❯',
     },
-  ])('retires a deduped auditor whose $screen turn completed and launches the Codex fallback', async ({ gatewayLog }) => {
+  ])('retires a deduped auditor with a terminal $screen and launches the Codex fallback', async ({ gatewayLog }) => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-gateway-500')]);
     d.launch

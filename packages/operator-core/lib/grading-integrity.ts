@@ -773,6 +773,11 @@ export async function dispatchPendingGradingAudits(
               maxRechecks: deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
               allowStandaloneWeeklyLimit: true,
               allowInferenceGatewayError: true,
+              // This controlled brief contains only the scorecard identity and
+              // fingerprint, never a quoted gateway screen. A headless Claude
+              // turn can stop on that exact screen before rendering its footer;
+              // treating it as terminal is what lets the Codex fallback run.
+              allowGatewayErrorWithoutFooter: true,
               allowLauncherQuotaDrop: true,
               // EI-22978598482930667: a launch REFUSED by the walled-pool preflight
               // is terminal for this mission. Without this it classified as nothing,
