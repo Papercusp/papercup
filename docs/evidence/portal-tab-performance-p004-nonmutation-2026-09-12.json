@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal P-004 deployed probe non-mutation and detector control",
+  "framework": "operational",
+  "command": [
+    "GET http://127.0.0.1:3081/api/preferences -> canonical before snapshot",
+    "npx tsx scripts/perf-probe.mts --tabs home,brainstorm --mode warm --repeats 1 --out /tmp/p004-nonmutation-probe.json --label p004-nonmutation-focus",
+    "GET http://127.0.0.1:3081/api/preferences -> canonical after snapshot; compare full preferences",
+    "mutate an in-memory copy by appending __positive_control_mutant__ to pinnedApps; require comparator mismatch"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-12T16:09:19.621Z",
+  "finishedAt": "2026-09-12T16:09:41.543Z",
+  "summary": "A focused current-head deployed warm probe drove one rail destination and one More-panel destination without changing any preference field; an isolated pinnedApps mutant proved the equality detector can turn red. This did not rerun the completed 34-tab performance measurement.",
+  "assertions": [
+    {
+      "id": "deployed-surface",
+      "passed": true,
+      "evidence": "The probe artifact records baseUrl http://127.0.0.1:3081, mode warm, two samples, duration 19 seconds, and host load 141.13 to 131.3."
+    },
+    {
+      "id": "rail-and-more-journeys-executed",
+      "passed": true,
+      "evidence": "home and brainstorm each produced one content sample; brainstorm exercised the More-panel path, and skipped was empty."
+    },
+    {
+      "id": "preferences-unchanged",
+      "passed": true,
+      "evidence": "Canonical full preferences JSON before and after had the same SHA-256: 28c9322c7449509e403e0074790f06c2a25003bc568295e791970c65cf3f1230."
+    },
+    {
+      "id": "pinned-apps-positive-control",
+      "passed": true,
+      "evidence": "Appending __positive_control_mutant__ to pinnedApps in an isolated copy produced a comparator mismatch, proving the detector notices the D-004 mutation class."
+    },
+    {
+      "id": "probe-artifact-integrity",
+      "passed": true,
+      "evidence": "The generated focused probe artifact SHA-256 was cc1254ddac2984db81710541547b2c5e0f60660fa4a9039dd388bf4fa6f89e3d."
+    }
+  ],
+  "subject": {
+    "workItem": "WI-10000657",
+    "planItem": "papercup-owner-reports-and-ledger-recovery-2026-09-09#P-004",
+    "portalHead": "87f91ca8675db0b31608085a0c11ed651f193dbf",
+    "acceptanceRubric": "acceptance-portal-tab-performance-2026-09-07@6",
+    "barSetHash": "704f4eaa1ed8bd3e185279b8061b34fe8e444836339ff4d26f8d24e43d107863"
+  }
+}

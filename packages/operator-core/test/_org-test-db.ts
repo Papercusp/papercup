@@ -130,7 +130,7 @@ let _migKey: string | null = null;
 /** Content hash of the migration set — the template key. Changes whenever any migration
  *  is added / edited / removed, so a schema change forces a template rebuild (a stale
  *  template would silently serve the WRONG schema). Computed once per process. */
-function migrationSetKey(): string {
+export function migrationSetKey(): string {
   if (_migKey) return _migKey;
   const h = createHash('sha1');
   for (const f of readdirSync(SQL_DIR).filter((n) => n.endsWith('.sql')).sort()) {
@@ -138,6 +138,25 @@ function migrationSetKey(): string {
   }
   _migKey = h.digest('hex').slice(0, 16);
   return _migKey;
+}
+
+/** Public name used by the integration globalSetup that pre-warms this template. */
+export function orgTemplateKey(): string {
+  return migrationSetKey();
+}
+
+/** Build the complete org fixture schema into a template database. */
+export async function provisionOrgTemplate(url: string): Promise<{ migrationCount: number }> {
+  const boot = postgres(url, { max: 1, onnotice: () => {} });
+  try {
+    await boot.unsafe(FRAMEWORK_PREREQS_DDL);
+    // empty→head builds the COMPLETE schema, throwing loudly on any real failure
+    // (self-contained-migration-baseline-2026-06-02).
+    const result = await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR });
+    return { migrationCount: result.totalKnown };
+  } finally {
+    await boot.end({ timeout: 5 });
+  }
 }
 
 export async function createOrgTestDb(): Promise<OrgTestDb> {
@@ -149,18 +168,8 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const db = await createFreshTestDb({
     prefix: 'org',
     template: {
-      key: migrationSetKey(),
-      provision: async (url) => {
-        const boot = postgres(url, { max: 1, onnotice: () => {} });
-        try {
-          await boot.unsafe(FRAMEWORK_PREREQS_DDL);
-          // empty→head builds the COMPLETE schema, throwing loudly on any real failure
-          // (self-contained-migration-baseline-2026-06-02).
-          await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR });
-        } finally {
-          await boot.end({ timeout: 5 });
-        }
-      },
+      key: orgTemplateKey(),
+      provision: provisionOrgTemplate,
     },
   });
   const dbName = db.name;

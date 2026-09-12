@@ -68,7 +68,7 @@ describe('deriveLastRespawnOutcome', () => {
     expect(deriveLastRespawnOutcome(firstRealWindow, { now: NOW }).outcome).toBe('pending');
     expect(deriveLastRespawnOutcome([
       ...firstRealWindow,
-      { ts: '2026-08-22T20:01:00.000Z', kind: 'respawn-carry-delivered', turnStartVerified: true },
+      { ts: '2026-08-22T20:01:00.000Z', kind: 'respawn-carry-delivered' },
     ], { now: NOW }).outcome).toBe('delivered');
   });
 

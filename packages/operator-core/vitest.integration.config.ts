@@ -13,7 +13,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // flush lands instead of disabling the sink.
 export default defineVitestConfig({
   layer: 'integration',
-  globalSetup: [BASELINE_SCHEMA_GLOBAL_SETUP_PATH],
+  globalSetup: [BASELINE_SCHEMA_GLOBAL_SETUP_PATH, resolve(__dirname, 'test/_org-template.globalSetup.ts')],
   setupFiles: [
     resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
     // Integration routes also start tracked lazy imports (e.g. session end).
