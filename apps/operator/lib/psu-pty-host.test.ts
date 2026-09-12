@@ -44,6 +44,7 @@ import {
   submitVerificationFailureReason,
   quotaLimitBannerVisible,
   quotaLimitBannerMatch,
+  quotaLineIsUsageAdvisory,
   quotaBannerPatternsForAgent,
   makeQuotaBlockDetector,
   verifyNativeTurnStartWithRetry,
@@ -2384,6 +2385,33 @@ describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
     expect(hit.excerpt).toContain('Usage limit reached');
     const miss = quotaLimitBannerMatch('nothing to see', 'codex');
     expect(miss).toEqual({ matched: false, pattern: null, excerpt: null });
+  });
+
+  it('does not treat Claude\'s percentage-used usage advisory as a quota wall', () => {
+    const advisory =
+      "You've used 75% of your weekly limit · resets Sep 17, 7am (America/New_York)";
+    expect(quotaLineIsUsageAdvisory(advisory)).toBe(true);
+    expect(quotaLimitBannerMatch(advisory, 'claude')).toEqual({
+      matched: false,
+      pattern: null,
+      excerpt: null,
+    });
+    const d = makeQuotaBlockDetector({ agent: 'claude' });
+    expect(d.observe(advisory)).toBeNull();
+    expect(d.isBlocked()).toBe(false);
+  });
+
+  it('still detects a real Claude wall when an advisory shares the screen', () => {
+    const advisory =
+      "You've used 75% of your weekly limit · resets Sep 17, 7am (America/New_York)";
+    const wall = "You've hit your weekly limit. Please try again after the reset.";
+    const screen = `${advisory}\n${wall}`;
+    const hit = quotaLimitBannerMatch(screen, 'claude');
+    expect(hit.matched).toBe(true);
+    expect(hit.excerpt).toContain(wall);
+    const d = makeQuotaBlockDetector({ agent: 'claude' });
+    expect(d.observe(screen)).toBe('detected');
+    expect(d.isBlocked()).toBe(true);
   });
 
   it('never blocks a codex session that only ever repaints chrome', () => {
