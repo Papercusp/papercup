@@ -2938,15 +2938,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
     const approvalResult = `PUI-PERMISSION-FIXTURE-${randomUUID()}`;
     const approvalFixturePath = path.join(home, `approved-${randomUUID()}.txt`);
-    // Ask for the user outcome, not for a pre-authored privileged invocation.
-    // Real providers may correctly refuse a prompt that tells them to reproduce
-    // exact shell syntax or force an escalation flag; that yields zero cards and
-    // tests provider policy instead of the PUI approval transport. The fixture
-    // pre-assigns the isolated work item to this session so the model need not
-    // choose an unrelated work-item tool before reaching the shell approval.
-    // The owned temp path still requires the native shell tool, while its
-    // permission handshake remains the engine's responsibility.
-    const approvalRequest = `I am testing the PUI's real tool-permission flow. The task ${REAL_APPROVAL_WORK_ITEM} is already assigned to this session, and I approve route A: handle it yourself here. Do not fetch or claim the task again. Create a text file at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline, using your shell-command tool. This path is in an isolated temporary directory that I own, and I authorize this write. The random string is only a correlation nonce proving which tool result returned; it is not an approval or security attestation. If the tool requires confirmation, pause so I can approve it in the PUI. After the write succeeds, reply with the file contents.`;
+    // Ask for the ordinary outcome in ordinary language. Security-attestation
+    // rhetoric and instructions not to inspect the task correctly make a real
+    // provider stop and ask what is actually being tested, which exercises
+    // provider policy rather than the PUI permission transport. The fixture
+    // pre-assigns the task and the AUTO launch authorizes execution; native
+    // toolApproval:'prompt' still requires the real Bash card below.
+    const approvalRequest = `Continue the already-assigned PUI acceptance task ${REAL_APPROVAL_WORK_ITEM}. Use Bash to create the temporary fixture file '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline.`;
     const first = await startOperatorProcess();
     const pane = new PuiPane(bin, first.port, home);
     const frames: Record<string, string> = {};
@@ -2960,7 +2958,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       if (approvalEnabled) {
         pane.write(approvalRequest);
         pane.enter();
-        await waitForSavedTurn(approvalRequest);
+        const approvalChat = await waitForSavedTurn(approvalRequest);
+        const approvalCommand = approvalChat.transcript.find((turn) =>
+          turn.content === approvalRequest)?.su_command?.command;
+        if (approvalCommand?.type !== 'owner_turn') {
+          throw new Error('Approval probe lacks a durable owner-turn receipt');
+        }
         const approvalLabel = scriptedEngine.backend === 'omp' ? 'Confirm' : 'Approve';
         const pendingCards = () => pendingNativeCards(first.events);
         await vi.waitFor(
@@ -2987,21 +2990,28 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           interval: 100,
         });
         expect(childCardReplies().at(-1)).toMatchObject({ status: 200 });
-        await waitForCorrelatedReply(approvalRequest, approvalResult, first.events);
-        await pane.waitForReply(approvalResult);
+        await vi.waitFor(() => {
+          approvalStart = first.events.find(
+            (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
+              event.type === 'tool' &&
+              event.phase === 'started' &&
+              JSON.stringify(event.input).includes(approvalFixturePath),
+          );
+          expect(approvalStart, 'the approved native command must be visible as a tool start').toMatchObject({
+            turnId: approvalCommand.turnId,
+            session: approvalCommand.target,
+          });
+          approvalEnd = first.events.find(
+            (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
+              event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId,
+          );
+          expect(approvalEnd, 'the approved native command must finish successfully').toMatchObject({
+            isError: false,
+            turnId: approvalCommand.turnId,
+            session: approvalCommand.target,
+          });
+        }, { timeout: 120_000, interval: 100 });
         expect(readFileSync(approvalFixturePath, 'utf8')).toBe(approvalResult + '\n');
-        approvalStart = first.events.find(
-          (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
-            event.type === 'tool' &&
-            event.phase === 'started' &&
-            JSON.stringify(event.input).includes(approvalFixturePath),
-        );
-        expect(approvalStart, 'the approved native command must be visible as a tool start').toBeDefined();
-        approvalEnd = first.events.find(
-          (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
-            event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId,
-        );
-        expect(approvalEnd, 'the approved native command must finish successfully').toMatchObject({ isError: false });
         expect(first.events).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
@@ -3012,6 +3022,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             }),
           ]),
         );
+        // The approval clause is the authorized tool effect, not a provider's
+        // optional prose after it. Wait until that turn settles before sending
+        // the independent greeting used by the restart/resume clause.
+        await pane.waitFor('· ready ·', { timeoutMs: 120_000 });
         frames.approved = pane.screen();
       }
       pane.write(greeting);
