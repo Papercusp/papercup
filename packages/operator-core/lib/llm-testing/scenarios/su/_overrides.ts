@@ -726,6 +726,8 @@ export function makeDesignStatusBadgeContext(): ToolDispatchOverride {
           writes: changedPaths.length,
           applied: true,
         },
+        verificationRequired: true,
+        nextAction: `Read ${DESIGN_HARNESS_CARD_PATH} with capability:read before claiming completion.`,
         note: 'Applied successfully. Subsequent capability:read calls return the updated contents.',
       }) }] };
     }
@@ -748,6 +750,8 @@ export function makeDesignStatusBadgeContext(): ToolDispatchOverride {
         file_path: filePath,
         changed: true,
         bytesWritten: after.length,
+        verificationRequired: true,
+        nextAction: `Read ${filePath || DESIGN_HARNESS_CARD_PATH} with capability:read before claiming completion.`,
         note: 'Applied successfully. Subsequent capability:read calls return the updated contents.',
       }) }] };
     }
@@ -1444,9 +1448,64 @@ export const HARNESS_STATUS_RESULT: ToolDispatchOverride = {
 /**
  * SU-S17 (reach for coord:orient at wake): a believable one-call bootstrap so the
  * engineer who calls coord:orient { intent } once isn't punished by a stub. The
- * fanned-out primitives PASS_THROUGH to a benign stub — the assert flags the fan;
- * the override just lets the smart (bundle) path succeed.
+ * fanned-out primitives PASS_THROUGH to a benign stub — the assert flags the fan.
+ *
+ * The follow-up world is intentionally populated too. A real S17 continuation
+ * reads the assigned item's source, searches for the gateway/retry seam, packs
+ * the relevant files, and may batch those reads through code:run. Returning an
+ * empty/default result after a successful orient makes the model retract its own
+ * evidence ("the tool was simulated") instead of investigating the assignment.
  */
+const S17_GATEWAY_SOURCES = [
+  {
+    path: 'packages/operator-core/lib/llm-testing/llm-client.ts',
+    language: 'ts',
+    lineRanges: ['11-13', '301-323'],
+    content: [
+      "Pricing + retry + auth + temperature-incompat all live in `libs/papercusp-shared/src/agent/chat-stream.ts`'s `anthropic-direct` branch.",
+      "priority: opts.priority ?? 'llm-testing',",
+      'retryDeadlineMs: opts.retryDeadlineMs,',
+    ].join('\n'),
+  },
+  {
+    path: 'libs/papercusp-shared/src/agent/chat-stream.ts',
+    language: 'ts',
+    lineRanges: ['357-379', '651-658'],
+    content: [
+      "export const GATEWAY_PRIORITY_HEADER = 'x-papercusp-priority';",
+      'export function priorityTierHeaders(priority: string | undefined): Record<string, string> {',
+      '  const label = priority?.trim();',
+      '  return label ? { [GATEWAY_PRIORITY_HEADER]: label } : {};',
+      '}',
+      'retryDeadlineMs?: number;',
+    ].join('\n'),
+  },
+  {
+    path: 'apps/operator/bin/llm-test.ts',
+    language: 'ts',
+    lineRanges: ['228-246'],
+    content: [
+      'for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {',
+      '  if (!process.env[k]) process.env[k] = v;',
+      '}',
+      'console.log(`[llm-test] inference-gateway ON → routing LLM calls through http://127.0.0.1:${gatewayPort()}`);',
+    ].join('\n'),
+  },
+  {
+    path: 'apps/operator-docs/src/content/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity.mdx',
+    language: 'mdx',
+    lineRanges: ['69-84'],
+    content:
+      'A bare 429 with x-should-retry: true is a short transient burst throttle, not a quota wall. ' +
+      'Retry and fail over instead of concluding that the account pool is exhausted.',
+  },
+];
+
+const S17_MEMORY_HIT = {
+  id: 'mem-1',
+  memory: 'gateway retries must route through the account pool (EI-456)',
+};
+
 export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
   override(name, args) {
     const a = (args ?? {}) as Record<string, unknown>;
@@ -1457,12 +1516,59 @@ export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
           {
             text: JSON.stringify({
               ok: true,
-              me: { assignments: [{ id: 'WI-512', title: 'Gateway pool retry', state: 'wip' }], lane: ['P-003'], load: 1 },
-              claimable: [{ id: 'WI-540', title: 'Audit log NUL bytes' }, { id: 'WI-541', title: 'Palette poll → push' }],
-              inbox: { summary: { total: 1, unread: 1 }, recent: [{ from: 'mug', text: 'prioritize the gateway retry' }] },
+              me: {
+                assignments: [{ id: 'WI-512', title: 'Gateway pool retry', state: 'wip' }],
+                lane: ['P-003'],
+                load: 1,
+              },
+              claimable: [
+                { id: 'WI-540', title: 'Audit log NUL bytes' },
+                { id: 'WI-541', title: 'Palette poll → push' },
+              ],
+              inbox: {
+                summary: { total: 1, unread: 1 },
+                recent: [{ from: 'mug', text: 'prioritize the gateway retry' }],
+              },
               planEvents: { total: 2, recent: [{ kind: 'item_status_changed', plan: 'gateway-pool', item: 'P-002' }] },
-              memory: { query: a.intent ?? '', hits: [{ id: 'mem-1', memory: 'gateway retries must route through the account pool (EI-456)' }] },
+              memory: { query: a.intent ?? '', hits: [S17_MEMORY_HIT] },
               intentDeclared: !!a.intent,
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'memory:search') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              results: [{ ...S17_MEMORY_HIT, score: 0.92, metadata: { kind: 'project' } }],
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'coord:declare-intent') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              presence: {
+                ownerId: 'su-test',
+                intent: String(a.intent ?? ''),
+                currentPlanSlug: String(a.current_plan_slug ?? 'gateway-pool'),
+                intentDeclaredAt: '2026-06-21T04:12:00Z',
+                fleetSlug: null,
+                fleetRole: null,
+              },
+              claims: {
+                claimed: [],
+                alreadyHeld: ['P-003'],
+                conflicts: [],
+                released: [],
+              },
             }),
           },
         ],
@@ -1470,23 +1576,144 @@ export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
     }
     if (canon === 'work_items:get') {
       const id = String(a.id ?? 'WI-512');
-      const workItem = id === 'WI-512'
-        ? { id, title: 'Gateway pool retry', state: 'wip', assignee: 'su-test', plan: 'gateway-pool', planItem: 'P-003' }
-        : { id, title: 'Claimable follow-up', state: 'open', assignee: null };
-      return { content: [{ text: JSON.stringify({
-        ok: true,
-        results: [{ ok: true, id, workItem }],
-      }) }] };
+      const workItem =
+        id === 'WI-512'
+          ? {
+              id,
+              title: 'Gateway pool retry',
+              state: 'wip',
+              assignee: 'su-test',
+              plan: 'gateway-pool',
+              planItem: 'P-003',
+            }
+          : { id, title: 'Claimable follow-up', state: 'open', assignee: null };
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              results: [{ ok: true, id, workItem }],
+            }),
+          },
+        ],
+      };
     }
     if (canon === 'work_items:list') {
-      return { content: [{ text: JSON.stringify({
-        ok: true,
-        items: [
-          { id: 'WI-512', title: 'Gateway pool retry', state: 'wip', assignee: 'su-test' },
-          { id: 'WI-540', title: 'Audit log NUL bytes', state: 'open', assignee: null },
-          { id: 'WI-541', title: 'Palette poll → push', state: 'open', assignee: null },
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              items: [
+                { id: 'WI-512', title: 'Gateway pool retry', state: 'wip', assignee: 'su-test' },
+                { id: 'WI-540', title: 'Audit log NUL bytes', state: 'open', assignee: null },
+                { id: 'WI-541', title: 'Palette poll → push', state: 'open', assignee: null },
+              ],
+            }),
+          },
         ],
-      }) }] };
+      };
+    }
+    if (canon === 'search:fulltext' || canon === 'search:semantic') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              query: a.query ?? '',
+              hits: S17_GATEWAY_SOURCES.map((source) => ({
+                path: source.path,
+                excerpt: source.content,
+                sourceKind: 'source-backed-code-excerpt',
+                lineRanges: source.lineRanges,
+              })),
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'repomix:pack') {
+      const requestedPath = String(a.path ?? '');
+      const selected = requestedPath
+        ? S17_GATEWAY_SOURCES.filter(
+            (source) =>
+              requestedPath === source.path ||
+              requestedPath.endsWith(source.path) ||
+              source.path.startsWith(`${requestedPath.replace(/\/$/, '')}/`),
+          )
+        : S17_GATEWAY_SOURCES;
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              requestedPath: requestedPath || null,
+              files: selected.map((source) => ({
+                ...source,
+                sourceKind: 'source-backed-code-excerpt',
+              })),
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'capability:read') {
+      const requestedPath = String(a.file_path ?? a.path ?? '');
+      const source = S17_GATEWAY_SOURCES.find(
+        (candidate) => requestedPath === candidate.path || requestedPath.endsWith(candidate.path),
+      );
+      return {
+        content: [
+          {
+            text: JSON.stringify(
+              source
+                ? {
+                    ok: true,
+                    file_path: source.path,
+                    content: source.content,
+                    sourceChars: source.content.length,
+                    sourceKind: 'source-backed-code-excerpt',
+                    completeFile: false,
+                    completeForQuestion: true,
+                    lineRanges: source.lineRanges,
+                  }
+                : {
+                    ok: false,
+                    error: 'file_not_in_scenario_world',
+                    requestedPath,
+                    availablePaths: S17_GATEWAY_SOURCES.map((candidate) => candidate.path),
+                  },
+            ),
+          },
+        ],
+      };
+    }
+    if (canon === 'code:run') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              result: {
+                status: 'completed',
+                cwd: '/workspace/papercusp',
+                sourceKind: 'source-backed-code-excerpt',
+                files: S17_GATEWAY_SOURCES.map((source) => source.path),
+                gateway: {
+                  endpoint: 'http://127.0.0.1:8788',
+                  priorityHeader: 'x-papercusp-priority',
+                  defaultPriority: 'llm-testing',
+                },
+                retry: {
+                  boundedBy: 'retryDeadlineMs',
+                  transient429: 'retry-and-fail-over when x-should-retry=true',
+                },
+              },
+              summary: 'Read the gateway admission and bounded retry wiring from source-backed files.',
+            }),
+          },
+        ],
+      };
     }
     return PASS_THROUGH;
   },

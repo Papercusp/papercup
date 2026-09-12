@@ -160,6 +160,24 @@ describe('findUnguardedHarnessArgs — CALIBRATION (must NOT flag)', () => {
     expect(findUnguardedHarnessArgs([tool('calib:exempt', { [exemptName!]: str })])).toEqual([]);
   });
 
+  it('does not treat design-phase filesystem roots as harness selectors', () => {
+    expect(HIVE_CLAMP_ARG_EXEMPTIONS.harnessRoot).toContain('filesystem root');
+    expect(
+      collectHarnessSlugArgs(
+        {
+          harnessRoot: '/workspace/papercusp',
+          workspaceRoot: '/workspace/papercusp-workspaces/papercusp-workspace',
+        },
+        { toolName: 'design-phase.get_design_spec' },
+      ),
+    ).toEqual([]);
+    expect(
+      findUnguardedHarnessArgs([
+        tool('design-phase.get_design_spec', { harnessRoot: str, workspaceRoot: str }),
+      ]),
+    ).toEqual([]);
+  });
+
   it('every exemption states a reason', () => {
     for (const [name, reason] of Object.entries(HIVE_CLAMP_ARG_EXEMPTIONS)) {
       expect(reason.trim().length, `exemption ${name} must state why it is safe`).toBeGreaterThan(20);
@@ -210,7 +228,7 @@ describe('the clamp SWEEP is wired (not just the module)', () => {
   // if the call is removed, coverage silently collapses back to four literals
   // and the detector — which trusts the claim — would report all-clear.
   const source = readFileSync(
-    fileURLToPath(new URL('./routes/transport/_mcp-handler.ts', import.meta.url)),
+    fileURLToPath(new URL('./routes/transport/_mcp-host.ts', import.meta.url)),
     'utf8',
   );
 
@@ -262,7 +280,7 @@ describe('HIVE_CLAMP_LITERAL_ARGS is pinned to the real clamp', () => {
   // Stops the list drifting into decoration: a name listed here as "guarded"
   // must correspond to an actual read in the clamp source.
   const source = readFileSync(
-    fileURLToPath(new URL('./routes/transport/_mcp-handler.ts', import.meta.url)),
+    fileURLToPath(new URL('./routes/transport/_mcp-host.ts', import.meta.url)),
     'utf8',
   );
 
