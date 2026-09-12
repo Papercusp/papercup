@@ -3,7 +3,7 @@
   "plan": "design-acceptance-journey-enforcement-2026-09-08",
   "workItemId": "WI-10000754",
   "specRef": "AUTO-BAR-R-2-P-002@3",
-  "status": "verification-in-progress",
+  "status": "browser-verified",
   "sourceTest": "apps/operator/e2e/portal-desktop-design.spec.ts",
   "original": {
     "testRunId": 17712295,
@@ -12,7 +12,7 @@
       "schemaVersion": 2,
       "buildId": "5J8-nhZvCyUiBU5llWuxa",
       "release": "5J8-nhZvCyUiBU5llWuxa-20260908023028593-1218708-bbd344f2",
-      "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "publishedAt": "2026-09-08T02:30:28.593Z",
       "sourceRootDigest": "58830c696715b247b7f79a0b6a398511110986f1b9216ad0e797ee01a0cada55"
     },
@@ -75,24 +75,88 @@
     "reproduction": "Run the source test with --grep desktop.entry against the named immutable original standalone generation using the normal portal service environment and its existing discovered PORTAL_DATABASE_URL, injected without printing secrets. Preview port was 3881 and has been stopped."
   },
   "positive": {
-    "status": "pending-new-preview",
-    "baselineTestRunId": 17709578,
-    "baselineScope": "four pre-existing real-portal tests passed before expansion; does not establish the six new scenarios"
+    "status": "pass",
+    "testRunId": 17713845,
+    "runGroupId": "design-journey-p002-preview-positive-20260908",
+    "build": {
+      "schemaVersion": 2,
+      "buildId": "YwYDgKxI3kL-64RCJTWa4",
+      "release": "YwYDgKxI3kL-64RCJTWa4-20260908160620228-2244334-229c9378",
+      "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-09-08T16:06:20.228Z",
+      "sourceRootDigest": "049ab089027614df8f0553dcc1e6a2a26e74706d82c93884fe0a89d31d07877e"
+    },
+    "testCount": 9,
+    "scenarioIds": [
+      "desktop.entry.clean",
+      "desktop.entry.canonical",
+      "desktop.entry.legacy",
+      "desktop.entry.persisted",
+      "desktop.entry.reload",
+      "desktop.entry.history"
+    ],
+    "otherCases": [
+      "invalid canonical subject",
+      "invalid legacy subject",
+      "navigation while auxiliary workspace-stats response held"
+    ],
+    "runtime": "real portal shell and current backend data; only the explicit stats-latency regression intercepts that auxiliary request",
+    "captureReview": "1440x900 large viewer with roster/activity at right;390x844 stacked roster reachable after scroll. Actual displayed canary is disconnected; no remote-control readiness claim."
   },
   "readinessDefect": {
     "workItemId": "EI-22708091798400094",
     "beforeTestRunId": 17711801,
-    "sourcePath": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell.tsx",
+    "sourcePath": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell.tsx",
     "rootCause": "refresh Promise.all waits for optional workspace stats before setApps, so a pending stats read prevents navigation rendering despite apps200",
     "fix": "Invoke existing refreshWorkspaceStats independently of the app-list refresh",
     "regression": "desktop navigation completes while the auxiliary workspace-stats request is held",
-    "afterStatus": "pending-preview",
-    "relatedChecks": "96 shell/preference tests passed"
+    "afterStatus": "pass",
+    "relatedChecks": "96 shell/preference tests passed",
+    "afterTestRunId": 17713845
   },
   "limits": [
-    "Original six failures all establish the missing destination before later scenario actions; individual repaired-path assertions remain required.",
+    "Original six failures all establish the missing destination before later scenario actions; those later actions passed on the repaired build in17713845.",
     "Fixtures or disconnected layouts do not prove connected-cloud control.",
-    "Temporary failure captures are identified by digest; the durable ledger and source test are the rerun authority.",
-    "No operator-core shipment or final plan completion claimed."
+    "Source and artifact measurements do not claim a whole-monorepo freeze or deployment.",
+    "Immutable browser generation is named separately from the mutable repository source; external portal source is not inside the papercusp harness measurement root.",
+    "P2 independent adequacy review and later plan stages remain separate obligations."
+  ],
+  "captures": [
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/original-canonical.png",
+      "sha256": "87d28ed9db1fce2b79cc7d3e27e52ab4668bd8fd411defb6db151c067d70824b"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/original-clean.png",
+      "sha256": "f6e180e3d3b365955b2d0873ff082d92c5ca0ac7113e0b6c2cb40c7c5bb0a77b"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/original-history.png",
+      "sha256": "7ea00002982141e4741fd27193040f38fc5b45cb350ee6708464691da74ebf60"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/original-legacy.png",
+      "sha256": "2d5d62696c46308a7e23d200c5cc8834b5de71b89766aa29e598c7794816a16d"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/original-persisted.png",
+      "sha256": "1d6fed3aa113bfe0fc2199dc5f46f6ae73264a7c4749b63d841cf601eeb99e9d"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/original-reload.png",
+      "sha256": "1d6fed3aa113bfe0fc2199dc5f46f6ae73264a7c4749b63d841cf601eeb99e9d"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/repaired-desktop-option-b-1440.png",
+      "sha256": "6901bd2bb0850bb924f8a7afe3b89c58f1792bb414e0954c07d1c8ffdbc11c5f"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/repaired-desktop-option-b-390-roster.png",
+      "sha256": "a5ef1381287eb40889efdaacbb728f2a235c4820eaada26b20c23b2647cae791"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08/repaired-desktop-option-b-390.png",
+      "sha256": "78ca3282d1bd56e6016dcf53072ab56a17a4438465ffc9c0196bf27ac68726a2"
+    }
   ]
 }

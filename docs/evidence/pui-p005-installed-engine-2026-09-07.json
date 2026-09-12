@@ -3,17 +3,32 @@
   "plan": "pui-first-party-public-release-2026-09-07",
   "planItem": "P-005",
   "workItem": "WI-10000427",
-  "status": "real-provider-verification-in-progress",
-  "installation": {
+  "status": "installed-journey-assertions-passed-test-still-red",
+  "previousInstallation": {
     "command": "scripts/pc-heavy.sh bash apps/tui/scripts/install-update.sh",
-    "taskId": "0mtrhz0uohz26wmuz4a",
-    "log": ".papercusp/scratch/bash-44f744d7-952.log",
-    "sourceSha": "a107fef8be846f62254b65e80242c62f7ee62d47",
-    "binary": "/home/marsh-office/.cargo/bin/pui",
-    "manifest": "/home/marsh-office/.papercusp/pui-install.json",
+    "taskId": "0mtrl3s967h6guqpty6",
+    "log": ".papercusp/scratch/bash-856bc0c0-044.log",
+    "sourceSha": "6ff43a78a3475a8904e80a7417e062911f36ce28",
+    "binarySha256": "9696ed5aef5aae77a1c7933056995920eab7b82b439e4a52c17b195961a7d6b8",
+    "binary": "/home/builduser/.cargo/bin/pui",
+    "manifest": "/home/builduser/.papercusp/pui-install.json",
     "manifestVerification": "passed",
     "installerExit": 1,
-    "exitExplanation": "Binary, companion and manifest installation completed. The final doctor reported an existing human pui-wb pane still running its old binary. The test uses the new installed binary in its own PTY; no existing pane was restarted or killed."
+    "exitExplanation": "Binary, companion and manifest installation completed. The final doctor reported an existing human pui-wb pane still running its old binary. The test uses the new installed binary in its own PTY; no existing pane was restarted or killed.",
+    "currentSourceStatus": "This verified installation predates the latest app.rs turn-lifecycle fix; rebuild via the supported installer before another real-provider test."
+  },
+  "installation": {
+    "command": "scripts/pc-heavy.sh bash apps/tui/scripts/install-update.sh",
+    "execSessionId": 65459,
+    "sourceSha": "0f45a7151cbe9c76c40fe27caf1dc433222e254a",
+    "binarySha256": "f96ec6b480aa5498f438da847460b0ecf338ad67a99c56fff58bcb496771b339",
+    "companionSha256": "341abd9527cbdd51e1e89d5b33ecdd727a90b01f6e72b3b06c896800e02c090a",
+    "binary": "/home/builduser/.cargo/bin/pui",
+    "manifest": "/home/builduser/.papercusp/pui-install.json",
+    "manifestVerification": "passed; independently read manifest and binary hash",
+    "installerExit": 1,
+    "exitExplanation": "Installation and local-generation doctor checks passed. The final doctor exit reports the existing human pui-wb pane still using its old binary; no existing pane was restarted or killed.",
+    "currentSourceStatus": "Contains the app.rs turn-lifecycle fix. Later TypeScript host changes run in the isolated current-source operator used by the installed-PUI test."
   },
   "firstLiveRun": {
     "taskId": "0mtri3y5o1fwsahxnqj",
@@ -34,7 +49,7 @@
     "test": "packages/operator-core/lib/su-session-claude-engine.test.ts",
     "priorRevisionUnitTestsPassed": 13,
     "priorRevisionUnitTestsSkipped": 0,
-    "currentUnitVerification": "pending",
+    "currentUnitVerification": "13 engine tests passed at 2026-09-07T17:54:32.700Z, including pending MCP handshake and failed/missing connection diagnosis; 7 attached-launch tests passed at 2026-09-07T17:36:48.931Z. Final real-provider run and final typecheck after the pending-MCP change remain required.",
     "unitRunStartedAt": "2026-09-07T17:25:34.076Z",
     "unitRunHead": "23f9c29c46",
     "unitRunProvenance": "local modifications, test-file router stamped",
@@ -53,12 +68,111 @@
     "unitRunStartedAt": "2026-09-07T17:36:48.931Z",
     "liveLaunchResult": "HTTP 200, followed by successful snapshot and event-stream attachment in task 0mtrix20b1tompcv8qw; readiness still failed under the superseded receipt-based attempt."
   },
-  "activeRuns": {},
-  "performanceFinding": "EI-22624891413821529: successful network.board resolve took 2088ms and its warning failed the first protocol-peer case; seven other fault cases passed. Cause remains unconfirmed. No timing warning was suppressed or test quarantined.",
+  "activeRuns": [],
+  "latestLiveRun": {
+    "taskId": "0mtrnx5yt1g9k4aepov",
+    "log": ".papercusp/scratch/bash-a3dfafb1-1cd.log",
+    "result": "failed",
+    "journeyAssertions": "all passed",
+    "greetingVerified": true,
+    "fileInspectionVerified": true,
+    "interruptVerified": true,
+    "followupVerified": true,
+    "nativeInterfacesClosed": true,
+    "evidence": "docs/evidence/pui-p005-installed-journey-2026-09-07.json",
+    "nativeTranscript": "/home/builduser/.papercusp/session-claude/su-c4c24b76-a474-4b40-9bc7-dd77a9f79da3/projects/-home-builduser-papercupai-workspace-papercusp/b8887e4f-3357-4072-aef6-450cda8158f9.jsonl",
+    "remaining": "Strict console guard failed on background orientation/watermark timeouts and network.board2183ms. No timing warning suppressed. P005 remains open; no passing spec cards or independent audit claimed."
+  },
+  "typecheck": {
+    "taskId": "0mtrnx7lzwq8rx1f5km",
+    "log": ".papercusp/scratch/bash-06ee35fe-50f.log",
+    "result": "Current engine, engine test, and PUI PTY fixture clean after the final acknowledgement and duplicate-text changes",
+    "priorWiderRun": "0mtrnbtfqd7e2qp8y43 passed all seven named files, including task-manager/control.ts and control.test.ts; the three subsequently edited files were rechecked above",
+    "rust": "Native exec7623 passed892unit+13integration,17existingignored, and strictall-targetClippy; all native exec handles drained"
+  },
+  "firstDraftReadiness": {
+    "failedInstalledRun": "0mtrjv8etr505li1quc",
+    "failedRunLog": ".papercusp/scratch/bash-82f2332e-9ad.log",
+    "observation": "Real host reached ready via SDK and SU MCP at 18:06:19Z, but PUI had already refused its first draft. No command POST was issued; run exited 1 at 18:08:22Z.",
+    "rootCause": "stream_su_session_events captured readiness once, then consumed the pending first turn on the initial starting descriptor before the later ready lifecycle event.",
+    "fix": "Retain the first draft across starting; dispatch once on ready/running after the send path rechecks the current executor, stream, lifecycle and exact identity. Failed/ended or wrong-identity events still refuse. The client startup bound accommodates the host's 45-second initialization budget.",
+    "source": "apps/tui/src/main.rs",
+    "regressionTask": "0mtrkc53j1m43b9f17o",
+    "regressionLog": ".papercusp/scratch/bash-f8d0c8dc-04f.log",
+    "regressionResult": "9 protocol-peer PTY tests passed; the separate opt-in real-provider test was excluded. Delayed initialization preserves the draft and submits exactly once without another Enter. Exit 0 at 18:20:54Z.",
+    "provenance": "Run began with a local test edit and git-sync committed during execution; the router labels the initial provenance unknown and its post-run file clean at c0c4d3fbe3. This result is behavioral evidence, not a claim that every imported source file was immutable throughout execution.",
+    "formatCheck": "cargo fmt --manifest-path apps/tui/Cargo.toml --check passed"
+  },
+  "stagingRecovery": {
+    "workItem": "EI-22626217437947102",
+    "status": "open, owned, recurrence measured",
+    "observed": "Staging systemd unit was active with PAPERCUSP_HONO_PORT=3170 but no TCP listener. Current ptool failed with ECONNREFUSED; default release MCP still works.",
+    "action": "Coordinated dev:restart fence 951 requested stop at 17:58:16Z; systemd reached its 90-second stop timeout at 17:59:46Z. Replacement PID990319 started at 18:00:21Z and bound at 18:01:16.500Z. Current3170 read/write calls now succeed. The earlier 17:59 no-listener read preceded the replacement process and did not prove its startup had failed.",
+    "next": "Current service is restored. Keep the original never-bound process and shutdown delay investigation open; migration-lock waiting is an unconfirmed hypothesis, not a diagnosed root cause.",
+    "latestObservation": "New staging PID349445 started18:58:19Z but port3170 remained unbound. PG observed boot-migrate PID672117 waiting on advisory lock, blocked by pcbackup-workspace PID655480 (idle holder) and PID655835 (waiting on655480). This is measured migration/backup lock contention; backup progress/deadlock and a durable fix remain unestablished.",
+    "transport": "Default3070 works for local tests, reads/checkpoints/locks; current3170 is needed for current plan/spec writes. No restart attempted on this recurrence.",
+    "latestRecheck": {
+      "at": "2026-09-07T19:26Z",
+      "result": "staging-api returned HTTP200 in dev:service_health; no restart or backup cancellation in this continuation",
+      "limit": "Original startup/migration/backup delay remains open under EI-22626217437947102."
+    }
+  },
+  "toolFriction": {
+    "automaticLock": "EI-22625837392319963: stale automatic apply_patch lock 3a2ff9f3-fb85-46b3-a7b2-d5faf8697c2a was explicitly released after successful edit proof. Check remaining own locks before another carry.",
+    "transcriptRead": "sessions:read self tail3 again failed invalid escape string; capture coalesced onto EI-22450051857376317. The blind-window activity log showed only session:request-compaction, no hidden edit."
+  },
+  "performanceFinding": "EI-22624891413821529 remains owned: current full protocol run8pass/2consolefail at3645/2854ms; installed journey all assertionspassed but consolefailure included2183ms. Controlled isolated1hive replay: moduleimport1404ms, board237/6/15ms, individualreads2-14ms. Focused actual PTY greeting with CPU profile passed once; CPU trace includes Vite module-runner work. No measured root latency cause or fix. New owned EI-22635039030625077 covers turn-start orientation and turn-end watermark deadline warnings.",
   "limits": [
-    "No real-provider passing result yet.",
+    "The complete installed first-engine journey assertions now pass, but the real-provider test verdict remains failed on background diagnostics.",
     "P005 is Linux and the first supported engine only; P006 owns backend parity.",
-    "P011 and P015 own public distribution and final publication verification.",
-    "The full approved plan includes P016 task management and the explicit P015 publication approval gate."
-  ]
+    "No exact P005 adequacy cards or independent audits have been emitted.",
+    "The full approved plan includes all16 items, fullP016, and the explicit final P015 public-publication approval gate."
+  ],
+  "oracleCorrection": {
+    "retracted": "The 18:26 persistence-defect interpretation was wrong. The failed SQL assertion queried the owner-command receipt store; native JSONL and the SU stream are the model transcript.",
+    "evidence": "WI-10000427 posts 200497, 200498, retraction 200500. Native e2ef52d0-1340-48af-bc49-bfa566bef31d contained the exact greeting.",
+    "current": "Correlate assistant completed stream events with saved owner command turnId/full target, then verify rendered PUI text. No model reply is fabricated."
+  },
+  "turnLifecycleChange": {
+    "source": "apps/tui/src/app.rs",
+    "summary": "Delivery ACK and completed assistant segments no longer end the model turn. Running/tool-start keep input locked; waiting-for-owner/interrupted/terminal lifecycle finishes it. Added reducer and real-PTY interruption/follow-up regression.",
+    "unit": "Final native exec7623 passed full Rust tests (892 unit and 13 integration; 17 existing ignored) plus strict all-target Clippy after the app.rs change. Handle drained exit0.",
+    "latestProtocolRun": {
+      "execSessionId": 34569,
+      "report": "/tmp/pcv/papercusp-test-files-report-NNEbNn/group-0.json",
+      "result": "8 passed, 2 failed, real-provider case excluded",
+      "interruptionRegression": "passed, including running input lock, interrupt, and same-session followup",
+      "failure": "Greeting and lost-ACK behavior assertions completed; strict console guard failed on network.board slow-success warnings at 3645ms and 2854ms. Latency remains owned under EI-22624891413821529; no warning suppressed."
+    },
+    "interruptFixture": "The assumption that standalone sleep 30 was supported is RETRACTED: the real native client explicitly refused it. The fixture now requests a long model response, waits for its exact completed input receipt plus running lifecycle and no completed assistant reply, interrupts through PUI, and requires a unique same-session followup. No shell guard bypass."
+  },
+  "longTurnAcknowledgement": {
+    "refusedShellRun": "0mtrn8nvm1sd93yoa7o",
+    "refusedShellLog": ".papercusp/scratch/bash-bdb3b5fc-44e.log",
+    "longReplyRun": "0mtrngp3nlse5rho243",
+    "longReplyLog": ".papercusp/scratch/bash-7124be56-2db.log",
+    "nativeTranscript": "/home/builduser/.papercusp/session-claude/su-5e0b94fc-7d94-4162-8f46-527af6d6298b/projects/-home-builduser-papercupai-workspace-papercusp/72ddf532-a8e2-4f44-b2cb-cae9b4b354be.jsonl",
+    "failure": "The native transcript persisted the long owner request at 19:47:42.470Z; SU then failed the running session at 19:48:14.475Z waiting for a replayed input frame. Interrupt was not sent.",
+    "rootCause": "The engine settled delivery only from replayed SDK user UUIDs and did not opt into partial events. A long response can outlive that acknowledgement timeout.",
+    "fix": "Request SDK partial events and acknowledge only the active serialized native input when its root assistant message_start arrives. Identity checks remain; nested-agent streams cannot acknowledge owner input; only the result completes the turn.",
+    "counterexampleTask": "0mtrnqtmt1o58mll11q",
+    "counterexampleResult": "Before fix: new long-response receipt test failed (refused instead of completed); nested-agent negative passed. Other cases excluded in this reproduction.",
+    "verificationTask": "0mtrnsv5f1qp2hmj10k",
+    "verificationStatus": "15 current engine tests passed, zero skipped, testing run a581697e-675b-45fc-983a-3cab79de90ff. Prior combined engine/attached-launch run0mtrnsv5f1qp2hmj10k passed22tests/zero skipped. Actual installed run0mtrnx5yt1g9k4aepov then completed interruption and same-session followup.",
+    "remainingStreamingWork": "EI-22633331216678992 retains actual incremental-text projection and dedup verification for the remaining PUI feature scope. A synthetic delta around a complete native text record is not token-streaming proof.",
+    "textProjection": "Only native partial message_start settles the active receipt; partial frames are not sent to the legacy timeline parser because it would duplicate them with the complete assistant record. One-final-reply regression passes. Actual incremental text projection remains EI-22633331216678992."
+  },
+  "taskSubtreeFix": {
+    "workItem": "EI-22630682284130168",
+    "state": "done, completion authority proposed pending git-sync settlement",
+    "source": "packages/operator-core/lib/task-manager/control.ts",
+    "rootCause": "includeSubtree selected the whole root_task_id family; nested target now follows parentTaskId descendants and preserves parents/siblings.",
+    "verification": "47 control tests passed, 0 skips in task0mtrm6ohncr8khe3skb (.papercusp/scratch/bash-0366417a-476.log). No real processes signalled. Pre-fix attempted run was admission-starved, not measured.",
+    "specificPuiCleanupCausality": "unconfirmed"
+  },
+  "optionalMemoryFallback": {
+    "issue": "EI-22628413686876169",
+    "handling": "Exact documented cold-memory deadline fallback is captured as PUI_OPTIONAL_MEMORY_DIAGNOSTIC; other warnings/errors still fail. No production timeout was widened or memory disabled."
+  },
+  "continuation": "Continue full approved AUTO/self pui-first-party-public-release-2026-09-07. P001-P004 done; P005 open. Resolve the owned network-board and orientation/watermark warning causes; rerun current full protocol and installed journeys without suppressing warnings, then exact3spec evidence and independent audits. Native acknowledgement root fix is verified by15current unit tests and actual installed interrupt/followup. Review all named runtime hashes in the detailed journey artifact. Retain EI-22633331216678992 text streaming, EI-22632629651914599 late teardown, original staging and historical DB investigations. All launched checks in this continuation have reached terminal results."
 }

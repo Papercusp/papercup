@@ -32,6 +32,8 @@ function post(body: string): Request {
   });
 }
 
+const judgeRequestUrl = 'http://127.0.0.1:3070/api/mcp?superuser=1&role=judge';
+
 describe('classifyMcpBody — only a tools/call is sheddable', () => {
   it('flags a tools/call and echoes its id', () => {
     expect(classifyMcpBody(toolsCall(42))).toEqual({ sheddable: true, id: 42 });
@@ -105,6 +107,273 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
+  it.each([
+    ['canonical', 'work_items:checkpoint'],
+    ['underscore', 'work_items_checkpoint'],
+    ['mcp-advertised', 'mcp__papercusp_su__work_items_checkpoint'],
+  ])('does NOT shed a single work-item checkpoint under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(19, name, { id: 'WI-10000745', checkpoint: 'resume from this boundary' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits one-item checkpoint batches but keeps bulk or ambiguous calls sheddable', () => {
+    expect(
+      classifyMcpBody(
+        toolsCall(20, 'work_items:checkpoint', {
+          items: [{ id: 'WI-10000745', checkpoint: 'resume from this boundary' }],
+        }),
+      ),
+    ).toEqual({ sheddable: false, id: null });
+    for (const args of [
+      { items: [{ id: 'WI-1' }, { id: 'WI-2' }] },
+      { id: 'WI-1', items: [{ id: 'WI-2' }] },
+      { checkpoint: 'missing item identity' },
+    ]) {
+      expect(classifyMcpBody(toolsCall(21, 'work_items:checkpoint', args))).toEqual({
+        sheddable: true,
+        id: 21,
+      });
+    }
+  });
+
+  it('recognizes a single work-item checkpoint through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 22,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__work_items_checkpoint',
+          args: { id: 'WI-10000745', checkpoint: 'resume from this boundary' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'scorecards:list'],
+    ['underscore', 'scorecards_list'],
+    ['mcp-advertised', 'mcp__papercusp_su__scorecards_list'],
+  ])('does NOT shed an exact scorecard audit read under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(13, name, {
+      rubricRef: 'grading-integrity',
+      subjectRef: 'EI-22581128473264750',
+      includeSuperseded: true,
+      includeRetracted: true,
+      limit: 1,
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad or oversized scorecards:list reads sheddable under critical pressure', () => {
+    for (const args of [
+      { rubricRef: 'grading-integrity' },
+      { subjectRef: 'EI-22581128473264750' },
+      { rubricRef: 'grading-integrity', subjectRef: 'EI-22581128473264750', limit: 26 },
+    ]) {
+      expect(classifyMcpBody(toolsCall(14, 'scorecards:list', args))).toEqual({ sheddable: true, id: 14 });
+    }
+  });
+
+  it('recognizes the exact scorecard audit through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__scorecards_list',
+          args: { rubricRef: 'grading-integrity', subjectRef: 'EI-22581128473264750', limit: 1 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'scorecards:get'],
+    ['underscore', 'scorecards_get'],
+    ['mcp-advertised', 'mcp__papercusp_su__scorecards_get'],
+  ])('does NOT shed one scorecard evidence read under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(29, name, { issueId: 'EI-22581128473264750' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps ambiguous or oversized scorecards:get reads sheddable under critical pressure', () => {
+    for (const args of [{}, { issueId: ' ' }, { issueId: 'x'.repeat(121) }, { issueId: 'EI-1', extra: true }]) {
+      expect(classifyMcpBody(toolsCall(30, 'scorecards:get', args))).toEqual({ sheddable: true, id: 30 });
+    }
+  });
+
+  it('recognizes one scorecard evidence read through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 31,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__scorecards_get',
+          args: { issueId: 'EI-22581128473264750' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'improvements:capture'],
+    ['underscore', 'improvements_capture'],
+    ['mcp-advertised', 'mcp__papercusp_su__improvements_capture'],
+  ])('does NOT shed the bounded tool-failure capture shorthand under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(32, name, {
+      toolFailure: {
+        toolName: 'scorecards:get',
+        errorCode: 'loop_pressure_critical',
+        status: 429,
+        message: 'operator MCP admission shed the scorecard evidence read',
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps authored, malformed, or oversized captures sheddable under critical pressure', () => {
+    for (const args of [
+      { title: 'operator admission shed a grading audit call', kind: 'bug' },
+      {
+        title: 'operator admission shed a grading audit call',
+        toolFailure: { toolName: 'scorecards:get', message: 'shed' },
+      },
+      { toolFailure: { toolName: 'scorecards:get' } },
+      { toolFailure: { toolName: 'scorecards:get', message: 'x'.repeat(4001) } },
+    ]) {
+      expect(classifyMcpBody(toolsCall(33, 'improvements:capture', args))).toEqual({ sheddable: true, id: 33 });
+      expect(classifyMcpRequest(toolsCall(33, 'improvements:capture', args))).toBe('ordinary');
+    }
+  });
+
+  it('recognizes the bounded tool-failure capture through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 34,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__improvements_capture',
+          args: {
+            toolFailure: { toolName: 'scorecards:get', message: 'operator MCP admission shed the read' },
+          },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'rubrics:get'],
+    ['underscore', 'rubrics_get'],
+    ['mcp-advertised', 'mcp__papercusp_su__rubrics_get'],
+  ])('does NOT shed a single full rubric read under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(16, name, { rubricRef: 'goal-mode-e2e' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps bulk or ambiguous rubrics:get reads sheddable under critical pressure', () => {
+    for (const args of [
+      { rubricRefs: ['goal-mode-e2e', 'grading-integrity'] },
+      { rubricRef: 'goal-mode-e2e', rubricRefs: ['grading-integrity'] },
+      { revision: 3 },
+    ]) {
+      const body = toolsCall(17, 'rubrics:get', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 17 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a single rubric read through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 18,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__rubrics_get',
+          args: { rubricRef: 'goal-mode-e2e' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits only bounded judge-role audit probes under critical pressure', () => {
+    const cases = [
+      [
+        'plans:evaluate-spec-test-adequacy',
+        { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 1 },
+      ],
+      ['gates:degenerate-check', { sinceHours: 24, minDecisions: 30 }],
+      ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 }],
+    ] as const;
+    for (const [name, args] of cases) {
+      const body = toolsCall(23, name, args);
+      expect(classifyMcpBody(body, judgeRequestUrl)).toEqual({ sheddable: false, id: null });
+      expect(classifyMcpRequest(body, judgeRequestUrl)).toBe('diagnostic');
+    }
+  });
+
+  it('keeps generic, non-judge, and unbounded judge audit probes sheddable', () => {
+    const cases = [
+      ['plans:evaluate-spec-test-adequacy', { slug: 'adequacy-plan', classRef: 'plan-class-investigation' }],
+      [
+        'plans:evaluate-spec-test-adequacy',
+        { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 26 },
+      ],
+      ['gates:degenerate-check', { sinceHours: 25 }],
+      ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'] }],
+    ] as const;
+    for (const [name, args] of cases) {
+      const body = toolsCall(24, name, args);
+      expect(classifyMcpBody(body, judgeRequestUrl)).toEqual({ sheddable: true, id: 24 });
+      expect(classifyMcpRequest(body, judgeRequestUrl)).toBe('ordinary');
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 24 });
+    }
+  });
+
+  it('recognizes bounded judge audit probes through tools:invoke', () => {
+    for (const [name, args] of [
+      [
+        'plans:evaluate-spec-test-adequacy',
+        { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 1 },
+      ],
+      ['gates:degenerate-check', { sinceHours: 24, minDecisions: 30 }],
+      ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 }],
+    ] as const) {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 25,
+        method: 'tools/call',
+        params: { name: 'tools:invoke', arguments: { name, args } },
+      });
+      expect(classifyMcpBody(body, judgeRequestUrl)).toEqual({ sheddable: false, id: null });
+      expect(classifyMcpRequest(body, judgeRequestUrl)).toBe('diagnostic');
+    }
+  });
+
   it('recognizes tools:find through tools:invoke', () => {
     const body = JSON.stringify({
       jsonrpc: '2.0',
@@ -121,7 +390,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
 
   it.each([
     ['uri', { uri: 'papercusp://scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4096 }],
-    ['file_path', { file_path: '/home/marsh-office/.papercusp/scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4096 }],
+    ['file_path', { file_path: '/home/builduser/.papercusp/scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4096 }],
   ])('recognizes bounded scratch capability:read through tools:invoke (%s)', (_shape, args) => {
     const body = JSON.stringify({
       jsonrpc: '2.0',
@@ -371,6 +640,47 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
   });
+  it('admits a single work_items:checkpoint under critical pressure so recovery state can be persisted', async () => {
+    const req = post(toolsCall(19, 'work_items:checkpoint', {
+      id: 'WI-10000745',
+      checkpoint: 'resume from this boundary',
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('work_items:checkpoint');
+  });
+  it('admits a deferred single work_items:checkpoint under critical pressure', async () => {
+    const req = post(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 21,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__work_items_checkpoint',
+          args: { id: 'WI-10000745', checkpoint: 'resume from this boundary' },
+        },
+      },
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds a bulk work_items:checkpoint under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(20, 'work_items:checkpoint', {
+        items: [
+          { id: 'WI-1', checkpoint: 'first' },
+          { id: 'WI-2', checkpoint: 'second' },
+        ],
+      })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
   it('admits tools:find under critical pressure so discovery can locate recovery tools', async () => {
     const req = post(toolsCall(8, 'tools:find', { query: 'grading integrity scorecard tools' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
@@ -390,6 +700,134 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     );
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('admits an exact scorecard audit through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 15,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'scorecards:list',
+            args: { rubricRef: 'grading-integrity', subjectRef: 'EI-22581128473264750', limit: 1 },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('admits one scorecard evidence read under critical pressure', async () => {
+    const req = post(toolsCall(35, 'scorecards:get', { issueId: 'EI-22581128473264750' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('scorecards:get');
+  });
+  it('admits the bounded tool-failure capture under critical pressure', async () => {
+    const req = post(
+      toolsCall(36, 'improvements:capture', {
+        toolFailure: { toolName: 'scorecards:get', message: 'operator MCP admission shed the read' },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('improvements:capture');
+  });
+  it('still sheds an authored improvements:capture under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(37, 'improvements:capture', { title: 'operator admission shed a grading audit call' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('admits a single rubric read through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 16,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__rubrics_get',
+            args: { rubricRef: 'goal-mode-e2e' },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds a bulk rubric read through tools:invoke under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 17,
+          method: 'tools/call',
+          params: {
+            name: 'tools:invoke',
+            arguments: {
+              name: 'rubrics:get',
+              args: { rubricRefs: ['goal-mode-e2e', 'grading-integrity'] },
+            },
+          },
+        }),
+      ),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('admits the three bounded judge audit probes under critical pressure', async () => {
+    for (const [name, args] of [
+      [
+        'plans:evaluate-spec-test-adequacy',
+        { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 1 },
+      ],
+      ['gates:degenerate-check', { sinceHours: 24, minDecisions: 30 }],
+      ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 }],
+    ] as const) {
+      const req = new Request(judgeRequestUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: toolsCall(26, name, args),
+      });
+      expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    }
+  });
+  it('still sheds unbounded judge audit probes and bounded probes without judge role', async () => {
+    const generic = await evaluateAdmission(
+      post(
+        toolsCall(27, 'plans:evaluate-spec-test-adequacy', {
+          slug: 'adequacy-plan',
+          classRef: 'plan-class-investigation',
+          specIds: ['SPEC-001'],
+        }),
+      ),
+      'critical',
+      true,
+    );
+    expect(generic).not.toBeNull();
+    const nonJudge = await evaluateAdmission(
+      post(toolsCall(28, 'plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 })),
+      'critical',
+      true,
+    );
+    expect(nonJudge).not.toBeNull();
+    expect((await nonJudge!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('admits bounded scratch capability:read through tools:invoke under critical pressure', async () => {
     const req = post(
