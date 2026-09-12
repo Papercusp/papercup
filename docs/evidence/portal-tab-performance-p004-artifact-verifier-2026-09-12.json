@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal P-004 deployed artifact invariants and negative controls",
+  "framework": "node",
+  "command": [
+    "node scripts/verify-portal-tab-performance-p004.mjs /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-12T16:24:22.142Z",
+  "finishedAt": "2026-09-12T16:24:23.351Z",
+  "summary": "The durable verifier passed all nine R-1 through R-4 artifact assertions, including missing-destination, inverted-delta, missing-warm-journey, missing-metric, and failed-instrument controls.",
+  "assertions": [
+    {
+      "id": "r1-complete-contract-derived-population",
+      "passed": true,
+      "evidence": "All 34 artifact tabs matched all 34 PORTAL_APP_KINDS in order and uniquely; skipped was empty; the probe imports and spreads the contract."
+    },
+    {
+      "id": "r1-missing-destination-control",
+      "passed": true,
+      "evidence": "Removing one tab from an in-memory artifact copy made the coverage predicate fail."
+    },
+    {
+      "id": "r2-measured-delta",
+      "passed": true,
+      "evidence": "The tracked control-projection artifact measured 15 rows at 219,070 before and 17,558 after: 201,512 bytes and 92% removed through projectControlRows."
+    },
+    {
+      "id": "r2-inverted-delta-control",
+      "passed": true,
+      "evidence": "Making the after payload larger than before in an in-memory copy made the improvement predicate fail."
+    },
+    {
+      "id": "r3-separated-journeys",
+      "passed": true,
+      "evidence": "The 34-tab, repeats=3 artifact carries separate cold/warm metrics and states for every tab; warm correctly omits navigation-only FCP/LCP."
+    },
+    {
+      "id": "r3-missing-warm-control",
+      "passed": true,
+      "evidence": "Removing one warm journey from an in-memory copy made the journey predicate fail."
+    },
+    {
+      "id": "r4-metrics-and-series-controls",
+      "passed": true,
+      "evidence": "All required cold/warm metrics are present; the 34-tab, five-cycle series has seven snapshots, VOID=false, and passing timer/EventSource/instrument controls."
+    },
+    {
+      "id": "r4-missing-metric-control",
+      "passed": true,
+      "evidence": "Removing one cold firstContentfulPaint field from an in-memory copy made the metric predicate fail."
+    },
+    {
+      "id": "r4-failed-instrument-control",
+      "passed": true,
+      "evidence": "Turning instrumentPresent false in an in-memory series copy made the full-cycle predicate fail."
+    },
+    {
+      "id": "verifier-result-integrity",
+      "passed": true,
+      "evidence": "Verifier result SHA-256 618fedf71d3fd4170ef491d81c7cdeb18e29953f8dc01393bc48f8bc00072669; verifier script SHA-256 49a52f6b7e7efb3e89eff899774a7590387b19214b39b2f54ae1bef9231adb94."
+    }
+  ],
+  "subject": {
+    "workItem": "WI-10000657",
+    "planItem": "papercup-owner-reports-and-ledger-recovery-2026-09-09#P-004",
+    "portalHead": "87f91ca8675db0b31608085a0c11ed651f193dbf",
+    "acceptanceRubric": "acceptance-portal-tab-performance-2026-09-07@6",
+    "barSetHash": "704f4eaa1ed8bd3e185279b8061b34fe8e444836339ff4d26f8d24e43d107863"
+  }
+}
