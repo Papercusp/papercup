@@ -38,7 +38,7 @@ export type CodeIntelBackend =
  * tool-routing hint gives the same actionable fallback.
  */
 export const RIPGREP_SCOPE_GUIDANCE =
-  'Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap lines (e.g., `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes.';
+  'Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`); else POSIX `grep`/`grep -E`. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matching lines with ripgrep itself (e.g., `rg --max-count 60 --max-columns 256 --max-columns-preview ...`); avoid piping to early-exit consumers such as `head` under `pipefail`, which can SIGPIPE `rg` (exit 141).';
 
 /**
  * Line-index base per backend, MEASURED not assumed.

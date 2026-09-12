@@ -40,8 +40,14 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('.papercusp');
     expect(guidance).toContain('apps/operator/public/internal/docs');
     expect(guidance).toContain('Do not run an unbounded search from the repository root');
+    // EI-22554535465849178: `head` can close a pipe while rg is still writing;
+    // under pipefail that turns useful bounded output into exit 141. Keep the
+    // bound on rg itself and make the unsafe form fail this regression test.
     expect(guidance).toContain('--max-columns 256 --max-columns-preview');
-    expect(guidance).toContain('head` limits rows, not bytes');
+    expect(guidance).toContain('`rg --max-count 60 --max-columns 256 --max-columns-preview ...`');
+    expect(guidance).toContain('avoid piping to early-exit consumers such as `head` under `pipefail`');
+    expect(guidance).toContain('SIGPIPE `rg` (exit 141)');
+    expect(guidance).not.toContain('| head');
     expect(guidance).toContain('Bound git history scans');
     expect(guidance).toContain('unbounded refused');
 
