@@ -1359,21 +1359,25 @@ describe('template_data persistence boundary — the set-template-data door', ()
     if (!seeded.ok) throw new Error(seeded.message);
     // acceptance-bar-seed deliberately leaves METHOD/checks blank for the author
     // to fill against as-built work — it seeds the literal placeholder "Fill
-    // METHOD/checks against as-built work before grading". Real callers perform
-    // that authoring step; this fixture did not, so once the pre-amendment
-    // readiness gate landed every amendment path here refused with
-    // bar_snapshot_method_missing / bar_snapshot_check_missing. Author them so
-    // the fixture represents a contract that is actually ready to amend.
+    // METHOD/checks against as-built work before grading". `check` is part of
+    // ACCEPTANCE_BAR_MEANING_FIELDS, so authoring it through the generic
+    // plans:set-template-data door is correctly refused as an unapproved BAR
+    // meaning change. Use the canonical amendment door so the fixture represents
+    // the approved, ready-to-amend contract that real callers would create.
     if (opts.authorMethods) {
-      const seededData = await storedTemplateData(seeded.rubricSlug);
-      await setTemplateDataDoor(seeded.rubricSlug, {
-        ...seededData,
-        criteria: seededData.criteria.map((criterion) => ({
+      const current = await rubrics.getRubric(seeded.rubricSlug);
+      if (!current) throw new Error(`seeded rubric '${seeded.rubricSlug}' did not resolve`);
+      const amendment: Parameters<typeof rubrics.amendRubric>[0] = {
+        rubricId: seeded.rubricSlug,
+        actorId: 'method-author',
+        reason: 'Author METHOD and deterministic checks for the seeded acceptance contract.',
+        criteria: current.criteria.map((criterion) => ({
           ...criterion,
           method: 'Execute the seeded acceptance fixture.',
-          check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+          check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
         })),
-      });
+      };
+      await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
     }
     return { ...seeded, workspaceId, subject };
   }

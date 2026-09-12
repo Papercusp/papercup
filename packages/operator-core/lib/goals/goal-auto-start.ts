@@ -53,7 +53,7 @@ import { readGoalHistoryContext } from '../prior-attempt-context';
 export interface AutoStartGoalInput {
   /** Workspace to file the goal under (default: the active workspace). */
   workspaceId?: string;
-  /** Ledger install key: a concrete harness, or workspaceId for workspace-wide Scout. */
+  /** Concrete harness, or Scout's workspace sentinel (resolved to its registered home Pot). */
   harnessSlug: string;
   /** The outcome, stated so its achievement is checkable. */
   title: string;
@@ -103,14 +103,26 @@ export interface AutoStartGoalResult {
 export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStartGoalResult> {
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   if (!workspaceId) throw new Error('no concrete workspace in scope — a goal cannot be filed workspace-less');
-  const installSlug = input.harnessSlug?.trim();
-  if (!installSlug) throw new Error('no harness in scope — goals are filed against an install_slug');
-  // EI-22762141222831537: workspace-wide Scout stores its workspace id in the
-  // ledger's install_slug slot. It is not a bootable harness. Preserve that
-  // storage key, but use the launcher's existing workspace-only scope for BOTH
-  // the goal holder and its optional drain member. Never fall back to some
-  // arbitrary harness (or widen a concrete per-harness goal).
-  const launchHarnessSlug = installSlug === workspaceId ? null : installSlug;
+  const sourceScope = input.harnessSlug?.trim();
+  if (!sourceScope) throw new Error('no harness in scope — goals are filed against an install_slug');
+  let installSlug = sourceScope;
+  if (sourceScope === workspaceId) {
+    // EI-22762141222831537: Scout's install key can be a workspace sentinel,
+    // but a GOAL's install_slug must remain a real Pot for subsequent restarts.
+    // Resolve through the existing home-Pot policy BEFORE any goal/mode writes,
+    // validating even an env-selected home against this workspace's registry.
+    // A genuinely registered same-named harness is not a sentinel.
+    const { loadHarnessRegistry } = await import('../harness-registry');
+    const registry = await loadHarnessRegistry(workspaceId);
+    if (!registry.projects.some((project) => project.slug === sourceScope)) {
+      const { resolveHomePotSlug } = await import('../agent-tools/pot/_resolve');
+      const home = await resolveHomePotSlug(workspaceId);
+      if (!home || !registry.projects.some((project) => project.slug === home && project.harness_kind === 'hive')) {
+        throw new Error('workspace Scout goal has no registered home Pot — nothing created or launched');
+      }
+      installSlug = home;
+    }
+  }
 
   const criterion = input.killCriterion?.trim();
   if (!criterion) throw new Error('an auto-created goal must carry a kill criterion (D-005)');
@@ -140,6 +152,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     metadata: {
       startedBy: launchedBy,
       agentOwnerId: ownerId,
+      ...(sourceScope !== installSlug ? { scoutSourceScope: sourceScope } : {}),
       ...(input.proposalId ? { routedProposalId: input.proposalId } : {}),
     },
     // The holder policy, DECLARED rather than inherited
@@ -267,7 +280,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   try {
     base = await buildConsoleEnvelope({
       workspaceId,
-      slug: launchHarnessSlug,
+      slug: installSlug,
       operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
       skipMcpJson: false,
     });
@@ -292,7 +305,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     command = buildAgentLaunchCommand({
       mode: 'fresh',
       agent: goalLaunch.effective.agent ?? 'claude',
-      harness: launchHarnessSlug,
+      harness: installSlug,
       ownerId,
       account: goalLaunch.effective.account ?? null,
       model: goalLaunch.effective.model ?? null,
@@ -338,7 +351,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
       let memberCmd = buildAgentLaunchCommand({
         mode: 'fresh',
         agent: goalLaunch.effective.agent ?? 'claude',
-        harness: launchHarnessSlug,
+        harness: installSlug,
         account: goalLaunch.effective.account ?? null,
         headless: true,
       });

@@ -23,6 +23,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnConsoleResult } from '../console-spawn';
 import { buildConsoleEnvelope } from '../console-launcher';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal } from './drain-fleet-mint';
+import { loadHarnessRegistry } from '../harness-registry';
+import { resolveHomePotSlug } from '../agent-tools/pot/_resolve';
 
 /** Every side effect, in the order it happened — the gate's placement is an ORDER claim. */
 const order: string[] = [];
@@ -43,6 +45,14 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: sqlTag }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({
+    projects: [{ slug: 'home-pot', harness_kind: 'hive' }],
+  })),
+}));
+vi.mock('../agent-tools/pot/_resolve', () => ({
+  resolveHomePotSlug: vi.fn(async () => 'home-pot'),
+}));
 vi.mock('../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
 vi.mock('../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3070' }));
 vi.mock('../console-launcher', () => ({
@@ -174,6 +184,10 @@ const pendingReadiness = (): Readiness => ({
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(drainFleetAutoMintEnabled).mockResolvedValue(false);
+  vi.mocked(loadHarnessRegistry).mockResolvedValue({
+    projects: [{ slug: 'home-pot', harness_kind: 'hive' }],
+  } as Awaited<ReturnType<typeof loadHarnessRegistry>>);
+  vi.mocked(resolveHomePotSlug).mockResolvedValue('home-pot');
   goalLaunchMocks.buildBrief.mockImplementation(
     (o: { goalId: string; portfolio?: unknown }) => `kickoff for ${o.goalId}`,
   );
@@ -209,16 +223,22 @@ beforeEach(() => {
 });
 
 describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', () => {
-  it('keeps the workspace ledger key but launches without a fabricated harness', async () => {
+  it('resolves the sentinel to the same real Pot for storage and launch', async () => {
     await call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' });
 
-    expect(sqlLog.find((entry) => /INSERT/i.test(entry.text))?.values).toContain('ws-test');
+    const values = sqlLog.find((entry) => /INSERT/i.test(entry.text))!.values;
+    expect(values[1]).toBe('home-pot'); // install_slug, not workspace_id
+    expect(values[2]).toBe('ws-test');
+    expect(values.some((value) => typeof value === 'string' && value.includes('"scoutSourceScope":"ws-test"'))).toBe(true);
+    expect(loadHarnessRegistry).toHaveBeenCalledWith('ws-test');
+    expect(resolveHomePotSlug).toHaveBeenCalledWith('ws-test');
     expect(buildConsoleEnvelope).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'ws-test', slug: null }),
+      expect.objectContaining({ workspaceId: 'ws-test', slug: 'home-pot' }),
     );
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
     const spawn = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
-    expect(spawn.envelope.greetingCmd).not.toContain('--harness=');
+    expect(spawn.envelope.greetingCmd).toContain('--harness=home-pot');
+    expect(spawn.envelope.greetingCmd).not.toContain('--harness=ws-test');
   });
 
   it('preserves a concrete per-harness launch instead of broadening every Scout goal', async () => {
@@ -229,9 +249,11 @@ describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', 
     );
     const spawn = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
     expect(spawn.envelope.greetingCmd).toContain('--harness=papercusp');
+    expect(loadHarnessRegistry).not.toHaveBeenCalled();
+    expect(resolveHomePotSlug).not.toHaveBeenCalled();
   });
 
-  it('also keeps the optional drain member workspace-scoped', async () => {
+  it('also launches the optional drain member in the resolved home Pot', async () => {
     vi.mocked(drainFleetAutoMintEnabled).mockResolvedValue(true);
     vi.mocked(mintDrainFleetForGoal).mockResolvedValue({
       fleetSlug: 'drain-test',
@@ -244,7 +266,8 @@ describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', 
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
     for (const [args] of spawnHeadlessMock.mock.calls) {
       const spawn = args as { envelope: { greetingCmd: string } };
-      expect(spawn.envelope.greetingCmd).not.toContain('--harness=');
+      expect(spawn.envelope.greetingCmd).toContain('--harness=home-pot');
+      expect(spawn.envelope.greetingCmd).not.toContain('--harness=ws-test');
     }
   });
 
@@ -255,10 +278,39 @@ describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', 
     } as unknown as SpawnConsoleResult);
 
     await expect(call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' })).rejects.toThrow(/goal rolled back/);
-    expect(buildConsoleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ slug: null }));
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ slug: 'home-pot' }));
     expect(replaceBlockedByMock).toHaveBeenCalled();
     expect(setModeCalls.some((entry) => entry.enabled === false)).toBe(true);
     expect(order).toContain('delete');
+  });
+
+  it.each([null, 'unregistered-other-workspace-pot'])('refuses invalid home %s before any side effects', async (home) => {
+    vi.mocked(resolveHomePotSlug).mockResolvedValue(home);
+
+    await expect(call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' })).rejects.toThrow(/no registered home Pot/);
+    expect(order).toEqual([]);
+    expect(buildConsoleEnvelope).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('does not misclassify a registered harness sharing the workspace name', async () => {
+    vi.mocked(loadHarnessRegistry).mockResolvedValue({
+      projects: [{ slug: 'ws-test', harness_kind: 'hive' }],
+    } as Awaited<ReturnType<typeof loadHarnessRegistry>>);
+
+    await call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' });
+
+    expect(resolveHomePotSlug).not.toHaveBeenCalled();
+    expect(sqlLog.find((entry) => /INSERT/i.test(entry.text))!.values[1]).toBe('ws-test');
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ slug: 'ws-test' }));
+  });
+
+  it('fails closed if the workspace registry cannot be read', async () => {
+    vi.mocked(loadHarnessRegistry).mockRejectedValueOnce(new Error('registry unavailable'));
+
+    await expect(call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' })).rejects.toThrow('registry unavailable');
+    expect(order).toEqual([]);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 });
 
