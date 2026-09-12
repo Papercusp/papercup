@@ -2066,13 +2066,30 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   if (!parsed || typeof parsed !== 'object') return false;
 
   const body = parsed as Record<string, unknown>;
-  if (body.ok !== true) return false;
   if (body.notFound === true || body.not_found === true || body.missing === true) return false;
   if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') {
     return false;
   }
   if (typeof body.code === 'string' && body.code.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') {
     return false;
+  }
+
+  // coord:inbox is a successful read envelope without an `ok` field. A
+  // non-empty entries array is nevertheless direct proof that the response is
+  // populated; an empty entries array remains warning-eligible.
+  if (Array.isArray(body.entries) && body.entries.length > 0) return true;
+  if (body.ok !== true) return false;
+
+  // Lifecycle tools return concrete success markers instead of one of the
+  // generic result-bearing fields below. These values prove that the requested
+  // transition landed, so an earlier proxy retry cannot make this response an
+  // ambiguous empty/not-found result.
+  if (body.ended === true || body.verified === true) return true;
+  if (
+    (typeof body.await_id === 'number' && Number.isSafeInteger(body.await_id) && body.await_id > 0) ||
+    (typeof body.await_id === 'string' && body.await_id.trim().length > 0)
+  ) {
+    return true;
   }
 
   // These are the standard result-bearing fields emitted by the tool

@@ -47,6 +47,57 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it.each([
+    ['loop:end', { ok: true, ended: true }],
+    ['events:await', { ok: true, await_id: 158065 }],
+    ['loop:checkpoint', { ok: true, verified: true, contentHash: '81efa6f12cc1' }],
+  ])('does not add the proxy degradation warning to a successful %s lifecycle result', (_tool, body) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-06T17:19:37.402Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('does not add the proxy degradation warning to a populated coord:inbox result without ok', () => {
+    const body = {
+      owner_id: 'su-1',
+      summary: { total: 1, returned: 1 },
+      entries: [{ msg_id: 'coord-send-1' }],
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-06T17:27:06.548Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('keeps the proxy degradation warning on an empty coord:inbox result', () => {
+    const result: McpCallResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ owner_id: 'su-1', summary: { total: 0, returned: 0 }, entries: [] }),
+      }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-06T17:27:06.548Z') }),
+    );
+
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+    expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
+  });
+
   it('keeps the warning for an unknown successful envelope shape', () => {
     const result: McpCallResult = {
       content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
