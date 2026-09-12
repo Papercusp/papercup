@@ -1671,33 +1671,35 @@ export default defineTool({
     };
     const claimBudgetMs = remainingBudgetMs();
     const claim = await withBoundedTimeout(
-      getNextForBee({
-        cupId: ident.ownerId,
-        onPlanLaneBlocked,
-        // EI-21830839826880925: ordinary MCP reads can occupy every slot on the
-        // process-wide org pool. Keep pickup on its own tiny transactional pool so a
-        // fleet member does not spend the whole 30s claim budget waiting behind them.
-        useDedicatedClaimPool: true,
-        // WI-1564: MUST match the partition scheduler:set_claim_spec writes
-        // (same resolveClaimSpecWorkspace helper) — a reader left on 'default'
-        // while the queen writes the workspace partition (or a federated spec
-        // arrives under the booted workspace) silently falls back to
-        // DEFAULT_CLAIM_SPEC and the steer never lands.
-        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-        harness: args.harness,
-        heldPaths: args.heldPaths,
-        contendedPaths,
-        states: args.states,
-        rigAvailable: args.rigAvailable,
-        ignoreStoredSpec: !specOn && !reconciliation.scope,
-        // P-006 (fleet-leader-frictions-six-improvements-2026-07-10, WI-3763): this is
-        // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
-        // view is empty" signal a fleet leader wants pushed, so opt in.
-        checkIdleDrainOnMiss: true,
-      }),
+      (signal) =>
+        getNextForBee({
+          cupId: ident.ownerId,
+          onPlanLaneBlocked,
+          // EI-21830839826880925: ordinary MCP reads can occupy every slot on the
+          // process-wide org pool. Keep pickup on its own tiny transactional pool so a
+          // fleet member does not spend the whole 30s claim budget waiting behind them.
+          useDedicatedClaimPool: true,
+          // WI-1564: MUST match the partition scheduler:set_claim_spec writes
+          // (same resolveClaimSpecWorkspace helper) — a reader left on 'default'
+          // while the queen writes the workspace partition (or a federated spec
+          // arrives under the booted workspace) silently falls back to
+          // DEFAULT_CLAIM_SPEC and the steer never lands.
+          workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+          harness: args.harness,
+          heldPaths: args.heldPaths,
+          contendedPaths,
+          states: args.states,
+          rigAvailable: args.rigAvailable,
+          ignoreStoredSpec: !specOn && !reconciliation.scope,
+          // P-006 (fleet-leader-frictions-six-improvements-2026-07-10, WI-3763): this is
+          // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
+          // view is empty" signal a fleet leader wants pushed, so opt in.
+          checkIdleDrainOnMiss: true,
+          signal,
+        }),
       // fallback:null is a type-correct member of getNextForBee's return (`... | null`) and is
       // NEVER read — we branch on `claim.degraded` before ever touching `claim.value`.
-      { fallback: null, timeoutMs: claimBudgetMs, label: 'scheduler:get_next:claim' },
+      { fallback: null, timeoutMs: claimBudgetMs, label: 'scheduler:get_next:claim', signal: ctx.signal },
     );
     // A genuine underlying error surfaces loudly (preserving today's behavior where a thrown
     // getNextForBee propagates), never degraded into a false "no claimable work" miss. Typed
@@ -1825,19 +1827,26 @@ export default defineTool({
             // have work immediately available.
             const retryBudgetMs = remainingBudgetMs();
             const retry = await withBoundedTimeout(
-              getNextForBee({
-                cupId: ident.ownerId,
-                onPlanLaneBlocked,
-                useDedicatedClaimPool: true,
-                workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-                harness: args.harness,
-                heldPaths: args.heldPaths,
-                contendedPaths,
-                states: args.states,
-                rigAvailable: args.rigAvailable,
-                checkIdleDrainOnMiss: true,
-              }),
-              { fallback: null, timeoutMs: retryBudgetMs, label: 'scheduler:get_next:retiredSoloPlanRetry' },
+              (signal) =>
+                getNextForBee({
+                  cupId: ident.ownerId,
+                  onPlanLaneBlocked,
+                  useDedicatedClaimPool: true,
+                  workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+                  harness: args.harness,
+                  heldPaths: args.heldPaths,
+                  contendedPaths,
+                  states: args.states,
+                  rigAvailable: args.rigAvailable,
+                  checkIdleDrainOnMiss: true,
+                  signal,
+                }),
+              {
+                fallback: null,
+                timeoutMs: retryBudgetMs,
+                label: 'scheduler:get_next:retiredSoloPlanRetry',
+                signal: ctx.signal,
+              },
             );
             if (!retry.degraded && retry.value) res = await arbitrateSchedulerClaim(retry.value);
           }
@@ -1903,23 +1912,30 @@ export default defineTool({
       if (issueBreakdown && issueBreakdown.claimable > 0) {
         const divergenceBudgetMs = remainingBudgetMs();
         const retry = await withBoundedTimeout(
-          getNextForBee({
-            cupId: ident.ownerId,
-            onPlanLaneBlocked,
-            // EI-22708243422971631: retries are still claim-path work. Keep them on the
-            // scheduler-only pool too; otherwise miss diagnosis can move the second claim
-            // onto the contended process-wide pool and consume the remaining handler budget.
-            useDedicatedClaimPool: true,
-            workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-            harness: args.harness,
-            heldPaths: args.heldPaths,
-            contendedPaths,
-            states: args.states,
-            rigAvailable: args.rigAvailable,
-            ignoreStoredSpec: !specOn && !reconciliation.scope,
-            checkIdleDrainOnMiss: true,
-          }),
-          { fallback: null, timeoutMs: divergenceBudgetMs, label: 'scheduler:get_next:divergenceRecheck' },
+          (signal) =>
+            getNextForBee({
+              cupId: ident.ownerId,
+              onPlanLaneBlocked,
+              // EI-22708243422971631: retries are still claim-path work. Keep them on the
+              // scheduler-only pool too; otherwise miss diagnosis can move the second claim
+              // onto the contended process-wide pool and consume the remaining handler budget.
+              useDedicatedClaimPool: true,
+              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+              harness: args.harness,
+              heldPaths: args.heldPaths,
+              contendedPaths,
+              states: args.states,
+              rigAvailable: args.rigAvailable,
+              ignoreStoredSpec: !specOn && !reconciliation.scope,
+              checkIdleDrainOnMiss: true,
+              signal,
+            }),
+          {
+            fallback: null,
+            timeoutMs: divergenceBudgetMs,
+            label: 'scheduler:get_next:divergenceRecheck',
+            signal: ctx.signal,
+          },
         );
         // A degraded retry (timeout/error) proves nothing either way — leave the original
         // breakdown in place and let the miss report itself exactly as it would have.
@@ -1960,22 +1976,29 @@ export default defineTool({
           // claimable>0 divergence recheck above.
           const featureRecheckBudgetMs = remainingBudgetMs();
           const retry = await withBoundedTimeout(
-            getNextForBee({
-              cupId: ident.ownerId,
-              onPlanLaneBlocked,
-              // EI-22708243422971631: the feature-family retry has the same claim-path
-              // contention risk as the divergence retry above.
-              useDedicatedClaimPool: true,
-              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-              harness: args.harness,
-              heldPaths: args.heldPaths,
-              contendedPaths,
-              states: args.states,
-              rigAvailable: args.rigAvailable,
-              ignoreStoredSpec: !specOn && !reconciliation.scope,
-              checkIdleDrainOnMiss: true,
-            }),
-            { fallback: null, timeoutMs: featureRecheckBudgetMs, label: 'scheduler:get_next:featureFamilyRecheck' },
+            (signal) =>
+              getNextForBee({
+                cupId: ident.ownerId,
+                onPlanLaneBlocked,
+                // EI-22708243422971631: the feature-family retry has the same claim-path
+                // contention risk as the divergence retry above.
+                useDedicatedClaimPool: true,
+                workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+                harness: args.harness,
+                heldPaths: args.heldPaths,
+                contendedPaths,
+                states: args.states,
+                rigAvailable: args.rigAvailable,
+                ignoreStoredSpec: !specOn && !reconciliation.scope,
+                checkIdleDrainOnMiss: true,
+                signal,
+              }),
+            {
+              fallback: null,
+              timeoutMs: featureRecheckBudgetMs,
+              label: 'scheduler:get_next:featureFamilyRecheck',
+              signal: ctx.signal,
+            },
           );
           if (!retry.degraded && retry.value) {
             res = await arbitrateSchedulerClaim(retry.value);

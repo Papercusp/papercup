@@ -34,10 +34,13 @@ describe('boundedOrgTxn', () => {
   it('runs fn in the txn, returns its value, and SET LOCALs both timeouts (bound params)', async () => {
     const vals: unknown[] = [];
     const client = fakeClient((_text, v) => vals.push(...v));
-    const out = await boundedOrgTxn(async (tx) => {
-      await (tx as never as (s: TemplateStringsArray) => Promise<unknown[]>)`INSERT INTO t VALUES (1)`;
-      return 'done';
-    }, { client, statementTimeoutMs: 12345, lockTimeoutMs: 6789 });
+    const out = await boundedOrgTxn(
+      async (tx) => {
+        await (tx as never as (s: TemplateStringsArray) => Promise<unknown[]>)`INSERT INTO t VALUES (1)`;
+        return 'done';
+      },
+      { client, statementTimeoutMs: 12345, lockTimeoutMs: 6789 },
+    );
     expect(out).toBe('done');
     // The set_config calls carry the configured timeouts as 'Nms' bound params.
     expect(vals).toContain('6789ms'); // lock_timeout
@@ -96,27 +99,36 @@ describe('boundedOrgTxn', () => {
   });
 
   it('maps a PG 57014 (statement_timeout) to OrgTxnTimeoutError with pgCode', async () => {
-    const err = await boundedOrgTxn(async () => {
-      throw pgError('57014');
-    }, { client: fakeClient() }).catch((e) => e);
+    const err = await boundedOrgTxn(
+      async () => {
+        throw pgError('57014');
+      },
+      { client: fakeClient() },
+    ).catch((e) => e);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).pgCode).toBe('57014');
     expect((err as OrgTxnTimeoutError).cause).toMatchObject({ code: '57014' });
   });
 
   it('maps a PG 55P03 (lock_timeout) to OrgTxnTimeoutError', async () => {
-    const err = await boundedOrgTxn(async () => {
-      throw pgError('55P03');
-    }, { client: fakeClient() }).catch((e) => e);
+    const err = await boundedOrgTxn(
+      async () => {
+        throw pgError('55P03');
+      },
+      { client: fakeClient() },
+    ).catch((e) => e);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).pgCode).toBe('55P03');
   });
 
   it('propagates a non-contention error unchanged (e.g. a unique violation)', async () => {
     const original = pgError('23505');
-    const err = await boundedOrgTxn(async () => {
-      throw original;
-    }, { client: fakeClient() }).catch((e) => e);
+    const err = await boundedOrgTxn(
+      async () => {
+        throw original;
+      },
+      { client: fakeClient() },
+    ).catch((e) => e);
     expect(err).toBe(original);
     expect(err).not.toBeInstanceOf(OrgTxnTimeoutError);
   });
@@ -166,9 +178,12 @@ describe('boundedOrgTxn', () => {
         return cb(tx);
       },
     } as never;
-    const err = await boundedOrgTxn(async () => {
-      throw pgError('55P03');
-    }, { client }).catch((e) => e);
+    const err = await boundedOrgTxn(
+      async () => {
+        throw pgError('55P03');
+      },
+      { client },
+    ).catch((e) => e);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('pid 1644480');
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('current/last statement');
@@ -186,9 +201,12 @@ describe('boundedOrgTxn', () => {
     // fakeClient() has no `.unsafe` at all — the diagnostic's tx.unsafe(...) throws,
     // which describeContentionAtFailure must swallow rather than letting it mask
     // (or replace) the real OrgTxnTimeoutError.
-    const err = await boundedOrgTxn(async () => {
-      throw pgError('55P03');
-    }, { client: fakeClient() }).catch((e) => e);
+    const err = await boundedOrgTxn(
+      async () => {
+        throw pgError('55P03');
+      },
+      { client: fakeClient() },
+    ).catch((e) => e);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).blockerHint).toBeUndefined();
     expect((err as OrgTxnTimeoutError).message).toBe(
@@ -212,9 +230,12 @@ describe('boundedOrgTxn', () => {
     } as never;
 
     const startedAt = Date.now();
-    const err = await boundedOrgTxn(async () => {
-      throw pgError('55P03');
-    }, { client }).catch((e) => e);
+    const err = await boundedOrgTxn(
+      async () => {
+        throw pgError('55P03');
+      },
+      { client },
+    ).catch((e) => e);
 
     expect(Date.now() - startedAt).toBeLessThan(5_000);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);

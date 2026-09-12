@@ -171,6 +171,8 @@ export interface GetNextOpts {
   states?: string[];
   /** WI-2796: caller has/coordinates a live ≥2-machine rig — see crossMachineRigExclusionSql. */
   rigAvailable?: boolean;
+  /** Abort the active claim transaction when the scheduler caller's bounded deadline fires. */
+  signal?: AbortSignal;
 }
 
 export interface GetNextResult {
@@ -2864,6 +2866,7 @@ export async function getNextWorkItem(
       ws,
       {
         client: sql,
+        signal: opts.signal,
         issueKinds,
         ids: idValues,
         excludeIds: excludeIds.length ? excludeIds : undefined,
@@ -2932,7 +2935,11 @@ export async function getNextWorkItem(
           ? rows
           : [];
       },
-      { client: sql, statementTimeoutMs: Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS) },
+      {
+        client: sql,
+        signal: opts.signal,
+        statementTimeoutMs: Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS),
+      },
     );
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
@@ -3074,6 +3081,7 @@ export async function getNextWorkItem(
       ws,
       {
         client: sql,
+        signal: opts.signal,
         issueKinds,
         ids: idValues,
         excludeIds: excludeIds.length ? excludeIds : undefined,

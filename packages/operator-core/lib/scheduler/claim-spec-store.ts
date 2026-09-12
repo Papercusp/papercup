@@ -557,6 +557,8 @@ export async function getNextForBee(args: {
   states?: string[];
   /** WI-2796: caller has/coordinates a live ≥2-machine rig — see crossMachineRigExclusionSql. */
   rigAvailable?: boolean;
+  /** Abort the in-flight claim transaction when the scheduler caller's deadline fires. */
+  signal?: AbortSignal;
   /** SCHEDULER_SPEC_CLAIM kill-switch: when true, ignore the bee's stored spec and use the
    *  DEFAULT ordering (== work_items:claim_next) — a no-breakage degrade. */
   ignoreStoredSpec?: boolean;
@@ -706,6 +708,7 @@ export async function getNextForBee(args: {
         ...(args.states ? { states: args.states } : {}),
         ...(args.rigAvailable ? { rigAvailable: true } : {}),
         ...('fleetSlug' in record && record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
+        signal: args.signal,
       },
     );
     if (!result) {

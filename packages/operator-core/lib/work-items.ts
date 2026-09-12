@@ -7988,6 +7988,8 @@ export async function claimNextIssueWorkItem(
       /** The feature-family readiness implementation selected by the caller. */
       useMaintainedReady?: boolean;
     };
+    /** Abort the active claim transaction when the scheduler caller's deadline fires. */
+    signal?: AbortSignal;
   } = {},
 ): Promise<WorkItem | null> {
   const sql = opts.client ?? getOrgPg().sql;
@@ -8267,7 +8269,7 @@ export async function claimNextIssueWorkItem(
         ? rows
         : [];
     },
-    { client: sql },
+    { client: sql, signal: opts.signal },
   );
   // RETURNING the base row uses the feature column shape; the row IS an issue-family row, so
   // map it through the issue facade (state dialect, no claim-time columns) for a consistent

@@ -51,7 +51,10 @@ type CancelableQuery = { cancel?: () => void };
  * transaction would keep its connection busy until PostgreSQL eventually
  * finished it (EI-23070293747146376).
  */
-function cancellableTransaction(tx: OrgSql, signal?: AbortSignal): {
+function cancellableTransaction(
+  tx: OrgSql,
+  signal?: AbortSignal,
+): {
   tx: OrgSql;
   assertNotAborted: () => void;
   abort: Promise<never> | undefined;
@@ -64,8 +67,7 @@ function cancellableTransaction(tx: OrgSql, signal?: AbortSignal): {
   const active = new Set<CancelableQuery>();
   let cancelled = signal.aborted;
   let removeAbortListener: (() => void) | undefined;
-  const abortReason = () =>
-    signal.reason ?? Object.assign(new Error('boundedOrgTxn aborted'), { name: 'AbortError' });
+  const abortReason = () => signal.reason ?? Object.assign(new Error('boundedOrgTxn aborted'), { name: 'AbortError' });
   const cancelActive = () => {
     cancelled = true;
     for (const query of active) {
@@ -167,12 +169,7 @@ export class OrgTxnTimeoutError extends Error {
    * knows it is synthesizing passes `'caller-budget'`.
    */
   readonly timeoutSource: 'pg' | 'caller-budget';
-  constructor(
-    pgCode: string,
-    cause: unknown,
-    blockerHint?: string,
-    timeoutSource: 'pg' | 'caller-budget' = 'pg',
-  ) {
+  constructor(pgCode: string, cause: unknown, blockerHint?: string, timeoutSource: 'pg' | 'caller-budget' = 'pg') {
     const base =
       timeoutSource === 'caller-budget'
         ? `operator write was abandoned after exceeding the CALLER's own time budget (reported as pg ${pgCode} so it is never mistaken for "nothing matched"; PostgreSQL itself did not time out) — retry shortly`
@@ -308,10 +305,7 @@ export interface BoundedOrgTxnOptions {
  * The `tx` is typed as OrgSql so store helpers that take a single `Sql` can be
  * constructed against it (e.g. `new PgThreadStore({ ...opts, getSql: () => tx })`).
  */
-export async function boundedOrgTxn<T>(
-  fn: (tx: OrgSql) => Promise<T>,
-  opts: BoundedOrgTxnOptions = {},
-): Promise<T> {
+export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: BoundedOrgTxnOptions = {}): Promise<T> {
   const sql = opts.client ?? getOrgPg().sql;
   const stmtMs = Math.max(100, Math.trunc(opts.statementTimeoutMs ?? ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS));
   const lockMs = Math.max(100, Math.trunc(opts.lockTimeoutMs ?? ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS));
@@ -341,12 +335,7 @@ export async function boundedOrgTxn<T>(
               await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true)`;
               await cancellation.tx`SELECT set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
               if (expired()) {
-                throw new DbCallDeadlineError(
-                  acquireLabel,
-                  acquireMs,
-                  acquireMs,
-                  acquirePool,
-                );
+                throw new DbCallDeadlineError(acquireLabel, acquireMs, acquireMs, acquirePool);
               }
               // The caller's work may legitimately run longer than acquisition;
               // stop the phase clock immediately before entering it.
@@ -358,9 +347,7 @@ export async function boundedOrgTxn<T>(
               // If cancellation wins the race, the transaction callback returns early while
               // the late `fn` promise is still observed and its rejection is suppressed.
               work.catch(() => undefined);
-              return await Promise.race(
-                cancellation.abort ? [work, cancellation.abort] : [work],
-              );
+              return await Promise.race(cancellation.abort ? [work, cancellation.abort] : [work]);
             } finally {
               cancellation.cleanup();
             }

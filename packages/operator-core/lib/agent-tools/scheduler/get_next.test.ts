@@ -204,15 +204,13 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
           ? `cooldown-only miss; ${opts.cooldownDiag.cooldownExcluded} excluded`
           : opts?.planTerminality?.allTerminal
             ? 'plan complete; stand down'
-          : opts?.issueBreakdown
-            ? 'floor-gated miss (WI-5561); see excludedBreakdownSummary'
-            : 'scoped miss; no generic fallback',
+            : opts?.issueBreakdown
+              ? 'floor-gated miss (WI-5561); see excludedBreakdownSummary'
+              : 'scoped miss; no generic fallback',
     fleetScope: { fleet: scope.fleetSlug, source: scope.record.source },
     quarantinedIds,
     windDown: true,
-    ...(opts?.planTerminality?.allTerminal
-      ? { reason: 'plan_complete', planTerminality: opts.planTerminality }
-      : {}),
+    ...(opts?.planTerminality?.allTerminal ? { reason: 'plan_complete', planTerminality: opts.planTerminality } : {}),
     ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
     ...(opts?.pausedReason !== undefined ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(opts?.cooldownDiag ? { cooldownOnly: true } : {}),
@@ -931,7 +929,11 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     // the fail-fast firing), so capture it explicitly rather than let vitest-fail-on-console trip.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Simulate the pool-contention stall: the atomic claim never resolves within the budget.
-    getNextM.mockImplementation(() => new Promise(() => {}));
+    let claimSignal: AbortSignal | undefined;
+    getNextM.mockImplementation((args: { signal?: AbortSignal }) => {
+      claimSignal = args.signal;
+      return new Promise(() => {});
+    });
     const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
       content: Array<{ text: string }>;
     }>;
@@ -956,6 +958,8 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(b.windDown).toBeUndefined();
     // The bounded-timeout deadline fired (the fail-fast) — assert it explicitly.
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:claim exceeded'));
+    expect(claimSignal).toBeInstanceOf(AbortSignal);
+    expect(claimSignal?.aborted).toBe(true);
     expect(readClaimConcurrencyM).toHaveBeenCalledWith({ cupId: 'su-member', workspaceId: 'ws-1' });
     warnSpy.mockRestore();
   });
