@@ -1332,6 +1332,89 @@ interface RouterOutcome extends TestProcessOutcome {
   actualDemand?: ResourceDemand;
 }
 
+const ROUTER_OUTPUT_TAIL_CHARS = 8_192;
+const ROUTER_PRIORITY_DIAGNOSTIC_CHARS = 1_600;
+
+/**
+ * Machine lines that explain why a routed run was refused or establish its
+ * terminal verdict. The child writes stdout and stderr through independent
+ * pipes, so their delivery order is not a causal order; a later healthy
+ * group's progress can otherwise evict an earlier failing group's terminal
+ * marker from the raw tail (EI-23084691057182393).
+ */
+const ROUTER_PRIORITY_DIAGNOSTIC_RE =
+  /^\s*(?:TEST_FILE_(?:ROUTE_ERROR|NOT_MEASURED|WATCHDOG|FREEZE_QUALIFIER|MID_INSTALL_SUSPECTED|TRANSFORM_FAILURE|COLLECTION_ATTRIBUTION|GROUP_RESULT|NAME_FILTER_NO_MATCH|ALL_SKIPPED|REQUIRE_RAN|RESULT)\b|(?:Error|Caused by):\s|(?:✗\s+BROKEN|✓\s+ok|unmatched)\b)/u;
+
+export interface BoundedRouterOutputCapture {
+  append(channel: 'stdout' | 'stderr', value: Buffer | string): void;
+  finish(): string;
+}
+
+/**
+ * Retain the ordinary bounded tail plus a tiny priority reservoir of causal
+ * router diagnostics. The reservoir is appended only when one of its lines
+ * fell out of the tail, which leaves normal short/successful output unchanged
+ * while ensuring every downstream `slice(-2000)` still sees the refusal that
+ * explains a `route_error`.
+ */
+export function createBoundedRouterOutputCapture(
+  opts: {
+    tailChars?: number;
+    diagnosticChars?: number;
+  } = {},
+): BoundedRouterOutputCapture {
+  const tailChars = Math.max(256, Math.floor(opts.tailChars ?? ROUTER_OUTPUT_TAIL_CHARS));
+  const diagnosticChars = Math.max(
+    128,
+    Math.min(tailChars - 96, Math.floor(opts.diagnosticChars ?? ROUTER_PRIORITY_DIAGNOSTIC_CHARS)),
+  );
+  const remainders: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
+  const diagnosticLines: string[] = [];
+  const seenDiagnostics = new Set<string>();
+  let tail = '';
+  let finished: string | null = null;
+
+  const retainLine = (line: string) => {
+    const normalized = line.trimEnd();
+    if (!ROUTER_PRIORITY_DIAGNOSTIC_RE.test(normalized) || seenDiagnostics.has(normalized)) return;
+    seenDiagnostics.add(normalized);
+    diagnosticLines.push(normalized.slice(0, 1_200));
+  };
+
+  return {
+    append(channel, value) {
+      if (finished !== null) return;
+      const text = Buffer.isBuffer(value) ? value.toString('utf8') : value;
+      tail = (tail + text).slice(-tailChars);
+      const parts = (remainders[channel] + text).split(/\r?\n/);
+      remainders[channel] = parts.pop() ?? '';
+      for (const line of parts) retainLine(line);
+    },
+    finish() {
+      if (finished !== null) return finished;
+      for (const channel of ['stdout', 'stderr'] as const) {
+        if (remainders[channel] !== '') retainLine(remainders[channel]);
+        remainders[channel] = '';
+      }
+      const missing = diagnosticLines.filter((line) => !tail.includes(line));
+      if (missing.length === 0) {
+        finished = tail;
+        return finished;
+      }
+      const joined = missing.join('\n');
+      const bounded =
+        joined.length <= diagnosticChars
+          ? joined
+          : `${joined.slice(0, Math.floor((diagnosticChars - 32) / 2))}\n` +
+            `[diagnostics clipped]\n${joined.slice(-Math.ceil((diagnosticChars - 32) / 2))}`;
+      finished = `${tail}\nTESTING_RUN_PRIORITY_DIAGNOSTICS retained-before-tail-truncation\n${bounded}`.slice(
+        -tailChars,
+      );
+      return finished;
+    },
+  };
+}
+
 export interface TestProcessDeadlineContext {
   /** Signal used by the child process; caller cancellation remains visible after admission. */
   signal: AbortSignal;
@@ -1500,7 +1583,7 @@ function runTestProcess(
             };
           }
           return new Promise((resolve) => {
-            let output = '';
+            const outputCapture = createBoundedRouterOutputCapture();
             let outputBytes = 0;
             let timedOut = false;
             let aborted = false;
@@ -1593,21 +1676,22 @@ function runTestProcess(
             else childSignal.addEventListener('abort', onAbort, { once: true });
             // Cap retained diagnostics — the router's own output is a fallback for the
             // error paths, never the success path's payload.
-            const append = (b: Buffer) => {
+            const append = (channel: 'stdout' | 'stderr') => (b: Buffer) => {
               outputBytes += b.byteLength;
-              output = (output + b.toString('utf8')).slice(-8192);
+              outputCapture.append(channel, b);
             };
-            child.stdout?.on('data', append);
-            child.stderr?.on('data', append);
+            child.stdout?.on('data', append('stdout'));
+            child.stderr?.on('data', append('stderr'));
             child.on('error', (e) => {
               spawnError = e.message;
+              outputCapture.append('stderr', `\n[spawn-error] ${e.message}\n`);
               finish({
                 code: null,
                 signal: null,
                 timedOut,
                 aborted,
                 spawnError,
-                output: `${output}\n[spawn-error] ${e.message}`,
+                output: outputCapture.finish(),
               });
             });
             child.on('close', (code, closeSignal) =>
@@ -1616,7 +1700,7 @@ function runTestProcess(
                 signal: closeSignal ?? null,
                 timedOut,
                 aborted,
-                output,
+                output: outputCapture.finish(),
               }),
             );
           });

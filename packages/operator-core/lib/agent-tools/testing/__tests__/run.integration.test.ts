@@ -36,6 +36,7 @@ import runTool, {
   buildTestProcessDemand,
   classifyTestProcessOutcome,
   checkoutRootForTestFiles,
+  createBoundedRouterOutputCapture,
   createTestProcessDemandSampler,
   detachedTestTimeoutHint,
   discoverKnownHiveCheckoutRoots,
@@ -167,6 +168,31 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await Promise.all(selectorRoots.map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
+  it('keeps a failing first-group marker after later progress displaces it from the raw tail', () => {
+    const capture = createBoundedRouterOutputCapture();
+    const refusal = 'TEST_FILE_ROUTE_ERROR (group cwd=apps/operator) requested=4 matched=0; use testing:run';
+    capture.append('stderr', `${refusal}\n`);
+    capture.append('stderr', `${'TEST_FILE_PROGRESS state=running cwd="packages/operator-core" x=1\n'.repeat(200)}`);
+    capture.append('stdout', 'ROUTE cwd=apps/operator config=vitest.config.ts\n');
+
+    const output = capture.finish();
+    expect(output.slice(-2_000)).toContain(refusal);
+    expect(output).toContain('TESTING_RUN_PRIORITY_DIAGNOSTICS retained-before-tail-truncation');
+    expect(output.length).toBeLessThanOrEqual(8_192);
+  });
+
+  it('reassembles a diagnostic split across stderr chunks and leaves a short tail unduplicated', () => {
+    const capture = createBoundedRouterOutputCapture();
+    capture.append('stderr', 'TEST_FILE_ROUTE_');
+    capture.append('stderr', 'ERROR (group cwd=apps/operator) requested=4 matched=0\n');
+
+    const output = capture.finish();
+    expect(output.match(/TEST_FILE_ROUTE_ERROR/g)).toHaveLength(1);
+    expect(output).not.toContain('TESTING_RUN_PRIORITY_DIAGNOSTICS');
+  });
 });
 
 describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
