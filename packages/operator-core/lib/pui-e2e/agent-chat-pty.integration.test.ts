@@ -1019,7 +1019,7 @@ beforeAll(async () => {
       VALUES (${WORKSPACE}, ${HARNESS}, ${REAL_APPROVAL_WORK_ITEM}, 'task',
               'Exercise one PUI native tool-permission roundtrip',
               'Create and verify the isolated permission fixture requested by the owner.',
-              'open', ${OWNER}, ${now}, ${now}, ${now}, ${now})`;
+              'open', ${OWNER}, now(), now(), ${now}, ${now})`;
   }
   if (scriptedEngine.real && process.env.PUI_REAL_PLAN === '1') {
     await db.adminSql`
@@ -2974,13 +2974,15 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await pane.waitFor(approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt);
         await pane.waitFor(approvalLabel);
         frames.approval = pane.screen();
-        const repliesBeforeApproval = cardReplies.length;
+        const childCardReplies = () => first.responses.filter(({ path: responsePath }) =>
+          responsePath.endsWith('/card-response'));
+        const repliesBeforeApproval = childCardReplies().length;
         pane.write(String(approvalIndex + 1));
-        await vi.waitFor(() => expect(cardReplies).toHaveLength(repliesBeforeApproval + 1), {
+        await vi.waitFor(() => expect(childCardReplies()).toHaveLength(repliesBeforeApproval + 1), {
           timeout: 15_000,
           interval: 100,
         });
-        expect(cardReplies.at(-1)).toMatchObject({ status: 200 });
+        expect(childCardReplies().at(-1)).toMatchObject({ status: 200 });
         await waitForCorrelatedReply(approvalRequest, approvalResult);
         await pane.waitForReply(approvalResult);
         expect(readFileSync(approvalFixturePath, 'utf8')).toBe(approvalResult + '\n');
