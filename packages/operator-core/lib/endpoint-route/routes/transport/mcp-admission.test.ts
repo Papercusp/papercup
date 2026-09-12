@@ -108,6 +108,55 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    ['canonical', 'scheduler:get_next'],
+    ['underscore', 'scheduler_get_next'],
+    ['mcp-advertised', 'mcp__papercusp_su__scheduler_get_next'],
+  ])('does NOT shed a bounded scheduler self-pull under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(14, name, {
+      harness: 'papercusp',
+      heldPaths: [],
+      states: ['open'],
+      rigAvailable: false,
+      ignoreContextPressure: false,
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad or malformed scheduler self-pulls sheddable under critical pressure', () => {
+    for (const args of [
+      { harness: 'papercusp', unknown: true },
+      { harness: '', states: ['open'] },
+      { harness: 'papercusp', states: ['blocked'] },
+      { harness: 'papercusp', heldPaths: Array.from({ length: 501 }, () => 'path') },
+      { harness: 'papercusp', heldPaths: ['x'.repeat(513)] },
+      { harness: 'papercusp', rigAvailable: 'false' },
+    ]) {
+      expect(classifyMcpBody(toolsCall(15, 'scheduler:get_next', args))).toEqual({
+        sheddable: true,
+        id: 15,
+      });
+    }
+  });
+
+  it('recognizes a bounded scheduler self-pull through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 16,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__scheduler_get_next',
+          args: { harness: 'papercusp', heldPaths: [], states: ['failing'] },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
     ['canonical', 'work_items:checkpoint'],
     ['underscore', 'work_items_checkpoint'],
     ['mcp-advertised', 'mcp__papercusp_su__work_items_checkpoint'],
@@ -693,6 +742,28 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
+  });
+  it('admits a bounded scheduler self-pull under critical pressure for direct staging calls', async () => {
+    const req = post(toolsCall(17, 'scheduler:get_next', {
+      harness: 'papercusp',
+      heldPaths: [],
+      states: ['open'],
+      rigAvailable: false,
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('scheduler:get_next');
+  });
+  it('still sheds an unbounded scheduler self-pull under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(18, 'scheduler:get_next', { harness: 'papercusp', extra: 'unbounded' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('admits a single work_items:checkpoint under critical pressure so recovery state can be persisted', async () => {
     const req = post(toolsCall(19, 'work_items:checkpoint', {
