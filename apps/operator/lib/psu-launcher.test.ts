@@ -33,10 +33,13 @@ import {
   ompDefaultModel,
   resolveOmpSessionModel,
   writeOmpSessionConfigDir,
+  writeOmpSessionConfigDirAsync,
   linkOmpAgentDb,
   applyOmpToolsAllowlist,
   applyOmpOperatorOrigin,
   applyOmpMcpUrlParams,
+  resolveOmpOperatorUrl,
+  probeOmpOperatorMcp,
   ompCoreToolNames,
   claudeSeedToolNames,
   CLAUDE_SEED_EXTRA_TOOL_NAMES,
@@ -928,7 +931,13 @@ describe("OMP ox-alpha Responses compatibility guard (EI-21439300345381616)", ()
     expect(roleBody).toContain(
       "ompResponsesCompatibilityEnv(res.agent, roleModel",
     );
+    expect(roleBody).toContain(
+      "await writeOmpSessionConfigDirAsync(res.sessionId",
+    );
     expect(freshBody).toContain("ompResponsesCompatibilityEnv(");
+    expect(freshBody).toContain(
+      "await writeOmpSessionConfigDirAsync(res.sessionId",
+    );
     expect(resumeBody).toContain(
       "lastActiveModelFor(session) || ompDefaultModel()",
     );
@@ -2301,6 +2310,83 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(mcp.mcpServers["papercusp-su"].headers.Authorization).toBe(
       "Bearer SECRET",
     );
+  });
+
+  it("recovers a stale runtime port before writing the per-session MCP origin", async () => {
+    const probed: string[] = [];
+    const recoveries: Array<Record<string, string | null>> = [];
+    const dir = await writeOmpSessionConfigDirAsync(
+      "stale-port",
+      {
+        env: { PAPERCUSP_HONO_PORT: "3271" },
+        probe: async (candidate: string) => {
+          probed.push(candidate);
+          return candidate === "http://127.0.0.1:3070/api/mcp";
+        },
+        onRecovery: (recovery: Record<string, string | null>) => {
+          recoveries.push(recovery);
+        },
+      },
+      home,
+    );
+    const url = new URL(
+      JSON.parse(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"))
+        .mcpServers["papercusp-su"].url,
+    );
+    expect(url.origin).toBe("http://127.0.0.1:3070");
+    expect(probed).toEqual([
+      "http://127.0.0.1:3271/api/mcp",
+      "http://127.0.0.1:3070/api/mcp",
+    ]);
+    expect(recoveries).toEqual([
+      {
+        configuredBase: "http://127.0.0.1:3271",
+        recoveredBase: "http://127.0.0.1:3070",
+        configuredPort: "3271",
+      },
+    ]);
+  });
+
+  it("keeps a live non-green runtime port when writing the per-session MCP origin", async () => {
+    const probed: string[] = [];
+    const dir = await writeOmpSessionConfigDirAsync(
+      "staging-port",
+      {
+        env: { PAPERCUSP_HONO_PORT: "3170" },
+        probe: async (candidate: string) => {
+          probed.push(candidate);
+          return candidate === "http://127.0.0.1:3170/api/mcp";
+        },
+      },
+      home,
+    );
+    const url = new URL(
+      JSON.parse(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"))
+        .mcpServers["papercusp-su"].url,
+    );
+    expect(url.origin).toBe("http://127.0.0.1:3170");
+    expect(probed).toEqual(["http://127.0.0.1:3170/api/mcp"]);
+  });
+
+  it("honors an explicit operator URL without probing or recovering it", async () => {
+    const probe = vi.fn(async () => {
+      throw new Error("explicit pins must not probe");
+    });
+    const dir = await writeOmpSessionConfigDirAsync(
+      "explicit-port",
+      {
+        operatorUrl: "http://localhost:3999",
+        env: { PAPERCUSP_HONO_PORT: "3271" },
+        probe,
+      },
+      home,
+    );
+    const url = new URL(
+      JSON.parse(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"))
+        .mcpServers["papercusp-su"].url,
+    );
+    expect(url.origin).toBe("http://localhost:3999");
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it("returns null for a falsy sessionId (no dir written)", () => {

@@ -4221,6 +4221,129 @@ export function applyOmpOperatorOrigin(mcpJsonText, operatorUrl) {
   }
 }
 
+/**
+ * Probe an OMP session's operator MCP endpoint without requiring auth or a
+ * valid MCP request. Any HTTP response proves that a listener is serving the
+ * route; connection and timeout failures are the only unavailable states.
+ * The async probe keeps native OMP materialization from blocking on a stale
+ * PAPERCUSP_HONO_PORT while preserving the sync writer below for pure callers.
+ */
+export async function probeOmpOperatorMcp(
+  operatorMcpUrl,
+  timeoutMs = 1_500,
+  fetchImpl = fetch,
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await fetchImpl(operatorMcpUrl, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function ompOperatorMcpEndpoint(operatorUrl) {
+  try {
+    const u = new URL(operatorUrl);
+    u.search = "";
+    u.hash = "";
+    const path = u.pathname.replace(/\/+$/, "");
+    u.pathname = /\/api\/mcp$/i.test(path) ? path : `${path}/api/mcp`;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackOperatorUrl(operatorUrl) {
+  try {
+    const host = new URL(operatorUrl).hostname;
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function runtimeOmpOperatorBase(operatorUrl, env) {
+  const configuredPort = String(env.PAPERCUSP_HONO_PORT || "").trim();
+  if (!/^\d+$/.test(configuredPort))
+    return { base: operatorUrl, configuredPort: null };
+  const proxyBase = String(env.PAPERCUSP_MCP_PROXY_BASE || "")
+    .trim()
+    .replace(/\/+$/, "");
+  const proxyTargetPort = String(
+    env.PAPERCUSP_MCP_PROXY_TARGET_PORT || "3070",
+  ).trim();
+  if (proxyBase && configuredPort === proxyTargetPort)
+    return { base: proxyBase, configuredPort };
+  // Match the orchestrator resolver: a known serving port outranks inherited
+  // PAPERCUSP_OPERATOR_URL so a child stays on its spawning code/control plane.
+  return { base: `http://127.0.0.1:${configuredPort}`, configuredPort };
+}
+
+/**
+ * Resolve the operator origin for native OMP's per-session mcp.json. This is
+ * the launcher-side counterpart to orchestrator spawn-mcp's async resolver:
+ * probe the runtime-selected local route, then recover on canonical :3070
+ * when a copied PAPERCUSP_HONO_PORT is stale. A live non-green port remains
+ * authoritative, so staging :3170 never silently falls through to green.
+ *
+ * No runtime port hint means there is no stale local-port claim to validate;
+ * preserve the already-resolved proxy/discovery target without adding a
+ * network request to ordinary launches. Caller-supplied writer pins bypass
+ * this helper in writeOmpSessionConfigDirAsync.
+ */
+export async function resolveOmpOperatorUrl(
+  operatorUrl = undefined,
+  {
+    env = process.env,
+    probe = probeOmpOperatorMcp,
+    onRecovery = ({ configuredBase, recoveredBase, configuredPort }) =>
+      console.warn(
+        `[psu] native OMP MCP route ${configuredBase} was unavailable; recovered on ${recoveredBase}` +
+          (configuredPort
+            ? ` (PAPERCUSP_HONO_PORT=${configuredPort} is stale)`
+            : ""),
+      ),
+    probeTimeoutMs = 1_500,
+  } = {},
+) {
+  // A caller-supplied pin is authoritative; never silently route it elsewhere.
+  if (operatorUrl) return operatorUrl;
+  const { base: configuredBase, configuredPort } = runtimeOmpOperatorBase(
+    OPERATOR_URL,
+    env,
+  );
+  if (!configuredPort || !isLoopbackOperatorUrl(configuredBase))
+    return configuredBase;
+  const configuredEndpoint = ompOperatorMcpEndpoint(configuredBase);
+  if (!configuredEndpoint) return configuredBase;
+  if (await probe(configuredEndpoint, probeTimeoutMs)) return configuredBase;
+
+  const candidates = [
+    `http://127.0.0.1:${configuredPort}`,
+    "http://127.0.0.1:3070",
+  ]
+    .filter((candidate, index, all) => all.indexOf(candidate) === index)
+    .filter((candidate) => candidate !== configuredBase);
+  for (const recoveredBase of candidates) {
+    const recoveredEndpoint = ompOperatorMcpEndpoint(recoveredBase);
+    if (!recoveredEndpoint || !(await probe(recoveredEndpoint, probeTimeoutMs)))
+      continue;
+    onRecovery({ configuredBase, recoveredBase, configuredPort });
+    return recoveredBase;
+  }
+  // Preserve the configured route when no recovery candidate is reachable so
+  // the normal OMP connection error remains the authoritative diagnosis.
+  return configuredBase;
+}
+
 /** Stamp fixed query params (`agent`, `model`) onto every papercusp `/api/mcp` server URL in an
  *  OMP mcp.json, so the operator learns the CALLING agent's backend + model PER REQUEST. This is
  *  the "current calling agent" signal fleet:launch-on-plan reads to default a spawned fleet's
@@ -4667,6 +4790,43 @@ export function writeOmpSessionConfigDir(
     );
     return null;
   }
+}
+
+/**
+ * Async launch-time counterpart to writeOmpSessionConfigDir. The synchronous
+ * writer remains pure from its callers' perspective, while fresh launches can
+ * validate the runtime-selected loopback route before baking it into mcp.json.
+ * Explicit operatorUrl pins bypass probing; all other route options are test
+ * seams and are removed before delegating to the synchronous writer.
+ */
+export async function writeOmpSessionConfigDirAsync(
+  sessionId,
+  opts = {},
+  home = homedir(),
+) {
+  const {
+    operatorUrl,
+    env = process.env,
+    probe = probeOmpOperatorMcp,
+    onRecovery,
+    probeTimeoutMs,
+    ...writerOpts
+  } = opts || {};
+  const explicitOperatorUrl =
+    operatorUrl != null && String(operatorUrl).trim().length > 0;
+  const resolvedOperatorUrl = explicitOperatorUrl
+    ? operatorUrl
+    : await resolveOmpOperatorUrl(undefined, {
+        env: env ?? process.env,
+        probe,
+        onRecovery,
+        probeTimeoutMs,
+      });
+  return writeOmpSessionConfigDir(
+    sessionId,
+    { ...writerOpts, operatorUrl: resolvedOperatorUrl },
+    home,
+  );
 }
 
 export function ompDefaultModelAdvisory(home = homedir()) {
@@ -13310,11 +13470,12 @@ async function roleFlow(args, role, rolesMeta) {
   } = finalizeFreshRoleArgs(res.agent, launchArgs, res, args);
   let roleOmpConfigDir = null;
   if (res.agent === "omp" && res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML) {
-    roleOmpConfigDir = writeOmpSessionConfigDir(res.sessionId, {
+    roleOmpConfigDir = await writeOmpSessionConfigDirAsync(res.sessionId, {
       discoveryOff: true,
       model: roleModel,
       modelsYml: res.envelopeEnv.PAPERCUSP_OMP_MODELS_YML,
       clientId: res.envelopeEnv?.PAPERCUSP_SID || null,
+      env: { ...process.env, ...res.envelopeEnv },
       interactive: !!process.stdout.isTTY,
     });
     if (!roleOmpConfigDir) {
@@ -14138,12 +14299,13 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
           `psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`,
         );
       }
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, {
+      ompPiConfigDir = await writeOmpSessionConfigDirAsync(res.sessionId, {
         discoveryOff: true,
         toolsAllowlist: spine,
         model: effectiveModel,
         modelsYml: res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML || null,
         clientId: res.envelopeEnv?.PAPERCUSP_SID || null,
+        env: { ...process.env, ...res.envelopeEnv },
         nativeMcp: true,
         mcpEnv: res.envelopeEnv || null,
         backendWindow,

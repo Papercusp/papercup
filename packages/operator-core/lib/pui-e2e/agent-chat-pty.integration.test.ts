@@ -1787,7 +1787,15 @@ async function startOperatorProcess(port = 0) {
   const shutdownStages: string[] = [];
   const descriptors = new Map<string, SuSessionDescriptor>();
   const diagnostics: Array<{ level: string; args: unknown[] }> = [];
-  const responses: Array<{ path: string; status: number }> = [];
+  const responses: Array<{
+    path: string;
+    status: number;
+    model?: string;
+    account?: string;
+    mode?: string;
+    carry?: string;
+    planSlug?: string;
+  }> = [];
   let ready: { pid: number; instanceId: string; port: number } | undefined;
   let startupError: Error | undefined;
   let stopped = false;
@@ -1808,6 +1816,7 @@ async function startOperatorProcess(port = 0) {
   child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
     events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
     path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string; error?: string;
+    model?: string; account?: string; mode?: string; carry?: string; planSlug?: string;
     before?: unknown[]; after?: unknown[]; body?: unknown; stage?: string; workers?: unknown }) => {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
     if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
@@ -1821,7 +1830,15 @@ async function startOperatorProcess(port = 0) {
     if (message.type === 'diagnostic') diagnostics.push({ level: message.level, args: message.args });
     if (message.type === 'stopped') stopped = true;
     if (message.type === 'shutdown-failed') shutdownFailure = message.error ?? 'unknown shutdown failure';
-    if (message.type === 'response') responses.push({ path: message.path, status: message.status });
+    if (message.type === 'response') responses.push({
+      path: message.path,
+      status: message.status,
+      model: message.model,
+      account: message.account,
+      mode: message.mode,
+      carry: message.carry,
+      planSlug: message.planSlug,
+    });
     if (message.type === 'readiness') readiness.push({ path: message.path, method: message.method,
       requestedAt: message.requestedAt, respondedAt: message.respondedAt, status: message.status,
       before: message.before, after: message.after, body: message.body });
@@ -3023,9 +3040,17 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           ]),
         );
         // The approval clause is the authorized tool effect, not a provider's
-        // optional prose after it. Wait until that turn settles before sending
-        // the independent greeting used by the restart/resume clause.
-        await pane.waitFor('· ready ·', { timeoutMs: 120_000 });
+        // optional prose after it. A post-tool provider error settles the host
+        // in `waiting-for-owner` but deliberately does not render `· ready ·`;
+        // wait on the producer-of-record lifecycle before sending the separate
+        // greeting used by the restart/resume clause.
+        await vi.waitFor(() => {
+          expect(first.events.some((event) =>
+            event.type === 'lifecycle' &&
+            event.state === 'waiting-for-owner' &&
+            event.sequence > (approvalEnd?.sequence ?? -1),
+          )).toBe(true);
+        }, { timeout: 120_000, interval: 100 });
         frames.approved = pane.screen();
       }
       pane.write(greeting);
@@ -3043,7 +3068,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           modes: process.env.PUI_REAL_MODE ? [process.env.PUI_REAL_MODE] : [],
         });
         expect(saved?.model, 'the selected model must be the one that actually answered').toBeTruthy();
-        expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toEqual([
+        expect(first.responses.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toEqual([
           expect.objectContaining({
             model: process.env.PUI_REAL_MODEL,
             mode: process.env.PUI_REAL_MODE,

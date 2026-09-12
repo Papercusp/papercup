@@ -347,6 +347,10 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
   it('preserves immutable clause pins and replay mode in adequacy rerun recipes', () => {
     const fingerprints = [
       {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 2,
+        specFingerprint: 'sha256:spec-v2',
         evidenceKind: 'test',
         evidenceRef: 'test/reconnect.test.ts#terminal-close',
         sourceFingerprint: 'git:spec-v2',
@@ -394,6 +398,57 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       replaySnapshot: true,
       current: fingerprints,
     });
+  });
+
+  it('rejects a partially scoped currentness fingerprint instead of silently falling back to legacy identity', () => {
+    const recipe = {
+      schemaVersion: 1 as const,
+      evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      classRef: 'plan-class-feature-ship',
+      args: {
+        slug: 'reconnect-plan',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-003-01'],
+        includeDraft: true as const,
+      },
+      selection: {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 2,
+        specFingerprint: 'sha256:spec-v2',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'artifact:shared-index' }],
+      },
+      current: {
+        supplied: true,
+        fingerprints: [
+          {
+            planSlug: 'reconnect-plan',
+            specId: 'SPEC-003-01',
+            specRevision: 2,
+            specFingerprint: 'sha256:spec-v2',
+            evidenceKind: 'test',
+            evidenceRef: 'artifact:shared-index',
+            sourceFingerprint: 'git:spec-v2',
+          },
+        ],
+      },
+      derivation: {
+        kind: 'listSpecEvidence.currentness' as const,
+        classifier: 'classifySpecEvidenceCurrentness' as const,
+        unknownWhenMissing: true as const,
+      },
+    };
+
+    expect(asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe).toBeDefined();
+    const { specId: _specId, ...partialIdentity } = recipe.current.fingerprints[0];
+    expect(
+      asStructuredObservation({
+        rerunRecipe: {
+          ...recipe,
+          current: { supplied: true, fingerprints: [partialIdentity] },
+        },
+      })?.rerunRecipe,
+    ).toBeUndefined();
   });
 
   it('round-trips native Cargo check runs and drops malformed native records', () => {

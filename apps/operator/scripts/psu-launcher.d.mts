@@ -1202,7 +1202,7 @@ export function probeOmpOperatorMcp(operatorMcpUrl: any, timeoutMs?: number, fet
  * network request to ordinary launches. Caller-supplied writer pins bypass
  * this helper in writeOmpSessionConfigDirAsync.
  */
-export function resolveOmpOperatorUrl(operatorUrl?: any, { env, probe, onRecovery, probeTimeoutMs, }?: {
+export function resolveOmpOperatorUrl(operatorUrl?: undefined, { env, probe, onRecovery, probeTimeoutMs, }?: {
     env?: NodeJS.ProcessEnv | undefined;
     probe?: typeof probeOmpOperatorMcp | undefined;
     onRecovery?: (({ configuredBase, recoveredBase, configuredPort }: {
@@ -1240,6 +1240,14 @@ export function applyOmpMcpUrlParams(mcpJsonText: any, params: any): any;
  */
 export function linkOmpAgentDb(srcAgent: any, dstAgent: any): void;
 export function writeOmpSessionConfigDir(sessionId: any, opts?: {}, home?: string): string | null;
+/**
+ * Async launch-time counterpart to writeOmpSessionConfigDir. The synchronous
+ * writer remains pure from its callers' perspective, while fresh launches can
+ * validate the runtime-selected loopback route before baking it into mcp.json.
+ * Explicit operatorUrl pins bypass probing; all other route options are test
+ * seams and are removed before delegating to the synchronous writer.
+ */
+export function writeOmpSessionConfigDirAsync(sessionId: any, opts?: {}, home?: string): Promise<string | null>;
 export function ompDefaultModelAdvisory(home?: string): string | null;
 /**
  * Env for a resumed session. Pure — exported for tests. Identity + scope

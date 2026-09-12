@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
 import {
   installPapercuspFiles,
   projectHistoryDispatcherExec,
@@ -1148,6 +1149,10 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
     import.meta.url,
   );
+  const blueprintHarness = new URL(
+    '../../../../../libs/papercusp/packages/harness/',
+    import.meta.url,
+  );
 
   it('keeps current-procedure verification distinct from coord bootstrap', async () => {
     const { text } = await renderSuPlaybook({
@@ -1162,6 +1167,36 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     expect(text).toMatch(/`coord:orient` is\s+coordination bootstrap, not documentation verification/);
     expect(text).toMatch(/injected prompt text or a bare\s+`\{ ok: true \}` result does not satisfy the gate/);
     expect(text).toMatch(/first call returns no procedure\s+evidence, keep reading until one does/);
+  });
+
+  it('P-005 renders the mechanical-dedup contract in full and fleet guidance', async () => {
+    const baseText = await fs.readFile(fileURLToPath(blueprintBase), 'utf8');
+    const memberBase = composeSuStackSource({
+      suText: baseText,
+      harnessDir: fileURLToPath(blueprintHarness),
+      binding: suSessionBinding({ fleetRole: 'member' }),
+    }).text;
+    const [full, fleet, member] = await Promise.all([
+      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase) }),
+      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase), tier: 'fleet' }),
+      renderSuPlaybook({
+        agent: 'claude',
+        baseSource: fileURLToPath(blueprintBase),
+        baseText: memberBase,
+        tier: 'fleet',
+      }),
+    ]);
+
+    for (const text of [full.text, fleet.text, member.text]) {
+      expect(text).toContain('work_items:get { id, resume:true }');
+      expect(text).toContain('bounded resume packet');
+      expect(text).toContain('follow its `readRef`s');
+      expect(text).toContain('work_items:checkpoint { id, unchanged:true, contentHash }');
+      expect(text).toContain('not rerun a test matrix solely to reconstruct saved proof');
+      expect(text).toContain('authoritative write responses, state reads');
+      expect(text).toContain('not hand-written copies');
+      expect(text).toContain('do NOT send a second completion FYI');
+    }
   });
 
   it('renders all five shared notes, and leaks no marker', async () => {

@@ -156,3 +156,50 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     );
   });
 });
+
+describe('plans:bind-spec-evidence authenticated actor provenance', () => {
+  const publicBinding = (evidenceRef: string) => ({
+    workItemId: 'WI-1',
+    specId: 'SPEC-001-01',
+    evidenceKind: 'test' as const,
+    evidenceRef,
+    sourceFingerprint: 'git:abc123',
+  });
+
+  it('accepts a valid two-row public payload without a caller-supplied actorId', async () => {
+    const { default: tool } = await import('./bind-spec-evidence');
+    const parsed = tool.args.safeParse({
+      slug: 'reconnect-plan',
+      items: [publicBinding('test/reconnect-a.test.ts'), publicBinding('test/reconnect-b.test.ts')],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects actorId at the public boundary because the handler derives it from identity', async () => {
+    const { default: tool } = await import('./bind-spec-evidence');
+    const parsed = tool.args.safeParse({
+      slug: 'reconnect-plan',
+      items: [publicBinding('test/reconnect-a.test.ts'), publicBinding('test/reconnect-b.test.ts')],
+      actorId: 'caller-controlled-actor',
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          keys: ['actorId'],
+          message: expect.stringContaining('Unrecognized key'),
+        }),
+      ]),
+    );
+  });
+
+  it('rejects actorId nested in a binding, keeping the internal store field private', async () => {
+    const { default: tool } = await import('./bind-spec-evidence');
+    const parsed = tool.args.safeParse({
+      slug: 'reconnect-plan',
+      binding: { ...publicBinding('test/reconnect.test.ts'), actorId: 'caller-controlled-actor' },
+    });
+    expect(parsed.success).toBe(false);
+  });
+});

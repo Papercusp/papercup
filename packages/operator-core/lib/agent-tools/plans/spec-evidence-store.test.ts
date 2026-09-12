@@ -254,6 +254,100 @@ describe('listSpecEvidence timestamp normalization', () => {
     });
   });
 
+  it('matches scoped currentness by clause identity when two specs share one artifact reference', async () => {
+    const shared = {
+      work_item_id: 'WI-shared-proof',
+      plan_slug: 'plan-one',
+      source_val_id: null,
+      spec_revision: 1,
+      evidence_kind: 'test' as const,
+      evidence_ref: 'artifact:shared-index',
+      test_fingerprint: null,
+      fixture_fingerprint: null,
+      rubric_fingerprint: null,
+      environment_fingerprint: null,
+      coverage_evidence_ref: null,
+      coverage_evidence_present: false,
+      test_run_id: null,
+      test_run_present: false,
+      details: {},
+      observed_at: '2026-08-20T21:10:00.000Z',
+      binding_fingerprint: 'sha256:binding',
+      created_by: 'su-test',
+      created_at: '2026-08-20T21:10:01.000Z',
+      spec_is_current: true,
+    };
+    h.rows = [
+      {
+        ...shared,
+        id: 10,
+        spec_id: 'SPEC-A',
+        spec_fingerprint: 'sha256:spec-a',
+        source_fingerprint: 'git:source-a',
+      },
+      {
+        ...shared,
+        id: 11,
+        spec_id: 'SPEC-B',
+        spec_fingerprint: 'sha256:spec-b',
+        source_fingerprint: 'git:source-b',
+      },
+    ];
+
+    const rows = await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'],
+      current: [
+        {
+          planSlug: 'plan-one',
+          specId: 'SPEC-A',
+          specRevision: 1,
+          specFingerprint: 'sha256:spec-a',
+          evidenceKind: 'test',
+          evidenceRef: 'artifact:shared-index',
+          sourceFingerprint: 'git:source-a',
+        },
+        {
+          planSlug: 'plan-one',
+          specId: 'SPEC-B',
+          specRevision: 1,
+          specFingerprint: 'sha256:spec-b',
+          evidenceKind: 'test',
+          evidenceRef: 'artifact:shared-index',
+          sourceFingerprint: 'git:source-b',
+        },
+      ],
+    });
+
+    expect(rows).toHaveLength(2);
+    // Equality with caller-supplied fingerprints is deliberately reported as
+    // attested-current/unknown at the aggregate level. Assert the per-row
+    // source dimension as well: that is the signal which proves the scoped
+    // identity selected SPEC-A's tuple instead of SPEC-B's last-writer value.
+    expect(rows.map((row) => ({
+      specId: row.specId,
+      overall: row.currentness.overall,
+      source: row.currentness.dimensions.source,
+      provenance: row.currentness.provenance,
+      comparisonSupplied: row.currentness.comparisonSupplied,
+    }))).toEqual([
+      {
+        specId: 'SPEC-A',
+        overall: 'unknown',
+        source: 'current',
+        provenance: 'attested-current',
+        comparisonSupplied: true,
+      },
+      {
+        specId: 'SPEC-B',
+        overall: 'unknown',
+        source: 'current',
+        provenance: 'attested-current',
+        comparisonSupplied: true,
+      },
+    ]);
+  });
+
   it('replays a pinned server-measured snapshot without reading the live repository', async () => {
     h.rows = [
       {

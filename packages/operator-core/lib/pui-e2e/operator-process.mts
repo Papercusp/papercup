@@ -104,7 +104,15 @@ const server = createAdaptorServer({
     const requestedAt = new Date().toISOString();
     const launch =
       request.method === 'POST' && pathname === '/api/adv/sessions/launch-su'
-        ? ((await request.clone().json()) as { agent_chat_id: string; harness_slug: string })
+        ? ((await request.clone().json()) as {
+            agent_chat_id: string;
+            harness_slug: string;
+            model?: string;
+            account?: string;
+            mode?: string;
+            carry?: string;
+            plan_slug?: string;
+          })
         : null;
     const response = await app.fetch(request, env);
     if (configStep) {
@@ -159,8 +167,22 @@ const server = createAdaptorServer({
         send({ type: 'host-state', descriptor: host.descriptor(), pid: row?.pid ?? null });
       }
     }
-    if (launch || pathname.endsWith('/card-response'))
-      send({ type: 'response', path: pathname, status: response.status });
+    if (launch || pathname.endsWith('/card-response')) {
+      send({
+        type: 'response',
+        path: pathname,
+        status: response.status,
+        ...(launch
+          ? {
+              model: launch.model,
+              account: launch.account,
+              mode: launch.mode,
+              carry: launch.carry,
+              planSlug: launch.plan_slug,
+            }
+          : {}),
+      });
+    }
     return response;
   },
 });

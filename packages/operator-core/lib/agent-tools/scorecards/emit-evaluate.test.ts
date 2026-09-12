@@ -208,6 +208,10 @@ const RERUN_RECIPE = {
     supplied: true,
     fingerprints: [
       {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
         evidenceKind: 'integration fixture',
         evidenceRef: 'surface:reconnect',
         sourceFingerprint: 'git:abc',
@@ -482,6 +486,26 @@ describe('emitScorecard', () => {
       rubricRef: 'test-rubric',
       ratings: RATINGS,
       rerunRecipe: missingRequired,
+    }).success).toBe(false);
+  });
+
+  it('rejects a partially scoped replay fingerprint instead of accepting an ambiguous legacy key', () => {
+    const partial = {
+      ...RERUN_RECIPE,
+      current: {
+        supplied: true,
+        fingerprints: [
+          {
+            ...RERUN_RECIPE.current.fingerprints[0],
+            specId: undefined,
+          },
+        ],
+      },
+    };
+    expect(scorecardEmitArgs.safeParse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rerunRecipe: partial,
     }).success).toBe(false);
   });
 

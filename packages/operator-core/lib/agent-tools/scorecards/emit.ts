@@ -141,6 +141,36 @@ const specTestAdequacyEvaluatorBuildSchema = z
     version: z.string().trim().min(1).max(120),
   })
   .strict();
+const specTestAdequacyCurrentFingerprintSchema = z
+  .object({
+    // Exact clause identity prevents one shared artifact reference from
+    // overwriting another clause's currentness tuple. Omit all four only for
+    // historical legacy recipes.
+    planSlug: z.string().trim().min(1).max(2000).optional(),
+    specId: z.string().trim().min(1).max(2000).optional(),
+    specRevision: z.number().int().positive().optional(),
+    specFingerprint: specTestAdequacyFingerprintSchema.optional(),
+    evidenceKind: z.string().trim().min(1).max(120),
+    evidenceRef: z.string().trim().min(1).max(2000),
+    sourceFingerprint: specTestAdequacyFingerprintSchema,
+    // A producer may omit dimensions it did not measure; explicit null keeps
+    // the same meaning for callers that already spell those keys.
+    testFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
+    fixtureFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
+    rubricFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
+    environmentFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    const identity = [input.planSlug, input.specId, input.specRevision, input.specFingerprint];
+    if (identity.some((value) => value !== undefined) && !identity.every((value) => value !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['planSlug'],
+        message: 'planSlug, specId, specRevision, and specFingerprint must be supplied together',
+      });
+    }
+  });
 const specTestAdequacyRerunRecipeSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -181,33 +211,7 @@ const specTestAdequacyRerunRecipeSchema = z
       .object({
         supplied: z.boolean(),
         fingerprints: z
-          .array(
-            z
-              .object({
-                evidenceKind: z.string().trim().min(1).max(120),
-                evidenceRef: z.string().trim().min(1).max(2000),
-                sourceFingerprint: specTestAdequacyFingerprintSchema,
-                // EI-21670417404287969 / EI-21723288985786146 / EI-21597519978995942:
-                // `.nullable()` alone makes a key REQUIRED-but-nullable, so a caller had
-                // to spell out `fixtureFingerprint: null` on every row that has no
-                // fixture. The producers legitimately OMIT a dimension they did not
-                // measure — an operational/check row has no test or fixture — so the
-                // documented evaluator→emit chain could not be passed through unchanged,
-                // and three separate plans (P-003, P-006, and a validator pass) each hit
-                // it and filed it. Omission and explicit null mean the same thing here;
-                // `unknownWhenMissing` in `derivation` below already fixes the semantics
-                // of a missing dimension, so requiring the key adds no information.
-                // This matches the three sibling call sites, which were already
-                // `.nullable().optional()`: plans/get-spec-evidence.ts:15,
-                // plans/evaluate-spec-test-adequacy.ts:17, plans/bind-spec-evidence.ts:25
-                // — emit.ts was the lone straggler.
-                testFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
-                fixtureFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
-                rubricFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
-                environmentFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
-              })
-              .strict(),
-          )
+          .array(specTestAdequacyCurrentFingerprintSchema)
           .max(500),
       })
       .strict(),
