@@ -60,6 +60,19 @@ export async function getFeedbackProd(
       });
       return { queued: r.queued ?? r.woke, woke: r.woke, pickupConfirmed: r.pickupConfirmed ?? false };
     },
+    postQueueLiveness: async (ownerId) => {
+      try {
+        const verdict = (await resolveSessionStates([{ ownerId }], {
+          hydratePerId: true,
+          psuHostPositiveAuthority: true,
+        })).get(ownerId);
+        return verdict ? { sessionState: verdict.sessionState } : null;
+      } catch {
+        // The wake is already durable; an enrichment failure must preserve the
+        // pending delivery rather than infer death and cascade.
+        return null;
+      }
+    },
     revive: makeConsultReviver({
       workspaceId: request.workspaceId,
       harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,

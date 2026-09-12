@@ -156,7 +156,10 @@ const routeOf = (
 });
 
 let convSeq = 0;
-function makeDeps(route: RouteResult) {
+function makeDeps(
+  route: RouteResult,
+  options: { postQueueLiveness?: GetFeedbackDeps['postQueueLiveness'] } = {},
+) {
   const opened: Array<Parameters<GetFeedbackDeps['open']>[0]> = [];
   const reached: Array<Parameters<GetFeedbackDeps['reach']>[0]> = [];
   const routeCalls: Array<Parameters<GetFeedbackDeps['route']>[0]> = [];
@@ -177,6 +180,7 @@ function makeDeps(route: RouteResult) {
       // The inbox wake pump reports durable queueing, not turn execution.
       return { queued: 1, woke: 1, pickupConfirmed: false };
     },
+    ...(options.postQueueLiveness ? { postQueueLiveness: options.postQueueLiveness } : {}),
     now: () => NOW,
   };
   return { deps, opened, reached, routeCalls };
@@ -1769,6 +1773,56 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(digest).toEqual([
       expect.objectContaining({ ownerId: 'zombie-first', kind: 'wake_failed' }),
     ]);
+  });
+
+  it.each(['ended', 'suspect'] as const)(
+    'post-queue confirmed %s: a queued wake advances to the next selected responder',
+    async (sessionState) => {
+      const first = cand('ended-after-queue');
+      const second = cand('next-reviewer', { score: 0.65 });
+      const postQueueLiveness = vi.fn(async (ownerId: string) => {
+        expect(ownerId).toBe(first.ownerId);
+        return { sessionState };
+      });
+      const base = makeDeps(routeOf([first, second]), { postQueueLiveness });
+
+      const res = asOk(await getFeedbackCore(baseReq, base.deps));
+
+      expect(postQueueLiveness).toHaveBeenCalledTimes(1);
+      expect(base.reached.map((wake) => wake.responder)).toEqual([first.ownerId, second.ownerId]);
+      expect(res.responder?.ownerId).toBe(second.ownerId);
+      expect(res.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
+      const row = await stateRow(res.conversation_id);
+      expect(row.cascade_cursor).toBe(1);
+      const digest = typeof row.cascade_digest === 'string' ? JSON.parse(row.cascade_digest) : row.cascade_digest;
+      expect(digest).toEqual([
+        expect.objectContaining({
+          ownerId: first.ownerId,
+          kind: 'wake_failed',
+          excerpt: expect.stringContaining(`sessionState=${sessionState}`),
+        }),
+      ]);
+    },
+  );
+
+  it.each([
+    ['parked', 'parked' as const],
+    ['unknown', null],
+  ] as const)('post-queue %s: pending queued wake is preserved without a cascade', async (_label, sessionState) => {
+    const first = cand('pending-reviewer');
+    const second = cand('must-not-run', { score: 0.65 });
+    const postQueueLiveness = vi.fn(async () => ({ sessionState }));
+    const base = makeDeps(routeOf([first, second]), { postQueueLiveness });
+
+    const res = asOk(await getFeedbackCore(baseReq, base.deps));
+
+    expect(postQueueLiveness).toHaveBeenCalledTimes(1);
+    expect(base.reached.map((wake) => wake.responder)).toEqual([first.ownerId]);
+    expect(res.responder?.ownerId).toBe(first.ownerId);
+    expect(res.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
+    const row = await stateRow(res.conversation_id);
+    expect(row.cascade_cursor).toBe(0);
+    expect(row.cascade_digest).toEqual([]);
   });
 
   it('cap 1 (MAX_REVIVALS_PER_CONSULT): dead-preempt spends the budget — a failed wake advances to the live next candidate without re-reviving', async () => {

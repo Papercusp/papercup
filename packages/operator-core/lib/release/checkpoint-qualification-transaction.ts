@@ -57,10 +57,14 @@ const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
     return null;
   };
   try {
-    return read(execFileSync('systemctl', ['--user', 'is-active', unit], {
-      encoding: 'utf8',
-      timeout: 5_000,
-    })) ?? 'unknown';
+    return (
+      read(
+        execFileSync('systemctl', ['--user', 'is-active', unit], {
+          encoding: 'utf8',
+          timeout: 5_000,
+        }),
+      ) ?? 'unknown'
+    );
   } catch (error) {
     // A non-active unit makes `is-active` exit non-zero WITH the state on stdout, so the throw is
     // the normal path for a dead unit, not an error.
@@ -209,6 +213,13 @@ export interface BeginQualificationInput {
   incumbentLiveness?: RunnerLiveness;
   nowMs?: number;
   /**
+   * Same-row proof that an unowned `repair-in-progress` wait now has an exact,
+   * never-judged `ready-to-verify` repair head. Set only by
+   * {@link beginStoredQualification}; callers cannot infer this from the
+   * qualification record alone because the repair queue is the authority.
+   */
+  resumeUnownedRepairVerification?: boolean;
+  /**
    * EI-22931381517977345: derive the logical attempt identity from the frozen repair queue's
    * VERIFICATION TARGET (`repairHead`, else `candidate`), read from the SAME locked routine row
    * the transaction lives in. Without it a request that declares no paths hashes to a per-root
@@ -244,14 +255,17 @@ export type QualificationTransition =
  */
 function isRetryableUnownedWait(
   current: CheckpointQualificationTransaction | null,
+  resumeUnownedRepairVerification = false,
 ): boolean {
-  return Boolean(
-    current &&
-      current.phase === 'waiting' &&
-      current.outcome.kind === 'pre-suite-no-verdict' &&
-      current.outcome.reason === 'wait-for-eligibility-unavailable' &&
-      current.currentPhysicalRunner === null,
-  );
+  if (
+    !current ||
+    current.phase !== 'waiting' ||
+    current.outcome.kind !== 'pre-suite-no-verdict' ||
+    current.currentPhysicalRunner !== null
+  )
+    return false;
+  if (current.outcome.reason === 'wait-for-eligibility-unavailable') return true;
+  return resumeUnownedRepairVerification && current.outcome.reason === 'repair-in-progress';
 }
 
 /**
@@ -291,22 +305,21 @@ function isQualificationOutcome(value: unknown): value is QualificationOutcome {
   if (outcome.kind === 'pre-suite-no-verdict') {
     return (PRE_SUITE_NO_VERDICT_REASONS as readonly unknown[]).includes(outcome.reason);
   }
-  return (
-    ['green', 'red', 'code-inconclusive'].includes(String(outcome.kind)) &&
-    typeof outcome.reason === 'string'
-  );
+  return ['green', 'red', 'code-inconclusive'].includes(String(outcome.kind)) && typeof outcome.reason === 'string';
 }
 
 function isPhysicalRun(value: unknown): value is QualificationPhysicalRun {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const run = value as Partial<QualificationPhysicalRun>;
   return (
-    typeof run.id === 'string' && !!run.id &&
+    typeof run.id === 'string' &&
+    !!run.id &&
     (run.candidate === null || typeof run.candidate === 'string') &&
     Number.isFinite(run.reservedAtMs) &&
     Number.isFinite(run.leaseExpiresAtMs) &&
     Number.isFinite(run.endedAtMs) &&
-    Array.isArray(run.evidenceRefs) && run.evidenceRefs.every((ref) => typeof ref === 'string') &&
+    Array.isArray(run.evidenceRefs) &&
+    run.evidenceRefs.every((ref) => typeof ref === 'string') &&
     isQualificationOutcome(run.outcome)
   );
 }
@@ -327,8 +340,7 @@ function completedPhaseDurations(
   const phaseEnteredAtMs = current.phaseEnteredAtMs ?? current.updatedAtMs;
   return {
     ...phaseDurations,
-    [current.phase]:
-      (phaseDurations[current.phase] ?? 0) + Math.max(0, nowMs - phaseEnteredAtMs),
+    [current.phase]: (phaseDurations[current.phase] ?? 0) + Math.max(0, nowMs - phaseEnteredAtMs),
   };
 }
 
@@ -356,19 +368,26 @@ export function qualificationPhaseDurations(
   };
 }
 
-export function projectCheckpointQualificationState(
-  raw: unknown,
-  nowMs = Date.now(),
-): CheckpointQualificationState {
+export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.now()): CheckpointQualificationState {
   const owner = { kind: 'routine' as const, id: 'system:green-checkpoint' as const };
   if (raw == null) {
     return {
-      status: 'none', attemptId: null, candidate: null, phase: null, outcome: null, owner,
-      lease: null, blockers: [], phaseDurationsMs: {}, consumedPhysicalRuns: [], unknown: null,
+      status: 'none',
+      attemptId: null,
+      candidate: null,
+      phase: null,
+      outcome: null,
+      owner,
+      lease: null,
+      blockers: [],
+      phaseDurationsMs: {},
+      consumedPhysicalRuns: [],
+      unknown: null,
       eligibilitySnapshot: null,
       safeNextAction: {
         code: 'read-release-control',
-        reason: 'no logical qualification attempt exists; read current serializer/manual-run authority before starting one',
+        reason:
+          'no logical qualification attempt exists; read current serializer/manual-run authority before starting one',
         waitEvents: [],
       },
     };
@@ -376,8 +395,16 @@ export function projectCheckpointQualificationState(
   const transaction = parseCheckpointQualificationTransaction(raw);
   if (!transaction) {
     return {
-      status: 'unreadable', attemptId: null, candidate: null, phase: null, outcome: null, owner,
-      lease: null, blockers: [], phaseDurationsMs: {}, consumedPhysicalRuns: [],
+      status: 'unreadable',
+      attemptId: null,
+      candidate: null,
+      phase: null,
+      outcome: null,
+      owner,
+      lease: null,
+      blockers: [],
+      phaseDurationsMs: {},
+      consumedPhysicalRuns: [],
       eligibilitySnapshot: null,
       safeNextAction: {
         code: 'read-release-control',
@@ -399,13 +426,29 @@ export function projectCheckpointQualificationState(
   const waitEvents = uniqueStrings(transaction.blockers.flatMap((blocker) => blocker.clearEvents));
   let safeNextAction: QualificationSafeNextAction;
   if (transaction.outcome.kind === 'green') {
-    safeNextAction = { code: 'read-release-control', reason: 'qualification is green; read promotion/deploy authority before acting', waitEvents: [] };
+    safeNextAction = {
+      code: 'read-release-control',
+      reason: 'qualification is green; read promotion/deploy authority before acting',
+      waitEvents: [],
+    };
   } else if (transaction.outcome.kind === 'red') {
-    safeNextAction = { code: 'repair-code', reason: 'a real red is terminal for this logical attempt; repair code before starting a successor', waitEvents: [] };
+    safeNextAction = {
+      code: 'repair-code',
+      reason: 'a real red is terminal for this logical attempt; repair code before starting a successor',
+      waitEvents: [],
+    };
   } else if (transaction.outcome.kind === 'code-inconclusive') {
-    safeNextAction = { code: 'inspect-terminal-evidence', reason: 'the terminal code outcome is inconclusive; inspect evidence before a successor', waitEvents: [] };
+    safeNextAction = {
+      code: 'inspect-terminal-evidence',
+      reason: 'the terminal code outcome is inconclusive; inspect evidence before a successor',
+      waitEvents: [],
+    };
   } else if (runner && lease?.expired) {
-    safeNextAction = { code: 'recover-expired-runner', reason: 'the physical-run lease expired without a terminal result', waitEvents: [] };
+    safeNextAction = {
+      code: 'recover-expired-runner',
+      reason: 'the physical-run lease expired without a terminal result',
+      waitEvents: [],
+    };
   } else if (runner) {
     safeNextAction = { code: 'await-current-run', reason: 'one physical runner owns the live lease', waitEvents: [] };
   } else if (transaction.eligibilitySnapshot) {
@@ -414,9 +457,17 @@ export function projectCheckpointQualificationState(
     // only when the transaction has no current runner.
     safeNextAction = transaction.eligibilitySnapshot.safeNextAction;
   } else if (transaction.phase === 'waiting') {
-    safeNextAction = { code: 'await-blocker-events', reason: 'pre-suite infrastructure blocked this attempt; resume it after the named events clear', waitEvents };
+    safeNextAction = {
+      code: 'await-blocker-events',
+      reason: 'pre-suite infrastructure blocked this attempt; resume it after the named events clear',
+      waitEvents,
+    };
   } else {
-    safeNextAction = { code: 'launch-physical-run', reason: 'the logical attempt is ready and has no live physical runner', waitEvents: [] };
+    safeNextAction = {
+      code: 'launch-physical-run',
+      reason: 'the logical attempt is ready and has no live physical runner',
+      waitEvents: [],
+    };
   }
   return {
     status: 'present',
@@ -459,8 +510,7 @@ export function qualificationIntentMatches(
 export function frozenRepairQueueVerificationTarget(rawRepairQueue: unknown): string | null {
   if (!rawRepairQueue || typeof rawRepairQueue !== 'object' || Array.isArray(rawRepairQueue)) return null;
   const row = rawRepairQueue as Record<string, unknown>;
-  const pick = (value: unknown): string | null =>
-    typeof value === 'string' && value.trim() ? value.trim() : null;
+  const pick = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value.trim() : null);
   return pick(row.repairHead) ?? pick(row.candidate);
 }
 
@@ -477,9 +527,7 @@ export function resolveQualificationAttemptId(input: BeginQualificationInput, ra
   return typeof derived === 'string' && derived.trim() ? derived.trim() : input.attemptId;
 }
 
-export function parseCheckpointQualificationTransaction(
-  value: unknown,
-): CheckpointQualificationTransaction | null {
+export function parseCheckpointQualificationTransaction(value: unknown): CheckpointQualificationTransaction | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Partial<CheckpointQualificationTransaction>;
   if (
@@ -500,41 +548,47 @@ export function parseCheckpointQualificationTransaction(
     !Array.isArray(row.evidenceRefs) ||
     (row.phaseEnteredAtMs != null && !Number.isFinite(row.phaseEnteredAtMs)) ||
     (row.phaseDurationsMs != null &&
-      (typeof row.phaseDurationsMs !== 'object' || Array.isArray(row.phaseDurationsMs) ||
+      (typeof row.phaseDurationsMs !== 'object' ||
+        Array.isArray(row.phaseDurationsMs) ||
         Object.entries(row.phaseDurationsMs).some(
           ([phase, duration]) =>
             !['waiting', 'ready', 'running', 'terminal'].includes(phase) ||
-            typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0,
+            typeof duration !== 'number' ||
+            !Number.isFinite(duration) ||
+            duration < 0,
         ))) ||
     (row.consumedPhysicalRuns != null &&
       (!Array.isArray(row.consumedPhysicalRuns) || row.consumedPhysicalRuns.some((run) => !isPhysicalRun(run)))) ||
     (row.eligibilitySnapshot != null && !parseCheckpointEligibilitySnapshot(row.eligibilitySnapshot))
-  ) return null;
+  )
+    return null;
   if (!isQualificationOutcome(row.outcome)) return null;
   if (
-    row.blockers.some((blocker) =>
-      !blocker ||
-      typeof blocker !== 'object' ||
-      typeof blocker.code !== 'string' ||
-      !Array.isArray(blocker.clearEvents) ||
-      blocker.clearEvents.some((event) => typeof event !== 'string') ||
-      !Number.isFinite(blocker.observedAtMs),
+    row.blockers.some(
+      (blocker) =>
+        !blocker ||
+        typeof blocker !== 'object' ||
+        typeof blocker.code !== 'string' ||
+        !Array.isArray(blocker.clearEvents) ||
+        blocker.clearEvents.some((event) => typeof event !== 'string') ||
+        !Number.isFinite(blocker.observedAtMs),
     ) ||
     row.evidenceRefs.some((ref) => typeof ref !== 'string') ||
     row.candidatePolicy.declaredPaths.some((declaredPath) => typeof declaredPath !== 'string')
-  ) return null;
+  )
+    return null;
   if (
     row.currentPhysicalRunner != null &&
-    (
-      typeof row.currentPhysicalRunner !== 'object' ||
+    (typeof row.currentPhysicalRunner !== 'object' ||
       typeof row.currentPhysicalRunner.id !== 'string' ||
       !row.currentPhysicalRunner.id ||
       !Number.isFinite(row.currentPhysicalRunner.reservedAtMs) ||
-      (row.currentPhysicalRunner.leaseExpiresAtMs != null && !Number.isFinite(row.currentPhysicalRunner.leaseExpiresAtMs)) ||
+      (row.currentPhysicalRunner.leaseExpiresAtMs != null &&
+        !Number.isFinite(row.currentPhysicalRunner.leaseExpiresAtMs)) ||
       !Array.isArray(row.currentPhysicalRunner.evidenceRefs) ||
-      row.currentPhysicalRunner.evidenceRefs.some((ref) => typeof ref !== 'string')
-    )
-  ) return null;
+      row.currentPhysicalRunner.evidenceRefs.some((ref) => typeof ref !== 'string'))
+  )
+    return null;
   const phaseEnteredAtMs = Number.isFinite(row.phaseEnteredAtMs) ? row.phaseEnteredAtMs! : row.updatedAtMs!;
   const phaseDurationsMs =
     row.phaseDurationsMs && typeof row.phaseDurationsMs === 'object' && !Array.isArray(row.phaseDurationsMs)
@@ -542,13 +596,13 @@ export function parseCheckpointQualificationTransaction(
           Object.entries(row.phaseDurationsMs).filter(
             ([phase, duration]) =>
               ['waiting', 'ready', 'running', 'terminal'].includes(phase) &&
-              typeof duration === 'number' && Number.isFinite(duration) && duration >= 0,
+              typeof duration === 'number' &&
+              Number.isFinite(duration) &&
+              duration >= 0,
           ),
         )
       : {};
-  const consumedPhysicalRuns = Array.isArray(row.consumedPhysicalRuns)
-    ? row.consumedPhysicalRuns.slice(-32)
-    : [];
+  const consumedPhysicalRuns = Array.isArray(row.consumedPhysicalRuns) ? row.consumedPhysicalRuns.slice(-32) : [];
   const currentPhysicalRunner = row.currentPhysicalRunner
     ? {
         ...row.currentPhysicalRunner,
@@ -558,9 +612,8 @@ export function parseCheckpointQualificationTransaction(
             : row.currentPhysicalRunner.reservedAtMs,
       }
     : null;
-  const eligibilitySnapshot = row.eligibilitySnapshot == null
-    ? null
-    : parseCheckpointEligibilitySnapshot(row.eligibilitySnapshot);
+  const eligibilitySnapshot =
+    row.eligibilitySnapshot == null ? null : parseCheckpointEligibilitySnapshot(row.eligibilitySnapshot);
   return {
     ...(row as CheckpointQualificationTransaction),
     phaseEnteredAtMs,
@@ -576,7 +629,7 @@ export function beginQualificationTransaction(
   input: BeginQualificationInput,
 ): QualificationTransition {
   const nowMs = input.nowMs ?? Date.now();
-  const retryableUnownedWait = isRetryableUnownedWait(current);
+  const retryableUnownedWait = isRetryableUnownedWait(current, input.resumeUnownedRepairVerification === true);
   const abandoned = isAbandonedQualification(current, input.incumbentLiveness, nowMs);
   if (current?.attemptId === input.attemptId) {
     if (retryableUnownedWait) {
@@ -586,12 +639,17 @@ export function beginQualificationTransaction(
           ...current,
           updatedAtMs: nowMs,
           requiredAncestorSha: input.requiredAncestorSha?.trim() || current.requiredAncestorSha,
+          candidatePolicy: {
+            ...current.candidatePolicy,
+            declaredPaths: uniqueStrings(input.declaredPaths ?? current.candidatePolicy.declaredPaths),
+          },
           candidate: input.candidate?.trim() || current.candidate,
           phase: 'ready',
           phaseEnteredAtMs: nowMs,
           phaseDurationsMs: completedPhaseDurations(current, 'ready', nowMs),
           outcome: { kind: 'pending' },
           blockers: [],
+          eligibilitySnapshot: input.resumeUnownedRepairVerification === true ? null : current.eligibilitySnapshot,
           evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
         },
       };
@@ -638,10 +696,8 @@ export function recordQualificationEligibilitySnapshot(
     nowMs?: number;
   },
 ): QualificationTransition {
-  if (
-    current.attemptId !== input.attemptId ||
-    input.snapshot.attemptId !== input.attemptId
-  ) return { status: 'conflict', transaction: current };
+  if (current.attemptId !== input.attemptId || input.snapshot.attemptId !== input.attemptId)
+    return { status: 'conflict', transaction: current };
   if (isTerminalQualificationOutcome(current.outcome)) {
     return { status: 'terminal', transaction: current };
   }
@@ -750,7 +806,8 @@ export function reserveQualificationRunner(
   if (liveRunner && current.currentPhysicalRunner!.id !== input.runnerId) {
     return { status: 'conflict', transaction: current };
   }
-  if (liveRunner && current.currentPhysicalRunner?.id === input.runnerId) return { status: 'idempotent', transaction: current };
+  if (liveRunner && current.currentPhysicalRunner?.id === input.runnerId)
+    return { status: 'idempotent', transaction: current };
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
   // Keep the two displacement causes distinct in the history: a lease that ran out is a runner that
   // overran, a reclaimed one is a runner that DIED. Collapsing them would hide exactly the signal
@@ -761,7 +818,7 @@ export function reserveQualificationRunner(
   };
   const expiredRuns = current.currentPhysicalRunner
     ? consumedRunner(current, displacedOutcome, nowMs)
-    : current.consumedPhysicalRuns ?? [];
+    : (current.consumedPhysicalRuns ?? []);
   return {
     status: 'updated',
     transaction: {
@@ -771,7 +828,7 @@ export function reserveQualificationRunner(
       phase: 'running',
       phaseEnteredAtMs:
         current.phase === 'running' && !current.currentPhysicalRunner
-          ? current.phaseEnteredAtMs ?? current.updatedAtMs
+          ? (current.phaseEnteredAtMs ?? current.updatedAtMs)
           : nowMs,
       phaseDurationsMs: completedPhaseDurations(current, 'running', nowMs),
       outcome: { kind: 'pending' },
@@ -790,10 +847,7 @@ export function reserveQualificationRunner(
   };
 }
 
-export function classifyQualificationVerdict(input: {
-  reason: string;
-  green?: boolean | null;
-}): QualificationOutcome {
+export function classifyQualificationVerdict(input: { reason: string; green?: boolean | null }): QualificationOutcome {
   const normalized = input.reason.trim().replaceAll('_', '-');
   if (input.green === true || ['advanced', 'up-to-date', 'advanced-prefix'].includes(normalized)) {
     return { kind: 'green', reason: input.reason };
@@ -807,7 +861,13 @@ export function classifyQualificationVerdict(input: {
 
 export function settleQualificationTransaction(
   current: CheckpointQualificationTransaction,
-  input: { attemptId: string; reason: string; green?: boolean | null; evidenceRefs?: readonly string[]; nowMs?: number },
+  input: {
+    attemptId: string;
+    reason: string;
+    green?: boolean | null;
+    evidenceRefs?: readonly string[];
+    nowMs?: number;
+  },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
@@ -871,11 +931,7 @@ export function cancelQualificationTransaction(
       blockers: [],
       currentPhysicalRunner: null,
       consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
-      evidenceRefs: uniqueStrings([
-        ...current.evidenceRefs,
-        ...(input.evidenceRefs ?? []),
-        `cancelled:${runner.id}`,
-      ]),
+      evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? []), `cancelled:${runner.id}`]),
     },
   };
 }
@@ -1051,11 +1107,7 @@ async function mutateStoredQualification(
           : null;
       const reconciliation =
         predecessor && successorInput
-          ? assessTerminalRepairQueueReconciliation(
-              predecessor,
-              successorInput,
-              metadata.repair_queue,
-            )
+          ? assessTerminalRepairQueueReconciliation(predecessor, successorInput, metadata.repair_queue)
           : null;
       if (reconciliation?.status === 'blocked') {
         return {
@@ -1166,13 +1218,35 @@ export function beginStoredQualification(
     // Probe INSIDE the mutation so the liveness verdict is taken against the same `current` the
     // transition decides on. Probing outside would race: the incumbent can die, or a fresh runner
     // can take the lease, between the read and the write.
-    (current, context) =>
-      beginQualificationTransaction(current, {
+    (current, context) => {
+      const queue = parseFrozenCandidateRepairQueue(context.rawRepairQueue);
+      const resumableRepairHead =
+        current &&
+        current.phase === 'waiting' &&
+        current.outcome.kind === 'pre-suite-no-verdict' &&
+        current.outcome.reason === 'repair-in-progress' &&
+        current.currentPhysicalRunner === null &&
+        queue?.phase === 'ready-to-verify' &&
+        queue.qualificationAttemptId === current.attemptId &&
+        queue.fixerSpawnId === null &&
+        queue.dispatchReservation == null &&
+        frozenRepairHeadAwaitsVerification(queue)
+          ? queue.repairHead
+          : null;
+      return beginQualificationTransaction(current, {
         ...input,
         // EI-22931381517977345: the identity is decided against the SAME locked row's queue.
-        attemptId: resolveQualificationAttemptId(input, context.rawRepairQueue),
+        // A repair wait already owns that queue. Reuse its logical attempt when the SAME
+        // locked row proves the fixer has published a never-judged head; a new id would
+        // conflict with the still-nonterminal waiter before it could verify its own repair.
+        attemptId: resumableRepairHead
+          ? current!.attemptId
+          : resolveQualificationAttemptId(input, context.rawRepairQueue),
+        candidate: resumableRepairHead ?? input.candidate,
         incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current?.currentPhysicalRunner),
-      }),
+        resumeUnownedRepairVerification: resumableRepairHead !== null,
+      });
+    },
     options.reconcileTerminalRepairQueueForSuccessor
       ? {
           successorInput: (context) => ({
@@ -1189,7 +1263,8 @@ export function waitStoredQualification(
   input: Parameters<typeof waitQualificationTransaction>[1],
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) =>
-    current ? waitQualificationTransaction(current, input) : { status: 'unreadable', error: 'missing attempt' });
+    current ? waitQualificationTransaction(current, input) : { status: 'unreadable', error: 'missing attempt' },
+  );
 }
 
 export function reserveStoredQualificationRunner(
@@ -1202,7 +1277,8 @@ export function reserveStoredQualificationRunner(
           ...input,
           incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current.currentPhysicalRunner),
         })
-      : { status: 'unreadable', error: 'missing attempt' });
+      : { status: 'unreadable', error: 'missing attempt' },
+  );
 }
 
 export function recordStoredQualificationEligibility(
@@ -1212,12 +1288,16 @@ export function recordStoredQualificationEligibility(
   return mutateStoredQualification(target, (current) =>
     current
       ? recordQualificationEligibilitySnapshot(current, input)
-      : { status: 'unreadable', error: 'missing attempt' });
+      : { status: 'unreadable', error: 'missing attempt' },
+  );
 }
 
 export async function readStoredQualification(
   target: GateVerdictTarget,
-): Promise<{ status: 'present'; transaction: CheckpointQualificationTransaction } | { status: 'none' | 'unreadable'; error?: string }> {
+): Promise<
+  | { status: 'present'; transaction: CheckpointQualificationTransaction }
+  | { status: 'none' | 'unreadable'; error?: string }
+> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ transaction: unknown }[]>`
