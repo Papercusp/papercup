@@ -31,6 +31,48 @@ const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
 
+const DEFAULT_BLUEPRINT_RELEASE_TIMEOUT_MS = 20_000;
+const DEFAULT_REPO_COORDS_TIMEOUT_MS = 12_000;
+
+type BlueprintPublishStage = 'blueprint_release' | 'repo_coords';
+
+class BlueprintPublishStageTimeoutError extends Error {
+  constructor(
+    readonly stage: BlueprintPublishStage,
+    readonly timeoutMs: number,
+  ) {
+    super(`blueprint_publish_stage_timeout:${stage}`);
+    this.name = 'BlueprintPublishStageTimeoutError';
+  }
+}
+
+async function runBlueprintPublishStage<T>(
+  stage: BlueprintPublishStage,
+  timeoutMs: number,
+  run: () => Promise<T>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new BlueprintPublishStageTimeoutError(stage, timeoutMs)), timeoutMs);
+  });
+  try {
+    return await Promise.race([run(), timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function publishStageTimeout(error: unknown): ReturnType<typeof text> | null {
+  return error instanceof BlueprintPublishStageTimeoutError
+    ? text({
+        ok: false,
+        error: 'blueprint_publish_timeout',
+        status: 504,
+        detail: { stage: error.stage, timeoutMs: error.timeoutMs },
+      })
+    : null;
+}
+
 export default defineTool({
   name: 'blueprint:publish',
   capability: 'harness:write',
@@ -90,14 +132,34 @@ export default defineTool({
           'Author/materialize the blueprint into one of those canonical repo layouts and push it before publishing.',
       });
     }
-    let prepared: Awaited<ReturnType<typeof prepareBlueprintPublicRelease>>;
-    try {
-      prepared = await prepareBlueprintPublicRelease({
-        blueprintFile: bpYaml,
-        listingRef: args.blueprintId,
-        resolveExtends: operatorResolveExtends({ localDirs: [sourceRoot] }),
-      });
-    } catch (error) {
+    // 2. Resolve and sign the release while resolving the repo's GitHub coords.
+    // These are independent read/preflight legs. Running them sequentially made
+    // their individually bounded GitHub/keychain paths add up past the enclosing
+    // MCP deadline before the publish core's own bounded attestation + POST even
+    // began (EI-22810897251728336). Bound both and overlap them so the full tool
+    // retains enough budget to return a structured success or stage failure.
+    const { resolveRepoCoordsFromDir, gitOriginUrl, fetchGithubRepoMeta } = await import(
+      '../../cupboard/resolve-repo-coords'
+    );
+    const [preparedResult, coordsResult] = await Promise.allSettled([
+      runBlueprintPublishStage('blueprint_release', DEFAULT_BLUEPRINT_RELEASE_TIMEOUT_MS, () =>
+        prepareBlueprintPublicRelease({
+          blueprintFile: bpYaml,
+          listingRef: args.blueprintId,
+          resolveExtends: operatorResolveExtends({ localDirs: [sourceRoot] }),
+        }),
+      ),
+      runBlueprintPublishStage('repo_coords', DEFAULT_REPO_COORDS_TIMEOUT_MS, () =>
+        resolveRepoCoordsFromDir(args.repoDir, {
+          getOriginUrl: gitOriginUrl,
+          fetchRepoMeta: fetchGithubRepoMeta,
+        }),
+      ),
+    ]);
+    if (preparedResult.status === 'rejected') {
+      const timeout = publishStageTimeout(preparedResult.reason);
+      if (timeout) return timeout;
+      const error = preparedResult.reason;
       return text({
         ok: false,
         error: 'blueprint_release_invalid',
@@ -105,17 +167,18 @@ export default defineTool({
         status: error instanceof BlueprintLifecycleError ? error.status : 422,
       });
     }
-    const blueprintKind: 'hive' | 'harness' =
-      prepared.source.raw.kind === 'hive' || prepared.source.raw.kind === 'pot' ? 'hive' : 'harness';
-
-    // 2. Resolve the repo's GitHub coords — the SAME path knowledge_packs:publish uses.
-    const { resolveRepoCoordsFromDir, gitOriginUrl, fetchGithubRepoMeta } = await import(
-      '../../cupboard/resolve-repo-coords'
-    );
-    const coords = await resolveRepoCoordsFromDir(args.repoDir, {
-      getOriginUrl: gitOriginUrl,
-      fetchRepoMeta: fetchGithubRepoMeta,
-    });
+    if (coordsResult.status === 'rejected') {
+      const timeout = publishStageTimeout(coordsResult.reason);
+      if (timeout) return timeout;
+      return text({
+        ok: false,
+        error: 'repo_coords_unresolvable',
+        detail: coordsResult.reason instanceof Error ? coordsResult.reason.message : String(coordsResult.reason),
+        hint: 'repoDir must be a git repo with a GitHub origin remote.',
+      });
+    }
+    const prepared = preparedResult.value;
+    const coords = coordsResult.value;
     if (!coords || 'error' in coords) {
       return text({
         ok: false,
@@ -124,6 +187,8 @@ export default defineTool({
         hint: 'repoDir must be a git repo with a GitHub origin remote.',
       });
     }
+    const blueprintKind: 'hive' | 'harness' =
+      prepared.source.raw.kind === 'hive' || prepared.source.raw.kind === 'pot' ? 'hive' : 'harness';
 
     // 3. Publish the kind='blueprint' listing through the one shared Cupboard core.
     const { publishListingToCupboard } = await import('../../cupboard/publish-listing');

@@ -53,7 +53,7 @@ import { readGoalHistoryContext } from '../prior-attempt-context';
 export interface AutoStartGoalInput {
   /** Workspace to file the goal under (default: the active workspace). */
   workspaceId?: string;
-  /** Harness/install slug the goal is filed against and the agent boots in. */
+  /** Ledger install key: a concrete harness, or workspaceId for workspace-wide Scout. */
   harnessSlug: string;
   /** The outcome, stated so its achievement is checkable. */
   title: string;
@@ -105,6 +105,12 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   if (!workspaceId) throw new Error('no concrete workspace in scope — a goal cannot be filed workspace-less');
   const installSlug = input.harnessSlug?.trim();
   if (!installSlug) throw new Error('no harness in scope — goals are filed against an install_slug');
+  // EI-22762141222831537: workspace-wide Scout stores its workspace id in the
+  // ledger's install_slug slot. It is not a bootable harness. Preserve that
+  // storage key, but use the launcher's existing workspace-only scope for BOTH
+  // the goal holder and its optional drain member. Never fall back to some
+  // arbitrary harness (or widen a concrete per-harness goal).
+  const launchHarnessSlug = installSlug === workspaceId ? null : installSlug;
 
   const criterion = input.killCriterion?.trim();
   if (!criterion) throw new Error('an auto-created goal must carry a kill criterion (D-005)');
@@ -261,7 +267,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   try {
     base = await buildConsoleEnvelope({
       workspaceId,
-      slug: installSlug,
+      slug: launchHarnessSlug,
       operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
       skipMcpJson: false,
     });
@@ -286,7 +292,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     command = buildAgentLaunchCommand({
       mode: 'fresh',
       agent: goalLaunch.effective.agent ?? 'claude',
-      harness: installSlug,
+      harness: launchHarnessSlug,
       ownerId,
       account: goalLaunch.effective.account ?? null,
       model: goalLaunch.effective.model ?? null,
@@ -332,7 +338,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
       let memberCmd = buildAgentLaunchCommand({
         mode: 'fresh',
         agent: goalLaunch.effective.agent ?? 'claude',
-        harness: installSlug,
+        harness: launchHarnessSlug,
         account: goalLaunch.effective.account ?? null,
         headless: true,
       });

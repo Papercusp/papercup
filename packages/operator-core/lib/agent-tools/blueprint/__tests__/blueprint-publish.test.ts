@@ -17,6 +17,7 @@ import publishTool from '../publish';
 import { operatorResolveExtends } from '../../../blueprint/installed-blueprints';
 import { resolveRepoCoordsFromDir } from '../../../cupboard/resolve-repo-coords';
 import { publishListingToCupboard } from '../../../cupboard/publish-listing';
+import { prepareBlueprintPublicRelease } from '../../../cupboard/blueprint-release';
 
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
 vi.mock('../../../blueprint/installed-blueprints', () => ({
@@ -54,6 +55,7 @@ vi.mock('../../../cupboard/blueprint-release', () => {
 const mockCoords = vi.mocked(resolveRepoCoordsFromDir);
 const mockPublish = vi.mocked(publishListingToCupboard);
 const mockResolveExtends = vi.mocked(operatorResolveExtends);
+const mockPrepareRelease = vi.mocked(prepareBlueprintPublicRelease);
 
 function call(tool: unknown, args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (tool as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler(
@@ -89,6 +91,7 @@ function repoWithLibraryBlueprint(id: string, yaml: string): string {
   return repo;
 }
 afterEach(() => {
+  vi.useRealTimers();
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -117,6 +120,27 @@ describe('blueprint:publish tool', () => {
     const res = body(await call(publishTool, { blueprintId: 'my-bp', title: 'T', description: 'D', repoDir: repo }));
     expect(res).toMatchObject({ ok: false, error: 'repo_coords_unresolvable' });
     expect(res.hint).toMatch(/git repo with a GitHub origin/i);
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it('starts repo resolution concurrently and returns a typed timeout when release preparation stalls', async () => {
+    vi.useFakeTimers();
+    const repo = repoWithBlueprint('slow-bp', 'id: slow-bp\nextends: coding\n');
+    mockPrepareRelease.mockImplementationOnce(() => new Promise(() => {}));
+
+    const pending = call(publishTool, { blueprintId: 'slow-bp', title: 'T', description: 'D', repoDir: repo });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mockCoords).toHaveBeenCalledTimes(1);
+    expect(mockPublish).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(body(await pending)).toMatchObject({
+      ok: false,
+      error: 'blueprint_publish_timeout',
+      status: 504,
+      detail: { stage: 'blueprint_release', timeoutMs: 20_000 },
+    });
     expect(mockPublish).not.toHaveBeenCalled();
   });
 

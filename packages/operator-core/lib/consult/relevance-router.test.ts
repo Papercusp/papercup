@@ -81,6 +81,24 @@ describe('selectResponders — selectability gate (liveness, D-008 §5)', () => 
     expect(vias(s)).toEqual(['floor', 'minimum']);
   });
 
+  it('rejects unknown liveness from absent presence in BOTH legs', () => {
+    const absentFloor = cand('absent-floor', { score: 0.9, liveness: 'unknown' });
+    const liveFloor = cand('live-floor', { score: 0.8 });
+    const absentFill = cand('absent-fill', { score: 0.5, liveness: 'unknown' });
+    const liveFill = cand('live-fill', { score: 0.4 });
+    const s = selectResponders({
+      qualified: [absentFloor, liveFloor],
+      allCandidates: [absentFloor, liveFloor, absentFill, liveFill],
+      min: 2,
+      max: 3,
+      // Missing presence is normalized to `unknown`; only a reachable live or
+      // parked session may receive the cascade wake.
+      isSelectable: (c) => c.liveness === 'live' || c.liveness === 'parked',
+    });
+    expect(ids(s)).toEqual(['live-floor', 'live-fill']);
+    expect(vias(s)).toEqual(['floor', 'minimum']);
+  });
+
   it('a minimum only fillable by the unreachable stays UNFILLED (honest short set)', () => {
     const all = [cand('dead', { liveness: 'ended' })];
     expect(selectResponders({ qualified: [], allCandidates: all, min: 1, max: 3, isSelectable: notDead })).toEqual([]);
