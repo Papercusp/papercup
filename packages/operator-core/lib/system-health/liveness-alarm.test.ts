@@ -2248,6 +2248,45 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
     expect([...unobservableLivenessSignatures(h)]).toEqual(['stale-paused-routines']);
   });
 
+  it('EI-22806259337076005: a stale token projection keeps accounts-starved unobservable', () => {
+    const h = mkHealth({
+      panels: {
+        tokens: {
+          data: {
+            accountsTotal: 12,
+            accountsAvailable: 0,
+            spendUsd: 1,
+            poolProjectionFreshestAgeMs: 31 * 60_000,
+          },
+        },
+      },
+    });
+    expect([...unobservableLivenessSignatures(h)]).toEqual(['accounts-starved']);
+  });
+
+  it('EI-22806259337076005: a fresh token projection remains observable', () => {
+    const h = mkHealth({
+      panels: {
+        tokens: {
+          data: {
+            accountsTotal: 12,
+            accountsAvailable: 0,
+            spendUsd: 1,
+            poolProjectionFreshestAgeMs: 29 * 60_000,
+          },
+        },
+      },
+    });
+    expect([...unobservableLivenessSignatures(h)]).toEqual([]);
+  });
+
+  it('EI-22806259337076005: an unreadable tokens panel keeps accounts-starved unobservable', () => {
+    const h = mkHealth({
+      panels: { tokens: { status: 'unknown', data: null, error: 'account pool read failed' } },
+    });
+    expect([...unobservableLivenessSignatures(h)]).toEqual(['accounts-starved']);
+  });
+
   it('CALIBRATION: a healthy, fully-READ panel marks nothing unobservable', () => {
     // Without this the two assertions above would also pass if the helper simply
     // returned every signature always.
@@ -2290,6 +2329,28 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
     const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp'), openRec('dead-routines', 'esc-dr')]);
     await t.run();
     expect(t.resolvedIds).toEqual([]);
+  });
+
+  it('EI-22806259337076005: an open accounts-starved escalation is NOT resolved while projection writes are stale', async () => {
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: {
+        tokens: {
+          data: {
+            accountsTotal: 12,
+            accountsAvailable: 0,
+            spendUsd: 1,
+            poolProjectionFreshestAgeMs: 31 * 60_000,
+          },
+        },
+      },
+    });
+    const t = tickWith(health, [openRec('accounts-starved', 'esc-accounts')]);
+    const r = await t.run();
+    // The fire path deliberately suppresses this signal while the projection is
+    // stale. The recovery path must preserve the open row for the same reason.
+    expect(t.resolvedIds).toEqual([]);
+    expect(r.resolved).toEqual([]);
   });
 
   it('CALIBRATION: a genuine, OBSERVED recovery still auto-resolves (the fix is not a blanket freeze)', async () => {

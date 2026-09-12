@@ -621,9 +621,7 @@ export function evaluateLivenessAlarm(
   //    projection-write stall through the shared predicate below; do not page the
   //    derived accounts-starved blocker until upstream capacity is measured again.
   const tk = health.panels.tokens?.data;
-  const poolProjectionStale = tk
-    ? projectionWriteStalled(tk, POOL_PROJECTION_STALE_WARN_MS)
-    : false;
+  const poolProjectionStale = accountPoolProjectionStale(health);
   if (!tickStale && !poolProjectionStale && tk && tk.accountsTotal > 0 && tk.accountsAvailable === 0) {
     signals.push({
       key: 'accounts-starved',
@@ -818,7 +816,31 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     // Panel succeeded, but this one sub-read's fail-soft catch fired.
     out.add('stale-paused-routines');
   }
+
+  // EI-22806259337076005 — the account-starvation signal is deliberately withheld
+  // while the usage-window projection is stale. `accountsAvailable === 0` is not a
+  // recovery observation in that state: the same untrusted projection that suppresses
+  // the fire path must keep an existing escalation open until a fresh write arrives.
+  // Keep this predicate shared with evaluateLivenessAlarm's suppression branch so the
+  // two absence paths cannot drift apart again.
+  const tokens = health.panels.tokens;
+  if (tokens && (tokens.status === 'unknown' || tokens.error != null)) {
+    // The panel-level collector failed, so account serviceability was not observed.
+    out.add('accounts-starved');
+  } else if (accountPoolProjectionStale(health)) {
+    out.add('accounts-starved');
+  }
   return out;
+}
+
+/**
+ * EI-22806259337076005 — account-starvation depends on a fresh usage-window
+ * projection. Keep the freshness test in one place because both the fire path
+ * and auto-resolve path must treat stale projection data as unobservable.
+ */
+function accountPoolProjectionStale(health: SystemHealth): boolean {
+  const tokens = health.panels.tokens?.data;
+  return tokens ? projectionWriteStalled(tokens, POOL_PROJECTION_STALE_WARN_MS) : false;
 }
 
 /**
