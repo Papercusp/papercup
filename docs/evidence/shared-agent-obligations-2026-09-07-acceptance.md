@@ -3,6 +3,48 @@
 Plan: `shared-agent-obligations-and-briefs-2026-09-05`, revision 53.
 Work item: `WI-2147072` / P-008. This is an in-progress evidence record; shipment is not yet verified.
 
+## Staging acceptance refresh — 2026-09-12
+
+Owner decision D-017 changes the remaining P-008 acceptance plane from deployed
+`main` to the current staging operator at `http://127.0.0.1:3170`. It preserves
+the pilot, tests, GUI journey, independent review, residue, rollback, and honest
+scope requirements. Staging evidence must not be called a deployed-main result.
+
+The staging `/api/health` response reported SHA
+`c20a63f79e44c7d20d492837712fe447c91f50d9`. The health writer resolves
+`getBuildInfo().sha` once at operator module load (`apps/operator/bin/serve.ts`)
+and the resolver returns the checkout Git SHA for an unbundled build
+(`packages/operator-core/lib/build-info.ts`). That staging commit is a descendant
+of the required feature floor `43460f5a5353b6607240d7f5a8417b878437fc50`.
+Git object reads at the staging SHA resolve all six required source paths:
+`agent-obligations.ts`, `agent-obligation-reader.ts`,
+`agent-obligation-providers.ts`, `agent-obligation-reminders.ts`,
+`turn-start-orientation.ts`, and `sync-resolver/goals.ts`. The staging tree also
+contains the shared-reader call sites in turn-start orientation, fleet leader
+brief, and goal-state composition. The scoped current working copies and tests
+have no diff from that staging SHA.
+
+Fresh R-6 replication through `testing:run` is run
+`9ec12f35-6a70-4ccf-af77-7921b13929f2`: 48 passed, zero failed/skipped across
+`agent-obligation-providers.test.ts` (25) and
+`agent-obligations.test.ts` (23). Reading the fixture writer gives exactly 18
+opportunities: six per placement, owner-report, and independent-verification
+family. The status rows contain eight known actionable cases
+(due/blocked/in-progress), three explicit unknown-inspection cases, and seven
+satisfied/no-demand controls. Because `agentObligationIsActionable` excludes only
+`satisfied` and `not-applicable`, the total actionable count is eleven. The seven
+controls have no action in the passing writer assertions, so this test population
+observed zero false interventions. These remain deterministic fixture
+opportunities—not completed live LLM cycles. Live behavior/canary residue remains
+explicitly unexercised where the prior record says so.
+
+Rubric revision 6 still declares R-6 on the `deployed` evidence plane. D-017 has
+been recorded and the required activation re-audit correctly refused to certify
+the plan until that mismatch is repaired (`WI-10001058`). The documented
+`rubrics:amend` preview is currently blocked by the independently owned
+BAR-snapshot repair `EI-23069125479585944`. No final grade, author acceptance,
+P-008 completion, or shipment is claimed by this refresh alone.
+
 ## Contract
 
 Acceptance rubric revision 5 preserves the seven existing outcomes and adds the required test layers. Independent approval is WI-10000444, thread-post:200074. A fresh complete amendment preview matched that approval before the CAS write from rubric 4 / plan 52. The resulting bar-set hash is `ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f`.
