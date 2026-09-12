@@ -43,6 +43,7 @@ const scorecard = {
   createdBy: 'su-grader',
   rubricRef: 'spec-test-adequacy',
   rubricRevision: 2,
+  criteriaHash: 'criteria-hash-v2',
   subject: { kind: 'scorecard' as const, ref: 'EI-subject' },
   criteria: Array.from({ length: 8 }, (_, i) => ({
     key: `criterion-${i + 1}`,
@@ -93,6 +94,7 @@ describe('scorecards:get evidence-first projection', () => {
     expect(Object.keys(payload?.scorecard ?? {}).sort()).toEqual([
       'createdAt',
       'createdBy',
+      'criteriaHash',
       'criteria',
       'extraKeys',
       'issueId',

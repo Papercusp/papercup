@@ -38,6 +38,7 @@ vi.mock('@papercusp/flags', () => ({
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { getFlag } from '@papercusp/flags/server';
 import { getModeSubject } from '../modes/store';
+import { classifyRubricEvidenceCurrentness } from '../rubrics';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import {
   GOAL_DISPOSITIONS,
@@ -314,24 +315,32 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
   };
   const card = (over: Partial<GoalAcceptanceCard> = {}): GoalAcceptanceCard => ({
     createdBy: 'su-goal-owner',
+    rubricRevision: 3,
+    criteriaHash: 'criteria-hash-current',
     rubricResolved: true,
     missingKeys: [],
     synthesized: false,
     ...over,
   });
   const vettedCard = (over: Partial<GoalAcceptanceCard> = {}): GoalAcceptanceCard =>
-    card({ vetting: { consultId: 'conv-vet-1', rubricRevision: 3 }, ...over });
+    card({
+      vetting: { consultId: 'conv-vet-1', rubricRevision: 3, criteriaHash: 'criteria-hash-current' },
+      ...over,
+    });
   /** Default deps: rubric exists (authored by the goal owner), meta registered,
    *  revision 3, no scorecards anywhere — each test overrides the leg it exercises. */
   const deps = (over: Partial<GoalAcceptanceGateDeps> = {}): GoalAcceptanceGateDeps => ({
     gateEnabled: async () => true,
     getRubricForGoal: async () => ({
       rubricId: 'ship-a-paid-app-acceptance',
+      revision: 3,
+      criteriaHash: 'criteria-hash-current',
       criteria: [{ key: 'outcome-1' }],
       proposedBy: 'su-goal-owner',
     }),
     getMetaRubric: async () => ({}),
     getRubricRevision: async () => 3,
+    classifyRubricCurrentness: classifyRubricEvidenceCurrentness,
     listCards: async () => [],
     metaRubricId: 'meta-acceptance-rubric',
     areLineageRelated: async (first, second) => first === second,
@@ -382,6 +391,38 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
     expect(v.satisfied).toBe(false);
     expect(v.code).toBe('goal_acceptance_rubric_unvetted');
     expect(v.message).toContain('Re-emit');
+  });
+
+  it('reuses vetting across a revision-only edit when the criteria hash is unchanged', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        listCards: cardsByRef(
+          [vettedCard({
+            vetting: { consultId: 'conv-vet-1', rubricRevision: 2, criteriaHash: 'criteria-hash-current' },
+          })],
+          [card({ createdBy: 'su-peer' })],
+        ),
+      }),
+    );
+
+    expect(v.satisfied).toBe(true);
+  });
+
+  it('invalidates same-revision vetting when the criteria or method identity changes', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        listCards: cardsByRef(
+          [vettedCard({
+            vetting: { consultId: 'conv-vet-1', rubricRevision: 3, criteriaHash: 'criteria-hash-old' },
+          })],
+          [card({ createdBy: 'su-peer' })],
+        ),
+      }),
+    );
+
+    expect(v.code).toBe('goal_acceptance_rubric_unvetted');
   });
 
   it('a meta-grade WITHOUT a linked consult is not a vetting', async () => {
@@ -438,6 +479,8 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
       deps({
         getRubricForGoal: async () => ({
           rubricId: 'ship-a-paid-app-acceptance',
+          revision: 3,
+          criteriaHash: 'criteria-hash-current',
           criteria: [{ key: 'outcome-1' }],
           proposedBy: 'su-rubric-author',
         }),
@@ -475,6 +518,8 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
         areLineageRelated,
         getRubricForGoal: async () => ({
           rubricId: 'ship-a-paid-app-acceptance',
+          revision: 3,
+          criteriaHash: 'criteria-hash-current',
           criteria: [{ key: 'outcome-1' }],
           proposedBy: 'su-rubric-author',
         }),
@@ -503,13 +548,43 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
     });
   });
 
-  it('unknown revision (null) accepts any vetted attestation — revision pinning needs a revision', async () => {
+  it('reuses independent grading across a revision-only edit when criteria are unchanged', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        listCards: cardsByRef(
+          [vettedCard()],
+          [card({ createdBy: 'su-independent-peer', rubricRevision: 2, criteriaHash: 'criteria-hash-current' })],
+        ),
+      }),
+    );
+
+    expect(v.satisfied).toBe(true);
+  });
+
+  it('invalidates independent grading at the same revision when criteria changed', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        listCards: cardsByRef(
+          [vettedCard()],
+          [card({ createdBy: 'su-independent-peer', rubricRevision: 3, criteriaHash: 'criteria-hash-old' })],
+        ),
+      }),
+    );
+
+    expect(v.code).toBe('goal_acceptance_ungraded');
+  });
+
+  it('criteria hash keeps vetting current when the revision read is null', async () => {
     const v = await evaluateGoalAcceptanceGate(
       GOAL,
       deps({
         getRubricRevision: async () => null,
         listCards: cardsByRef(
-          [vettedCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 1 } })],
+          [vettedCard({
+            vetting: { consultId: 'conv-vet-1', rubricRevision: 1, criteriaHash: 'criteria-hash-current' },
+          })],
           [card({ createdBy: 'su-independent-peer' })],
         ),
       }),

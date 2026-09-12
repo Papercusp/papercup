@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import type { SelectionVia } from '@papercusp/ranked-selection';
 import { getOrgPg } from '@papercusp/db-org';
 import {
+  classifyRubricEvidenceCurrentness,
   computeAcceptanceBarHash,
   computeAcceptanceBarSetHash,
   getAcceptanceRubricsForPlan,
@@ -261,6 +262,7 @@ export interface AcceptanceBarTrace {
     state: 'pass' | 'not-pass' | 'stale' | 'missing' | 'truncated';
     history?: Array<{
       scorecardId: string; createdAt: string; createdBy: string | null; rubricRevision: number | null;
+      criteriaHash?: string | null;
       role: 'author' | 'implementer' | 'independent' | 'unattributed';
       authoritative: boolean; currentRevision: boolean; complete: boolean; retracted: boolean;
       supersedes: string | null; supersededBy: string | null; selectedVia: SelectionVia | null;
@@ -268,6 +270,7 @@ export interface AcceptanceBarTrace {
     }>;
     scorecardId: string | null;
     rubricRevision: number | null;
+    criteriaHash?: string | null;
     gradedBy: string | null;
     selectedVia: SelectionVia | null;
     rating: string | null;
@@ -291,7 +294,7 @@ export interface AcceptanceBarContractSnapshot {
   rubric: {
     rubricId: string;
     revision: number | null;
-    criteriaHash: string | null;
+   Hash: string | null;
     barSetHash: string | null;
     contract: Rubric['barContract'] | null;
     createdBy: string | null;
@@ -324,10 +327,12 @@ export interface AcceptanceBarContractSnapshot {
     gradedBy: string | null;
     selectedVia: SelectionVia | null;
     rubricRevision: number | null;
+    criteriaHash?: string | null;
     vetting: {
       state: 'current' | 'stale' | 'missing' | 'truncated';
       scorecardId: string | null;
       rubricRevision: number | null;
+      criteriaHash?: string | null;
     };
     authorVerdict: {
       state: 'accepted' | 'accepted-pending-delivery' | 'rejected' | 'stale' | 'missing';
@@ -335,6 +340,7 @@ export interface AcceptanceBarContractSnapshot {
       verdict: string | null;
       createdBy?: string | null;
       rubricRevision?: number | null;
+      criteriaHash?: string | null;
       supersedes?: string | null;
       reasoning?: string | null;
     };
@@ -406,42 +412,6 @@ function problemKey(problem: AcceptanceBarSnapshotProblem): string {
 function addProblem(problems: AcceptanceBarSnapshotProblem[], problem: AcceptanceBarSnapshotProblem): void {
   const key = problemKey(problem);
   if (!problems.some((candidate) => problemKey(candidate) === key)) problems.push(problem);
-}
-
-/**
- * Is a card recorded at `cardRevision` still current for `rubricRevision`?
- *
- * Revision equality alone answers this WRONG in the expensive direction. The
- * rubric revision counter advances on every amendment, including ones that
- * change only METHOD (how a BAR is probed) and leave every BAR's meaning — and
- * so its `barHash` — byte-identical. Judged by the counter, a typo fix voids a
- * peer's completed independent grading pass and the vetting attestation with
- * it, and the only recorded consequence is that the party who did the work
- * correctly is told to do it again.
- *
- * `barContract.meaningRevision` — the MEANING EPOCH, written by the same
- * `ACCEPTANCE_BAR_MEANING_FIELDS` classifier that decides whether an amendment
- * needs approval — records the revision at which BAR meaning last actually
- * changed. A card recorded at or after that revision judged the BAR contract
- * still in force, whatever the counter has done since.
- *
- * When no epoch is recorded (a rubric last written before the field existed)
- * this falls back to strict equality. That fallback is the conservative
- * direction on purpose: absence means "meaning history unknown", and treating
- * unknown as "unchanged" would bless a card graded before an untracked meaning
- * change, which is the failure the epoch exists to prevent.
- */
-function revisionRecordCurrent(
-  cardRevision: number | null | undefined,
-  rubricRevision: number | null,
-  meaningRevision: number | null | undefined,
-): boolean {
-  if (cardRevision == null) return cardRevision === rubricRevision;
-  if (cardRevision === rubricRevision) return true;
-  if (meaningRevision == null || rubricRevision == null) return false;
-  // Never treat a card from the FUTURE of the current revision as current: that
-  // is a read anomaly, not a meaning-preserving amendment.
-  return cardRevision >= meaningRevision && cardRevision <= rubricRevision;
 }
 
 function scorecardAcceptance(card: ScorecardRow): {
@@ -591,11 +561,11 @@ export function nextRepair(
     bar_snapshot_work_contract_stale: 'Rebind the open work-item contract to the current spec revision.',
     bar_snapshot_proof_missing: 'Bind evidence at the current spec revision on the declared evidence plane.',
     bar_snapshot_proof_stale: 'Re-prove the current spec revision; superseded proof does not cover it.',
-    bar_snapshot_grading_missing: 'Record a complete independent grading against the current rubric revision.',
-    bar_snapshot_grading_stale: 'Re-grade against the current rubric revision.',
+    bar_snapshot_grading_missing: 'Record a complete independent grading against the current rubric criteria.',
+    bar_snapshot_grading_stale: 'Re-grade against the current rubric criteria.',
     bar_snapshot_grading_not_pass: 'Satisfy the BAR and record a pass-equivalent independent rating.',
-    bar_snapshot_vetting_missing: 'Vet the current acceptance-rubric revision.',
-    bar_snapshot_vetting_stale: 'Re-vet the current acceptance-rubric revision.',
+    bar_snapshot_vetting_missing: 'Vet the current acceptance-rubric criteria.',
+    bar_snapshot_vetting_stale: 'Re-vet the current acceptance-rubric criteria.',
     bar_snapshot_author_verdict_missing: 'Record the author-side verdict after reading the independent grading.',
     bar_snapshot_author_verdict_stale: 'Record a new author verdict for the authoritative grading.',
     bar_snapshot_author_rejected: 'Address the rejected grading before recording a newer verdict.',
@@ -846,11 +816,7 @@ export function projectAcceptanceBarContractSnapshot(
   const itemStatus = new Map(input.planItems.rows.map((item) => [item.itemId, item.status]));
   const grading = authoritativeGrading(input, rubric);
   const rubricRevision = rubric?.revision ?? null;
-  // The MEANING EPOCH: the revision at which BAR meaning last changed. Grading
-  // and vetting currentness follow this, not the bare revision counter — see
-  // revisionRecordCurrent. Undefined on rubrics written before the field
-  // existed, which falls back to strict revision equality.
-  const barMeaningRevision = rubric?.barContract?.meaningRevision ?? null;
+  const rubricCriteriaHash = rubric?.criteriaHash ?? null;
   const bars: AcceptanceBarTrace[] = [];
   for (const criterion of boundedCriteria
     .slice()
@@ -935,11 +901,10 @@ export function projectAcceptanceBarContractSnapshot(
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
     const rating = ratingEntry?.rating?.trim() || null;
     const passRatings = normalized(criterion.passRatings).map((value) => value.toLowerCase());
-    const gradingCurrent = revisionRecordCurrent(
-      grading.card?.rubricRevision,
-      rubricRevision,
-      barMeaningRevision,
-    );
+    const gradingCurrent = classifyRubricEvidenceCurrentness(
+      { revision: grading.card?.rubricRevision, criteriaHash: grading.card?.criteriaHash },
+      { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+    ).state === 'current';
     const gradingState: AcceptanceBarTrace['grading']['state'] = input.scorecards.truncated
       ? 'truncated'
       : !grading.card || !rating
@@ -977,7 +942,6 @@ export function projectAcceptanceBarContractSnapshot(
           clause.sourceBar?.barHash !== criterion.barHash ||
           clause.sourceBar?.barSetHash !== plan?.barSetHash ||
           clause.sourceBar?.rubricSlug !== rubric?.rubricId ||
-          clause.sourceBar?.rubricRevision !== rubricRevision ||
           clause.sourceBar?.evidencePlane !== criterion.evidencePlane ||
           requiredTestLayers.some((layer) => !normalized(clause.requiredTestLayers).includes(layer)),
       )
@@ -1077,9 +1041,13 @@ export function projectAcceptanceBarContractSnapshot(
             const acceptance = scorecardAcceptance(card);
             return {
               scorecardId: card.issueId, createdAt: card.createdAt, createdBy: card.createdBy,
-              rubricRevision: card.rubricRevision ?? null, role: grading.roleOf(card),
+              rubricRevision: card.rubricRevision ?? null, criteriaHash: card.criteriaHash ?? null,
+              role: grading.roleOf(card),
               authoritative: card.issueId === grading.card?.issueId || card.issueId === grading.authorVerdict?.issueId,
-              currentRevision: card.rubricRevision === rubricRevision, complete: completeScorecard(card),
+              currentRevision: classifyRubricEvidenceCurrentness(
+                { revision: card.rubricRevision, criteriaHash: card.criteriaHash },
+                { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+              ).state === 'current', complete: completeScorecard(card),
               retracted: Boolean(card.retracted), supersedes: card.supersedes ?? null,
               supersededBy: card.supersededBy ?? null, selectedVia: gradingViaOf(card, input.graderSelectionVia),
               rating: entry?.rating ?? null, evidence: entry?.evidence ?? null,
@@ -1088,6 +1056,7 @@ export function projectAcceptanceBarContractSnapshot(
           }),
         scorecardId: grading.card?.issueId ?? null,
         rubricRevision: grading.card?.rubricRevision ?? null,
+        criteriaHash: grading.card?.criteriaHash ?? null,
         gradedBy: grading.card?.createdBy ?? null,
         selectedVia: grading.via,
         rating,
@@ -1108,7 +1077,10 @@ export function projectAcceptanceBarContractSnapshot(
       (card) =>
         completeScorecard(card) &&
         Boolean(card.vetting?.consultId || card.vetting?.workItemId) &&
-        revisionRecordCurrent(card.vetting?.rubricRevision as number | null | undefined, rubricRevision, barMeaningRevision) &&
+        classifyRubricEvidenceCurrentness(
+          { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
+          { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+        ).state === 'current' &&
         !card.supersededBy,
     )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
@@ -1248,10 +1220,12 @@ export function projectAcceptanceBarContractSnapshot(
       gradedBy: grading.card?.createdBy ?? null,
       selectedVia: grading.via,
       rubricRevision: grading.card?.rubricRevision ?? null,
+      criteriaHash: grading.card?.criteriaHash ?? null,
       vetting: {
         state: vettingState,
         scorecardId: currentVetting?.issueId ?? anyVetting?.issueId ?? null,
         rubricRevision: currentVetting?.vetting?.rubricRevision ?? anyVetting?.vetting?.rubricRevision ?? null,
+        criteriaHash: currentVetting?.vetting?.criteriaHash ?? anyVetting?.vetting?.criteriaHash ?? null,
       },
       authorVerdict: {
         state: authorVerdictState,
@@ -1259,6 +1233,7 @@ export function projectAcceptanceBarContractSnapshot(
         verdict: authorAcceptance?.verdict ?? null,
         createdBy: grading.authorVerdict?.createdBy ?? null,
         rubricRevision: grading.authorVerdict?.rubricRevision ?? null,
+        criteriaHash: grading.authorVerdict?.criteriaHash ?? null,
         supersedes: grading.authorVerdict?.supersedes ?? null,
         reasoning: authorAcceptance?.reasoning ?? null,
       },

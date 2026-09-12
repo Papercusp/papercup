@@ -524,6 +524,8 @@ export interface ScorecardRow {
   rubricRef: string;
   /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
   rubricRevision?: number;
+  /** The graded rubric's substantive criteria/method identity at emit time. */
+  criteriaHash?: string;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
   ratings: ObservationRatings;
   /** Commit the positive release-gating ratings tested, when gate-bound. */
@@ -658,6 +660,7 @@ export interface ScorecardEvidenceRow {
   createdBy: string | null;
   rubricRef: string;
   rubricRevision?: number;
+  criteriaHash?: string;
   sourceHive?: string;
   subject?: ObservationSubject;
   criteria: ScorecardEvidenceCriterion[];
@@ -682,6 +685,7 @@ interface ScorecardEvidenceDb {
   created_at: string | Date;
   rubric_ref: string | null;
   rubric_revision: unknown;
+  criteria_hash: string | null;
   source_hive: string | null;
   subject: unknown;
   ratings: unknown;
@@ -709,6 +713,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.created_at,
              scorecard.payload -> 'observation' ->> 'rubricRef' AS rubric_ref,
              scorecard.payload -> 'observation' -> 'rubricRevision' AS rubric_revision,
+             scorecard.payload -> 'observation' ->> 'criteriaHash' AS criteria_hash,
              scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
              scorecard.payload -> 'observation' -> 'subject' AS subject,
              scorecard.payload -> 'observation' -> 'ratings' AS ratings,
@@ -728,6 +733,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
   const observation = asStructuredObservation({
     rubricRef: row.rubric_ref,
     rubricRevision: row.rubric_revision,
+    criteriaHash: row.criteria_hash,
     sourceHive: row.source_hive,
     subject: row.subject,
     ratings: row.ratings,
@@ -770,6 +776,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       createdBy: row.created_by,
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+      ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
       ...(observation.subject ? { subject: observation.subject } : {}),
       criteria,
@@ -1724,6 +1731,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+      ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
       ratings,
       ...(observation.testedSha ? { testedSha: observation.testedSha } : {}),
       ...(observation.releaseGateBinding

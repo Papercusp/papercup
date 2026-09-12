@@ -55,6 +55,11 @@ import {
 import { transientExecHandleWarning } from './su-cold-loop';
 import type { HydratableRef } from './agent-tools/coordination/ref-hydrate';
 import type { WorkItemCheckpointRef, WorkItemCheckpointWithMeta } from './work-item-checkpoint';
+import {
+  readLinkedByocReleaseCarries,
+  renderByocReleaseCarry,
+  type ByocReleaseCarrySnapshot,
+} from './byoc-release-carry';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -157,6 +162,9 @@ export interface CarryBrief {
   postNoteInbox?: { count: number; lines: string[] } | null;
   /** Held (assigned, non-terminal) work-items + their checkpoints. */
   heldItems: CarryBriefHeldItem[];
+  /** Bounded projections of canonical BYOC release journals explicitly linked
+   * to this owner or one of the held work-items. The task ledger stays canonical. */
+  byocReleases?: ByocReleaseCarrySnapshot[];
   /** This session's non-terminal, unheld work-items that it filed or commented
    *  on. Optional so legacy/injected CarryBrief literals remain valid. */
   deferredItems?: CarryBriefDeferredItem[];
@@ -881,6 +889,11 @@ export interface BuildCarryBriefOpts {
     ownerId: string;
   }) => Promise<LoopCarryNoteWithMeta>;
   readHeldWorkItemsFn?: typeof readHeldWorkItems;
+  readByocReleaseCarriesFn?: (
+    ownerId: string,
+    workspaceId: string,
+    heldWorkItemIds: readonly string[],
+  ) => Promise<ByocReleaseCarrySnapshot[]>;
   readDeferredWorkItemsFn?: typeof readDeferredWorkItems;
   listOwnerFactsFn?: (
     ownerId: string,
@@ -1299,6 +1312,19 @@ export async function buildCarryBrief(
   }
 
   try {
+    const readReleases = opts.readByocReleaseCarriesFn ??
+      ((id: string, ws: string, heldIds: readonly string[]) =>
+        readLinkedByocReleaseCarries(
+          { ownerId: id, workspaceId: ws, heldWorkItemIds: heldIds },
+          opts.sql ?? getOrgPg().sql,
+        ));
+    const releases = await readReleases(ownerId, workspaceId, brief.heldItems.map((item) => item.id));
+    if (releases.length > 0) brief.byocReleases = releases;
+  } catch {
+    /* optional BYOC adapter stays absent; other carry sections remain usable */
+  }
+
+  try {
     const readDeferred = opts.readDeferredWorkItemsFn ?? readDeferredWorkItems;
     const deferredItems = await readDeferred(ownerId, workspaceId, { sql: opts.sql });
     if (deferredItems.length > 0) brief.deferredItems = deferredItems;
@@ -1554,6 +1580,11 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   if (brief.awaits.length > 0) {
     parts.push(`armed awaits: ${brief.awaits.map((a) => a.eventKey).join(', ')}`);
   }
+  if ((brief.byocReleases ?? []).length > 0) {
+    parts.push(
+      `BYOC release tasks ${(brief.byocReleases ?? []).map((release) => release.taskId).join(', ')} — current stage receipts re-render from task_ledger`,
+    );
+  }
   if (brief.fleet) {
     parts.push(`fleet ${brief.fleet.slug}${brief.fleet.role ? ` (${brief.fleet.role})` : ''}`);
   }
@@ -1738,6 +1769,13 @@ export function renderCarryBriefColdExtras(
       `🧪 CARRIED CHECKS (this LOOP's) — claims + their probes (✓ verified w/ evidence · ? PREDICTED — run the re-check before relying; clear via loop:checkpoint { checks }):\n${brief.checks
         .map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`)
         .join('\n')}${alsoOnItems}`,
+    );
+  }
+  if ((brief.byocReleases ?? []).length > 0) {
+    sections.push(
+      `🚚 AUTHORITATIVE BYOC RELEASE RECEIPTS — derived from task_ledger, not authored carry prose. ` +
+        `Re-read the task before acting if this document is stale; open walls/retractions elsewhere in this brief remain binding:\n` +
+        (brief.byocReleases ?? []).map(renderByocReleaseCarry).join('\n'),
     );
   }
   const idleNoteGuard = detectIdleNoteGuard(brief.loop?.carryNote, deferredItems);

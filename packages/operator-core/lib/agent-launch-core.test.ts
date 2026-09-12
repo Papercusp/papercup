@@ -13,6 +13,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 import {
   AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS,
   AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS,
+  MEMBER_BASELINE_RULES,
   buildAgentLaunchCommand,
   claimAgentLaunch,
   composeModelSpec,
@@ -32,6 +33,19 @@ import {
 } from './agent-launch-core';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
+
+describe('member baseline causal-evidence contract', () => {
+  it('names every v2 field required by successful defect closes', () => {
+    const completionRule = MEMBER_BASELINE_RULES.find((rule) => rule.head === 'Completion evidence is mandatory');
+    expect(completionRule?.body).toContain('rootCauseVerification');
+    for (const field of [
+      'testProcedure',
+      'predictedObservations:{hypothesis,alternativeHypothesis}',
+      'actualObservation',
+      'evidenceRefs',
+    ]) expect(completionRule?.body).toContain(field);
+  });
+});
 
 beforeEach(() => {
   launchCoreSql.mockReset();
