@@ -75,6 +75,7 @@ import {
 import {
   CompletionRecordSchema,
   COMPLETION_COVERAGE_CONTRACT,
+  COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
   ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
   ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES,
   missingRootCauseVerificationV2Fields,
@@ -414,6 +415,12 @@ const SERVER_STAMPED_TREE_STAMP_MESSAGE =
   'content identity for the committed-vs-proposed authority gate, and an abbreviated SHA is an ' +
   'ambiguous identity), so the fix is to DROP the field — not to lengthen the SHA. Put what you ' +
   'actually verified in `testsRun` / `testResult`, and the paths you changed in `filesChanged`.';
+
+const SERVER_STAMPED_SETTLEMENT_MANIFEST_MESSAGE =
+  '`completion.verification.settlementManifest` is SERVER-STAMPED — omit it. The server derives the ' +
+  'settlement receipt from the observed checkout and overwrites any caller-supplied value. Do not ' +
+  'translate it into intuitive artifact fields or retry with a guessed schema; send only the ' +
+  'caller-owned completion evidence and let the server create the manifest.';
 
 /**
  * A union's default error collapses every branch into "Invalid input", hiding
@@ -4564,6 +4571,7 @@ export default defineTool({
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
     seeAlso: [
+      COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
       'improvements:capture (file the friction the reflect step surfaced)',
@@ -4701,9 +4709,19 @@ export default defineTool({
       if (!verification || typeof verification !== 'object' || Array.isArray(verification)) return false;
       return (verification as Record<string, unknown>).treeStamp !== undefined;
     });
+    const sendsSettlementManifest = entries.some((entry) => {
+      const completion = entry.completion ?? root.completion;
+      if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return false;
+      const fields = completion as Record<string, unknown>;
+      if (fields.settlementManifest !== undefined) return true;
+      const verification = fields.verification;
+      if (!verification || typeof verification !== 'object' || Array.isArray(verification)) return false;
+      return (verification as Record<string, unknown>).settlementManifest !== undefined;
+    });
     return [
       ...(needsAssumptions ? [ASSUMPTIONS_REQUIRED_MESSAGE] : []),
       ...(sendsTreeStamp ? [SERVER_STAMPED_TREE_STAMP_MESSAGE] : []),
+      ...(sendsSettlementManifest ? [SERVER_STAMPED_SETTLEMENT_MANIFEST_MESSAGE] : []),
     ];
   },
   args: z.preprocess(

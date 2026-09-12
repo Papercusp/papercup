@@ -138,7 +138,10 @@ import {
   hoistMisplacedCompletionFields,
 } from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
-import { CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS } from '../../coord-lifecycle/records';
+import {
+  CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
+  COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
+} from '../../coord-lifecycle/records';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
 
@@ -151,6 +154,7 @@ describe('work_items:complete — ambient workspace transaction safety (EI-20194
 describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
   it('stays within the shared guidance budget', () => {
     expect(promptWeight(complete as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+    expect(complete.guidance?.seeAlso).toContain(COMPLETION_SETTLEMENT_MANIFEST_CONTRACT);
   });
 
   it('publishes closed→dropped semantics so successful work is not marked discarded', () => {
@@ -4008,6 +4012,28 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(result.success).toBe(true);
       expect(result.data?.completion).not.toHaveProperty('treeStamp');
       expect(result.data?.completion).not.toHaveProperty('settlementManifest');
+
+      const nestedResult = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: any; error?: unknown };
+        }
+      ).safeParse({
+        id: 'WI-21599866958764530',
+        completion: {
+          workItem: 'WI-21599866958764530',
+          summary: 'retrying the recorded completion with nested evidence',
+          verification: {
+            filesChanged: ['src/fix.ts'],
+            testsRun: 'focused test',
+            testResult: 'passed',
+            verifiedHow: 'unit',
+            settlementManifest,
+          },
+        },
+      });
+
+      expect(nestedResult.success).toBe(true);
+      expect(nestedResult.data?.completion?.verification).not.toHaveProperty('settlementManifest');
     });
 
     it('accepts the server-stamped assumptions object on a read→retry (EI-22404076241784390)', () => {
@@ -5093,6 +5119,62 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       ).toEqual([expect.stringContaining('a terminal close requires `assumptions`'), treeStampHint]);
     });
 
+    const settlementManifestHint = expect.stringContaining('settlementManifest');
+
+    it('names the caller-omit rule for direct completion.settlementManifest', () => {
+      expect(
+        preconditions({
+          id: 'WI-1',
+          completion: { summary: 'x', settlementManifest: { schemaVersion: 1 } },
+        }),
+      ).toEqual([settlementManifestHint]);
+    });
+
+    it('names it for nested verification.settlementManifest and an items[] entry', () => {
+      expect(
+        preconditions({
+          id: 'WI-1',
+          completion: { summary: 'x', verification: { settlementManifest: {} } },
+        }),
+      ).toEqual([settlementManifestHint]);
+      expect(
+        preconditions({
+          items: [
+            { id: 'WI-1', completion: { summary: 'clean' } },
+            { id: 'WI-2', completion: { summary: 'x', verification: { settlementManifest: {} } } },
+          ],
+        }),
+      ).toEqual([settlementManifestHint]);
+    });
+
+    it('warns on a well-formed settlement manifest too — presence, not schema shape, is the rule', () => {
+      const manifest = {
+        version: 1,
+        generation: 1,
+        evidenceHash: 'c'.repeat(64),
+        repositoryRoot: '/repo',
+        headSha: 'a'.repeat(40),
+        normalizedPaths: ['src/fix.ts'],
+        contentIdentity: [{ path: 'src/fix.ts', workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'b'.repeat(40) }],
+      };
+      expect(
+        preconditions({
+          id: 'WI-1',
+          completion: { summary: 'x', verification: { settlementManifest: manifest } },
+        }),
+      ).toEqual([settlementManifestHint]);
+    });
+
+    it('emits BOTH lines when a terminal close also sends settlementManifest, assumptions first', () => {
+      expect(
+        preconditions({
+          id: 'WI-1',
+          state: 'resolved',
+          completion: { summary: 'x', verification: { settlementManifest: {} } },
+        }),
+      ).toEqual([expect.stringContaining('a terminal close requires `assumptions`'), settlementManifestHint]);
+    });
+
     // CONTROLS — these must not be rewritten to accommodate a future change. They are what
     // make the assertions above falsifiable: a detector that fired on any `completion` at all,
     // or on any key merely containing "treeStamp", would pass every test above and fail these.
@@ -5102,6 +5184,15 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       ).toEqual([]);
       expect(preconditions({ id: 'WI-1', completion: { summary: 'x', verification: {} } })).toEqual([]);
       expect(preconditions({ id: 'WI-1', completion: { summary: 'mentions treeStamp in prose only' } })).toEqual([]);
+    });
+
+    it('stays silent for settlementManifest prose and unrelated verification evidence', () => {
+      expect(
+        preconditions({ id: 'WI-1', completion: { summary: 'settlementManifest is server-generated' } }),
+      ).toEqual([]);
+      expect(
+        preconditions({ id: 'WI-1', completion: { summary: 'x', verification: { filesChanged: ['a.ts'] } } }),
+      ).toEqual([]);
     });
 
     it('is total against the malformed shapes this detector newly reaches into', () => {
