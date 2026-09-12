@@ -110,8 +110,8 @@ export function toShaPattern(sha: string): string {
  */
 export function defaultRollupSource(
   rollup: 'commit' | 'runGroup' | undefined,
-  source?: 'ci' | 'local' | 'admin-ui',
-): 'ci' | 'local' | 'admin-ui' | null {
+  source?: 'ci' | 'local' | 'admin-ui' | 'mutation-probe',
+): 'ci' | 'local' | 'admin-ui' | 'mutation-probe' | null {
   return source ?? (rollup ? 'ci' : null);
 }
 
@@ -339,7 +339,7 @@ export default defineTool({
     commitSha?: string;
     runGroup?: string;
     status?: Array<'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running'>;
-    source?: 'ci' | 'local' | 'admin-ui';
+    source?: 'ci' | 'local' | 'admin-ui' | 'mutation-probe';
     since?: string;
     sinceHours?: number;
     workspace?: string;

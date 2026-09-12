@@ -1609,8 +1609,8 @@ export interface PersistHarnessTestRunsParams {
   runGroupId: string;
   branch?: string | null;
   commit?: string | null;
-  /** test_runs.source — must satisfy the CHECK ('ci'|'local'|'admin-ui'); defaults to 'admin-ui'. */
-  source?: 'ci' | 'local' | 'admin-ui';
+  /** test_runs.source — must satisfy the CHECK ('ci'|'local'|'admin-ui'|'mutation-probe'); defaults to 'admin-ui'. */
+  source?: 'ci' | 'local' | 'admin-ui' | 'mutation-probe';
   /** EI-18795303393201472: true when the run executed against a working tree that
    *  wasn't provably stable start-to-finish (see computeWorktreeDirty) — the stamped
    *  `commit` can't be trusted as the code that actually ran. Defaults to false ONLY

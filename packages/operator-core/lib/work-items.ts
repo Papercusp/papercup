@@ -5041,7 +5041,26 @@ export async function claimWorkItem(
     const ws = activeWorkspaceId();
     const rows = await sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
-         SET taken_by = ${assignee}, taken_at = now(),
+         SET payload = CASE
+               WHEN taken_by = ${assignee}
+                 OR (taken_by IS NOT NULL AND taken_by <> '' AND position(taken_by in ${assignee}) = 1)
+               THEN payload
+               ELSE jsonb_set(
+                 COALESCE(payload, '{}'::jsonb),
+                 '{claim_history_post_id}',
+                 to_jsonb(COALESCE((
+                   SELECT max(post.id)
+                     FROM harness_shared.coord_threads thread
+                     JOIN harness_shared.coord_thread_posts post
+                       ON post.workspace_id = ${ws} AND post.thread_id = thread.thread_id
+                    WHERE thread.workspace_id = ${ws}
+                      AND thread.parent_kind = 'feature'
+                      AND thread.parent_ref = harness_slug || '#' || feature_id
+                 ), 0)),
+                 true
+               )
+             END,
+             taken_by = ${assignee}, taken_at = now(),
              -- P-001: a NEW holder starts with a clean progress slate (so the grace
              -- window anchors on the fresh taken_at, not a prior holder's stale
              -- last_progress_at); a re-claim by the SAME agent (including a
@@ -7220,7 +7239,21 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
       UPDATE harness_shared.harness_features_consolidated
          -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
          -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
-         SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
+         SET payload = jsonb_set(
+               COALESCE(payload, '{}'::jsonb),
+               '{claim_history_post_id}',
+               to_jsonb(COALESCE((
+                 SELECT max(post.id)
+                   FROM harness_shared.coord_threads thread
+                   JOIN harness_shared.coord_thread_posts post
+                     ON post.workspace_id = ${ws} AND post.thread_id = thread.thread_id
+                  WHERE thread.workspace_id = ${ws}
+                    AND thread.parent_kind = 'feature'
+                    AND thread.parent_ref = harness_slug || '#' || feature_id
+               ), 0)),
+               true
+             ),
+             taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
        WHERE (harness_slug, feature_id) = (
          SELECT harness_slug, feature_id
            FROM harness_shared.harness_features_consolidated
@@ -8081,7 +8114,21 @@ export async function claimNextIssueWorkItem(
         : tx`TRUE`;
       const rows = await tx<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
-       SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
+       SET payload = jsonb_set(
+             COALESCE(payload, '{}'::jsonb),
+             '{claim_history_post_id}',
+             to_jsonb(COALESCE((
+               SELECT max(post.id)
+                 FROM harness_shared.coord_threads thread
+                 JOIN harness_shared.coord_thread_posts post
+                   ON post.workspace_id = ${issueWs} AND post.thread_id = thread.thread_id
+                WHERE thread.workspace_id = ${issueWs}
+                  AND thread.parent_kind = 'issue'
+                  AND thread.parent_ref = feature_id
+             ), 0)),
+             true
+           ),
+           taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
      WHERE (workspace_id, harness_slug, feature_id) = (
        SELECT workspace_id, harness_slug, feature_id
          FROM harness_shared.work_items wi

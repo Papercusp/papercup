@@ -281,10 +281,16 @@ export const FALSIFIED_OWNER_ANCHOR_NOTE =
 
 /** P-016 (EI-212678): the owner-authority vocabulary shared by every
  * carry-surface writer. These matches were historically response-only warnings,
- * so a later carry fold could lose the caveat entirely. */
+ * so a later carry fold could lose the caveat entirely.
+ *
+ * A bare `do not ... until ...` gate is intentionally NOT in this set. The
+ * synchronous lint surfaces it as a potentially unsafe imperative, but its
+ * wording carries no claim that the human owner issued it. Treating that
+ * warning as owner evidence fabricated `sourceRef:'owner-turn'` and silently
+ * downgraded caller confidence on ordinary self/peer/system guidance.
+ */
 export const OWNER_AUTHORITY_LINT_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
   'owner-attribution',
-  'bare-gate-imperative',
   'manual-owner-tag',
   'unverified-dialog-answer-claim',
 ]);

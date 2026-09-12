@@ -20,6 +20,19 @@ import {
 const NOW = Date.parse('2026-08-04T00:47:00.000Z');
 
 describe('deriveLastRespawnOutcome', () => {
+  it('does not infer a dead retry from the real multi-window pending sequence (EI-23072259158385662)', () => {
+    const out = deriveLastRespawnOutcome([
+      { ts: '2026-09-12T15:52:24.659Z', kind: 'respawn-rearm-queued', capMs: 360_000 },
+      { ts: '2026-09-12T16:13:24.667Z', kind: 'respawn-rearm-superseded', capMs: 180_000 },
+      { ts: '2026-09-12T16:22:38.477Z', kind: 'wake-turn-deferred-for-pending-respawn' },
+    ], { now: Date.parse('2026-09-12T16:23:00.000Z') });
+    expect(out.outcome).toBe('pending');
+    expect(lostRespawnAmbientLine(out)).toContain('carry-respawn DELAYED');
+    expect(lostRespawnAmbientLine(out)).not.toContain('ORPHANED');
+    expect(priorRespawnNote(out)).not.toContain('does NOT inherit');
+    expect(priorRespawnNote(out)).toContain('may still be retrying');
+  });
+
   it('reports `dropped` with the host reason for the real 2026-08-04 failure sequence', () => {
     const rows = [
       { ts: '2026-08-04T00:25:22.517Z', kind: 'wake-turn-deferred-for-pending-respawn', reason: 'carry-respawn-pending' },

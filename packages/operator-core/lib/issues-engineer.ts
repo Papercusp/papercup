@@ -2889,7 +2889,27 @@ export async function claimIssue(
        AND item_kind IN ('bug', 'change', 'task')`;
   const priorAssignee = priorRows[0]?.taken_by ?? null;
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
+    UPDATE harness_shared.engineer_issues SET
+      payload = CASE
+        WHEN assignee = ${assignee}
+          OR (assignee IS NOT NULL AND btrim(assignee) <> '' AND position(assignee in ${assignee}) = 1)
+        THEN payload
+        ELSE jsonb_set(
+          COALESCE(payload, '{}'::jsonb),
+          '{claim_history_post_id}',
+          to_jsonb(COALESCE((
+            SELECT max(post.id)
+              FROM harness_shared.coord_threads thread
+              JOIN harness_shared.coord_thread_posts post
+                ON post.workspace_id = ${ws} AND post.thread_id = thread.thread_id
+             WHERE thread.workspace_id = ${ws}
+               AND thread.parent_kind = 'issue'
+               AND thread.parent_ref = issue_id
+          ), 0)),
+          true
+        )
+      END,
+      assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
        -- EI-15027: a literal 'unassigned' sentinel (case/whitespace-insensitive) — some
        -- federated/legacy writers use it as a "not taken" placeholder instead of NULL/''

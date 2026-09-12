@@ -140,7 +140,7 @@ export default defineTool({
       .optional()
       .describe('Exact run_group_id to diff TO. Default: the most recent group in the population.'),
     source: z
-      .enum(['ci', 'local', 'admin-ui'])
+      .enum(['ci', 'local', 'admin-ui', 'mutation-probe'])
       .optional()
       .describe('Which writer produced the rows. Default "ci" — local rows prove nothing about a sha.'),
     includeDirty: z
@@ -158,7 +158,7 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean(),
-      source: z.enum(['ci', 'local', 'admin-ui']),
+      source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']),
       includeDirty: z.boolean(),
       limit: z.number().int().nonnegative(),
       baseline: z.unknown().optional(),
@@ -183,7 +183,7 @@ export default defineTool({
   async handler(args: {
     baseline?: string;
     candidate?: string;
-    source?: 'ci' | 'local' | 'admin-ui';
+    source?: 'ci' | 'local' | 'admin-ui' | 'mutation-probe';
     includeDirty?: boolean;
     limit?: number;
   }) {
