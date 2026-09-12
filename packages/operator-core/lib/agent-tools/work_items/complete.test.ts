@@ -139,6 +139,7 @@ import {
   hoistMisplacedCompletionFields,
 } from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
+import { CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS } from '../../coord-lifecycle/records';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
 
@@ -715,6 +716,28 @@ describe('work_items:complete (keyed-array)', () => {
       expect(carried).toContain('gate is green');
       expect(carried).toContain('"observed":"audit remains pending"');
       expect(carried).toContain('main is at abc123');
+      expect(carried).toContain('verification pass done');
+      expect(carried).toContain('checkpointProseSnapshot');
+    });
+
+    it('carries a bounded prose checkpoint snapshot before terminal cleanup', async () => {
+      const prose = `## Did\nnamed prose survives the clear\n\n## Baseline\nbaseline prose survives the clear\n${'x'.repeat(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS + 200)}`;
+      getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
+      getWorkItemCheckpoint.mockResolvedValue(prose);
+
+      const r = await one({ id: 'F-12', completion: { summary: 'shipped' } });
+
+      expect(r.ok).toBe(true);
+      const [, options] = attachCompletionEvidenceToSettledItem.mock.calls[0] as [
+        string,
+        { completionEvidence?: Record<string, unknown> },
+      ];
+      const snapshot = options.completionEvidence?.checkpointProseSnapshot;
+      expect(snapshot).toEqual(expect.stringContaining('named prose survives the clear'));
+      expect(snapshot).toEqual(expect.stringContaining('baseline prose survives the clear'));
+      expect(typeof snapshot).toBe('string');
+      expect((snapshot as string).length).toBe(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS);
+      expect((snapshot as string).endsWith('…[truncated]')).toBe(true);
     });
 
     it('writes no checkpointChecksCarried when the checkpoint is empty or absent', async () => {
@@ -4681,6 +4704,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
           summary: 'retry stored evidence',
           testsRun: 'focused completion test',
           checkpointChecksCarried: [{ claim: 'the checkpoint was checked' }],
+          checkpointProseSnapshot: '## Did\nserver-generated prose',
         },
       });
       expect(retry.success).toBe(true);
@@ -4689,6 +4713,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         testsRun: 'focused completion test',
       });
       expect(retry.data.completion).not.toHaveProperty('checkpointChecksCarried');
+      expect(retry.data.completion).not.toHaveProperty('checkpointProseSnapshot');
 
       const unrelated = (
         complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } }

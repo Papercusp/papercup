@@ -582,6 +582,39 @@ describe('specTestAdequacyCompletionGate', () => {
     }
   });
 
+  it('refuses evaluator capability gaps distinctly and never dispatches a grading audit', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue([
+      listedEvidence({
+        currentness: {
+          ...evidence().currentness,
+          overall: 'unknown',
+          dimensions: { ...evidence().currentness.dimensions, test: 'unknown' },
+          unknownReasons: ['test-current-fingerprint-not-supplied'],
+        },
+      }),
+      counterexampleEvidence({
+        currentness: {
+          ...evidence().currentness,
+          overall: 'unknown',
+          dimensions: { ...evidence().currentness.dimensions, test: 'unknown' },
+          unknownReasons: ['test-current-fingerprint-not-supplied'],
+        },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [] });
+    if (!result.ok) {
+      expect(result.reason).toContain('evaluator capability unavailable on build');
+      expect(result.reason).toContain('freshness');
+      expect(result.reason).toContain('grading-integrity audit');
+      expect(result.pendingGradingAuditTargetIds).toBeUndefined();
+    }
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
   it('distinguishes a mismatched fingerprint dimension in a freshness refusal', async () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
@@ -835,6 +868,34 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
 
     expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
     expect(deps.listEvidence).toHaveBeenCalledWith(expect.objectContaining({ evidenceRefs }));
+  });
+
+  it('preserves an immutable evaluator replay snapshot through the completion evidence read', async () => {
+    const deps = passingDeps();
+    const attestation = {
+      ...ATTESTATION,
+      evidenceRefs: ['test:reconnect', 'counterexample:reconnect'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+    };
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { ...WORK_ITEM, kind: 'bug' }, attestation },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    expect(deps.listEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evidenceRefs: attestation.evidenceRefs,
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        replaySnapshot: true,
+        currentProvenance: 'server-measured',
+        current: ATTESTATION.current,
+      }),
+    );
   });
 
   it('does NOT enforce an active plan that has adopted no clauses — the per-plan migration lane', async () => {

@@ -6,6 +6,7 @@ import {
   type EvidenceCurrentInput,
 } from '../plans/spec-evidence-store';
 import { listSpecClauses } from '../plans/spec-clauses-store';
+import { getBuildInfo } from '../../build-info';
 import {
   enforcedClausesOf,
   ENFORCEABLE_LIFECYCLE_STATUSES,
@@ -34,6 +35,11 @@ export interface SpecAdequacyCompletionAttestation {
    * plans:evaluate-spec-test-adequacy already permits.
    */
   evidenceRefs?: string[];
+  /** Immutable clause pin copied from the evaluator rerun recipe being replayed. */
+  specRevision?: number;
+  specFingerprint?: string;
+  /** Preserve the evaluator's prior server-measured currentness snapshot. */
+  replaySnapshot?: boolean;
   current?: EvidenceCurrentInput[];
 }
 
@@ -238,6 +244,30 @@ function adequacyFailureReason(label: string, result: SpecTestAdequacyResult): s
   return `${label}: ${result.verdict} [${blockers}]${boundedDetails ? ` — ${boundedDetails}` : ''}`;
 }
 
+/**
+ * An evaluator `unknown` is a capability/readiness failure, not a scorecard gap.
+ * Keep it separate from the ordinary verdict refusal so completion cannot dispatch
+ * grading-integrity auditors for a condition an auditor cannot change. The generated
+ * rerun recipe carries the authoritative loaded-build identity; the fallback covers
+ * historical evaluator implementations that predate that stamp.
+ */
+function evaluatorCapabilityFailureReason(label: string, result: SpecTestAdequacyResult): string | undefined {
+  const unknownRatings = Object.entries(result.ratings).filter(([, value]) => value.rating === 'unknown');
+  if (unknownRatings.length === 0) return undefined;
+
+  const build = result.scorecardDraft.rerunRecipe.evaluatorBuild ?? getBuildInfo();
+  const buildLabel = `sha=${build.sha ?? 'unknown'}, version=${build.version}`;
+  const criteria = unknownRatings.map(([criterion, value]) => {
+    const evidence = humanizeFreshnessEvidence(value.evidence);
+    const boundedEvidence = evidence.length > 600 ? `${evidence.slice(0, 597)}…` : evidence;
+    return `${criterion} (${boundedEvidence})`;
+  });
+  const detail = `${label}: evaluator capability unavailable on build ${buildLabel}; ` +
+    `unmeasurable criterion(s) evaluated as unknown: ${criteria.join(', ')}.`;
+  return `${detail} ${adequacyFailureReason(label, result)} ` +
+    'This is not repairable by a grading-integrity audit; no pendingGradingAuditTargetIds were produced.';
+}
+
 export async function specTestAdequacyCompletionGate(
   input: {
     workItem: WorkItemForSpecGate;
@@ -376,6 +406,12 @@ export async function specTestAdequacyCompletionGate(
     workItemIds: [input.workItem.id],
     specIds: relevant.map((clause) => clause.specId),
     evidenceRefs: input.attestation.evidenceRefs,
+    specRevision: input.attestation.specRevision,
+    specFingerprint: input.attestation.specFingerprint,
+    replaySnapshot: input.attestation.replaySnapshot === true,
+    ...(input.attestation.replaySnapshot === true && input.attestation.current !== undefined
+      ? { currentProvenance: 'server-measured' as const }
+      : {}),
     current: input.attestation.current,
     limit: 1000,
   });
@@ -402,6 +438,19 @@ export async function specTestAdequacyCompletionGate(
       workItemKind: input.workItem.kind,
     });
     const label = `${clause.specId}@${clause.revision}`;
+    const evaluatorCapabilityFailure = evaluatorCapabilityFailureReason(label, result);
+    if (evaluatorCapabilityFailure) {
+      // Stop before inspecting any scorecards. A prior clause may have exposed a
+      // pending audit, but once any clause is unmeasurable that audit cannot unblock
+      // this completion; returning now guarantees the caller never dispatches it.
+      return withReport({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        checked: [],
+        reason: evaluatorCapabilityFailure,
+      });
+    }
     if (result.verdict !== 'pass') {
       failures.push(adequacyFailureReason(label, result));
       continue;

@@ -80,6 +80,7 @@ import {
   missingRootCauseVerificationV2Fields,
   hasMalformedCoverageShape,
   stripNulBytesDeep,
+  CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
   type CompletionCoverage,
   type CompletionRecord,
   type PersistedCompletionEvidence,
@@ -219,7 +220,7 @@ import { checkoutRootForPath, discoverKnownHiveCheckoutRoots } from '../testing/
 import { hasValidGitEntry } from '../locks/valid-git-entry';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { getWorkItemCheckpoint, setWorkItemCheckpoint } from '../../work-item-checkpoint';
-import { splitCarryNoteChecks } from '../../carry-note';
+import { splitCarryNoteChecks, splitCarryNoteWalls } from '../../carry-note';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { fireReactionInProcess } from '../../events';
 import { detectEphemeralDeliverableReferences, renderEphemeralDeliverableWarning } from '../../turn-end-tracking';
@@ -2023,6 +2024,26 @@ export function completionEvidenceFromRecord(
   return Object.keys(evidence).length > 0 ? evidence : undefined;
 }
 
+const CHECKPOINT_PROSE_SNAPSHOT_TRUNCATION_MARKER = '…[truncated]';
+
+/**
+ * Preserve the narrative portion of a checkpoint before terminal cleanup clears
+ * its replace-on-write note. Structured checks are carried separately, so this
+ * snapshot is the prose surface an evidence citation can still resolve against.
+ * Truncate explicitly rather than allowing a large checkpoint to inflate every
+ * terminal completion read.
+ */
+function boundedCheckpointProseSnapshot(note: string | null | undefined): string | undefined {
+  const prose = splitCarryNoteWalls(splitCarryNoteChecks(note).body).body.trim();
+  if (!prose) return undefined;
+  if (prose.length <= CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS) return prose;
+  const contentLength = Math.max(
+    0,
+    CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS - CHECKPOINT_PROSE_SNAPSHOT_TRUNCATION_MARKER.length,
+  );
+  return `${prose.slice(0, contentLength)}${CHECKPOINT_PROSE_SNAPSHOT_TRUNCATION_MARKER}`;
+}
+
 /**
  * WI-2142447 — fold the CLOSE-TIME claim verdicts onto the record about to be persisted.
  *
@@ -3319,8 +3340,11 @@ async function completeOne(
   // completion evidence routinely cites it. Read the live note NOW — before that
   // clear — and carry any checks rows into the persisted narrative so the citation
   // lands on `_completionEvidence` instead of a location guaranteed empty. Best-
-  // effort: a read failure must never cost the completion.
+  // effort: a read failure must never cost the completion. The prose body is carried
+  // alongside the structured rows because arbitrary named sections are not parseable
+  // as checks and would otherwise disappear with the cleared note.
   let checkpointChecksCarried: PersistedCompletionEvidence['checkpointChecksCarried'];
+  let checkpointProseSnapshot: PersistedCompletionEvidence['checkpointProseSnapshot'];
   try {
     const priorCheckpoint = await getWorkItemCheckpoint({
       harness: (it.harness as string | null | undefined) ?? null,
@@ -3329,6 +3353,7 @@ async function completeOne(
     });
     if (priorCheckpoint) {
       const { checks } = splitCarryNoteChecks(priorCheckpoint);
+      checkpointProseSnapshot = boundedCheckpointProseSnapshot(priorCheckpoint);
       if (checks.length > 0) {
         checkpointChecksCarried = checks.map((c) => ({
           claim: c.claim,
@@ -3359,6 +3384,9 @@ async function completeOne(
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
   if (checkpointChecksCarried?.length) {
     completionNarrative.checkpointChecksCarried = checkpointChecksCarried;
+  }
+  if (checkpointProseSnapshot) {
+    completionNarrative.checkpointProseSnapshot = checkpointProseSnapshot;
   }
   // WI-41769. Only reachable on the PASSING path: a refusing verdict returned above, before
   // any persistence — which is correct, since a refused close records no completion at all.
