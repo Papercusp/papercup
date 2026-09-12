@@ -1424,6 +1424,10 @@ export interface CheckpointResult {
   frozenCandidate?: string;
   /** P-003: explicit mutable repair head identity for no-suite repair statuses. */
   repairHead?: string;
+  /** Head targeted by this pass's selective repair verification, before no-suite identity
+   * normalization. An unavailable verifier can name this head without settling its retest;
+   * the recorded convergence round remains the evidence that a red was measured. */
+  repairVerificationHead?: string;
   /** P-003: machine-readable identity/provenance for the status shown to readers. */
   verdictProvenance?: {
     frozenCandidate: string;
@@ -10753,6 +10757,7 @@ async function runGreenCheckpointInner(
           reason: "repair-in-progress",
           summary,
           repairQueue,
+          repairVerificationHead: candidate,
         });
       }
       if (verification.kind === "unavailable") {
@@ -10768,6 +10773,7 @@ async function runGreenCheckpointInner(
           reason: "repair-in-progress",
           summary,
           repairQueue,
+          repairVerificationHead: candidate,
         });
       }
       // "green" / "full-run-required": the full canonical gate runs at `candidate` (the repair
@@ -13839,7 +13845,7 @@ export async function runGreenCheckpoint(
     ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
   };
   const result = await runGreenCheckpointInner(cfg, deps, innerOpts);
-  const judgedRepairHead = result.candidate;
+  const judgedRepairHead = result.repairVerificationHead ?? result.candidate;
   const repairIdentity = result.repairQueue
     ? buildFrozenRepairStatusIdentity(result.repairQueue)
     : null;
