@@ -213,12 +213,24 @@ export function buildDetachedTestRunRequest(opts: {
   timeoutMs?: number;
 }): SpawnRequest {
   // An explicit Vitest reporter replaces the reporters declared by the workspace config.
-  // Detached recovery does not need the foreground JSON report, but it MUST retain the
-  // admin ledger reporter so a green recovery still writes durable testRunIds for evidence
-  // binding. Mirror the foreground path's existence check for non-standard Papercusp roots.
+  // The admin reporter normally writes durable testRunIds directly. A single integration
+  // test is different: its suite can mock @papercusp/db-org, which also redirects the
+  // reporter's connection into the disposable test database. The foreground runner already
+  // avoids that trap by ingesting a JSON report in the parent operator. Preserve the same
+  // boundary for the documented one-integration-file detached recovery path: write one JSON
+  // artifact and let testing-run-store ingest it after the child closes.
   const adminReporterPath = resolveAdminTestRunsReporterPath(opts.root);
+  const parentIngestsIntegration =
+    opts.files.length === 1 && /\.integration\.test\.[cm]?[jt]sx?$/i.test(opts.files[0]!);
+  const reportPath = parentIngestsIntegration
+    ? join(ensurePapercuspTmpdir() ?? tmpdir(), `papercusp-testing-run-detached-${randomUUID()}.json`)
+    : null;
   const vitestArgs = [
-    ...(adminReporterPath ? [`--reporter=${adminReporterPath}`] : []),
+    ...(reportPath
+      ? ['--reporter=json', `--outputFile=${reportPath}`]
+      : adminReporterPath
+        ? [`--reporter=${adminReporterPath}`]
+        : []),
     ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
   ];
   const env: NodeJS.ProcessEnv = {
@@ -232,6 +244,19 @@ export function buildDetachedTestRunRequest(opts: {
     command: process.execPath,
     args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
     cwd: opts.root,
+    ...(reportPath
+      ? {
+          detachedReportArtifacts: [
+            {
+              reportPath,
+              root: opts.root,
+              ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
+                ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } }
+                : {}),
+            },
+          ],
+        }
+      : {}),
     ...(opts.timeoutMs && opts.timeoutMs > 0
       ? { runtimeMaxSec: Math.max(1, Math.ceil(Math.max(opts.timeoutMs, DEFAULT_TIMEOUT_MS) / 1000)) }
       : {}),

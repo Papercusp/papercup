@@ -941,6 +941,31 @@ describe('testing:run (integration)', () => {
     });
   });
 
+  it('uses parent-side JSON ledger ingestion for a single detached integration file', () => {
+    const request = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/operator-core/lib/sync-resolver/goals.integration.test.ts'],
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'papercusp',
+      timeoutMs: 900_000,
+    });
+
+    const artifact = request.detachedReportArtifacts?.[0];
+    expect(artifact).toMatchObject({
+      root: REPO_ROOT,
+      scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+    });
+    expect(artifact?.reportPath).toContain('papercusp-testing-run-detached-');
+    expect(request.args).toEqual([
+      join(REPO_ROOT, 'scripts', 'test-files.mjs'),
+      'packages/operator-core/lib/sync-resolver/goals.integration.test.ts',
+      '--',
+      '--reporter=json',
+      `--outputFile=${artifact?.reportPath}`,
+    ]);
+    expect(request.args.some((arg) => arg.includes('admin-test-runs-reporter'))).toBe(false);
+  });
+
   it('gives detached recovery an independent runtime floor beyond the foreground timeout', () => {
     const foregroundTimeoutMs = 45_000;
     const request = buildDetachedTestRunRequest({

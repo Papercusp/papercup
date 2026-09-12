@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-003 historical acceptance counterexample and repaired persistence proof",
+  "framework": "operational",
+  "command": [
+    "ptool",
+    "code:run",
+    "--url=http://127.0.0.1:3170",
+    "--transport=http",
+    "--script",
+    "const startedAt=new Date().toISOString();const b=await tools.testing.runs({filePath:'emit-acceptance-reference.integration.test.ts',since:'2026-09-12T16:28:00Z',status:['fail'],limit:3});const a=await tools.testing.runs({filePath:'emit-acceptance-reference.integration.test.ts',since:'2026-09-12T16:38:00Z',harness:'papercusp',status:['pass'],limit:3});const before=b.runs.find(r=>String(r.outputTail).includes('stale_host_generation'));const after=a.runs.find(r=>r.id===17815717);if(!before||!after)throw Error('counterexample or repaired run not found');if(Date.parse(after.startedAt)<=Date.parse(before.startedAt))throw Error('invalid temporal comparison');return {startedAt,finishedAt:new Date().toISOString(),before:{id:before.id,status:before.status,startedAt:before.startedAt,commitSha:before.commitSha,outputTail:before.outputTail},after:{id:after.id,status:after.status,startedAt:after.startedAt,commitSha:after.commitSha,harness:after.harnessSlug},assertions:['historical positive-control run failed with stale_host_generation','repaired real-PG run passed afterward','repaired run is harness-attributed']};"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-12T16:42:53.124Z",
+  "finishedAt": "2026-09-12T16:42:53.828Z",
+  "summary": "Verified canonical execution-ledger records: the real-PG authorized acceptance test caught the actual wrong-process staleHost regression (run 17815504); repaired current-build execution passed (17815717). This is a historical counterexample check, not a newly injected mutant and not a rerun of the subject tests. The source correction is D-005/EI-23074025929199961.",
+  "assertions": [
+    {
+      "id": "negative-control-observed",
+      "passed": true,
+      "evidence": "test_runs 17815504 at 2026-09-12T16:29:30.319Z, commit 53edba367eaff29e9c65a55598e98d234373ab55: positive real-PG acceptance test failed with precise code stale_host_generation, querying SHA 53edba367e vs Scout boot b400b023dbc1e8b32de1506cc67dd85c49279de6."
+    },
+    {
+      "id": "repaired-persistence",
+      "passed": true,
+      "evidence": "test_runs 17815717 at 2026-09-12T16:39:55.100Z, commit 194e87581d65335648687d2b135affbf3689e7f8 plus reported local change: real-PG acceptance suite passed 3 tests with zero skips; positive control checks direct database readback."
+    },
+    {
+      "id": "exact-scope-and-order",
+      "passed": true,
+      "evidence": "Repaired row 17815717 is stamped workspace papercusp-workspace/harness papercusp and starts after the exact observed failure. The older failed row is workspace-scoped with null harness, and is used here only as a transparently identified historical counterexample."
+    }
+  ],
+  "limitations": [
+    "This comparison does not certify deployed main, broader plan completion, or independence of a future reviewer.",
+    "A module-level test pass is supported by the actual Vitest transcript; this operational recorder checks ledger identity, failure reason, scope, and ordering.",
+    "The runs measured local working-tree changes; the quoted commit alone does not reconstruct the entire tested tree."
+  ],
+  "relatedWorkItems": [
+    "WI-10000980",
+    "EI-23074025929199961"
+  ],
+  "sourcePlan": "review-verification-efficiency-2026-09-09",
+  "sourcePaths": [
+    "packages/operator-core/lib/agent-tools/scorecards/emit.ts",
+    "packages/operator-core/lib/agent-tools/scorecards/emit-evaluate.test.ts",
+    "packages/operator-core/lib/agent-tools/scorecards/emit-acceptance-reference.integration.test.ts"
+  ]
+}
