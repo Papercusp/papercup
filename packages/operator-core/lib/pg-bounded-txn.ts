@@ -42,6 +42,97 @@ import {
 /** The postgres-js client type the org handle exposes (same alias pg-read-query uses). */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
+type CancelableQuery = { cancel?: () => void };
+
+/**
+ * Wrap a postgres-js transaction client so an abandoned caller can cancel every
+ * query it has started. `withBoundedTimeout` deliberately races the caller's
+ * promise instead of awaiting it after the deadline; without this bridge the
+ * transaction would keep its connection busy until PostgreSQL eventually
+ * finished it (EI-23070293747146376).
+ */
+function cancellableTransaction(tx: OrgSql, signal?: AbortSignal): {
+  tx: OrgSql;
+  assertNotAborted: () => void;
+  abort: Promise<never> | undefined;
+  cleanup: () => void;
+} {
+  if (!signal) {
+    return { tx, assertNotAborted: () => undefined, abort: undefined, cleanup: () => undefined };
+  }
+
+  const active = new Set<CancelableQuery>();
+  let cancelled = signal.aborted;
+  let removeAbortListener: (() => void) | undefined;
+  const abortReason = () =>
+    signal.reason ?? Object.assign(new Error('boundedOrgTxn aborted'), { name: 'AbortError' });
+  const cancelActive = () => {
+    cancelled = true;
+    for (const query of active) {
+      try {
+        query.cancel?.();
+      } catch {
+        // Cancellation is best-effort; the original abort/error remains authoritative.
+      }
+    }
+  };
+  const assertNotAborted = () => {
+    if (cancelled || signal.aborted) throw abortReason();
+  };
+  const track = <T>(query: T): T => {
+    const candidate = query as T & CancelableQuery;
+    if (!candidate || typeof candidate.cancel !== 'function') return query;
+    active.add(candidate);
+    void Promise.resolve(query)
+      .finally(() => active.delete(candidate))
+      .catch(() => undefined);
+    if (cancelled) {
+      try {
+        candidate.cancel?.();
+      } catch {
+        // See the cancellation catch above.
+      }
+    }
+    return query;
+  };
+  const invoke = (...args: unknown[]) => {
+    assertNotAborted();
+    return track(Reflect.apply(tx as unknown as (...input: unknown[]) => unknown, tx, args));
+  };
+  const wrapped = Object.assign(invoke, tx) as unknown as OrgSql;
+  const unsafe = (tx as unknown as { unsafe?: (...args: unknown[]) => unknown }).unsafe;
+  if (unsafe) {
+    Object.defineProperty(wrapped, 'unsafe', {
+      configurable: true,
+      value: (...args: unknown[]) => {
+        assertNotAborted();
+        return track(Reflect.apply(unsafe, tx, args));
+      },
+    });
+  }
+
+  const abort = new Promise<never>((_, reject) => {
+    const onAbort = () => {
+      cancelActive();
+      reject(abortReason());
+    };
+    if (signal.aborted) onAbort();
+    else {
+      signal.addEventListener('abort', onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+    }
+  });
+  return {
+    tx: wrapped,
+    assertNotAborted,
+    abort,
+    cleanup: () => {
+      removeAbortListener?.();
+      active.clear();
+    },
+  };
+}
+
 /**
  * Thrown when a bounded admin-pool txn can't finish in time: a statement exceeds
  * `statement_timeout` (PG `57014`) or a lock wait exceeds `lock_timeout` (PG `55P03`).
@@ -203,6 +294,8 @@ export interface BoundedOrgTxnOptions {
   lockTimeoutMs?: number;
   /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
   client?: OrgSql;
+  /** Cancel in-flight postgres-js queries when the caller abandons this transaction. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -239,23 +332,38 @@ export async function boundedOrgTxn<T>(
     result = await retryOnRetryableDbDeadline(() =>
       withAcquisitionDeadline(
         ({ disarm, expired }) =>
-          sql.begin(async (tx) => {
-            // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
-            // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
-            await tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true)`;
-            await tx`SELECT set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
-            if (expired()) {
-              throw new DbCallDeadlineError(
-                acquireLabel,
-                acquireMs,
-                acquireMs,
-                acquirePool,
+          sql.begin(async (rawTx) => {
+            const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, opts.signal);
+            try {
+              cancellation.assertNotAborted();
+              // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
+              // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
+              await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true)`;
+              await cancellation.tx`SELECT set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
+              if (expired()) {
+                throw new DbCallDeadlineError(
+                  acquireLabel,
+                  acquireMs,
+                  acquireMs,
+                  acquirePool,
+                );
+              }
+              // The caller's work may legitimately run longer than acquisition;
+              // stop the phase clock immediately before entering it.
+              disarm();
+              const work = Promise.resolve().then(() => {
+                cancellation.assertNotAborted();
+                return fn(cancellation.tx);
+              });
+              // If cancellation wins the race, the transaction callback returns early while
+              // the late `fn` promise is still observed and its rejection is suppressed.
+              work.catch(() => undefined);
+              return await Promise.race(
+                cancellation.abort ? [work, cancellation.abort] : [work],
               );
+            } finally {
+              cancellation.cleanup();
             }
-            // The caller's work may legitimately run longer than acquisition;
-            // stop the phase clock immediately before entering it.
-            disarm();
-            return fn(tx as unknown as OrgSql);
           }),
         { ms: acquireMs, label: acquireLabel, pool: acquirePool },
       ),
