@@ -572,6 +572,21 @@ describe('acceptance authoring profile (EI-21826845597011306)', () => {
     },
   );
 
+  it.each([
+    'unknown — evidence does not establish an outcome',
+    'NOT-MEASURED: the measurement was unavailable',
+    'not assessed — no admissible evidence was recorded',
+  ])('recognizes a human-readable %s scale entry by its leading label', (value) => {
+    expect(isUnknownRatingEquivalent(value)).toBe(true);
+  });
+
+  it('accepts an acceptance rubric whose unknown-equivalent scale entry includes a definition', () => {
+    const result = rubricTemplateDataAuthoringSchema.safeParse(
+      acceptance({ ratingScale: ['pass', 'fail', 'unknown — evidence does not establish an outcome'] }),
+    );
+    expect(result.success).toBe(true);
+  });
+
   it('accepts a non-canonical unknown-equivalent and a concrete falsifier', () => {
     const result = rubricTemplateDataAuthoringSchema.safeParse(
       acceptance({ ratingScale: ['pass', 'fail', 'not-measured'] }),

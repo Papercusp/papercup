@@ -19,6 +19,7 @@
  */
 import { z } from 'zod';
 import { normalizeRequirementSections } from '../../requirement-contract';
+import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { registerPlanTemplate, type PlanTemplate } from './template-registry';
 
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
@@ -956,9 +957,19 @@ function normalizeRatingVocabularyToken(value: string): string {
     .replace(/^n\/a$/, 'na');
 }
 
-/** True when a rating-scale entry can represent an honest no-verdict outcome. */
+/** True when a rating-scale entry can represent an honest no-verdict outcome.
+ *
+ * Scale entries may carry their human-readable definition inline (for example,
+ * `unknown — evidence does not establish an outcome`).  Scorecard emission
+ * resolves that entry by its leading label, so the acceptance authoring guard
+ * must inspect the same label rather than only the full entry text.
+ */
 export function isUnknownRatingEquivalent(value: string): boolean {
-  return (UNKNOWN_RATING_EQUIVALENTS as readonly string[]).includes(normalizeRatingVocabularyToken(value));
+  const normalized = normalizeRatingVocabularyToken(value);
+  if ((UNKNOWN_RATING_EQUIVALENTS as readonly string[]).includes(normalized)) return true;
+  return (UNKNOWN_RATING_EQUIVALENTS as readonly string[]).includes(
+    normalizeRatingVocabularyToken(leadingScaleLabel(value)),
+  );
 }
 
 /** Ratings that can never satisfy a mandatory outcome BAR. The BAR author may
