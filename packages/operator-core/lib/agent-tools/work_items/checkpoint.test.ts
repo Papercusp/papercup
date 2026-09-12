@@ -27,6 +27,7 @@ const getWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 const resolveCurrentTokens = vi.hoisted(() => vi.fn());
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
+const postLearnedAtLevel = vi.hoisted(() => vi.fn());
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
   setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
@@ -55,6 +56,10 @@ const resolveCurrentTurnStamp = vi.hoisted(() => vi.fn(async (): Promise<{ ref: 
 vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../turn-provenance/turn-ref')>()),
   resolveCurrentTurnStamp,
+}));
+vi.mock('../../effort-thread', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../effort-thread')>()),
+  postLearnedAtLevel,
 }));
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
@@ -146,9 +151,16 @@ beforeEach(() => {
   readSuccessfulActionInvocations.mockReset();
   resolveCurrentTokens.mockReset();
   readFrozenRepairMarker.mockReset();
+  postLearnedAtLevel.mockReset();
   readFrozenRepairMarker.mockReturnValue(null);
   readSuccessfulActionInvocations.mockResolvedValue([]);
   resolveCurrentTokens.mockResolvedValue(new Map());
+  postLearnedAtLevel.mockResolvedValue({
+    posted: true,
+    level: 'work_item',
+    ref: 'WI-7',
+    fellBack: false,
+  });
   // EI-9325: checkpoint.ts routes every PLAIN replace-on-write (non-append,
   // non-clear) through setWorkItemCheckpointWithPrior instead of setWorkItemCheckpoint
   // now, to get the prior length for free. Default it to delegate straight through to
@@ -438,7 +450,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(21406);
+    expect(JSON.stringify(json)).toHaveLength(21462);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -2779,6 +2791,90 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(call[1]).toBeUndefined();
       expect(call[2]).toMatchObject({ dependsOn: ['work-item:WI-38026'] });
       expect(call[2].guard).toBeUndefined();
+    });
+
+    it('EI-23083222467738105: a learned-only patch preserves the body and posts the lesson', async () => {
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'the detailed checkpoint body that must survive a learned-only update' });
+      const prior = await lastStored();
+
+      withPrior(prior);
+      const r = await one({
+        id: 'WI-7',
+        learned: 'the checkpoint body must survive effort-thread metadata writes',
+        learnedLevel: 'work_item',
+      });
+
+      expect(r).toMatchObject({
+        ok: true,
+        cleared: false,
+        learned: { posted: true, level: 'work_item', ref: 'WI-7' },
+      });
+      expect(await lastStored()).toBe(prior);
+      expect(postLearnedAtLevel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItemId: 'WI-7',
+          level: 'work_item',
+          text: 'the checkpoint body must survive effort-thread metadata writes',
+          harness: 'papercup',
+          workspaceId: 'default',
+        }),
+      );
+    });
+
+    it('EI-23083222467738105: learned-only patches preserve each bulk item body', async () => {
+      const current = new Map([
+        ['WI-A', 'body A that must survive the learned-only bulk update'],
+        ['WI-B', 'body B that must survive the learned-only bulk update'],
+      ]);
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          ref: { workItemId: string },
+          cp: string | null | undefined,
+          opts?: { transform?: (p: string | null, n: string | null | undefined) => string | null | undefined },
+        ) => {
+          const prior = current.get(ref.workItemId) ?? null;
+          const next = opts?.transform ? opts.transform(prior, cp) : cp;
+          const stored = typeof next === 'string' && next.trim().length > 0 ? next.trim() : null;
+          current.set(ref.workItemId, stored ?? '');
+          return { stored, priorLength: prior?.length ?? 0 };
+        },
+      );
+      getWorkItemCheckpoint.mockImplementation(async (ref: { workItemId: string }) => current.get(ref.workItemId) ?? null);
+      postLearnedAtLevel.mockImplementation(async (input: { workItemId: string; level?: string }) => ({
+        posted: true,
+        level: input.level ?? 'work_item',
+        ref: input.workItemId,
+        fellBack: false,
+      }));
+
+      const out = await env({
+        items: [
+          { id: 'WI-A', learned: 'lesson A' },
+          { id: 'WI-B', learned: 'lesson B', learnedLevel: 'plan' },
+        ],
+      });
+
+      expect(out).toMatchObject({ ok: true, counts: { ok: 2, failed: 0 } });
+      expect(current.get('WI-A')).toBe('body A that must survive the learned-only bulk update');
+      expect(current.get('WI-B')).toBe('body B that must survive the learned-only bulk update');
+      expect(out.results).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'WI-A',
+            ok: true,
+            cleared: false,
+            learned: expect.objectContaining({ ref: 'WI-A' }),
+          }),
+          expect.objectContaining({
+            id: 'WI-B',
+            ok: true,
+            cleared: false,
+            learned: expect.objectContaining({ level: 'plan', ref: 'WI-B' }),
+          }),
+        ]),
+      );
+      expect(postLearnedAtLevel).toHaveBeenCalledTimes(2);
     });
 
     it('EI-19447043119380534: an EXPLICIT clear (checkpoint:null) alongside checks still wipes the body — deliberate intent stays reachable', async () => {
