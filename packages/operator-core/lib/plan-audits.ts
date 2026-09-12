@@ -309,12 +309,17 @@ export function mergeActivationAuditCoverage(
   const ranges = new Map<string, ActivationAuditSourceRange>();
   for (const range of [...previous.sourceRanges, ...submitted.sourceRanges]) ranges.set(rangeKey(range), range);
 
-  if (mappings.length > 300 || ranges.size > 50) {
+  // sourceRanges.max(50) bounds each incoming tool request, not the plan's
+  // lifetime history. Carry-respawn creates distinct canonical session ids;
+  // rejecting their accumulated union forces an auditor to omit real evidence.
+  // Keep exact-range deduplication and all prior coverage instead. The separate
+  // mapping contract still limits the effective requirement map.
+  if (mappings.length > 300) {
     conflicts.push({
       code: 'coverage_limit_exceeded',
       detail:
-        `effective activation coverage would contain ${mappings.length} mappings and ${ranges.size} source ranges; ` +
-        'compact equivalent entries without dropping requirements before re-auditing',
+        `effective activation coverage would contain ${mappings.length} mappings; ` +
+        'compact equivalent mapping entries without dropping requirements before re-auditing',
     });
     return { ok: false, conflicts };
   }

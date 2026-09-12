@@ -26,6 +26,7 @@ import {
   gitBlobSha,
   harnessCitationRepoRoot,
   independentSiblingRepos,
+  mergeActivationAuditCoverage,
   registeredCitationRepoRoots,
   selectHarnessCitationRepoRoot,
   planItemTextHash,
@@ -35,10 +36,55 @@ import {
   repoCitationDeps,
   validatePersistedAuditEntries,
   type AuditCitation,
+  type ActivationAuditPayload,
   type CitationDeps,
   type CitationFailureReason,
   type CitationResolution,
 } from './plan-audits';
+
+describe('activation audit accumulated source coverage', () => {
+  const payload = (count: number, start = 0): ActivationAuditPayload => ({
+    sourceRanges: Array.from({ length: count }, (_, n) => ({
+      sourceKind: 'codex', sessionId: `carry-${start + n}`, fromTurn: 0, toTurn: 4,
+    })),
+    mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [],
+  });
+
+  it('retains distinct prior sessions when a bounded re-audit crosses 50 lifetime ranges', () => {
+    const previous = payload(50);
+    const incoming = payload(2, 50);
+    const oldBytes = JSON.stringify(previous);
+    const merged = mergeActivationAuditCoverage(previous, incoming);
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.activation.sourceRanges).toEqual([
+      ...previous.sourceRanges, ...incoming.sourceRanges,
+    ]);
+    expect(JSON.stringify(previous)).toBe(oldBytes);
+    const repeated = mergeActivationAuditCoverage(merged.activation, incoming);
+    expect(repeated.ok).toBe(true);
+    if (repeated.ok) expect(repeated.activation.sourceRanges).toHaveLength(52);
+  });
+
+  it('still rejects a changed requirement or dropped source refs after many carry sessions', () => {
+    const previous = payload(51);
+    previous.mappings = [{
+      id: 'M-001', sourceRefs: ['session_turn:codex:carry-0:1'],
+      requirement: 'Preserve the owner approval gate', planTargets: ['P-001'],
+      disposition: 'covered',
+    }];
+    const incoming = payload(1, 51);
+    incoming.mappings = [{ ...previous.mappings[0], sourceRefs: [],
+      requirement: 'Skip the owner approval gate' }];
+    const merged = mergeActivationAuditCoverage(previous, incoming);
+    expect(merged.ok).toBe(false);
+    if (!merged.ok) {
+      expect(merged.conflicts.map((conflict) => conflict.code)).toEqual([
+        'mapping_id_reused', 'mapping_source_refs_dropped',
+      ]);
+    }
+  });
+});
 
 let workspaceRoot: string;
 let repoRoot: string;
