@@ -26,9 +26,9 @@
  * a host restart takes the pending cut with it — and then NO verdict row is ever
  * written. The reader reported `pending` indefinitely and every warning here was
  * gated on `dropped`, so the one case with no evidence to quote was also the one
- * case that said nothing. {@link isOrphanedPendingRespawn} decides it from the
- * host's own stamped re-poll budget: past `capMs`, a pending attempt is not slow,
- * it is gone.
+ * case that said nothing. The stamped `capMs` bounds ONE wait, however: the
+ * production controller retries across multiple windows. Elapsed time can
+ * establish a DELAY, never prove that the controller died or lost its request.
  *
  * The derivation is PURE and exported separately from the IO so it can be
  * unit-tested without a host. The row reader is the EXISTING
@@ -58,11 +58,8 @@ export interface PriorRespawn {
   ts?: string;
   /** How long ago that row was written, ms (null when the row carried no ts). */
   ageMs?: number | null;
-  /** The re-poll budget the host stamped on the deciding row (`capMs`), when it
-   *  recorded one — the window after which a `pending` attempt CANNOT still be
-   *  legitimately in flight. Read from the row rather than assumed, so the
-   *  orphan verdict tracks the host's own configured cap instead of a copy of
-   *  it that can silently drift. */
+  /** One wait interval stamped by the host. Production can retry across several
+   * intervals, so this is NOT the request lifetime or proof of controller death. */
   capMs?: number | null;
 }
 
@@ -130,43 +127,25 @@ export async function readPriorRespawnOutcome(
 export const LOST_RESPAWN_AMBIENT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 /**
- * The host's re-poll budget for a busy-gate-deferred respawn, used ONLY when the
- * deciding row carried no `capMs` of its own. Measured from a real host log
- * (su-b8422496, 2026-08-09T01:46:12Z): the first attempt caps at 180000ms and
- * the single deferred re-arm at 360000ms, so 360000 is the longest a `pending`
- * attempt can legitimately still be alive.
+ * Fallback wait interval used to surface a delayed continuation when an older
+ * event omitted capMs. This is not the lifetime of a multi-window request.
  */
 export const PENDING_RESPAWN_DEFAULT_CAP_MS = 360_000;
 
 /**
- * Slack added to the cap before a `pending` attempt is called ORPHANED. The cap
- * is a wait budget, not a deadline the host promises to write a row at, so a
- * verdict row can trail it by a clock skew / a flush. Two minutes is far larger
- * than any observed trailing gap and still an order of magnitude below the
- * multi-hour silences this exists to catch.
+ * Slack before surfacing delay. The historical name is retained for import
+ * compatibility; crossing this interval does not establish orphaning.
  */
 export const PENDING_RESPAWN_ORPHAN_GRACE_MS = 120_000;
 
 /**
- * PURE: is this `pending` attempt provably ORPHANED — i.e. past the window in
- * which it could still fire, with no terminal row ever written?
- *
- * WHY THIS IS DECIDABLE AT ALL, and why it is the P-009 signal. While a respawn
- * is genuinely pending the host DEFERS the agent's wakes
- * (`wake-turn-deferred-for-pending-respawn`), so a live agent reading this is
- * already evidence the attempt is not holding its slot. The cap turns that into
- * proof rather than a hunch: past `capMs + grace` the re-poll loop is over, and
- * a respawn that neither delivered nor dropped inside it is one nobody is
- * waiting for. The failure mode it names (P-009) is a `session:request-compaction`
- * ACKED with `respawn:true` whose cut was then pre-empted — an internal claude
- * re-exec, a host restart — leaving the attempt pending forever. `dropped` at
- * least got a verdict row; this one gets silence, which is why it needed its own
- * predicate rather than more prose on the drop path.
- *
- * An unknown age is NOT orphaned: the same evidence-only rule the ambient line
- * follows everywhere else.
+ * PURE: has pending delivery exceeded one observed wait interval plus slack?
+ * This is a liveness warning, not a terminal outcome. Interactive owner turns
+ * can arrive while the host keeps a retry pending, and production retries span
+ * several capMs windows. Inspect host/controller evidence to establish loss;
+ * an elapsed timer alone cannot do so. Unknown ages never manufacture a delay.
  */
-export function isOrphanedPendingRespawn(prior: PriorRespawn | null | undefined): boolean {
+export function isDelayedPendingRespawn(prior: PriorRespawn | null | undefined): boolean {
   if (!prior || prior.outcome !== 'pending') return false;
   if (prior.ageMs == null || !Number.isFinite(prior.ageMs)) return false;
   const cap =
@@ -175,6 +154,9 @@ export function isOrphanedPendingRespawn(prior: PriorRespawn | null | undefined)
       : PENDING_RESPAWN_DEFAULT_CAP_MS;
   return prior.ageMs > cap + PENDING_RESPAWN_ORPHAN_GRACE_MS;
 }
+
+/** @deprecated Historical misnomer: this measures delay, NOT orphaning. */
+export const isOrphanedPendingRespawn = isDelayedPendingRespawn;
 
 /**
  * The AMBIENT warning line, for the per-turn coord injection block
@@ -196,7 +178,7 @@ export function isOrphanedPendingRespawn(prior: PriorRespawn | null | undefined)
  *
  * PURE. Returns null unless the last respawn was LOST within
  * {@link LOST_RESPAWN_AMBIENT_MAX_AGE_MS} — either terminally DROPPED, or
- * ORPHANED while pending ({@link isOrphanedPendingRespawn}, the P-009 case).
+ * delayed while pending ({@link isDelayedPendingRespawn}).
  * `delivered`, `none`, a still-live `pending`, and a loss of unknown age are all
  * silent (a warning is only ever emitted on evidence — the same rule
  * {@link priorRespawnNote} follows).
@@ -206,8 +188,8 @@ export function lostRespawnAmbientLine(
   opts: { maxAgeMs?: number } = {},
 ): string | null {
   if (!prior) return null;
-  const orphaned = isOrphanedPendingRespawn(prior);
-  if (prior.outcome !== 'dropped' && !orphaned) return null;
+  const delayed = isDelayedPendingRespawn(prior);
+  if (prior.outcome !== 'dropped' && !delayed) return null;
   const maxAge = opts.maxAgeMs ?? LOST_RESPAWN_AMBIENT_MAX_AGE_MS;
   // An unknown age is NOT treated as recent: `ageMs` is null when the host row
   // carried no parseable timestamp, and guessing "recent" there would nag
@@ -217,12 +199,13 @@ export function lostRespawnAmbientLine(
   // drop has a verdict you can quote back, an orphan has none — and telling an
   // agent the host "recorded" something it never recorded is the manufactured
   // certainty this whole module exists to remove.
-  const head = orphaned
-    ? `⚠ carry-respawn ORPHANED ${humanAge(prior.ageMs)}` +
+  const head = delayed
+    ? `⚠ carry-respawn DELAYED ${humanAge(prior.ageMs)}` +
       ` — your last session:request-compaction was acknowledged and the host queued a re-poll` +
-      `${prior.reason ? ` (${prior.reason})` : ''}, then NEVER recorded an outcome. That re-poll window` +
-      ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) has long expired, so the` +
-      ` continuation has no verified delivery. Inspect the current host and native transcript before retrying.`
+      `${prior.reason ? ` (${prior.reason})` : ''}, with no recorded terminal outcome. One wait interval` +
+      ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) has elapsed; the controller` +
+      ` may still be retrying. This does not prove that the request was lost or the host restarted.` +
+      ` Inspect the current host and native transcript before retrying.`
     : `⚠ carry-respawn DROPPED ${humanAge(prior.ageMs)}` +
       `${prior.reason ? ` (reason: ${prior.reason})` : ''} — your last session:request-compaction was` +
       ` acknowledged but its continuation was not delivered. The process may already have respawned.`;
@@ -262,17 +245,16 @@ export function priorRespawnNote(prior: PriorRespawn | null | undefined): string
     );
   }
   if (prior.outcome === 'pending') {
-    // An orphaned attempt is NOT "still re-polling", and saying so would tell the
-    // caller their new request is being adopted by a loop that no longer exists.
-    if (isOrphanedPendingRespawn(prior)) {
+    // A per-attempt cap cannot decide whether a multi-window retry still exists.
+    if (isDelayedPendingRespawn(prior)) {
       return (
-        ` ⚠ prior-respawn-ORPHANED: an earlier carry-respawn on this session was queued` +
+        ` ⚠ prior-respawn-DELAYED: an earlier carry-respawn on this session was queued` +
         ` ${humanAge(prior.ageMs)} (host recorded \`${prior.reason ? `${prior.reason}` : 'respawn-rearm-queued'}\`)` +
-        ` and NEVER produced an outcome — no delivered row, no dropped row. Its re-poll window` +
-        ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) expired long ago, so that` +
-        ` attempt has no verified continuation. Inspect the current host before inferring whether it cut.` +
-        ` This request does NOT inherit it — it is a fresh attempt, and the` +
-        ` same pre-emption can take this one too, so keep flushing state durably rather than relying on the carry.`
+        ` with no recorded terminal outcome. Its wait interval` +
+        ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) is not the request lifetime.` +
+        ` The controller may still be retrying and may adopt this newer carry. Inspect its current state` +
+        ` and verify the native continuation before inferring loss, delivery, or a new attempt.` +
+        ` Keep flushing state durably rather than relying on the carry.`
       );
     }
     return (

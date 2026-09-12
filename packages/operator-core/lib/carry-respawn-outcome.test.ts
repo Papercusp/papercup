@@ -327,10 +327,12 @@ describe('lostRespawnAmbientLine — orphaned pending (P-009)', () => {
     capMs: 360_000,
   };
 
-  it('warns that the cut was PRE-EMPTED, and never claims a verdict the host did not record', () => {
+  it('warns about delayed delivery without inventing preemption or a terminal verdict', () => {
     const line = lostRespawnAmbientLine(orphan);
-    expect(line).toContain('carry-respawn ORPHANED');
-    expect(line).toContain('NEVER recorded an outcome');
+    expect(line).toContain('carry-respawn DELAYED');
+    expect(line).toContain('no recorded terminal outcome');
+    expect(line).toContain('may still be retrying');
+    expect(line).not.toContain('ORPHANED');
     expect(line).toContain('verify which native session is running');
     expect(line).not.toContain('still the same session');
     // A drop has a verdict row to quote; an orphan does not. Reporting one as the
@@ -355,10 +357,11 @@ describe('lostRespawnAmbientLine — orphaned pending (P-009)', () => {
     expect(lostRespawnAmbientLine(fresh)).toBeNull();
   });
 
-  it('priorRespawnNote calls an orphan ORPHANED and does NOT tell the caller it inherits the dead re-poll', () => {
+  it('priorRespawnNote does not invent a dead retry or a fresh request from a wait cap', () => {
     const note = priorRespawnNote(orphan);
-    expect(note).toContain('prior-respawn-ORPHANED');
-    expect(note).toContain('does NOT inherit it');
+    expect(note).toContain('prior-respawn-DELAYED');
+    expect(note).toContain('may still be retrying');
+    expect(note).not.toContain('does NOT inherit it');
     expect(note).not.toContain('SUPERSEDES');
   });
 });

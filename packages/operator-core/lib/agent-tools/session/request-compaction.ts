@@ -806,6 +806,7 @@ export default defineTool({
         mode: 'carry-respawn',
         data: firstPrompt,
         systemPromptAddendum: spec.systemPromptAddendum,
+        ...(self?.sourceKind === 'codex' && self.filePath ? { sourceTranscriptPath: self.filePath } : {}),
         ownerId: identity.ownerId,
       },
       // EI-18686525818431054: NOT the 2000ms default — see

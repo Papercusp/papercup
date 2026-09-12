@@ -140,7 +140,8 @@ describe("coord:inbox — dropped carry-respawn ambient line (EI-193263315018497
     const injection = String(out.injection ?? "");
     expect(injection).toContain("carry-respawn DROPPED 2h ago");
     expect(injection).toContain("(reason: carry-stale)");
-    expect(injection).toContain("NEVER CUT");
+    expect(injection).toContain("continuation was not delivered");
+    expect(injection).not.toContain("NEVER CUT");
     expect(injection).toContain("session:request-compaction");
   });
 
@@ -212,7 +213,7 @@ describe("coord:inbox — dropped carry-respawn ambient line (EI-193263315018497
   // It never gets a verdict row, so it reads `pending` forever — and this whole
   // surface used to be gated on `dropped`, which is why the acked-but-never-cut
   // case with NO host evidence was also the one case nothing ever said.
-  it("surfaces an ORPHANED pending respawn — the acked cut that was pre-empted, not refused", async () => {
+  it("surfaces delayed pending delivery without inferring that its controller died", async () => {
     prior({
       outcome: "pending",
       reason: "busy-gate-expired",
@@ -221,9 +222,10 @@ describe("coord:inbox — dropped carry-respawn ambient line (EI-193263315018497
       capMs: 360_000,
     });
     const injection = String((await callInbox()).injection ?? "");
-    expect(injection).toContain("carry-respawn ORPHANED");
-    expect(injection).toContain("NEVER recorded an outcome");
-    expect(injection.split("\n")[0]).toContain("carry-respawn ORPHANED");
+    expect(injection).toContain("carry-respawn DELAYED");
+    expect(injection).toContain("no recorded terminal outcome");
+    expect(injection.split("\n")[0]).toContain("carry-respawn DELAYED");
+    expect(injection).not.toContain("ORPHANED");
   });
 
   it("stays silent for a pending respawn still INSIDE its re-poll window", async () => {

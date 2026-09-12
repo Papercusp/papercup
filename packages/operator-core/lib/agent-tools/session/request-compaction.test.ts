@@ -94,6 +94,8 @@ vi.mock('../../release/frozen-repair-edit-marker', async (orig) => ({
 
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
+const resolveSelfSession = vi.hoisted(() => vi.fn());
+vi.mock('../../search/self-session', () => ({ resolveSelfSession }));
 vi.mock('../../events/await/psu-pty-discovery', () => {
   // Keep the REAL caps predicate so the gating logic is exercised honestly.
   const hostSupports = (host: { caps?: string[] } | null | undefined, cap: string) =>
@@ -191,6 +193,13 @@ it('opts out of the ambient workspace transaction because the handler never read
   expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
 });
 
+it('pins the resolved Codex transcript on the carry control envelope', async () => {
+  findLiveHost.mockReturnValue(carryHost);
+  resolveSelfSession.mockResolvedValue({ sourceKind: 'codex', filePath: '/fixture/sessions/current.jsonl' });
+  await call({ focus: 'preserve the completed turn boundary' });
+  expect(injected().sourceTranscriptPath).toBe('/fixture/sessions/current.jsonl');
+});
+
 type Out = { content: { text: string }[]; isError?: boolean };
 // EI-19480099650947832: the tool reads the host's own event log to report what
 // happened to the PREVIOUS carry-respawn. The DERIVATION is unit-tested in
@@ -205,7 +214,7 @@ vi.mock('../../carry-respawn-outcome', async () => {
   return { ...actual, readPriorRespawnOutcome: (...a: unknown[]) => readPriorRespawnOutcome(...a) };
 });
 
-type Envelope = { mode: string; data: string; systemPromptAddendum?: string };
+type Envelope = { mode: string; data: string; systemPromptAddendum?: string; sourceTranscriptPath?: string };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
 const call = (args: Record<string, unknown>, ctx: unknown = {}) =>
   tool.handler(parse(args) as never, ctx as never) as Promise<Out>;
@@ -239,6 +248,7 @@ beforeEach(async () => {
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   delete process.env.PAPERCUSP_FLUSH_GATE;
   injectIntoHost.mockResolvedValue(true);
+  resolveSelfSession.mockResolvedValue(null);
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   buildCarryBrief.mockResolvedValue(emptyBrief);
   getWorkItem.mockResolvedValue({ state: 'wip' });
@@ -300,7 +310,8 @@ describe('session:request-compaction — reports what happened to the PREVIOUS r
     expect(b.note).toContain('prior-respawn-DROPPED');
     expect(b.note).toContain('busy-gate-expired');
     // The operative correction the caller has to act on.
-    expect(b.note).toContain('An acknowledged request is NOT a landed cut');
+    expect(b.note).toContain('spawning and submitting its first turn are separate steps');
+    expect(b.note).not.toContain('NEVER CUT');
   });
 
   it('says a still-pending re-poll STILL INSIDE its window is SUPERSEDED by this request rather than racing it', async () => {
@@ -319,7 +330,7 @@ describe('session:request-compaction — reports what happened to the PREVIOUS r
   // scenario its own name no longer described. Both `pending` verdicts reach the
   // caller as outcome:'pending' — only the NOTE distinguishes them — so the note
   // is the only thing that can carry "nobody is waiting on that attempt".
-  it('calls a pending re-poll past its window ORPHANED, and does not claim this request inherits it', async () => {
+  it('reports delayed delivery without declaring a multi-window retry orphaned', async () => {
     findLiveHost.mockReturnValue(carryHost);
     readPriorRespawnOutcome.mockResolvedValue({
       outcome: 'pending',
@@ -327,7 +338,9 @@ describe('session:request-compaction — reports what happened to the PREVIOUS r
     });
     const b = body(await call({ focus: 'anything' }));
     expect(b.priorRespawn.outcome).toBe('pending');
-    expect(b.note).toContain('prior-respawn-ORPHANED');
+    expect(b.note).toContain('prior-respawn-DELAYED');
+    expect(b.note).toContain('may still be retrying');
+    expect(b.note).not.toContain('ORPHANED');
     expect(b.note).not.toContain('prior-respawn-STILL-PENDING');
   });
 

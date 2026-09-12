@@ -41,7 +41,7 @@
 import { createRequire } from 'node:module';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as osConstants, homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import {
@@ -51,6 +51,7 @@ import {
   unlinkSync,
   existsSync,
   readFileSync,
+  realpathSync,
   chmodSync,
   renameSync,
   appendFileSync,
@@ -469,6 +470,48 @@ export function findNativeTranscriptMarker({
     }
   }
   return null;
+}
+
+/** A carry requested in THIS turn may use its exact native completion as a
+ * safe boundary even while the terminal keeps repainting. Never scan other
+ * sessions or accept an older turn's completion. Missing/partial proof falls
+ * back to the existing output gate. */
+export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAtMs }) {
+  if (agent !== 'codex' || !env?.CODEX_HOME || !transcriptPath || !Number.isFinite(receivedAtMs)) return false;
+  let fd;
+  try {
+    const root = realpathSync(join(env.CODEX_HOME, 'sessions'));
+    const path = realpathSync(transcriptPath);
+    const rel = relative(root, path);
+    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) || !path.endsWith('.jsonl')) return false;
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.size === 0) return false;
+    const length = Math.min(info.size, 256 * 1024);
+    const bytes = Buffer.alloc(length);
+    const read = readSync(fd, bytes, 0, length, info.size - length);
+    let tail = bytes.subarray(0, read).toString('utf8');
+    if (!tail.endsWith('\n')) return false; // the newest record is still being written
+    if (info.size > length) tail = tail.slice(tail.indexOf('\n') + 1);
+    let completed = false;
+    for (const line of tail.split('\n')) {
+      if (!line.trim()) continue;
+      const row = JSON.parse(line);
+      if (row.type !== 'event_msg') continue;
+      const kind = row.payload?.type;
+      if (kind === 'task_started' || kind === 'user_message' || kind === 'turn_aborted') completed = false;
+      if (kind === 'task_complete' || kind === 'turn_completed') {
+        const at = Date.parse(row.timestamp);
+        completed = Number.isFinite(at) && at >= receivedAtMs && at <= Date.now()
+          && typeof row.payload?.turn_id === 'string' && row.payload.turn_id.length > 0;
+      }
+    }
+    return completed;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /**
@@ -1845,7 +1888,7 @@ export function makeAgentBusyGate({
      *  WI-1872 (1): `overrideCapMs` lets a caller use a DIFFERENT completion
      *  budget than this gate's own construction-time `capMs` without needing a
      *  second gate instance over the same activity tracker. */
-    async waitAtPrompt(overrideCapMs) {
+    async waitAtPrompt(overrideCapMs, verifiedBoundary = null) {
       const effectiveCapMs = overrideCapMs ?? capMs;
       const deadline = now() + effectiveCapMs;
       // EI-19480099650947832: track the LONGEST quiet window actually observed,
@@ -1861,6 +1904,10 @@ export function makeAgentBusyGate({
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        if (verifiedBoundary?.()) {
+          await new Promise((resolve) => setImmediate(resolve));
+          if (verifiedBoundary()) return { deferred: false, boundary: 'native-turn-complete' };
+        }
         const quietFor = this.quietForMs();
         if (quietFor > maxQuietForMs) maxQuietForMs = quietFor;
         if (quietFor >= quietMs) {
@@ -2072,7 +2119,7 @@ export function makeCarryRearmController({
             let deferred = false;
             try {
               if (waitIdle) await waitIdle();
-              const atPrompt = await waitAtPrompt(capMs);
+              const atPrompt = await waitAtPrompt(capMs, current);
               deferred = !!atPrompt.deferred;
               if (Number.isFinite(atPrompt?.maxQuietForMs) && atPrompt.maxQuietForMs > observedMaxQuietMs) {
                 observedMaxQuietMs = atPrompt.maxQuietForMs;
@@ -2823,6 +2870,8 @@ export function decodeControl(payload) {
           mode: 'carry-respawn',
           data: String(o.data ?? ''),
           systemPromptAddendum: String(o.systemPromptAddendum ?? ''),
+          ...(typeof o.sourceTranscriptPath === 'string' && o.sourceTranscriptPath
+            ? { sourceTranscriptPath: o.sourceTranscriptPath.slice(0, 4096) } : {}),
           // P-020 drill correlation is additive on the v1 envelope. An ordinary
           // P-018 carry-respawn omits both fields and stays byte-for-byte inert.
           drillId: o.drillId != null ? String(o.drillId).slice(0, 200) : '',
@@ -5899,7 +5948,10 @@ export function hostThroughPty(o) {
   const carryRearm = makeCarryRearmController({
     acquireInject: () => injectMutex.acquire(),
     waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
-    waitAtPrompt: (cap) => agentBusyGate.waitAtPrompt(cap),
+    waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, () => codexCarryTurnCompleted({
+      agent: env.PAPERCUSP_AGENT, env, transcriptPath: msg?.sourceTranscriptPath,
+      receivedAtMs: msg?.receivedAtMs,
+    })),
     recycle: (data, opts) => recycleChild(data, opts),
     emitEvent: (kind, extra) => {
       appendHostEvent(ownerId, kind, extra);
@@ -6299,7 +6351,10 @@ export function hostThroughPty(o) {
           // it applies UNCONDITIONALLY for every gated verb (bridgeTty or not) —
           // gating it on bridgeTty left reset/recycle unguarded whenever the host
           // ran without a bridged terminal.
-          const atPrompt = await agentBusyGate.waitAtPrompt();
+          const atPrompt = await agentBusyGate.waitAtPrompt(undefined, msg.mode === 'carry-respawn'
+            ? () => codexCarryTurnCompleted({ agent: env.PAPERCUSP_AGENT, env,
+              transcriptPath: msg.sourceTranscriptPath, receivedAtMs: msg.receivedAtMs })
+            : null);
           if (atPrompt.deferred) {
             // Agent stayed mid-turn past the cap. DROP the live inject/kill rather
             // than wedge the turn or lose in-flight work — the wake is already
