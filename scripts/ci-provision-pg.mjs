@@ -22,16 +22,28 @@
  * Superuser URL comes from CI_PG_SUPERUSER_URL (the workflow's service creds);
  * local verification can point it at a throwaway container on any port.
  */
-import postgres from 'postgres';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyPendingMigrations } from '../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR = resolve(ROOT, 'libs/papercusp/libs/db/sql');
-const SUPER_URL = process.env.CI_PG_SUPERUSER_URL
-  ?? 'postgresql://postgres:postgres@127.0.0.1:5432/postgres';
 const DB_NAME = 'papercusp';
+
+export const USAGE = `Usage: node scripts/ci-provision-pg.mjs [--help]
+  --help, -h  Show this help and exit without connecting to PostgreSQL or applying migrations.
+
+Without --help, provisions the CI Postgres service and applies pending migrations.`;
+
+/**
+ * Parse the read-only control flag before loading or constructing any database
+ * client. Keep this pure so help can be tested without a live Postgres service.
+ *
+ * @param {string[]} argv
+ * @returns {{ help: boolean }}
+ */
+export function parseArgs(argv) {
+  return { help: argv.includes('--help') || argv.includes('-h') };
+}
 
 const FRAMEWORK_ROLES_DDL = `
   DO $pg$ BEGIN
@@ -59,38 +71,68 @@ function withDbName(url, name) {
   return u.toString();
 }
 
-const t0 = Date.now();
-const cluster = postgres(SUPER_URL, { max: 1, onnotice: () => {} });
-try {
-  await cluster.unsafe(FRAMEWORK_ROLES_DDL);
-  const exists = await cluster.unsafe(
-    `SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'`,
+/**
+ * Provision the database, or print help without touching the database.
+ *
+ * The database-only imports and client construction are deliberately lazy and
+ * live after the help branch. This keeps `--help` safe for CI argument
+ * discovery and makes the no-client-construction guarantee testable.
+ *
+ * @param {string[]} argv
+ * @returns {Promise<0 | 1>}
+ */
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  if (args.help) {
+    console.log(USAGE);
+    return 0;
+  }
+
+  const { default: postgres } = await import('postgres');
+  const { applyPendingMigrations } = await import(
+    '../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js'
   );
-  if (exists.length === 0) await cluster.unsafe(`CREATE DATABASE "${DB_NAME}"`);
-} finally {
-  await cluster.end({ timeout: 5 });
+  const superUrl = process.env.CI_PG_SUPERUSER_URL
+    ?? 'postgresql://postgres:postgres@127.0.0.1:5432/postgres';
+  const t0 = Date.now();
+
+  const cluster = postgres(superUrl, { max: 1, onnotice: () => {} });
+  try {
+    await cluster.unsafe(FRAMEWORK_ROLES_DDL);
+    const exists = await cluster.unsafe(
+      `SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'`,
+    );
+    if (exists.length === 0) await cluster.unsafe(`CREATE DATABASE "${DB_NAME}"`);
+  } finally {
+    await cluster.end({ timeout: 5 });
+  }
+
+  // max:1 — the runner applies each migration in an explicit BEGIN/COMMIT block.
+  const db = postgres(withDbName(superUrl, DB_NAME), { max: 1, onnotice: () => {} });
+  try {
+    await db.unsafe(EXTENSIONS_DDL);
+    const { appliedCount, totalKnown, failed } = await applyPendingMigrations({
+      client: db,
+      sqlDir: SQL_DIR,
+      log: (s) => console.log(`[ci-provision-pg] ${s}`),
+    });
+    if (failed.length > 0) {
+      console.error(`[ci-provision-pg] FAILED migrations: ${JSON.stringify(failed)}`);
+      return 1;
+    }
+    const tables = await db.unsafe(
+      `SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'harness_shared'`,
+    );
+    console.log(
+      `[ci-provision-pg] ${DB_NAME} at schema head: applied ${appliedCount}/${totalKnown} files, `
+      + `${tables[0].n} harness_shared tables, ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    );
+  } finally {
+    await db.end({ timeout: 5 });
+  }
+  return 0;
 }
 
-// max:1 — the runner applies each migration in an explicit BEGIN/COMMIT block.
-const db = postgres(withDbName(SUPER_URL, DB_NAME), { max: 1, onnotice: () => {} });
-try {
-  await db.unsafe(EXTENSIONS_DDL);
-  const { appliedCount, totalKnown, failed } = await applyPendingMigrations({
-    client: db,
-    sqlDir: SQL_DIR,
-    log: (s) => console.log(`[ci-provision-pg] ${s}`),
-  });
-  if (failed.length > 0) {
-    console.error(`[ci-provision-pg] FAILED migrations: ${JSON.stringify(failed)}`);
-    process.exit(1);
-  }
-  const tables = await db.unsafe(
-    `SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'harness_shared'`,
-  );
-  console.log(
-    `[ci-provision-pg] ${DB_NAME} at schema head: applied ${appliedCount}/${totalKnown} files, `
-    + `${tables[0].n} harness_shared tables, ${((Date.now() - t0) / 1000).toFixed(1)}s`,
-  );
-} finally {
-  await db.end({ timeout: 5 });
-}
+const isMainModule = process.argv[1]
+  && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isMainModule) process.exitCode = await main();

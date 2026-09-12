@@ -265,7 +265,7 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const recovery = { workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: origin, runId: detached };
     const details = { schemaVersion: 1, root: h.repoRoot, filePath: testPath,
       workspaceId: WORKSPACE, harnessSlug: HARNESS, runGroupId: detached, testNamePattern: null,
-      passed: 3, failed: 0, skipped: 0, collectionFailed: false };
+      passed: 3, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null };
     // A same-run, same-file row from another tenant must not settle this proof.
     await db.sql`INSERT INTO harness_shared.test_runs
       (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,execution_details)

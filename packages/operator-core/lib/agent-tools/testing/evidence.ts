@@ -11,6 +11,7 @@ import { readHarnessTestRunEvidence, countUnattributedTestRunRows, type HarnessT
 import { resolveScenarioRerunScope } from './scenario-rerun-scope';
 import type { TestFilesCoreResult } from './run';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from '../plans/spec-clauses-store';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 
 const proofId = z.string().regex(SPEC_PROOF_OBLIGATION_ID_RE).max(200);
 const bindingSchema = z.object({
@@ -54,20 +55,11 @@ type LedgerAttribution = 'attributed' | 'unattributed' | 'absent' | 'ambiguous' 
 const refFor = (runId: string, index: number) => `test-run-group:${runId}:${index}`;
 const succeeded = (status: string) => status === 'created' || status === 'unchanged';
 
-const executionDetailsSchema = z.object({
-  schemaVersion: z.literal(1), root: z.string().min(1), filePath: z.string().min(1),
-  runGroupId: z.string().uuid(), workspaceId: z.string().min(1), harnessSlug: z.string().min(1),
-  testNamePattern: z.string().nullable(),
-  passed: z.number().int().nonnegative().safe(), failed: z.number().int().nonnegative().safe(),
-  skipped: z.number().int().nonnegative().safe(), collectionFailed: z.boolean(),
-}).strict();
-
 /** Only a complete, exact reporter measurement can replace a lost foreground result. */
 function recoveredFileResult(run: HarnessTestRunEvidence | undefined, binding: Request['bindings'][number],
   runId: string, scope: Scope): TestFilesCoreResult | undefined {
-  const parsed = executionDetailsSchema.safeParse(run?.execution_details);
-  if (!parsed.success || !run || binding.counterexample) return undefined;
-  const detail = parsed.data;
+  const detail = parseTestRunExecutionDetails(run?.execution_details);
+  if (!detail || !run || binding.counterexample) return undefined;
   if (detail.runGroupId !== runId || detail.workspaceId !== scope.workspaceId
     || detail.harnessSlug !== scope.harnessSlug || detail.root !== scope.root
     || detail.filePath !== binding.testPath || run.file_path !== binding.testPath) return undefined;

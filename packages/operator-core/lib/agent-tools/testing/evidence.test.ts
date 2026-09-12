@@ -166,7 +166,8 @@ describe('test-time evidence continuity', () => {
   const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
   const measured = { schemaVersion: 1, root: scope.root, filePath: binding.testPath,
     workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: detached,
-    testNamePattern: null, passed: 2, failed: 0, skipped: 0, collectionFailed: false };
+    testNamePattern: null, passed: 2, failed: 0, skipped: 0, collectionFailed: false,
+    mutationPhase: null };
   async function pendingRecovery(detail: unknown, status = 'pass', sourceChanged = false) {
     const d = deps();
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
@@ -181,7 +182,7 @@ describe('test-time evidence continuity', () => {
     return { d, bundle: await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
       originRunId: runId, runId: detached }, scope, d) };
   }
-  it('settles a recovered run from complete measured details, not its pass status', async () => {
+  it('settles a current reporter row with mutationPhase:null from complete measured details', async () => {
     const { bundle } = await pendingRecovery(measured);
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
     expect(bundle.verificationFingerprint).toBeTruthy();
