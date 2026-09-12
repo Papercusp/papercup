@@ -791,7 +791,6 @@ export function crossGenerationAuditProbeArgs(rerunRecipe: SpecTestAdequacyRerun
   // exact selection/currentness contract in rerunRecipe itself.
   const {
     evaluatorBuild: _evaluatorBuild,
-    evidenceRefs: _evidenceRefs,
     specRevision: _specRevision,
     specFingerprint: _specFingerprint,
     replaySnapshot: _replaySnapshot,

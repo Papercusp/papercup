@@ -1392,7 +1392,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(evaluatorArgsSchema.safeParse(args).success).toBe(true);
     expect(args).toEqual(crossGenerationAuditProbeArgs(recipe));
     expect(Object.keys(args).sort()).toEqual(
-      ['classRef', 'current', 'harness', 'includeDraft', 'limit', 'slug', 'specIds', 'workItemIds'].sort(),
+      ['classRef', 'current', 'evidenceRefs', 'harness', 'includeDraft', 'limit', 'slug', 'specIds', 'workItemIds'].sort(),
     );
     expect(args).toMatchObject({
       harness: 'papercusp',
@@ -1400,12 +1400,12 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       classRef: 'plan-class-bugfix',
       specIds: ['SPEC-003-01'],
       workItemIds: ['WI-101'],
+      evidenceRefs: ['surface:reconnect'],
       current,
       includeDraft: true,
       limit: 25,
     });
     expect(args).not.toHaveProperty('evaluatorBuild');
-    expect(args).not.toHaveProperty('evidenceRefs');
     expect(args).not.toHaveProperty('specRevision');
     expect(args).not.toHaveProperty('specFingerprint');
     expect(args).not.toHaveProperty('replaySnapshot');
