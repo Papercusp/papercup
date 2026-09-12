@@ -52,7 +52,13 @@ import {
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
-import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
+import {
+  classifyRubricEvidenceCurrentness,
+  getRubric,
+  rubricInstrumentContract,
+  type Rubric,
+  type RubricStatus,
+} from './rubrics';
 import type { OrgSql } from './work-items';
 import { pgTimestampToIso } from './pg-timestamp';
 import {
@@ -813,19 +819,13 @@ export function classifyGradingAuditCurrentness(
   if (audit.metaRubricRef !== liveMetaRubric.rubricId) {
     return { state: 'unknown', reason: 'meta-rubric-mismatch', ...base };
   }
-  if (recordedRevision == null || recordedCriteriaHash == null) {
-    return { state: 'unknown', reason: 'recorded-identity-missing', ...base };
-  }
-  if (currentRevision == null || currentCriteriaHash == null) {
-    return { state: 'unknown', reason: 'live-identity-missing', ...base };
-  }
-  if (recordedRevision !== currentRevision) {
-    return { state: 'stale', reason: 'revision-mismatch', ...base };
-  }
-  if (recordedCriteriaHash !== currentCriteriaHash) {
-    return { state: 'stale', reason: 'criteria-hash-mismatch', ...base };
-  }
-  return { state: 'current', reason: 'current', ...base };
+  return {
+    ...classifyRubricEvidenceCurrentness(
+      { revision: recordedRevision, criteriaHash: recordedCriteriaHash },
+      { revision: currentRevision, criteriaHash: currentCriteriaHash },
+    ),
+    ...base,
+  };
 }
 
 /** The projected {@link parseGradedGeneration} shape — see RunningGeneration

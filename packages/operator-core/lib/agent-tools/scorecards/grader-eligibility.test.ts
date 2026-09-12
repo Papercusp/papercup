@@ -107,6 +107,38 @@ describe('resolveAggregatedVettingCritics (EI-22182364716054326)', () => {
     expect(cardsConsidered).toBe(1);
     expect(critics).toEqual([]);
   });
+
+  it('reuses critics across revision-only changes when the criteria hash is unchanged', async () => {
+    listScorecards.mockResolvedValue([
+      vettingCard({
+        vetting: {
+          consultId: 'conv-1',
+          rubricRevision: 6,
+          criteriaHash: 'hash-current',
+          critics: ['su-reviewer-a'],
+        },
+      }),
+    ]);
+
+    const result = await resolveAggregatedVettingCritics('ar-some-plan', 7, 'hash-current');
+    expect(result).toEqual({ critics: ['su-reviewer-a'], cardsConsidered: 1 });
+  });
+
+  it('excludes a same-revision vetting card whose criteria hash is stale', async () => {
+    listScorecards.mockResolvedValue([
+      vettingCard({
+        vetting: {
+          consultId: 'conv-1',
+          rubricRevision: 7,
+          criteriaHash: 'hash-old',
+          critics: ['su-reviewer-a'],
+        },
+      }),
+    ]);
+
+    const result = await resolveAggregatedVettingCritics('ar-some-plan', 7, 'hash-current');
+    expect(result).toEqual({ critics: [], cardsConsidered: 0 });
+  });
 });
 
 describe('resolveAcceptanceGraderEligibility sole-vetting-critic rail (EI-22182364716054326)', () => {

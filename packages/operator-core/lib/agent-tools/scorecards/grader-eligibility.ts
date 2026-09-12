@@ -22,7 +22,11 @@
  * narrow test. Keep every predicate in this module and give each surface a
  * projection of it; do not copy one out.
  */
-import { readRubricPlanRevision, META_ACCEPTANCE_RUBRIC_ID } from '../../rubrics';
+import {
+  classifyRubricEvidenceCurrentness,
+  readRubricPlanRevision,
+  META_ACCEPTANCE_RUBRIC_ID,
+} from '../../rubrics';
 import { listScorecards } from '../../scorecards';
 import {
   areAcceptanceLineageRelated,
@@ -94,6 +98,7 @@ export interface GraderEligibilityDeps {
 /** The identity fields the rails read — a structural subset of `Rubric`. */
 export interface GraderEligibilityRubric {
   rubricId: string;
+  criteriaHash?: string | null;
   status?: string | null;
   proposedBy?: string | null;
   createdBy?: string | null;
@@ -126,6 +131,7 @@ export interface VettingScorecardLike {
     consultId?: string | null;
     workItemId?: string | null;
     rubricRevision?: number | string | null;
+    criteriaHash?: string | null;
     critics?: readonly string[];
   } | null;
 }
@@ -151,6 +157,7 @@ export interface VettingScorecardLike {
 export async function resolveAggregatedVettingCritics(
   rubricId: string,
   currentRevision: number | string | null | undefined,
+  currentCriteriaHash?: string | null,
 ): Promise<{ critics: string[]; cardsConsidered: number }> {
   const vettingCards = (await listScorecards({
     rubricRef: META_ACCEPTANCE_RUBRIC_ID,
@@ -163,7 +170,10 @@ export async function resolveAggregatedVettingCritics(
       card.missingKeys.length === 0 &&
       !card.synthesized &&
       (card.vetting?.consultId != null || card.vetting?.workItemId != null) &&
-      (currentRevision == null || card.vetting?.rubricRevision === currentRevision),
+      classifyRubricEvidenceCurrentness(
+        { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
+        { revision: currentRevision, criteriaHash: currentCriteriaHash },
+      ).state === 'current',
   );
   const seen = new Set<string>();
   const critics: string[] = [];
@@ -346,7 +356,11 @@ export async function resolveAcceptanceGraderEligibility(params: {
   // vetting card (both channels), not just the first one a `.find()` happens to
   // return — see resolveAggregatedVettingCritics for why a single-card read
   // misreports a genuinely two-critic vetting as sole-critic.
-  const { critics } = await resolveAggregatedVettingCritics(rubric.rubricId, currentRevision);
+  const { critics } = await resolveAggregatedVettingCritics(
+    rubric.rubricId,
+    currentRevision,
+    rubric.criteriaHash,
+  );
   // WI-905074: what preserves the three-party chain is an INDEPENDENT critic,
   // not a second row in the list. The old `critics.length === 1` made the
   // identity comparison unreachable for two or more critics, so a vetting record

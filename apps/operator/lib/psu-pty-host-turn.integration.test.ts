@@ -84,7 +84,7 @@ function uniqueOwner(suffix: string): string {
 }
 
 describe('Codex carry first turn on a continuously repainting fresh composer', () => {
-  it.each(['ready', 'launch-ready', 'owner-input', 'not-ready'] as const)(
+  it.each(['ready', 'launch-ready', 'terminal-reply', 'owner-input', 'not-ready'] as const)(
     '%s: requires startup proof, preserves owner input, and records actual submission',
     async (scenario) => {
       const root = mkdtempSync(join(tmpdir(), 'codex-carry-redraw-'));
@@ -153,6 +153,7 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           expect(readFileSync(nativePath, 'utf8').trim().split('\n')).toHaveLength(1);
           return;
         }
+        if (scenario === 'terminal-reply') type('\u001b[12;40R');
         if (scenario === 'owner-input') type('owner draft');
         let terminal: Record<string, unknown> | undefined;
         const deadline = Date.now() + 2500;
@@ -164,7 +165,7 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           }
           if (!terminal) await sleep(20);
         }
-        if (scenario === 'ready') {
+        if (scenario === 'ready' || scenario === 'terminal-reply') {
           expect(terminal).toMatchObject({ kind: 'respawn-carry-delivered', turnStartVerified: true });
           const turns = readFileSync(nativePath, 'utf8').trim().split('\n');
           expect(turns).toHaveLength(1);

@@ -16,6 +16,10 @@ import {
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
 } from './frozen-candidate-repair-queue';
+import {
+  CHECKPOINT_ELIGIBILITY_PREDICATES,
+  buildCheckpointEligibilitySnapshot,
+} from './checkpoint-eligibility-snapshot';
 
 const begin = () => beginQualificationTransaction(null, {
   attemptId: 'attempt-1',
@@ -159,6 +163,41 @@ describe('logical checkpoint qualification transaction', () => {
         currentPhysicalRunner: { id: 'physical-2', leaseExpiresAtMs: 501 },
         consumedPhysicalRuns: [{ id: 'physical-1', outcome: { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' } }],
       },
+    });
+  });
+
+  it('lets a live physical-run lease outrank a stale eligibility action', () => {
+    const running = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1',
+      runnerId: 'physical-1',
+      candidate: 'candidate-1',
+      leaseDurationMs: 1_000,
+      nowMs: 200,
+    }).transaction;
+    const staleEligibility = buildCheckpointEligibilitySnapshot({
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      observedAtMs: 150,
+      predicates: CHECKPOINT_ELIGIBILITY_PREDICATES.map((code) => ({
+        code,
+        status: ['candidate-migrations', 'dependency-generation', 'target-relation-reservation'].includes(code)
+          ? 'deferred' as const
+          : 'clear' as const,
+        detail: `${code} observed at request time`,
+        clearEvents: [],
+        evidenceRefs: [`test:${code}`],
+      })),
+    });
+    const withStaleEligibility = {
+      ...running,
+      eligibilitySnapshot: staleEligibility,
+    };
+
+    expect(projectCheckpointQualificationState(withStaleEligibility, 250)).toMatchObject({
+      phase: 'running',
+      lease: { holder: 'physical-1', expired: false },
+      eligibilitySnapshot: { safeNextAction: { code: 'launch-preflight-runner' } },
+      safeNextAction: { code: 'await-current-run' },
     });
   });
 

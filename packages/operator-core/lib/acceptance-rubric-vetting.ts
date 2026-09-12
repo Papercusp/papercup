@@ -9,6 +9,7 @@
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import {
+  classifyRubricEvidenceCurrentness,
   getRubric as defaultGetRubric,
   getRubricPlanRevision as defaultGetRubricPlanRevision,
   META_ACCEPTANCE_RUBRIC_ID,
@@ -36,7 +37,9 @@ export interface AcceptanceRubricVettingStatus {
   gateEnabled: boolean;
   metaRubricRef: string;
   currentRevision: number | null;
+  currentCriteriaHash?: string | null;
   attestedRevision: number | null;
+  attestedCriteriaHash?: string | null;
   attestedRevisions: number[];
   attestationIssueId: string | null;
   consultId: string | null;
@@ -133,7 +136,11 @@ export async function getAcceptanceRubricVettingStatus(
     ...new Set(vettedCards.map((card) => card.vetting?.rubricRevision).filter((v): v is number => v != null)),
   ];
   const current = vettedCards.find(
-    (card) => currentRevision == null || card.vetting?.rubricRevision === currentRevision,
+    (card) =>
+      classifyRubricEvidenceCurrentness(
+        { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
+        { revision: currentRevision, criteriaHash: rubric.criteriaHash },
+      ).state === 'current',
   );
 
   if (!current) {
@@ -145,7 +152,9 @@ export async function getAcceptanceRubricVettingStatus(
       gateEnabled,
       metaRubricRef: META_ACCEPTANCE_RUBRIC_ID,
       currentRevision,
+      currentCriteriaHash: rubric.criteriaHash ?? null,
       attestedRevision: vettedCards[0]?.vetting?.rubricRevision ?? null,
+      attestedCriteriaHash: vettedCards[0]?.vetting?.criteriaHash ?? null,
       attestedRevisions,
       attestationIssueId: vettedCards[0]?.issueId ?? null,
       consultId: vettedCards[0]?.vetting?.consultId ?? null,
@@ -162,7 +171,9 @@ export async function getAcceptanceRubricVettingStatus(
     gateEnabled,
     metaRubricRef: META_ACCEPTANCE_RUBRIC_ID,
     currentRevision,
+    currentCriteriaHash: rubric.criteriaHash ?? null,
     attestedRevision: vetting.rubricRevision ?? null,
+    attestedCriteriaHash: vetting.criteriaHash ?? null,
     attestedRevisions,
     attestationIssueId: current.issueId,
     consultId: vetting.consultId ?? null,

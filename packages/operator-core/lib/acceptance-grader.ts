@@ -235,6 +235,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     startupStallMaxRechecks = ACCEPTANCE_GRADER_STARTUP_STALL_MAX_RECHECKS,
     allowStandaloneWeeklyLimit = false,
     allowInferenceGatewayError = false,
+    allowGatewayErrorWithoutFooter = false,
     allowLauncherQuotaDrop = false,
     allowLauncherWalledPoolRefusal = false,
     detectStartupStall = true,
@@ -258,6 +259,13 @@ export async function detectAcceptanceGraderTerminalFailure(
      * general acceptance prompt because frozen evidence can contain error prose.
      */
     allowInferenceGatewayError?: boolean;
+    /**
+     * Dedicated fire-and-forget launches can stop at the exact gateway error
+     * screen without rendering Claude's completed-turn footer. Only controlled
+     * callers whose launch brief cannot quote that screen may enable this, and
+     * only together with allowInferenceGatewayError.
+     */
+    allowGatewayErrorWithoutFooter?: boolean;
     /**
      * A fire-and-forget controlled launch may opt into the exact pty-host
      * terminal receipt emitted when its launch kickoff cannot be submitted
@@ -285,6 +293,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError,
+      allowGatewayErrorWithoutFooter,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
     });
@@ -305,6 +314,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError,
+      allowGatewayErrorWithoutFooter,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
     });
@@ -338,11 +348,14 @@ export function classifyAcceptanceGraderTerminalFailure(
   {
     allowStandaloneWeeklyLimit = false,
     allowInferenceGatewayError = false,
+    allowGatewayErrorWithoutFooter = false,
     allowLauncherQuotaDrop = false,
     allowLauncherWalledPoolRefusal = false,
   }: {
     allowStandaloneWeeklyLimit?: boolean;
     allowInferenceGatewayError?: boolean;
+    /** Controlled-launch opt-in for an exact gateway screen that never reaches a completed-turn footer. */
+    allowGatewayErrorWithoutFooter?: boolean;
     allowLauncherQuotaDrop?: boolean;
     /**
      * EI-22978598482930667: psu REFUSES a launch whose auto-route pool is
@@ -428,7 +441,12 @@ export function classifyAcceptanceGraderTerminalFailure(
   const gatewayError = allowInferenceGatewayError
     ? normalized.match(
         /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)(?:\s*·\s*inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after \d+s|\s+This request would exceed your\s+account(?:'|’)s rate limit\.\s*Please try again later\.))[\s\S]{0,800}?(?:Baked|Churned|Cogitated|Cooked|Worked) for [^\n]{1,120}?\s*·\s*done\b/i,
-      )
+      ) ??
+      (allowGatewayErrorWithoutFooter
+        ? normalized.match(
+            /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)(?:\s*·\s*inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after \d+s|\s+This request would exceed your\s+account(?:'|’)s rate limit\.\s*Please try again later\.))/i,
+          )
+        : null)
     : null;
   if (gatewayError) {
     return {

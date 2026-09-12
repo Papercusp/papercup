@@ -36,6 +36,7 @@ import {
   shouldBreakComposerWedge,
   makeOwnerComposerGate,
   makeOwnerInputDetector,
+  makeFreshChildOwnerInterruptionDetector,
   makeActivityTracker,
   makeAgentBusyGate,
   codexCarryTurnCompleted,
@@ -1474,6 +1475,22 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
     it('rejects a reply even when it is split one byte per read', () => {
       const d = makeOwnerInputDetector();
       const seen = [...'\u001bP>|VTE(7600)\u001b\\'].map((c) => d.sawOwnerInput(c));
+      expect(seen.some(Boolean)).toBe(false);
+    });
+
+    it('does not let ambiguous terminal replies cancel a fresh carry, while real input still does', () => {
+      const d = makeFreshChildOwnerInterruptionDetector();
+      expect(d.sawOwnerInput('\u001b[12;40R')).toBe(false); // cursor-position reply
+      expect(d.sawOwnerInput('\u001b[?1;2c')).toBe(false); // device-attributes reply
+      expect(d.sawOwnerInput('\u001bOP')).toBe(false); // ambiguous SS3 reply/key
+      expect(d.sawOwnerInput('owner draft')).toBe(true);
+      expect(d.sawOwnerInput('\r')).toBe(true);
+      expect(d.sawOwnerInput('\u0003')).toBe(true);
+    });
+
+    it('keeps the fresh-carry interruption detector stateful across split terminal replies', () => {
+      const d = makeFreshChildOwnerInterruptionDetector();
+      const seen = [...'\u001b[12;40R'].map((c) => d.sawOwnerInput(c));
       expect(seen.some(Boolean)).toBe(false);
     });
 

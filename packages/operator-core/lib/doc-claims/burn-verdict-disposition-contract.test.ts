@@ -58,6 +58,15 @@ const ALLOWED_BARE_VERDICTS: readonly AllowedBareVerdict[] = [
       'there is no burn disposition it could carry. The two levers share a module and the verb ' +
       '"shedding", which is the whole reason this needs saying rather than assuming.',
   },
+  {
+    file: 'packages/operator-core/lib/deployment/account-pool-store.ts',
+    match: 'edge-throttled of',
+    reason:
+      'The edge-throttle tally is an egress-path measurement, not a burn-governor verdict. It ' +
+      'counts accounts excluded by a live upstream edge throttle, while the burn disposition ' +
+      'describes provider usage walls or local pacing policy; the two signals are intentionally ' +
+      'reported together in this capacity summary.',
+  },
 ];
 
 const SKIP_DIRS = new Set([

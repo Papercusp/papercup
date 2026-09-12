@@ -302,6 +302,50 @@ export interface Rubric {
   updatedAt: string;
 }
 
+/** The exact rubric identity recorded beside reusable grading/vetting evidence. */
+export interface RubricEvidenceIdentity {
+  revision?: number | string | null;
+  criteriaHash?: string | null;
+}
+
+export type RubricEvidenceCurrentness =
+  | { state: 'current'; reason: 'current' }
+  | { state: 'stale'; reason: 'criteria-hash-mismatch' | 'revision-mismatch' }
+  | { state: 'unknown'; reason: 'recorded-identity-missing' | 'live-identity-missing' };
+
+/**
+ * Compare a persisted rubric-backed proof with the rubric in force now.
+ *
+ * `revision` is a storage/event counter: harmless plan-row or formatting edits can
+ * advance it. `criteriaHash` is the dependency identity over the fields that actually
+ * grade (including criterion methods and delegated class revision), so two complete
+ * hashes are authoritative even when the counters differ. Legacy rows that predate the
+ * hash retain the conservative exact-revision fallback. A one-sided/missing identity is
+ * UNKNOWN, never silently current.
+ */
+export function classifyRubricEvidenceCurrentness(
+  recorded: RubricEvidenceIdentity,
+  live: RubricEvidenceIdentity,
+): RubricEvidenceCurrentness {
+  const recordedHash = recorded.criteriaHash?.trim() || null;
+  const liveHash = live.criteriaHash?.trim() || null;
+  if (recordedHash !== null || liveHash !== null) {
+    if (recordedHash === null) return { state: 'unknown', reason: 'recorded-identity-missing' };
+    if (liveHash === null) return { state: 'unknown', reason: 'live-identity-missing' };
+    return recordedHash === liveHash
+      ? { state: 'current', reason: 'current' }
+      : { state: 'stale', reason: 'criteria-hash-mismatch' };
+  }
+
+  const recordedRevision = recorded.revision == null ? null : String(recorded.revision);
+  const liveRevision = live.revision == null ? null : String(live.revision);
+  if (recordedRevision === null) return { state: 'unknown', reason: 'recorded-identity-missing' };
+  if (liveRevision === null) return { state: 'unknown', reason: 'live-identity-missing' };
+  return recordedRevision === liveRevision
+    ? { state: 'current', reason: 'current' }
+    : { state: 'stale', reason: 'revision-mismatch' };
+}
+
 /**
  * The workspace the rubric-template PLANS are homed in — the ACTIVE workspace, resolved
  * the same way every other workspace-scoped operator-core store resolves it

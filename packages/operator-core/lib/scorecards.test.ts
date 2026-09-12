@@ -120,14 +120,34 @@ describe('grading-audit rubric identity currentness (EI-22701281083010532)', () 
     });
   });
 
-  it('marks a settled stamp stale when the live meta-rubric advances', () => {
+  it('marks a settled stamp stale when the graded criteria change', () => {
     expect(
       classifyGradingAuditCurrentness(base, {
         rubricId: 'grading-integrity',
         revision: 6,
         criteriaHash: 'hash-new',
       }),
-    ).toMatchObject({ state: 'stale', reason: 'revision-mismatch', recordedRevision: 4, currentRevision: 6 });
+    ).toMatchObject({ state: 'stale', reason: 'criteria-hash-mismatch', recordedRevision: 4, currentRevision: 6 });
+  });
+
+  it('reuses a settled stamp across a revision-only edit when the criteria hash is unchanged', () => {
+    expect(
+      classifyGradingAuditCurrentness(base, {
+        rubricId: 'grading-integrity',
+        revision: 6,
+        criteriaHash: 'hash-old',
+      }),
+    ).toMatchObject({ state: 'current', reason: 'current', recordedRevision: 4, currentRevision: 6 });
+  });
+
+  it('invalidates a same-revision stamp when a delegated criterion dependency changes', () => {
+    expect(
+      classifyGradingAuditCurrentness(base, {
+        rubricId: 'grading-integrity',
+        revision: 4,
+        criteriaHash: 'hash-new',
+      }),
+    ).toMatchObject({ state: 'stale', reason: 'criteria-hash-mismatch' });
   });
 
   it('keeps missing identity unknown instead of treating historical settlement as current', () => {

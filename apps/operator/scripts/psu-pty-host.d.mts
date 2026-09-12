@@ -414,6 +414,26 @@ export function makeOwnerInputDetector(): {
     sawOwnerInput(data: any): boolean;
 };
 /**
+ * Does this stdin chunk contain a DEFINITE owner interruption of a fresh
+ * successor's first prompt?
+ *
+ * This is intentionally narrower than makeOwnerInputDetector. A bridged
+ * terminal writes CSI/SS3 replies (cursor position, device attributes, etc.)
+ * to the same stdin stream during every fresh Codex boot. Those bytes are
+ * indistinguishable from arrow/function keys, so they remain owner activity
+ * for presence/idle accounting, but they cannot safely cancel the deterministic
+ * carry: doing so strands every successor before its first submission. Only
+ * bytes outside an escape sequence can change/submit/cancel the fresh
+ * composer's line, and therefore interrupt its carry prompt. Enter, Ctrl-C,
+ * Ctrl-U and ordinary owner text all remain definite interruptions.
+ *
+ * Stateful across chunks — construct one per stdin stream.
+ */
+export function makeFreshChildOwnerInterruptionDetector(): {
+    /** true only when the chunk contains definite line-affecting owner input. */
+    sawOwnerInput(data: any): boolean;
+};
+/**
  * Detect a composer that is no longer tracking a real person (WI-38156).
  *
  * The parser fix above removes the KNOWN phantom source; this exists for the

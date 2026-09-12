@@ -1568,6 +1568,36 @@ export function makeOwnerInputDetector() {
 }
 
 /**
+ * Does this stdin chunk contain a DEFINITE owner interruption of a fresh
+ * successor's first prompt?
+ *
+ * This is intentionally narrower than makeOwnerInputDetector. A bridged
+ * terminal writes CSI/SS3 replies (cursor position, device attributes, etc.)
+ * to the same stdin stream during every fresh Codex boot. Those bytes are
+ * indistinguishable from arrow/function keys, so they remain owner activity
+ * for presence/idle accounting, but they cannot safely cancel the deterministic
+ * carry: doing so strands every successor before its first submission. Only
+ * bytes outside an escape sequence can change/submit/cancel the fresh
+ * composer's line, and therefore interrupt its carry prompt. Enter, Ctrl-C,
+ * Ctrl-U and ordinary owner text all remain definite interruptions.
+ *
+ * Stateful across chunks — construct one per stdin stream.
+ */
+export function makeFreshChildOwnerInterruptionDetector() {
+  const scanner = makeAnsiZoneScanner();
+  return {
+    /** true only when the chunk contains definite line-affecting owner input. */
+    sawOwnerInput(data) {
+      let human = false;
+      scanner.scan(data, (_code, zone) => {
+        if (zone === 'text') human = true;
+      });
+      return human;
+    },
+  };
+}
+
+/**
  * Detect a composer that is no longer tracking a real person (WI-38156).
  *
  * The parser fix above removes the KNOWN phantom source; this exists for the
@@ -5267,6 +5297,7 @@ export function hostThroughPty(o) {
   // so its escape state machine stays in step with the real byte stream; a
   // classifier that misses chunks mis-reads the tail of a split reply as text.
   const ownerInputDetector = makeOwnerInputDetector();
+  const freshChildOwnerInterruptionDetector = makeFreshChildOwnerInterruptionDetector();
 
   const wedgeDetector = makeComposerWedgeDetector({
     minDefers: positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_MIN_DEFERS, 3),
@@ -7198,8 +7229,14 @@ export function hostThroughPty(o) {
     // bridged host becomes un-shutdownable by tooling.
     // Conservative by construction: only unambiguous terminal-authored string
     // sequences are filtered, so arrow/function/keypad keys still count.
-    if (ownerInputDetector.sawOwnerInput(input)) {
+    // A fresh Codex boot elicits automatic CSI/SS3 replies from the bridged
+    // terminal. They remain possible-owner activity for the presence/idle
+    // accounting below, but cannot cancel deterministic first-prompt delivery:
+    // only definite line-affecting input advances this interruption epoch.
+    if (freshChildOwnerInterruptionDetector.sawOwnerInput(input)) {
       ownerInputGeneration++;
+    }
+    if (ownerInputDetector.sawOwnerInput(input)) {
       idleGate.touch();
       activity.touchInput();
       // owner-presence-human-turn-signal-2026-07-11 P-003: a real human keystroke into

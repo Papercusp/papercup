@@ -102,6 +102,23 @@ describe('PUI composer file-picker documentation claims', () => {
       expect(verdict.violations.join('\n')).toMatch(/pushes them after the draft row/);
     });
 
+    it('accepts attachment rows above a multiline draft renderer', () => {
+      const verdict = judgeComposerPickerClaims({
+        appRs: APP,
+        uiRs: [
+          'for row in app.attachments.rows() {',
+          '    composer_lines.push(Line::from(row));',
+          '}',
+          "composer_lines.extend(ctext.split('\\n').enumerate().map(|(row, text)| {",
+          '    Line::from(text)',
+          '}));',
+        ].join('\n'),
+        pickerRs: PICKER,
+      });
+      expect(verdict.ok).toBe(true);
+      expect(verdict.violations).toEqual([]);
+    });
+
     it('rejects attachment removal that mutates the selected file', () => {
       const verdict = judgeComposerPickerClaims({
         appRs: APP,

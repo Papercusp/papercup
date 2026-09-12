@@ -5,6 +5,8 @@ import { getAcceptanceRubricVettingStatus } from './acceptance-rubric-vetting';
 
 const rubric = {
   rubricId: 'acceptance-plan',
+  revision: 4,
+  criteriaHash: 'hash-current',
   workspaceId: 'ws-test',
   kind: 'acceptance',
   characteristic: 'plan',
@@ -28,7 +30,7 @@ function card(over: Partial<ScorecardRow> = {}): ScorecardRow {
     rubricResolved: true,
     synthesized: false,
     linkedItems: [],
-    vetting: { consultId: 'consult-vetting', rubricRevision: 4 },
+    vetting: { consultId: 'consult-vetting', rubricRevision: 4, criteriaHash: 'hash-current' },
     ...over,
   } as ScorecardRow;
 }
@@ -71,6 +73,37 @@ describe('getAcceptanceRubricVettingStatus grading-audit admission', () => {
       satisfied: true,
       state: 'vetted',
       attestedRevision: 4,
+    });
+  });
+
+  it('reuses unchanged vetting across a revision-only rubric edit', async () => {
+    await expect(
+      getAcceptanceRubricVettingStatus(
+        { ...rubric, revision: 6 },
+        { ...deps([card()]), getRubricPlanRevision: async () => 6 },
+      ),
+    ).resolves.toMatchObject({
+      satisfied: true,
+      state: 'vetted',
+      currentRevision: 6,
+      attestedRevision: 4,
+      currentCriteriaHash: 'hash-current',
+      attestedCriteriaHash: 'hash-current',
+    });
+  });
+
+  it('invalidates same-revision vetting when criterion or method identity changes', async () => {
+    await expect(
+      getAcceptanceRubricVettingStatus(
+        rubric,
+        deps([card({ vetting: { consultId: 'consult-vetting', rubricRevision: 4, criteriaHash: 'hash-old' } })]),
+      ),
+    ).resolves.toMatchObject({
+      satisfied: false,
+      state: 'unvetted',
+      reason: 'stale-attestation',
+      currentCriteriaHash: 'hash-current',
+      attestedCriteriaHash: 'hash-old',
     });
   });
 });

@@ -102,7 +102,13 @@ export function judgeComposerPickerClaims(input: PickerClaimsInput): PickerClaim
 
   // ── Claim 2: attachments are shown ABOVE the draft ────────────────────────
   const rowsAt = uiRs.indexOf('app.attachments.rows()');
-  const draftAt = uiRs.indexOf('composer_lines.push(Line::from(Span::styled(ctext');
+  // The renderer grew from a single draft Line into one Line per logical draft
+  // row. Keep both source shapes recognizable: the claim is about ordering, not
+  // about which ratatui collection method happens to render the editor.
+  const draftAt = [
+    uiRs.indexOf('composer_lines.push(Line::from(Span::styled(ctext'),
+    uiRs.indexOf("composer_lines.extend(ctext.split('\\n').enumerate().map("),
+  ].filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? -1;
   if (rowsAt === -1) {
     violations.push(
       'PUBLIC_RELEASE_UX.md:316 promises every attachment is shown above the draft, but ui.rs never renders app.attachments.rows().',

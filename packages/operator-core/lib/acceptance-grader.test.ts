@@ -619,6 +619,15 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
 
     expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(error, { allowInferenceGatewayError: true })).toBeNull();
+    expect(
+      classifyAcceptanceGraderTerminalFailure(error, {
+        allowInferenceGatewayError: true,
+        allowGatewayErrorWithoutFooter: true,
+      }),
+    ).toEqual({
+      code: 'inference_gateway_error',
+      evidence: 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s',
+    });
     expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
       code: 'inference_gateway_error',
       evidence:

@@ -398,9 +398,7 @@ export function projectCheckpointQualificationState(
     : null;
   const waitEvents = uniqueStrings(transaction.blockers.flatMap((blocker) => blocker.clearEvents));
   let safeNextAction: QualificationSafeNextAction;
-  if (transaction.eligibilitySnapshot && !isTerminalQualificationOutcome(transaction.outcome)) {
-    safeNextAction = transaction.eligibilitySnapshot.safeNextAction;
-  } else if (transaction.outcome.kind === 'green') {
+  if (transaction.outcome.kind === 'green') {
     safeNextAction = { code: 'read-release-control', reason: 'qualification is green; read promotion/deploy authority before acting', waitEvents: [] };
   } else if (transaction.outcome.kind === 'red') {
     safeNextAction = { code: 'repair-code', reason: 'a real red is terminal for this logical attempt; repair code before starting a successor', waitEvents: [] };
@@ -410,6 +408,11 @@ export function projectCheckpointQualificationState(
     safeNextAction = { code: 'recover-expired-runner', reason: 'the physical-run lease expired without a terminal result', waitEvents: [] };
   } else if (runner) {
     safeNextAction = { code: 'await-current-run', reason: 'one physical runner owns the live lease', waitEvents: [] };
+  } else if (transaction.eligibilitySnapshot) {
+    // The snapshot describes request-time preflight only. A physical runner's lease is
+    // action-time authority and must win over a stale snapshot, so this branch is reached
+    // only when the transaction has no current runner.
+    safeNextAction = transaction.eligibilitySnapshot.safeNextAction;
   } else if (transaction.phase === 'waiting') {
     safeNextAction = { code: 'await-blocker-events', reason: 'pre-suite infrastructure blocked this attempt; resume it after the named events clear', waitEvents };
   } else {
