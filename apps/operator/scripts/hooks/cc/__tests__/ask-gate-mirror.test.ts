@@ -61,6 +61,18 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     return p;
   };
 
+  const transcriptWithToolUseThenText = (text: string, toolName = 'session:request-compaction') => {
+    const p = join(tmp, 'tool-use-then-text.jsonl');
+    const entries = [
+      { type: 'user', message: { content: [{ type: 'text', text: 'Continue.' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tool-1', name: toolName, input: {} }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text }] } },
+    ];
+    fs.writeFileSync(p, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+    return p;
+  };
+
   it('no PAPERCUSP_SID → exit 0, empty stdout', () => {
     const r = run(payload({ hook_event_name: 'Stop' }), {}, false);
     expect(r.status).toBe(0);
@@ -110,6 +122,70 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     const r = run(payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith('All done, tests pass.') }));
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
+  });
+
+  describe('claimed-action-without-tool-call bounce (EI-22981386187027177)', () => {
+    const bounced = (text: string, extra: object = {}) => {
+      const r = run(
+        payload({
+          hook_event_name: 'Stop',
+          session_id: 'claimed-action-session',
+          transcript_path: transcriptWith(text),
+          ...extra,
+        }),
+      );
+      expect(r.status).toBe(0);
+      return r.stdout ? JSON.parse(r.stdout) : null;
+    };
+
+    it.each([
+      'Compacting now',
+      'Compacting now, at 104%',
+      'Going quiet now so the cut lands',
+      "I'm compacting now.",
+      "I'll request compaction right now.",
+    ])('BOUNCES an imminent action claim with no tool call: %s', (text) => {
+      const out = bounced(text);
+      expect(out?.decision).toBe('block');
+      expect(out.reason).toMatch(/CLAIMING that an imminent action/);
+      expect(out.reason).toMatch(/session:request-compaction/);
+    });
+
+    it('uses the documented last_assistant_message field when it is present', () => {
+      const out = bounced('A stale transcript ending.', { last_assistant_message: 'Compacting now' });
+      expect(out?.decision).toBe('block');
+    });
+
+    it('allows the same wording when the current turn contains the matching tool call', () => {
+      const r = run(
+        payload({
+          hook_event_name: 'Stop',
+          session_id: 'claimed-action-session',
+          transcript_path: transcriptWithToolUseThenText('Compacting now'),
+        }),
+      );
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe('');
+    });
+
+    it('still bounces when the current turn contains only an unrelated tool call', () => {
+      const p = transcriptWithToolUseThenText('Compacting now', 'Bash');
+      const r = run(payload({ hook_event_name: 'Stop', session_id: 'claimed-action-session', transcript_path: p }));
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out.decision).toBe('block');
+      expect(out.reason).toMatch(/matching session:request-compaction/);
+    });
+
+    it.each([
+      'I will compact after the owner confirms the route.',
+      'The report explains why the prior agent wrote “Compacting now” as an example.',
+      'The compaction detector is covered by the focused suite.',
+    ])('allows non-imminent or quoted action language: %s', (text) => {
+      const r = run(payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith(text) }));
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe('');
+    });
   });
 
   it('Stop with a bare question-shaped ending and NO <ask> tag → BOUNCE (decision:block)', () => {
