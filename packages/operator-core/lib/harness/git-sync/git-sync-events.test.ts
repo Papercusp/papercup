@@ -7,6 +7,8 @@ import {
   emitGitSyncCommittedEvent,
   emitGitSyncEgressedEvent,
   emitGitSyncLockRetryEvent,
+  emitResourceReleasedEvent,
+  resourceReleasedEventKey,
   isSystemGitSyncHolder,
   snapshotGitSyncLockHolders,
 } from './git-sync-events';
@@ -223,6 +225,52 @@ describe('emitGitSyncLockRetryEvent (EI-20271766491179856)', () => {
     ).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock-retry-event'));
+    warn.mockRestore();
+  });
+});
+
+describe('emitResourceReleasedEvent (EI-22726196301284168)', () => {
+  it('emits one exact resource key at the release boundary with scope and release time', async () => {
+    const emit = typedEmit();
+    emitResourceReleasedEvent('git-sync:harness-a', 'workspace-a', emit);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: resourceReleasedEventKey('git-sync:harness-a'),
+      source: 'resource-locks',
+      payload: {
+        resource: 'git-sync:harness-a',
+        workspaceId: 'workspace-a',
+        releasedAtMs: expect.any(Number),
+      },
+    });
+    expect(emit.mock.calls[0][0].summary).toContain('git-sync:harness-a');
+  });
+
+  it('omits an absent workspace scope without failing the release notification', async () => {
+    const emit = typedEmit();
+    emitResourceReleasedEvent('dev-server', undefined, emit);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'resource:released:dev-server',
+        payload: { resource: 'dev-server', releasedAtMs: expect.any(Number) },
+      }),
+    );
+    expect(emit.mock.calls[0][0].payload).not.toHaveProperty('workspaceId');
+  });
+
+  it('never rejects on an emit failure (resource release remains best-effort)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn(async () => {
+      throw new Error('engine down');
+    });
+
+    expect(() => emitResourceReleasedEvent('dev-server', 'workspace-a', emit as never)).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('resource-release-event'));
     warn.mockRestore();
   });
 });
