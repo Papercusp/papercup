@@ -131,6 +131,11 @@ describe('locks:acquire — outcome branches', () => {
     expect(tool.args.shape).not.toHaveProperty('goal_ref');
   });
 
+  it('documents the required intent argument for blocked peers', () => {
+    expect(tool.description).toMatch(/required short `intent`/);
+    expect(tool.args.shape).toHaveProperty('intent');
+  });
+
   it('documents that harness/workspace slugs are not acquire arguments', () => {
     expect(tool.description).toMatch(/workspace-global file-lock surface/);
     expect(tool.description).toMatch(/omit `harness` and `workspace`/);

@@ -53,9 +53,14 @@ const dataDir = process.env.VERDICT_DATA_DIR;
 const session = process.env.VERDICT_SESSION || '';
 const stateDir = session ? resolve(dataDir, 'sessions', session) : dataDir;
 const server = createServer(async (req, res) => {
-  for await (const _chunk of req) {}
+  let body = '';
+  for await (const chunk of req) body += chunk;
   res.writeHead(200);
-  res.end('ok');
+  res.end('ok', () => {
+    let command = '';
+    try { command = JSON.parse(body).command || ''; } catch {}
+    if (command === 'stop') server.close(() => process.exit(0));
+  });
 });
 server.listen(0, '127.0.0.1', () => {
   mkdirSync(stateDir, { recursive: true });

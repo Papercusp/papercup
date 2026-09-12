@@ -663,7 +663,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b.results[0]).toEqual({ ok: false, id: 'WI-404', error: "work_item 'WI-404' not found" });
   });
 
-  it('surfaces the canonical issue claim floor when the named claim is refused (EI-21637135941119450)', async () => {
+  it('surfaces the canonical issue claim floor when the named claim is refused (EI-21637135941119450 / EI-22486369985989805)', async () => {
     claimM.mockResolvedValue(null as never);
     getM.mockResolvedValue({
       id: 'EI-PENDING', kind: 'bug', family: 'issue', harness: 'papercup', assignee: null,
@@ -693,6 +693,11 @@ describe('work_items:claim handler (keyed-array)', () => {
       },
     });
     expect(b.results[0].hint).toMatch(/admission-pending.*duplicate screening is pending/);
+    const contract = `${(tool as { description?: string }).description ?? ''}\n${
+      (tool as { guidance?: { when?: string } }).guidance?.when ?? ''
+    }`;
+    expect(contract).toMatch(/born-pending admission\/trust floor remains enforced for ordinary named claims/);
+    expect(contract).toContain('server-derived dispatch or authorized-force capabilities');
     // A floor that advertises no bound renders EXACTLY the pre-existing hint — the
     // EI-21973318733042066 clauses below are strictly additive.
     expect(b.results[0].hint).not.toMatch(/CLEARS ON ITS OWN/);

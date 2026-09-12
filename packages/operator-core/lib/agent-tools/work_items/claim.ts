@@ -1078,9 +1078,9 @@ export default defineTool({
   //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
   //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available (issue-family refusals include typed `claimFloor` when the oracle can identify one). `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
+    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available. The separate born-pending admission/trust floor remains enforced for ordinary named claims; only server-derived capabilities (current-leader dispatch, self-filed fallout, an exact legacy fleet-scope downgrade, or an authorized force takeover) may bypass a matching pending row. `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
   guidance: {
-    when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.',
+    when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness/lifecycle floors, never fleet scope or the ordinary born-pending admission/trust floor; server-derived dispatch or authorized-force capabilities carry their own exact pending-row exception.',
     notWhen:
       '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `work_item_unreadable` = the pre-claim read failed; retry or inspect database health.',
     chaining:
@@ -1135,7 +1135,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'default for the inline id / every id in `ids`: checked-reclaim another agent\'s claim with `reason`; readiness floors are already overridden by naming an id, and every cross-holder takeover is audited + notifies the holder and owner.',
+          'default for the inline id / every id in `ids`: checked-reclaim another agent\'s claim with `reason`; self-select readiness/lifecycle floors are already overridden by naming an id, but ordinary born-pending admission remains enforced. An authorized force takeover mints the exact pending-row exception, and every cross-holder takeover is audited + notifies the holder and owner.',
         ),
       reason: z
         .string()

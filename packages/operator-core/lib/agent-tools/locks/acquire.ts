@@ -104,7 +104,7 @@ const PROGRESS_TICK_MS = 10_000;
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim repository or authorized home-directory/XDG-runtime files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass current-user home or XDG_RUNTIME_DIR files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp, not caller input.',
+    'Claim repository or authorized home-directory/XDG-runtime files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass current-user home or XDG_RUNTIME_DIR files via absolute `external_paths` (mapped to edit-hook reserved keys). Pass the required short `intent` so a blocked peer can see what this lock is for. Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp, not caller input.',
   guidance: {
     // P-011: response documentation lives in `returns`, which promptWeight() does not
     // sum (description + when + notWhen + chaining + byRole only) — the WI-9334 pattern.

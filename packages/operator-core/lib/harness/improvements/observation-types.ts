@@ -225,6 +225,8 @@ export interface SpecTestAdequacyRerunRecipe {
     evidenceRefs?: string[];
     /** Preserve an explicit plan-item selector instead of widening the replay. */
     planItemIds?: string[];
+    /** Bound the evidence page for pressure-safe judge replays. */
+    limit?: number;
     /** Pin replay to the exact immutable clause revision graded by the emitter. */
     specRevision?: number;
     /** Content hash paired with specRevision for an exact immutable clause pin. */
