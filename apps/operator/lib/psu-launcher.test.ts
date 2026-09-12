@@ -201,6 +201,7 @@ import {
   resolveFallbackOperatorTargets,
   resolveOperatorUrl,
   resolveOperatorTarget,
+  applyLauncherOperatorUrlEnv,
   normalizeOperatorBaseUrl,
   readToken,
   claudeOAuthTokenPath,
@@ -12150,6 +12151,35 @@ describe("resolveFallbackOperatorTargets (stale-shell heal candidate ladder)", (
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("applyLauncherOperatorUrlEnv (wake-respawn URL provenance)", () => {
+  it("marks discovered targets as launcher-managed", () => {
+    const env: Record<string, string> = {};
+    applyLauncherOperatorUrlEnv(env, {
+      url: "http://127.0.0.1:24689",
+      source: "discovery",
+      startedAt: null,
+    });
+    expect(env).toEqual({
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:24689",
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+    });
+  });
+
+  it("clears a stale marker when the target is an explicit env pin", () => {
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+    };
+    applyLauncherOperatorUrlEnv(env, {
+      url: "http://127.0.0.1:24689",
+      source: "env",
+      startedAt: null,
+    });
+    expect(env).toEqual({
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:24689",
+    });
   });
 });
 
