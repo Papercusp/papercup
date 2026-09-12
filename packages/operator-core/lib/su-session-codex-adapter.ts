@@ -41,12 +41,14 @@ import {
   findCodexRolloutPath,
 } from './session-transcript-resolvers';
 import { createCodexTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
+import { gatewayServedAccountForOwner } from './compaction-usage';
 import {
   SuSessionHost,
   registerSuSessionHost,
   type SuSessionCommandContext,
   type SuSessionCommandOutcome,
   type SuSessionEventInput,
+  type SuSessionServedAccountReader,
 } from './su-session-host';
 
 export type CodexPuiSuSessionInput =
@@ -80,6 +82,7 @@ export interface CodexSuSessionDescriptorOptions {
   agentChatId: string;
   model?: string | null;
   accountRoute?: string | null;
+  servedAccountReader?: SuSessionServedAccountReader;
   carry?: 'warm' | 'cold';
   modes?: readonly string[];
   runtimeGeneration?: number;
@@ -405,6 +408,7 @@ function descriptorFor(
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
+    accountServed: null,
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
     modes: [...(options.modes ?? [])],
@@ -427,6 +431,7 @@ export class CodexSuSessionAdapter {
   private readonly controls: CodexSuSessionControls;
   private readonly unregister: (() => void) | null;
   private lastNativeErrorKey: string | null = null;
+  private readonly servedAccountReader: SuSessionServedAccountReader;
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'codex' },
@@ -434,6 +439,7 @@ export class CodexSuSessionAdapter {
     options: CreateCodexSuSessionAdapterOptions,
   ) {
     this.runtimeValue = runtime;
+    this.servedAccountReader = options.servedAccountReader ?? gatewayServedAccountForOwner;
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
@@ -460,6 +466,17 @@ export class CodexSuSessionAdapter {
 
   get runtime(): CodexSuRuntimeBinding {
     return this.runtimeValue;
+  }
+
+  /** Refresh gateway serving-account provenance after a known native turn. */
+  async refreshAccountServed(): Promise<void> {
+    let account: string | null;
+    try {
+      account = await this.servedAccountReader(this.host.descriptor().identity.ownerId);
+    } catch {
+      return;
+    }
+    this.host.updateAccountServed(account);
   }
 
   materializeRuntime(runtime: CodexSuRuntimeBinding): void {
