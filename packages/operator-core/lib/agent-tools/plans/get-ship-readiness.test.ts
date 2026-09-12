@@ -274,6 +274,6 @@ describe('plans:get — shipReadiness', () => {
       unavailableReason: 'resolver-unavailable',
       buildProvenance: { version: expect.any(String) },
     });
-    expect(result.results[0].shipReadiness.buildProvenance).toHaveProperty('sha');
+    expect(result.results[0].shipReadiness).toHaveProperty('buildProvenance.sha');
   });
 });
