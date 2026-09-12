@@ -23,7 +23,16 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { createRequire } from 'node:module';
+// STATIC value import, deliberately not `createRequire(import.meta.url)(…)`.
+// The packed desktop sidecar is a single esbuild bundle with NO node_modules
+// tree beside it (build-desktop-sidecar.sh: "serve.mjs has every inlinable
+// module"), and every inlined module shares serve.mjs's own import.meta.url —
+// so a runtime require of this specifier resolves against sidecar/ and throws
+// ERR_MODULE_NOT_FOUND. That threw inside registerMcpHost(), was swallowed by
+// the global unhandledRejection handler as "non-fatal … continuing boot", and
+// left every /api/mcp request hanging with no response ever written. A static
+// import is what esbuild can see, so the schemas are inlined into the bundle.
+import * as sdk from '@modelcontextprotocol/sdk/types.js';
 import {
   getCatalog,
   toArgsJsonSchema,
@@ -2839,8 +2848,6 @@ export function mcpHostServerOptions() {
 
 /** Register the complete operator protocol on a transport-independent SDK server. */
 export function registerMcpHost(server: McpServer): void {
-  const sdk = createRequire(import.meta.url)('@modelcontextprotocol/sdk/types.js');
-
   server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) => {
     // Shared visibility walk — see resolveVisibleToolListings above
     // (strict-mode + manifest + allowlist semantics documented there).
