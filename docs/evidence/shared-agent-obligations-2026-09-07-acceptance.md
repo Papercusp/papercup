@@ -72,6 +72,7 @@ R-1 through R-5 require tree evidence. Under D-017, R-6 requires current staging
 
 ## Current automated execution
 
+<a id="R-7-P-008-unit-current-a8089380dd"></a>
 The repository test router ran 15 files, comprising acceptance unit/component checks and the owner-report / goals PostgreSQL integration checks, at `ddb59a866e`, starting 2026-09-07T08:54:14.620Z and completing by 09:00:10Z. All 419 tests passed: 277 core unit tests, 113 component tests, and 29 real-PostgreSQL integration tests. No tests were skipped; the named paths were clean before and after. Full execution log: `/tmp/wi2147072-acceptance-tests-0854.log`.
 
 The additional event-await store and unanswered-directed PostgreSQL tests passed 100/100, with zero skips, at the same clean revision. Execution ran from 09:06:25Z to 09:10:19Z; log: `/tmp/wi2147072-recovery-tests-0906.log`. The implementation files recorded by the proof bindings have no diff from `ddb59a866e` at the subsequent verification read.
@@ -99,6 +100,7 @@ The later model-authority change in the shared launch code exposed three stale t
 
 For the exact criterion models, methods, failure observations and detector paths, call `rubrics:get {"rubricRef":"shared-agent-obligations-and-briefs-2026-09-05-acceptance"}` against staging `http://127.0.0.1:3170`; assert `results[0].rubric.revision === 8` and the criteria hash above. Read the independent counterexample partition with `work_items:get {"id":"WI-10000492","harness":"papercusp","detail":true,"threadLimit":3}` (post 200159), the detector repair confirmation with the same call for `WI-10000511` (post 200173), and the D-017 amendment approval in `WI-10001060` post 202910. These records are outside the implementation author's lineage.
 
+<a id="R-7-P-008-integration-current-a8089380dd"></a>
 The PostgreSQL goals checks execute the actual goal detail resolver, including the holder's exact turn-start obligation projection and canonical portfolio. The owner-report integration checks verify the newest complete exact-goal evidence across reporting channels and reject incomplete, wrong-subject, wrong-owner, wrong-workspace, and non-human rows.
 
 ## Frozen policy pilot
@@ -127,6 +129,7 @@ The fourth real rig successfully copied source/SPA and initialized PostgreSQL, t
 
 The fifth rig successfully ran the real desktop at PID 3924823, display :91, port 33710, serving `ddb59a866e`. It used the available shared Cargo slot zero; it does not validate the peer's alternate-slot repair. The journey opened the installed goal through its card, waited for real goal data, compared the exact server-provided component payload with the DOM, closed the cockpit and verified `hudgoal` disappeared, reopened through the card, and captured the rendered section. All seven parity checks passed: status, generation, observation time, action, omitted count, recovery text, and absence of false all-clear. The goal remained killed throughout; the verifier was stopped afterward.
 
+<a id="R-7-P-008-e2e-current-a8089380dd"></a>
 The exact parity sample was degraded at generation `9fdb18df0f498e361ca3`, observed 09:13:46.539Z, with a turn-start receipt of one delivered entry, seven omitted, 255 characters and 64 estimated tokens. The screenshot is a separate later refresh at generation `6f9c85c1cfaf49675789`, observed 09:15:11.225Z. Complete payload, DOM observations and journey checks are in [the GUI record](shared-agent-obligations-2026-09-07-gui-journey.json); [the screenshot](shared-agent-obligations-2026-09-07-goal-mode-state.png) was visually inspected. This exercises the live degraded/unknown path. Known/no-demand cases remain covered by component and PostgreSQL integration tests; no live opportunity was induced.
 
 Independent review WI-10000514 is complete: acceptance grading EI-22599793240835202 rates R-1 through R-5 and R-7 pass, and R-6 partial. The reviewer independently reran the ten core files (277 passed, zero failed/skipped), audited the GUI records and reproduced the negative deployment result. Their exact scope and repair are recorded in WI-10000514#200262. The four PostgreSQL legs were verified from the recorded router evidence, not independently rerun by that reviewer.
