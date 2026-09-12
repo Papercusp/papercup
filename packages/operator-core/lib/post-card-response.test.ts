@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { postCardResponse } from './post-card-response';
 
+const originalFetch = globalThis.fetch;
+
 describe('postCardResponse', () => {
   const fetchSpy = vi.fn();
   beforeEach(() => {
@@ -13,6 +15,7 @@ describe('postCardResponse', () => {
   });
   afterEach(() => {
     fetchSpy.mockReset();
+    globalThis.fetch = originalFetch;
   });
 
   function okResp(body: object) {
@@ -86,7 +89,10 @@ describe('postRunCancel', () => {
     fetchSpy.mockReset();
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
   });
-  afterEach(() => fetchSpy.mockReset());
+  afterEach(() => {
+    fetchSpy.mockReset();
+    globalThis.fetch = originalFetch;
+  });
 
   it('POSTs runId + workspaceId to /run-cancel and returns ok:true', async () => {
     const { postRunCancel } = await import('./post-card-response');
