@@ -189,7 +189,9 @@ const runningGeneration = (deployedSha: string) => ({
 
 const replayAuditRubric = () => ({
   ...mkRubric('grading-integrity', 'standard'),
-  criteria: [{ key: 're-runnable-evidence', title: 'Re-runnable evidence', model: 'm', method: 'm', driftMarkers: 'd' }],
+  criteria: [
+    { key: 're-runnable-evidence', title: 'Re-runnable evidence', model: 'm', method: 'm', driftMarkers: 'd' },
+  ],
 });
 
 const replayConsistencyAuditRubric = () => ({
@@ -354,14 +356,17 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(res.ok).toBe(true);
     expect(closeSourceAuditConsults).toHaveBeenCalledWith(expect.any(String), 'EI-CARD');
-    expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({
-      auditIssueId: 'EI-AUDIT-1',
-      auditor: 'su-auditor',
-      verdict: 'passed',
-      rubricRevision: 1,
-      criteriaHash: 'rubric-hash-v1',
-      requireCurrentIdentity: true,
-    }));
+    expect(recordGradingAudit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({
+        auditIssueId: 'EI-AUDIT-1',
+        auditor: 'su-auditor',
+        verdict: 'passed',
+        rubricRevision: 1,
+        criteriaHash: 'rubric-hash-v1',
+        requireCurrentIdentity: true,
+      }),
+    );
     expect((res as { gradingAuditRecorded?: boolean }).gradingAuditRecorded).toBe(true);
     // D-004 one level: the audit card carries NO pending stamp of its own.
     const payload = captureImprovement.mock.calls[0][0] as {
@@ -371,10 +376,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   });
 
   it('a failing rating settles the subject as failed', async () => {
-    await emitScorecard(
-      { ...auditArgs, ratings: FAIL_RATINGS },
-      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
-    );
+    await emitScorecard({ ...auditArgs, ratings: FAIL_RATINGS }, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
@@ -541,36 +543,36 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res.ok).toBe(true);
     expect(captureImprovement).toHaveBeenCalledOnce();
-    expect(recordGradingAudit).toHaveBeenCalledWith(
-      'EI-CARD',
-      expect.objectContaining({ verdict: 'failed' }),
-    );
+    expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
   it.each([
     ['older', false, 'auditor-build-older-than-graded-build'],
     ['unknown', null, 'generation-ancestry-unknown'],
-  ] as const)('fails closed when the auditor generation is %s than the replayable graded card', async (_label, probeResult, reason) => {
-    const gradedSha = 'a'.repeat(40);
-    const auditorSha = 'b'.repeat(40);
-    getRubric.mockResolvedValue(replayAuditRubric());
-    getIssue.mockResolvedValue(replayableGradedCard(gradedSha));
-    readRunningGeneration.mockResolvedValue(runningGeneration(auditorSha));
-    const generationAncestry = vi.fn().mockReturnValue(probeResult);
+  ] as const)(
+    'fails closed when the auditor generation is %s than the replayable graded card',
+    async (_label, probeResult, reason) => {
+      const gradedSha = 'a'.repeat(40);
+      const auditorSha = 'b'.repeat(40);
+      getRubric.mockResolvedValue(replayAuditRubric());
+      getIssue.mockResolvedValue(replayableGradedCard(gradedSha));
+      readRunningGeneration.mockResolvedValue(runningGeneration(auditorSha));
+      const generationAncestry = vi.fn().mockReturnValue(probeResult);
 
-    const res = await emitScorecard(
-      { ...auditArgs, ratings: RE_RUN_FAIL_RATINGS },
-      { createdBy: 'su-auditor', ctxHarness: 'papercusp', checkRoot: '/test/root' },
-      { generationAncestry },
-    );
+      const res = await emitScorecard(
+        { ...auditArgs, ratings: RE_RUN_FAIL_RATINGS },
+        { createdBy: 'su-auditor', ctxHarness: 'papercusp', checkRoot: '/test/root' },
+        { generationAncestry },
+      );
 
-    expect(res).toMatchObject({ ok: false, code: 'grading_audit_generation_incompatible' });
-    expect((res as { error?: string }).error).toContain(reason);
-    expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
-    expect(readRunningGeneration).toHaveBeenCalledOnce();
-    expect(captureImprovement).not.toHaveBeenCalled();
-    expect(recordGradingAudit).not.toHaveBeenCalled();
-  });
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_generation_incompatible' });
+      expect((res as { error?: string }).error).toContain(reason);
+      expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
+      expect(readRunningGeneration).toHaveBeenCalledOnce();
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(recordGradingAudit).not.toHaveBeenCalled();
+    },
+  );
 
   it('allows a descendant auditor generation to settle a failing replayable card', async () => {
     const gradedSha = 'a'.repeat(40);
@@ -648,7 +650,10 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     };
     // The settled-subject exception and the generic supersedes validator both
     // read the referenced audit card; keep both reads on the same prior card.
-    getIssue.mockResolvedValueOnce(settledGradedCard).mockResolvedValueOnce(priorAudit).mockResolvedValueOnce(priorAudit);
+    getIssue
+      .mockResolvedValueOnce(settledGradedCard)
+      .mockResolvedValueOnce(priorAudit)
+      .mockResolvedValueOnce(priorAudit);
 
     const res = await emitScorecard(
       { ...auditArgs, supersedes: 'EI-AUDIT-OLD' },
@@ -684,6 +689,8 @@ describe('pure halves (P-013)', () => {
     expect(needsGradingAudit({ rubricKind: 'standard', rubricRef: 'goal-mode-e2e', provisional: false })).toBe(true);
     expect(needsGradingAudit({ rubricKind: 'standard', rubricRef: 'goal-mode-e2e', provisional: true })).toBe(false);
     expect(needsGradingAudit({ rubricKind: 'acceptance', rubricRef: 'plan-x', provisional: false })).toBe(false);
-    expect(needsGradingAudit({ rubricKind: 'standard', rubricRef: 'grading-integrity', provisional: false })).toBe(false);
+    expect(needsGradingAudit({ rubricKind: 'standard', rubricRef: 'grading-integrity', provisional: false })).toBe(
+      false,
+    );
   });
 });
