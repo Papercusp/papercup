@@ -301,6 +301,7 @@ describe('workspace-host entrypoint behavior', () => {
       PC_ENTRYPOINT_OUTPUT: output,
       PAPERCUSP_PORT: '4107',
       PAPERCUSP_EMBEDDED_PG_ROOT: pgRoot,
+      PAPERCUSP_HOME: join(root, '.papercusp'),
     };
     const result = run(join(root, 'bin/papercusp-server'), [], env);
     expect(result.status, result.stderr).toBe(0);

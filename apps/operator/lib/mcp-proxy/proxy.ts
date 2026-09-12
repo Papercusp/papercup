@@ -2502,6 +2502,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     // EI-22052756477768229 — this is the loop's only recovery record; a dwell 429
     // would leave the next wake's carry state ambiguous.
     "loop:checkpoint",
+    // EI-22476972244692928 — the work-item checkpoint is the fallback carry record. A
+    // finite dwell 429 makes the checkpoint outcome unknown while the successor needs it.
+    "work_items:checkpoint",
     "work_items:complete",
   ]);
   const hasNonExpiringCriticalContinuation = (tools: string[]): boolean =>

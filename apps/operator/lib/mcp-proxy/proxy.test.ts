@@ -6667,6 +6667,102 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["long-completion", "queued-checkpoint"]);
   });
 
+  it("EI-22476972244692928: does not expire queued work_items:checkpoint at a finite continuation dwell boundary", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-checkpoint") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"checkpoint":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 25,
+        criticalContinuationQueueWaitLogMs: 10,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-checkpoint",
+    );
+    await firstStarted;
+
+    let checkpointSettled = false;
+    const checkpoint = request(
+      port(proxy),
+      body(2, "work_items:checkpoint"),
+      "/api/mcp?client=queued-checkpoint",
+    ).then((result) => {
+      checkpointSettled = true;
+      return result;
+    });
+    await waitFor(() =>
+      logs.some((line) =>
+        line.includes("queued critical-continuation request"),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    expect(checkpointSettled).toBe(false);
+    expect(hits).toEqual(["held-checkpoint"]);
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 1,
+      max: 1,
+      maxWaitMs: 0,
+      requests: [
+        expect.objectContaining({
+          tools: ["work_items:checkpoint"],
+          maxWaitMs: 0,
+        }),
+      ],
+    });
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await checkpoint).status).toBe(200);
+    expect(hits).toEqual(["held-checkpoint", "queued-checkpoint"]);
+  });
+
   it("BYOC P-004: disjoint work-item continuations bypass a slow completion while same-item writes stay ordered", async () => {
     let releaseItemA: () => void = () => {};
     const itemAGate = new Promise<void>((resolve) => {
