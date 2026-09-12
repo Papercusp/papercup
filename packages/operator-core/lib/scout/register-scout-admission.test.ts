@@ -50,7 +50,10 @@ describe('production Scout caller admission', () => {
     });
     await expect(productionScoutRunner({ ...ctx, admitLlmCall, deferDispatch: true })).rejects.toThrow('study budget exhausted');
     expect(seams.provider).not.toHaveBeenCalled();
-    expect(seams.buildDeps).toHaveBeenCalledWith(expect.objectContaining({ deferDispatch: true }));
+    expect(seams.buildDeps).toHaveBeenCalledWith(expect.objectContaining({
+      deferDispatch: true,
+      workspaceId: ctx.workspaceId,
+    }));
   });
   it('uses the original provider exactly once after caller admission', async () => {
     const order: string[] = [];

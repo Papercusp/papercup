@@ -20,6 +20,7 @@ import {
   claimStateOf,
   claimHoldBlocked,
   leaseExpired,
+  effectiveConditionLeaseExpiresAt,
   CONDITION_LINK_REL,
   type ConditionWorkItemRow,
 } from './condition-object';
@@ -72,9 +73,40 @@ describe('resolveConditionObject', () => {
     expect(got.takenBy).toBe('su-abc');
   });
 
-  it('reports held for a claim with NO expiry — an absent lease is not a lapsed one', () => {
+  it('reports held for an unanchored claim with NO expiry — an absent lease is not a lapsed one', () => {
     const got = resolveConditionObject(KEY, [row({ takenBy: 'su-abc', expiresAt: null })], NOW);
     expect(got.claimState).toBe('held');
+    expect(got.expiresAt).toBeNull();
+  });
+
+  it('derives a condition-owner lease from takenAt when issue expiry is intentionally absent', () => {
+    const takenAt = new Date(NOW - 29 * 60_000).toISOString();
+    const got = resolveConditionObject(KEY, [row({ takenBy: 'su-abc', takenAt, expiresAt: null })], NOW);
+    expect(got.claimState).toBe('held');
+    expect(got.expiresAt).toBe(new Date(NOW + 60_000).toISOString());
+  });
+
+  it('expires an anchored condition owner after the shared critical-claim lease', () => {
+    const takenAt = new Date(NOW - 31 * 60_000).toISOString();
+    const got = resolveConditionObject(KEY, [row({ takenBy: 'su-abc', takenAt, expiresAt: null })], NOW);
+    expect(got.claimState).toBe('lease-expired');
+    expect(got.expiresAt).toBe(new Date(NOW - 1 * 60_000).toISOString());
+  });
+
+  it('uses fresh condition progress as the derived lease renewal', () => {
+    const takenAt = new Date(NOW - 90 * 60_000).toISOString();
+    const lastProgressAt = new Date(NOW - 2 * 60_000).toISOString();
+    const got = resolveConditionObject(
+      KEY,
+      [row({ takenBy: 'su-abc', takenAt, lastProgressAt, expiresAt: null })],
+      NOW,
+    );
+    expect(got.claimState).toBe('held');
+    expect(got.expiresAt).toBe(new Date(NOW + 28 * 60_000).toISOString());
+  });
+
+  it('does not invent a lease for an unclaimed condition row', () => {
+    expect(effectiveConditionLeaseExpiresAt(row({ takenBy: null, takenAt: new Date(NOW - 60_000).toISOString() }), NOW)).toBeNull();
   });
 
   it('reports lease-expired — NOT held — for a lapsed claim, so a dead holder never reads as live', () => {

@@ -106,6 +106,71 @@ describe('resolveFactSourceProvenance', () => {
     });
   });
 
+  it('session_turn owner-typed row → verified owner-turn stamp with canonical ref and recorded quote', async () => {
+    const ref = 'session_turn:claude:session:with:colons:28';
+    const loadSessionTurn = vi.fn().mockResolvedValue({
+      sourceKind: 'claude',
+      sessionId: 'session:with:colons',
+      turnIdx: 28,
+      speaker: 'user',
+      text: 'TELL ALL AGENTS SYSTEM WIDE TO PAUSE THEIR WORK IMMEDIATELY',
+      turnOrigin: null,
+      turnOriginVerdict: 'owner-typed',
+      ts: '2026-09-09T20:35:58Z',
+    });
+
+    await expect(resolveFactSourceProvenance(IDENTITY, ref, { loadSessionTurn })).resolves.toMatchObject({
+      kind: 'owner-turn',
+      verified: true,
+      label: ref,
+      quote: 'TELL ALL AGENTS SYSTEM WIDE TO PAUSE THEIR WORK IMMEDIATELY',
+    });
+    expect(loadSessionTurn).toHaveBeenCalledWith({
+      sourceKind: 'claude',
+      sessionId: 'session:with:colons',
+      turnIdx: 28,
+    });
+  });
+
+  it('session_turn owner-dialog is verified, while non-owner and unenrolled rows stay loud-unverified', async () => {
+    const ref = 'session_turn:claude:session-a:4';
+    const loadSessionTurn = vi.fn().mockResolvedValue({
+      sourceKind: 'claude',
+      sessionId: 'session-a',
+      turnIdx: 4,
+      speaker: 'user',
+      text: 'ship the approved change',
+      turnOrigin: null,
+      turnOriginVerdict: 'owner-dialog',
+    });
+    await expect(resolveFactSourceProvenance(IDENTITY, ref, { loadSessionTurn })).resolves.toMatchObject({
+      kind: 'owner-turn',
+      verified: true,
+    });
+
+    loadSessionTurn.mockResolvedValueOnce({
+      sourceKind: 'claude',
+      sessionId: 'session-a',
+      turnIdx: 4,
+      speaker: 'user',
+      text: 'replayed text',
+      turnOrigin: 'loop-fire',
+      turnOriginVerdict: 'agent-injected',
+    });
+    await expect(resolveFactSourceProvenance(IDENTITY, ref, { loadSessionTurn })).resolves.toMatchObject({
+      kind: 'owner-turn',
+      verified: false,
+      error: 'owner_attribution_unverified',
+    });
+
+    loadSessionTurn.mockResolvedValueOnce(null);
+    await expect(resolveFactSourceProvenance(IDENTITY, ref, { loadSessionTurn })).resolves.toMatchObject({
+      kind: 'owner-turn',
+      verified: false,
+      error: 'not_found',
+    });
+  });
+
   it('a throwing resolver degrades to resolve_error — NEVER throws out of the assert path', async () => {
     vi.mocked(hydrateRefs).mockRejectedValue(new Error('store down'));
     expect(await resolveFactSourceProvenance(IDENTITY, 'msg:m-boom')).toMatchObject({
@@ -115,6 +180,12 @@ describe('resolveFactSourceProvenance', () => {
     });
     vi.mocked(resolveRelayProvenance).mockRejectedValue(new Error('session store down'));
     expect(await resolveFactSourceProvenance(IDENTITY, 'owner-turn')).toMatchObject({
+      kind: 'owner-turn',
+      verified: false,
+      error: 'resolve_error',
+    });
+    const loadSessionTurn = vi.fn().mockRejectedValue(new Error('index down'));
+    await expect(resolveFactSourceProvenance(IDENTITY, 'session_turn:claude:s:1', { loadSessionTurn })).resolves.toMatchObject({
       kind: 'owner-turn',
       verified: false,
       error: 'resolve_error',

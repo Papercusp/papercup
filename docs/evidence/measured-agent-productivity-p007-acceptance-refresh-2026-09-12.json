@@ -1,12 +1,48 @@
 {
   "schemaVersion": 1,
-  "kind": "acceptance-proof-refresh",
+  "kind": "operational-test-evidence",
   "name": "P-007 acceptance proof refresh after the September 12 PTY delta",
+  "framework": "operational",
+  "command": [
+    "Reuse the committed 2,062-test base battery recorded by test run 17813683 and artifact 53635a1842456507a5d6bcbe1da13500855c207b6aeed3110365eab31a243ef5.",
+    "Diff all 37 declared source/test paths from tested head 55171b4dffa3bdba24d7ecb5c323e008850074b2; identify exactly the PTY host source and real-PTY integration test as changed.",
+    "Verify current-byte passing receipts 17815299 (host unit) and 17814367 (real-PTY integration), then recompute the complete current source/test file-set fingerprints."
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-12T15:32:51.724Z",
+  "finishedAt": "2026-09-12T16:14:32.047Z",
   "plan": "measured-agent-productivity-2026-09-06",
   "workItem": "WI-10000336",
   "recordedAt": "2026-09-12T16:30:00Z",
   "scope": "tree",
   "summary": "The original 2,062-test guardrail battery remains the broad proof base. Only the PTY host source and real-PTY integration test changed afterward; both changed paths have fresh passing receipts against byte-identical current files. This refresh proves the declared current tree scope. It does not prove a productivity gain, a matched baseline, actual billed cost, complete latency, broader-rollout readiness, physical acceptance, a 72-hour canary, or final shipment.",
+  "assertions": [
+    {
+      "id": "base-battery-pass",
+      "passed": true,
+      "evidence": "Committed artifact 53635a1842456507a5d6bcbe1da13500855c207b6aeed3110365eab31a243ef5 and ledger run 17813683 record 2,062 passes across all 18 declared test files, with zero failures and zero skips."
+    },
+    {
+      "id": "post-battery-drift-bounded",
+      "passed": true,
+      "evidence": "A path-by-path git comparison against tested head 55171b4dffa3bdba24d7ecb5c323e008850074b2 found exactly two changed declared paths: apps/operator/scripts/psu-pty-host.mjs and apps/operator/lib/psu-pty-host-turn.integration.test.ts; the other 35 declared paths were unchanged."
+    },
+    {
+      "id": "current-pty-unit-pass",
+      "passed": true,
+      "evidence": "Ledger test run 17815299 passed apps/operator/lib/psu-pty-host.test.ts, and the current host source plus unit-test bytes match its tested commit a2e6105f2a6e8d80de761bad7fc65a386d991fb1."
+    },
+    {
+      "id": "current-pty-integration-pass",
+      "passed": true,
+      "evidence": "Ledger test run 17814367 passed apps/operator/lib/psu-pty-host-turn.integration.test.ts, and the current host source plus real-PTY integration-test bytes match its tested commit b400b023dbc1e8b32de1506cc67dd85c49279de6."
+    },
+    {
+      "id": "rollout-hold-preserved",
+      "passed": true,
+      "evidence": "D-010 and committed artifact d61cd167216e6cf1622d392b687840f4a79c8b5d888f7544612442828e7e2c6d retain fixed cohort [0,7,0], unmatched baseline, five of seven missing latency values, unknown actual billed cost, and HOLD/no broader rollout."
+    }
+  ],
   "baseBattery": {
     "artifact": "docs/evidence/measured-agent-productivity-p007-guardrail-refresh-2026-09-12.json",
     "artifactSha256": "53635a1842456507a5d6bcbe1da13500855c207b6aeed3110365eab31a243ef5",

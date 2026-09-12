@@ -16,6 +16,10 @@
  *                         quote = bounded summary/body verbatim.
  *   wi:<id> / WI- / EI- → work-item must exist (P-001 default WI resolver);
  *                         quote = title/summary, label carries kind/state.
+ *   session_turn:<source>:<session>:<idx>
+ *                      → indexed transcript turn must exist and carry a
+ *                        persisted owner-typed/owner-dialog verdict; quote =
+ *                        the bounded recorded user text.
  *   owner-turn          → the caller's CURRENT human turn, read server-side
  *                         from the session store (H2 Tier-2 reuse) — the fact
  *                         carries the owner's verbatim words, not the agent's
@@ -30,7 +34,12 @@
  */
 
 import type { AgentIdentity } from '../coordination/identity';
-import { parseRefToken, clampSnippet } from '../coordination/ref-hydrate';
+import {
+  formatSessionTurnRef,
+  parseRefToken,
+  clampSnippet,
+  type SessionTurnRef,
+} from '../coordination/ref-hydrate';
 import { hydrateRefs } from '../coordination/ref-hydrate-resolve';
 import { resolveRelayProvenance } from '../coordination/relay-provenance-resolve';
 import { OWNER_TURN_SENTINEL } from '../coordination/relay-provenance';
@@ -40,6 +49,57 @@ import {
 } from '../../agent-facts/store';
 import { redactProvenanceQuote } from './quote-secret-redaction';
 
+export type IndexedSessionTurnProvenance = SessionTurnRef & {
+  speaker: string;
+  text: string;
+  turnOrigin?: string | null;
+  turnOriginVerdict?: string | null;
+  ts?: string | null;
+};
+
+/** Injectable read seam for the exact indexed transcript row used by a
+ * session_turn sourceRef. Keeping this seam at the provenance boundary makes
+ * unit tests DB-free while production reuses the canonical session_turns
+ * index and its persisted origin verdict. */
+export type SessionTurnProvenanceLoader = (
+  ref: SessionTurnRef,
+) => Promise<IndexedSessionTurnProvenance | null>;
+
+export interface ResolveFactSourceProvenanceDeps {
+  loadSessionTurn?: SessionTurnProvenanceLoader;
+}
+
+const OWNER_VERIFIED_TURN_VERDICTS = new Set(['owner-typed', 'owner-dialog']);
+
+async function loadIndexedSessionTurn(
+  identity: AgentIdentity,
+  ref: SessionTurnRef,
+): Promise<IndexedSessionTurnProvenance | null> {
+  const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('../../workspace-registry'),
+  ]);
+  const workspaceId = identity.workspaceId?.trim() || activeWorkspaceId();
+  const [row] = await getOrgPg().sql<IndexedSessionTurnProvenance[]>`
+    SELECT source_kind AS "sourceKind",
+           session_id AS "sessionId",
+           turn_idx AS "turnIdx",
+           speaker,
+           text,
+           turn_origin AS "turnOrigin",
+           turn_origin_verdict AS "turnOriginVerdict",
+           ts::text AS ts
+      FROM harness_shared.session_turns
+     WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+       AND source_kind = ${ref.sourceKind}
+       AND session_id = ${ref.sessionId}
+       AND turn_idx = ${ref.turnIdx}
+     ORDER BY CASE WHEN workspace_id = ${workspaceId} THEN 0 ELSE 1 END
+     LIMIT 1
+  `;
+  return row ?? null;
+}
+
 /**
  * Resolve a sourceRef into an assert-time provenance stamp.
  * `null` = not a typed ref (free-text anchor — store it unstamped, unchanged).
@@ -47,6 +107,7 @@ import { redactProvenanceQuote } from './quote-secret-redaction';
 export async function resolveFactSourceProvenance(
   identity: AgentIdentity,
   sourceRef: string,
+  deps: ResolveFactSourceProvenanceDeps = {},
 ): Promise<FactSourceProvenance | null> {
   const ref = parseRefToken(sourceRef);
   if (!ref) return null;
@@ -67,6 +128,32 @@ export async function resolveFactSourceProvenance(
         };
       }
       return { kind: 'owner-turn', verified: false, error: 'owner_turn_unresolved', verifiedAt };
+    }
+
+    if (ref.kind === 'session-turn') {
+      const label = formatSessionTurnRef(ref);
+      const load = deps.loadSessionTurn ?? ((target) => loadIndexedSessionTurn(identity, target));
+      const turn = await load({
+        sourceKind: ref.sourceKind,
+        sessionId: ref.sessionId,
+        turnIdx: ref.turnIdx,
+      });
+      if (!turn) {
+        return { kind: 'owner-turn', verified: false, label, error: 'not_found', verifiedAt };
+      }
+      const verdict = turn.turnOriginVerdict?.toLowerCase() ?? null;
+      if (turn.speaker.toLowerCase() !== 'user' || !verdict || !OWNER_VERIFIED_TURN_VERDICTS.has(verdict)) {
+        return { kind: 'owner-turn', verified: false, label, error: 'owner_attribution_unverified', verifiedAt };
+      }
+      const safe = redactProvenanceQuote(clampSnippet(turn.text, FACT_PROVENANCE_QUOTE_CHARS));
+      return {
+        kind: 'owner-turn',
+        verified: true,
+        ...(safe.quote ? { quote: safe.quote } : {}),
+        ...(safe.redacted ? { quoteRedacted: true } : {}),
+        label,
+        verifiedAt,
+      };
     }
 
     if (ref.kind === 'msg' || ref.kind === 'work-item') {

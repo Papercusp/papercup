@@ -75,6 +75,48 @@ export default defineTool({
     const fleet = await getFleet(workspaceId, args.fleet);
     if (!fleet) return json({ ok: false, error: `no fleet '${args.fleet}' in this workspace` }, true);
     if (args.target == null) {
+      // `target:null` is intentionally a disable-only operation. Before this
+      // guard, every optional launch/governance field was silently ignored on
+      // this early return, so a caller could receive `ok:true` while believing
+      // it had repaired the profile that takeover/respawn will later consume.
+      // Refuse every field this branch cannot apply; the required-only disable
+      // path still avoids rereading or mutating the saved recipe.
+      const ignoredFields = [
+        'productiveCapacityFloor',
+        'supervise',
+        'agent',
+        'model',
+        'effort',
+        'account',
+        'headless',
+        'role',
+        'brief',
+        'launchContext',
+        'contextSize',
+        'compactionLimit',
+        'carry',
+        'extraArgs',
+        'replaceExisting',
+        'reason',
+      ].filter((field) => {
+        const value = (args as Record<string, unknown>)[field];
+        // replaceExisting defaults to false during schema parsing; that
+        // default is not a requested update and must not break disable-only
+        // calls. An explicit true is refused because it cannot be honored on
+        // this branch.
+        return field === 'replaceExisting' ? value === true : value !== undefined;
+      });
+      if (ignoredFields.length > 0) {
+        return json({
+          ok: false,
+          error: 'invalid_args',
+          offending: ignoredFields,
+          message:
+            '`target:null` is a disable-only operation and cannot update launch recipe fields. ' +
+            `These fields would be ignored: ${ignoredFields.join(', ')}. ` +
+            'Pass a non-null target to update the recipe, or omit the recipe fields to disable the governor.',
+        }, true);
+      }
       await setFleetHeadcountTarget({ workspaceId, fleetSlug: args.fleet, target: null });
       return json({ ok: true, fleet: args.fleet, target: null, disabled: true, launchProfilePreserved: true, by: ownerId });
     }

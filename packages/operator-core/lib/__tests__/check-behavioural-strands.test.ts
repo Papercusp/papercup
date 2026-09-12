@@ -62,6 +62,29 @@ const WRITER_AFTER = `
     return patch;
   }
 `;
+const INSERTED_OUTPUT_BEFORE = `
+  export function classifyReservation(row) {
+    if (row.kind === 'reserved') {
+      return { status: 'already-reserved', code: 'inference_gateway_error', reason: 'keep reserved' };
+    }
+    if (row.kind === 'stalled') {
+      return { status: 'not-pending', code: 'startup_connection_stalled', reason: 'keep stalled' };
+    }
+  }
+`;
+const INSERTED_OUTPUT_AFTER = `
+  export function classifyReservation(row) {
+    if (row.kind === 'quota') {
+      return { status: 'quota-backoff', code: 'model_quota_exhausted', reason: 'new quota branch' };
+    }
+    if (row.kind === 'reserved') {
+      return { status: 'already-reserved', code: 'inference_gateway_error', reason: 'keep reserved' };
+    }
+    if (row.kind === 'stalled') {
+      return { status: 'not-pending', code: 'startup_connection_stalled', reason: 'keep stalled' };
+    }
+  }
+`;
 
 describe('the trigger: a seam gained call sites', () => {
   it('counts only calls rooted at a FUNCTION PARAMETER — an injected collaborator', () => {
@@ -166,6 +189,24 @@ describe('the second trigger: a writer output value changed', () => {
         property: 'spentCents',
         before: 'rollup.potCents',
         after: 'rollup.pot.samples > 0 ? rollup.potCents : null',
+        reason: 'value-changed',
+      },
+    ]);
+  });
+
+  it('aligns returned objects by structural branch identity, not property occurrence position', () => {
+    expect(diffOutputValues(INSERTED_OUTPUT_BEFORE, INSERTED_OUTPUT_AFTER, 'reservation.ts')).toEqual([]);
+    expect(
+      diffOutputValues(
+        INSERTED_OUTPUT_BEFORE,
+        INSERTED_OUTPUT_BEFORE.replace("'keep reserved'", "'changed reserved'"),
+        'reservation.ts',
+      ),
+    ).toEqual([
+      {
+        property: 'reason',
+        before: '"keep reserved"',
+        after: '"changed reserved"',
         reason: 'value-changed',
       },
     ]);

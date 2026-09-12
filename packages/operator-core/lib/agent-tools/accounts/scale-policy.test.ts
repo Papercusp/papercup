@@ -23,6 +23,7 @@ vi.mock('../../gateway-control/control-harness', () => ({
 }));
 
 import { readScalePolicy, writeScalePolicy } from '../../scale-policy';
+import { MIN_SCALE_POLICY_WINDOW_MS } from '../../deployment/account-pool';
 const readM = vi.mocked(readScalePolicy);
 const writeM = vi.mocked(writeScalePolicy);
 
@@ -30,7 +31,7 @@ const tool = (await import('./scale-policy')).default;
 
 type Out = { content: { text: string }[] };
 const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
-const DEF = { windowMs: 900_000, sustainedPenaltyThreshold: 3 };
+const DEF = { windowMs: MIN_SCALE_POLICY_WINDOW_MS, sustainedPenaltyThreshold: 3 };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -63,7 +64,7 @@ describe('accounts:scale_policy', () => {
 
   it('dryRun does not write', async () => {
     const b = body(
-      await tool.handler({ op: 'set', windowMs: 600_000, dryRun: true } as never, { role: 'operator' } as never),
+      await tool.handler({ op: 'set', windowMs: MIN_SCALE_POLICY_WINDOW_MS + 60_000, dryRun: true } as never, { role: 'operator' } as never),
     );
     expect(writeM).not.toHaveBeenCalled();
     expect(b).toMatchObject({ dryRun: true, applied: false });

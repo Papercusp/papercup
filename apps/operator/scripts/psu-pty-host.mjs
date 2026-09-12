@@ -2400,6 +2400,117 @@ const QUOTA_USAGE_ADVISORY_PATTERNS = [
 /** Is THIS line a usage advisory rather than a wall? Scoped to the single line
  *  carrying the match so an advisory cannot suppress a real wall elsewhere on the
  *  same screen. Pure; exported for tests. */
+/**
+ * A quota detector is intentionally fail-closed for a real usage wall, but a
+ * latched detector can otherwise turn every future gated injection into a
+ * silent no-op. Keep a separate, outcome-driven liveness guard so a wall that
+ * lasts long enough without one successful gated injection becomes a loud
+ * health signal. The guard does not inspect PTY bytes: callers feed it the
+ * detector level and the result of an actual gated delivery.
+ *
+ * The threshold is deliberately bounded by an attempted delivery. A quiet
+ * session with no pending wake has no starvation to report; the first queued
+ * wake after the threshold makes the stuck episode observable. A successful
+ * gated injection during the episode suppresses the zero-success verdict.
+ * Pure except for the injected onStarvation callback; exported for tests.
+ */
+export const QUOTA_BLOCK_STARVATION_THRESHOLD_MS = 5 * 60_000;
+
+export function makeQuotaBlockStarvationGuard({
+  thresholdMs = QUOTA_BLOCK_STARVATION_THRESHOLD_MS,
+  now = Date.now,
+  onStarvation = () => {},
+} = {}) {
+  const threshold = positiveNumber(thresholdMs, QUOTA_BLOCK_STARVATION_THRESHOLD_MS);
+  let blockedSinceMs = null;
+  let attemptedGatedInjections = 0;
+  let successfulGatedInjections = 0;
+  let alerted = false;
+  let lastSignal = null;
+
+  const clock = () => {
+    const value = Number(now());
+    return Number.isFinite(value) ? value : Date.now();
+  };
+
+  const reset = () => {
+    blockedSinceMs = null;
+    attemptedGatedInjections = 0;
+    successfulGatedInjections = 0;
+    alerted = false;
+    lastSignal = null;
+  };
+
+  /**
+   * Observe the current detector level and, optionally, one completed gated
+   * injection. gatedInjection.successful must mean the host has a positive
+   * delivery/submit result; an early socket ACK is not sufficient.
+   */
+  const observe = ({
+    quotaBlocked = false,
+    observedBlockedSinceMs = null,
+    gatedInjection = null,
+  } = {}) => {
+    const atMs = clock();
+    if (!quotaBlocked) {
+      reset();
+      return null;
+    }
+
+    const suppliedSince = Number(observedBlockedSinceMs);
+    if (blockedSinceMs == null) {
+      blockedSinceMs = Number.isFinite(suppliedSince) ? suppliedSince : atMs;
+    }
+
+    const attempted = gatedInjection?.attempted === true || gatedInjection?.successful === true;
+    if (attempted) attemptedGatedInjections += 1;
+    if (gatedInjection?.successful === true) successfulGatedInjections += 1;
+
+    const ageMs = Math.max(0, atMs - blockedSinceMs);
+    if (
+      !alerted &&
+      attemptedGatedInjections > 0 &&
+      successfulGatedInjections === 0 &&
+      ageMs >= threshold
+    ) {
+      alerted = true;
+      lastSignal = {
+        reason: 'quota-block-starvation',
+        blockedSinceMs,
+        ageMs,
+        thresholdMs: threshold,
+        attemptedGatedInjections,
+        successfulGatedInjections,
+      };
+      try {
+        onStarvation(lastSignal);
+      } catch {
+        // A health signal must never break the delivery path it diagnoses.
+      }
+      return lastSignal;
+    }
+    return null;
+  };
+
+  return {
+    observe,
+    snapshot() {
+      const atMs = clock();
+      return {
+        quotaBlocked: blockedSinceMs != null,
+        blockedSinceMs,
+        blockedAgeMs: blockedSinceMs == null ? null : Math.max(0, atMs - blockedSinceMs),
+        thresholdMs: threshold,
+        attemptedGatedInjections,
+        successfulGatedInjections,
+        alerted,
+        lastSignal,
+      };
+    },
+    reset,
+  };
+}
+
 export function quotaLineIsUsageAdvisory(line) {
   const text = String(line ?? '');
   return QUOTA_USAGE_ADVISORY_PATTERNS.some((re) => re.test(text));
@@ -4828,6 +4939,36 @@ export function hostThroughPty(o) {
     deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' &&
       args.some((arg) => arg === 'resume' || arg === 'fork'),
   });
+  const quotaBlockStarvationGuard = makeQuotaBlockStarvationGuard({
+    thresholdMs: positiveNumber(
+      env.PAPERCUSP_PSU_PTY_QUOTA_STARVATION_MS,
+      QUOTA_BLOCK_STARVATION_THRESHOLD_MS,
+    ),
+    onStarvation: (signal) => {
+      const extra = {
+        ...signal,
+        agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+      };
+      appendHostEvent(ownerId, 'quota-block-starvation', extra);
+      try {
+        process.stderr.write(
+          `psu-pty-host: QUOTA BLOCK STARVATION for ${ownerId} — ` +
+            `${signal.ageMs}ms blocked with ${signal.attemptedGatedInjections} gated ` +
+            `injection attempt(s) and zero successful deliveries; health signal recorded\n`,
+        );
+      } catch {
+        /* diagnostics must never break delivery */
+      }
+    },
+  });
+  const observeQuotaBlockStarvation = (gatedInjection = null) => {
+    const snapshot = quotaBlockDetector.snapshot();
+    return quotaBlockStarvationGuard.observe({
+      quotaBlocked: snapshot.quotaBlocked,
+      observedBlockedSinceMs: snapshot.quotaBlockedSinceMs,
+      gatedInjection,
+    });
+  };
   // Output-quiet alone is not a startup-ready signal: before a backend-owned
   // marker, terminal probes can read as "quiet at prompt" even though a slow
   // TUI has not installed its editor yet (live Codex/OMP ports WI-4943/WI-4947).

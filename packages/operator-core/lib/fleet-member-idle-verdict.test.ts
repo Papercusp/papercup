@@ -39,6 +39,39 @@ describe('computeMemberIdleVerdict — single causes', () => {
     expect(v.remedy).toBeNull();
   });
 
+  it('a held claim with no productive call past budget is stalled-holder even when generic liveness is fresh', () => {
+    const v = computeMemberIdleVerdict(
+      idle({ load: 1, stalled: false, lastToolCallAgeMs: 31 * 60_000, productiveToolCallAgeMs: 31 * 60_000 }),
+      ctx(),
+    );
+    expect(v.cause).toBe('stalled-holder');
+    expect(v.reason).toContain('last productive tool call was 31m ago');
+    expect(v.remedy).toContain('Reclaim');
+  });
+
+  it('a fresh housekeeping call still wins over a stale productive age', () => {
+    const v = computeMemberIdleVerdict(
+      idle({ load: 1, stalled: false, lastToolCallAgeMs: 5_000, productiveToolCallAgeMs: 31 * 60_000 }),
+      ctx(),
+    );
+    expect(v.cause).toBe('mid-turn');
+    expect(v.remedy).toBeNull();
+  });
+
+  it('does not classify a held claim as stalled while a long local call is in flight', () => {
+    const v = computeMemberIdleVerdict(
+      idle({
+        load: 1,
+        stalled: false,
+        productiveToolCallAgeMs: 31 * 60_000,
+        longCallInFlight: { tool: 'capability:terminal', ageSec: 1_900 },
+      }),
+      ctx(),
+    );
+    expect(v.cause).toBe('working');
+    expect(v.remedy).toBeNull();
+  });
+
   it('a fresh tool call means mid-turn, not idle', () => {
     const v = computeMemberIdleVerdict(idle({ lastToolCallAgeMs: 5_000 }), ctx());
     expect(v.cause).toBe('mid-turn');

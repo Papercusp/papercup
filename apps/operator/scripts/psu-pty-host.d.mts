@@ -794,9 +794,35 @@ export function submitExhaustionTerminatesHost(label: any): boolean;
  * not proof that the injected turn landed, so it must remain distinguishable
  * from both success and bounded exhaustion. Pure; exported for tests. */
 export function submitVerificationFailureReason(result: any): string | null;
-/** Is THIS line a usage advisory rather than a wall? Scoped to the single line
- *  carrying the match so an advisory cannot suppress a real wall elsewhere on the
- *  same screen. Pure; exported for tests. */
+export function makeQuotaBlockStarvationGuard({ thresholdMs, now, onStarvation, }?: {
+    thresholdMs?: number | undefined;
+    now?: (() => number) | undefined;
+    onStarvation?: (() => void) | undefined;
+}): {
+    observe: ({ quotaBlocked, observedBlockedSinceMs, gatedInjection, }?: {
+        quotaBlocked?: boolean | undefined;
+        observedBlockedSinceMs?: null | undefined;
+        gatedInjection?: null | undefined;
+    }) => {
+        reason: string;
+        blockedSinceMs: any;
+        ageMs: number;
+        thresholdMs: any;
+        attemptedGatedInjections: number;
+        successfulGatedInjections: number;
+    } | null;
+    snapshot(): {
+        quotaBlocked: boolean;
+        blockedSinceMs: any;
+        blockedAgeMs: number | null;
+        thresholdMs: any;
+        attemptedGatedInjections: number;
+        successfulGatedInjections: number;
+        alerted: boolean;
+        lastSignal: any;
+    };
+    reset: () => void;
+};
 export function quotaLineIsUsageAdvisory(line: any): boolean;
 /** The banner set for one agent. An UNKNOWN agent gets [] — never another
  *  product's copy (see the cost model above). An unset agent keeps the
@@ -1918,6 +1944,24 @@ export const SHUTDOWN_GRACE_MS: number;
  * already on its way out.
  */
 export const SHUTDOWN_ACK_DELAY_MS: number;
+/** Is THIS line a usage advisory rather than a wall? Scoped to the single line
+ *  carrying the match so an advisory cannot suppress a real wall elsewhere on the
+ *  same screen. Pure; exported for tests. */
+/**
+ * A quota detector is intentionally fail-closed for a real usage wall, but a
+ * latched detector can otherwise turn every future gated injection into a
+ * silent no-op. Keep a separate, outcome-driven liveness guard so a wall that
+ * lasts long enough without one successful gated injection becomes a loud
+ * health signal. The guard does not inspect PTY bytes: callers feed it the
+ * detector level and the result of an actual gated delivery.
+ *
+ * The threshold is deliberately bounded by an attempted delivery. A quiet
+ * session with no pending wake has no starvation to report; the first queued
+ * wake after the threshold makes the stuck episode observable. A successful
+ * gated injection during the episode suppresses the zero-success verdict.
+ * Pure except for the injected onStarvation callback; exported for tests.
+ */
+export const QUOTA_BLOCK_STARVATION_THRESHOLD_MS: number;
 /** How often the discovery file's activity fields are refreshed. Coarse on
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */

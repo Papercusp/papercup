@@ -59,6 +59,13 @@ export type MemberIdleCause =
   /** Everything upstream is healthy, work is claimable, and it still took nothing. */
   | 'genuinely-idle';
 
+/**
+ * A held claim whose last productive call is older than this is not safely described as
+ * advancing merely because housekeeping calls or a healthy loop keep its generic liveness
+ * signals fresh. Keep this threshold aligned with the leader brief's spinning detector.
+ */
+export const PRODUCTIVE_STALL_BUDGET_MS = 30 * 60_000;
+
 export interface MemberIdleVerdict {
   cause: MemberIdleCause;
   /** Why THIS cause, phrased so a leader can check it against the member row. */
@@ -86,6 +93,10 @@ export interface MemberIdleInput {
   stalled?: boolean | null;
   /** ms since ANY tool call; null = never (still booting). */
   lastToolCallAgeMs?: number | null;
+  /** ms since the last non-housekeeping tool call; null/undefined = no productive history. */
+  productiveToolCallAgeMs?: number | null;
+  /** A local command is still running; settled-call ages cannot classify it as stalled. */
+  longCallInFlight?: unknown;
   contextPressure?: string | null;
   /** Present when the member has backed off a provider wall. */
   throttled?: unknown;
@@ -136,9 +147,17 @@ export function computeMemberIdleVerdict(
   fleet: FleetIdleContext,
 ): MemberIdleVerdict {
   const ownSpec = member.hasOwnSpec === true ? { ownSpecUnresolved: true } : {};
+  const productiveAge = member.productiveToolCallAgeMs;
+  const productiveGap =
+    member.longCallInFlight == null &&
+    productiveAge != null &&
+    Number.isFinite(productiveAge) &&
+    productiveAge > PRODUCTIVE_STALL_BUDGET_MS;
 
-  // 1. Holding work and advancing it — not idle, and nothing to explain.
-  if ((member.load ?? 0) > 0 && !member.stalled) {
+  // 1. Holding work and advancing it — not idle, and nothing to explain. A stale productive
+  // call is the exception: a healthy loop/housekeeping traffic can keep `stalled` false while
+  // the held claim makes no real progress, so let that case reach the member-level stall branch.
+  if ((member.load ?? 0) > 0 && !member.stalled && !productiveGap) {
     return {
       cause: 'working',
       reason: `Holding ${member.load} claim(s) and advancing them.`,
@@ -186,11 +205,15 @@ export function computeMemberIdleVerdict(
   //    oracle over this fleet's real rows: two members held work-items with load 1 + stalled
   //    while a pause was in force, and reporting them as merely 'fleet-blocked' hid the one
   //    thing a leader must act on — the claim needs reclaiming whatever the fleet is doing.
-  if ((member.load ?? 0) > 0 && member.stalled) {
+  if ((member.load ?? 0) > 0 && (member.stalled || productiveGap)) {
     return {
       cause: 'stalled-holder',
       reason:
         `Holding ${member.load} claim(s) that are NOT advancing. The work is stranded here, ` +
+        (productiveGap
+          ? `the last productive tool call was ${Math.round((productiveAge as number) / 60_000)}m ago ` +
+            `(over the ${Math.round(PRODUCTIVE_STALL_BUDGET_MS / 60_000)}m budget). `
+          : '') +
         'and that stays true regardless of any fleet-level block.',
       remedy: 'Reclaim the held item(s) so they return to the pool; then diagnose the member.',
       ...ownSpec,

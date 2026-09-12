@@ -660,6 +660,13 @@ export const CompletionVerificationEvidenceSchema = z.object({
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 
 /**
+ * Bound the server-generated copy of checkpoint prose carried onto a terminal
+ * completion. The checkpoint itself may be much larger, but completion evidence
+ * must remain a compact, durable narrative rather than another unbounded note.
+ */
+export const CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS = 8_000;
+
+/**
  * EI-21478999218933285: the row-persisted close record is deliberately wider
  * than the caller-facing `verification` object. These narrative fields remain
  * top-level completion inputs, but ride beside verification evidence under
@@ -699,6 +706,13 @@ export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
     observed?: string;
     contested?: string;
   }>;
+  /**
+   * EI-22959550187023490 — prose sections from the checkpoint are copied before
+   * terminal cleanup clears the replace-on-write note. This is server-generated,
+   * bounded, and narrative-only; structured `## Checks` rows remain in
+   * `checkpointChecksCarried` and neither field affects completion authority.
+   */
+  checkpointProseSnapshot?: string;
   /**
    * WI-2142447 — the CLOSE-TIME verdict for each declared `claims` entry, recorded at the
    * moment the close computed it.

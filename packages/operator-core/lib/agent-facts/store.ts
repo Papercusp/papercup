@@ -411,7 +411,7 @@ export const GUARD_RAIL_KEY_PREFIX = 'guard-rail:';
 
 /**
  * P-007 (coord-authority-hardening): the platform-VERIFIED stamp for a TYPED
- * sourceRef (`msg:<id>` / `wi:<id>`/WI-/EI- / `owner-turn`), captured
+ * sourceRef (`msg:<id>` / `wi:<id>`/WI-/EI- / `session_turn:<source>:<session>:<idx>` / `owner-turn`), captured
  * server-side AT ASSERT TIME (H2-tier reuse — see
  * agent-tools/facts/source-provenance-resolve.ts). Folds render it verbatim
  * with zero extra reads. NULL/absent for free-text sourceRefs + legacy rows.

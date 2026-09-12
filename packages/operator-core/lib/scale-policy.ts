@@ -7,7 +7,7 @@
  * the store: the host (account-pool-store.ts) now reads `readScalePolicy()` at the trigger + decision
  * + read-model sites.
  *
- * Empty store ⇒ DEFAULT_SCALE_POLICY (15min / 3) ⇒ byte-identical behavior, so this is safe-by-default.
+ * Empty store ⇒ DEFAULT_SCALE_POLICY (re-probe-aligned 60min / 3) ⇒ safe-by-default for slow account probes.
  * Spend note: this only tunes WHEN scale-out fires; the provisioning itself stays owner-gated
  * (accounts:scale_out). Registers as a runtime-config override concern.
  *
@@ -16,7 +16,17 @@
  */
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
-import { DEFAULT_SCALE_POLICY, type ScalePolicy } from './deployment/account-pool';
+import { DEFAULT_SCALE_POLICY, MIN_SCALE_POLICY_WINDOW_MS, type ScalePolicy } from './deployment/account-pool';
+
+/** Keep persisted overrides aligned with the slow account re-probe cadence. */
+export function normalizeScalePolicy(policy: Partial<ScalePolicy>): ScalePolicy {
+  const requestedWindowMs = policy.windowMs;
+  const windowMs =
+    typeof requestedWindowMs === 'number' && Number.isFinite(requestedWindowMs)
+      ? Math.max(MIN_SCALE_POLICY_WINDOW_MS, requestedWindowMs)
+      : DEFAULT_SCALE_POLICY.windowMs;
+  return { ...DEFAULT_SCALE_POLICY, ...policy, windowMs };
+}
 
 /** Effective policy = stored override merged over the baked DEFAULT_SCALE_POLICY.
  *  Truly safe-by-default: a store READ FAILURE (no DB / transient) ⇒ DEFAULT, never a
@@ -27,7 +37,7 @@ import { DEFAULT_SCALE_POLICY, type ScalePolicy } from './deployment/account-poo
 export async function readScalePolicy(): Promise<ScalePolicy> {
   try {
     const stored = await readOperatorState<Partial<ScalePolicy>>('operator_scale_policy');
-    return { ...DEFAULT_SCALE_POLICY, ...(stored ?? {}) };
+    return normalizeScalePolicy(stored ?? {});
   } catch {
     return DEFAULT_SCALE_POLICY;
   }
@@ -35,7 +45,7 @@ export async function readScalePolicy(): Promise<ScalePolicy> {
 
 /** Merge a patch over the current policy + persist; returns the new effective policy. */
 export async function writeScalePolicy(patch: Partial<ScalePolicy>): Promise<ScalePolicy> {
-  const next = { ...(await readScalePolicy()), ...patch };
+  const next = normalizeScalePolicy({ ...(await readScalePolicy()), ...patch });
   await writeOperatorState<ScalePolicy>('operator_scale_policy', next);
   return next;
 }

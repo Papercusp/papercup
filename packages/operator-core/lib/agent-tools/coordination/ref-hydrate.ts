@@ -24,6 +24,22 @@
  * agent-mcp graph into its dependency tree.
  */
 
+/** Session-source kinds accepted by the canonical `session_turn:` reference. */
+export const SESSION_TURN_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
+export type SessionTurnSourceKind = (typeof SESSION_TURN_SOURCE_KINDS)[number];
+
+/** The parsed coordinates of one indexed transcript turn. */
+export interface SessionTurnRef {
+  sourceKind: SessionTurnSourceKind;
+  sessionId: string;
+  turnIdx: number;
+}
+
+/** Render a parsed session-turn ref in the public canonical form. */
+export function formatSessionTurnRef(ref: SessionTurnRef): string {
+  return `session_turn:${ref.sourceKind}:${ref.sessionId}:${ref.turnIdx}`;
+}
+
 /** A typed, platform-resolvable reference. */
 export type HydratableRef =
   /** A coord message by msg_id (`msg:<id>`). */
@@ -34,6 +50,8 @@ export type HydratableRef =
   | { kind: 'plan-item'; slug: string; item: string }
   /** An announced event gate by exact key (`gate:<key>`). */
   | { kind: 'gate'; key: string }
+  /** One indexed transcript turn (`session_turn:<source>:<session>:<idx>`). */
+  | ({ kind: 'session-turn' } & SessionTurnRef)
   /** The calling session's current human turn (`owner-turn` sentinel — the
    *  H2 Tier-2 origin; a TUI turn has NO coord msg_id, so it is resolved
    *  server-side from the session store, never referenced by id). */
@@ -74,6 +92,10 @@ const WORK_ITEM_ID = /^(?:wi:)?((?:WI|EI|F)-\d+)$/i;
 const PLAN_ITEM = /^plan:([a-z0-9][a-z0-9-]*)#(P-\d{3,})$/i;
 const MSG_REF = /^msg:(\S+)$/i;
 const GATE_REF = /^gate:(\S+)$/;
+/** Session ids may contain colons, so the session capture is greedy and the
+ * final numeric segment is the turn index (same first/last separator rule as
+ * sessions/_shared.ts parseTurnRef). */
+const SESSION_TURN_REF = /^session_turn:(claude|omp|codex|agent_chat):(\S+):(\d+)$/i;
 
 /**
  * Parse one explicit ref token into a typed ref. Returns null for anything
@@ -91,6 +113,18 @@ export function parseRefToken(token: string): HydratableRef | null {
   if (pi) return { kind: 'plan-item', slug: pi[1].toLowerCase(), item: pi[2].toUpperCase() };
   const gate = GATE_REF.exec(t);
   if (gate) return { kind: 'gate', key: gate[1] };
+  const sessionTurn = SESSION_TURN_REF.exec(t);
+  if (sessionTurn) {
+    const turnIdx = Number(sessionTurn[3]);
+    if (Number.isSafeInteger(turnIdx)) {
+      return {
+        kind: 'session-turn',
+        sourceKind: sessionTurn[1].toLowerCase() as SessionTurnSourceKind,
+        sessionId: sessionTurn[2],
+        turnIdx,
+      };
+    }
+  }
   return null;
 }
 
@@ -200,6 +234,8 @@ export function canonicalRefKey(ref: HydratableRef): string {
       return `plan-item:${ref.slug}#${ref.item}`;
     case 'gate':
       return `gate:${ref.key}`;
+    case 'session-turn':
+      return `session-turn:${ref.sourceKind}:${ref.sessionId}:${ref.turnIdx}`;
     case 'owner-turn':
       return 'owner-turn';
   }

@@ -234,6 +234,8 @@ describe('applyOwnerTurnAutoVerify (cold-carry-system-hardening-2026-07-19 P-005
 });
 
 describe('mergeQuoteMismatchesIntoLint (EI-12890 — pure, no IO)', () => {
+  const LOOP_REF = '[turn:loop-session@2026-09-12T16:40:19.647Z]';
+  const LOOP_TURN: CurrentTurnStamp = { ref: LOOP_REF, verdict: 'agent-injected', origin: 'loop-fire' };
   const verdict = (over: Partial<TurnRefVerdict>): TurnRefVerdict => ({
     ref: '[turn:82909092@2026-07-15T19:50:23Z]',
     found: true,
@@ -271,6 +273,37 @@ describe('mergeQuoteMismatchesIntoLint (EI-12890 — pure, no IO)', () => {
     const lint = { flagged: true as const, note: 'sync note', matches: [{ line: 'x', kind: 'bare-gate-imperative' as const }] };
     expect(mergeQuoteMismatchesIntoLint(lint, [])).toEqual(lint);
     expect(mergeQuoteMismatchesIntoLint(lint, [verdict({ quoteMatch: true })])).toEqual(lint);
+  });
+
+  it('does not flag a quote mismatch on the exact current machine-injected turn', () => {
+    const current = verdict({ ref: LOOP_REF, verdict: 'agent-injected', origin: 'loop-fire' });
+    expect(mergeQuoteMismatchesIntoLint(undefined, [current], LOOP_TURN)).toBeUndefined();
+  });
+
+  it('keeps a quote mismatch from a different machine turn visible', () => {
+    const prior = verdict({
+      ref: '[turn:loop-session@2026-09-12T16:39:19.647Z]',
+      verdict: 'agent-injected',
+      origin: 'loop-fire',
+    });
+    const merged = mergeQuoteMismatchesIntoLint(undefined, [prior], LOOP_TURN);
+    expect(merged?.matches).toHaveLength(1);
+    expect(merged?.matches[0].kind).toBe('quote-mismatch');
+  });
+
+  it('keeps a quote mismatch on the exact current owner turn visible', () => {
+    const ownerTurn: CurrentTurnStamp = { ref: LOOP_REF, verdict: 'owner-typed', origin: null };
+    const current = verdict({ ref: LOOP_REF, verdict: 'owner-typed', origin: null });
+    const merged = mergeQuoteMismatchesIntoLint(undefined, [current], ownerTurn);
+    expect(merged?.matches).toHaveLength(1);
+    expect(merged?.matches[0].kind).toBe('quote-mismatch');
+  });
+
+  it('requires the verified ref to be machine-injected too', () => {
+    const current = verdict({ ref: LOOP_REF, verdict: 'owner-typed', origin: null });
+    const merged = mergeQuoteMismatchesIntoLint(undefined, [current], LOOP_TURN);
+    expect(merged?.matches).toHaveLength(1);
+    expect(merged?.matches[0].kind).toBe('quote-mismatch');
   });
 });
 

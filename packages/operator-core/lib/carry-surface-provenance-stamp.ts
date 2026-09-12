@@ -96,16 +96,33 @@ export interface CarryProvenanceStamp {
  * the wrong turn's timestamp). Fold any such mismatch into `lint` so it
  * surfaces in the SAME flagged/matches shape a consumer already checks,
  * instead of requiring a separate turnProvenance.refs[].quoteMatch read that
- * nothing currently makes anyone perform. Pure — no IO — so it's unit-testable
- * without a transcript fixture; `verified` is `[]` whenever ownerId was absent
- * or the transcript legs were skipped/timed out.
+ * nothing currently makes anyone perform. The one expected mismatch is a
+ * `[turn:self]` ref expanded to THIS write's machine-injected turn: that ref
+ * resolves to the loop wake prompt, while the quote describes the work being
+ * written in response to it. Suppress only that exact same-turn,
+ * agent-injected verdict; a cross-turn machine ref and every owner-turn ref
+ * remain EI-12890 mismatches. Pure — no IO — so it's unit-testable without a
+ * transcript fixture; `verified` is `[]` whenever ownerId was absent or the
+ * transcript legs were skipped/timed out.
  */
 export function mergeQuoteMismatchesIntoLint(
   lint: { flagged: true; note: string; matches: ProvenanceLintMatch[] } | undefined,
   verified: TurnRefVerdict[],
+  currentTurn: CurrentTurnStamp | null = null,
 ): { flagged: true; note: string; matches: ProvenanceLintMatch[] } | undefined {
   const quoteMismatches: ProvenanceLintMatch[] = verified
-    .filter((v) => v.found && v.quote && v.quoteMatch === false)
+    .filter(
+      (v) =>
+        v.found &&
+        v.quote &&
+        v.quoteMatch === false &&
+        !(
+          currentTurn?.verdict === 'agent-injected' &&
+          v.verdict === 'agent-injected' &&
+          v.ref === currentTurn.ref &&
+          v.origin === currentTurn.origin
+        ),
+    )
     .map((v) => ({
       line: `${v.ref}: claimed "${v.quote}" — NOT found in the referenced turn's actual text (snippet: ${v.snippet ?? ''})`.slice(0, 400),
       kind: 'quote-mismatch' as const,
@@ -489,7 +506,7 @@ export async function stampCarrySurfaceProvenance(
   const { lint: effectiveLint, ownerTagsAutoVerified } = applyOwnerTurnAutoVerify(lint, writtenDuring);
 
   const stamp: CarryProvenanceStamp = {};
-  const quoteMergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, completeRefs);
+  const quoteMergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, completeRefs, writtenDuring);
   const mergedLint = mergeUnresolvedTurnRefsIntoLint(quoteMergedLint, text, completeRefs);
   if (mergedLint) stamp.lint = mergedLint;
   if (slotLint) stamp.slotLint = slotLint;

@@ -37,6 +37,7 @@ import {
   DRAIN_FULL_UTIL,
   type AccountPool,
 } from './account-pool';
+import { ROLLING_WINDOW_REPROBE_MAX_MS } from '@papercusp/papercusp-shared/resilience';
 
 const T0 = 1_000_000_000_000; // a fixed epoch-ms base
 const MIN = 60_000;
@@ -127,6 +128,16 @@ describe('recordAccountPenalty + window rolling', () => {
     p = recordAccountPenalty(p, 'a', T0 + DEFAULT_SCALE_POLICY.windowMs + 1, {});
     expect(getAccount(p, 'a')!.rate.penaltyCount).toBe(1);
     expect(getAccount(p, 'a')!.rate.windowStartedAt).toBe(T0 + DEFAULT_SCALE_POLICY.windowMs + 1);
+  });
+
+  it('keeps three slow re-probe penalties in one accrual window', () => {
+    expect(DEFAULT_SCALE_POLICY.windowMs).toBeGreaterThanOrEqual(ROLLING_WINDOW_REPROBE_MAX_MS);
+    let p = recordAccountPenalty(poolOf('a'), 'a', T0, {});
+    p = recordAccountPenalty(p, 'a', T0 + ROLLING_WINDOW_REPROBE_MAX_MS, {});
+    p = recordAccountPenalty(p, 'a', T0 + 2 * ROLLING_WINDOW_REPROBE_MAX_MS, {});
+    const a = getAccount(p, 'a')!;
+    expect(a.rate.penaltyCount).toBe(3);
+    expect(isSustainedlyLimited(a, T0 + 2 * ROLLING_WINDOW_REPROBE_MAX_MS)).toBe(true);
   });
 
   it('pausedUntil advances monotonically (never shortened by a later, nearer penalty)', () => {

@@ -3,7 +3,7 @@
  * (live-configurability-audit-2026-06-20 P-006).
  *
  * windowMs + sustainedPenaltyThreshold decide when an account is "sustainedly limited" — the verdict
- * that gates the PAID auto-scale-out. Hardcoded DEFAULT_SCALE_POLICY (15min / 3) until now. This makes
+ * that gates the PAID auto-scale-out. The default is a re-probe-aligned 60min / 3 policy. This makes
  * it settable, threaded into the trigger (the onGovernorPause observer), the decision (decideScaleOut),
  * and the read-model. Audited + one-call-revertible via the control harness.
  *
@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import { readScalePolicy, writeScalePolicy } from '../../scale-policy';
-import type { ScalePolicy } from '../../deployment/account-pool';
+import { MIN_SCALE_POLICY_WINDOW_MS, type ScalePolicy } from '../../deployment/account-pool';
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
@@ -24,7 +24,7 @@ export default defineTool({
   name: 'accounts:scale_policy',
   profile: 'engineer',
   description:
-    'Read or set the account scale-out trigger policy: windowMs (penalty accumulation window) + sustainedPenaltyThreshold (≥N penalties in the window ⇒ "sustainedly limited", which gates PAID auto-scale-out). Default 15min / 3. set is audited + one-call-revertible. Tunes WHEN scale-out fires; provisioning stays owner-gated (accounts:scale_out).',
+    `Read or set the account scale-out trigger policy: windowMs (penalty accumulation window, minimum ${Math.round(MIN_SCALE_POLICY_WINDOW_MS / 60_000)}min to cover account re-probes) + sustainedPenaltyThreshold (≥N penalties in the window ⇒ "sustainedly limited", which gates PAID auto-scale-out). Default ${Math.round(MIN_SCALE_POLICY_WINDOW_MS / 60_000)}min / 3. set is audited + one-call-revertible. Tunes WHEN scale-out fires; provisioning stays owner-gated (accounts:scale_out).`,
   capability: 'operator:write',
   guidance: {
     when: 'During a provider rate-limit storm: raise the threshold to avoid over-provisioning paid machines on transient 429 bursts, or lower it to scale out earlier under sustained limiting — live, no redeploy.',
@@ -43,7 +43,7 @@ export default defineTool({
     z.object({ op: z.literal('get') }),
     z.object({
       op: z.literal('set'),
-      windowMs: z.number().int().min(1000).max(86_400_000).optional(),
+      windowMs: z.number().int().min(MIN_SCALE_POLICY_WINDOW_MS).max(86_400_000).optional(),
       sustainedPenaltyThreshold: z.number().int().min(1).max(1000).optional(),
       dryRun: z.boolean().optional(),
     }),

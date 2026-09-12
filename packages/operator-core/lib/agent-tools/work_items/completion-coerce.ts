@@ -84,6 +84,7 @@ export const COMPLETION_FIELDS: readonly string[] = [
  */
 const SERVER_GENERATED_COMPLETION_FIELDS = [
   'checkpointChecksCarried',
+  'checkpointProseSnapshot',
   'treeStamp',
   'settlementManifest',
 ] as const;

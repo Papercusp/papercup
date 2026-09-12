@@ -67,13 +67,40 @@ beforeEach(() => {
 describe('fleet:headcount-target canonical launch profile', () => {
   it('disables the governor without deleting or even rereading the saved profile', async () => {
     const result = await tool.handler(
-      { fleet: 'byoc', target: null, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      { fleet: 'byoc', target: null, harness: 'papercusp', plan: 'byoc-plan', replaceExisting: false } as never,
       {} as never,
     );
     expect(parse(result)).toMatchObject({ ok: true, disabled: true, launchProfilePreserved: true });
     expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
       workspaceId: 'ws-test', fleetSlug: 'byoc', target: null,
     });
+    expect(mocks.getFleetHeadcountTarget).not.toHaveBeenCalled();
+  });
+
+  it('refuses target:null recipe fields instead of silently dropping them', async () => {
+    const result = await tool.handler(
+      {
+        fleet: 'byoc',
+        target: null,
+        harness: 'papercusp',
+        plan: 'byoc-plan',
+        agent: 'claude',
+        model: 'fable[1m]',
+        effort: 'high',
+        account: 'default',
+        replaceExisting: true,
+        reason: 'repair the saved launch profile while disabled',
+      } as never,
+      {} as never,
+    );
+
+    expect(parse(result)).toMatchObject({
+      ok: false,
+      error: 'invalid_args',
+      offending: ['agent', 'model', 'effort', 'account', 'replaceExisting', 'reason'],
+    });
+    expect(parse(result).message).toContain('would be ignored');
+    expect(mocks.setFleetHeadcountTarget).not.toHaveBeenCalled();
     expect(mocks.getFleetHeadcountTarget).not.toHaveBeenCalled();
   });
 

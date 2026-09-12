@@ -146,7 +146,11 @@ import type { AccountProvider } from '../../deployment/account-pool';
 import { providerForModel, readProviderAvailability } from './capacity';
 import type { FleetBriefDelta } from '../../fleet-brief-delta';
 import type { FleetCampaign } from './fleet-campaign';
-import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
+import {
+  computeMemberIdleVerdict,
+  PRODUCTIVE_STALL_BUDGET_MS,
+  summariseIdleCauses,
+} from '../../fleet-member-idle-verdict';
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { buildPolicyParkedCapacity, resolveFleetParkResumePath } from '../../fleet-park-resume-path';
@@ -1537,7 +1541,7 @@ export function computeDormantAlert(
  * catches the failure mode this targets (the reported incident ran unnoticed for ~8h)
  * without tripping on normal pacing.
  */
-export const SPINNING_BUDGET_MS = 30 * 60_000;
+export const SPINNING_BUDGET_MS = PRODUCTIVE_STALL_BUDGET_MS;
 
 /**
  * EI-19307414464301772: the SPINNING alert. Observed live 2026-08-02 on fleet
@@ -4687,6 +4691,8 @@ export async function buildLeaderBrief(
         load: m.load,
         stalled: m.stalled,
         lastToolCallAgeMs: m.lastToolCallAgeMs,
+        productiveToolCallAgeMs: m.productiveToolCallAgeMs,
+        longCallInFlight: m.longCallInFlight,
         contextPressure: m.contextPressure,
         throttled: (m as { throttled?: unknown }).throttled,
         loopMode: m.loopMode,

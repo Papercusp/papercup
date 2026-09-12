@@ -14,6 +14,7 @@ import {
   DEFAULT_REF_BUDGET,
   detectBodyRefs,
   detectEntryBodyRefs,
+  formatSessionTurnRef,
   GATE_REFS_FIELD,
   isBodyRefEligible,
   parseRefToken,
@@ -49,12 +50,24 @@ describe('parseRefToken', () => {
       key: 'fleet:p2p-git:phase1-green',
     });
     expect(parseRefToken('owner-turn')).toEqual({ kind: 'owner-turn' });
+    expect(parseRefToken('session_turn:claude:session:with:colons:28')).toEqual({
+      kind: 'session-turn',
+      sourceKind: 'claude',
+      sessionId: 'session:with:colons',
+      turnIdx: 28,
+    });
   });
 
   it('returns null for non-refs (never throws)', () => {
-    for (const junk of ['', '   ', 'hello', 'WI-', 'plan:#P-001', 'msg:', 'XWI-123']) {
+    for (const junk of ['', '   ', 'hello', 'WI-', 'plan:#P-001', 'msg:', 'XWI-123', 'session_turn:unknown:s:1', 'session_turn:claude:s:-1']) {
       expect(parseRefToken(junk)).toBeNull();
     }
+  });
+
+  it('formats session-turn coordinates canonically and preserves ids containing colons', () => {
+    expect(formatSessionTurnRef({ sourceKind: 'codex', sessionId: 'rollout:with:colons', turnIdx: 7 })).toBe(
+      'session_turn:codex:rollout:with:colons:7',
+    );
   });
 });
 
@@ -102,6 +115,12 @@ describe('applyRefBudget', () => {
     ];
     const out = applyRefBudget(refs, { snippetChars: 200, maxRefs: 3 });
     expect(out.map(canonicalRefKey)).toEqual(['work-item:WI-1', 'msg:m1', 'gate:g1']);
+    expect(canonicalRefKey({
+      kind: 'session-turn',
+      sourceKind: 'codex',
+      sessionId: 'rollout:1',
+      turnIdx: 7,
+    })).toBe('session-turn:codex:rollout:1:7');
   });
 });
 

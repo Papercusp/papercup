@@ -49,6 +49,10 @@
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from '../agent-tools/coordination/log';
 import { WORK_ITEM_TAG_SRC_KIND } from '../agent-tools/coordination/coupled-topic-sources';
 import { EVENT_SUBSCRIPTION_KIND } from '../agent-tools/coordination/event-subscriptions';
+import {
+  assessCriticalClaimProgressLease,
+  CRITICAL_CLAIM_PROGRESS_LEASE_MS,
+} from '../agent-tools/work_items/release-force-guard';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { linkWorkItem, readWorkItemClaimHoldProvenance, unlinkWorkItem } from '../work-items';
 import {
@@ -105,6 +109,7 @@ export interface ConditionObject {
   takenAt: string | null;
   /** Genuine item-scoped progress used by critical-claim recovery. */
   lastProgressAt: string | null;
+  /** Effective condition-owner lease deadline (stored expiry or read-only derived expiry). */
   expiresAt: string | null;
   /**
    * Additional open work-items linked to the SAME key beyond the canonical one.
@@ -166,7 +171,7 @@ export function resolveConditionObject(
     takenBy: canonical.takenBy,
     takenAt: canonical.takenAt,
     lastProgressAt: canonical.lastProgressAt,
-    expiresAt: canonical.expiresAt,
+    expiresAt: effectiveConditionLeaseExpiresAt(canonical, nowMs),
     duplicates,
     reachability: classifyExternalConditionReachability(
       { liveResolver: true, registration: 'live' },
@@ -175,11 +180,39 @@ export function resolveConditionObject(
   };
 }
 
-/** PURE. Has this row's claim lease lapsed? A claim with no expiry never lapses. */
+/**
+ * PURE. Resolve the condition-owner lease deadline without changing the work-item row.
+ *
+ * Migration 866 deliberately removed the generic issue-family `expires_at` writer:
+ * ordinary issue claims do not have a lease. A condition link is a narrower singleton
+ * coordination surface, though, and a claimed condition owner must not hold that key
+ * forever merely because its issue-family row has no stored expiry. Reuse the shared
+ * critical-claim progress lease for this read-only fallback. Missing progress and claim
+ * anchors remain unmeasured (and therefore fail closed as held); no generic issue row is
+ * mutated or assigned an expiry by this policy.
+ */
+export function effectiveConditionLeaseExpiresAt(
+  row: ConditionWorkItemRow,
+  nowMs: number,
+): string | null {
+  if (!row.takenBy) return null;
+  if (row.expiresAt) return row.expiresAt;
+
+  const lease = assessCriticalClaimProgressLease({
+    takenAt: row.takenAt,
+    lastProgressAt: row.lastProgressAt,
+    nowMs,
+    leaseMs: CRITICAL_CLAIM_PROGRESS_LEASE_MS,
+  });
+  if (lease.anchorMs === null) return null;
+  return new Date(lease.anchorMs + lease.leaseMs).toISOString();
+}
+
+/** PURE. Has this condition-owner lease lapsed? An unanchored claim fails closed. */
 export function leaseExpired(row: ConditionWorkItemRow, nowMs: number): boolean {
-  if (!row.takenBy) return false;
-  if (!row.expiresAt) return false;
-  const t = Date.parse(row.expiresAt);
+  const expiresAt = effectiveConditionLeaseExpiresAt(row, nowMs);
+  if (!expiresAt) return false;
+  const t = Date.parse(expiresAt);
   return Number.isFinite(t) && t <= nowMs;
 }
 

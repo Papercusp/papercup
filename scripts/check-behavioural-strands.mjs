@@ -502,6 +502,101 @@ function normalisedExpressionText(node, sourceFile, fileName) {
   return normalised.replace(/\s+/g, ' ').trim();
 }
 
+/** Whether `node` is inside `candidate` before reaching `boundary` in the AST. */
+function isWithinNode(node, candidate, boundary) {
+  let current = node;
+  while (current && current !== boundary) {
+    if (current === candidate) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+/**
+ * Build an identity for one output object that survives insertion of a sibling object.
+ *
+ * Property-name occurrence is not an identity: two returned objects with the same
+ * `status`/`code`/`reason` fields are common, and inserting one shifts every property
+ * array in the old implementation. The enclosing callable plus structural boundaries
+ * (return/binding/writer and control-flow branch) identify the object without depending
+ * on source-order offsets or on the value expression that may legitimately change.
+ */
+function outputObjectStructuralIdentity(objectLiteral, sourceFile, fileName) {
+  const callable = enclosingCallableName(objectLiteral, sourceFile) || '<module>';
+  const context = [];
+  let current = objectLiteral;
+  while (current?.parent) {
+    const parent = current.parent;
+    if (ts.isReturnStatement(parent) && parent.expression === current) context.push('return');
+    if (ts.isArrowFunction(parent) && parent.body === current) context.push('arrow-return');
+    if (ts.isVariableDeclaration(parent) && parent.initializer === current && ts.isIdentifier(parent.name)) {
+      context.push(`binding:${parent.name.text}`);
+    }
+    if (ts.isCallExpression(parent) && parent.arguments.some((arg) => arg === current) && isWriterCall(parent, sourceFile)) {
+      context.push(`writer:${terminalCallName(parent.expression, sourceFile)}`);
+    }
+    if (ts.isIfStatement(parent)) {
+      const branch = isWithinNode(current, parent.thenStatement, parent)
+        ? 'then'
+        : parent.elseStatement && isWithinNode(current, parent.elseStatement, parent)
+          ? 'else'
+          : null;
+      if (branch) context.push(`if:${normalisedExpressionText(parent.expression, sourceFile, fileName)}:${branch}`);
+    }
+    if (ts.isConditionalExpression(parent)) {
+      const branch = isWithinNode(current, parent.whenTrue, parent)
+        ? 'true'
+        : isWithinNode(current, parent.whenFalse, parent)
+          ? 'false'
+          : null;
+      if (branch) context.push(`conditional:${normalisedExpressionText(parent.condition, sourceFile, fileName)}:${branch}`);
+    }
+    current = parent;
+  }
+  const shape = objectLiteral.properties
+    .map((property) => {
+      if (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) {
+        return propertyNameText(property.name) ?? '<computed>';
+      }
+      return '<spread>';
+    })
+    .join(',');
+  return `${callable}|${context.reverse().join('>') || 'root'}|shape:${shape}`;
+}
+
+/** Collect output values with an object identity in addition to the legacy property map. */
+export function collectOutputPropertyRecords(sourceText, fileName = 'file.ts') {
+  let sourceFile;
+  try {
+    sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    return [];
+  }
+
+  const records = [];
+  const visit = (node) => {
+    if (ts.isObjectLiteralExpression(node) && isLikelyOutputObject(node, sourceFile)) {
+      const properties = [...node.properties].filter(
+        (property) => ts.isPropertyAssignment(property) && propertyNameText(property.name),
+      );
+      const objectIdentity = outputObjectStructuralIdentity(node, sourceFile, fileName);
+      for (const [index, property] of properties.entries()) {
+        const name = propertyNameText(property.name);
+        if (!name) continue;
+        const occurrence = properties.slice(0, index).filter((candidate) => propertyNameText(candidate.name) === name).length;
+        records.push({
+          property: name,
+          value: normalisedExpressionText(property.initializer, sourceFile, fileName),
+          identity: `${objectIdentity}|property:${name}|occurrence:${occurrence}`,
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return records;
+}
+
 /**
  * Collect output-object property values as `property -> values in source order`.
  *
@@ -511,26 +606,12 @@ function normalisedExpressionText(node, sourceFile, fileName) {
  * object literal to diff; a later explicit assignment is still detected.
  */
 export function collectOutputPropertyValues(sourceText, fileName = 'file.ts') {
-  let sourceFile;
-  try {
-    sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  } catch {
-    return new Map();
-  }
-
   const values = new Map();
-  const visit = (node) => {
-    if (ts.isPropertyAssignment(node) && ts.isObjectLiteralExpression(node.parent)) {
-      const property = propertyNameText(node.name);
-      if (property && isLikelyOutputObject(node.parent, sourceFile)) {
-        const list = values.get(property) ?? [];
-        list.push(normalisedExpressionText(node.initializer, sourceFile, fileName));
-        values.set(property, list);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(sourceFile, visit);
+  for (const { property, value } of collectOutputPropertyRecords(sourceText, fileName)) {
+    const list = values.get(property) ?? [];
+    list.push(value);
+    values.set(property, list);
+  }
   return values;
 }
 
@@ -541,15 +622,47 @@ export function collectOutputPropertyValues(sourceText, fileName = 'file.ts') {
  * the separate "new shape" case).
  */
 export function diffOutputValues(beforeText, afterText, fileName = 'file.ts') {
-  const before = collectOutputPropertyValues(beforeText, fileName);
-  const after = collectOutputPropertyValues(afterText, fileName);
+  const beforeRecords = collectOutputPropertyRecords(beforeText, fileName);
+  const afterRecords = collectOutputPropertyRecords(afterText, fileName);
+  const beforeByIdentity = new Map();
+  const afterByIdentity = new Map();
+  for (const record of beforeRecords) {
+    const list = beforeByIdentity.get(record.identity) ?? [];
+    list.push(record);
+    beforeByIdentity.set(record.identity, list);
+  }
+  for (const record of afterRecords) {
+    const list = afterByIdentity.get(record.identity) ?? [];
+    list.push(record);
+    afterByIdentity.set(record.identity, list);
+  }
+
   const changes = [];
-  for (const [property, afterValues] of after) {
-    const beforeValues = before.get(property) ?? [];
-    const shared = Math.min(beforeValues.length, afterValues.length);
+  for (const [identity, afterGroup] of afterByIdentity) {
+    const beforeGroup = beforeByIdentity.get(identity) ?? [];
+    if (beforeGroup.length === 0) continue;
+
+    // First consume exact values as anchors. This makes an inserted object harmless even
+    // when it shares the same structural group: unchanged siblings pair with themselves,
+    // while the unmatched insertion is never interpreted as a rewrite.
+    const unmatchedBefore = [...beforeGroup];
+    const unmatchedAfter = [];
+    for (const after of afterGroup) {
+      const exact = unmatchedBefore.findIndex((before) => before.value === after.value);
+      if (exact >= 0) unmatchedBefore.splice(exact, 1);
+      else unmatchedAfter.push(after);
+    }
+
+    // A structural identity is safe to pair directly when it is unique, or when the
+    // before/after group cardinality is unchanged. If cardinality changed, the residue
+    // may contain an insertion/deletion and positional pairing would recreate the bug.
+    if (beforeGroup.length !== afterGroup.length) continue;
+    const shared = Math.min(unmatchedBefore.length, unmatchedAfter.length);
     for (let i = 0; i < shared; i += 1) {
-      if (beforeValues[i] !== afterValues[i]) {
-        changes.push({ property, before: beforeValues[i], after: afterValues[i], reason: 'value-changed' });
+      const before = unmatchedBefore[i];
+      const after = unmatchedAfter[i];
+      if (before.value !== after.value) {
+        changes.push({ property: after.property, before: before.value, after: after.value, reason: 'value-changed' });
       }
     }
   }

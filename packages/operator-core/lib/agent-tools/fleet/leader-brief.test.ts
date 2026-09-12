@@ -61,6 +61,7 @@ import {
 } from './leader-brief';
 import leaderBriefTool from './leader-brief';
 import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
+import { computeMemberIdleVerdict } from '../../fleet-member-idle-verdict';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
 
@@ -2269,6 +2270,36 @@ describe('computeSpinningAlert (EI-19307414464301772)', () => {
     const m = projectMember(agent, NOW);
     expect(m.productiveToolCallAgeMs).toBe(BUDGET + 60_000);
     expect(m.spinning).toBe(true);
+  });
+
+  it('uses the productive-call age as the held-claim idle signal, even when the generic stall flag is clear', () => {
+    const agent = baseAgent({
+      verdict: 'monitoring',
+      load: 1,
+      stalled: false,
+      lastToolCallAt: new Date(NOW - 31 * 60_000).toISOString(),
+      productiveToolCallAt: new Date(NOW - 31 * 60_000).toISOString(),
+    });
+    const member = projectMember(agent, NOW);
+    expect(member.productiveToolCallAgeMs).toBe(31 * 60_000);
+    // The handler passes this already-projected field into computeMemberIdleVerdict below;
+    // assert the oracle's exact result here to keep the incident's wiring contract explicit.
+    expect(
+      computeMemberIdleVerdict(
+        {
+          load: member.load,
+          stalled: member.stalled,
+          lastToolCallAgeMs: member.lastToolCallAgeMs,
+          productiveToolCallAgeMs: member.productiveToolCallAgeMs,
+          sessionState: member.sessionState,
+          contextPressure: member.contextPressure,
+          loopMode: member.loopMode,
+          nextFireAt: member.nextFireAt,
+          parkedOn: member.parkedOn,
+        },
+        { blockedAtLayer: null, midTurnFreshnessMs: VERDICT_SPEAKING_FRESH_MS },
+      ).cause,
+    ).toBe('stalled-holder');
   });
 
   it('projectMember: null productiveToolCallAgeMs when no productive call is on record', () => {

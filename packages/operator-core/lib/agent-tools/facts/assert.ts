@@ -563,7 +563,7 @@ export default defineTool({
       .describe(
         `REFUSED ABOVE ${FACT_BODY_MAX_CHARS} CHARS — size your write to this, not the 4000 schema ceiling (4000 is transport headroom only, so the refusal can measure your exact overage and preview the tail that would be cut). An over-cap body is NOT silently clipped: NO WRITE HAPPENS and the error names how many chars to cut — either shorten it, or re-call with acceptTruncation:true to force the clipped write through. Front-load the operative clause; write tight, not documents.`,
       ),
-    sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
+    sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, session_turn:<source>:<session>:<idx>, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
     slot: z
       .enum(['dead-end', 'wall', 'guard-rail'])
       .optional()
@@ -890,7 +890,7 @@ export default defineTool({
           'and fail in substrate_outbox.',
       );
     }
-    // P-007: a TYPED sourceRef (msg:/wi:/owner-turn) is platform-verified at
+    // P-007: a TYPED sourceRef (msg:/wi:/session_turn:/owner-turn) is platform-verified at
     // assert time — the stamp travels with the fact and folds render the
     // verified quote with zero extra reads. Fail-soft: stamping never blocks
     // the assert (the resolver degrades internally; this catch is the belt).

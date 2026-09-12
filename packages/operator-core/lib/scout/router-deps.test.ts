@@ -11,6 +11,7 @@ import type { ArchivePort, ArchiveEliteView } from './gym-bridge';
 import type { CaptureImprovementInput, CaptureImprovementResult } from '../harness/improvements/capture-core';
 import {
   buildCapturePort,
+  buildGoalDispatchPort,
   buildGoalAmendmentDispatchPort,
   buildGymDispatchPort,
   buildPlansNewPort,
@@ -18,6 +19,17 @@ import {
   type GoalUpdateDispatcher,
   type PlanDraftCreator,
 } from './router-deps';
+
+const autoStartGoal = vi.hoisted(() =>
+  vi.fn(async () => ({
+    goalId: 'goal-auto',
+    agentOwnerId: 'agent-auto',
+    drainFleet: null,
+    startBlockedOverride: null,
+    warnings: [],
+  })),
+);
+vi.mock('../goals/goal-auto-start', () => ({ autoStartGoal }));
 
 function proposal(over: Partial<Proposal> = {}): Proposal {
   return {
@@ -163,6 +175,29 @@ describe('buildGoalAmendmentDispatchPort', () => {
     expect(args.reason).toContain('Scout proposal prop-1');
     expect(Object.keys(args).sort()).toEqual(['body', 'id', 'reason']);
     expect(scope).toEqual({ harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' });
+  });
+});
+
+describe('buildGoalDispatchPort', () => {
+  it('forwards the explicit workspace to autoStartGoal instead of relying on ambient scope', async () => {
+    autoStartGoal.mockClear();
+    const port = buildGoalDispatchPort({ harnessSlug: 'papercusp-workspace', workspaceId: 'ws-scout-real' });
+    const input = {
+      proposal: proposal({ id: 'prop-goal' }),
+      title: 'Workspace-scoped goal',
+      killCriterion: 'no verified outcome',
+      budgetCents: 2_000,
+    };
+
+    await expect(port(input)).resolves.toEqual({ goalId: 'goal-auto' });
+    expect(autoStartGoal).toHaveBeenCalledWith(expect.objectContaining({
+      harnessSlug: 'papercusp-workspace',
+      workspaceId: 'ws-scout-real',
+      title: input.title,
+      killCriterion: input.killCriterion,
+      budgetCents: input.budgetCents,
+      proposalId: 'prop-goal',
+    }));
   });
 });
 

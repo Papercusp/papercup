@@ -24,6 +24,7 @@ import {
   type BurnVerdict,
 } from '../inference-gateway/burn-governor';
 import { accountLoadKey } from '../inference-gateway/account-failover';
+import { ROLLING_WINDOW_REPROBE_MAX_MS } from '@papercusp/papercusp-shared/resilience';
 
 /**
  * Per-account upstream egress binding — per-account IP routing (D-003). Each registered Claude Max
@@ -268,9 +269,16 @@ export interface ScalePolicy {
   sustainedPenaltyThreshold: number;
 }
 
+/**
+ * Minimum penalty window for the default threshold. Three penalties need two intervals; the
+ * slow account-keyed usage-cap re-probe is bounded by ROLLING_WINDOW_REPROBE_MAX_MS.
+ */
+export const MIN_SCALE_POLICY_WINDOW_MS = Math.max(15 * 60_000, 2 * ROLLING_WINDOW_REPROBE_MAX_MS);
+
 export const DEFAULT_SCALE_POLICY: ScalePolicy = {
-  windowMs: 15 * 60_000, // 15 min
-  sustainedPenaltyThreshold: 3, // 3 × 429 in 15 min = this account genuinely can't keep up
+  // Three slow re-probe penalties (at the cap) must fit in one accrual window.
+  windowMs: MIN_SCALE_POLICY_WINDOW_MS,
+  sustainedPenaltyThreshold: 3, // 3 × 429 in the window = this account genuinely can't keep up
 };
 
 /**
@@ -462,7 +470,7 @@ export function clearSoftPin(pool: AccountPool, slug: string): AccountPool {
 }
 
 /**
- * Record a rate-limit penalty against an account (pure). Rolls the penalty window:
+ * Record a rate-limit penalty against an account (pure). Rolls the inclusive penalty window:
  * a penalty outside the current window opens a fresh count of 1; inside it
  * increments. `pausedUntil` advances monotonically — a penalty never shortens an
  * existing pause. A penalty for an unknown id is a no-op.
@@ -477,7 +485,7 @@ export function recordAccountPenalty(
   return {
     accounts: pool.accounts.map((a) => {
       if (a.id !== id) return a;
-      const inWindow = a.rate.windowStartedAt > 0 && now - a.rate.windowStartedAt < policy.windowMs;
+      const inWindow = a.rate.windowStartedAt > 0 && now - a.rate.windowStartedAt <= policy.windowMs;
       const rate: AccountRateState = {
         // Preserve the last-known observed budget (utilization / windowResetAt / utilizationAt): a 429
         // penalty must NOT erase the usage reading, else the Accounts tab loses the "% used" the
@@ -684,7 +692,7 @@ export function isSustainedlyLimited(
 ): boolean {
   const r = account.rate;
   if (effectiveDrainUtil(account, now) >= EXHAUSTED_UTIL) return true;
-  const inWindow = r.windowStartedAt > 0 && now - r.windowStartedAt < policy.windowMs;
+  const inWindow = r.windowStartedAt > 0 && now - r.windowStartedAt <= policy.windowMs;
   return inWindow && r.penaltyCount >= policy.sustainedPenaltyThreshold;
 }
 
