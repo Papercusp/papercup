@@ -15,6 +15,14 @@ import type {
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
 
+/**
+ * Keep persisted judge replays within the critical-pressure admission budget.
+ * The evaluator's general default is intentionally larger, but generated
+ * scorecard recipes must carry an explicit bounded page so the exact replay can
+ * pass the MCP recovery allowlist when the operator is saturated.
+ */
+export const SPEC_TEST_ADEQUACY_REPLAY_LIMIT = 25;
+
 export const PLAN_CLASS_RUBRIC_REFS = [
   'plan-class-feature-ship',
   'plan-class-bugfix',
@@ -744,6 +752,7 @@ function rerunRecipeFor(
       ...(replayEvidenceRefs.length ? { evidenceRefs: replayEvidenceRefs } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
+      limit: SPEC_TEST_ADEQUACY_REPLAY_LIMIT,
       // Replay the exact immutable clause snapshot that produced this grade. The
       // evaluator accepts these fields and, with replaySnapshot, reuses the persisted
       // currentness tuple instead of measuring mutable live bindings again.
