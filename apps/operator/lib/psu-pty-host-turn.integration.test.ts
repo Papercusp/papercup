@@ -538,6 +538,72 @@ function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number
 }
 
 describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)', () => {
+  it.each(['settled', 'active'] as const)(
+    'Codex idle repaint with a %s native turn uses only a verified completion boundary',
+    async (state) => {
+      const root = mkdtempSync(join(tmpdir(), 'codex-warm-turn-boundary-'));
+      const ownerId = uniqueOwner(`CODEX-WARM-${state}`);
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const transcript = join(root, 'sessions', '2026', '09', '12', 'rollout-current.jsonl');
+      mkdirSync(join(root, 'sessions', '2026', '09', '12'), { recursive: true });
+      writeFileSync(transcript, JSON.stringify({
+        type: 'event_msg', timestamp: new Date().toISOString(),
+        payload: { type: state === 'settled' ? 'task_complete' : 'task_started', turn_id: 'turn-current' },
+      }) + '\n');
+      const { captured, io } = fakeIo();
+      const childCode = [
+        "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "process.stdout.write('READY\\n');setInterval(()=>process.stdout.write('IDLE-REPAINT\\n'),15);",
+        "let line='';process.stdin.on('data',d=>{for(const c of d){",
+        "if(c==='\\u0004')process.exit(0);",
+        "else if(c==='\\r'){if(line){process.stdout.write('SUBMITTED:'+line+'\\n');line='';}}else line+=c;}});",
+        'setTimeout(()=>process.exit(0),4000);',
+      ].join('');
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: root,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: () => {},
+      });
+      try {
+        expect(await waitForOutput(captured, 'READY')).toBe(true);
+        expect(await injectIntoHost(sock, { mode: 'turn', data: `warm-${state}`, ownerId })).toBe(true);
+        if (state === 'settled') {
+          expect(await waitForOutput(captured, 'SUBMITTED:warm-settled', 1_000)).toBe(true);
+          const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          expect(events).not.toContain('"kind":"busy-gate-expired"');
+        } else {
+          await sleep(700);
+          expect(captured()).not.toContain('SUBMITTED:warm-active');
+          const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          expect(events).toContain('"kind":"busy-gate-expired"');
+          expect(events).toContain('"mode":"turn"');
+        }
+      } finally {
+        await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
+
   it(
     'discovers the live host by ownerId, injects a turn, and the child reads it as a SUBMITTED line',
     async () => {
