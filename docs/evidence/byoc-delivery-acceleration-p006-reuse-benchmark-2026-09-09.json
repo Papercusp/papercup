@@ -44,7 +44,7 @@
   ],
   "benchmark": "BYOC-ACCEL-P006-CACHE@2 controlled release preparation",
   "observedAtUtc": "2026-09-09T13:16:40.369Z",
-  "host": "main-server-Precision-7865-Tower",
+  "host": "buildhost",
   "runtime": {
     "node": "v25.9.0",
     "platform": "linux",
