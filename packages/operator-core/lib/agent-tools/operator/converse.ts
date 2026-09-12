@@ -60,6 +60,7 @@ import { canonicalToolName } from '../../operator-mcp-tools';
 import { PROMPT_ROLES } from '../../prompt-assembly';
 import { UI_CONTEXT_MAX_CHARS } from '../../chat-context-sections';
 import { capabilityToolNames, OWNED_LOOP_TOOL_SELECTION } from '../../agent-loop/capability-toolset';
+import { assertSelectedInputSchemaBudget } from '../tool-guidance-budget';
 import { resolvePapercupChatModel } from '../../papercup/papercup-chat-model';
 import type { AgentBackend } from '../../agent-config-constants';
 import {
@@ -336,7 +337,18 @@ export default defineTool({
             return projected !== undefined
               && projected.capabilities.every((capability) => publicPrincipal.capabilities.has(capability));
           })
-        : selectedOperatorTools;
+          : selectedOperatorTools;
+    // The `?tools=` MCP mount loads exactly these selected schemas non-deferred.
+    // Account for the selected set at that runtime seam; promptWeight() remains
+    // the description/guidance-only metric for the assembled prompt catalog.
+    assertSelectedInputSchemaBudget(
+      operatorTools.flatMap((fullName) => {
+        const canonicalName = fullName.replace(/^mcp__agentmcp__/, '');
+        const projected = lookupByMcpName(canonicalName);
+        return projected ? [{ name: canonicalName, inputSchema: projected.inputSchema }] : [];
+      }),
+      { label: `operator:converse ${hostTrust} tool set` },
+    );
     const convId =
       typeof input.conversationId === 'string' && input.conversationId.trim()
         ? input.conversationId

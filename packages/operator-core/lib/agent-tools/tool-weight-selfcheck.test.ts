@@ -13,6 +13,10 @@ import {
   HARD_CAP,
   ALLOW_OVER_BUDGET,
   promptWeight,
+  serializedInputSchemaBytes,
+  selectedInputSchemaBudget,
+  assertSelectedInputSchemaBudget,
+  MAX_SELECTED_INPUT_SCHEMA_BYTES,
   budgetViolations,
   formatViolations,
   type NamedToolWeight,
@@ -50,6 +54,40 @@ describe('promptWeight (EI-10966 — matches the assembled-prompt string weight)
   it('is 0 for an empty tool and ignores unknown fields', () => {
     expect(promptWeight({})).toBe(0);
     expect(promptWeight({ description: 'abc' })).toBe(3);
+  });
+});
+
+describe('selected inputSchema budget (runtime MCP loads)', () => {
+  it('counts JSON schema bytes as UTF-8, including non-ASCII descriptions', () => {
+    const schema = { type: 'object', description: 'café 🚀' };
+    const expected = new TextEncoder().encode(JSON.stringify(schema)).byteLength;
+    expect(serializedInputSchemaBytes(schema)).toBe(expected);
+    expect(serializedInputSchemaBytes(undefined)).toBe(0);
+  });
+
+  it('sums only the selected schemas and treats the exact boundary as fitting', () => {
+    const tools = [
+      { name: 'first', inputSchema: { type: 'object', description: 'α'.repeat(10) } },
+      { name: 'second', inputSchema: { type: 'object', properties: { ok: { type: 'boolean' } } } },
+    ];
+    const total = tools.reduce((sum, tool) => sum + serializedInputSchemaBytes(tool.inputSchema), 0);
+    expect(selectedInputSchemaBudget(tools, total)).toMatchObject({
+      totalBytes: total,
+      remainingBytes: 0,
+      overBudget: false,
+    });
+    expect(selectedInputSchemaBudget(tools, total - 1)).toMatchObject({
+      totalBytes: total,
+      remainingBytes: -1,
+      overBudget: true,
+    });
+  });
+
+  it('fails with aggregate and largest-schema diagnostics when selected load is too large', () => {
+    const tools = [{ name: 'large', inputSchema: { description: 'x'.repeat(MAX_SELECTED_INPUT_SCHEMA_BYTES) } }];
+    expect(() => assertSelectedInputSchemaBudget(tools)).toThrow(
+      new RegExp(`aggregate budget.*largest schemas: large=`),
+    );
   });
 });
 

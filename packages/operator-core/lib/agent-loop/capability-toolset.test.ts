@@ -12,11 +12,15 @@ import {
   type ToolDispatcher,
 } from './capability-toolset';
 
-function fakeProjected(name: string, description = `desc of ${name}`): ProjectedTool {
+function fakeProjected(
+  name: string,
+  description = `desc of ${name}`,
+  inputSchema: unknown = { type: 'object', properties: {} },
+): ProjectedTool {
   return {
     pluginName: 'test',
     description,
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema,
     expose: { mcp: { name } },
   } as unknown as ProjectedTool;
 }
@@ -86,6 +90,19 @@ describe('capabilityToolset', () => {
     expect(() =>
       capabilityToolset({ dispatch: okDispatch, registry, names: ['capability:nonexistent'] }),
     ).toThrow(/capability:nonexistent/);
+  });
+
+  it('rejects an oversized aggregate schema load before projecting LoopTools', () => {
+    const registry = () => [
+      fakeProjected('capability:huge', 'huge', {
+        type: 'object',
+        description: 'x'.repeat(128_001),
+      }),
+    ];
+
+    expect(() => capabilityToolset({ dispatch: okDispatch, registry })).toThrow(
+      /capabilityToolset input schemas use .* aggregate budget/,
+    );
   });
 
   it('execute routes through the dispatcher and flattens the result', async () => {

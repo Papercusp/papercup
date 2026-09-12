@@ -37,6 +37,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
         : name === 'voice:delegate_deep'
           ? ['operator:read']
           : ['not-granted'],
+      inputSchema: { type: 'object', properties: {} },
     }),
   };
 });

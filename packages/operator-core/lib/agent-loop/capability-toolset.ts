@@ -16,6 +16,7 @@
  */
 import { listAllProjectedTools, type ProjectedTool } from '@papercusp/tooldef';
 import type { LoopTool } from './loop';
+import { assertSelectedInputSchemaBudget } from '../agent-tools/tool-guidance-budget';
 
 /** MCP-shaped dispatch result (the registry dispatcher's return contract). */
 export interface DispatchResult {
@@ -131,7 +132,12 @@ export function flattenDispatchResult(result: DispatchResult): unknown {
  * misconfiguration that must fail loud at construction, not mid-conversation).
  */
 export function capabilityToolset(opts: CapabilityToolsetOpts): LoopTool[] {
-  return selectCapabilityTools(opts).map(({ name, tool }) => ({
+  const selected = selectCapabilityTools(opts);
+  assertSelectedInputSchemaBudget(
+    selected.map(({ name, tool }) => ({ name, inputSchema: tool.inputSchema })),
+    { label: 'capabilityToolset' },
+  );
+  return selected.map(({ name, tool }) => ({
     name,
     description: tool.description,
     inputSchema: tool.inputSchema,
