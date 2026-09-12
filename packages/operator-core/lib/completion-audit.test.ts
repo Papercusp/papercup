@@ -1069,6 +1069,11 @@ describe('citedImagePaths / citesAssertionBearingRun (EI-18797014705631713)', ()
     ]);
   });
 
+  it('keeps the full Playwright artifact path when its result directory contains Unicode', () => {
+    const path = 'test-results/portal-work-plans-×-chromium/test-failed-1.png';
+    expect(citedImagePaths({ testResult: `Playwright capture: "${path}"` })).toEqual([path]);
+  });
+
   it('counts only `check` as assertion-bearing — screenshot and capture cannot fail', () => {
     expect(citesAssertionBearingRun({ testsRun: 'tauri-agent-tools check --eval "x" --json' })).toBe(true);
     // These two exit 0 whether or not anything painted, which is the entire bug.

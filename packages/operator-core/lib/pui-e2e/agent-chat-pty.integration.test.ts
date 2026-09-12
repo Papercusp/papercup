@@ -351,6 +351,7 @@ const HARNESS = 'papercusp';
 const WORKSPACE = 'pui-agent-chat-e2e';
 const OWNER = 'pui-agent-chat-e2e-owner';
 const REAL_PLAN = 'pui-native-acceptance-plan';
+const REAL_APPROVAL_WORK_ITEM = 'EI-90000006';
 const execFileAsync = promisify(execFile);
 
 // Opt-in diagnosis uses the actual worker (including cold module evaluation),
@@ -1009,6 +1010,16 @@ beforeAll(async () => {
   // unqualified `agent_chats` through the consolidated PG table.
   const { scaffoldHarnessSchema } = await import('../scaffold-harness-schema');
   await scaffoldHarnessSchema(HARNESS);
+  if (scriptedEngine.real && process.env.PUI_REAL_APPROVAL === '1') {
+    const now = Date.now();
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, summary, status, created_ts, updated_ts)
+      VALUES (${WORKSPACE}, ${HARNESS}, ${REAL_APPROVAL_WORK_ITEM}, 'task',
+              'Exercise one PUI native tool-permission roundtrip',
+              'Create and verify the isolated permission fixture requested by the owner.',
+              'open', ${now}, ${now})`;
+  }
   if (scriptedEngine.real && process.env.PUI_REAL_PLAN === '1') {
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
@@ -2920,7 +2931,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const greetingReply = `PUI-PROCESS-${randomUUID()}`;
     const greeting = `Reply exactly ${greetingReply}. Do not use tools.`;
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
-    const approvalResult = `PUI-APPROVED-${randomUUID()}`;
+    const approvalResult = `PUI-PERMISSION-FIXTURE-${randomUUID()}`;
     const approvalFixturePath = path.join(home, `approved-${randomUUID()}.txt`);
     // Ask for the user outcome, not for a pre-authored privileged invocation.
     // Real providers may correctly refuse a prompt that tells them to reproduce
@@ -2928,7 +2939,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // tests provider policy instead of the PUI approval transport. The owned temp
     // path still requires the native shell tool, while its permission handshake
     // remains the engine's responsibility.
-    const approvalRequest = `Create a text file at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline, using your shell-command tool. This path is in a temporary directory that I own, and I authorize this write. If the tool requires confirmation, ask me to approve it. After it succeeds, reply with exactly '${approvalResult}'.`;
+    const approvalRequest = `I am testing the PUI's real tool-permission flow. The task is registered as ${REAL_APPROVAL_WORK_ITEM}, and I approve route A: handle it yourself in this session. First claim that work item. Then create a text file at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline, using your shell-command tool. This path is in an isolated temporary directory that I own, and I authorize this write. The random string is only a correlation nonce proving which tool result returned; it is not an approval or security attestation. If the tool requires confirmation, pause so I can approve it in the PUI. After the write succeeds, reply with the file contents.`;
     const first = await startOperatorProcess();
     const pane = new PuiPane(bin, first.port, home);
     const frames: Record<string, string> = {};

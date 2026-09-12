@@ -967,7 +967,13 @@ const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
  */
 const ASSERTION_BEARING_PATTERN = /\btauri-agent-tools\b[^\n]{0,80}\bcheck\b/i;
 
-const IMAGE_PATH_PATTERN = /[\w./~-]*[\w~-]\.(?:png|jpe?g|webp|gif|ppm)\b/gi;
+// Match a path TOKEN, not merely its ASCII suffix. Playwright keeps Unicode from
+// test titles in result-directory names (for example `...-×/test-failed-1.png`);
+// `\w` stops at that character and used to turn the real relative citation into
+// `/test-failed-1.png`. Whitespace/quotes delimit tokens, while the small ASCII
+// wrapper set keeps prose such as `--output=/tmp/shot.png` and `(/tmp/shot.png)`
+// compatible with the pre-existing extraction shape.
+const IMAGE_PATH_PATTERN = /[^\s"'`<>=()\[\]{},;:]+?\.(?:png|jpe?g|webp|gif|ppm)\b/giu;
 
 /** An HTTP status code immediately following a citation, e.g. `-> 200` or `200 OK`. */
 const HTTP_STATUS_AFTER_PATTERN = /^\s*(?:->|→)?\s*\d{3}\b/;

@@ -218,7 +218,9 @@ export const rubricsProposeArgs = z
     ratingScale: z
       .array(z.string())
       .optional()
-      .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
+      .describe(
+        'optional default scale shared by criteria. When omitted, the server uses the existing rubric/class scale when revising or composing, otherwise ["healthy","degraded","broken","unknown"]. For acceptance rubrics, the effective scale is normalized before authoring: if it lacks an unknown-equivalent label, the server appends "unknown" so every persisted acceptance rubric can represent an honest no-verdict outcome; callers may omit this field or supply only domain-specific ratings.',
+      ),
     methodRef: z
       .string()
       .max(200)

@@ -1,25 +1,19 @@
 /**
- * WI-6154 (part 3, "SECONDARY BUG"): agent_tools:list's `asRole` simulation
- * used to blindly drop the principal for EVERY simulated role, on the
- * assumption that "real spawned agents at that role don't carry one". That
- * assumption is false for a role with a real (possibly capability-EMPTY)
- * `system_principals` row — e.g. `worker` on a live host, whose row exists
- * by design with zero capabilities. The result: `agent_tools:list { asRole:
- * 'worker' }` reported `allowed:true` for capability-gated tools that the
- * REAL dispatch path (which sees a non-null-but-empty-capability principal)
- * correctly denies with `missing_capability` — the catalog and dispatch
- * disagreeing, exactly as WI-6154 observed live.
+ * Regression coverage for `agent_tools:list`'s `asRole` simulation: it must
+ * use the same role→capability synthesis as real dispatch, including
+ * blueprint/runtime baselines for roles without a system_principals row.
+ * Otherwise the catalog can advertise a capability-gated tool as callable
+ * even though the synthesized dispatch principal correctly denies it.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const lookupSystemPrincipalCapabilitiesByRoleMock = vi.fn();
+const loadRoleCapabilitiesMock = vi.fn();
+const withWorkspaceMock = vi.fn();
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
   SU_ROLES: ['su', 'operator'],
-  lookupSystemPrincipalCapabilitiesByRole: (...a: unknown[]) =>
-    lookupSystemPrincipalCapabilitiesByRoleMock(...a),
   listAllProjectedTools: () => [
     {
       expose: { mcp: { name: 'capability:bash' } },
@@ -36,6 +30,15 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
       composition: 'primitive',
     },
   ],
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withWorkspace: (...args: unknown[]) => withWorkspaceMock(...args),
+}));
+
+vi.mock('../../endpoint-route/routes/transport/role-principal-caps', () => ({
+  loadRoleCapabilities: (...a: unknown[]) => loadRoleCapabilitiesMock(...a),
 }));
 
 vi.mock('../../workspace-registry', () => ({
@@ -61,12 +64,13 @@ function rows(result: unknown): Array<{ name: string; allowed: boolean; reason: 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  withWorkspaceMock.mockImplementation(async (_workspaceId, callback) => callback({}));
 });
 
-describe('agent_tools:list asRole simulation — matches real dispatch capability gating (WI-6154)', () => {
+describe('agent_tools:list asRole simulation — matches real dispatch capability gating', () => {
   it('a role WITH a real (empty-capability) system_principals row denies a capability-gated tool — matching real dispatch', async () => {
     // worker's real row exists, by design, with zero capabilities.
-    lookupSystemPrincipalCapabilitiesByRoleMock.mockResolvedValue(new Set<string>());
+    loadRoleCapabilitiesMock.mockResolvedValue(new Set<string>());
     const out = rows(await callAsRole('worker'));
     const bash = out.find((r) => r.name === 'capability:bash');
     expect(bash?.allowed).toBe(false);
@@ -75,23 +79,27 @@ describe('agent_tools:list asRole simulation — matches real dispatch capabilit
     expect(send?.allowed).toBe(true); // no capabilities required — never gated
   });
 
-  it('a role WITH NO system_principals row at all is NOT capability-gated (matches a genuinely principal-less real dispatch)', async () => {
-    lookupSystemPrincipalCapabilitiesByRoleMock.mockResolvedValue(null);
-    const out = rows(await callAsRole('some-gateless-role'));
+  it('a role with no system_principals row still receives synthesized baseline caps and denies Bash', async () => {
+    // judge has no provisioned row in a fresh workspace, but dispatch still
+    // synthesizes its role baseline (plus agent_tools:read) before gating.
+    loadRoleCapabilitiesMock.mockResolvedValue(new Set(['agent_tools:read', 'coord:read']));
+    const out = rows(await callAsRole('judge'));
     const bash = out.find((r) => r.name === 'capability:bash');
-    expect(bash?.allowed).toBe(true);
+    expect(bash?.allowed).toBe(false);
+    expect(bash?.reason).toMatch(/missing_capability/);
   });
 
   it('a role principal that DOES carry the required capability is allowed', async () => {
-    lookupSystemPrincipalCapabilitiesByRoleMock.mockResolvedValue(new Set(['capability:bash']));
+    loadRoleCapabilitiesMock.mockResolvedValue(new Set(['capability:bash']));
     const out = rows(await callAsRole('worker'));
     const bash = out.find((r) => r.name === 'capability:bash');
     expect(bash?.allowed).toBe(true);
   });
 
-  it('looks up the role by the simulated asRole name, in the caller workspace', async () => {
-    lookupSystemPrincipalCapabilitiesByRoleMock.mockResolvedValue(new Set<string>());
+  it('synthesizes the role by asRole name under the caller workspace', async () => {
+    loadRoleCapabilitiesMock.mockResolvedValue(new Set<string>());
     await callAsRole('worker');
-    expect(lookupSystemPrincipalCapabilitiesByRoleMock).toHaveBeenCalledWith('ws-1', 'worker');
+    expect(withWorkspaceMock).toHaveBeenCalledWith('ws-1', expect.any(Function));
+    expect(loadRoleCapabilitiesMock).toHaveBeenCalledWith({}, 'ws-1', 'worker');
   });
 });

@@ -14,10 +14,11 @@ import { z } from 'zod';
 import {
   defineTool,
   listAllProjectedTools,
-  lookupSystemPrincipalCapabilitiesByRole,
   SU_ROLES,
 } from '@papercusp/agent-mcp';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { loadRoleCapabilities } from '../../endpoint-route/routes/transport/role-principal-caps';
 import { shapeAgentToolsList } from './list-shape';
 
 export default defineTool({
@@ -73,24 +74,21 @@ export default defineTool({
     const asRoleOverride = args.asRole && args.asRole.length > 0 ? args.asRole : null;
     const role = asRoleOverride ?? ctx.role;
     const isSuperuser = asRoleOverride ? false : ctx.isSuperuser === true;
-    // In asRole simulation, evaluate the capability gate against the REAL
-    // system_principals row for that role (WI-6154), not against a blindly
-    // dropped principal. Many roles (e.g. `worker`) intentionally carry a
-    // restricted, capability-EMPTY principal on a live host — dropping the
-    // principal entirely for every simulated role made this tool report
-    // `allowed:true` for tools whose REAL dispatch-time capability gate
-    // (dispatchProjectedTool, packages/agent-mcp/src/dispatch-projected.ts)
-    // denies with missing_capability, because dispatch sees ctx.principal
-    // non-null-but-empty while this simulation saw null (gate skipped
-    // entirely). A role with NO system_principals row at all still gets no
-    // synthesized gate here — that correctly matches real dispatch behavior
-    // for a genuinely principal-less role (e.g. an su/operator role).
+    // In asRole simulation, use the same role→capability synthesis as real
+    // dispatch (synthesizeDispatchPrincipal → loadRoleCapabilities). The
+    // earlier lookup of only the system_principals row diverged for roles with
+    // blueprint/runtime baseline grants — notably `judge`, whose real
+    // principal is synthesized with read-only caps even when its row is absent.
+    // Keep this read-only simulation under a short workspace-scoped
+    // transaction so runtime grants and RLS see the same workspace as dispatch.
     let effectivePrincipal: { capabilities?: ReadonlySet<string> } | null;
     let principalCaps: ReadonlySet<string>;
     if (asRoleOverride) {
       const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
       const roleCaps = workspaceId
-        ? await lookupSystemPrincipalCapabilitiesByRole(workspaceId, asRoleOverride)
+        ? await withWorkspace(workspaceId, (tx) =>
+            loadRoleCapabilities(tx, workspaceId, asRoleOverride),
+          )
         : null;
       effectivePrincipal = roleCaps ? { capabilities: roleCaps } : null;
       principalCaps = roleCaps ?? new Set<string>();

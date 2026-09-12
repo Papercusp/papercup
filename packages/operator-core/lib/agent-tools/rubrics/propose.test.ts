@@ -53,6 +53,31 @@ describe('rubrics:propose args — standard-only watchdog fields', () => {
     expect(() => z.toJSONSchema(proposeTool.args as never)).not.toThrow();
   });
 
+  it('documents the conditional acceptance ratingScale normalization without requiring caller input', () => {
+    const schema = z.toJSONSchema(rubricsProposeArgs as never) as {
+      properties?: {
+        ratingScale?: { description?: string };
+      };
+      required?: string[];
+    };
+    const description = schema.properties?.ratingScale?.description ?? '';
+
+    expect(schema.required ?? []).not.toContain('ratingScale');
+    expect(description).toMatch(/acceptance rubrics/i);
+    expect(description).toMatch(/omitted/i);
+    expect(description).toMatch(/unknown-equivalent/i);
+    expect(description).toMatch(/appends "unknown"/i);
+
+    expect(
+      rubricsProposeArgs.safeParse({
+        ...base,
+        kind: 'acceptance',
+        subjectPlan: 'release-plan',
+        criteria: [lightAcceptanceCriterion],
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts unified sections at the real proposal door and refuses conflicting duplicates', () => {
     const unified = {
       key: 'export',

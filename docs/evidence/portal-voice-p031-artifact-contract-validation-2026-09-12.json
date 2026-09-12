@@ -1,14 +1,22 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "command": "node --import tsx --input-type=module < inline validator driver",
+  "name": "Portal voice P-031 artifact contract validation",
+  "framework": "node",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "--input-type=module",
+    "< inline validator driver"
+  ],
   "startedAt": "2026-09-12T20:30:02Z",
   "finishedAt": "2026-09-12T20:30:04Z",
   "exitCode": 0,
   "summary": "The bound portal validator accepted the regenerated current-release R-5 and R-10 artifacts with zero structural, teardown, broker/tenant, picker, safeguard, or redaction failures.",
   "subjectRelease": {
     "buildId": "5-sc_mNg-ARSpNh1zvMXt",
-    "sourceSha": "cd79d14615b61538eceebae953f259d06f0a9fc4",
+    "sourceSha": "f182d512d60f380fa958f3176e439898676fbd8f",
     "sourceRootDigest": "992e73d958ca64fc2d9e0488fba438d4fd616ef7b5d2c84ede6b54d14cb92d6a"
   },
   "validator": {

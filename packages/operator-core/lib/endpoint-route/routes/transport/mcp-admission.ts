@@ -470,17 +470,37 @@ export function isBoundedScorecardsListArgs(args: unknown): boolean {
 
 /**
  * `scorecards:get` is the evidence-first read used by grading-integrity audits.
- * Its handler accepts exactly one issue id and performs one bounded projection;
- * keep the critical-pressure exemption tied to that identity rather than the
- * broader scorecards history reader.
+ * Its handler accepts one issue id plus an optional criterion page cursor and
+ * performs one bounded projection per call. Keep the critical-pressure
+ * exemption tied to that paginated identity rather than the broader scorecards
+ * history reader.
  */
 function isBoundedScorecardsGetArgs(args: unknown): boolean {
-  if (!isRecord(args) || Object.keys(args).length !== 1) return false;
-  return (
-    typeof args.issueId === 'string' &&
-    args.issueId.trim().length > 0 &&
-    args.issueId.length <= CRITICAL_SCORECARDS_GET_ISSUE_ID_MAX
-  );
+  if (!isRecord(args)) return false;
+  const keys = Object.keys(args);
+  if (keys.some((key) => !['issueId', 'criterionKey', 'evidenceOffset'].includes(key))) return false;
+  if (
+    typeof args.issueId !== 'string' ||
+    args.issueId.trim().length === 0 ||
+    args.issueId.length > CRITICAL_SCORECARDS_GET_ISSUE_ID_MAX
+  ) {
+    return false;
+  }
+  if (args.criterionKey !== undefined) {
+    if (
+      typeof args.criterionKey !== 'string' ||
+      args.criterionKey.trim().length === 0 ||
+      args.criterionKey.length > 200
+    ) {
+      return false;
+    }
+  }
+  if (args.evidenceOffset !== undefined) {
+    if (!Number.isInteger(args.evidenceOffset) || (args.evidenceOffset as number) < 0) return false;
+    // The handler cannot resume a page without knowing which criterion owns it.
+    if (args.criterionKey === undefined) return false;
+  }
+  return true;
 }
 
 function isBoundedToolFailureString(value: unknown, max: number, required = false): value is string {

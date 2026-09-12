@@ -207,8 +207,26 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
+  it('does NOT shed generated scorecard evidence pages under critical pressure', () => {
+    for (const args of [
+      { issueId: 'EI-22581128473264750', criterionKey: 'freshness' },
+      { issueId: 'EI-22581128473264750', criterionKey: 'freshness', evidenceOffset: 1600 },
+    ]) {
+      const body = toolsCall(29, 'scorecards:get', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+      expect(classifyMcpRequest(body)).toBe('diagnostic');
+    }
+  });
+
   it('keeps ambiguous or oversized scorecards:get reads sheddable under critical pressure', () => {
-    for (const args of [{}, { issueId: ' ' }, { issueId: 'x'.repeat(121) }, { issueId: 'EI-1', extra: true }]) {
+    for (const args of [
+      {},
+      { issueId: ' ' },
+      { issueId: 'x'.repeat(121) },
+      { issueId: 'EI-1', extra: true },
+      { issueId: 'EI-1', evidenceOffset: 1600 },
+      { issueId: 'EI-1', criterionKey: 'freshness', evidenceOffset: -1 },
+    ]) {
       expect(classifyMcpBody(toolsCall(30, 'scorecards:get', args))).toEqual({ sheddable: true, id: 30 });
     }
   });
@@ -223,6 +241,23 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         arguments: {
           name: 'mcp__papercusp_su__scorecards_get',
           args: { issueId: 'EI-22581128473264750' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('recognizes a paginated scorecard evidence read through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 31,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__scorecards_get',
+          args: { issueId: 'EI-22581128473264750', criterionKey: 'freshness', evidenceOffset: 1600 },
         },
       },
     });
@@ -334,6 +369,25 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       expect(classifyMcpBody(body, judgeRequestUrl)).toEqual({ sheddable: false, id: null });
       expect(classifyMcpRequest(body, judgeRequestUrl)).toBe('diagnostic');
     }
+  });
+
+  it('admits the generated exact evaluator replay shape at the critical-pressure boundary', () => {
+    const body = toolsCall(23, 'plans:evaluate-spec-test-adequacy', {
+      harness: 'papercusp',
+      slug: 'adequacy-plan',
+      classRef: 'plan-class-investigation',
+      evaluatorBuild: { sha: 'sha256:evaluator', version: '0.0.0' },
+      specIds: ['SPEC-001'],
+      evidenceRefs: ['test-run:42'],
+      includeDraft: true,
+      limit: 25,
+      specRevision: 1,
+      specFingerprint: 'sha256:spec',
+      replaySnapshot: true,
+      current: [],
+    });
+    expect(classifyMcpBody(body, judgeRequestUrl)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body, judgeRequestUrl)).toBe('diagnostic');
   });
 
   it('keeps generic, non-judge, and unbounded judge audit probes sheddable', () => {
