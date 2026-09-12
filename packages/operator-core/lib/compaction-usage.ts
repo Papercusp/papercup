@@ -737,6 +737,19 @@ export async function gatewayServedRouteForOwner(
   }
 }
 
+/**
+ * Narrow reader for consumers that need serving-account provenance but not the
+ * context/usage fields. Keeping the route request in one helper preserves the
+ * gateway's nullable/timeout semantics and gives native-session adapters an
+ * injectable test seam.
+ */
+export async function gatewayServedAccountForOwner(
+  ownerId: string,
+  opts: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<string | null> {
+  return (await gatewayServedRouteForOwner(ownerId, opts))?.account ?? null;
+}
+
 /** The served route ONLY when it is bound to the ref's own native session — the binding is
  *  what keeps a successor from inheriting a predecessor's window/usage (same owner id). A
  *  route without a native id (pre-upgrade gateway, non-CLI caller) is not trusted for either. */

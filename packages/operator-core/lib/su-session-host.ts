@@ -54,6 +54,9 @@ type StripEventEnvelope<T> = T extends unknown ? Omit<T, EventEnvelopeKey> : nev
 /** Event payload accepted from runtime adapters; the host owns the envelope. */
 export type SuSessionEventInput<B extends SuSessionBackend = SuSessionBackend> = StripEventEnvelope<SuSessionEvent<B>>;
 
+/** Read the gateway's owner-scoped serving account after a native turn settles. */
+export type SuSessionServedAccountReader = (ownerId: string) => Promise<string | null>;
+
 export type SuSessionCommandOutcome = { status: 'completed' } | { status: 'refused'; refusal: SuSessionRefusal };
 
 export interface SuSessionCommandContext<B extends SuSessionBackend> {
@@ -269,6 +272,19 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
 
   descriptor(): SuSessionDescriptor<B> {
     return jsonClone(this.descriptorValue);
+  }
+
+  /**
+   * Publish fresh serving-account provenance without changing the requested
+   * route. A null value is intentional: it means the gateway has no current
+   * route or the account could not be established, never "default".
+   */
+  updateAccountServed(accountServed: string | null): SuSessionEvent<B> | null {
+    if (this.descriptorValue.accountServed === accountServed) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, accountServed },
+    } as SuSessionEventInput<B>);
   }
 
   /** Attach one replacement engine to a descriptor-only restored host. Keep

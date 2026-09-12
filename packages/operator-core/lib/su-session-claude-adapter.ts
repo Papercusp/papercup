@@ -38,6 +38,7 @@ import {
 import { nativeSessionHandleForAdvSession, type ClaudeNativeSessionHandle } from './native-session-handles';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-session-persistence';
 import { findSessionTranscript } from './claude-sessions';
+import { gatewayServedAccountForOwner } from './compaction-usage';
 import { createAgentTimelineParser } from './endpoint-route/routes/harness/streams';
 import type { TimelineLineParser } from './session-timeline-parsers';
 import {
@@ -46,6 +47,7 @@ import {
   type SuSessionCommandContext,
   type SuSessionCommandOutcome,
   type SuSessionEventInput,
+  type SuSessionServedAccountReader,
 } from './su-session-host';
 
 export type ClaudePuiSuSessionInput =
@@ -83,6 +85,7 @@ export interface ClaudeSuSessionDescriptorOptions {
   agentChatId: string;
   model?: string | null;
   accountRoute?: string | null;
+  servedAccountReader?: SuSessionServedAccountReader;
   carry?: 'warm' | 'cold';
   modes?: readonly string[];
   runtimeGeneration?: number;
@@ -329,6 +332,7 @@ function descriptorFor(
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
+    accountServed: null,
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
     modes: [...(options.modes ?? [])],
@@ -412,6 +416,7 @@ export class ClaudeSuSessionAdapter {
   private readonly transportHandlesCards: boolean;
   private streamingMessageId: string | null = null;
   private readonly textStreams = new Map<string, Map<number, ClaudeTextStream>>();
+  private readonly servedAccountReader: SuSessionServedAccountReader;
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'claude' },
@@ -419,6 +424,7 @@ export class ClaudeSuSessionAdapter {
     options: CreateClaudeSuSessionAdapterOptions,
   ) {
     this.runtimeValue = runtime;
+    this.servedAccountReader = options.servedAccountReader ?? gatewayServedAccountForOwner;
     this.transportCorrelatesTurns = options.ownerTurnCorrelation === 'transport';
     this.transportHandlesCards = options.cardSource === 'transport';
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
@@ -444,6 +450,17 @@ export class ClaudeSuSessionAdapter {
 
   get runtime(): ClaudeSuRuntimeBinding {
     return this.runtimeValue;
+  }
+
+  /** Refresh gateway serving-account provenance after a known native turn. */
+  async refreshAccountServed(): Promise<void> {
+    let account: string | null;
+    try {
+      account = await this.servedAccountReader(this.host.descriptor().identity.ownerId);
+    } catch {
+      return;
+    }
+    this.host.updateAccountServed(account);
   }
 
   /** The structured transport calls this when a queued owner turn is sent. */

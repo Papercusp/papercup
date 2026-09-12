@@ -38,12 +38,14 @@ import { nativeSessionHandleForAdvSession, type OmpNativeSessionHandle } from '.
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-session-persistence';
 import { findOmpSessionPath, ompAgentHomeForSessionKey } from './session-transcript-resolvers';
 import { createOmpTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
+import { gatewayServedAccountForOwner } from './compaction-usage';
 import {
   SuSessionHost,
   registerSuSessionHost,
   type SuSessionCommandContext,
   type SuSessionCommandOutcome,
   type SuSessionEventInput,
+  type SuSessionServedAccountReader,
 } from './su-session-host';
 
 export type OmpPuiSuSessionInput =
@@ -78,6 +80,7 @@ export interface OmpSuSessionDescriptorOptions {
   agentChatId: string;
   model?: string | null;
   accountRoute?: string | null;
+  servedAccountReader?: SuSessionServedAccountReader;
   carry?: 'warm' | 'cold';
   modes?: readonly string[];
   runtimeGeneration?: number;
@@ -307,6 +310,7 @@ function descriptorFor(
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
+    accountServed: null,
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
     modes: [...(options.modes ?? [])],
@@ -372,6 +376,7 @@ export class OmpSuSessionAdapter {
   private readonly controls: OmpSuSessionControls;
   private readonly unregister: (() => void) | null;
   private lastErrorKey: string | null = null;
+  private readonly servedAccountReader: SuSessionServedAccountReader;
   /**
    * Set once a `model_change` record has named the resolved model. OMP stamps
    * assistant messages with a BARE id (`stealth/ox-alpha`) while `model_change`
@@ -388,6 +393,7 @@ export class OmpSuSessionAdapter {
     options: CreateOmpSuSessionAdapterOptions,
   ) {
     this.runtimeValue = runtime;
+    this.servedAccountReader = options.servedAccountReader ?? gatewayServedAccountForOwner;
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
@@ -408,6 +414,17 @@ export class OmpSuSessionAdapter {
   }
 
   get runtime(): OmpSuRuntimeBinding { return this.runtimeValue; }
+
+  /** Refresh gateway serving-account provenance after a known native turn. */
+  async refreshAccountServed(): Promise<void> {
+    let account: string | null;
+    try {
+      account = await this.servedAccountReader(this.host.descriptor().identity.ownerId);
+    } catch {
+      return;
+    }
+    this.host.updateAccountServed(account);
+  }
 
   materializeRuntime(runtime: OmpSuRuntimeBinding): void {
     if (this.host.descriptor().identity.nativeSessionId !== runtime.nativeSession.ompThreadId) {
