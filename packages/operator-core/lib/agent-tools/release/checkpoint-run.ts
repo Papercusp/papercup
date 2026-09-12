@@ -108,7 +108,9 @@ function concreteCheckpointWorkspace(ctx: CheckpointHandlerContext): string {
   return workspace && workspace !== '*' ? workspace : activeWorkspaceId();
 }
 
-function qualificationMutationContinues(mutation: StoredQualificationMutation): boolean {
+function qualificationMutationContinues(
+  mutation: StoredQualificationMutation,
+): mutation is Extract<StoredQualificationMutation, { status: 'updated' | 'idempotent' }> {
   return mutation.status === 'updated' || mutation.status === 'idempotent';
 }
 
@@ -1044,7 +1046,7 @@ export default defineTool({
         ],
       };
     }
-    const logicalAttemptId =
+    const requestedAttemptId =
       storedQualification.status === 'present' &&
       qualificationIntentMatches(storedQualification.transaction, beginInput)
         ? storedQualification.transaction.attemptId
@@ -1059,10 +1061,10 @@ export default defineTool({
       qualificationTarget,
       {
         ...beginInput,
-        attemptId: logicalAttemptId,
+        attemptId: requestedAttemptId,
         // An id INHERITED from a live non-terminal attempt with the same intent must stay
         // idempotent; only a fresh request derives its identity from the queue target.
-        ...(logicalAttemptId !== beginInput.attemptId ? { attemptIdForVerificationTarget: undefined } : {}),
+        ...(requestedAttemptId !== beginInput.attemptId ? { attemptIdForVerificationTarget: undefined } : {}),
       },
       { reconcileTerminalRepairQueueForSuccessor: !preflight.refuse },
     );
@@ -1081,7 +1083,7 @@ export default defineTool({
                   : qualificationBegin.status === 'conflict'
                     ? 'qualification_transaction_conflict'
                     : 'qualification_transaction_unavailable',
-              logical_attempt_id: transaction?.attemptId ?? logicalAttemptId,
+              logical_attempt_id: transaction?.attemptId ?? requestedAttemptId,
               phase: transaction?.phase ?? null,
               outcome: transaction?.outcome ?? null,
               repair_queue_reconciliation:
@@ -1098,6 +1100,10 @@ export default defineTool({
         ],
       };
     }
+
+    // The store can derive a new id from the locked queue's repair target. Every
+    // subsequent write and the detached runner must use the identity it installed.
+    const logicalAttemptId = qualificationBegin.transaction.attemptId;
 
     // D-001 / EI-21137440735672596: after the successor transaction has had its one safe
     // same-row reconciliation opportunity, read the persisted queue policy that the detached
