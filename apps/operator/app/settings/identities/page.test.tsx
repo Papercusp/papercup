@@ -261,12 +261,15 @@ describe("IdentitySettingsPage", () => {
     );
     expect(screen.getByText("configuration.domain")).toBeTruthy();
     expect(
-      (
-        screen.getByLabelText(
-          "Fresh context — relaunch with carried work.",
-        ) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
+      screen.getByRole("radiogroup", { name: "Delivery" }),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole("radio", {
+          name: "Fresh context — relaunch with carried work.",
+        })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
   });
 
   it("applies an exclusive slot as switch only after the review is present", async () => {
