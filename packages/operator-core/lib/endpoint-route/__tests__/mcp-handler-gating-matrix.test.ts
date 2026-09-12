@@ -2822,6 +2822,45 @@ describe('scoped-superuser hive clamp', () => {
     }
   });
 
+  it('flag ON: allows routines:set to address an exact reserved harness-less Scout routine', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'routines:set',
+      {
+        name: 'bp-singleton-scout-0',
+        installSlug: '@singleton',
+        active: false,
+        reason: 'transport regression probe',
+        dryRun: true,
+      },
+      hiveScoped(),
+    );
+    // The mocked routine store may reject the dry-run lookup; the transport
+    // assertion is that the reserved host reaches the handler rather than
+    // being rejected as a foreign hive.
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows routines:list to inspect an exact reserved harness-less Scout routine', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'routines:list',
+      { installSlug: '@singleton', name: 'bp-singleton-scout-0' },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['a broad reserved-host read', { installSlug: '@singleton' }],
+    ['a reserved-host rollup', { installSlug: '@singleton', name: 'bp-singleton-scout-0', rollup: true }],
+  ])('flag ON: still rejects non-exact reserved-host routines:list targets (%s)', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('routines:list', args, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
   it.each([
     [
       'an omitted ownerId',
@@ -4105,6 +4144,45 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
       hiveScoped(),
     );
     expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows nested routines:set to address an exact reserved harness-less Scout routine', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'routines:set',
+        args: {
+          name: 'bp-singleton-scout-0',
+          installSlug: '@singleton',
+          active: false,
+          reason: 'transport regression probe',
+          dryRun: true,
+        },
+      },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows nested routines:list to inspect an exact reserved harness-less Scout routine', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'routines:list', args: { installSlug: '@singleton', name: 'bp-singleton-scout-0' } },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['a broad reserved-host read', { installSlug: '@singleton' }],
+    ['a reserved-host rollup', { installSlug: '@singleton', name: 'bp-singleton-scout-0', rollup: true }],
+  ])('flag ON: nested routines:list still rejects non-exact reserved-host targets (%s)', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('tools:invoke', { name: 'routines:list', args }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
   });
 
   it('flag ON: allows a nested self-owned loop:checkpoint READ to recover a concrete sibling-hive note', async () => {
