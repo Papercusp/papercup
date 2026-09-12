@@ -1352,6 +1352,14 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // tools:invoke-wrapped calls so the server's typed result wins over the
   // ordinary 30s client cutoff.
   ['dev:pg_query', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22810897251728336: blueprint:publish legitimately composes three
+  // independently bounded network stages (GitHub repo metadata, best-effort
+  // publisher attestation, and the complete Cupboard POST/body read). Their
+  // combined budget can exceed ptool's flat 30s client cutoff while remaining
+  // inside the MCP transport floor. Preserve the tool's structured success or
+  // bounded 504 on both direct and tools:invoke routes instead of surfacing an
+  // outcome-unknown -32001 first.
+  ['blueprint:publish', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],

@@ -33,6 +33,33 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
   });
 
+  it('does not add the proxy degradation warning to a populated successful result', () => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, results: [{ id: 'WI-10000979' }] }) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+
+    expect(body).toEqual({ ok: true, results: [{ id: 'WI-10000979' }] });
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('keeps the warning for an unknown successful envelope shape', () => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+    expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
+  });
+
   it('uses _meta for non-JSON text and composes with the scope warning', () => {
     const result: McpCallResult = {
       content: [{ type: 'text', text: 'plain text result' }],
