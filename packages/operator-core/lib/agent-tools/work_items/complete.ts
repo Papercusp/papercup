@@ -233,7 +233,7 @@ import {
   preflightPlaneCloseLive,
   renderPlaneClosePreflightWarning,
 } from '../../agent-plane-close-preflight';
-import { SPEC_EVIDENCE_KINDS } from '../plans/spec-evidence-store';
+import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 import { isNonCodeWorkItemKind, PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 import { dispatchPendingGradingAudits } from '../../grading-integrity';
@@ -314,7 +314,6 @@ const completionSpec = z
       `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
   );
 
-const specEvidenceFingerprint = z.string().trim().min(1).max(256);
 const specAdequacyCompletionSpec = z
   .object({
     classRef: z
@@ -328,27 +327,39 @@ const specAdequacyCompletionSpec = z
       .describe(
         'Exact immutable evidence identities to grade. Use this to exclude superseded run-specific bindings without deleting history; include every relied-on ref across the enforced clauses.',
       ),
+    /** Immutable clause pin copied from a persisted evaluator rerun recipe. */
+    specRevision: z.number().int().positive().optional(),
+    specFingerprint: z.string().trim().min(1).max(256).optional(),
+    /** Reuse the persisted evaluator snapshot instead of re-measuring repository files. */
+    replaySnapshot: z.boolean().optional(),
     current: z
-      .array(
-        z
-          .object({
-            evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
-            evidenceRef: z.string().trim().min(1).max(2000),
-            sourceFingerprint: specEvidenceFingerprint,
-            testFingerprint: specEvidenceFingerprint.nullable().optional(),
-            fixtureFingerprint: specEvidenceFingerprint.nullable().optional(),
-            rubricFingerprint: specEvidenceFingerprint.nullable().optional(),
-            environmentFingerprint: specEvidenceFingerprint.nullable().optional(),
-          })
-          .strict(),
-      )
+      .array(evidenceCurrentInputSchema.strict())
       .max(500)
       .optional()
       .describe('Current fingerprints for the exact bound evidence refs; omitted dimensions remain unknown, never pass.'),
   })
   .strict()
+  .superRefine((attestation, ctx) => {
+    if ((attestation.specRevision === undefined) !== (attestation.specFingerprint === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['specRevision'],
+        message: 'specRevision and specFingerprint must be supplied together for an immutable clause pin',
+      });
+    }
+    if (
+      attestation.replaySnapshot === true &&
+      (attestation.specRevision === undefined || attestation.specFingerprint === undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['replaySnapshot'],
+        message: 'replaySnapshot requires specRevision and specFingerprint',
+      });
+    }
+  })
   .describe(
-    'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy over the optional exact evidenceRefs selection and accepts only exact current terminal scorecards whose grading audit is settled.',
+    'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy over the optional exact evidenceRefs selection and accepts only exact current terminal scorecards whose grading audit is settled. Persisted evaluator rerun recipes may also supply specRevision + specFingerprint with replaySnapshot:true so the gate preserves the evaluator snapshot contract.',
   );
 
 /**

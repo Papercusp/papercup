@@ -1864,6 +1864,12 @@ describe('work_items:complete (keyed-array)', () => {
         },
       ],
     };
+    const replaySpecAdequacy = {
+      ...specAdequacy,
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+    };
     const behaviorChangePath = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
 
     it.each([
@@ -1913,6 +1919,28 @@ describe('work_items:complete (keyed-array)', () => {
       ).toBe(true);
       expect(
         (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: replaySpecAdequacy,
+        }).success,
+      ).toBe(true);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          items: [
+            {
+              id: 'WI-101',
+              state: 'resolved',
+              assumptions: 'none',
+              completion: { summary: 'fixed' },
+              specAdequacy: replaySpecAdequacy,
+            },
+          ],
+        }).success,
+      ).toBe(true);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
           items: [
             {
               id: 'WI-101',
@@ -1940,6 +1968,24 @@ describe('work_items:complete (keyed-array)', () => {
           assumptions: 'none',
           completion: { summary: 'fixed' },
           specAdequacy: { ...specAdequacy, evidenceRefs: [] },
+        }).success,
+      ).toBe(false);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: { ...specAdequacy, specRevision: 1 },
+        }).success,
+      ).toBe(false);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: { ...specAdequacy, replaySnapshot: true },
         }).success,
       ).toBe(false);
     });
