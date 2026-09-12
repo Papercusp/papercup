@@ -936,6 +936,32 @@ export interface BuildCarryBriefOpts {
 const POST_NOTE_INBOX_MAX_LINES = 3;
 const POST_NOTE_INBOX_LINE_CHARS = 150;
 
+/**
+ * Render one post-note message for the carry brief.
+ *
+ * The sender is actionable recovery state: a successor may need to reply to
+ * this exact directed message with `coord:send`. Do not prefix-truncate it.
+ * The old 12-character display prefix turned distinct owners such as
+ * `su-respawn-1-…` into the same ambiguous recipient, so the successor had to
+ * perform another roster lookup before it could answer. Keep the line bounded
+ * by shortening only the message text after the complete sender and timestamp.
+ */
+export function renderPostNoteInboxLine(e: Record<string, unknown>): string {
+  const from = typeof e.from === 'string' && e.from.length > 0 ? e.from : '?';
+  const ts = typeof e.ts === 'string' ? e.ts : '';
+  const text =
+    (typeof e.summary === 'string' && e.summary) || (typeof e.body === 'string' && e.body) || '';
+  const clippedText = text.replace(/\s+/g, ' ').trim();
+  const prefix = `- ${from} (${ts}): `;
+  const textBudget = POST_NOTE_INBOX_LINE_CHARS - prefix.length;
+  // Owner ids are normally short enough to leave room for text. If a future
+  // owner-id format consumes the whole line, preserve the exact sender rather
+  // than clipping it into an unusable identifier.
+  if (textBudget <= 0) return prefix;
+  if (clippedText.length <= textBudget) return `${prefix}${clippedText}`;
+  return `${prefix}${clippedText.slice(0, Math.max(0, textBudget - 1))}…`;
+}
+
 /** Default P-002 hydrator: P-008 reuse end-to-end (detect → hydrate → render one-liners).
  *  Lazy imports keep the coordination edge off the brief's cold path; any failure ⇒ [].
  *
@@ -1190,15 +1216,7 @@ async function defaultReadPostNoteInbox(
   ]);
   const entries = await readInbox(ownerId, { since_ts: sinceIso, excludeOwn: true });
   const rows = (Array.isArray(entries) ? entries : []).filter((e) => isPendingInterrupt(e as never));
-  const lines = rows.slice(-POST_NOTE_INBOX_MAX_LINES).map((e: Record<string, unknown>) => {
-    const from = typeof e.from === 'string' ? e.from.slice(0, 12) : '?';
-    const ts = typeof e.ts === 'string' ? e.ts : '';
-    const text =
-      (typeof e.summary === 'string' && e.summary) || (typeof e.body === 'string' && e.body) || '';
-    const clipped = text.replace(/\s+/g, ' ').trim();
-    const line = `- ${from} (${ts}): ${clipped}`;
-    return line.length > POST_NOTE_INBOX_LINE_CHARS ? `${line.slice(0, POST_NOTE_INBOX_LINE_CHARS - 1)}…` : line;
-  });
+  const lines = rows.slice(-POST_NOTE_INBOX_MAX_LINES).map(renderPostNoteInboxLine);
   return { count: rows.length, lines };
 }
 

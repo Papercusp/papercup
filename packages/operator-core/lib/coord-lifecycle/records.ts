@@ -162,6 +162,10 @@ export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 export const COMPLETION_TREE_STAMP_CONTRACT =
   'Server-stamped verification metadata: `work_items:complete` records `treeStamp` from the observed checkout when available; callers must omit `treeStamp`. When present in persisted evidence, `headSha` is a full lowercase 40- or 64-character commit SHA; short hashes are invalid.';
 
+/** Caller-facing contract for the server-generated settlement receipt. */
+export const COMPLETION_SETTLEMENT_MANIFEST_CONTRACT =
+  'Server-stamped settlement metadata: `work_items:complete` derives `settlementManifest` from the observed checkout; callers must omit `settlementManifest` (including `completion.verification.settlementManifest`). When present in persisted evidence, it contains version=1, a positive generation, a 64-hex evidenceHash, repositoryRoot, a full 40- or 64-character headSha, normalizedPaths, and contentIdentity[]. Do not send intuitive artifact fields such as schemaVersion, artifactPath, artifactSha256, head, or boolean contentIdentity.';
+
 /** Server-observed Git blob identities for each declared changed path. */
 export type CompletionTreeContentIdentity = {
   path: string;
@@ -639,7 +643,7 @@ export const CompletionVerificationEvidenceSchema = z.object({
    */
   treeStamp: CompletionTreeStampSchema.optional().describe(COMPLETION_TREE_STAMP_CONTRACT),
   /** Server-derived causal receipt for code completions awaiting git-sync settlement. */
-  settlementManifest: CompletionSettlementManifestSchema.optional(),
+  settlementManifest: CompletionSettlementManifestSchema.optional().describe(COMPLETION_SETTLEMENT_MANIFEST_CONTRACT),
   /**
    * EI-22175397357614106 — structured, machine-checkable assertions the close makes about
    * the source, so a claim that is present, well-formed and WRONG can be caught.

@@ -39,6 +39,10 @@ const H = vi.hoisted(() => ({
       invalidate: ReturnType<typeof vi.fn>;
     }
   >,
+  virtualizerOptions: [] as Array<{
+    count: number;
+    useAnimationFrameWithResizeObserver?: boolean;
+  }>,
 }));
 const blank = () => ({
   data: [] as unknown[],
@@ -61,18 +65,24 @@ vi.mock("@papercusp/sync", () => ({
 // (WI-5339 virtualization) — mock it to render every item (same seam as
 // the shared PapercupChat tests).
 vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: (opts: { count: number }) => ({
-    getVirtualItems: () =>
-      Array.from({ length: opts.count }, (_, i) => ({
-        index: i,
-        key: `vk-${i}`,
-        start: i * 52,
-        size: 52,
-      })),
-    getTotalSize: () => opts.count * 52,
-    measureElement: () => {},
-    scrollToIndex: () => {},
-  }),
+  useVirtualizer: (opts: {
+    count: number;
+    useAnimationFrameWithResizeObserver?: boolean;
+  }) => {
+    H.virtualizerOptions.push(opts);
+    return {
+      getVirtualItems: () =>
+        Array.from({ length: opts.count }, (_, i) => ({
+          index: i,
+          key: `vk-${i}`,
+          start: i * 52,
+          size: 52,
+        })),
+      getTotalSize: () => opts.count * 52,
+      measureElement: () => {},
+      scrollToIndex: () => {},
+    };
+  },
 }));
 // OtherDetail is the Queue's own component — stub it to a marker that echoes
 // the hosted item id and exposes the onDiscuss seam (parity behavior is the
@@ -325,6 +335,7 @@ function renderPane(
 afterEach(() => {
   cleanup();
   H.results = {};
+  H.virtualizerOptions = [];
   chatModalProps.mockClear();
   discussionProps.mockClear();
 });
@@ -415,6 +426,15 @@ describe("useInboxPendingCount", () => {
 });
 
 describe("<InboxPane>", () => {
+  it("defers virtualizer ResizeObserver work to an animation frame", () => {
+    seedAttention([mkItem("resize-observer")]);
+    renderPane();
+
+    expect(
+      H.virtualizerOptions.at(-1)?.useAnimationFrameWithResizeObserver,
+    ).toBe(true);
+  });
+
   it("keeps the masthead from collapsing when loaded facets consume vertical space", () => {
     const css = readFileSync(join(__dirname, "inbox-pane.css"), "utf8");
     const mastheadRule =

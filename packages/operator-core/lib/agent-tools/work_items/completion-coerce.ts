@@ -354,6 +354,12 @@ export function coerceCompletionShape(raw: unknown): unknown {
   // `testsRun` form is already rescued by STRING_FIELDS (EI-20234587310739072).
   if (isPlainObject(out.verification)) {
     const verification: Record<string, unknown> = { ...out.verification };
+    // Persisted evidence can contain server-generated metadata when a caller feeds a
+    // work_items:get result back into work_items:complete. Strip the known generated
+    // fields at this nested location too, so the retry does not validate its own receipt
+    // as caller evidence or reject a nested settlementManifest before the presence-time
+    // guidance can explain that the server recreates it (EI-22552507428065516).
+    for (const f of SERVER_GENERATED_COMPLETION_FIELDS) delete verification[f];
     for (const f of ['testsRun', 'testResult', 'verifiedHow', 'summary'] as const) {
       const value = verification[f];
       if (Array.isArray(value)) verification[f] = joinToString(value) || undefined;

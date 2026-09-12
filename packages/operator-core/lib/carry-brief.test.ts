@@ -30,6 +30,7 @@ import {
   renderCitedRefLivenessSections,
   annotateCarryNoteLiveContradictions,
   detectRetractionShapedLines,
+  renderPostNoteInboxLine,
   unverifiedFocusRefs,
   renderFocusIntegrityWarning,
   CARRY_BRIEF_FOCUS_MAX,
@@ -286,6 +287,22 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
 });
 
 describe('note-citation hydration + post-note delta (cold-carry-system-hardening-2026-07-19 P-002/P-003)', () => {
+  it('P-003 keeps the complete directed-message sender usable for a coord:send reply', () => {
+    const sender = 'su-respawn-1-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const sibling = 'su-respawn-1-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const line = renderPostNoteInboxLine({
+      from: sender,
+      ts: '2026-09-12T22:59:18.429Z',
+      summary: 'Please answer this recovery question.',
+    });
+
+    // A 12-character prefix (`su-respawn-1`) is ambiguous against `sibling`;
+    // the carry line must retain the exact ownerId that coord:send accepts.
+    expect(line).toContain(`- ${sender} (`);
+    expect(line).not.toContain(`- ${sender.slice(0, 12)} (`);
+    expect(line).toContain('Please answer this recovery question.');
+  });
+
   it('qualifies bare plan-item ids only through a unique held work-item binding', () => {
     const held = [
       {

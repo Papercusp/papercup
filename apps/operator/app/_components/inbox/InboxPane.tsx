@@ -837,6 +837,10 @@ export default function InboxPane({
     estimateSize: () => 72,
     overscan: 8,
     getItemKey: (i) => visible[i]?.id ?? i,
+    // ResizeObserver callbacks can synchronously trigger another measurement
+    // while an expanded inbox row is settling. TanStack's animation-frame
+    // path keeps that feedback out of the browser's resize notification phase.
+    useAnimationFrameWithResizeObserver: true,
   });
 
   // owner-inbox D-012: expanding/collapsing a disclosure must preserve the

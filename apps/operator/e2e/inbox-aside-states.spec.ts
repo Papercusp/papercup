@@ -48,6 +48,38 @@ const ITEMS = mkInboxItems(PAGE, "aside-");
 const FIRST_PAGE = mkInboxFirstPage(ITEMS, INBOX_TOTAL);
 const RUN = "run-e2e";
 
+const RESIZE_OBSERVER_LOOP_ERROR =
+  /ResizeObserver loop completed with undelivered notifications/i;
+const resizeObserverErrorsByPage = new WeakMap<Page, string[]>();
+
+// Keep this guard at the file level so it attaches before every navigation,
+// including the stack-mode route. The prior green run hid this browser error
+// because its assertions only inspected DOM geometry and locator state.
+test.beforeEach(({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (
+      message.type() === "error" &&
+      RESIZE_OBSERVER_LOOP_ERROR.test(message.text())
+    ) {
+      errors.push(`console: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => {
+    if (RESIZE_OBSERVER_LOOP_ERROR.test(error.message)) {
+      errors.push(`pageerror: ${error.message}`);
+    }
+  });
+  resizeObserverErrorsByPage.set(page, errors);
+});
+
+test.afterEach(({ page }, testInfo) => {
+  expect(
+    resizeObserverErrorsByPage.get(page) ?? [],
+    `${testInfo.title} emitted a ResizeObserver loop error`,
+  ).toEqual([]);
+});
+
 type Mode = "quiet" | "running" | "review";
 
 /** One resolver per page; `mode` is read at REQUEST time, so a re-navigation after flipping it lands the next state. */
