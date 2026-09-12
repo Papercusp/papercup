@@ -124,6 +124,17 @@ export function resolveOperatorTarget({ env, home, probe, warn, }?: {
 /** Back-compat string form of resolveOperatorTarget (exported for tests/callers). */
 export function resolveOperatorUrl(opts?: {}): any;
 /**
+ * Apply the current launcher target to a child environment and preserve URL
+ * provenance. An explicit PAPERCUSP_OPERATOR_URL source is a caller pin and
+ * must remain fixed; discovery/proxy/default targets are launcher-managed.
+ * Exported for the environment-boundary regression tests.
+ */
+export function applyLauncherOperatorUrlEnv(env: any, target?: {
+    url: any;
+    source: string;
+    startedAt: number | null;
+}): any;
+/**
  * The candidate ladder for HEALING a dead operator target mid-session — the
  * same ladder as resolveOperatorTarget MINUS the env pin (the env pin is
  * exactly what's being healed). Candidates are NOT liveness-checked here;
@@ -3494,6 +3505,8 @@ export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Paper
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN: "<no-plan>";
+export const OPERATOR_URL_PROVENANCE_ENV: "PAPERCUSP_OPERATOR_URL_PROVENANCE";
+export const LAUNCHER_OPERATOR_URL_PROVENANCE: "psu-launcher";
 export const MCP_PROXY_OVERLOAD_MAX_ATTEMPTS: 5;
 export const MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS: 20000;
 export const MCP_PROXY_OVERLOAD_DEFAULT_RETRY_MS: 1000;

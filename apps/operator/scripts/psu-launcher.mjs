@@ -488,6 +488,27 @@ export function resolveOperatorUrl(opts = {}) {
 let OPERATOR_TARGET = resolveOperatorTarget();
 let OPERATOR_URL = OPERATOR_TARGET.url;
 
+// This marker travels with the launcher-managed URL export. ptool must be able
+// to distinguish that handoff from a URL explicitly pinned by the caller: only
+// the former may rediscover after a wake-respawn finds a new operator port.
+export const OPERATOR_URL_PROVENANCE_ENV = "PAPERCUSP_OPERATOR_URL_PROVENANCE";
+export const LAUNCHER_OPERATOR_URL_PROVENANCE = "psu-launcher";
+
+/**
+ * Apply the current launcher target to a child environment and preserve URL
+ * provenance. An explicit PAPERCUSP_OPERATOR_URL source is a caller pin and
+ * must remain fixed; discovery/proxy/default targets are launcher-managed.
+ * Exported for the environment-boundary regression tests.
+ */
+export function applyLauncherOperatorUrlEnv(env, target = OPERATOR_TARGET) {
+  env.PAPERCUSP_OPERATOR_URL = target.url;
+  if (target.source === "env")
+    delete env[OPERATOR_URL_PROVENANCE_ENV];
+  else
+    env[OPERATOR_URL_PROVENANCE_ENV] = LAUNCHER_OPERATOR_URL_PROVENANCE;
+  return env;
+}
+
 /**
  * The candidate ladder for HEALING a dead operator target mid-session — the
  * same ladder as resolveOperatorTarget MINUS the env pin (the env pin is
@@ -9898,8 +9919,10 @@ export function runWrapper(options) {
   // desktop-install/claude-integration) resolves to the LIVE operator on each
   // launch. The desktop operator binds a dynamic localhost port per boot, so a
   // baked url would go stale; env-interpolation + this export self-heal it.
-  // OPERATOR_URL already honors an explicit PAPERCUSP_OPERATOR_URL override.
-  env.PAPERCUSP_OPERATOR_URL = OPERATOR_URL;
+  // OPERATOR_URL already honors an explicit PAPERCUSP_OPERATOR_URL override;
+  // the provenance marker lets a fresh ptool wake distinguish this managed
+  // export from a caller's deliberate env pin.
+  applyLauncherOperatorUrlEnv(env);
   // WI-3665: hand every descendant the terminal this launch OWNS, so the fleet-identity
   // title (👑/👤 + fleet + colour square) can be written even from a hook that has been
   // setsid'd away from its controlling terminal — which is exactly how Claude Code spawns

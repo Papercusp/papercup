@@ -762,6 +762,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // work-item / plan reads
   "work_items:list",
   "work_items:get",
+  "work_items:search",
   "work_items:claimable",
   // Exact rubric+subject audit reads are side-effect-free and safe to replay.
   "scorecards:list",

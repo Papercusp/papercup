@@ -615,6 +615,8 @@ export function stdoutDeliveryError(): Error | null;
  * @returns {Promise<number>}
  */
 export function printResult(result: unknown, { raw, deliveryProbe, env }?: unknown): Promise<number>;
+export const OPERATOR_URL_PROVENANCE_ENV: "PAPERCUSP_OPERATOR_URL_PROVENANCE";
+export const LAUNCHER_OPERATOR_URL_PROVENANCE: "psu-launcher";
 /**
  * A result-door truncation only tells ptool that the operator's reply is not
  * machine-readable. The tool call may already have executed, which is

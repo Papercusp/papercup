@@ -36,6 +36,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...actual,
     getRubric: vi.fn(),
+    getRubricCriteriaHash: vi.fn(async () => null),
     getRubricPlanRevision: vi.fn(async () => 7),
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 7 })),
   };
@@ -61,7 +62,7 @@ vi.mock('../../acceptance-author-identity', () => ({
   resolvePlanImplementerIdentities: vi.fn(async () => [] as string[]),
 }));
 
-import { getRubric, getRubricPlanRevision, readRubricPlanRevision } from '../../rubrics';
+import { getRubric, getRubricCriteriaHash, getRubricPlanRevision, readRubricPlanRevision } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { getIssue, type EngineerIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
@@ -72,6 +73,7 @@ import listTool from './list';
 import { collapseCriticsToSoleParty } from './grader-eligibility';
 
 const getRubricM = vi.mocked(getRubric);
+const getRubricCriteriaHashM = vi.mocked(getRubricCriteriaHash);
 const getRubricPlanRevisionM = vi.mocked(getRubricPlanRevision);
 const readRubricPlanRevisionM = vi.mocked(readRubricPlanRevision);
 const captureM = vi.mocked(captureImprovement);
@@ -231,6 +233,7 @@ beforeEach(() => {
   planImplementersM.mockResolvedValue([]);
   getRubricM.mockResolvedValue(RUBRIC);
   getRubricPlanRevisionM.mockResolvedValue(7);
+  getRubricCriteriaHashM.mockResolvedValue(null);
   readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 7 });
   readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ satisfied: true });
   listM.mockResolvedValue([]);
@@ -2229,6 +2232,17 @@ describe('scorecards:emit — author acceptance by exact reference (P-003)', () 
     const r = await emitScorecard(acceptanceOfArgs() as never, asAuthor);
 
     expect(r).toMatchObject({ ok: false, code: 'acceptance_of_stale_revision' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses acceptance_of_stale_criteria even when the noisy revision counter is unchanged', async () => {
+    getRubricCriteriaHashM.mockResolvedValue('hash-current');
+    listM.mockResolvedValue([independentCard({ rubricRevision: 7, criteriaHash: 'hash-old' })]);
+
+    const r = await emitScorecard(acceptanceOfArgs() as never, asAuthor);
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_of_stale_criteria' });
+    expect(r.error).toContain('criteria-hash-mismatch');
     expect(captureM).not.toHaveBeenCalled();
   });
 

@@ -1903,6 +1903,31 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("EI-23082732693236516: work_items:search retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"total":0,"results":[]}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"work_items:search","arguments":{"query":"transport reset"}}}',
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"total":0,"results":[]}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-22583902856092839: tools:invoke-wrapped coord:whoami retries after a post-connect reset", async () => {
     const upstream = resetOnceUpstream(
       '{"result":{"ownerId":"su-test"}}',

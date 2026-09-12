@@ -7,6 +7,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
 import {
+  classifyRubricEvidenceCurrentness,
   getRubric,
   getRubricCriteriaHash,
   getRubricPlanRevision,
@@ -1192,14 +1193,23 @@ export async function emitScorecard(
           // Adoption does: copying ratings from a card that graded a different
           // revision would persist a grading of criteria no longer in force,
           // under the current revision's identity.
-          if ((named.rubricRevision ?? null) !== (rubricRevision ?? null)) {
+          const acceptedRubricCurrentness = classifyRubricEvidenceCurrentness(
+            { revision: named.rubricRevision, criteriaHash: named.criteriaHash },
+            { revision: rubricRevision, criteriaHash },
+          );
+          if (acceptedRubricCurrentness.state !== 'current') {
             return {
               ok: false as const,
-              code: 'acceptance_of_stale_revision' as const,
+              code:
+                acceptedRubricCurrentness.reason === 'criteria-hash-mismatch'
+                  ? ('acceptance_of_stale_criteria' as const)
+                  : ('acceptance_of_stale_revision' as const),
               error:
-                `acceptanceOf '${acceptanceOf}' graded rubric revision ${named.rubricRevision ?? 'unversioned'}, ` +
-                `but '${args.rubricRef}' is now at revision ${rubricRevision ?? 'unversioned'} — its ratings cover ` +
-                'criteria that have since changed. Have it re-graded against the current revision, then accept that card',
+                `acceptanceOf '${acceptanceOf}' graded rubric identity ` +
+                `(revision ${named.rubricRevision ?? 'unversioned'}, criteriaHash ${named.criteriaHash ?? 'unrecorded'}), ` +
+                `but '${args.rubricRef}' is now (revision ${rubricRevision ?? 'unversioned'}, ` +
+                `criteriaHash ${criteriaHash ?? 'unavailable'}) — ${acceptedRubricCurrentness.reason}. ` +
+                'Have it re-graded against the current criteria, then accept that card',
             };
           }
           acceptedIndependent = named;
@@ -1611,6 +1621,7 @@ export async function emitScorecard(
       const { critics: otherChannelCritics } = await resolveAggregatedVettingCritics(
         args.subject.ref,
         vetting?.rubricRevision ?? null,
+        vetting?.criteriaHash ?? null,
       );
       const seen = new Set(advisoryCritics);
       unionedAdvisoryCritics = [...advisoryCritics, ...otherChannelCritics.filter((c) => !seen.has(c))];
@@ -1911,7 +1922,10 @@ export async function emitScorecard(
           return (
             sameSubject &&
             card.rubricRef === args.rubricRef &&
-            (card.rubricRevision ?? null) === (rubricRevision ?? null) &&
+            classifyRubricEvidenceCurrentness(
+              { revision: card.rubricRevision, criteriaHash: card.criteriaHash },
+              { revision: rubricRevision, criteriaHash },
+            ).state === 'current' &&
             card.rubricResolved &&
             card.missingKeys.length === 0 &&
             (card.extraKeys?.length ?? 0) === 0 &&
@@ -1969,17 +1983,26 @@ export async function emitScorecard(
       // WI-41477: the work-item channel is the same kind of move — a re-emit that
       // switches channel or cites a different review work-item is a re-vetting step.
       (latest?.vetting?.workItemId ?? null) !== (vetting?.workItemId ?? null) ||
-      (latest?.vetting?.rubricRevision ?? null) !== (vetting?.rubricRevision ?? null) ||
+      (latest?.vetting != null || vetting != null) &&
+        classifyRubricEvidenceCurrentness(
+          { revision: latest?.vetting?.rubricRevision, criteriaHash: latest?.vetting?.criteriaHash },
+          { revision: vetting?.rubricRevision, criteriaHash: vetting?.criteriaHash },
+        ).state !== 'current' ||
       (latest?.vetting?.unanswered ?? false) !== (vetting?.unanswered ?? false);
-    // The rubric revision is part of the grading binding but deliberately remains
-    // outside the historical evidence fingerprint. A rubric edit must therefore
-    // escape unchanged-evidence deduplication and create a new auditable card.
-    const rubricRevisionChanged = (latest?.rubricRevision ?? null) !== (rubricRevision ?? null);
+    // The rubric identity is part of the grading binding but deliberately remains
+    // outside the historical evidence fingerprint. Relevant criterion/method/dependency
+    // changes must escape deduplication; a revision-only bookkeeping edit must not.
+    const rubricIdentityChanged =
+      latest != null &&
+      classifyRubricEvidenceCurrentness(
+        { revision: latest.rubricRevision, criteriaHash: latest.criteriaHash },
+        { revision: rubricRevision, criteriaHash },
+      ).state !== 'current';
     if (
       !args.force &&
       !finalityChanged &&
       !vettingChanged &&
-      !rubricRevisionChanged &&
+      !rubricIdentityChanged &&
       latestFingerprint === evidenceFingerprint &&
       (!args.supersedes || sameCorrectionAlreadyExists)
     ) {

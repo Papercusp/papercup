@@ -91,6 +91,14 @@ export function resolvePtoolOperatorBase(env = process.env) {
 
 const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
 
+// psu-launcher exports the resolved URL into every child so the MCP config can
+// reach the same operator. That export is a managed handoff, not an explicit
+// caller pin: a wake-respawn must be allowed to rediscover operator.json when
+// the desktop operator has moved to a new port. The launcher stamps this value
+// only on managed exports; a bare PAPERCUSP_OPERATOR_URL remains authoritative.
+export const OPERATOR_URL_PROVENANCE_ENV = 'PAPERCUSP_OPERATOR_URL_PROVENANCE';
+export const LAUNCHER_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
@@ -98,7 +106,10 @@ const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
  * caller's transport choice (and could route a request to the wrong host).
  */
 export function shouldRediscoverOperatorUrl(args = {}, env = process.env) {
-  return !args.url && !env.PAPERCUSP_OPERATOR_URL;
+  return !args.url && (
+    !env.PAPERCUSP_OPERATOR_URL ||
+    env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
+  );
 }
 
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */

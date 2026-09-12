@@ -121,6 +121,92 @@ export function promptWeight(tool: { description?: string; guidance?: GuidanceSh
   return promptWeightBreakdown(tool).total;
 }
 
+/**
+ * Runtime tool calls carry each selected tool's JSON Schema separately from
+ * the description/guidance text measured above. Keep this accounting separate:
+ * promptWeight() describes the assembled prompt catalog, while this metric
+ * describes the schema payload a selected tool load adds to the model context.
+ *
+ * This is intentionally a byte count of JSON.stringify(inputSchema), encoded
+ * as UTF-8. String.length would count UTF-16 code units and under-count schemas
+ * containing non-ASCII descriptions (the wire payload is UTF-8).
+ */
+export const MAX_SELECTED_INPUT_SCHEMA_BYTES = 128_000;
+
+const UTF8_ENCODER = new TextEncoder();
+
+export interface SelectedInputSchemaTool {
+  name: string;
+  inputSchema?: unknown;
+}
+
+export interface InputSchemaCost {
+  name: string;
+  bytes: number;
+}
+
+export interface SelectedInputSchemaBudget {
+  budgetBytes: number;
+  totalBytes: number;
+  remainingBytes: number;
+  overBudget: boolean;
+  entries: InputSchemaCost[];
+}
+
+/** Count the exact UTF-8 bytes in a projected tool's serialized input schema. */
+export function serializedInputSchemaBytes(inputSchema: unknown): number {
+  const serialized = JSON.stringify(inputSchema);
+  return serialized === undefined ? 0 : UTF8_ENCODER.encode(serialized).byteLength;
+}
+
+/** Calculate the aggregate schema load for one selected tool set. */
+export function selectedInputSchemaBudget(
+  tools: readonly SelectedInputSchemaTool[],
+  budgetBytes = MAX_SELECTED_INPUT_SCHEMA_BYTES,
+): SelectedInputSchemaBudget {
+  const entries = tools.map(({ name, inputSchema }) => ({
+    name,
+    bytes: serializedInputSchemaBytes(inputSchema),
+  }));
+  const totalBytes = entries.reduce((sum, entry) => sum + entry.bytes, 0);
+  return {
+    budgetBytes,
+    totalBytes,
+    remainingBytes: budgetBytes - totalBytes,
+    overBudget: totalBytes > budgetBytes,
+    entries,
+  };
+}
+
+export interface SelectedInputSchemaBudgetOptions {
+  budgetBytes?: number;
+  label?: string;
+}
+
+/**
+ * Fail closed before a selected schema set is mounted when its aggregate load
+ * would exceed the runtime budget. The report is returned for callers that
+ * want to emit telemetry or diagnostics on a successful check.
+ */
+export function assertSelectedInputSchemaBudget(
+  tools: readonly SelectedInputSchemaTool[],
+  options: SelectedInputSchemaBudgetOptions = {},
+): SelectedInputSchemaBudget {
+  const report = selectedInputSchemaBudget(tools, options.budgetBytes);
+  if (!report.overBudget) return report;
+
+  const label = options.label ?? 'selected tool set';
+  const largest = [...report.entries]
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 3)
+    .map((entry) => `${entry.name}=${entry.bytes}`)
+    .join(', ');
+  throw new Error(
+    `${label} input schemas use ${report.totalBytes} UTF-8 bytes, exceeding the ` +
+      `${report.budgetBytes}-byte aggregate budget; largest schemas: ${largest}`,
+  );
+}
+
 export interface NamedToolWeight {
   name: string;
   weight: number;

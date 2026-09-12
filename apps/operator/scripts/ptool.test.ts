@@ -16,6 +16,7 @@ import {
   resolvePayloadHarnessScope,
   resolveHarnessScope,
   resolvePtoolOperatorBase,
+  shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
   dispatchScriptedToolWithoutCatalog,
@@ -234,6 +235,26 @@ describe('ptool operator routing', () => {
       PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
       PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
     })).toBe('http://127.0.0.1:9071');
+  });
+
+  it('rediscovers a launcher-managed inherited URL after a wake-respawn', () => {
+    expect(shouldRediscoverOperatorUrl({}, {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    })).toBe(true);
+  });
+
+  it('keeps a bare inherited env URL pinned when no launcher marker is present', () => {
+    expect(shouldRediscoverOperatorUrl({}, {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
+    })).toBe(false);
+  });
+
+  it('keeps an explicit --url pin authoritative even with a launcher marker', () => {
+    expect(shouldRediscoverOperatorUrl({ url: 'http://127.0.0.1:3170' }, {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    })).toBe(false);
   });
 });
 
