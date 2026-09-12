@@ -892,7 +892,8 @@ function checksSpec() {
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
         "plain rewrite never silently drops them) and [] clears them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
         `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
-        `${CARRY_NOTE_MAX_CHECKS}: a checks-only overflow refuses atomically before it can drop rows. A body-bearing ` +
+        `${CARRY_NOTE_MAX_CHECKS}: an unconfirmed checks-only overflow refuses atomically before it can drop rows; ` +
+        '`confirmRetire:true` explicitly permits the cap eviction and reports the dropped carried rows. A body-bearing ' +
         'append/merge still stores the body and every carried row, admits supplied rows only into vacant slots, and ' +
         'returns `checksNotRetained`/`checksNotRetainedRows` for supplied rows that did not fit. Retire stale rows with ' +
         'a plain replace first, or append without `checks` to leave the carried set untouched. ' +
@@ -977,7 +978,7 @@ const itemSpec = z.object({
       'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
       'treated as a clear). Bounded to the 32000-char cap: the superseded tail of the prior content is trimmed first if the join would ' +
       `overflow it, preserving the oldest baseline and newest addendum whenever they fit. A body-bearing checks union that exceeds the ${CARRY_NOTE_MAX_CHECKS}-row cap still stores the body and carried ` +
-      'rows, and reports supplied rows that did not fit; a checks-only overflow refuses. Retire stale rows with a ' +
+      'rows, and reports supplied rows that did not fit; an unconfirmed checks-only overflow refuses, while `confirmRetire:true` permits and reports the cap eviction. Retire stale rows with a ' +
       'plain replace first or omit `checks`.',
   ),
   confirmShrink: looseBoolean().describe(
@@ -987,7 +988,7 @@ const itemSpec = z.object({
   ),
   rowsMode: rowsModeSpec(),
   confirmRetire: looseBoolean().describe(
-    "rowsMode:'replace' safety (WI-42106): if the supplied checks would RETIRE carried rows, refuse before writing unless true. The refusal names every dropped claim; merge mode never needs this.",
+    "rowsMode:'replace' safety (WI-42106) and merge-cap consent (EI-22489206594122743): if supplied checks would RETIRE carried rows, or a merge would evict carried rows at the cap, refuse before writing unless true. The refusal names every affected claim.",
   ),
   retireIds: retireIdsSpec(),
   dependsOn: dependsOnSpec(),
@@ -2128,6 +2129,13 @@ export default defineTool({
                   legacyOverCapNormalization.legacyExcess = legacyExcess;
                   return null;
                 }
+                // EI-22489206594122743: `confirmRetire:true` is the explicit one-call
+                // consent for the same merge-cap eviction that `loop:checkpoint` already
+                // permits. Without this escape, the checks-only branch below refused the
+                // write unconditionally, so the documented confirmation had no effect
+                // even though the transform could safely report the exact carried rows
+                // it evicted. Keep the default refusal for an unconfirmed additive write.
+                if (wantsConfirmRetire) return null;
                 // EI-21602661222231785: the body is the primary checkpoint payload;
                 // optional check capacity must not strand it. For body-bearing writes,
                 // proceed atomically while the transform preserves every carried row,
