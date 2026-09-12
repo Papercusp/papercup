@@ -274,9 +274,13 @@ export const scorecardEmitArgs = z
         "The EXACT independent scorecard this acceptance verdict responds to (its issue id, e.g. 'EI-123…'). Valid only alongside `acceptance`. Naming it lets you omit `ratings`: the server re-reads that card, re-checks it against the same independence, completeness and current-revision rails the scan applies, and adopts its ratings verbatim into your card, stamping ratingsProvenance so the adoption stays auditable. Prefer it over omitting the reference — without it the server accepts whatever independent card it finds first, which may not be the one you read.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
-    current: z.array(evidenceCurrentInputSchema).max(2000).optional().describe(
-      'Fresh evidence fingerprints for requirements checks, identical to plans:get current. Required to establish non-code operational outcomes; omitted comparisons remain unknown.',
-    ),
+    current: z
+      .array(evidenceCurrentInputSchema)
+      .max(2000)
+      .optional()
+      .describe(
+        'Fresh evidence fingerprints for requirements checks, identical to plans:get current. Required to establish non-code operational outcomes; omitted comparisons remain unknown.',
+      ),
     rerunRecipe: specTestAdequacyRerunRecipeSchema.optional(),
     subject: z
       .object({
@@ -485,13 +489,16 @@ async function validateSpecTestAdequacyReplay(
     };
   }
 
-  const payload = replay && typeof replay === 'object' && !Array.isArray(replay) ? replay as {
-    ok?: unknown;
-    rows?: unknown;
-    error?: unknown;
-    evaluatorBuild?: unknown;
-    evaluatorBuildDrift?: unknown;
-  } : null;
+  const payload =
+    replay && typeof replay === 'object' && !Array.isArray(replay)
+      ? (replay as {
+          ok?: unknown;
+          rows?: unknown;
+          error?: unknown;
+          evaluatorBuild?: unknown;
+          evaluatorBuildDrift?: unknown;
+        })
+      : null;
   if (payload?.ok === false) {
     return {
       code: 'invalid_spec_test_adequacy_binding',
@@ -531,7 +538,7 @@ async function validateSpecTestAdequacyReplay(
       };
     }
   }
-  const rows = Array.isArray(payload?.rows) ? payload.rows as SpecTestAdequacyReplayRow[] : [];
+  const rows = Array.isArray(payload?.rows) ? (payload.rows as SpecTestAdequacyReplayRow[]) : [];
   const selection = parsedRecipe.data.selection;
   const row = rows.find(
     (candidate) =>
@@ -551,14 +558,15 @@ async function validateSpecTestAdequacyReplay(
 
   const replayRatings =
     row.ratings && typeof row.ratings === 'object' && !Array.isArray(row.ratings)
-      ? row.ratings as Record<string, { rating?: unknown }>
+      ? (row.ratings as Record<string, { rating?: unknown }>)
       : {};
-  const wouldBlock = Array.isArray(row.wouldBlock) ? row.wouldBlock.filter((key): key is string => typeof key === 'string') : [];
+  const wouldBlock = Array.isArray(row.wouldBlock)
+    ? row.wouldBlock.filter((key): key is string => typeof key === 'string')
+    : [];
   for (const [criterion, submitted] of submittedPasses) {
     const replayRating = replayRatings[criterion];
-    const replayVerdict = replayRating && typeof replayRating.rating === 'string'
-      ? ratingVerdict(replayRating.rating)
-      : null;
+    const replayVerdict =
+      replayRating && typeof replayRating.rating === 'string' ? ratingVerdict(replayRating.rating) : null;
     if (replayVerdict !== 'pass' || wouldBlock.includes(criterion)) {
       return {
         code: 'invalid_spec_test_adequacy_binding',
@@ -592,8 +600,8 @@ async function validateGradingAuditReplayConsistency(
   if (
     gradedObservation.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF ||
     !gradedObservation.rerunRecipe ||
-    ratingVerdict(auditRatings['re-runnable-evidence']?.rating ?? '') !== 'pass' ||
-    ratingVerdict(auditRatings['degenerate-distribution']?.rating ?? '') !== 'fail'
+    ratingVerdict(auditRatings?.['re-runnable-evidence']?.rating ?? '') !== 'pass' ||
+    ratingVerdict(auditRatings?.['degenerate-distribution']?.rating ?? '') !== 'fail'
   ) {
     return undefined;
   }
@@ -627,9 +635,10 @@ async function validateGradingAuditReplayConsistency(
     };
   }
 
-  const payload = replay && typeof replay === 'object' && !Array.isArray(replay)
-    ? replay as { ok?: unknown; rows?: unknown; error?: unknown }
-    : null;
+  const payload =
+    replay && typeof replay === 'object' && !Array.isArray(replay)
+      ? (replay as { ok?: unknown; rows?: unknown; error?: unknown })
+      : null;
   if (payload?.ok === false) {
     return {
       code: 'grading_audit_replay_uncorroborated',
@@ -642,7 +651,7 @@ async function validateGradingAuditReplayConsistency(
   }
 
   const selection = parsedRecipe.data.selection;
-  const rows = Array.isArray(payload?.rows) ? payload.rows as SpecTestAdequacyReplayRow[] : [];
+  const rows = Array.isArray(payload?.rows) ? (payload.rows as SpecTestAdequacyReplayRow[]) : [];
   const row = rows.find(
     (candidate) =>
       candidate &&
@@ -662,21 +671,18 @@ async function validateGradingAuditReplayConsistency(
 
   const replayRatings =
     row.ratings && typeof row.ratings === 'object' && !Array.isArray(row.ratings)
-      ? row.ratings as Record<string, { rating?: unknown }>
+      ? (row.ratings as Record<string, { rating?: unknown }>)
       : {};
   const wouldBlock = new Set(
-    Array.isArray(row.wouldBlock)
-      ? row.wouldBlock.filter((key): key is string => typeof key === 'string')
-      : [],
+    Array.isArray(row.wouldBlock) ? row.wouldBlock.filter((key): key is string => typeof key === 'string') : [],
   );
-  const mismatches = Object.entries(gradedObservation.ratings).flatMap(([criterion, graded]) => {
+  const gradedRatings: ObservationRatings = gradedObservation.ratings ?? {};
+  const mismatches = Object.entries(gradedRatings).flatMap(([criterion, graded]) => {
     const gradedVerdict = ratingVerdict(graded.rating);
     if (gradedVerdict === null) return [];
     const replayRating = replayRatings[criterion];
     const replayVerdict =
-      replayRating && typeof replayRating.rating === 'string'
-        ? ratingVerdict(replayRating.rating)
-        : null;
+      replayRating && typeof replayRating.rating === 'string' ? ratingVerdict(replayRating.rating) : null;
     return replayVerdict !== gradedVerdict || wouldBlock.has(criterion) ? [criterion] : [];
   });
   if (mismatches.length > 0) return undefined;
@@ -736,10 +742,7 @@ function validateSpecTestAdequacyBinding(
   // proof look current in the persisted card. Refuse the contradiction before
   // any rubric revision read, deduplication, checks, or ledger write. Use the
   // shared rating vocabulary so aliases such as "healthy" cannot bypass it.
-  if (
-    parsedRecipe.data.current.supplied === false &&
-    ratingVerdict(args.ratings?.freshness?.rating ?? '') === 'pass'
-  ) {
+  if (parsedRecipe.data.current.supplied === false && ratingVerdict(args.ratings?.freshness?.rating ?? '') === 'pass') {
     return {
       code: 'invalid_spec_test_adequacy_binding',
       error:
@@ -1013,7 +1016,7 @@ export async function emitScorecard(
       return {
         ok: false as const,
         error:
-          "acceptanceOf names the independent card an acceptance verdict responds to — pass acceptance:{ verdict, reasoning } with it, or omit both (an independent grader emits ratings and neither field)",
+          'acceptanceOf names the independent card an acceptance verdict responds to — pass acceptance:{ verdict, reasoning } with it, or omit both (an independent grader emits ratings and neither field)',
       };
     }
     if (rubric.kind === 'acceptance') {
@@ -1285,7 +1288,7 @@ export async function emitScorecard(
       return {
         ok: false as const,
         error:
-          "ratings is required: supply the complete per-criterion ratings, or — when recording an acceptance " +
+          'ratings is required: supply the complete per-criterion ratings, or — when recording an acceptance ' +
           "verdict — pass acceptanceOf:'<the independent card's issue id>' to adopt that card's ratings verbatim",
       };
     }
@@ -1718,11 +1721,9 @@ export async function emitScorecard(
         await Promise.all(
           gradingEvidenceSources.map(async (source) => ({
             source,
-            related: await (deps.lineageRelated ?? areAcceptanceLineageRelated)(
-              source,
-              input.createdBy,
-              { workspaceId: input.workspaceId || activeWorkspaceId() },
-            ),
+            related: await (deps.lineageRelated ?? areAcceptanceLineageRelated)(source, input.createdBy, {
+              workspaceId: input.workspaceId || activeWorkspaceId(),
+            }),
           })),
         )
       ).find(({ related }) => related)?.source;
@@ -1761,7 +1762,8 @@ export async function emitScorecard(
           gradedGeneration?.deployedSha,
           auditorGeneration?.deployedSha,
           input.checkRoot ?? resolveAgentWorkspaceRoot({}),
-          deps.generationAncestry ?? ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+          deps.generationAncestry ??
+            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
         );
         if (!generationCheck.ok) {
           return {
@@ -1905,8 +1907,7 @@ export async function emitScorecard(
       const existingIndependentScorecardIds = priorScorecards
         .filter((card) => {
           const sameSubject =
-            !subject ||
-            (card.subject?.ref === subject.ref && (card.subject?.kind ?? null) === (subject.kind ?? null));
+            !subject || (card.subject?.ref === subject.ref && (card.subject?.kind ?? null) === (subject.kind ?? null));
           return (
             sameSubject &&
             card.rubricRef === args.rubricRef &&
@@ -2251,7 +2252,8 @@ export async function emitScorecard(
       if (auditSettlement.ok) {
         try {
           await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
-            input.workspaceId || activeWorkspaceId(), auditContext.subjectIssueId,
+            input.workspaceId || activeWorkspaceId(),
+            auditContext.subjectIssueId,
           );
         } catch (error) {
           auditCleanupError = error instanceof Error ? error.message : String(error);
@@ -2289,12 +2291,7 @@ export async function emitScorecard(
     // fan out the same backlog while the original dispatch is still in flight.
     // The dispatcher is detached so a historical backlog cannot stretch the
     // scorecards:emit latency or fail a card that was already written.
-    if (
-      result.created &&
-      result.issue?.id &&
-      input.launchContext &&
-      args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF
-    ) {
+    if (result.created && result.issue?.id && input.launchContext && args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF) {
       const dispatchAudits = deps.dispatchPendingGradingAudits ?? dispatchPendingGradingAudits;
       void trackDetached(
         dispatchAudits({
