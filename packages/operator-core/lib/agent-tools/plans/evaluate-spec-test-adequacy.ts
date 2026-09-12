@@ -5,6 +5,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { listSpecClauses } from './spec-clauses-store';
 import {
+  evidenceCurrentInputKey,
   listSpecEvidence,
   evidenceCurrentInputSchema,
   type EvidenceCurrentInput,
@@ -232,7 +233,7 @@ export default defineTool({
         harness: harnessSlug,
         current: (() => {
           const merged = new Map<string, EvidenceCurrentInput>();
-          for (const input of current ?? []) merged.set(`${input.evidenceKind}\0${input.evidenceRef}`, input);
+          for (const input of current ?? []) merged.set(evidenceCurrentInputKey(input), input);
           // The grade selects the newest append of each exact-clause binding.
           // Its replay must use that SAME measurement, not an older recipe that
           // happens to appear later in the newest-first evidence history.
@@ -244,10 +245,7 @@ export default defineTool({
           )));
           for (const row of allEvidence) {
             if (!selected.has(row) || row.serverMeasurement?.status !== 'measured') continue;
-            merged.set(
-              `${row.evidenceKind}\0${row.evidenceRef}`,
-              row.serverMeasurement.current,
-            );
+            merged.set(evidenceCurrentInputKey(row.serverMeasurement.current), row.serverMeasurement.current);
           }
           return merged.size > 0 ? [...merged.values()] : undefined;
         })(),

@@ -22,7 +22,7 @@ const argsSchema = z.object({
     .max(500)
     .optional()
     .describe(
-      'Current fingerprints keyed by evidenceKind+evidenceRef. Missing applicable values return unknown, never current.',
+      'Current fingerprints keyed by planSlug/specId/specRevision/specFingerprint/evidenceKind/evidenceRef when clause identity is supplied; legacy evidenceKind+evidenceRef tuples remain a fallback. Missing applicable values return unknown, never current.',
     ),
   currentness: z
     .array(z.enum(['current', 'stale', 'unknown']))
