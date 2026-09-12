@@ -14,10 +14,15 @@
  * spawn / fs / os are mocked (no terminal opens); buildKickoffPromptFile is
  * mocked so no /dev/shm file is written and we can force the failure path.
  */
+import { EventEmitter } from 'node:events';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
-const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
+// spawnInTerminal watches the returned ChildProcess for an early exit. Keep the
+// fake EventEmitter-shaped so the shared watcher exercises the same contract as
+// a real child; the old `{ unref, pid }` stub made every successful route return
+// a `child.once is not a function` 500 once the watcher was introduced.
+const spawnMock = vi.fn(() => Object.assign(new EventEmitter(), { unref: () => {}, pid: 4242 }));
 // The kickoff prompt-file factory — mocked so generation is deterministic and
 // its failure path is forceable.
 const buildKickoffPromptFileMock = vi.fn(
