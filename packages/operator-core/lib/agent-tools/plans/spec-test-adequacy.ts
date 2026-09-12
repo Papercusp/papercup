@@ -8,6 +8,7 @@ import type {
   ProvisionalScorecardProof,
   SpecEvidenceKind,
 } from './spec-evidence-store';
+import { evidenceCurrentInputKey } from './spec-evidence-store';
 import type {
   SpecTestAdequacyCurrentFingerprint,
   SpecTestAdequacyRerunRecipe,
@@ -692,7 +693,7 @@ function rerunRecipeFor(
   const selectedEvidence = [
     ...new Map(
       evidence.map((row) => [
-        `${row.evidenceKind}\0${row.evidenceRef}`,
+        evidenceCurrentInputKey(row),
         {
           evidenceKind: row.evidenceKind,
           evidenceRef: row.evidenceRef,
@@ -700,7 +701,6 @@ function rerunRecipeFor(
       ]),
     ).values(),
   ].sort((a, b) => `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`));
-  const selectedKeys = new Set(selectedEvidence.map((row) => `${row.evidenceKind}\0${row.evidenceRef}`));
   const selectedEvidenceRefs = [...new Set(selectedEvidence.map((row) => row.evidenceRef))].sort((a, b) =>
     a.localeCompare(b),
   );
@@ -710,9 +710,42 @@ function rerunRecipeFor(
   const replayEvidenceRefs = selectedEvidenceRefs.length > 0
     ? selectedEvidenceRefs
     : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
-  const fingerprints: SpecTestAdequacyCurrentFingerprint[] = (current ?? [])
-    .filter((row) => selectedKeys.has(`${row.evidenceKind}\0${row.evidenceRef}`))
+  const currentByKey = new Map((current ?? []).map((row) => [evidenceCurrentInputKey(row), row]));
+  const currentForEvidence = (row: SpecEvidenceForAdequacy): EvidenceCurrentInput | undefined => {
+    const scopedCurrentKey = evidenceCurrentInputKey({
+      planSlug: row.planSlug,
+      specId: row.specId,
+      specRevision: row.specRevision,
+      specFingerprint: row.specFingerprint,
+      evidenceKind: row.evidenceKind,
+      evidenceRef: row.evidenceRef,
+    });
+    const legacyCurrentKey = evidenceCurrentInputKey({
+      evidenceKind: row.evidenceKind,
+      evidenceRef: row.evidenceRef,
+    });
+    return currentByKey.get(scopedCurrentKey) ?? currentByKey.get(legacyCurrentKey);
+  };
+  const fingerprints: SpecTestAdequacyCurrentFingerprint[] = [
+    ...new Map(
+      evidence
+        .map(currentForEvidence)
+        .filter((row): row is EvidenceCurrentInput => row !== undefined)
+        .map((row) => [evidenceCurrentInputKey(row), row] as const),
+    ).values(),
+  ]
     .map((row) => ({
+      ...(row.planSlug !== undefined &&
+      row.specId !== undefined &&
+      row.specRevision !== undefined &&
+      row.specFingerprint !== undefined
+        ? {
+            planSlug: row.planSlug,
+            specId: row.specId,
+            specRevision: row.specRevision,
+            specFingerprint: row.specFingerprint,
+          }
+        : {}),
       evidenceKind: row.evidenceKind,
       evidenceRef: row.evidenceRef,
       sourceFingerprint: row.sourceFingerprint,
@@ -721,7 +754,7 @@ function rerunRecipeFor(
       rubricFingerprint: row.rubricFingerprint ?? null,
       environmentFingerprint: row.environmentFingerprint ?? null,
     }))
-    .sort((a, b) => `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`));
+    .sort((a, b) => evidenceCurrentInputKey(a).localeCompare(evidenceCurrentInputKey(b)));
   return {
     schemaVersion: 1,
     evaluator: 'plans:evaluate-spec-test-adequacy',
