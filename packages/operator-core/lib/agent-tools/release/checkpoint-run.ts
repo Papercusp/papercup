@@ -68,6 +68,7 @@ import {
   ownershipContradicted,
 } from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveSessionStates, type LivenessVerdict } from '../coordination/liveness-oracle';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { assessCriticalClaimProgressLease } from '../work_items/release-force-guard';
@@ -126,6 +127,36 @@ function canFollowGateCellFromSeeAlso(ctx: unknown): boolean {
   if (!ctx || typeof ctx !== 'object' || GATE_VERDICT_CELL.visibility.kind !== 'harness') return false;
   const harnessSlug = (ctx as SeeAlsoContext).harnessSlug;
   return typeof harnessSlug === 'string' && harnessSlug.trim() === GATE_VERDICT_CELL.visibility.ref;
+}
+
+type AutomaticTransferTargetCheck =
+  | { ok: true; verdict: LivenessVerdict }
+  | { ok: false; kind: 'unknown' | 'unavailable'; verdict?: LivenessVerdict; detail?: string };
+
+/**
+ * Validate the caller before an abandoned gate claim is transferred to it.
+ *
+ * `resolveAgentIdentity` only proves that the request carried an owner-shaped
+ * string. A mistyped `--client` therefore looks attributable even though no
+ * session can ever execute the newly acquired claim. The shared liveness
+ * oracle, hydrated from that owner's presence row, is the authority for the
+ * existence check. Unknown/unmeasured is fail-closed because this branch is a
+ * claim mutation, not a best-effort status read.
+ */
+async function checkAutomaticTransferTarget(ownerId: string): Promise<AutomaticTransferTargetCheck> {
+  try {
+    const verdict = (await resolveSessionStates([{ ownerId }], { hydratePerId: true })).get(ownerId);
+    if (!verdict || verdict.signalMissing === true || verdict.sessionState == null) {
+      return { ok: false, kind: 'unknown', verdict };
+    }
+    return { ok: true, verdict };
+  } catch (error) {
+    return {
+      ok: false,
+      kind: 'unavailable',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 type RefusalRunnerCodeFreshness = {
@@ -814,6 +845,44 @@ export default defineTool({
             ? recovery.basis
             : null;
         if (automaticBasis) {
+          const targetCheck = await checkAutomaticTransferTarget(callerOwnerId);
+          if (!targetCheck.ok) {
+            const targetReason =
+              targetCheck.kind === 'unknown'
+                ? 'condition_transfer_target_unknown'
+                : 'condition_transfer_target_unverified';
+            recordMetadata({
+              standDown: targetReason,
+              standDownWorkItem: ownership.workItem,
+              standDownTakenBy: ownership.takenBy,
+              standDownTransferTarget: callerOwnerId,
+              standDownTransferBasis: automaticBasis,
+              standDownTransferTargetSessionState: targetCheck.verdict?.sessionState ?? null,
+              ...(targetCheck.detail ? { standDownTransferTargetDetail: targetCheck.detail } : {}),
+              ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+            });
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: serializeResponse({
+                    ok: false,
+                    launched: false,
+                    reason: targetReason,
+                    work_item: ownership.workItem,
+                    prior_holder: ownership.takenBy,
+                    transfer_target: callerOwnerId,
+                    transfer_basis: automaticBasis,
+                    target_session_state: targetCheck.verdict?.sessionState ?? null,
+                    note:
+                      `NOT launched: automatic ownership transfer target ${callerOwnerId} is ` +
+                      `${targetCheck.kind === 'unknown' ? 'not a known coordination session' : 'not verifiable from the coordination session oracle'}. ` +
+                      'No claim mutation was attempted; retry from a verified live session identity.',
+                  }),
+                },
+              ],
+            };
+          }
           const [{ claimWorkItem }, forceTransition] = await Promise.all([
             import('../../work-items'),
             recoveryModule ? Promise.resolve(recoveryModule) : import('../work_items/release-force-guard'),

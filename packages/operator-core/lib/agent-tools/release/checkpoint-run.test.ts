@@ -35,6 +35,9 @@ const qualificationMocks = vi.hoisted(() => ({
 const routingMocks = vi.hoisted(() => ({
   resolve: vi.fn(),
 }));
+const livenessMocks = vi.hoisted(() => ({
+  resolve: vi.fn(),
+}));
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   readStoredQualification: (...a: unknown[]) => qualificationMocks.read(...a),
@@ -68,6 +71,35 @@ function qualificationTransaction(input: Record<string, unknown>, phase = 'ready
 
 const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
   ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides }) as never;
+
+function mockAutomaticTransferTarget(targetOwnerId: string, known = true) {
+  livenessMocks.resolve.mockResolvedValue(
+    known
+      ? new Map([
+          [
+            targetOwnerId,
+            {
+              ownerId: targetOwnerId,
+              sessionState: 'live',
+              wakeable: true,
+              liveTurn: true,
+              confirmLiveness: false,
+              heartbeatFresh: true,
+            },
+          ],
+        ])
+      : new Map(),
+  );
+  vi.doMock('../coordination/liveness-oracle', async () => {
+    const actual = await vi.importActual<typeof import('../coordination/liveness-oracle')>(
+      '../coordination/liveness-oracle',
+    );
+    return {
+      ...actual,
+      resolveSessionStates: (...args: unknown[]) => livenessMocks.resolve(...args),
+    };
+  });
+}
 
 function parse(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
@@ -121,6 +153,7 @@ beforeEach(() => {
   qualificationMocks.wait.mockReset();
   qualificationMocks.reserve.mockReset();
   qualificationMocks.eligibility.mockReset();
+  livenessMocks.resolve.mockReset();
   qualificationMocks.read.mockResolvedValue({ status: 'none' });
   qualificationMocks.begin.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
     status: 'updated',
@@ -182,6 +215,7 @@ afterEach(() => {
   vi.doUnmock('../../release/checkpoint-serializer-authority');
   vi.doUnmock('../../work-items');
   vi.doUnmock('../work_items/release-force-guard');
+  vi.doUnmock('../coordination/liveness-oracle');
 });
 
 /**
@@ -2457,6 +2491,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       fanoutCapped: [],
     }));
     vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+    mockAutomaticTransferTarget('su-caller');
     const claimWorkItem = vi.fn(async () => ({ id: 'WI-38026', harness: 'papercusp' }));
     vi.doMock('../../work-items', async () => {
       const actual = await vi.importActual<typeof import('../../work-items')>('../../work-items');
@@ -2547,6 +2582,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       fanoutCapped: [],
     }));
     vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+    mockAutomaticTransferTarget('su-caller');
     const claimWorkItem = vi.fn(async () => ({ id: 'WI-38026', harness: 'papercusp' }));
     vi.doMock('../../work-items', async () => {
       const actual = await vi.importActual<typeof import('../../work-items')>('../../work-items');
@@ -2586,6 +2622,84 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       ownership_transferred: true,
       transfer_basis: 'critical-claim-progress-expired',
     });
+  });
+
+  it('EI-22993970761240432: an unknown automatic-transfer target cannot mutate ownership or launch', async () => {
+    const launchSpy = mockLaunch();
+    const staleProgress = new Date(Date.now() - 31 * 60_000).toISOString();
+    const ownership = {
+      eventKey: 'gate-red-streak:papercusp',
+      workItem: 'WI-38026',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-live-holder',
+      takenAt: staleProgress,
+      lastProgressAt: staleProgress,
+      expiresAt: null,
+      holderSessionState: 'live',
+      duplicates: [],
+      thread: { recent: [], total: 0 },
+    };
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ownership),
+      shouldStandDownForLivePeer: vi.fn(() => true),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => null),
+      ownershipContradicted: vi.fn(() => false),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-typo-target', workspaceId: 'papercusp-workspace' })),
+    }));
+    const wakeRecipients = vi.fn(async () => ({
+      targets: ['su-live-holder'],
+      keys: ['coord:inbox-wake:su-live-holder'],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+    }));
+    vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+    mockAutomaticTransferTarget('su-typo-target', false);
+    const claimWorkItem = vi.fn(async () => ({ id: 'WI-38026', harness: 'papercusp' }));
+    vi.doMock('../../work-items', async () => {
+      const actual = await vi.importActual<typeof import('../../work-items')>('../../work-items');
+      return { ...actual, claimWorkItem };
+    });
+
+    const { default: tool } = await import('./checkpoint-run');
+    const metadata = vi.fn();
+    const b = parse(
+      (await tool.handler(
+        {},
+        MAKE_CTX('operator', {
+          uiClientId: 'su-typo-target',
+          workspaceId: 'papercusp-workspace',
+          metadata,
+        }),
+      )) as never,
+    );
+
+    expect(livenessMocks.resolve).toHaveBeenCalledWith(
+      [{ ownerId: 'su-typo-target' }],
+      { hydratePerId: true },
+    );
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(claimWorkItem).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'condition_transfer_target_unknown',
+      work_item: 'WI-38026',
+      prior_holder: 'su-live-holder',
+      transfer_target: 'su-typo-target',
+      transfer_basis: 'critical-claim-progress-expired',
+      target_session_state: null,
+    });
+    expect(String(b.note)).toMatch(/su-typo-target/);
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      standDown: 'condition_transfer_target_unknown',
+      standDownTransferTarget: 'su-typo-target',
+    }));
   });
 
   it('P-008: terminal prerequisites atomically arm the routine and never spawn a detached duplicate', async () => {
