@@ -73,6 +73,22 @@ export interface OrientationHeldItem {
   checkpointStale?: boolean;
 }
 
+/** Post-claim discussion changes that the holder has not necessarily seen yet. */
+export interface OrientationHistoryUpdate {
+  workItemId: string;
+  harness?: string | null;
+  count: number;
+  newestPostId: number;
+}
+
+/** Post-claim revisions on the held work's bounded plan/goal ancestry. */
+export interface OrientationEffortUpdate {
+  level: 'plan' | 'goal';
+  ref: string;
+  count: number;
+  newestPostId: number;
+}
+
 /** Actionable inbox context from the same primitive as fleet:leader-brief. */
 export interface OrientationInboxEntry {
   msgId: string;
@@ -240,6 +256,10 @@ export interface OrientationToolSurface {
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
+  /** `undefined` means the read failed and must preserve the prior cursor token. */
+  historyUpdates?: OrientationHistoryUpdate[];
+  /** `undefined` means unreadable; preserve the previous delivery token. */
+  effortUpdates?: OrientationEffortUpdate[];
   /** Directed messages awaiting THIS agent's reply, from a sender who is not
    *  positively dead — the population that genuinely outranks your own work. */
   unansweredDirected: number;
@@ -411,6 +431,8 @@ export async function readOrientationToolSurfaces(
 export function isEmptyOrientation(state: OrientationState): boolean {
   return (
     state.held.length === 0 &&
+    (!state.historyUpdates || state.historyUpdates.length === 0) &&
+    (!state.effortUpdates || state.effortUpdates.length === 0) &&
     state.unansweredDirected === 0 &&
     state.unansweredStale === 0 &&
     state.openAsks === null &&
@@ -539,6 +561,24 @@ export function fingerprintOrientation(
       )
       .sort()
       .join(','),
+    historyUpdates:
+      state.historyUpdates === undefined
+        ? typeof committed?.historyUpdates === 'string'
+          ? committed.historyUpdates
+          : ''
+        : state.historyUpdates
+            .map((u) => `${u.workItemId}:${u.count}:${u.newestPostId}`)
+            .sort()
+            .join(','),
+    effortUpdates:
+      state.effortUpdates === undefined
+        ? typeof committed?.effortUpdates === 'string'
+          ? committed.effortUpdates
+          : ''
+        : state.effortUpdates
+            .map((u) => `${u.level}:${u.ref}:${u.count}:${u.newestPostId}`)
+            .sort()
+            .join(','),
     unanswered: state.unansweredDirected,
     // EI-20085805220385722: its own token, not folded into `unanswered` — the
     // two move independently (a sender DYING demotes an ask from one to the
@@ -606,6 +646,8 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
   const b = next as Record<string, unknown>;
   return (
     a.held === b.held &&
+    (a.historyUpdates ?? '') === (b.historyUpdates ?? '') &&
+    (a.effortUpdates ?? '') === (b.effortUpdates ?? '') &&
     a.unanswered === b.unanswered &&
     // REQUIRED, same rule as `unanswered` beside it: writing the token in
     // fingerprintOrientation does nothing unless it is compared here.
@@ -735,6 +777,21 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
   // discovered late or never. It renders once per respawn, so the cost is bounded.
   if (state.carryBlindWindow) {
     lines.push(renderCarryBlindWindowLine(state.carryBlindWindow));
+  }
+  if (state.historyUpdates && state.historyUpdates.length > 0) {
+    const shown = state.historyUpdates.slice(0, 2);
+    const total = state.historyUpdates.reduce((sum, update) => sum + update.count, 0);
+    const refs = shown.map((update) => workItemFetchHint(update.workItemId, update.harness)).join('; ');
+    lines.push(
+      `- ⚠ ${total} post-claim history update(s) on held work — read current context: ${refs}`,
+    );
+  }
+  if (state.effortUpdates && state.effortUpdates.length > 0) {
+    const total = state.effortUpdates.reduce((sum, update) => sum + update.count, 0);
+    const refs = state.effortUpdates.slice(0, 3).map((update) => `${update.level}:${update.ref}`).join(', ');
+    lines.push(
+      `- ⚠ ${total} post-claim plan/goal revision(s) (${refs}) — re-read the current plan/goal context.`,
+    );
   }
   if (state.unansweredDirected > 0) {
     lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
@@ -894,14 +951,23 @@ export function fingerprintDeliveredOrientation(
   committed: CursorState | null,
   block: string,
 ): CursorState {
+  let deliveredState = state;
+  if (state.historyUpdates?.length) {
+    const delivered = block.includes('post-claim history update(s)');
+    if (!delivered) deliveredState = { ...deliveredState, historyUpdates: undefined };
+  }
+  if (state.effortUpdates?.length) {
+    const delivered = block.includes('post-claim plan/goal revision(s)');
+    if (!delivered) deliveredState = { ...deliveredState, effortUpdates: undefined };
+  }
   const obligations = state.obligations;
-  if (!obligations) return fingerprintOrientation(state, epoch, committed);
+  if (!obligations) return fingerprintOrientation(deliveredState, epoch, committed);
   const projectedLines = obligations.projection.text.split('\n').filter(Boolean);
   const actionsDelivered = projectedLines.every((line) => block.includes(line));
   const recoveryDelivered =
     obligations.projection.receipt.entriesOmitted === 0 || block.includes(obligations.detailRef);
   return fingerprintOrientation(
-    actionsDelivered && recoveryDelivered ? state : { ...state, obligations: undefined },
+    actionsDelivered && recoveryDelivered ? deliveredState : { ...deliveredState, obligations: undefined },
     epoch,
     committed,
   );
@@ -914,6 +980,8 @@ export function fingerprintDeliveredOrientation(
  */
 export interface OrientationDeps {
   held: (ownerId: string, workspaceId: string) => Promise<OrientationHeldItem[]>;
+  historyUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationHistoryUpdate[]>;
+  effortUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationEffortUpdate[]>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -975,6 +1043,8 @@ export async function resolveOrientationState(
   const d = { ...defaultOrientationDeps(), ...deps };
   const [
     held,
+    historyUpdates,
+    effortUpdates,
     inbox,
     announcedGates,
     openAsks,
@@ -988,6 +1058,10 @@ export async function resolveOrientationState(
     carryBlindWindow,
   ] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
+    // Unknown must remain distinct from measured-empty. Otherwise a transient
+    // read failure advances the shared cursor past history the agent never saw.
+    d.historyUpdates(ownerId, workspaceId).catch(() => undefined),
+    d.effortUpdates(ownerId, workspaceId).catch(() => undefined),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId, workspaceId).catch(() => [] as OrientationAnnouncedGate[]),
     // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
@@ -1016,6 +1090,8 @@ export async function resolveOrientationState(
   ]);
   return {
     held,
+    historyUpdates,
+    effortUpdates,
     unansweredDirected: inbox.count,
     // `in` rather than a plain read: an injected seam (tests, an older deps
     // object) may legitimately omit the field, and the union type says so.
@@ -1039,6 +1115,146 @@ export async function resolveOrientationState(
  *  Dynamic imports keep them off the module graph until a turn actually needs them. */
 export function defaultOrientationDeps(): OrientationDeps {
   return {
+    effortUpdates: async (ownerId, workspaceId) => {
+      const [{ getOrgPg }, { resolveConcreteWorkspaceId }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('./workspace-registry'),
+      ]);
+      const { sql } = getOrgPg();
+      const ws = resolveConcreteWorkspaceId(workspaceId);
+      const rows = await sql<Array<{
+        level: 'plan' | 'goal';
+        effort_ref: string;
+        post_count: number | string;
+        newest_post_id: number | string;
+      }>>`
+        WITH held AS (
+          SELECT feature_id, harness_slug, taken_by, source_plan_slug, goal_id, payload
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${ws}
+             AND taken_by = ${ownerId}
+             AND taken_at IS NOT NULL
+             AND ((item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
+               OR (item_kind IN ('feature', 'chunk') AND status NOT IN ('passed', 'deprecated', 'done', 'resolved', 'closed')))
+           ORDER BY feature_id DESC
+           LIMIT 6
+        ), ancestry AS (
+          SELECT h.*,
+                 COALESCE(h.goal_id, p.goal_id) AS effective_goal_id
+            FROM held h
+            LEFT JOIN harness_shared.harness_plans p
+              ON p.workspace_id = ${ws}
+             AND p.harness_slug = h.harness_slug
+             AND p.plan_slug = h.source_plan_slug
+        ), relevant AS (
+          SELECT 'plan'::text AS level,
+                 a.source_plan_slug AS effort_ref,
+                 a.payload,
+                 t.thread_id
+            FROM ancestry a
+            JOIN harness_shared.coord_threads t
+              ON t.workspace_id = ${ws}
+             AND t.parent_kind = 'plan'
+             AND t.parent_ref = a.harness_slug || ':' || a.source_plan_slug
+           WHERE a.source_plan_slug IS NOT NULL
+          UNION ALL
+          SELECT 'goal'::text AS level,
+                 a.effective_goal_id AS effort_ref,
+                 a.payload,
+                 t.thread_id
+            FROM ancestry a
+            JOIN harness_shared.coord_threads t
+              ON t.workspace_id = ${ws}
+             AND t.parent_kind = 'goal'
+             AND t.parent_ref = a.effective_goal_id
+           WHERE a.effective_goal_id IS NOT NULL
+        )
+        SELECT r.level,
+               r.effort_ref,
+               count(DISTINCT p.id)::int AS post_count,
+               max(p.id)::bigint AS newest_post_id
+          FROM relevant r
+          JOIN harness_shared.coord_thread_posts p
+            ON p.workspace_id = ${ws}
+           AND p.thread_id = r.thread_id
+           AND p.id > COALESCE(NULLIF(r.payload ->> 'claim_history_post_id', '')::bigint, 0)
+         GROUP BY r.level, r.effort_ref
+         ORDER BY max(p.id) DESC
+      `;
+      return rows.map((row) => ({
+        level: row.level,
+        ref: row.effort_ref,
+        count: Number(row.post_count),
+        newestPostId: Number(row.newest_post_id),
+      }));
+    },
+    historyUpdates: async (ownerId, workspaceId) => {
+      const [{ getOrgPg }, { resolveConcreteWorkspaceId }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('./workspace-registry'),
+      ]);
+      const { sql } = getOrgPg();
+      const ws = resolveConcreteWorkspaceId(workspaceId);
+      const rows = await sql<Array<{
+        work_item_id: string;
+        harness_slug: string | null;
+        post_count: number | string;
+        newest_post_id: number | string;
+      }>>`
+        WITH held AS (
+          SELECT feature_id, harness_slug, item_kind, taken_at, payload
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${ws}
+             AND taken_by = ${ownerId}
+             AND taken_at IS NOT NULL
+             AND ((item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
+               OR (item_kind IN ('feature', 'chunk') AND status NOT IN ('passed', 'deprecated', 'done', 'resolved', 'closed')))
+           ORDER BY feature_id DESC
+           LIMIT 6
+        ), relevant_threads AS (
+          SELECT h.feature_id,
+                 h.harness_slug,
+                 h.taken_at,
+                 h.payload,
+                 t.thread_id
+            FROM held h
+            JOIN harness_shared.coord_threads t
+              ON t.workspace_id = ${ws}
+             AND (
+               (t.parent_kind = 'issue' AND h.item_kind IN ('bug', 'change', 'task') AND t.parent_ref = h.feature_id)
+               OR (t.parent_kind = 'feature' AND h.item_kind IN ('feature', 'chunk') AND t.parent_ref = h.harness_slug || '#' || h.feature_id)
+             )
+        )
+        SELECT r.feature_id AS work_item_id,
+               r.harness_slug,
+               count(*)::int AS post_count,
+               max(p.id)::bigint AS newest_post_id
+          FROM relevant_threads r
+          JOIN harness_shared.coord_thread_posts p
+           ON p.workspace_id = ${ws}
+           AND p.thread_id = r.thread_id
+           AND p.id > COALESCE(
+             NULLIF(r.payload ->> 'claim_history_post_id', '')::bigint,
+             -- Legacy claims predate the atomic watermark. Reconstruct the
+             -- best truthful baseline from posts that already existed by the
+             -- claim instant; new claims never use this timestamp fallback.
+             (SELECT max(before.id)
+                FROM harness_shared.coord_thread_posts before
+               WHERE before.workspace_id = ${ws}
+                 AND before.thread_id = r.thread_id
+                 AND before.created_at <= r.taken_at),
+             0
+           )
+         GROUP BY r.feature_id, r.harness_slug
+         ORDER BY max(p.id) DESC
+      `;
+      return rows.map((row) => ({
+        workItemId: row.work_item_id,
+        harness: row.harness_slug,
+        count: Number(row.post_count),
+        newestPostId: Number(row.newest_post_id),
+      }));
+    },
     // The SAME primitive coord:orient folds this tier with (foldNeverDropFacts,
     // narrowed in SQL to NEVER_DROP_KEY_PREFIXES), so the per-turn block and the
     // orient fold cannot drift on "what counts as a never-drop fact".

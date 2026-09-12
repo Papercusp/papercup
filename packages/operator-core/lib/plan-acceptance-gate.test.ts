@@ -36,6 +36,7 @@ import {
   type PlanSpecCoverageGateVerdict,
 } from './agent-tools/plans/plan-spec-coverage-gate';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
+import { getBuildInfo } from './build-info';
 // This suite checks shipment wiring; the design adapter's filesystem and
 // all-item aggregation are exercised by design-compare/acceptance.test.ts.
 vi.mock('./agent-tools/work_items/design-evidence-gate', () => ({ planDesignEvidenceGate: vi.fn() }));
@@ -231,6 +232,20 @@ describe('grading-recruitment unfinished-item exception', () => {
 });
 
 describe('evaluatePlanAcceptanceGate', () => {
+  it('stamps even an early refusal with the loaded build provenance', async () => {
+    mockRubric.mockResolvedValue(null);
+
+    const verdict = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(verdict).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_rubric_missing',
+      buildProvenance: getBuildInfo(),
+    });
+    expect(verdict.buildProvenance).toHaveProperty('sha');
+    expect(verdict.buildProvenance).toHaveProperty('version');
+  });
+
   it('refuses stale design proof before a disabled rubric gate can return success', async () => {
     mockFlag.mockResolvedValue(false);
     mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'design-plan', harness_slug: 'papercusp', status: 'ready' }]));

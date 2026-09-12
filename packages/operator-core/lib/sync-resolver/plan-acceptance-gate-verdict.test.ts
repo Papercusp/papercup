@@ -38,11 +38,13 @@ vi.mock('../acceptance-bar-contract-snapshot', () => ({
 }));
 
 import { resolvePlanAcceptanceGateVerdict } from './plan-acceptance-gate-verdict';
+import { getBuildInfo } from '../build-info';
 
 const ARGS = { workspaceId: 'default', harnessSlug: 'papercusp', planSlug: 'p-1' };
 
 type Row = {
   planSlug: string;
+  buildProvenance: { sha: string | null; version: string };
   satisfied: boolean;
   skipped: string | null;
   code: string | null;
@@ -112,6 +114,13 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
     expect(row.acceptanceBarContractSnapshot).toBe(snapshot);
     expect(row.acceptanceBarContractSnapshotUnavailableReason).toBeNull();
     expect(row.code).toBe('plan_items_unfinished');
+  });
+
+  it('carries the gate build provenance into the read row', async () => {
+    const buildProvenance = { sha: 'gate-sha', version: '1.2.3' };
+    gateSpy.mockResolvedValue({ satisfied: false, code: 'plan_items_unfinished', buildProvenance });
+
+    expect((await run()).buildProvenance).toEqual(buildProvenance);
   });
 
   it('keeps the real gate verdict when only snapshot explainability is unavailable', async () => {
@@ -222,6 +231,7 @@ describe('P-011 acceptance-gate read — fails CLOSED (opposite polarity to the 
     // must never render as the green that a failing-open resolver would produce.
     expect(row.satisfied).toBe(false);
     expect(row.unavailableReason).toBe('resolver-unavailable');
+    expect(row.buildProvenance).toEqual(getBuildInfo());
     expect(row.message).toContain('could not be evaluated');
     expect(row.acceptanceBarContractSnapshot).toBeNull();
   });

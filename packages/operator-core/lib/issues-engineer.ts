@@ -2889,22 +2889,18 @@ export async function claimIssue(
        AND item_kind IN ('bug', 'change', 'task')`;
   const priorAssignee = priorRows[0]?.taken_by ?? null;
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET
+    UPDATE harness_shared.engineer_issues AS target SET
       payload = CASE
-        WHEN assignee = ${assignee}
-          OR (assignee IS NOT NULL AND btrim(assignee) <> '' AND position(assignee in ${assignee}) = 1)
-        THEN payload
+        WHEN target.assignee = ${assignee}
+          OR (target.assignee IS NOT NULL AND btrim(target.assignee) <> '' AND position(target.assignee in ${assignee}) = 1)
+        THEN target.payload
         ELSE jsonb_set(
-          COALESCE(payload, '{}'::jsonb),
+          COALESCE(target.payload, '{}'::jsonb),
           '{claim_history_post_id}',
           to_jsonb(COALESCE((
             SELECT max(post.id)
-              FROM harness_shared.coord_threads thread
-              JOIN harness_shared.coord_thread_posts post
-                ON post.workspace_id = ${ws} AND post.thread_id = thread.thread_id
-             WHERE thread.workspace_id = ${ws}
-               AND thread.parent_kind = 'issue'
-               AND thread.parent_ref = issue_id
+              FROM harness_shared.coord_thread_posts post
+             WHERE post.workspace_id = ${ws}
           ), 0)),
           true
         )

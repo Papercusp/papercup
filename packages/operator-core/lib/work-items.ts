@@ -5040,22 +5040,18 @@ export async function claimWorkItem(
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
     const ws = activeWorkspaceId();
     const rows = await sql<FeatureRowDb[]>`
-      UPDATE harness_shared.harness_features_consolidated
+      UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = CASE
-               WHEN taken_by = ${assignee}
-                 OR (taken_by IS NOT NULL AND taken_by <> '' AND position(taken_by in ${assignee}) = 1)
-               THEN payload
+               WHEN target.taken_by = ${assignee}
+                 OR (target.taken_by IS NOT NULL AND target.taken_by <> '' AND position(target.taken_by in ${assignee}) = 1)
+               THEN target.payload
                ELSE jsonb_set(
-                 COALESCE(payload, '{}'::jsonb),
+                 COALESCE(target.payload, '{}'::jsonb),
                  '{claim_history_post_id}',
                  to_jsonb(COALESCE((
                    SELECT max(post.id)
-                     FROM harness_shared.coord_threads thread
-                     JOIN harness_shared.coord_thread_posts post
-                       ON post.workspace_id = ${ws} AND post.thread_id = thread.thread_id
-                    WHERE thread.workspace_id = ${ws}
-                      AND thread.parent_kind = 'feature'
-                      AND thread.parent_ref = harness_slug || '#' || feature_id
+                     FROM harness_shared.coord_thread_posts post
+                    WHERE post.workspace_id = ${ws}
                  ), 0)),
                  true
                )
@@ -7236,20 +7232,16 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
     // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
     // byte-identical to the pre-P-002 claim.
     const rows = await sql<FeatureRowDb[]>`
-      UPDATE harness_shared.harness_features_consolidated
+      UPDATE harness_shared.harness_features_consolidated AS target
          -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
          -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
          SET payload = jsonb_set(
-               COALESCE(payload, '{}'::jsonb),
+               COALESCE(target.payload, '{}'::jsonb),
                '{claim_history_post_id}',
                to_jsonb(COALESCE((
                  SELECT max(post.id)
-                   FROM harness_shared.coord_threads thread
-                   JOIN harness_shared.coord_thread_posts post
-                     ON post.workspace_id = ${ws} AND post.thread_id = thread.thread_id
-                  WHERE thread.workspace_id = ${ws}
-                    AND thread.parent_kind = 'feature'
-                    AND thread.parent_ref = harness_slug || '#' || feature_id
+                   FROM harness_shared.coord_thread_posts post
+                  WHERE post.workspace_id = ${ws}
                ), 0)),
                true
              ),
@@ -8113,18 +8105,14 @@ export async function claimNextIssueWorkItem(
           })
         : tx`TRUE`;
       const rows = await tx<FeatureRowDb[]>`
-    UPDATE harness_shared.work_items
+    UPDATE harness_shared.work_items AS target
        SET payload = jsonb_set(
-             COALESCE(payload, '{}'::jsonb),
+             COALESCE(target.payload, '{}'::jsonb),
              '{claim_history_post_id}',
              to_jsonb(COALESCE((
                SELECT max(post.id)
-                 FROM harness_shared.coord_threads thread
-                 JOIN harness_shared.coord_thread_posts post
-                   ON post.workspace_id = ${issueWs} AND post.thread_id = thread.thread_id
-                WHERE thread.workspace_id = ${issueWs}
-                  AND thread.parent_kind = 'issue'
-                  AND thread.parent_ref = feature_id
+                 FROM harness_shared.coord_thread_posts post
+                WHERE post.workspace_id = ${issueWs}
              ), 0)),
              true
            ),

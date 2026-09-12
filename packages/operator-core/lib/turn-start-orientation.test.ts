@@ -30,6 +30,8 @@ import type { ScoredItem } from './harness/improvements/digest';
 
 const base: OrientationState = {
   held: [],
+  historyUpdates: [],
+  effortUpdates: [],
   unansweredDirected: 0,
   unansweredStale: 0,
   openAsks: null,
@@ -53,6 +55,8 @@ const withWork: OrientationState = {
       checkpointStale: false,
     },
   ],
+  historyUpdates: [],
+  effortUpdates: [],
   unansweredDirected: 2,
   unansweredStale: 0,
   openAsks: null,
@@ -69,6 +73,24 @@ const withWork: OrientationState = {
 
 /** The context generation most of these cases hold fixed; P-023's own block varies it. */
 const EPOCH = 3;
+
+const quietDeps = {
+  held: async () => [],
+  historyUpdates: async () => [],
+  effortUpdates: async () => [],
+  inbox: async () => ({ count: 0, newest: [] }),
+  announcedGates: async () => [],
+  openAsks: async () => null,
+  loopArmed: async () => false,
+  loopFireWithheld: async () => false,
+  improvementTriage: async () => null,
+  executableFrontier: async () => null,
+  obligations: async () => null,
+  neverDropFacts: async () => [],
+  toolSurface: async () => null,
+  carryBlindWindow: async () => null,
+  contextEpoch: async () => 0,
+};
 
 function obligationBrief(sourceGeneration = 'agenda-1'): NonNullable<OrientationState['obligations']> {
   return {
@@ -113,6 +135,70 @@ describe('turn-start-orientation — when it speaks', () => {
   it('says NOTHING on a turn where nothing changed — the whole economy of the fold', () => {
     const committed = fingerprintOrientation(withWork, EPOCH);
     expect(composeOrientationBlock({ state: withWork, committed, epoch: EPOCH })).toBe('');
+  });
+
+  it('re-emits when a held item own-thread history generation advances', () => {
+    const committed = fingerprintOrientation(withWork, EPOCH);
+    const changed: OrientationState = {
+      ...withWork,
+      historyUpdates: [{ workItemId: 'WI-1', harness: 'papercusp', count: 2, newestPostId: 44 }],
+    };
+    const out = composeOrientationBlock({ state: changed, committed, epoch: EPOCH });
+    expect(out).toContain('2 post-claim history update(s)');
+    expect(out).toContain('WI-1');
+    expect(orientationUnchanged(committed, fingerprintOrientation(changed, EPOCH, committed))).toBe(false);
+  });
+
+  it('does not advance unseen post-claim history when the outer budget omits its line', () => {
+    const committed = fingerprintOrientation(withWork, EPOCH);
+    const changed: OrientationState = {
+      ...withWork,
+      toolSurface: { hookCalls: 30, windowMinutes: 5 },
+      historyUpdates: [{ workItemId: 'WI-1', harness: 'papercusp', count: 1, newestPostId: 45 }],
+    };
+    const block = composeOrientationBlock({ state: changed, committed, epoch: EPOCH, budgetChars: 210 });
+    expect(block).not.toContain('post-claim history update(s)');
+    const delivered = fingerprintDeliveredOrientation(changed, EPOCH, committed, block);
+    expect(delivered.historyUpdates).toBe(committed.historyUpdates);
+  });
+
+  it('re-emits current plan/goal revision generations without duplicating their full history', () => {
+    const committed = fingerprintOrientation(withWork, EPOCH);
+    const changed: OrientationState = {
+      ...withWork,
+      effortUpdates: [{ level: 'plan', ref: 'one-plan', count: 1, newestPostId: 46 }],
+    };
+    const out = composeOrientationBlock({ state: changed, committed, epoch: EPOCH });
+    expect(out).toContain('1 post-claim plan/goal revision(s) (plan:one-plan)');
+    expect(out).not.toContain('full history');
+  });
+
+  it('preserves the prior history token when the history reader fails', async () => {
+    const state = await resolveOrientationState('su-x', 'ws-x', {
+      ...quietDeps,
+      historyUpdates: async () => { throw new Error('read failed'); },
+    });
+    const committed = { ...fingerprintOrientation(base, EPOCH), historyUpdates: 'WI-old:1:9' };
+    expect(fingerprintOrientation(state, EPOCH, committed).historyUpdates).toBe('WI-old:1:9');
+  });
+
+  it('preserves unseen plan/goal revisions on read failure and final-budget omission', async () => {
+    const state = await resolveOrientationState('su-x', 'ws-x', {
+      ...quietDeps,
+      effortUpdates: async () => { throw new Error('read failed'); },
+    });
+    const committed = { ...fingerprintOrientation(base, EPOCH), effortUpdates: 'plan:old:1:8' };
+    expect(fingerprintOrientation(state, EPOCH, committed).effortUpdates).toBe('plan:old:1:8');
+
+    const changed: OrientationState = {
+      ...withWork,
+      toolSurface: { hookCalls: 30, windowMinutes: 5 },
+      effortUpdates: [{ level: 'goal', ref: 'G-1', count: 1, newestPostId: 47 }],
+    };
+    const block = composeOrientationBlock({ state: changed, committed, epoch: EPOCH, budgetChars: 210 });
+    expect(block).not.toContain('post-claim plan/goal revision(s)');
+    expect(fingerprintDeliveredOrientation(changed, EPOCH, committed, block).effortUpdates)
+      .toBe('plan:old:1:8');
   });
 
   it('emits the executable frontier on baseline, then suppresses it during unrelated changes', () => {
@@ -644,6 +730,8 @@ describe('turn-start-orientation — what it says', () => {
   it('resolves every new fold leg through injectable shared-reader seams', async () => {
     const state = await resolveOrientationState('su-1', 'ws-1', {
       held: async () => [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
+      historyUpdates: async () => [{ workItemId: 'WI-9', count: 1, newestPostId: 12 }],
+      effortUpdates: async () => [{ level: 'plan', ref: 'p-9', count: 1, newestPostId: 13 }],
       inbox: async () => ({
         count: 1,
         newest: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
@@ -663,6 +751,8 @@ describe('turn-start-orientation — what it says', () => {
     });
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
+      historyUpdates: [{ workItemId: 'WI-9', count: 1, newestPostId: 12 }],
+      effortUpdates: [{ level: 'plan', ref: 'p-9', count: 1, newestPostId: 13 }],
       unansweredDirected: 1,
       unansweredStale: 0,
       openAsks: null,
