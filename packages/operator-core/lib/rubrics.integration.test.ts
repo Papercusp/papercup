@@ -1825,6 +1825,88 @@ describe('template_data persistence boundary — the set-template-data door', ()
     ]);
   });
 
+  it('applies an identical METHOD edit through the amendment transaction when stored BAR hashes are legacy', async () => {
+    const seeded = await seedBarContract('legacy-hash-method-apply', { authorMethods: true });
+    const { workspaceId, subject } = seeded;
+    const canonical = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const [stored] = await db.adminSql<{ template_data: { criteria: Array<Record<string, unknown>> } }[]>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.rubricSlug}`;
+    const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
+    const legacyHashByBar = new Map(canonical.criteria.map((criterion) => [
+      criterion.barKey!,
+      rubrics.computeAcceptanceBarHash({ ...criterion, check: undefined }),
+    ]));
+    const legacyBarSetHash = hashPlanContent(JSON.stringify(
+      [...legacyHashByBar.entries()].sort(([a], [b]) => a.localeCompare(b)),
+    ));
+    const legacyTemplateData = {
+      ...stored!.template_data,
+      criteria: stored!.template_data.criteria.map((criterion) => ({
+        ...criterion,
+        barHash: legacyHashByBar.get(String(criterion.barKey ?? criterion.key)),
+      })),
+      barSetHash: legacyBarSetHash,
+    };
+    await db.adminSql.begin(async (tx) => {
+      await tx`
+        UPDATE harness_shared.harness_plans
+           SET template_data=${JSON.stringify(legacyTemplateData)}::text::jsonb
+         WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
+           AND plan_slug=${seeded.rubricSlug}`;
+      await tx`
+        UPDATE harness_shared.harness_plans
+           SET acceptance_bar_set_hash=${legacyBarSetHash}
+         WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
+           AND plan_slug=${subject}`;
+      await tx`
+        UPDATE harness_shared.plan_spec_clause_revisions r
+           SET source_bar_hash=CASE r.source_bar_key
+                 WHEN 'R-1' THEN ${legacyHashByBar.get('R-1')!}
+                 WHEN 'R-2' THEN ${legacyHashByBar.get('R-2')!}
+                 ELSE r.source_bar_hash
+               END,
+               source_bar_set_hash=${legacyBarSetHash}
+          FROM harness_shared.plan_spec_clauses c
+         WHERE c.workspace_id=r.workspace_id AND c.harness_slug=r.harness_slug
+           AND c.plan_slug=r.plan_slug AND c.spec_id=r.spec_id
+           AND c.current_revision=r.revision
+           AND c.workspace_id=${workspaceId} AND c.harness_slug='papercusp'
+           AND c.plan_slug=${subject}`;
+    });
+
+    const legacy = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(legacy.barSetHash).toBe(legacyBarSetHash);
+    expect(legacy.criteria.map((criterion) => criterion.barHash)).not.toEqual(
+      canonical.criteria.map((criterion) => criterion.barHash),
+    );
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'hash-migration-author',
+      reason: 'Recompute legacy BAR hashes under the current canonical algorithm.',
+      expectedRubricRevision: legacy.revision,
+      criterion: {
+        key: legacy.criteria[0]!.key,
+        field: 'method' as const,
+        mode: 'replace' as const,
+        text: legacy.criteria[0]!.method!,
+      },
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ approvalRequired: true, changedBars: ['R-1', 'R-2'] });
+
+    const applied = (await rubrics.amendRubric({
+      ...amendment,
+      approvalRef: await postApproval(amendment),
+    }))!;
+    expect(applied.revision).toBe(legacy.revision! + 1);
+    expect(applied.barSetHash).toBe(canonical.barSetHash);
+    expect(applied.criteria.map((criterion) => criterion.barHash)).toEqual(
+      canonical.criteria.map((criterion) => criterion.barHash),
+    );
+  });
+
   it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;
