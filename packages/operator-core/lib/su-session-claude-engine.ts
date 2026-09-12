@@ -167,6 +167,10 @@ export function startClaudeSuEngine(
     stallReported = false;
     // Reported once per turn: a stall does not resolve on its own, so repeating
     // would bury the transcript without adding an observation.
+    // D-004: 'timeout-reaper' — the passage of time IS the trigger here. The body
+    // does nothing but compare idleMs against turnStallTimeoutMs, i.e. a deadline
+    // check, which the doc lists as the definitive timeout-reaper shape. There is no
+    // "turn went quiet" event to subscribe to: silence is the signal.
     stallWatch ??= managedSetInterval('su-session-claude-turn-stall',
       Math.max(50, Math.round(turnStallTimeoutMs / 3)), () => {
         if (closed || stallReported || !activeInputUuid) return;
@@ -177,7 +181,7 @@ export function startClaudeSuEngine(
           type: 'error', scope: 'transport', code: 'claude_turn_stalled', recoverable: true,
           message: formatStalledTurnMessage(idleMs, childStderr.read()),
         });
-      }, { category: 'liveness', instanced: true });
+      }, { category: 'liveness', instanced: true, classification: 'timeout-reaper' });
   }
   function disarmStallWatch() { stallWatch?.stop(); stallWatch = undefined; }
   const unavailable = (message: string): ClaudeNativeCommandVerdict => ({
@@ -297,7 +301,11 @@ export function startClaudeSuEngine(
         pid: processId, operatorUrl: env.PAPERCUSP_OPERATOR_URL,
         onTerminalSession: () => { void close().catch((error) => console.warn('[su-session] terminal engine cleanup failed', error)); },
         setIntervalImpl: (callback: () => void, ms: number) => {
-          heartbeat = managedSetInterval('su-session-engine-heartbeat', ms, callback, { category: 'liveness', instanced: true });
+          // D-004: 'must-sample' — proves the engine PROCESS is still alive, and no
+          // event source exists to subscribe to for that (the doc names PID liveness
+          // as the canonical must-sample case). A dead process emits nothing, which
+          // is exactly why its absence can only be sampled.
+          heartbeat = managedSetInterval('su-session-engine-heartbeat', ms, callback, { category: 'liveness', instanced: true, classification: 'must-sample' });
           return {};
         },
       });
