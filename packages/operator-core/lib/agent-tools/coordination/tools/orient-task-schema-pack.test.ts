@@ -174,7 +174,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
 
     expect(args.length).toBeLessThanOrEqual(180);
     expect(args).toContain(
-        'completion?:object; RCV2+{testProcedure,predictedObservations(hypothesis,alternativeHypothesis),actualObservation,evidenceRefs}',
+        'completion?:object; rootCauseVerification v2 adds testProcedure,predictedObservations,actualObservation,evidenceRefs',
     );
     expect(args).toContain('assumptions?');
     expect(args).toContain('terminal close');

@@ -212,7 +212,7 @@ function compactSchema(schema: unknown): string | null {
     const description = (completion as Record<string, unknown>).description;
     return typeof description === 'string'
       && /rootCauseVerification/.test(description)
-      && /bug\/capability-gap/.test(description);
+      && /bug\/capability-gap/i.test(description);
   });
   for (const rawBranch of rawBranches) {
     if (!rawBranch || typeof rawBranch !== 'object' || Array.isArray(rawBranch)) continue;
@@ -236,7 +236,7 @@ function compactSchema(schema: unknown): string | null {
       // a valid-looking bug close fail only after the write is attempted.
       const compactFragment = isCompletion
         ? completionHasRootCauseContract
-          ? `${name}?:object; RCV2+{testProcedure,predictedObservations(hypothesis,alternativeHypothesis),actualObservation,evidenceRefs}`
+          ? `${name}?:object; rootCauseVerification v2 adds testProcedure,predictedObservations,actualObservation,evidenceRefs`
           : `${name}?:object structured record`
         : name === 'assumptions' && completionHasRootCauseContract
           ? `${name}?:terminal close; record-only; \"none\"|facts`

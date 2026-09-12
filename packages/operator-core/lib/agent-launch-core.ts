@@ -962,7 +962,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Completion evidence is mandatory',
-    body: 'Terminal closes require `work_items:complete { id,state,assumptions: "none",completion:{summary,testsRun,testResult,verifiedHow,filesChanged} }`; use fact keys instead of `"none"` when applicable. Successful bug/capability-gap closes require `completion.rootCauseVerification` v2 with `{hypothesis,alternativeHypothesis,distinguishingTest:"if H1 then observable A; if H2 then observable B",testResult,testProcedure,predictedObservations:{hypothesis,alternativeHypothesis},actualObservation,evidenceRefs}`; the server rejects a close without this contrastive record. Include root-cause, verification/result, and durable evidence references.',
+    body: '`work_items:complete` terminal closes require `{id,state,assumptions:"none"|factKeys,completion:{summary,testsRun,testResult,verifiedHow,filesChanged}}`. Successful bug/capability-gap closes also require `completion.rootCauseVerification:{hypothesis,alternativeHypothesis,distinguishingTest:"if H1 then A; if H2 then B",testResult,testProcedure,predictedObservations:{hypothesis,alternativeHypothesis},actualObservation,evidenceRefs}`; missing contrastive evidence is rejected.',
   },
   {
     head: '"Not available" means DEFERRED, not missing',

@@ -41,7 +41,7 @@ import { buildTaskToolSchemaPack } from './orient-task-schema-pack';
 const TOOL = 'work_items:complete';
 const ASSUMPTIONS_MARKER = /assumptions\?/;
 const COMPLETION_MARKER =
-  'completion?:object; RCV2+{testProcedure,predictedObservations(hypothesis,alternativeHypothesis),actualObservation,evidenceRefs}';
+  'completion?:object; rootCauseVerification v2 adds testProcedure,predictedObservations,actualObservation,evidenceRefs';
 
 interface CatalogEntry {
   expose?: { mcp?: { name?: string } | null };

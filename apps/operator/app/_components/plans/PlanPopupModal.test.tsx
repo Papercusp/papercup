@@ -14,7 +14,7 @@ import {
 } from "nuqs/adapters/testing";
 import type { AuthorIdentity } from "@/app/admin/plans/plans-api";
 
-const { planRows, planListState, usePlanList } = vi.hoisted(() => ({
+const { planRows, planListState, usePlanList, confirmPlanClose } = vi.hoisted(() => ({
   planRows: {
     value: [] as Array<{
       slug: string;
@@ -28,6 +28,7 @@ const { planRows, planListState, usePlanList } = vi.hoisted(() => ({
     error: null as Error | null,
   },
   usePlanList: vi.fn(),
+  confirmPlanClose: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("@/app/admin/plans/plans-api", () => ({
@@ -78,12 +79,22 @@ vi.mock("@/app/harness/Tooltip", () => ({
 }));
 
 vi.mock("@/app/admin/plans/PlanDetail", () => ({
-  default: () => <div data-testid="plan-detail" />,
+  default: ({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) => (
+    <div data-testid="plan-detail">
+      <button
+        type="button"
+        data-testid="plan-detail-mark-dirty"
+        onClick={() => onDirtyChange?.(true)}
+      >
+        Mark dirty
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("@/app/harness/useConfirmDialog", () => ({
   useConfirmDialog: () => ({
-    confirm: vi.fn().mockResolvedValue(true),
+    confirm: confirmPlanClose,
     element: null,
   }),
 }));
@@ -99,6 +110,8 @@ afterEach(() => {
   planListState.loading = false;
   planListState.error = null;
   usePlanList.mockClear();
+  confirmPlanClose.mockReset();
+  confirmPlanClose.mockResolvedValue(true);
   delete (HTMLElement.prototype as unknown as Record<string, unknown>)
     .requestFullscreen;
   delete (document as unknown as Record<string, unknown>).fullscreenEnabled;
@@ -427,6 +440,41 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
     );
     expect(screen.getByTestId("plan-popup-modal").style.width).toBe("94vw");
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("preserves popup tabs and confirms before discarding dirty plan edits", async () => {
+    const onClose = vi.fn();
+    renderPopup(null, null, { onClose });
+
+    const planTab = screen.getByRole("tab", { name: "Plan" });
+    const sessionsTab = screen.getByRole("tab", { name: "Sessions" });
+    expect(planTab.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("plan-detail")).toBeTruthy();
+
+    fireEvent.click(sessionsTab);
+    await waitFor(() => expect(screen.getByTestId("plan-sessions")).toBeTruthy());
+    expect(sessionsTab.getAttribute("aria-selected")).toBe("true");
+    expect(planTab.getAttribute("aria-selected")).toBe("false");
+
+    fireEvent.click(planTab);
+    await waitFor(() => expect(screen.getByTestId("plan-detail")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("plan-detail-mark-dirty"));
+
+    confirmPlanClose.mockResolvedValueOnce(false);
+    fireEvent.click(screen.getByTestId("plan-popup-close"));
+    await waitFor(() =>
+      expect(confirmPlanClose).toHaveBeenCalledWith({
+        title: "Discard unsaved edits?",
+        body: "Your current plan edits will be discarded.",
+        confirmLabel: "Discard",
+        destructive: true,
+      }),
+    );
+    expect(onClose).not.toHaveBeenCalled();
+
+    confirmPlanClose.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByTestId("plan-popup-close"));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
   it("clears stale popup view and P/D target state on close", async () => {
