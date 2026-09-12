@@ -1,6 +1,6 @@
 # Shared agent obligations — current acceptance evidence
 
-Plan: `shared-agent-obligations-and-briefs-2026-09-05`, revision 53.
+Plan: `shared-agent-obligations-and-briefs-2026-09-05`, revision 55.
 Work item: `WI-2147072` / P-008. This is an in-progress evidence record; shipment is not yet verified.
 
 ## Staging acceptance refresh — 2026-09-12
@@ -37,6 +37,15 @@ controls have no action in the passing writer assertions, so this test populatio
 observed zero false interventions. These remain deterministic fixture
 opportunities—not completed live LLM cycles. Live behavior/canary residue remains
 explicitly unexercised where the prior record says so.
+
+The full current rubric file set was also routed in detached recovery run
+`5e4b89a8-5fe2-4e1f-aa62-5f30d129b56e` at clean HEAD
+`1bd43fdbbed16aacf8fdad5cae7494e65b2fc91f`. All 20 requested files matched,
+all three owning-workspace groups exited zero, and the final router verdict is
+`status=passed`, `executed=20`, `matched=20`, `uncommittedPaths=0/20`. The
+router's final line reports `skippedTests=unknown`; therefore this record does
+not invent an aggregate test or skip count. The narrower R-6 run above is the
+measured 48-test/zero-skip result.
 
 Rubric revision 6 still declares R-6 on the `deployed` evidence plane. D-017 has
 been recorded and the required activation re-audit correctly refused to certify
