@@ -122,7 +122,10 @@ export function resetMcpAdmissionForTests(): void {
  * The outer MCP proxy has the matching capacity-reserve list. This inner gate
  * still needs its own exemption because direct ptool/staging calls bypass that
  * proxy, and because a proxy-reserved request can otherwise be shed here after
- * it reaches the operator.
+ * it reaches the operator. `scheduler:get_next` is included below as a bounded
+ * recovery/self-pull call: it claims at most one item and its handler has an
+ * explicit whole-call deadline, but it is admitted only for its known, bounded
+ * argument shape (unlike a generic ordinary tools/call).
  */
 /**
  * EI-21574538947513211 adds `dev:dogfood_substrate_status`, measured: a bounded 149-index
@@ -173,6 +176,11 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'work_items:get',
   ].map(normalizeMcpName),
 );
+const SCHEDULER_GET_NEXT_NAME = normalizeMcpName('scheduler:get_next');
+const CRITICAL_SCHEDULER_MAX_HARNESS_CHARS = 200;
+const CRITICAL_SCHEDULER_MAX_HELD_PATH_CHARS = 512;
+const CRITICAL_SCHEDULER_MAX_HELD_PATHS = 500;
+const CRITICAL_SCHEDULER_STATES = new Set(['open', 'failing']);
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
@@ -410,6 +418,51 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
 }
 
 /**
+ * `scheduler:get_next` is the authoritative fleet self-pull and is already
+ * reserved by the outer MCP proxy. Direct ptool/staging calls still pass
+ * through this inner gate, so admit only the exact bounded request surface
+ * documented by the handler: one claim, at most 500 short held paths, and the
+ * two claimable states. Unknown keys are rejected rather than allowing a large
+ * opaque payload to ride the critical-pressure recovery lane.
+ */
+function isBoundedSchedulerGetNextArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['harness', 'heldPaths', 'states', 'rigAvailable', 'ignoreContextPressure']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    args.harness !== undefined &&
+    (typeof args.harness !== 'string' ||
+      args.harness.trim().length === 0 ||
+      args.harness.length > CRITICAL_SCHEDULER_MAX_HARNESS_CHARS)
+  ) {
+    return false;
+  }
+  if (args.heldPaths !== undefined) {
+    if (
+      !Array.isArray(args.heldPaths) ||
+      args.heldPaths.length > CRITICAL_SCHEDULER_MAX_HELD_PATHS ||
+      !args.heldPaths.every(
+        (path) => typeof path === 'string' && path.length <= CRITICAL_SCHEDULER_MAX_HELD_PATH_CHARS,
+      )
+    ) {
+      return false;
+    }
+  }
+  if (
+    args.states !== undefined &&
+    (!Array.isArray(args.states) ||
+      args.states.length > 20 ||
+      !args.states.every((state) => typeof state === 'string' && CRITICAL_SCHEDULER_STATES.has(state)))
+  ) {
+    return false;
+  }
+  for (const field of ['rigAvailable', 'ignoreContextPressure']) {
+    if (args[field] !== undefined && typeof args[field] !== 'boolean') return false;
+  }
+  return true;
+}
+
+/**
  * A single checkpoint is the smallest durable recovery write: it preserves the
  * successor state needed to resume after the pressure condition clears. Keep the
  * exemption to one identified item so a bulk checkpoint request cannot turn the
@@ -616,6 +669,7 @@ function isBoundedJudgeGradingAuditEmitArgs(args: unknown, requestUrl?: string):
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, requestUrl?: string): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
+  if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
