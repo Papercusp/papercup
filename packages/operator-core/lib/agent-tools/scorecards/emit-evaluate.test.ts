@@ -295,7 +295,7 @@ describe('emitScorecard', () => {
     });
   });
 
-  it('refuses a stale-host emit before writing an authoritative scorecard', async () => {
+  it('does not confuse the separate Scout host with evaluator freshness, and preserves its telemetry', async () => {
     readRunningGenerationM.mockResolvedValue({
       deployedSha: 'release-sha',
       hostStartedAt: '2026-09-11T00:00:00.000Z',
@@ -307,13 +307,20 @@ describe('emitScorecard', () => {
     const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
 
     expect(r).toMatchObject({
-      ok: false,
-      code: 'stale_host_generation',
+      ok: true,
+      created: true,
       staleHost: true,
       deployedSha: 'release-sha',
       gradedGeneration: { deployedSha: 'release-sha', staleHost: true },
     });
-    expect(captureM).not.toHaveBeenCalled();
+    expect(captureM).toHaveBeenCalledTimes(1);
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          gradedGeneration: { bootHeadSha: 'older-sha', deployedSha: 'release-sha', staleHost: true },
+        },
+      },
+    });
   });
 
   it('surfaces the running generation on a successful emit', async () => {

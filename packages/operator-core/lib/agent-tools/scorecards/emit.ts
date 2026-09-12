@@ -2058,22 +2058,11 @@ export async function emitScorecard(
     }
 
     const gradedGeneration = await readCurrentGeneration();
-    // EI-22964903794871049: a stale evaluator can produce a complete-looking
-    // scorecard against an old release checkout. The generation stamp is the
-    // detector; make it load-bearing at the write boundary instead of burying
-    // `staleHost` in the persisted observation for a later audit to discover.
-    if (gradedGeneration?.staleHost === true) {
-      return {
-        ok: false as const,
-        code: 'stale_host_generation' as const,
-        error:
-          'scorecard emit refused: the running evaluator host is not proven to execute the querying build; ' +
-          'rerun from a host whose generation matches the deployed build, then emit again',
-        staleHost: true as const,
-        deployedSha: gradedGeneration.deployedSha,
-        gradedGeneration,
-      };
-    }
+    // EI-23074025929199961: this stamp measures the SEPARATE Scout bg-host.
+    // Its boot HEAD differing from the querying build says nothing about this
+    // evaluator's freshness. Preserve and surface that telemetry, but never use
+    // it to refuse an otherwise valid scorecard. Exact evaluator build/selection
+    // and pass-claim checks remain in validateSpecTestAdequacyReplay above.
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
       kind: 'change',
@@ -2278,7 +2267,7 @@ export default defineTool({
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     returns:
-      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. A stale running generation returns code `stale_host_generation` with `staleHost`, `deployedSha`, and `gradedGeneration`, and writes no card. Successful emits surface the same `gradedGeneration` stamp (including `staleHost` and `deployedSha`) alongside `ok:true`. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
+      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. Successful emits surface `gradedGeneration`, `staleHost` and `deployedSha`: these describe the separate Scout bg-host relative to the querying build, not evaluator freshness. Exact spec-test-adequacy replay independently refuses changed evaluator builds, missing identities or contradicted pass claims. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
     chaining:
       'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
