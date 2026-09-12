@@ -154,16 +154,22 @@ test.describe('/adv Learning tab — Observations pane, real long-body row', () 
   }) => {
     const sync = await stubApis(page);
 
+    // Playwright's webServer readiness probe proves only that Vite can serve
+    // HTML. On a first isolated run the /adv module graph can still be compiling
+    // after that probe succeeds; waiting for `domcontentloaded` then spends the
+    // whole 30s navigation budget on a lifecycle event this test does not use.
+    // Commit proves the document request succeeded, while the sync query below
+    // is the content-bearing readiness signal for the panel under test.
     const res = await page.goto(
       `${baseURL}/adv?tab=learning&lview=observations&slug=${SLUG}&scope=self`,
-      { waitUntil: 'domcontentloaded' },
+      { waitUntil: 'commit' },
     );
     expect([200, 304]).toContain(res?.status() ?? 0);
 
     // Prove the stub is feeding the pane BEFORE the 30s mount wait below, so a
     // bypassed stub fails in seconds with a diagnostic instead of masquerading
     // as "the shell did not mount".
-    await sync.waitForServed(['learning.observations']);
+    await sync.waitForServed(['learning.observations'], 45_000);
 
     const expandBtn = page.getByRole('button', {
       name: `Expand observation ${OBSERVATION_TITLE}`,
