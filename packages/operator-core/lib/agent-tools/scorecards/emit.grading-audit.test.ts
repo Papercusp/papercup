@@ -106,6 +106,10 @@ const FAIL_RATINGS: ObservationRatings = { c1: { rating: 'fail', evidence: 'prob
 const RE_RUN_FAIL_RATINGS: ObservationRatings = {
   're-runnable-evidence': { rating: 'fail', evidence: 'probe not re-runnable' },
 };
+const REPLAY_SPLIT_RATINGS: ObservationRatings = {
+  're-runnable-evidence': { rating: 'pass', evidence: 'exact target recipe executed' },
+  'degenerate-distribution': { rating: 'fail', evidence: 'spot replay contradicted the uniform target card' },
+};
 
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
@@ -122,13 +126,13 @@ const RERUN_RECIPE = {
     specId: 'SPEC-003-01',
     specRevision: 1,
     specFingerprint: 'sha256:spec-v1',
-    evidence: [{ evidenceKind: 'integration fixture', evidenceRef: 'surface:reconnect' }],
+    evidence: [{ evidenceKind: 'test', evidenceRef: 'surface:reconnect' }],
   },
   current: {
     supplied: true,
     fingerprints: [
       {
-        evidenceKind: 'integration fixture',
+        evidenceKind: 'test',
         evidenceRef: 'surface:reconnect',
         sourceFingerprint: 'git:abc',
         testFingerprint: 'sha256:test',
@@ -186,6 +190,39 @@ const runningGeneration = (deployedSha: string) => ({
 const replayAuditRubric = () => ({
   ...mkRubric('grading-integrity', 'standard'),
   criteria: [{ key: 're-runnable-evidence', title: 'Re-runnable evidence', model: 'm', method: 'm', driftMarkers: 'd' }],
+});
+
+const replayConsistencyAuditRubric = () => ({
+  ...mkRubric('grading-integrity', 'standard'),
+  criteria: [
+    { key: 're-runnable-evidence', title: 'Re-runnable evidence', model: 'm', method: 'm', driftMarkers: 'd' },
+    { key: 'degenerate-distribution', title: 'Degenerate distribution', model: 'm', method: 'm', driftMarkers: 'd' },
+  ],
+});
+
+const replayConsistencyGradedCard = () => ({
+  ...replayableGradedCard('a'.repeat(40)),
+  payload: {
+    observation: {
+      ...replayableGradedCard('a'.repeat(40)).payload.observation,
+      rubricRef: 'spec-test-adequacy',
+      ratings: { traceability: { rating: 'pass', evidence: 'exact binding replay passed' } },
+    },
+  },
+});
+
+const targetReplay = (rating: 'pass' | 'fail') => ({
+  ok: true,
+  rows: [
+    {
+      specId: 'SPEC-003-01',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      verdict: rating,
+      wouldBlock: rating === 'fail' ? ['traceability'] : [],
+      ratings: { traceability: { rating } },
+    },
+  ],
 });
 
 beforeEach(() => {
@@ -468,6 +505,46 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect((res as { error?: string }).error).toContain('recorded evidence source');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('refuses a degenerate-distribution failure when the exact server replay reproduces every target rating', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect((res as { error?: string }).error).toContain('reproduced every applicable rating');
+    expect(dispatchTool).toHaveBeenCalledWith(
+      'plans:evaluate-spec-test-adequacy',
+      expect.objectContaining({ slug: 'reconnect-plan', payloadTier: 'full' }),
+    );
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('allows the same audit split when the exact server replay really contradicts a target rating', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('fail'));
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledOnce();
+    expect(recordGradingAudit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({ verdict: 'failed' }),
+    );
   });
 
   it.each([

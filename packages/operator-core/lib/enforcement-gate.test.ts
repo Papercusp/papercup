@@ -8,6 +8,8 @@ import {
   renderFlushRefusal,
   armedLoopNeedsCarryNote,
   carryNoteStartsWithSelfCompaction,
+  SAME_TURN_CHECKPOINT_FRESHNESS_MS,
+  hasFreshCheckpointWriterEvidence,
 } from './enforcement-gate';
 
 const NOW = 1_800_000_000_000;
@@ -266,6 +268,93 @@ describe('carryNoteStartsWithSelfCompaction', () => {
 
   it('does not treat a prohibition as the self-compaction action', () => {
     expect(carryNoteStartsWithSelfCompaction('Do not compact now')).toBe(false);
+  });
+});
+
+describe('hasFreshCheckpointWriterEvidence', () => {
+  const coldLoop = (over: Partial<NonNullable<CarryBrief['loop']>> = {}) => ({
+    harness: 'papercusp',
+    active: true,
+    intervalSec: 60,
+    carry: 'cold' as const,
+    goal: null,
+    carryNote: '## Next action\nRun the verified next step.',
+    carryNoteUpdatedAtMs: NOW - 1_000,
+    ...over,
+  });
+
+  it('accepts a finite, current carry-note writer timestamp', () => {
+    expect(hasFreshCheckpointWriterEvidence(brief({ loop: coldLoop() }), NOW)).toBe(true);
+  });
+
+  it('accepts a fresh held-item checkpoint when the carry-note is stale', () => {
+    expect(
+      hasFreshCheckpointWriterEvidence(
+        brief({
+          loop: coldLoop({ carryNoteUpdatedAtMs: NOW - SAME_TURN_CHECKPOINT_FRESHNESS_MS - 1 }),
+          heldItems: [held({ checkpoint: 'verified', checkpointUpdatedAtMs: NOW - 1_000 })],
+        }),
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['missing timestamp', { carryNoteUpdatedAtMs: null }],
+    ['unknown timestamp', { carryNoteUpdatedAtMs: Number.NaN }],
+    ['stale timestamp', { carryNoteUpdatedAtMs: NOW - SAME_TURN_CHECKPOINT_FRESHNESS_MS - 1 }],
+    ['future timestamp', { carryNoteUpdatedAtMs: NOW + 1 }],
+    ['read failure', { carryNoteReadFailed: true }],
+  ])('rejects %s writer evidence', (_label, over) => {
+    expect(hasFreshCheckpointWriterEvidence(brief({ loop: coldLoop(over) }), NOW)).toBe(false);
+  });
+
+  it('rejects a timestamp without a readable checkpoint value', () => {
+    expect(
+      hasFreshCheckpointWriterEvidence(
+        brief({ heldItems: [held({ checkpoint: null, checkpointUpdatedAtMs: NOW - 1_000 })] }),
+        NOW,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('detectFlushTripwires — same-turn checkpoint writer exemption', () => {
+  const coldLoopWithNextAction = (carryNoteUpdatedAtMs: number | null = NOW - 10 * 60_000) =>
+    brief({
+      loop: {
+        harness: 'papercusp',
+        active: true,
+        intervalSec: 60,
+        carry: 'cold',
+        goal: null,
+        carryNote: '## Next action\nRun the exact backlog recipe.',
+        carryNoteUpdatedAtMs,
+      },
+    });
+
+  it('does not refuse a compaction immediately after a fresh carry-note write', () => {
+    expect(detectFlushTripwires(coldLoopWithNextAction(NOW - 1_000), NOW, 0, 'compaction')).toEqual([]);
+  });
+
+  it('keeps refusing when the carry-note writer timestamp is stale or unknown', () => {
+    expect(
+      detectFlushTripwires(
+        coldLoopWithNextAction(NOW - SAME_TURN_CHECKPOINT_FRESHNESS_MS - 1),
+        NOW,
+        0,
+        'compaction',
+      ).map((tripwire) => tripwire.kind),
+    ).toEqual(['cold-successor-no-progress']);
+    expect(detectFlushTripwires(coldLoopWithNextAction(null), NOW, 0, 'compaction')).toEqual([
+      expect.objectContaining({ kind: 'cold-successor-no-progress' }),
+    ]);
+  });
+
+  it('does not apply the compaction-only exemption to a handoff boundary', () => {
+    expect(
+      detectFlushTripwires(coldLoopWithNextAction(NOW - 1_000), NOW, 0, 'handoff'),
+    ).toEqual([expect.objectContaining({ kind: 'cold-successor-no-progress' })]);
   });
 });
 

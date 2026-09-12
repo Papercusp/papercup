@@ -1352,6 +1352,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // tools:invoke-wrapped calls so the server's typed result wins over the
   // ordinary 30s client cutoff.
   ['dev:pg_query', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-23079930157206205: dev:service_health fans out across fixed service
+  // endpoints and systemd state. Its valid read can outlive ptool's ordinary
+  // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside
+  // the MCP transport floor instead of reporting an outcome-unknown timeout.
+  ['dev:service_health', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-22810897251728336: blueprint:publish legitimately composes three
   // independently bounded network stages (GitHub repo metadata, best-effort
   // publisher attestation, and the complete Cupboard POST/body read). Their

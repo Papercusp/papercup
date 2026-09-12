@@ -22,6 +22,7 @@ import {
   runFlushGate,
   __resetRefusalMarkers,
 } from './enforcement-gate-io';
+import { SAME_TURN_CHECKPOINT_FRESHNESS_MS } from './enforcement-gate';
 
 const NOW = 1_800_000_000_000;
 
@@ -249,6 +250,39 @@ describe('runFlushGate — cold-successor-no-progress wiring', () => {
     expect(out.verdict).toBe('clear');
     expect(out.tripwires).toEqual([]);
     expect(countFn).toHaveBeenCalledWith('su-cold-compaction', NOW - 10 * 60_000, NOW);
+  });
+
+  it('does not refuse compaction after a fresh carry-note writer flush with zero post-note calls', async () => {
+    const countFn = vi.fn(async () => 0);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold-fresh-writer',
+      workspaceId: '*',
+      sessionId: 'su-cold-fresh-writer',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({ carryNoteUpdatedAtMs: NOW - 1_000 }),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('clear');
+    expect(out.tripwires).toEqual([]);
+    expect(countFn).toHaveBeenCalledWith('su-cold-fresh-writer', NOW - 1_000, NOW);
+  });
+
+  it('keeps refusing when the carry-note writer is stale despite zero post-note calls', async () => {
+    const countFn = vi.fn(async () => 0);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold-stale-writer',
+      workspaceId: '*',
+      sessionId: 'su-cold-stale-writer',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({ carryNoteUpdatedAtMs: NOW - SAME_TURN_CHECKPOINT_FRESHNESS_MS - 1 }),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('refuse');
+    expect(out.tripwires).toEqual([expect.objectContaining({ kind: 'cold-successor-no-progress' })]);
   });
 
   it('does not self-refuse compaction when the first next action is "Compact now"', async () => {

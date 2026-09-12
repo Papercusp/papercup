@@ -74,6 +74,23 @@ function errorMessage(error) {
 }
 
 /**
+ * Render an inspector/browser URL safely for diagnostic output.
+ *
+ * Debugger and browser WebSocket URLs can carry credentials or short-lived
+ * access tokens in their query string. Diagnostics only need the endpoint
+ * identity, so omit credentials, search parameters, and fragments entirely.
+ * An unparseable value is not echoed because it may itself contain a secret.
+ */
+export function redactDiagnosticUrl(value) {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}${url.pathname || '/'}`;
+  } catch {
+    return '<unparseable-url>';
+  }
+}
+
+/**
  * Create a small CDP client whose Runtime.evaluate path cannot mistake
  * `exceptionDetails` for a successful evaluation.
  */

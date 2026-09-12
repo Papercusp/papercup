@@ -6,7 +6,12 @@
 //
 // Usage: node scripts/leak-sample.mjs <pid> [durationMs] [inspectorPort]
 import { setTimeout as sleep } from 'node:timers/promises';
-import { closeInspector, createCdpClient, discoverInspector } from './cdp-inspector.mjs';
+import {
+  closeInspector,
+  createCdpClient,
+  discoverInspector,
+  redactDiagnosticUrl,
+} from './cdp-inspector.mjs';
 
 const pid = Number(process.argv[2]);
 const durationMs = Number(process.argv[3] || 45000);
@@ -24,7 +29,7 @@ for (let i = 0; i < 8 && !inspector; i += 1) {
   if (!inspector) await sleep(700);
 }
 if (!inspector) { console.error('could not find inspector ws url (SIGUSR1 may need --inspect support)'); process.exit(1); }
-console.error('inspector:', inspector.wsUrl);
+console.error('inspector:', redactDiagnosticUrl(inspector.wsUrl));
 
 const client = createCdpClient(inspector.wsUrl);
 await client.connect();

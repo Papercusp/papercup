@@ -3,7 +3,11 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error — the shared CLI seam is a plain .mjs module.
-import { closeInspector, createCdpClient } from '../../../scripts/cdp-inspector.mjs';
+import {
+  closeInspector,
+  createCdpClient,
+  redactDiagnosticUrl,
+} from '../../../scripts/cdp-inspector.mjs';
 
 class FakeWebSocket extends EventEmitter {
   static instances: FakeWebSocket[] = [];
@@ -59,6 +63,21 @@ function makeClient(responses: Map<string, unknown>, options: Record<string, unk
 }
 
 describe('CDP inspector seam', () => {
+  it('redacts credentials, query strings, and fragments from diagnostic URLs', () => {
+    const redacted = redactDiagnosticUrl(
+      'wss://user:password@example.test:9229/devtools/page/id?access_token=short-lived&safe=yes#fragment',
+    );
+
+    expect(redacted).toBe('wss://example.test:9229/devtools/page/id');
+    expect(redacted).not.toContain('access_token');
+    expect(redacted).not.toContain('short-lived');
+    expect(redacted).not.toContain('password');
+  });
+
+  it('does not echo an unparseable diagnostic URL', () => {
+    expect(redactDiagnosticUrl('not a URL with token=secret')).toBe('<unparseable-url>');
+  });
+
   it('surfaces Runtime.evaluate exceptionDetails as a failure', async () => {
     const client = makeClient(new Map([
       ['Runtime.evaluate', {

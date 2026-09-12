@@ -9,7 +9,12 @@
 // Usage: node scripts/cpu-sample.mjs <pid> [durationMs] [inspectorPort] [--save <path>]
 import { setTimeout as sleep } from 'node:timers/promises';
 import { writeFileSync } from 'node:fs';
-import { closeInspector, createCdpClient, discoverInspector } from './cdp-inspector.mjs';
+import {
+  closeInspector,
+  createCdpClient,
+  discoverInspector,
+  redactDiagnosticUrl,
+} from './cdp-inspector.mjs';
 import { aggregateCpuProfile } from './lib/cpu-profile.mjs';
 
 const args = process.argv.slice(2);
@@ -33,7 +38,7 @@ for (let i = 0; i < 8 && !inspector; i += 1) {
   if (!inspector) await sleep(700);
 }
 if (!inspector) { console.error('could not find inspector ws url (SIGUSR1 may need --inspect support)'); process.exit(1); }
-console.error('inspector:', inspector.wsUrl);
+console.error('inspector:', redactDiagnosticUrl(inspector.wsUrl));
 
 const client = createCdpClient(inspector.wsUrl);
 await client.connect();
