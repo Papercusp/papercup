@@ -24,18 +24,20 @@
  */
 export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
   const proxy = process.env.PAPERCUSP_MCP_PROXY_BASE?.trim();
-  // The resilient proxy is intentionally a live-operator (:3070) transport. When
-  // this process is serving the staging/current-build operator (:3170), routing a
-  // child through :9071 silently changes its runtime vintage back to green main.
-  // Keep the explicit staging endpoint authoritative even when the parent service
-  // exports the proxy for ordinary live sessions.
-  let isStagingRuntime = false;
+  // The resilient proxy is intentionally a live-operator (:3070) transport. Any
+  // explicit non-live operator port (:3170 staging, :3271 current-build, hermetic
+  // gym/smoke hosts, …) must stay authoritative: routing one through :9071 silently
+  // changes its runtime vintage back to green main. The old check special-cased only
+  // :3170, so a :3271 capability:launch-agent command kept its requested --stack
+  // argv but bootstrapped against stale :3070 and persisted an empty identity stack.
+  let isExplicitNonLiveRuntime = false;
   try {
-    isStagingRuntime = new URL(operatorBaseUrl).port === '3170';
+    const port = new URL(operatorBaseUrl).port;
+    isExplicitNonLiveRuntime = port.length > 0 && port !== '3070';
   } catch {
-    // Preserve the historical string fallback for malformed/relative test inputs.
+    // Preserve the historical proxy fallback for malformed/relative inputs.
   }
-  const base = proxy && proxy.length > 0 && !isStagingRuntime ? proxy : operatorBaseUrl;
+  const base = proxy && proxy.length > 0 && !isExplicitNonLiveRuntime ? proxy : operatorBaseUrl;
   return base.replace(/\/$/, '');
 }
 
