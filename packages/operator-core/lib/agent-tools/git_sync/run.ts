@@ -40,9 +40,9 @@ const GIT_SYNC_COMMITTED_EVENT = 'git-sync:committed';
 /**
  * WI-4940: `git rev-parse HEAD` itself has NO bound — the ~120s hang the reporter
  * observed (a WI-4938 caller had to terminate its wait) happened AFTER the
- * commit had already landed (headSha's `after` call, run unconditionally once
- * `fireGitSyncNow` resolves, degraded or not — the EI-9425 GIT_SYNC_RUN_BUDGET_MS
- * wrap only bounds the fire itself, never this trailing `git rev-parse`). Under
+ * commit had already landed, during the post-fire HEAD probe. Both probes use
+ * a bounded `execFile`, and a degraded fire skips the post-fire probe so the
+ * 45s fire budget cannot be extended by another child-process wait. Under
  * disk/IO stall or fleet-wide git-process contention a bare `execFile` can hang
  * indefinitely with no signal back to the caller — an ambiguous-write response-loss
  * class exactly like the one GIT_SYNC_RUN_BUDGET_MS exists to prevent for the fire
@@ -209,7 +209,10 @@ export default defineTool({
       label: 'git-sync:run fireGitSyncNow',
     });
 
-    const after = repoDir ? await headSha(repoDir) : null;
+    // A degraded fire has already reached the caller's response budget. Do not
+    // spend another bounded git probe before returning the explicit in-progress
+    // or error result; the fire may still be running in the background.
+    const after = repoDir && !fired.degraded ? await headSha(repoDir) : null;
     const outcome = fired.value;
     const pushedScopes = outcome && 'pushed' in outcome ? outcome.pushed : [];
     const superprojectPushConfirmed = pushedScopes.includes('superproject');

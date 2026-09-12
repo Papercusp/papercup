@@ -789,6 +789,7 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
     'capability:bash',
     'capability:inspect',
     'code:run',
+    'recipes:run',
   ];
 
   it.each(FOREGROUND_CAPABLE_TOOLS)('%s gets a client deadline beyond the transport cap, not the flat 30s default', (name) => {
@@ -800,6 +801,10 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
 
   it('honours the same override when reached via tools:invoke (the sanctioned deferred-tool fallback)', () => {
     expect(timeoutForTool('tools:invoke', { name: 'testing:run' })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the saved-recipe foreground budget through tools:invoke', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'recipes:run' })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
   });
 
   it('a caller-supplied `timeoutMs` tool ARGUMENT does not, by itself, widen the client deadline', () => {

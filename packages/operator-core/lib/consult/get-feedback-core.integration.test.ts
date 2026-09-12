@@ -238,12 +238,19 @@ describe('source-audit dispatcher through persisted consult routing', () => {
         )`;
 
       const fixture = makeDeps(routeOf([cand('fresh-auditor')]));
-      const feedback = vi.fn(async (req: GetFeedbackRequest, _identity: unknown, options?: { filterRoute?: (route: RouteResult) => Promise<RouteResult> }) =>
+      const feedback = vi.fn(async (
+        req: GetFeedbackRequest,
+        _identity: unknown,
+        options: {
+          harnessSlug?: string | null;
+          filterRoute?: (route: RouteResult) => Promise<RouteResult>;
+        } = {},
+      ) =>
         getFeedbackCore(req, {
           ...fixture.deps,
           route: async (params) => {
             const routed = await fixture.deps.route(params);
-            return options?.filterRoute ? options.filterRoute(routed) : routed;
+            return options.filterRoute ? options.filterRoute(routed) : routed;
           },
         }),
       );
@@ -278,12 +285,14 @@ describe('source-audit dispatcher through persisted consult routing', () => {
       const routeDeps = {
         getSql: () => rootSql,
         feedback,
-        resolveParties: async (ids: string[]) => new Map(ids.map((id) => [id, id])),
+        resolveParties: async (ids: readonly (string | null | undefined)[]) => new Map(
+          ids.filter((id): id is string => Boolean(id)).map((id) => [id, id]),
+        ),
         resolveResponderLiveness,
       };
 
       const first = await routeSourceGradingAudit(input, routeDeps);
-      expect(first).toMatchObject({ state: 'routed' });
+      if (first.state !== 'routed') throw new Error(`expected first route, got ${first.state}`);
       expect(resolveResponderLiveness).toHaveBeenCalledWith(responderId);
       expect(feedback).toHaveBeenCalledOnce();
       const oldRow = await stateRow(conversationId);
@@ -295,7 +304,8 @@ describe('source-audit dispatcher through persisted consult routing', () => {
       // The fresh consult is still deduped on replay; the stale row is the only
       // one retired, so a retry cannot create a second active chain.
       const replay = await routeSourceGradingAudit(input, routeDeps);
-      expect(replay).toMatchObject({ state: 'deduped', conversationId: first.conversationId });
+      if (replay.state !== 'deduped') throw new Error(`expected replay dedupe, got ${replay.state}`);
+      expect(replay.conversationId).toBe(first.conversationId);
       expect(feedback).toHaveBeenCalledOnce();
     },
   );
@@ -349,6 +359,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
         const dispatchDeps = {
           listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
           reserve: async () => ({ status: 'claimed' as const }), release: async () => true,
+          confirmReservation: async () => true,
           listWorkspaceWideLoopStanddownOwners: async () => new Set<string>(), route, launch,
         };
         const request = { targetIds: [issueId], ctx: { workspaceId: WS, uiClientId: 'counterexample-requester', isSuperuser: true } as DispatchPendingGradingAuditsInput['ctx'] };
@@ -445,6 +456,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const dispatchDeps = {
       listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
       reserve: async () => ({ status: 'claimed' as const }), release: async () => true,
+      confirmReservation: async () => true,
       listWorkspaceWideLoopStanddownOwners: async () => new Set<string>(), route, launch,
     };
     const first = await dispatchPendingGradingAudits({ targetIds: [source.issueId], ctx }, dispatchDeps);

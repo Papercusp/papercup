@@ -358,6 +358,45 @@ describe('git-sync:run', () => {
     });
   });
 
+  it('does not run a trailing HEAD probe after a timed-out fire', async () => {
+    vi.doMock('../../bounded-timeout', () => ({
+      withBoundedTimeout: async () => ({ value: undefined, degraded: true, reason: 'timeout', elapsedMs: 45_000 }),
+    }));
+    const execFileMock = vi.fn(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, cb: (...a: unknown[]) => void) =>
+        cb(null, 'abc123\n', ''),
+    );
+    Object.defineProperty(execFileMock, promisify.custom, {
+      value: (_file: string, _args: string[], _opts: Record<string, unknown>) =>
+        new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execFileMock(_file, _args, _opts, (...callbackArgs: unknown[]) => {
+            const [error, stdout, stderr] = callbackArgs as [unknown, string, string];
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve({ stdout, stderr });
+          });
+        }),
+    });
+    vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => '/repo' }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => undefined) }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: 'in_progress',
+      degraded: true,
+      head_before: 'abc123',
+      head_after: null,
+    });
+  });
+
   const SKIP_HOLDERS = [
     {
       owner: 'su-peer',

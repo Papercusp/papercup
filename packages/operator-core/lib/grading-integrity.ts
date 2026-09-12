@@ -144,6 +144,8 @@ export interface DispatchPendingGradingAuditsDeps {
   launch?: GradingAuditLaunchHandler;
   route?: typeof routeSourceGradingAudit;
   reserve?: typeof reservePendingGradingAudit;
+  /** Re-check the owned reservation after the candidate snapshot is claimed. */
+  confirmReservation?: typeof confirmPendingGradingAuditReservation;
   release?: typeof releasePendingGradingAudit;
   getTask?: typeof getTask;
   readLogTail?: (path: string) => string | Promise<string>;
@@ -188,6 +190,43 @@ export interface GradingAuditReservationResult {
   };
   /** Present on `quota-backoff`: the live suppression that refused the claim. */
   backoff?: GradingAuditDispatchBackoff;
+}
+
+/**
+ * Confirm that a reservation still owns a pending target immediately before
+ * dispatch. The initial candidate read is intentionally outside the reservation
+ * transaction, and the settlement writer can finish another auditor between
+ * that read and this dispatcher. Re-locking the row here makes the post-
+ * reservation state check authoritative for the next side effect.
+ */
+export async function confirmPendingGradingAuditReservation(
+  issueId: string,
+  reservationKey: string,
+  options: Pick<GradingAuditReservationOptions, 'workspaceId'> = {},
+): Promise<boolean> {
+  const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
+  const current = await boundedOrgTxn(
+    async (tx: OrgSql) =>
+      tx<{ feature_id: string }[]>`
+      SELECT scorecard.feature_id
+        FROM harness_shared.work_items AS scorecard
+       WHERE scorecard.workspace_id = ${workspaceId}
+         AND scorecard.feature_id = ${issueId}
+         AND scorecard.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND scorecard.payload->'observation'->'gradingAudit'->>'state' = 'pending'
+         AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
+         AND scorecard.payload->'observation'->'retracted' IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.work_items AS superseder
+            WHERE superseder.workspace_id = scorecard.workspace_id
+              AND superseder.payload->'observation'->>'supersedes' = scorecard.feature_id
+              AND superseder.payload->'observation'->>'rubricRef' = scorecard.payload->'observation'->>'rubricRef'
+              AND superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM scorecard.payload->'observation'->>'sourceHive'
+         )
+       FOR UPDATE`,
+  );
+  return Boolean(current[0]);
 }
 
 interface GradingAuditReservationOptions {
@@ -538,6 +577,7 @@ export async function dispatchPendingGradingAudits(
   const resolveRubric = deps.getRubric ?? getRubric;
   const launch = deps.launch ?? launchAgentTool.handler;
   const reserve = deps.reserve ?? reservePendingGradingAudit;
+  const confirmReservation = deps.confirmReservation ?? confirmPendingGradingAuditReservation;
   const release = deps.release ?? releasePendingGradingAudit;
   const workspaceId = input.ctx.workspaceId?.trim();
   const readWorkspaceWideStanddowns =
@@ -625,6 +665,7 @@ export async function dispatchPendingGradingAudits(
     let attempts = 0;
     let reservationHeld = false;
     let routingFallback: string | undefined;
+    let receipt: PendingGradingAuditDispatchReceipt | null = null;
     const releaseReservation = async (backoff?: GradingAuditDispatchBackoff) => {
       if (!reservationHeld) return;
       reservationHeld = false;
@@ -637,6 +678,21 @@ export async function dispatchPendingGradingAudits(
         // The reservation TTL is the durable cleanup fallback if this release
         // cannot reach the database after a launcher failure.
       }
+    };
+    const confirmOwnedPendingReservation = async (): Promise<boolean> => {
+      const current = await confirmReservation(issueId, idempotencyKey, {
+        workspaceId: input.ctx.workspaceId,
+      });
+      if (current) return true;
+      await releaseReservation();
+      receipt = {
+        issueId,
+        rubricRef: card.rubricRef,
+        state: 'skipped',
+        idempotencyKey,
+        reason: 'target is no longer pending after reservation; dispatch abandoned',
+      };
+      return false;
     };
     const recoveryFields = () => ({
       ...(routingFallback ? { routingFallback } : {}),
@@ -673,6 +729,10 @@ export async function dispatchPendingGradingAudits(
         continue;
       }
       reservationHeld = true;
+      if (!(await confirmOwnedPendingReservation())) {
+        receipts.push(receipt!);
+        continue;
+      }
       const routed = await (deps.route ?? routeSourceGradingAudit)({
         card,
         reservationKey: idempotencyKey,
@@ -726,10 +786,14 @@ export async function dispatchPendingGradingAudits(
         });
       };
       let launchBackend: 'claude' | 'codex' = 'claude';
-      let receipt: PendingGradingAuditDispatchReceipt | null = null;
 
       for (let attempt = 0; attempt <= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS; attempt += 1) {
         attempts = attempt + 1;
+        // Routing can itself create a durable consult and take long enough for
+        // another auditor to settle the target. Re-check directly before each
+        // external launch as well as before routing; never launch from the stale
+        // candidate snapshot after settlement.
+        if (!(await confirmOwnedPendingReservation())) break;
         const useFallback = launchBackend === GRADING_AUDIT_FALLBACK.agent;
         const result = (await launch(
           {

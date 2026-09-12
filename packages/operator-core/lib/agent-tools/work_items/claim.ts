@@ -1078,13 +1078,13 @@ export default defineTool({
   //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
   //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available. The separate born-pending admission/trust floor remains enforced for ordinary named claims; only server-derived capabilities (current-leader dispatch, self-filed fallout, an exact legacy fleet-scope downgrade, or an authorized force takeover) may bypass a matching pending row. `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
+    'Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness/lifecycle floors and report advisories, not fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. `force:true` is an audited, liveness-checked takeover requiring reason.',
   guidance: {
-    when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness/lifecycle floors, never fleet scope or the ordinary born-pending admission/trust floor; server-derived dispatch or authorized-force capabilities carry their own exact pending-row exception.',
+    when: 'Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.',
     notWhen:
-      '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `work_item_unreadable` = the pre-claim read failed; retry or inspect database health.',
+      '`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed.',
     chaining:
-      'work_items:list → claim → set_state → release/close. No heartbeat verb exists — any platform call refreshes liveness; during a long LOCAL-ONLY stretch call work_items:checkpoint as a liveness pulse (EI-6772).',
+      'work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772).',
     seeAlso: [
       'work_items:claim_next (self-select the next claimable item instead of naming an id)',
       'work_items:observe (check claimability before taking)',

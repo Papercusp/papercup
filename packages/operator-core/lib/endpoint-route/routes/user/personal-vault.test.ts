@@ -63,11 +63,15 @@ vi.mock('../../../external-triggers/source-store', () => ({
   disconnectOwnedExternalTriggerSources: mocks.disconnectSources,
   setOwnedExternalTriggerSourceCapability: mocks.setCapability,
 }));
-vi.mock('../../../external-triggers/google-workspace', () => ({
-  GOOGLE_WORKSPACE_OAUTH_PLUGIN: 'google-workspace',
-  GOOGLE_WORKSPACE_SOURCE_KINDS: ['gmail', 'gcal', 'contacts'],
-  googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
-}));
+vi.mock('../../../external-triggers/google-workspace', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../external-triggers/google-workspace')>();
+  return {
+    ...actual,
+    GOOGLE_WORKSPACE_OAUTH_PLUGIN: 'google-workspace',
+    GOOGLE_WORKSPACE_SOURCE_KINDS: ['gmail', 'gcal', 'contacts'],
+    googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
+  };
+});
 vi.mock('../../../external-triggers/facebook', () => ({
   FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN: 'facebook-personal-vault',
   FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS: ['facebook'],
@@ -346,6 +350,74 @@ describe('Personal Vault owner routes', () => {
     expect(body).not.toContain('never-serialize-source-config');
     expect(body).not.toContain('never-serialize-google-access-token');
     expect(body).not.toContain('never-serialize-google-refresh-token');
+  });
+
+  it('groups legacy Google pseudo-account rows under the Gmail cursor identity', async () => {
+    mocks.listSources.mockResolvedValueOnce([
+      {
+        id: 'canonical-gmail-source',
+        workspaceId: 'ws-test',
+        kind: 'gmail',
+        ownerUserId: 'user-1',
+        providerAccountId: 'owner@example.com',
+        credentialRef: 'google-workspace:owner-user-1',
+        status: 'connected',
+        config: {},
+        cursor: { emailAddress: 'owner@example.com' },
+        lastError: null,
+        lastConnectedAt: null,
+        updatedAt: '2026-08-23T00:00:00.000Z',
+      },
+      {
+        id: 'legacy-gmail-source',
+        workspaceId: 'ws-test',
+        kind: 'gmail',
+        ownerUserId: 'user-1',
+        providerAccountId: 'google-workspace:owner',
+        credentialRef: 'google-workspace:legacy-owner',
+        status: 'disabled',
+        config: {},
+        cursor: { emailAddress: 'Owner@Example.com' },
+        lastError: null,
+        lastConnectedAt: null,
+        updatedAt: '2026-08-23T00:00:00.000Z',
+      },
+      {
+        id: 'legacy-calendar-source',
+        workspaceId: 'ws-test',
+        kind: 'gcal',
+        ownerUserId: 'user-1',
+        providerAccountId: 'google-workspace:owner',
+        credentialRef: 'google-workspace:legacy-owner',
+        status: 'disabled',
+        config: {},
+        cursor: {},
+        lastError: null,
+        lastConnectedAt: null,
+        updatedAt: '2026-08-23T00:00:00.000Z',
+      },
+    ]);
+
+    const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    const google = payload.integrations.google;
+
+    expect(google.accounts).toHaveLength(1);
+    expect(google.accounts[0]).toMatchObject({
+      providerAccountId: 'owner@example.com',
+      connected: true,
+      status: 'connected',
+    });
+    expect(google.accounts[0].sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'gmail', providerAccountId: 'google-workspace:owner', status: 'disabled' }),
+        expect.objectContaining({ kind: 'gcal', providerAccountId: 'google-workspace:owner', status: 'disabled' }),
+      ]),
+    );
+    expect(google.accounts.map((account: { providerAccountId: string }) => account.providerAccountId)).toEqual([
+      'owner@example.com',
+    ]);
   });
 
   it('reports a persisted disabled YouTube capability as disabled on readback', async () => {

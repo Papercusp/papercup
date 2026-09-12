@@ -465,6 +465,72 @@ describe('GET /api/oauth/callback', () => {
     expect(sourceMocks.provision).not.toHaveBeenCalled();
   });
 
+  it('reconciles an ADD-account callback with a legacy Gmail cursor before duplicate detection', async () => {
+    const legacySources = [
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        workspaceId: 'workspace-1',
+        kind: 'gmail',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        providerAccountId: 'google-workspace:owner',
+        credentialRef: 'google-workspace:legacy-owner',
+        status: 'disabled',
+        config: {},
+        cursor: { emailAddress: 'Owner@Example.com' },
+      },
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        workspaceId: 'workspace-1',
+        kind: 'gcal',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        providerAccountId: 'google-workspace:owner',
+        credentialRef: 'google-workspace:legacy-owner',
+        status: 'disabled',
+        config: {},
+        cursor: {},
+      },
+    ];
+    const reconciledSources = legacySources.map((source) => ({
+      ...source,
+      providerAccountId: 'owner@example.com',
+    }));
+    sourceMocks.listOwned.mockResolvedValueOnce(legacySources).mockResolvedValueOnce(reconciledSources);
+
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({
+        accessToken: 'google-access',
+        refreshToken: 'google-refresh',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
+    expect(sourceMocks.renameAccount).toHaveBeenCalledWith(sourceMocks.sql, {
+      workspaceId: 'workspace-1',
+      ownerUserId: '22222222-2222-4222-8222-222222222222',
+      previousProviderAccountId: 'google-workspace:owner',
+      providerAccountId: 'owner@example.com',
+    });
+    expect(sourceMocks.provision).toHaveBeenCalledWith(
+      sourceMocks.sql,
+      expect.objectContaining({ providerAccountId: 'owner@example.com' }),
+    );
+  });
+
   it('WI-129473: fails closed when a NEW Google account arrives without a refresh token', async () => {
     // access_type=offline only yields a refresh_token on a genuine consent. If
     // Google satisfies the request from an existing grant, the response carries an

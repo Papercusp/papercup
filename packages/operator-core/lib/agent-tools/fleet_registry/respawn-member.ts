@@ -439,6 +439,8 @@ export async function awaitReplacementMember(opts: {
   /** Stop a speculative verifier when the nested launch fails before returning. */
   cancel?: Promise<void>;
   shouldStop?: () => boolean;
+  /** Defer the first roster read one turn so an immediately failed launch can cancel cleanly. */
+  deferFirstPoll?: boolean;
 }): Promise<AwaitReplacementResult> {
   const {
     before,
@@ -451,6 +453,7 @@ export async function awaitReplacementMember(opts: {
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
     cancel,
     shouldStop,
+    deferFirstPoll = false,
   } = opts;
   const startedAt = now();
   // Bound the loop by ITERATIONS as well as by the clock: the deadline test alone spins forever if
@@ -458,6 +461,17 @@ export async function awaitReplacementMember(opts: {
   // slightly early give-up.
   const maxPolls = Math.ceil(timeoutMs / Math.max(1, intervalMs)) + 2;
   let rosterOwnerIds: string[] = [];
+  if (deferFirstPoll) {
+    const stopped = cancel
+      ? await Promise.race([
+          sleep(0).then(() => false),
+          cancel.then(() => true),
+        ])
+      : (await sleep(0), false);
+    if (stopped || shouldStop?.()) {
+      return { verified: false, newMemberOwnerId: null, waitedMs: now() - startedAt, rosterOwnerIds };
+    }
+  }
   for (let poll = 0; ; poll += 1) {
     if (shouldStop?.()) {
       return { verified: false, newMemberOwnerId: null, waitedMs: now() - startedAt, rosterOwnerIds };
@@ -1462,6 +1476,7 @@ export default defineTool({
         timeoutMs: verifySec * 1000,
         cancel: cancellation,
         shouldStop: () => cancelled,
+        deferFirstPoll: true,
       });
     }
     const launch = launchOutcome(await launchRequest);

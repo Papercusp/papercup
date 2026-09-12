@@ -1014,11 +1014,12 @@ beforeAll(async () => {
     const now = Date.now();
     await db.adminSql`
       INSERT INTO harness_shared.work_items
-        (workspace_id, harness_slug, feature_id, item_kind, title, summary, status, created_ts, updated_ts)
+        (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
+         taken_by, taken_at, last_progress_at, created_ts, updated_ts)
       VALUES (${WORKSPACE}, ${HARNESS}, ${REAL_APPROVAL_WORK_ITEM}, 'task',
               'Exercise one PUI native tool-permission roundtrip',
               'Create and verify the isolated permission fixture requested by the owner.',
-              'open', ${now}, ${now})`;
+              'open', ${OWNER}, ${now}, ${now}, ${now}, ${now})`;
   }
   if (scriptedEngine.real && process.env.PUI_REAL_PLAN === '1') {
     await db.adminSql`
@@ -2936,10 +2937,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // Ask for the user outcome, not for a pre-authored privileged invocation.
     // Real providers may correctly refuse a prompt that tells them to reproduce
     // exact shell syntax or force an escalation flag; that yields zero cards and
-    // tests provider policy instead of the PUI approval transport. The owned temp
-    // path still requires the native shell tool, while its permission handshake
-    // remains the engine's responsibility.
-    const approvalRequest = `I am testing the PUI's real tool-permission flow. The task is registered as ${REAL_APPROVAL_WORK_ITEM}, and I approve route A: handle it yourself in this session. First claim that work item. Then create a text file at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline, using your shell-command tool. This path is in an isolated temporary directory that I own, and I authorize this write. The random string is only a correlation nonce proving which tool result returned; it is not an approval or security attestation. If the tool requires confirmation, pause so I can approve it in the PUI. After the write succeeds, reply with the file contents.`;
+    // tests provider policy instead of the PUI approval transport. The fixture
+    // pre-assigns the isolated work item to this session so the model need not
+    // choose an unrelated work-item tool before reaching the shell approval.
+    // The owned temp path still requires the native shell tool, while its
+    // permission handshake remains the engine's responsibility.
+    const approvalRequest = `I am testing the PUI's real tool-permission flow. The task ${REAL_APPROVAL_WORK_ITEM} is already assigned to this session, and I approve route A: handle it yourself here. Do not fetch or claim the task again. Create a text file at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline, using your shell-command tool. This path is in an isolated temporary directory that I own, and I authorize this write. The random string is only a correlation nonce proving which tool result returned; it is not an approval or security attestation. If the tool requires confirmation, pause so I can approve it in the PUI. After the write succeeds, reply with the file contents.`;
     const first = await startOperatorProcess();
     const pane = new PuiPane(bin, first.port, home);
     const frames: Record<string, string> = {};
@@ -2957,25 +2960,6 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const approvalLabel = scriptedEngine.backend === 'omp' ? 'Confirm' : 'Approve';
         const pendingCards = () => pendingNativeCards(first.events);
         await vi.waitFor(
-          () => expect(pendingCards().some((card) => card.prompt.includes(REAL_APPROVAL_WORK_ITEM))).toBe(true),
-          { timeout: 120_000, interval: 100 },
-        );
-        const claimCard = pendingCards().find((card) => card.prompt.includes(REAL_APPROVAL_WORK_ITEM))!;
-        if (claimCard.presentation?.kind !== 'radio' || !claimCard.presentation.options) {
-          throw new Error('Work-item claim did not produce a PUI choice card');
-        }
-        const claimIndex = claimCard.presentation.options.findIndex((option) => option.label === approvalLabel);
-        expect(claimIndex).toBeGreaterThanOrEqual(0);
-        await pane.waitFor(claimCard.prompt);
-        const repliesBeforeClaim = cardReplies.length;
-        pane.write(String(claimIndex + 1));
-        await vi.waitFor(() => expect(cardReplies).toHaveLength(repliesBeforeClaim + 1), {
-          timeout: 15_000,
-          interval: 100,
-        });
-        expect(cardReplies.at(-1)).toMatchObject({ status: 200 });
-
-        await vi.waitFor(
           () => expect(pendingCards().some((card) => card.prompt.includes(approvalFixturePath))).toBe(true),
           { timeout: 120_000, interval: 100 },
         );
@@ -2987,7 +2971,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
         const approvalIndex = approvalCard.presentation.options.findIndex((option) => option.label === approvalLabel);
         expect(approvalIndex).toBeGreaterThanOrEqual(0);
-        await pane.waitFor(approvalCard.prompt);
+        await pane.waitFor(approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt);
         await pane.waitFor(approvalLabel);
         frames.approval = pane.screen();
         const repliesBeforeApproval = cardReplies.length;

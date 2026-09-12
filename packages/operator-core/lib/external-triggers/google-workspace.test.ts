@@ -4,6 +4,7 @@ import {
   GOOGLE_GMAIL_PROFILE_ENDPOINT,
   isGoogleWorkspaceTerminalAuthError,
   probeGoogleContactsAccess,
+  googleWorkspaceSourceAccountId,
   resolveGoogleWorkspaceProviderAccount,
 } from './google-workspace';
 
@@ -44,6 +45,31 @@ describe('Google Contacts scope probe', () => {
 });
 
 describe('Google Workspace provider account identity', () => {
+  it('resolves legacy pseudo-account rows from the Gmail cursor identity', () => {
+    const gmail = {
+      kind: 'gmail',
+      providerAccountId: 'google-workspace:owner',
+      cursor: { emailAddress: ' Owner@Example.COM ' },
+      config: {},
+    };
+    const calendar = {
+      kind: 'gcal',
+      providerAccountId: 'google-workspace:owner',
+      cursor: {},
+      config: {},
+    };
+    const sources = [gmail, calendar];
+
+    expect(googleWorkspaceSourceAccountId(gmail, sources)).toBe('owner@example.com');
+    expect(googleWorkspaceSourceAccountId(calendar, sources)).toBe('owner@example.com');
+    expect(
+      googleWorkspaceSourceAccountId(
+        { kind: 'gmail', providerAccountId: 'owner@example.com', cursor: {}, config: {} },
+        sources,
+      ),
+    ).toBe('owner@example.com');
+  });
+
   it('resolves and normalizes the Gmail account behind the exchanged token', async () => {
     const fetchMock = vi.fn(async () =>
       Response.json({ emailAddress: ' Owner.Second@Example.COM ', historyId: '123' }),

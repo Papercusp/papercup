@@ -20,6 +20,7 @@ type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecar
 type GetRubric = NonNullable<DispatchPendingGradingAuditsDeps['getRubric']>;
 type Launch = NonNullable<DispatchPendingGradingAuditsDeps['launch']>;
 type GetTask = NonNullable<DispatchPendingGradingAuditsDeps['getTask']>;
+type ConfirmReservation = NonNullable<DispatchPendingGradingAuditsDeps['confirmReservation']>;
 type LaunchResult = Awaited<ReturnType<Launch>>;
 
 // Keep the mock result shape explicit without using `as never` at a mock call;
@@ -73,9 +74,20 @@ function deps() {
     }),
   );
   const release = vi.fn(async () => true);
+  const confirmReservation = vi.fn<ConfirmReservation>().mockResolvedValue(true);
   const getTask = vi.fn<GetTask>().mockResolvedValue({ state: 'running' } as Awaited<ReturnType<GetTask>>);
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
-  return { listScorecards, getRubric, launch, route, reserve, release, getTask, listWorkspaceWideLoopStanddownOwners };
+  return {
+    listScorecards,
+    getRubric,
+    launch,
+    route,
+    reserve,
+    confirmReservation,
+    release,
+    getTask,
+    listWorkspaceWideLoopStanddownOwners,
+  };
 }
 
 describe('dispatchPendingGradingAudits', () => {
@@ -132,6 +144,66 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.route).toHaveBeenCalledOnce();
     expect(d.launch).not.toHaveBeenCalled();
   });
+
+  it('abandons a reservation when the target settles before routing', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-settled-after-reservation')]);
+    d.confirmReservation.mockResolvedValue(false);
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-settled-after-reservation'], ctx },
+      d,
+    );
+
+    expect(result.receipts).toEqual([
+      {
+        issueId: 'EI-settled-after-reservation',
+        rubricRef: 'standard-rubric',
+        state: 'skipped',
+        idempotencyKey: 'grading-audit:EI-settled-after-reservation',
+        reason: 'target is no longer pending after reservation; dispatch abandoned',
+      },
+    ]);
+    expect(d.confirmReservation).toHaveBeenCalledWith(
+      'EI-settled-after-reservation',
+      'grading-audit:EI-settled-after-reservation',
+      { workspaceId: 'ws-test' },
+    );
+    expect(d.release).toHaveBeenCalledWith('EI-settled-after-reservation', 'grading-audit:EI-settled-after-reservation', {
+      workspaceId: 'ws-test',
+    });
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('re-checks after routing before launching when settlement wins during the route', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-settled-during-route')]);
+    d.route.mockResolvedValue({ state: 'fallback', reason: 'no responder' });
+    d.confirmReservation.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-settled-during-route'], ctx },
+      d,
+    );
+
+    expect(result.receipts).toEqual([
+      {
+        issueId: 'EI-settled-during-route',
+        rubricRef: 'standard-rubric',
+        state: 'skipped',
+        idempotencyKey: 'grading-audit:EI-settled-during-route',
+        reason: 'target is no longer pending after reservation; dispatch abandoned',
+      },
+    ]);
+    expect(d.confirmReservation).toHaveBeenCalledTimes(2);
+    expect(d.route).toHaveBeenCalledOnce();
+    expect(d.release).toHaveBeenCalledWith('EI-settled-during-route', 'grading-audit:EI-settled-during-route', {
+      workspaceId: 'ws-test',
+    });
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('suppresses terminal auditor dispatch during an active workspace-wide loop stand-down', async () => {
     const d = deps();
     d.listWorkspaceWideLoopStanddownOwners.mockResolvedValue(new Set(['su-owner']));

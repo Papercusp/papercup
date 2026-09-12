@@ -1392,6 +1392,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // result instead of returning an ambiguous may-have-executed timeout.
   ['capability:launch-agent', PTOOL_AGENT_LAUNCH_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // `recipes:run` executes the same foreground orchestration worker as
+  // `code:run`, including its 45s server-side ceiling. Keep the client beyond
+  // the MCP transport cap so a saved recipe receives its typed timeout/result
+  // instead of being cut off by ptool's flat 30s default (EI-22529463182997544).
+  ['recipes:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // Provisioning starts Xvfb, waits for the display, and may launch a window
   // manager plus apps. The ordinary 30s client deadline can return an
   // ambiguous timeout while the lease is still being created; keep the

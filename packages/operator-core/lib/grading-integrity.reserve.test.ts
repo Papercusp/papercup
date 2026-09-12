@@ -4,7 +4,7 @@ const h = vi.hoisted(() => ({ boundedOrgTxn: vi.fn() }));
 
 vi.mock('./pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
 
-import { reservePendingGradingAudit } from './grading-integrity';
+import { confirmPendingGradingAuditReservation, reservePendingGradingAudit } from './grading-integrity';
 import type { ScorecardGradingAuditCurrentness } from './scorecards';
 
 type QueryResult = Record<string, unknown>[];
@@ -14,6 +14,7 @@ function transactionHarness(options: {
   currentState?: string;
   hasReservation?: boolean;
   backoff?: unknown;
+  confirmReservation?: boolean;
 }) {
   const statements: Array<{ text: string; values: unknown[] }> = [];
   const tx = (async (strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> => {
@@ -21,6 +22,9 @@ function transactionHarness(options: {
     statements.push({ text, values });
     if (text.includes('RETURNING feature_id')) {
       return options.claim ? [{ feature_id: 'EI-legacy-settled' }] : [];
+    }
+    if (text.includes('SELECT scorecard.feature_id') && text.includes("dispatchReservation'->>'key'")) {
+      return options.confirmReservation ? [{ feature_id: 'EI-reserved' }] : [];
     }
     if (text.includes("'{observation,gradingAudit}'")) return [];
     if (text.includes("SELECT payload->'observation'->'gradingAudit'->>'state'")) {
@@ -44,6 +48,34 @@ beforeEach(() => {
 });
 
 describe('reservePendingGradingAudit', () => {
+  it('confirms only an owned pending reservation while holding the scorecard row lock', async () => {
+    const { statements } = transactionHarness({ claim: false, confirmReservation: true });
+
+    const result = await confirmPendingGradingAuditReservation('EI-reserved', 'grading-audit:reserved', {
+      workspaceId: 'ws-test',
+    });
+
+    expect(result).toBe(true);
+    const confirmation = statements.find(
+      (statement) =>
+        statement.text.includes('SELECT scorecard.feature_id') && statement.text.includes("dispatchReservation'->>'key'"),
+    );
+    expect(confirmation).toBeDefined();
+    expect(confirmation?.values).toEqual(['ws-test', 'EI-reserved', 'grading-audit:reserved']);
+    expect(confirmation?.text).toContain("gradingAudit'->>'state' = 'pending'");
+    expect(confirmation?.text).toContain("gradingAudit'->'dispatchReservation'->>'key' = ?");
+    expect(confirmation?.text).toContain("scorecard.payload->'observation'->'retracted' IS NULL");
+    expect(confirmation?.text).toContain('NOT EXISTS');
+    expect(confirmation?.text).toContain("superseder.payload->'observation'->>'supersedes' = scorecard.feature_id");
+    expect(confirmation?.text).toContain(
+      "superseder.payload->'observation'->>'rubricRef' = scorecard.payload->'observation'->>'rubricRef'",
+    );
+    expect(confirmation?.text).toContain(
+      "superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM scorecard.payload->'observation'->>'sourceHive'",
+    );
+    expect(confirmation?.text).toContain('FOR UPDATE');
+  });
+
   it('executes the legacy identity reopen writer with the current rubric identity', async () => {
     const now = new Date('2026-09-09T15:00:00.000Z');
     const currentness: ScorecardGradingAuditCurrentness = {

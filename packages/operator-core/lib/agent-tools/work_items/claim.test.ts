@@ -696,8 +696,8 @@ describe('work_items:claim handler (keyed-array)', () => {
     const contract = `${(tool as { description?: string }).description ?? ''}\n${
       (tool as { guidance?: { when?: string } }).guidance?.when ?? ''
     }`;
-    expect(contract).toMatch(/born-pending admission\/trust floor remains enforced for ordinary named claims/);
-    expect(contract).toContain('server-derived dispatch or authorized-force capabilities');
+    expect(contract).toMatch(/not fleet scope or born-pending admission\/trust/);
+    expect(contract).toContain('server-derived dispatch\/force may bypass pending rows');
     // A floor that advertises no bound renders EXACTLY the pre-existing hint — the
     // EI-21973318733042066 clauses below are strictly additive.
     expect(b.results[0].hint).not.toMatch(/CLEARS ON ITS OWN/);

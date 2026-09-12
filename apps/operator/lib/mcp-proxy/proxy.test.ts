@@ -6169,18 +6169,19 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await holderStarted;
 
-    // `work_items:checkpoint` carries a finite generic dwell, so its shed must attribute itself
-    // to the holder, not to queue depth. Pure `improvements:capture` uses its dedicated lane.
-    const checkpoint = request(
+    // The lifecycle REST write carries a finite generic dwell, so its shed must attribute itself
+    // to the holder, not to queue depth. `work_items:checkpoint` is intentionally non-expiring;
+    // pure `improvements:capture` uses its dedicated lane.
+    const lifecycle = request(
       port(proxy),
       body(2, "work_items:checkpoint"),
-      "/api/mcp?client=blocked-checkpoint",
+      "/api/agent-mcp/console/bootstrap-su/session-ended?client=blocked-lifecycle",
     );
     await waitFor(() =>
       logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
-    const expired = await checkpoint;
+    const expired = await lifecycle;
     expect(expired.status).toBe(429);
     const shed = JSON.parse(expired.body) as {
       error: string;
