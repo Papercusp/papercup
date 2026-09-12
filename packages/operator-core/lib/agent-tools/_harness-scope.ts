@@ -258,11 +258,18 @@ export async function readFleetHarnessBinding(
   const ownerId = input.ownerId?.trim();
   if (!workspaceId || !ownerId) return {};
   const record = await readRecord({ cupId: ownerId, workspaceId });
-  if (record.source === 'default') {
-    return record.fleetSlug
-      ? { refs: [record.fleetSlug], stale: true, detail: `fleet ${record.fleetSlug} has no current claim-spec binding` }
-      : {};
-  }
+  // `default` is the sentinel for "no cup spec and no fleet spec — use the default
+  // ordering". That is the ordinary state of a freshly created fleet, NOT a binding
+  // that went stale: every other `stale: true` here marks a binding that EXISTED and
+  // lost validity (an expired/cross-workspace claim, stale presence, a plan that no
+  // longer resolves, a fleet spec missing its harness). Flagging `default` stale
+  // hard-refused every MCP call from a member of any fleet not yet given a claim
+  // spec — while the same record WITHOUT a fleetSlug returned {} and passed, so the
+  // refusal keyed on merely carrying a fleet label rather than on any staleness.
+  // An unbound fleet contributes no harness; resolution continues to the next source.
+  // (WI-10000280. Taking LEADERSHIP still requires a concrete harness — enforced
+  // separately by takeFleetLeadership's own fleet_harness_binding_required check.)
+  if (record.source === 'default') return {};
   const harnessSlug = concreteHarness(record.harnessSlug);
   if (!harnessSlug) {
     return record.source === 'fleet'
