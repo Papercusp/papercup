@@ -35,6 +35,20 @@ export async function ensureCoordEventLogTable(..._args: unknown[]): Promise<nev
 }
 
 /**
+ * Browser stand-in for the coordination package's Postgres retry wrapper.
+ *
+ * Client-reachable tool modules import this binding even though their handlers
+ * execute only on the operator server. The shim must expose it so the SPA can
+ * link, but it must never run the supplied operation in a browser: doing so
+ * would turn a boundary violation into a local write attempt before failing.
+ */
+export async function withPgContentionRetry(..._args: unknown[]): Promise<never> {
+  throw new Error(
+    '[browser] withPgContentionRetry() is server-only. The SPA cannot run Postgres coordination writes.',
+  );
+}
+
+/**
  * Browser stand-in for the Postgres CoordEventLog backend.
  *
  * `agent-tools/coordination/log.ts` constructs one at MODULE SCOPE
