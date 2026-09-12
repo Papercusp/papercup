@@ -456,6 +456,80 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it.each([
+    [
+      "direct",
+      {
+        name: "capability:bash",
+        arguments: { command: "rg -n -F needle packages/operator-core/lib" },
+      },
+    ],
+    [
+      "tools:invoke with object args",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "capability:bash",
+          args: { command: "rg -n -F needle packages/operator-core/lib" },
+        },
+      },
+    ],
+    [
+      "tools:invoke with ptool-stringified args",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "capability:bash",
+          args: JSON.stringify({
+            command: "rg -n -F needle packages/operator-core/lib",
+          }),
+        },
+      },
+    ],
+  ])(
+    "EI-21660633304527755: %s read-only capability:bash is replay-safe",
+    (_label, params) => {
+      const body = Buffer.from(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params,
+        }),
+      );
+      const r = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: gen,
+      });
+      expect(r.klass).toBe("readonly");
+      expect(r.body).toBe(body);
+      expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+    },
+  );
+  it("EI-21660633304527755: a mutating capability:bash remains keyed", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "capability:bash",
+            args: JSON.stringify({ command: "printf x > /tmp/proxy-write" }),
+          },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("keyed");
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe(
+      "KEY123",
+    );
+  });
   it("tools:invoke wrapping a mutator remains keyed", () => {
     const body = Buffer.from(
       JSON.stringify({
@@ -1958,6 +2032,42 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":{"ownerId":"su-test"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-21660633304527755: tools:invoke-wrapped read-only capability:bash retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"output":"needle"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "capability:bash",
+            args: JSON.stringify({ command: "rg -n -F needle README.md" }),
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"output":"needle"}}');
     expect(upstream.hits()).toBe(2);
   });
 

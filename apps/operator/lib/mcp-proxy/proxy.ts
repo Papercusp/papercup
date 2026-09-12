@@ -51,6 +51,7 @@ import {
 } from "@papercusp/operator-core/lib/mcp-request-trace";
 import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
 import { isBoundedScorecardsListArgs } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
+import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
 export {
   CHEAP_REPEATING_BEAT_PATHS,
   isCheapRepeatingBeat,
@@ -821,6 +822,7 @@ const READ_ONLY_TOOLS_LOOKUP: ReadonlySet<string> = new Set(
 );
 
 const READ_ONLY_TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
+const CAPABILITY_BASH_NAME = normalizeMcpName("capability:bash");
 
 function forwardedToolName(m: unknown): string | null {
   if (!m || typeof m !== "object") return null;
@@ -845,9 +847,40 @@ function forwardedToolName(m: unknown): string | null {
   return typeof target === "string" ? normalizeMcpName(target) : null;
 }
 
+/** The effective target arguments, unwrapping tools:invoke's optional JSON string. */
+function forwardedToolArgs(m: unknown): unknown {
+  if (!m || typeof m !== "object") return null;
+  const params = (m as { params?: unknown }).params;
+  if (!params || typeof params !== "object" || Array.isArray(params))
+    return null;
+  const name = (params as { name?: unknown }).name;
+  if (typeof name !== "string") return null;
+  const argumentsValue = (params as { arguments?: unknown }).arguments;
+  if (normalizeMcpName(name) !== READ_ONLY_TOOLS_INVOKE_NAME)
+    return argumentsValue;
+  if (
+    !argumentsValue ||
+    typeof argumentsValue !== "object" ||
+    Array.isArray(argumentsValue)
+  )
+    return null;
+  const nested = (argumentsValue as { args?: unknown }).args;
+  if (typeof nested !== "string") return nested;
+  try {
+    return JSON.parse(nested) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 function isReadOnlyToolCall(m: unknown): boolean {
   const name = forwardedToolName(m);
-  return name !== null && READ_ONLY_TOOLS_LOOKUP.has(name);
+  if (name === null) return false;
+  if (READ_ONLY_TOOLS_LOOKUP.has(name)) return true;
+  return (
+    name === CAPABILITY_BASH_NAME &&
+    classifyCapabilityBashEffect(forwardedToolArgs(m)) === "read"
+  );
 }
 
 const CODE_RUN_TOOL_NAME = normalizeMcpName("code:run");
