@@ -1153,6 +1153,19 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     '../../../../../libs/papercusp/packages/harness/',
     import.meta.url,
   );
+  const mechanicalDedupClauses = [
+    'work_items:get { id, resume:true }',
+    'bounded resume packet',
+    'follow its `readRef`s',
+    'work_items:checkpoint { id, unchanged:true, contentHash }',
+    'not rerun a test matrix solely to reconstruct saved proof',
+    'authoritative write responses, state reads',
+    'not hand-written copies',
+    'do NOT send a second completion FYI',
+  ] as const;
+  const expectMechanicalDedupContract = (text: string) => {
+    for (const clause of mechanicalDedupClauses) expect(text).toContain(clause);
+  };
 
   it('keeps current-procedure verification distinct from coord bootstrap', async () => {
     const { text } = await renderSuPlaybook({
@@ -1187,15 +1200,14 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
       }),
     ]);
 
-    for (const text of [full.text, fleet.text, member.text]) {
-      expect(text).toContain('work_items:get { id, resume:true }');
-      expect(text).toContain('bounded resume packet');
-      expect(text).toContain('follow its `readRef`s');
-      expect(text).toContain('work_items:checkpoint { id, unchanged:true, contentHash }');
-      expect(text).toContain('not rerun a test matrix solely to reconstruct saved proof');
-      expect(text).toContain('authoritative write responses, state reads');
-      expect(text).toContain('not hand-written copies');
-      expect(text).toContain('do NOT send a second completion FYI');
+    for (const text of [full.text, fleet.text, member.text]) expectMechanicalDedupContract(text);
+  });
+
+  it('P-005 copy-out mutants fail when any mechanical-dedup clause is removed', async () => {
+    const { text } = await renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase) });
+    for (const clause of mechanicalDedupClauses) {
+      expect(text, `positive control must contain ${clause}`).toContain(clause);
+      expect(() => expectMechanicalDedupContract(text.replace(clause, ''))).toThrow();
     }
   });
 

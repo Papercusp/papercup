@@ -195,6 +195,33 @@ describe('emits: completion (on work_items:complete — the P0 emits field end-t
     expect(a?.args.to).not.toContain(staleOwner);
   });
 
+  it('produces exactly one routed completion action for one logical completion', () => {
+    const ev = {
+      tool: 'work_items:complete',
+      args: { id: 'WI-ONCE', completion: { summary: 'fixed once' } },
+      result: {
+        ok: true,
+        data: {
+          ok: true,
+          fleetSlug: 'one-completion-one-report',
+          workItem: { id: 'WI-ONCE', family: 'issue', harness: 'demo' },
+          completion: { workItem: 'WI-ONCE', summary: 'fixed once', agent: 'su-member' },
+        },
+      },
+      ctx: { uiClientId: 'su-member' },
+    };
+
+    const completionActions = (matchReactions(ev as never) as unknown as Action[]).filter(
+      (action) => action.args.category === 'completion',
+    );
+    expect(completionActions).toHaveLength(1);
+    expect(completionActions[0]).toMatchObject({
+      ruleId: 'emits:work_items:complete#0',
+      fire: 'coord:emit',
+      args: { to: expect.arrayContaining(['@fleet-leader:one-completion-one-report']) },
+    });
+  });
+
   it('does NOT fire the completion emit when no completion record came back', () => {
     const ev = {
       tool: 'work_items:complete',
