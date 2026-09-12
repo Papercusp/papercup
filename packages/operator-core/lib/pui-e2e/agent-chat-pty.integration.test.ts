@@ -1771,9 +1771,9 @@ function installedManifest(): Record<string, unknown> {
       .toBe(manifest.companionSha256);
     return manifest;
 }
-function pendingNativeCards() {
-  const closed = new Set(scriptedEngine.events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
-  return scriptedEngine.events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
+function pendingNativeCards(events: SuSessionEvent[] = scriptedEngine.events) {
+  const closed = new Set(events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
+  return events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
 }
 
 async function startOperatorProcess(port = 0) {
@@ -2954,9 +2954,34 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         pane.write(approvalRequest);
         pane.enter();
         await waitForSavedTurn(approvalRequest);
-        await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(1), { timeout: 120_000, interval: 100 });
-        approvalCard = pendingNativeCards()[0];
         const approvalLabel = scriptedEngine.backend === 'omp' ? 'Confirm' : 'Approve';
+        const pendingCards = () => pendingNativeCards(first.events);
+        await vi.waitFor(
+          () => expect(pendingCards().some((card) => card.prompt.includes(REAL_APPROVAL_WORK_ITEM))).toBe(true),
+          { timeout: 120_000, interval: 100 },
+        );
+        const claimCard = pendingCards().find((card) => card.prompt.includes(REAL_APPROVAL_WORK_ITEM))!;
+        if (claimCard.presentation?.kind !== 'radio' || !claimCard.presentation.options) {
+          throw new Error('Work-item claim did not produce a PUI choice card');
+        }
+        const claimIndex = claimCard.presentation.options.findIndex((option) => option.label === approvalLabel);
+        expect(claimIndex).toBeGreaterThanOrEqual(0);
+        await pane.waitFor(claimCard.prompt);
+        const repliesBeforeClaim = cardReplies.length;
+        pane.write(String(claimIndex + 1));
+        await vi.waitFor(() => expect(cardReplies).toHaveLength(repliesBeforeClaim + 1), {
+          timeout: 15_000,
+          interval: 100,
+        });
+        expect(cardReplies.at(-1)).toMatchObject({ status: 200 });
+
+        await vi.waitFor(
+          () => expect(pendingCards().some((card) => card.prompt.includes(approvalFixturePath))).toBe(true),
+          { timeout: 120_000, interval: 100 },
+        );
+        const targetApprovalCard = pendingCards().find((card) => card.prompt.includes(approvalFixturePath));
+        if (!targetApprovalCard) throw new Error('Native tool approval card disappeared before it could be answered');
+        approvalCard = targetApprovalCard;
         if (approvalCard.presentation?.kind !== 'radio' || !approvalCard.presentation.options) {
           throw new Error('Native tool approval did not produce a PUI choice card');
         }
@@ -2965,25 +2990,29 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await pane.waitFor(approvalCard.prompt);
         await pane.waitFor(approvalLabel);
         frames.approval = pane.screen();
+        const repliesBeforeApproval = cardReplies.length;
         pane.write(String(approvalIndex + 1));
-        await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 15_000, interval: 100 });
-        expect(cardReplies[0]).toMatchObject({ status: 200 });
+        await vi.waitFor(() => expect(cardReplies).toHaveLength(repliesBeforeApproval + 1), {
+          timeout: 15_000,
+          interval: 100,
+        });
+        expect(cardReplies.at(-1)).toMatchObject({ status: 200 });
         await waitForCorrelatedReply(approvalRequest, approvalResult);
         await pane.waitForReply(approvalResult);
         expect(readFileSync(approvalFixturePath, 'utf8')).toBe(approvalResult + '\n');
-        approvalStart = scriptedEngine.events.find(
+        approvalStart = first.events.find(
           (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
             event.type === 'tool' &&
             event.phase === 'started' &&
             JSON.stringify(event.input).includes(approvalFixturePath),
         );
         expect(approvalStart, 'the approved native command must be visible as a tool start').toBeDefined();
-        approvalEnd = scriptedEngine.events.find(
+        approvalEnd = first.events.find(
           (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
             event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId,
         );
         expect(approvalEnd, 'the approved native command must finish successfully').toMatchObject({ isError: false });
-        expect(scriptedEngine.events).toEqual(
+        expect(first.events).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               type: 'card',
