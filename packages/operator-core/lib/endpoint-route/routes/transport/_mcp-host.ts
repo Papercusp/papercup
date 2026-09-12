@@ -2001,6 +2001,60 @@ function withMcpDiagnosticWarning<T extends McpCallResult>(
 }
 
 /**
+ * The proxy warning is useful when a response could be an empty/not-found
+ * transport result, but it is noise on a successful response that contains
+ * data. Keep this deliberately envelope-oriented: only an explicit `ok:true`
+ * result (or a JSON array) is classified as populated/empty; unknown shapes
+ * retain the warning rather than pretending that their payload was verified.
+ */
+function hasPopulatedMcpResult(result: McpCallResult): boolean {
+  const first = Array.isArray(result.content) ? result.content[0] : undefined;
+  if (!first || !('type' in first) || first.type !== 'text' || typeof first.text !== 'string') return false;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(first.text);
+  } catch {
+    return false;
+  }
+  if (Array.isArray(parsed)) return parsed.length > 0;
+  if (!parsed || typeof parsed !== 'object') return false;
+
+  const body = parsed as Record<string, unknown>;
+  if (body.ok !== true) return false;
+  if (body.notFound === true || body.not_found === true || body.missing === true) return false;
+  if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') {
+    return false;
+  }
+  if (typeof body.code === 'string' && body.code.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') {
+    return false;
+  }
+
+  // These are the standard result-bearing fields emitted by the tool
+  // envelopes. An explicitly empty field means the response is still a
+  // candidate for the proxy's empty/not-found warning. Unknown `ok:true`
+  // shapes remain diagnostic-safe rather than being treated as populated.
+  let sawResultField = false;
+  let hasPopulatedField = false;
+  for (const key of ['results', 'items', 'data', 'result', 'value']) {
+    if (!(key in body)) continue;
+    sawResultField = true;
+    const value = body[key];
+    if (value === null || value === undefined || value === '') continue;
+    if (Array.isArray(value)) {
+      hasPopulatedField ||= value.length > 0;
+      continue;
+    }
+    if (typeof value === 'object') {
+      hasPopulatedField ||= Object.keys(value as object).length > 0;
+      continue;
+    }
+    hasPopulatedField = true;
+  }
+  return sawResultField && hasPopulatedField;
+}
+
+/**
  * Fold rare transport/scoping uncertainty into otherwise well-formed tool
  * results. Both warnings use the same JSON-body-or-_meta annotation contract so
  * clients have one diagnostic shape to inspect.
@@ -2018,7 +2072,7 @@ export function withMcpDiagnosticWarnings<T extends McpCallResult>(result: T, sp
       `expected workspace) rather than trusting this result at face value.`;
     annotated = withMcpDiagnosticWarning(annotated, '_scopeGuessWarning', 'scopeGuessWarning', warning);
   }
-  if (spawnCtx.dataPlaneDegradedAtMs) {
+  if (spawnCtx.dataPlaneDegradedAtMs && !hasPopulatedMcpResult(annotated)) {
     const observedAt = new Date(spawnCtx.dataPlaneDegradedAtMs).toISOString();
     const warning =
       `⚠ DATA PLANE MAY BE DEGRADED: this session's local MCP proxy observed an upstream retry or ` +
