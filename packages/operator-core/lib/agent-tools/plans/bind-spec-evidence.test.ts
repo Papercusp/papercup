@@ -61,6 +61,52 @@ describe('plans:bind-spec-evidence repo-files measurement contract', () => {
 });
 
 describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
+  const flatAdequacyFields: ReadonlyArray<readonly [string, unknown]> = [
+    ['fixtureCalibrated', true],
+    ['falsifiable', true],
+    ['testLayer', 'integration'],
+    ['pathReachable', true],
+    ['oracleIndependent', true],
+    ['collected', true],
+    ['skipped', false],
+    ['executed', true],
+    ['outcome', 'passed'],
+    ['targeted', true],
+    ['coverageRungs', { l3: true }],
+    ['scenarioIds', ['stale-vs-decision']],
+    ['causalPairIds', ['missing-goal-history']],
+    ['provisionalProofBase', true],
+  ];
+
+  it.each(flatAdequacyFields)(
+    'rejects flat adequacy field %s with the correct details.adequacy path',
+    (field, value) => {
+      const parsed = bindingSchema.safeParse({
+        ...measuredBinding,
+        details: { [field]: value },
+      });
+      expect(parsed.success).toBe(false);
+      if (parsed.success) return;
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['details', field],
+            message: expect.stringContaining(`details.adequacy.${field}`),
+          }),
+        ]),
+      );
+    },
+  );
+
+  it('continues to accept unrelated free-form details without an adequacy container', () => {
+    expect(
+      bindingSchema.safeParse({
+        ...measuredBinding,
+        details: { observations: { source: 'independent-run' } },
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts stable scenario and causal-pair ids on executable proof', () => {
     const parsed = bindingSchema.safeParse({
       ...measuredBinding,

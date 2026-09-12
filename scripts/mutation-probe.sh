@@ -694,7 +694,7 @@ fi
 if [ "$DELETES_ACK" -eq 1 ]; then
   command -v bwrap >/dev/null 2>&1 \
     || die "--i-know-this-deletes needs bwrap (bubblewrap) for its read-only sandbox and this host has none. Use --fake-destructive instead."
-  if ! bwrap --ro-bind / / --dev /dev --proc /proc --die-with-parent -- true 2>"$SCRATCH/bwrap-preflight.err"; then
+  if ! bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc --die-with-parent -- true 2>"$SCRATCH/bwrap-preflight.err"; then
     die "bwrap cannot create its sandbox on this host (user namespaces may be disabled here):
       $(head -3 "$SCRATCH/bwrap-preflight.err" 2>/dev/null)
       REFUSING to run destructive code unsandboxed. Use --fake-destructive instead."
@@ -749,7 +749,9 @@ run_guard() {
         # writable zone. Parent-held fds (the >"$output" redirect) pass through.
         export TMPDIR="$SCRATCH"
         printf '%s\n' "$cmd" >"$SCRATCH/guard-cmd.sh"
-        exec bwrap --ro-bind / / --dev /dev --proc /proc \
+        # --dev replaces /dev, hiding subjects stored in a tmpfs TMPDIR under /dev/shm.
+        # Preserve that source tree read-only before granting the two writable binds.
+        exec bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc \
           --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
           --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
       fi

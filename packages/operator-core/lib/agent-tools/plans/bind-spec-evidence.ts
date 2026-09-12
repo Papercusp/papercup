@@ -27,7 +27,38 @@ const adequacyBindingDetailsSchema = z
     causalPairIds: proofCoverageIds.optional(),
   })
   .passthrough();
+// Keep the evaluator's adequacy vocabulary out of the free-form details
+// namespace. `spec-test-adequacy` reads these keys only below
+// `details.adequacy`; accepting them at the top level creates a successful,
+// persisted binding whose metadata is silently inert.
+const ADEQUACY_DETAIL_KEYS = new Set([
+  'fixtureCalibrated',
+  'falsifiable',
+  'testLayer',
+  'pathReachable',
+  'oracleIndependent',
+  'collected',
+  'skipped',
+  'executed',
+  'outcome',
+  'targeted',
+  'coverageRungs',
+  'scenarioIds',
+  'causalPairIds',
+  'provisionalProofBase',
+]);
 const bindingDetailsSchema = z.record(z.string(), z.unknown()).superRefine((details, ctx) => {
+  if (details.adequacy === undefined) {
+    for (const key of Object.keys(details).filter((candidate) => ADEQUACY_DETAIL_KEYS.has(candidate))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message:
+          `adequacy metadata must be nested under details.adequacy.${key}; ` +
+          `flat details.${key} is ignored by spec-test-adequacy`,
+      });
+    }
+  }
   if (details.adequacy === undefined) return;
   const parsed = adequacyBindingDetailsSchema.safeParse(details.adequacy);
   if (parsed.success) return;

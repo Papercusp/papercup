@@ -16,11 +16,6 @@
  * from that oracle: a dead owner's own lease cannot prove the owner alive.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { fileLockCoordinationDomain, lockDomainForProjectDir } from './agent-tools/locks/coordination-domain';
-import { releaseAllOwnedLocks } from './agent-tools/locks/release-all-owned';
-import { closeAdoptedTerminalSessions } from './task-manager/adopt-terminal-session';
-import { killTask } from './task-manager/control';
-import { listTasks } from './task-manager/store';
 import { isAutoReapExempt, type TaskRow } from './task-manager/types';
 
 export const SESSION_END_LEASE_RELEASE_DELAY_MS = 15_000;
@@ -49,11 +44,11 @@ export interface SessionEndLeaseReleaseDeps {
    * owner's own (still-fresh) presence row — EI-22651749738479868.
    */
   loadProtectedOwners?: (endingOwnerId: string) => Promise<ReadonlySet<string>>;
-  releaseLocks?: typeof releaseAllOwnedLocks;
+  releaseLocks?: typeof import('./agent-tools/locks/release-all-owned').releaseAllOwnedLocks;
   releaseWorkItems?: typeof import('./work-item-lease-release').releaseAllWorkItemLeasesForOwner;
-  listTasks?: typeof listTasks;
-  killTask?: typeof killTask;
-  closeAdoptedTerminalSessions?: typeof closeAdoptedTerminalSessions;
+  listTasks?: typeof import('./task-manager/store').listTasks;
+  killTask?: typeof import('./task-manager/control').killTask;
+  closeAdoptedTerminalSessions?: typeof import('./task-manager/adopt-terminal-session').closeAdoptedTerminalSessions;
 }
 
 interface SessionEndLeaseReleaseScheduleOptions {
@@ -196,6 +191,25 @@ export async function runSessionEndLeaseRelease(
   const protectedOwners = await (deps.loadProtectedOwners ?? loadProtectedOwners)(ownerId);
   if (protectedOwners.has(ownerId)) return { ok: false, reason: 'owner-live', ownerId };
 
+  // Keep the delayed hook's eager graph leaf-like. These modules eventually
+  // reach adv-sessions through coordination/work-item infrastructure, while
+  // adv-sessions dynamically imports this hook after recording an end. The
+  // defaults are needed only after the delayed pass has established that the
+  // owner is really gone, so resolve them here rather than at module load.
+  const [coordinationDomainModule, lockModule, terminalModule, taskControlModule, taskStoreModule] =
+    await Promise.all([
+      import('./agent-tools/locks/coordination-domain'),
+      deps.releaseLocks ? undefined : import('./agent-tools/locks/release-all-owned'),
+      deps.closeAdoptedTerminalSessions ? undefined : import('./task-manager/adopt-terminal-session'),
+      deps.killTask ? undefined : import('./task-manager/control'),
+      deps.listTasks ? undefined : import('./task-manager/store'),
+    ]);
+  const releaseLocks = deps.releaseLocks ?? lockModule!.releaseAllOwnedLocks;
+  const listTasks = deps.listTasks ?? taskStoreModule!.listTasks;
+  const killTask = deps.killTask ?? taskControlModule!.killTask;
+  const closeAdoptedTerminalSessions =
+    deps.closeAdoptedTerminalSessions ?? terminalModule!.closeAdoptedTerminalSessions;
+
   const reapAgentSessionTasks = async () => {
     const sessionId = row.sessionId?.trim() ?? '';
     if (!sessionId) {
@@ -206,7 +220,7 @@ export async function runSessionEndLeaseRelease(
         exemptTaskIds: [] as string[],
       };
     }
-    const listed = await (deps.listTasks ?? listTasks)({
+    const listed = await listTasks({
       workspaceId: row.workspaceId,
       sessionId,
       states: ['pending', 'running'],
@@ -231,7 +245,7 @@ export async function runSessionEndLeaseRelease(
     // declined. Do not widen this without a fresh owner ruling.
     const { reapable: tasks, exempt } = partitionReapableTasks(listed);
     const outcomes = await Promise.allSettled(
-      tasks.map((task) => (deps.killTask ?? killTask)(task.taskId, { reapTerminalResidue: true })),
+      tasks.map((task) => killTask(task.taskId, { reapTerminalResidue: true })),
     );
     // Exempt rows are never SIGNALLED, but a row whose supervisor is provably
     // gone is still CLOSED — closing a ledger row touches no process, so the
@@ -240,7 +254,7 @@ export async function runSessionEndLeaseRelease(
     // filed as strands is exactly what buries the one real escape. A row whose
     // launcher is STILL ALIVE after its session ended is deliberately left open:
     // that is the zombie this feature exists to make visible.
-    await (deps.closeAdoptedTerminalSessions ?? closeAdoptedTerminalSessions)(exempt).catch(() => ({
+    await closeAdoptedTerminalSessions(exempt).catch(() => ({
       closedTaskIds: [],
       stillLiveTaskIds: [],
     }));
@@ -260,8 +274,8 @@ export async function runSessionEndLeaseRelease(
   };
 
   const primaryCoordinationDomain = row.cwd?.trim()
-    ? lockDomainForProjectDir(row.cwd.trim())
-    : fileLockCoordinationDomain();
+    ? coordinationDomainModule.lockDomainForProjectDir(row.cwd.trim())
+    : coordinationDomainModule.fileLockCoordinationDomain();
   // Keep the work-item lease implementation out of this module's eager graph:
   // work-item-lease-release -> work-items -> … -> adv-sessions, while
   // adv-sessions dynamically imports this hook after recording an end. The
@@ -273,7 +287,7 @@ export async function runSessionEndLeaseRelease(
         releaseAllWorkItemLeasesForOwner(ownerId),
       );
   const [locks, workItems, tasks] = await Promise.allSettled([
-    (deps.releaseLocks ?? releaseAllOwnedLocks)({ ownerId, primaryCoordinationDomain }),
+    releaseLocks({ ownerId, primaryCoordinationDomain }),
     workItemsPromise,
     reapAgentSessionTasks(),
   ]);

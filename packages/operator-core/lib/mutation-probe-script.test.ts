@@ -1075,7 +1075,7 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
         '--test', `[ "$(bash {} "${outside}" | tail -1)" = ok ]`,
       ]);
       expect(out).toMatch(/sandbox: guard runs will execute under bwrap/);
-      expect(code).toBe(0); // the probe itself still works end-to-end
+      expect(code, out).toBe(0); // the probe itself still works end-to-end
       // The subject really ran `rm -f` on this path in BOTH phases — and the
       // read-only bind meant it could not remove it. Without the sandbox this
       // assertion is the one that fails.
