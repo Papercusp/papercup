@@ -114,6 +114,7 @@ vi.mock('./sync/hyperbee/fanout-projection', async () => {
 
 const wi = await import('./work-items');
 const issuesEngineer = await import('./issues-engineer');
+const { defaultOrientationDeps } = await import('./turn-start-orientation');
 const { workItemClaimLeaseEnabled } = await import('./work-item-claim-lease-wiring');
 
 async function setLeaseFlag(on: boolean): Promise<void> {
@@ -349,6 +350,42 @@ describe('P-009 — terminal/release lifecycle retires cached goal refs', () => 
     expect(readAgentStateStamp('agB').goalRef).toBe(feature.id);
     await wi.releaseWorkItem(feature.id);
     expect(readAgentStateStamp('agB').goalRef).toBeNull();
+  });
+});
+
+describe('P-011 — post-claim own-thread freshness', () => {
+  it('snapshots the real post id on claim and exposes only later posts to turn-start orientation', async () => {
+    const feature = await wi.createWorkItem({
+      kind: 'feature', title: 'history freshness', harness: 'papercup', createdBy: 'agA',
+    });
+    const threadId = `thread-history-${feature.id}`;
+    await db.sql`
+      INSERT INTO harness_shared.coord_threads
+        (workspace_id, thread_id, parent_kind, parent_ref, title)
+      VALUES ('default', ${threadId}, 'feature', ${`papercup#${feature.id}`}, 'history')`;
+    const [before] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, body)
+      VALUES ('default', ${threadId}, 'before claim') RETURNING id`;
+
+    expect((await wi.claimWorkItem(feature.id, 'agHistory', { harness: 'papercup' }))?.assignee).toBe('agHistory');
+    const [claimed] = await db.sql<{ watermark: string | null }[]>`
+      SELECT payload ->> 'claim_history_post_id' AS watermark
+        FROM harness_shared.work_items
+       WHERE workspace_id = 'default' AND feature_id = ${feature.id}`;
+    expect(Number(claimed?.watermark)).toBe(Number(before?.id));
+    expect(await defaultOrientationDeps().historyUpdates('agHistory', 'default')).toEqual([]);
+
+    const [after] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, body)
+      VALUES ('default', ${threadId}, 'after claim') RETURNING id`;
+    expect(await defaultOrientationDeps().historyUpdates('agHistory', 'default')).toEqual([
+      {
+        workItemId: feature.id,
+        harness: 'papercup',
+        count: 1,
+        newestPostId: Number(after?.id),
+      },
+    ]);
   });
 });
 

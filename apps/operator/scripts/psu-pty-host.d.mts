@@ -105,6 +105,16 @@ export function findNativeTranscriptMarker({ agent, env, marker, sinceMs, home, 
     home?: string;
     nativeId?: string | null;
 }): string | null;
+/** A carry requested in THIS turn may use its exact native completion as a
+ * safe boundary even while the terminal keeps repainting. Never scan other
+ * sessions or accept an older turn's completion. Missing/partial proof falls
+ * back to the existing output gate. */
+export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAtMs }: {
+    agent: any;
+    env: any;
+    transcriptPath: any;
+    receivedAtMs: any;
+}): boolean;
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
  *   home?: string, timeoutMs?: number, pollMs?: number, nativeId?: string | null}} options
@@ -641,8 +651,15 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
      *  WI-1872 (1): `overrideCapMs` lets a caller use a DIFFERENT completion
      *  budget than this gate's own construction-time `capMs` without needing a
      *  second gate instance over the same activity tracker. */
-    waitAtPrompt(overrideCapMs: any): Promise<{
+    waitAtPrompt(overrideCapMs: any, verifiedBoundary?: null): Promise<{
         deferred: boolean;
+        boundary: string;
+        reason?: undefined;
+        maxQuietForMs?: undefined;
+        quietMs?: undefined;
+    } | {
+        deferred: boolean;
+        boundary?: undefined;
         reason?: undefined;
         maxQuietForMs?: undefined;
         quietMs?: undefined;
@@ -651,6 +668,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         reason: string;
         maxQuietForMs: number;
         quietMs: number;
+        boundary?: undefined;
     }>;
     /** WI-1872 (2): the START-RACE fix. Resolves as soon as output goes BUSY
      *  (quietForMs drops below quietMs — the agent started emitting), so a
@@ -1068,6 +1086,7 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    sourceTranscriptPath: any;
     drillId: string;
     sessionClass: string;
     gated: boolean;
@@ -1079,6 +1098,7 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    sourceTranscriptPath: any;
     drillId: string;
     sessionClass: string;
     gated: boolean;
@@ -1090,6 +1110,7 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    sourceTranscriptPath: any;
     drillId: string;
     sessionClass: string;
     gated: boolean;
@@ -1101,6 +1122,7 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    sourceTranscriptPath: any;
     drillId: string;
     sessionClass: string;
     gated: boolean;
