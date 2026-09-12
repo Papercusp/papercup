@@ -92,6 +92,13 @@ export function isSystemGitSyncHolder(
 /** Global signal for a git-sync fire that must retry after a resource is freed. */
 export const GIT_SYNC_LOCK_RETRY_EVENT = 'git-sync:lock-retry';
 
+/** Exact release-boundary signal for a named resource. */
+export const RESOURCE_RELEASED_EVENT_PREFIX = 'resource:released:';
+
+export function resourceReleasedEventKey(resource: string): string {
+  return `${RESOURCE_RELEASED_EVENT_PREFIX}${resource}`;
+}
+
 /**
  * Errors that are EXPECTED for a best-effort, fire-and-forget notification and so must
  * never warn (vitest-fail-on-console would then flake any rig test): a partial test
@@ -111,6 +118,33 @@ function failSoft(scope: string, e: unknown): void {
     return;
   }
   console.warn(`[git-sync-events] ${scope} emit failed: ${msg}`);
+}
+
+/**
+ * Fire-and-forget proof that an exclusive named-resource row was actually
+ * released. This is deliberately emitted by the release path, never at the
+ * refusal boundary, so a waiter cannot wake into the same held_exclusive state.
+ */
+export function emitResourceReleasedEvent(
+  resource: string,
+  workspaceId: string | null | undefined,
+  emit: typeof emitAwaitedEvent = emitAwaitedEvent,
+): void {
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: resourceReleasedEventKey(resource),
+        summary: `named resource ${resource} was released`,
+        payload: {
+          resource,
+          ...(workspaceId ? { workspaceId } : {}),
+          releasedAtMs: Date.now(),
+        },
+        source: 'resource-locks',
+        ...(workspaceId ? { workspaceId } : {}),
+      }),
+    )
+    .catch((e: unknown) => failSoft(`resource-release-event for ${resource}`, e));
 }
 
 export interface GitSyncEventScope {

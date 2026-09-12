@@ -1097,6 +1097,7 @@ export class WorkspaceBackup {
       await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
       await this.detachedEvent('restore', { phase: 'done', target });
     } catch (err) {
+      await this.markMissingSnapshotReceipt(opts.kopiaSnapshotId, err);
       await this.detachedEvent('restore', { phase: 'failed', error: String(err) });
       throw err;
     }
@@ -1143,6 +1144,7 @@ export class WorkspaceBackup {
       });
       await this.detachedEvent('restore', { phase: 'done', mode: 'in_place', target });
     } catch (err) {
+      await this.markMissingSnapshotReceipt(opts.kopiaSnapshotId, err);
       await this.detachedEvent('restore', { phase: 'failed', mode: 'in_place', error: String(err) });
       throw err;
     }
@@ -1158,6 +1160,40 @@ export class WorkspaceBackup {
       `;
     } catch {
       // best-effort
+    }
+  }
+
+  /**
+   * A successful receipt is only useful while its content-addressed Kopia
+   * object still exists. Retention or repository damage can remove that
+   * object after the receipt was written, leaving the list/health surfaces
+   * claiming an `ok` backup. A restore is the authoritative availability
+   * probe, so reconcile only the permanent missing-object failure and leave
+   * transient destination/permission/disk failures retryable.
+   */
+  private async markMissingSnapshotReceipt(kopiaSnapshotId: string, error: unknown): Promise<void> {
+    if (!isMissingKopiaSnapshotObject(error, kopiaSnapshotId)) return;
+    const sql = backupHost().getSql();
+    const errorText = `restore failed: ${error instanceof Error ? error.message : String(error)}`;
+    try {
+      const updated = await sql<{ id: number }[]>`
+        UPDATE harness_shared.backup_snapshots
+           SET status = 'failed',
+               error_text = ${errorText}
+         WHERE workspace_id = ${this.workspaceId}
+           AND kopia_snapshot_id = ${kopiaSnapshotId}
+           AND status IN ('ok', 'degraded')
+         RETURNING id
+      `;
+      for (const row of updated) {
+        await this.event(row.id, 'restore_receipt_failed', {
+          phase: 'missing_kopia_object',
+          kopiaSnapshotId,
+          error: errorText,
+        });
+      }
+    } catch {
+      // Receipt reconciliation must never hide the original restore failure.
     }
   }
 

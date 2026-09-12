@@ -933,6 +933,16 @@ describe('detectUntrackedShellBackgrounding (EI-21810817545133564)', () => {
     expect(detectUntrackedShellBackgrounding('echo hi &> /tmp/out')).toBeNull();
   });
 
+  it('does not confuse bitwise ampersands in Bash arithmetic with backgrounding', () => {
+    expect(detectUntrackedShellBackgrounding('(( (8#$mode & 8#040) == 8#040 ))')).toBeNull();
+    expect(detectUntrackedShellBackgrounding('if (( (8#$mode & 8#040) == 8#040 )); then echo ok; fi')).toBeNull();
+    expect(detectUntrackedShellBackgrounding('printf "%d" $((8 & 4))')).toBeNull();
+    expect(detectUntrackedShellBackgrounding('((8 & 4)) & echo detached')).toMatchObject({
+      operator: '&',
+      backgroundCount: 1,
+    });
+  });
+
   it('permits a single child joined by wait, including wait "$!"', () => {
     expect(detectUntrackedShellBackgrounding('watcher & wait')).toBeNull();
     expect(detectUntrackedShellBackgrounding('watcher & wait "$!"')).toBeNull();

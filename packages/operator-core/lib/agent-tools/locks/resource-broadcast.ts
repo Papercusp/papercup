@@ -21,6 +21,7 @@
 import { sendMessage } from '../coordination/messages';
 import type { AgentIdentity } from '../coordination/identity';
 import type { ResourceHolder } from './su-lock-store';
+import { emitResourceReleasedEvent } from '../../harness/git-sync/git-sync-events';
 
 export async function broadcastResourceDrainStart(params: {
   source: AgentIdentity;
@@ -65,6 +66,10 @@ export async function broadcastResourceBackUp(params: {
    *  ['*'] firehose to every agent for a resource only a few ever wanted). */
   waiters: string[];
 }): Promise<void> {
+  // Refused callers such as git-sync:run do not enter the waiter table, so the
+  // targeted coord message alone cannot wake them. Emit an exact-key event at
+  // the real release boundary; the resource suffix keeps it targeted.
+  emitResourceReleasedEvent(params.resource, params.source.workspaceId);
   if (!params.waiters || params.waiters.length === 0) return;
   try {
     await sendMessage(params.source, {

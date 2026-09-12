@@ -1307,6 +1307,12 @@ export const PTOOL_AGENT_LAUNCH_TIMEOUT_MS = 100_000;
 // with response-delivery margin, so the tool's typed result wins the race.
 export const PTOOL_COORD_ORIENT_TIMEOUT_MS = 130_000;
 
+// EI-23098800759403082: request-compaction supports a legacy pre-ACK host by
+// waiting through its doubled busy-gate window. Its handler declares 600s and
+// MCP adds a 5s settlement buffer. Keep ptool outside that whole contract for
+// direct and tools:invoke calls so the queued receipt remains observable.
+export const PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS = 610_000;
+
 // `events:await` performs a write-side registration after several bounded,
 // best-effort state/catalog probes. Under a busy operator those probes can
 // legitimately outlive ptool's ordinary 30s deadline; abandoning the call
@@ -1411,11 +1417,9 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
   ['plans:new', PTOOL_PLANS_NEW_TIMEOUT_MS],
-  // EI-21562635786542847: session:request-compaction declares a 120s server
-  // timeout while assembling carry state and injecting the respawn. Keep the
-  // direct and tools:invoke paths above the effective 125s MCP deadline so a
-  // successful carry request cannot be reported as outcome_unknown at 30s.
-  ['session:request-compaction', PTOOL_COORD_ORIENT_TIMEOUT_MS],
+  // EI-23098800759403082: preserve the legacy-host compatibility path's typed
+  // queued receipt beyond the tool's 600s budget + MCP settlement buffer.
+  ['session:request-compaction', PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS],
   // EI-21567372634210816: plans:start runs the plan-start consult, approval,
   // idempotent item promotion, exact-plan admission, and claim-spec binding.
   // Its projected dispatcher defaults to 60s when no timeoutSec is declared;

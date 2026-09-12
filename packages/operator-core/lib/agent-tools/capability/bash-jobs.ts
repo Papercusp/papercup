@@ -995,6 +995,7 @@ export function detectUntrackedShellBackgrounding(command: string): UntrackedShe
   let commandPosition = true;
   let redirectTarget = false;
   let currentWait: ShellWaitObservation | null = null;
+  let arithmeticParenDepth = 0;
 
   const flushToken = (): void => {
     if (!token) return;
@@ -1066,6 +1067,25 @@ export function detectUntrackedShellBackgrounding(command: string): UntrackedShe
       token += ch;
       escaped = true;
       continue;
+    }
+    // Bash uses the same ampersand character for bitwise/logical arithmetic
+    // operators inside `(( ... ))` and `$(( ... ))`. Those ampersands are
+    // expression data, not shell background operators. Track the arithmetic
+    // parentheses so the backgrounding guard does not reject valid commands.
+    if (ch === '(' && source[i - 1] === '(') {
+      arithmeticParenDepth = 1;
+      continue;
+    }
+    if (arithmeticParenDepth > 0) {
+      if (ch === '(') {
+        arithmeticParenDepth += 1;
+        continue;
+      }
+      if (ch === ')') {
+        arithmeticParenDepth -= 1;
+        continue;
+      }
+      if (ch === '&') continue;
     }
     if (ch === '#' && (i === 0 || /[\s;|&()]/.test(source[i - 1]!))) {
       flushToken();

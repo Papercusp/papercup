@@ -2528,7 +2528,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the argument — an unmatched backtick fails before either tool runs. Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap lines (e.g., `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes. Do not run an unbounded search from the repository root. Bound git history scans (`git log --all`, `-S`, `-G`) with `-n` + a focused path; unbounded refused. do not shell-background child without `wait`.",
+        "when": "Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the argument — an unmatched backtick fails before either tool runs. Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matching lines with ripgrep itself (e.g., `rg --max-count 60 --max-columns 256 --max-columns-preview ...`); avoid piping to early-exit consumers such as `head` under `pipefail`, which can SIGPIPE `rg` (exit 141). Do not run an unbounded search from the repository root. Bound git history scans (`git log --all`, `-S`, `-G`) with `-n` + a focused path; unbounded refused. do not shell-background child without `wait`.",
         "notWhen": "Use capability:read/write/edit for one-file ops and capability:git for git. Shell execution strips DB credential env vars, so use dev:pg_query for read-only operator DB queries.",
         "chaining": "run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push."
       }
@@ -4334,7 +4334,7 @@
       ],
       "guidance": {
         "when": "Need a scoped subsystem document for review, audit, or refactor; use `diff` for changed code only.",
-        "notWhen": "Packing follows retrieval: use lsp:query, gitnexus.query, code:structural, or Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap lines (e.g., `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes. first, then pack the measured radius.",
+        "notWhen": "Packing follows retrieval: use lsp:query, gitnexus.query, code:structural, or Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matching lines with ripgrep itself (e.g., `rg --max-count 60 --max-columns 256 --max-columns-preview ...`); avoid piping to early-exit consumers such as `head` under `pipefail`, which can SIGPIPE `rg` (exit 141). first, then pack the measured radius.",
         "chaining": "gitnexus.query → code:pack include:<radius>; cite provenance.commit + dirty."
       }
     },
@@ -4348,7 +4348,7 @@
       },
       "description": "Run a multi-step tool-orchestration JS script in one call with tools.ns.verb(args). Only the returned summary/media re-enters context; intermediate results stay in the runtime. Wrong names return typed signatures; dryRun:true previews write effects. Tool-name mapping is colon-to-dot: only the namespace/verb separator `:` becomes `.`, while `_` stays inside each segment (work_items:get → tools.work_items.get or tools.workItems.get; `tools:invoke` → tools.tools.invoke).",
       "capabilities": [
-        "capability:bash"
+        "agent_tools:read"
       ],
       "agentRoles": [
         "scoper",
@@ -17636,7 +17636,7 @@
       ],
       "guidance": {
         "when": "You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.",
-        "notWhen": "Use text/regex search (Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap lines (e.g., `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes.) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
+        "notWhen": "Use text/regex search (Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matching lines with ripgrep itself (e.g., `rg --max-count 60 --max-columns 256 --max-columns-preview ...`); avoid piping to early-exit consumers such as `head` under `pipefail`, which can SIGPIPE `rg` (exit 141).) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
         "chaining": "op:\"workspace_symbols\" { name } → op:\"symbol\"/\"references\" { file, line1, character }. On degradation, op:\"health\" reports servers and the processes:kill taskId."
       }
     },
@@ -19055,7 +19055,7 @@
       },
       "description": "Preferred execution door for exactly one fresh script or saved recipe. Runs on the server under the current caller and returns one bounded authored-summary envelope.",
       "capabilities": [
-        "capability:bash"
+        "agent_tools:read"
       ],
       "agentRoles": [
         "scoper",
