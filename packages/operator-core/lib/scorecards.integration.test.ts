@@ -48,6 +48,7 @@ const {
   builtInCriterionKeysForRubric,
   listScorecardPage,
   listScorecards,
+  readScorecardEvidence,
   scorecardTotalCountsByRubric,
   scorecardTrend,
 } = await import('./scorecards');
@@ -117,6 +118,7 @@ const supersede: { original: string; correction: string; independent: string } =
   correction: '',
   independent: '',
 };
+let roundtripScorecardId = '';
 
 /** File a scorecard via the real write path, then pin its created_at deterministically. */
 async function fileScorecard(
@@ -125,6 +127,8 @@ async function fileScorecard(
     id: string;
     rubricRef?: string;
     sourceHive?: string;
+    rubricRevision?: number;
+    criteriaHash?: string;
     ratings: Record<string, { rating: string; evidence: string }>;
     instrumentSnapshots?: Record<string, unknown>;
     createdAt: string;
@@ -139,6 +143,8 @@ async function fileScorecard(
     payload: {
       observation: {
         ...(opts.rubricRef ? { rubricRef: opts.rubricRef } : {}),
+        ...(opts.rubricRevision != null ? { rubricRevision: opts.rubricRevision } : {}),
+        ...(opts.criteriaHash ? { criteriaHash: opts.criteriaHash } : {}),
         ...(opts.sourceHive ? { sourceHive: opts.sourceHive } : {}),
         ratings: opts.ratings,
         ...(opts.instrumentSnapshots ? { instrumentSnapshots: opts.instrumentSnapshots } : {}),
@@ -169,9 +175,11 @@ describe('listScorecards (P-013) — real PG', () => {
     // A historically malformed papercusp scorecard: all 3 required criteria plus
     // one extra key. Direct createIssue intentionally bypasses the capture gate so
     // the read path proves old rows remain auditable without polluting trends.
-    await fileScorecard(db, {
+    roundtripScorecardId = await fileScorecard(db, {
       id: 'complete',
       rubricRef: RUBRIC,
+      rubricRevision: 17,
+      criteriaHash: 'criteria-hash-roundtrip',
       sourceHive: 'papercusp',
       createdAt: '2026-06-20T12:00:00.000Z',
       ratings: {
@@ -383,6 +391,8 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(complete.missingKeys).toEqual([]); // all 3 criteria rated
     expect(complete.extraKeys).toEqual(['legacy-ad-hoc-check']);
     expect(complete.rubricResolved).toBe(true);
+    expect(complete.rubricRevision).toBe(17);
+    expect(complete.criteriaHash).toBe('criteria-hash-roundtrip');
     expect(complete.score10).toBe(5); // known criteria only: broken(0), healthy(10), degraded(5)
     expect(complete.ratings['end-to-end-flow']).toEqual({ rating: 'broken', evidence: '88 unplaced' });
     expect(complete.instrumentSnapshots).toEqual({
@@ -399,6 +409,19 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(partial.missingKeys).toEqual(['ideation-quality', 'watchdog-determinism']); // unrated, in rubric order
     expect(partial.extraKeys).toEqual([]);
     expect(partial.rubricResolved).toBe(true);
+  });
+
+  it('round-trips the substantive rubric identity through the evidence-first reader', async () => {
+    const result = await readScorecardEvidence(roundtripScorecardId);
+
+    expect(result).toMatchObject({
+      kind: 'found',
+      scorecard: {
+        issueId: roundtripScorecardId,
+        rubricRevision: 17,
+        criteriaHash: 'criteria-hash-roundtrip',
+      },
+    });
   });
 
   it('filters by sourceHive — same rubric, different hive is a separate result', async () => {

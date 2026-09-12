@@ -236,7 +236,7 @@ function compactSchema(schema: unknown): string | null {
       // a valid-looking bug close fail only after the write is attempted.
       const compactFragment = isCompletion
         ? completionHasRootCauseContract
-          ? `${name}?:object; rootCauseVerification required {hypothesis,alternativeHypothesis,distinguishingTest,testResult}`
+          ? `${name}?:object; RCV2+{testProcedure,predictedObservations(hypothesis,alternativeHypothesis),actualObservation,evidenceRefs}`
           : `${name}?:object structured record`
         : name === 'assumptions' && completionHasRootCauseContract
           ? `${name}?:terminal close; record-only; \"none\"|facts`

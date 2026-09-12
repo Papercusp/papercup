@@ -55,7 +55,7 @@ import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners
 import { liveLockHoldingsStrict } from '../../agent-tools/locks/live-lock-paths';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
-import { loopbackFetch } from '../../loopback-fetch';
+import { describeFetchError, loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
@@ -1969,7 +1969,11 @@ async function spawnContentFixer(
       }
     })
     .catch(async (e) => {
-      const msg = e instanceof Error ? e.message : String(e);
+      // Preserve undici's underlying transport code (for example
+      // `UND_ERR_SOCKET`) instead of persisting only the opaque `fetch failed`
+      // message. The fixer marker is the live diagnostic used to distinguish
+      // an egress failure from a repair that ran and failed its tests.
+      const msg = describeFetchError(e);
       console.warn(`[git-sync] content-fixer dispatch failed (${slug}): ${msg}`);
       await recordContentFixerDispatch(slug, workspaceId, {
         ...dispatchMarker,

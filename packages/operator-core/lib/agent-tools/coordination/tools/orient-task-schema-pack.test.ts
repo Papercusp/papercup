@@ -142,7 +142,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
       ),
       description:
         'Structured completion evidence. '.repeat(20) +
-        'Successful bug/capability-gap closes require completion.rootCauseVerification with hypothesis, alternativeHypothesis, a contrastive distinguishingTest, and the observed testResult.',
+        'Successful bug/capability-gap closes require completion.rootCauseVerification v2 with hypothesis, alternativeHypothesis, a contrastive distinguishingTest, testResult, testProcedure, predictedObservations.hypothesis, predictedObservations.alternativeHypothesis, actualObservation, and evidenceRefs.',
     };
     const completeSchema = {
       type: 'object',
@@ -174,7 +174,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
 
     expect(args.length).toBeLessThanOrEqual(180);
     expect(args).toContain(
-      'completion?:object; rootCauseVerification required {hypothesis,alternativeHypothesis,distinguishingTest,testResult}',
+        'completion?:object; RCV2+{testProcedure,predictedObservations(hypothesis,alternativeHypothesis),actualObservation,evidenceRefs}',
     );
     expect(args).toContain('assumptions?');
     expect(args).toContain('terminal close');

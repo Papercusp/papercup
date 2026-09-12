@@ -302,6 +302,13 @@ const loopbackFetchMock = vi.fn(async (_url: string, _init?: Record<string, unkn
 }));
 vi.mock('../../loopback-fetch', () => ({
   loopbackFetch: (...a: unknown[]) => loopbackFetchMock(a[0] as string, a[1] as Record<string, unknown>),
+  describeFetchError: (error: unknown) => {
+    const base = error instanceof Error ? error.message : String(error);
+    const cause = (error as { cause?: { code?: string; message?: string } } | null)?.cause;
+    if (!cause?.code || base.includes(cause.code)) return base;
+    const detail = cause.message && cause.message !== base ? `: ${cause.message}` : '';
+    return `${base} (${cause.code}${detail})`;
+  },
 }));
 
 const sendMessageMock = vi.fn(async (_id: unknown, _msg: Record<string, unknown>): Promise<unknown> => ({ ok: true }));
@@ -3155,6 +3162,38 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       last_content_fixer: expect.objectContaining({ status: 'ok', httpStatus: 200 }),
     });
     warn.mockRestore();
+  });
+
+  it('persists the underlying transport code when content-fixer dispatch fails', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loopbackFetchMock.mockRejectedValueOnce(
+      Object.assign(new TypeError('fetch failed'), {
+        cause: { code: 'UND_ERR_SOCKET', message: 'other side closed' },
+      }),
+    );
+
+    try {
+      await action(ctx);
+
+      const expectedError = 'fetch failed (UND_ERR_SOCKET: other side closed)';
+      await vi.waitFor(() => {
+        expect(routinePatches()).toContainEqual({
+          last_content_fixer: expect.objectContaining({ status: 'error', error: expectedError }),
+        });
+      });
+      expect(appendPipelineEventMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'content_fixer',
+          status: 'error',
+          detail: expect.objectContaining({ error: expectedError }),
+        }),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(expectedError));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('revalidates a repaired offender before dispatch and clears its stale fixer identity', async () => {

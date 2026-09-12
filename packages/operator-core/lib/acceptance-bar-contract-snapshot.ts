@@ -294,7 +294,7 @@ export interface AcceptanceBarContractSnapshot {
   rubric: {
     rubricId: string;
     revision: number | null;
-   Hash: string | null;
+    criteriaHash: string | null;
     barSetHash: string | null;
     contract: Rubric['barContract'] | null;
     createdBy: string | null;

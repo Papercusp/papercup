@@ -46,7 +46,8 @@ const rubricMocks = vi.hoisted(() => ({
   getAcceptanceRubricsForPlan: vi.fn(),
   getRetiredAcceptanceRubricsForPlan: vi.fn(),
 }));
-vi.mock('./rubrics', () => ({
+vi.mock('./rubrics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rubrics')>()),
   getAcceptanceRubricForPlan: rubricMocks.getAcceptanceRubricForPlan,
   getAcceptanceRubricsForPlan: rubricMocks.getAcceptanceRubricsForPlan,
   getRetiredAcceptanceRubricsForPlan: rubricMocks.getRetiredAcceptanceRubricsForPlan,
@@ -136,6 +137,7 @@ const acceptanceRubric = (over: Partial<Rubric> = {}): Rubric => ({
   characteristic: 'plan-acceptance',
   title: 'Acceptance: some plan',
   description: '',
+  criteriaHash: 'criteria-hash-current',
   criteria: [{ key: 'k1', title: 'K1', model: '', method: '', driftMarkers: '' }],
   ratingScale: ['pass', 'fail', 'unknown'],
   methodRef: null,
@@ -153,6 +155,7 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
   createdAt: '2026-08-11T01:00:00Z',
   createdBy: 'su-grader',
   rubricRef: 'ar-some-plan',
+  criteriaHash: 'criteria-hash-current',
   ratings: { k1: { rating: 'pass', evidence: 'verified live' } },
   nKeys: 1,
   missingKeys: [],
@@ -463,9 +466,11 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', { expectedApplicable: true });
     });
 
-    it('exposes the ungraded refusal when only a stale rubric-revision card exists', async () => {
+    it('exposes the ungraded refusal when only a stale rubric-identity card exists', async () => {
       mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
-      mockScorecards.mockResolvedValue([scorecard({ rubricRevision: 1 })]);
+      mockScorecards.mockResolvedValue([
+        scorecard({ rubricRevision: 3, criteriaHash: 'criteria-hash-before-method-change' }),
+      ]);
       mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
         ? ['bar_snapshot_proof_inadequate', 'bar_snapshot_grading_stale', 'bar_snapshot_author_verdict_missing']
         : []));
@@ -1160,7 +1165,7 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
       rubricRef: 'meta-acceptance-rubric',
       createdBy: 'su-implementer',
       subject: { kind: 'rubric', ref: 'ar-some-plan' },
-      vetting: { consultId: 'conv-vet-1', rubricRevision: 7 },
+      vetting: { consultId: 'conv-vet-1', rubricRevision: 7, criteriaHash: 'criteria-hash-current' },
       ...over,
     });
 
@@ -1222,13 +1227,38 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
   });
 
-  it('a vetting pinned to an OLDER revision refuses, naming both revisions', async () => {
+  it('a legacy vetting pinned to an older revision refuses when no substantive hash was recorded', async () => {
     stockScorecards([metaVettingCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 6 } })]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
     expect(v.message).toContain('revision 6');
     expect(v.message).toContain('revision 7');
     expect(v.message).toContain('EI-vet');
+  });
+
+  it('reuses vetting across a revision-only edit when the criteria hash is unchanged', async () => {
+    stockScorecards([
+      metaVettingCard({
+        vetting: { consultId: 'conv-vet-1', rubricRevision: 6, criteriaHash: 'criteria-hash-current' },
+      }),
+    ]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
+  });
+
+  it('refuses same-revision vetting when the criteria or method identity changed', async () => {
+    stockScorecards([
+      metaVettingCard({
+        vetting: { consultId: 'conv-vet-1', rubricRevision: 7, criteriaHash: 'criteria-hash-old' },
+      }),
+    ]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+    expect(v.message).toContain('graded criteria or method changed');
   });
 
   it('a current-revision vetting with a linked consult satisfies (meta-rubric still proposed — tolerance proven)', async () => {
@@ -1285,9 +1315,13 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
   // fine — the guard silently became no guard, and rendered no refusal, so nothing
   // recorded that it had been skipped). The first still degrades open; the second now
   // refuses. The pair is the falsifiability control for each other.
-  it('a SUCCESSFUL read of an unversioned rubric degrades OPEN: any linked vetting satisfies (never deadlocks)', async () => {
+  it('a criteria hash keeps vetting current when the successful revision read is unversioned', async () => {
     mockRevision.mockResolvedValue(null);
-    stockScorecards([metaVettingCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 3 } })]);
+    stockScorecards([
+      metaVettingCard({
+        vetting: { consultId: 'conv-vet-1', rubricRevision: 3, criteriaHash: 'criteria-hash-current' },
+      }),
+    ]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v.satisfied).toBe(true);
   });
@@ -1295,7 +1329,9 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
   it('a FAILED revision read refuses instead of failing open — the same state that satisfies on a successful read', async () => {
     // Identical scorecard state in both halves; the ONLY delta is whether the read
     // succeeded. If the guard still short-circuited on the null, both would satisfy.
-    const staleVetting = [metaVettingCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 3 } })];
+    const staleVetting = [metaVettingCard({
+      vetting: { consultId: 'conv-vet-1', rubricRevision: 3, criteriaHash: 'criteria-hash-current' },
+    })];
 
     mockRevisionRead.mockResolvedValue({ ok: true, revision: null });
     stockScorecards(staleVetting);
@@ -1367,6 +1403,7 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
         vetting: {
           consultId: 'conv-vet-1',
           rubricRevision: 7,
+          criteriaHash: 'criteria-hash-current',
           critiquePosts: 0,
           unanswered: true,
           unansweredReason: 'all 3 routed reviewers ended; consult expired 19:54Z with 0 posts',
@@ -1387,7 +1424,13 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     // Without this, a `vettedUnderWaiver` hard-wired on would pass the test above.
     stockScorecards([
       metaVettingCard({
-        vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 2, critics: ['su-reviewer'] },
+        vetting: {
+          consultId: 'conv-vet-1',
+          rubricRevision: 7,
+          criteriaHash: 'criteria-hash-current',
+          critiquePosts: 2,
+          critics: ['su-reviewer'],
+        },
       }),
     ]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
