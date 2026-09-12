@@ -33,6 +33,7 @@
  */
 import type { Sql } from 'postgres';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
@@ -171,6 +172,13 @@ export type GetFeedbackError =
   | { error: 'consult_depth_exceeded'; depth: number; max_depth: number; hint: string }
   | { error: 'consult_cycle'; lineage: string[]; hint: string };
 
+/** The fresh read taken after a durable wake was queued but before pickup was
+ * confirmed. `null` is the oracle's explicit unknown; only `ended` and
+ * `suspect` are strong enough to advance the selected cascade. */
+export interface PostQueueLiveness {
+  sessionState: SessionState | null;
+}
+
 export interface GetFeedbackDeps {
   getSql: () => Sql;
   route: (params: {
@@ -203,6 +211,13 @@ export interface GetFeedbackDeps {
     /** True only after a later execution-confirming handshake. */
     pickupConfirmed?: boolean;
   }>;
+  /**
+   * Fresh liveness read after a queued wake with no execution-confirming
+   * handshake. Bound to the shared liveness oracle in production. The read is
+   * deliberately optional so PG-free callers retain the durable queued-wake
+   * contract; failures/unknown are fail-soft and must not cascade.
+   */
+  postQueueLiveness?: (ownerId: string) => Promise<PostQueueLiveness | null | undefined>;
   /** WI-39852 revival leg [owner 2026-08-18: respawn-and-consult beats
    * retrieval-only]: carry-respawn a DEAD expert's session (headless resume —
    * the resumed session re-attaches its ORIGINAL coord identity) with `brief`
@@ -1316,6 +1331,25 @@ export async function getFeedbackCore(
     // truthful: a queued wake is not a started turn.
     woke = pickupConfirmed ? queued : 0;
 
+    // A durable queue delivery is still pending until a turn pickup is
+    // confirmed. When the wake fan reports queued>0 without that handshake,
+    // take ONE fresh, fail-soft liveness read: the selected reviewer may have
+    // ended in the small window after routing and before pickup. Preserve the
+    // pending wake for parked/unknown/recorded/draining/live states; only the
+    // oracle's confirmed-death states advance the already-selected menu.
+    let postQueueState: PostQueueLiveness | null | undefined;
+    if (queued > 0 && !pickupConfirmed && deps.postQueueLiveness) {
+      try {
+        postQueueState = await deps.postQueueLiveness(finalChosen.ownerId);
+      } catch {
+        // Liveness enrichment is advisory to this already-durable delivery.
+        // An unavailable read must never turn a pending wake into a cascade.
+        postQueueState = undefined;
+      }
+    }
+    const postQueueDeath =
+      postQueueState?.sessionState === 'ended' || postQueueState?.sessionState === 'suspect';
+
     // 7b) A required wake that queued nothing is a failed delivery, not a
     //     successful route. If the persisted selection has another entry,
     //     advance the same CAS-protected cascade used by reply/decline/expiry
@@ -1329,7 +1363,10 @@ export async function getFeedbackCore(
     //     wake-failed recovery while preferring the already-selected menu over
     //     spending a revival on a responder whose delivery just failed.
     const hasNextCandidate = finalSelected.length > 1;
-    if (queued === 0 && hasNextCandidate) {
+    if ((queued === 0 || postQueueDeath) && hasNextCandidate) {
+      const advanceReason = queued === 0
+        ? 'Required wake queued no deliveries; advancing to the next selected responder.'
+        : `Required wake queued a delivery, but post-queue liveness confirmed sessionState=${postQueueState?.sessionState}; advancing to the next selected responder.`;
       let failoverReach: { queued?: number; woke?: number; pickupConfirmed?: boolean } | undefined;
       const advanced = await advanceCascade(
         {
@@ -1345,7 +1382,7 @@ export async function getFeedbackCore(
             finalChosen.ownerId,
             'wake_failed',
             now.toISOString(),
-            'Required wake queued no deliveries; advancing to the next selected responder.',
+            advanceReason,
           ),
           stateOnAdvance: 'awaiting_responder',
           nowIso: now.toISOString(),
