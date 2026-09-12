@@ -2811,6 +2811,15 @@ async function injectPsuHostWake(
       mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake,
       deps.tagTurn ?? tagTurnForInjection,
     );
+    // Codex's cold reset is host-mapped to a hard recycle, and the fresh Codex
+    // child needs the carry in CODEX_HOME/AGENTS.md rather than only as its
+    // opening prompt. The psu host's carry-respawn protocol is the existing
+    // transport that persists that system addendum before spawning the child.
+    // Keep Claude/OMP's reset/recycle envelope byte-compatible: they consume
+    // the carry through their existing control-mode path.
+    const codexColdRespawn =
+      d.wakeHandle?.kind === 'adv-session' && d.wakeHandle.agent?.trim().toLowerCase() === 'codex';
+    const coldTransportMode = codexColdRespawn ? 'carry-respawn' : decision.mode;
     // WI-6862: book what we actually KNOW. injectIntoHost's bare boolean cannot tell a host ACK
     // from the optimistic bare-close fallback, and that fallback explicitly covers a host that
     // crashed or was killed mid-delivery after accepting the connection — precisely what a
@@ -2829,8 +2838,9 @@ async function injectPsuHostWake(
     // the cold reset/recycle path goes through the identical gated pipeline and
     // is exposed to the identical ack-loss-then-retry duplicate.
     const injectMsg = {
-      mode: decision.mode,
+      mode: coldTransportMode,
       data: coldText,
+      ...(codexColdRespawn ? { systemPromptAddendum: coldText } : {}),
       fireNumber: coldFireCount,
       routineId,
       ownerId: d.subscriberId,
@@ -2857,7 +2867,7 @@ async function injectPsuHostWake(
       // A re-exec the host never confirmed is reported as such instead of as a clean success.
       const unconfirmed = confirmation === 'assumed-close';
       const channel: WakeChannel =
-        decision.mode === 'recycle'
+        coldTransportMode === 'recycle' || coldTransportMode === 'carry-respawn'
           ? unconfirmed
             ? 'psu-socket-recycle-unconfirmed'
             : 'psu-socket-recycle'

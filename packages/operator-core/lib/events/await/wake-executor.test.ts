@@ -3525,6 +3525,48 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(msg.data).toContain('loop:checkpoint');
   });
 
+  it('Codex cold reset uses carry-respawn and forwards the cold text as the system addendum', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle({ agent: 'codex' }),
+        payload: coldPayload({ wakeCount: 1 }),
+      }),
+      coldDeps({ injectPsuHost: injectPsuHost as never }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+    const msg = (injectPsuHost.mock.calls[0] as unknown as [string, {
+      mode: string;
+      data: string;
+      systemPromptAddendum?: string;
+    }])[1];
+    expect(msg.mode).toBe('carry-respawn');
+    expect(msg.systemPromptAddendum).toBe(msg.data);
+    expect(msg.systemPromptAddendum).toBe(renderColdWakeInjection('## Next action\nresume the wiring', undefined, 1));
+  });
+
+  it('Codex cold recycle also forwards the system addendum through carry-respawn', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle({ agent: 'codex' }),
+        payload: coldPayload({ wakeCount: 8 }),
+      }),
+      coldDeps({ injectPsuHost: injectPsuHost as never }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+    const msg = (injectPsuHost.mock.calls[0] as unknown as [string, {
+      mode: string;
+      data: string;
+      systemPromptAddendum?: string;
+    }])[1];
+    expect(msg.mode).toBe('carry-respawn');
+    expect(msg.systemPromptAddendum).toBe(msg.data);
+    expect(msg.systemPromptAddendum).toContain('(fire #8)');
+  });
+
   it('EI-18224278118395857: the production read (meta variant, no getLoopCarryNoteFn seam) threads the note write-time into the injection so a late-flushed stale note is self-evident', async () => {
     const injectPsuHost = vi.fn(async () => true);
     const updatedAtMs = Date.parse('2026-07-21T03:10:00.000Z');
