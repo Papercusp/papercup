@@ -427,7 +427,9 @@ sect "8. named release-context hardlinks survive COMMIT normalization"
 RELEASE_PROBE_ROOT="$(mktemp -d /tmp/p306-release-hardlinks.XXXXXX)"
 trap 'rm -rf -- "$RELEASE_PROBE_ROOT"' EXIT
 RELEASE_PROBE_CONTEXT="$RELEASE_PROBE_ROOT/context"
-RELEASE_PROBE_LOG="$RELEASE_PROBE_ROOT/build.log"
+# Keep the builder transcript outside RELEASE_PROBE_ROOT: the EXIT cleanup must
+# not erase the only diagnosis when this recurrence target itself fails to build.
+RELEASE_PROBE_LOG="${P306_RELEASE_BUILD_LOG:-${BUILD_LOG}.release}"
 RELEASE_PROBE_TAG="${TAG}-release-hardlinks"
 install -d -m 0755 "$RELEASE_PROBE_CONTEXT/hardlink tree"
 printf '%s\n' 'named-context hardlink metadata sentinel' \

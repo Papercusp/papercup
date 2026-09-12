@@ -840,7 +840,7 @@ function overlaySelfFleetMembership(
  */
 function annotateDegradedFleetAssignments(
   value: unknown,
-  outcome: { degraded: boolean; reason?: 'timeout' | 'error'; errorMessage?: string },
+  outcome: { degraded: boolean; reason?: 'timeout' | 'aborted' | 'error'; errorMessage?: string },
 ): unknown {
   const isObject = value && typeof value === 'object' && !Array.isArray(value);
   const record: Record<string, unknown> =

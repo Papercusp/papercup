@@ -161,6 +161,7 @@ function descriptorFor(input: {
     runtimeGeneration: input.runtimeGeneration ?? 3,
     role: 'su',
     model: null,
+    accountServed: null,
     accountRoute: 'default',
     carry: 'warm',
     modes: ['auto'],

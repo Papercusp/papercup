@@ -55,6 +55,7 @@ function descriptor(): SuSessionDescriptor<'claude'> {
     runtimeGeneration: 1,
     role: 'su',
     model: 'claude-opus',
+    accountServed: null,
     accountRoute: 'default',
     carry: 'warm',
     modes: ['auto'],

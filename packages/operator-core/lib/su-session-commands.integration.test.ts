@@ -48,7 +48,7 @@ function descriptor(): SuSessionDescriptor<'claude'> {
     identity: { workspaceId, harnessSlug, agentChatId, advSessionId, backend: 'claude',
       ownerId: 'su-command-fixture', nativeSessionId: 'native-command-fixture' },
     lifecycle: 'ready', runtimeGeneration: 1, role: 'su', carry: 'warm',
-    model: null, accountRoute: 'default', modes: [],
+    model: null, accountServed: null, accountRoute: 'default', modes: [],
     capabilities: {
       commands: { owner_turn: supported, interrupt: supported, resume: supported, fork: supported, focus: supported, end: supported },
       features: { 'tool-events': supported, 'interactive-cards': supported, 'reasoning-stream': supported, usage: supported, compaction: supported,

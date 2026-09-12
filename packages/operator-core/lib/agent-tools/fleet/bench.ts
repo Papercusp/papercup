@@ -326,7 +326,7 @@ type FleetRosterRows = Awaited<ReturnType<typeof listFleetAssignments>>;
  */
 async function readFleetRosterBounded(
   args: Parameters<typeof listFleetAssignments>[0],
-): Promise<{ rows: FleetRosterRows | null; reason: 'timeout' | 'error' | null }> {
+): Promise<{ rows: FleetRosterRows | null; reason: 'timeout' | 'aborted' | 'error' | null }> {
   const read = await withBoundedTimeout<FleetRosterRows | null>(
     () => listFleetAssignments(args),
     { fallback: null, timeoutMs: BENCH_ROSTER_READ_BUDGET_MS, label: 'fleet-bench:roster' },
@@ -339,7 +339,7 @@ async function readFleetRosterBounded(
 
 /** The one refusal shape for an unreadable roster, shared by both modes so they
  *  cannot drift into disagreeing about what an unreadable roster means. */
-function rosterUnavailable(fleet: string, reason: 'timeout' | 'error' | null, member?: string) {
+function rosterUnavailable(fleet: string, reason: 'timeout' | 'aborted' | 'error' | null, member?: string) {
   const timedOut = reason === 'timeout';
   return {
     data: {

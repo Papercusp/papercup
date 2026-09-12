@@ -54,7 +54,7 @@ function fixture(backend: 'claude' | 'codex' | 'omp'): DurableSuSessionRecord {
     runtimeGeneration: 3, pid: null, endedAt: 'yesterday', lifecycle: 'ended',
     descriptor: { identity: { agentChatId: 'saved-chat', advSessionId: 42, workspaceId: 'workspace',
       harnessSlug: 'project', backend, nativeSessionId: 'saved-native', ownerId: 'saved-owner' },
-    lifecycle: 'ended', role: 'su', runtimeGeneration: 3, model: 'saved-model', accountRoute: 'named-account',
+    lifecycle: 'ended', role: 'su', runtimeGeneration: 3, model: 'saved-model', accountServed: null, accountRoute: 'named-account',
     carry: 'cold', modes: ['auto', 'ideate'], capabilities: {} as never,
     backendExtension: backend === 'claude' ? { backend, configDir: '/saved/claude', configDirSource: 'observed' }
       : backend === 'codex' ? { backend, codexHome: '/saved/codex' } : { backend, agentHome: '/saved/omp' } } } as DurableSuSessionRecord;
