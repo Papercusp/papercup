@@ -36,14 +36,30 @@ const sourcePath = process.env.SERVICENOW_INTERVIEW_PREP_FILE ?? resolveEvidence
 const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 const normalized = (value: string | null | undefined): string => value?.replace(/\s+/g, ' ').trim() ?? '';
 const withoutTerminalPeriod = (value: string): string => value.replace(/\.$/, '');
-const collectionSlugs = [
+const reviewedCollectionSlugs = [
   'mcp-cicd-study-faq',
   'papercusp-answer-bank',
   'rtx-hirevue-prep',
   'servicenow-staff-ml-interview-prep',
   'twg-recruiter-screen',
 ];
+const collectionDir = dirname(sourcePath);
+const buildScript = readFileSync(resolve(collectionDir, 'build-standalone.sh'), 'utf8');
+const sourceBlock = buildScript.match(/SOURCES=\(([\s\S]*?)\n\)/);
+if (!sourceBlock) throw new Error('interview_prep_collection_not_declared');
+const collectionSlugs = [...sourceBlock[1].matchAll(/"([a-z0-9-]+)\.html"/g)].map((match) => match[1]);
 const expectedCollectionTargets = collectionSlugs.map((slug) => `${slug}-standalone.html`).sort();
+
+// Shared navigation grows independently of this reviewed role document. Reconstruct ONLY
+// its original navigation for the historical hash; the current collection is checked below.
+function reviewedSource(source: string): string {
+  return source.replace(/<nav class="sitenav"[\s\S]*?<\/nav>/, (nav) =>
+    nav.split('\n').filter((line) => {
+      const target = line.match(/href="([^"]+)\.html"/);
+      return line.trim() !== '' && (!target || reviewedCollectionSlugs.includes(target[1]));
+    }).join('\n'),
+  );
+}
 
 function reciprocalCollectionTargets(document: Document): string[] {
   return [
@@ -77,17 +93,33 @@ beforeAll(() => {
 });
 
 describe('ServiceNow Staff ML interview-prep source contract', () => {
-  it('pins the exact reviewed source and answer-bank snapshots', () => {
-    expect(sha256(html)).toBe(manifest.sourceSha256);
-    expect(sha256(readFileSync(resolveEvidencePath(manifest.answerBankPath)))).toBe(manifest.answerBankSha256);
+  it('pins the reviewed role content while allowing maintained shared navigation to grow', () => {
+    expect(sha256(reviewedSource(html))).toBe(manifest.sourceSha256);
     expect(manifest.manualReview.result).toBe('pass');
     expect(manifest.manualReview.scope.length).toBeGreaterThanOrEqual(6);
     expect(manifest.manualReview.falsifierCoverage.length).toBeGreaterThanOrEqual(4);
   });
 
+  it('retains content-change detection and resolves the independently maintained answer bank', () => {
+    const mutated = html.replace('744000146824899', 'JB0074818');
+    expect(mutated).not.toBe(html);
+    expect(sha256(reviewedSource(mutated))).not.toBe(manifest.sourceSha256);
+    // The answer bank received factual corrections after this role page shipped. Its
+    // historical review digest is provenance, not a freeze on that reusable dependency.
+    const answerBank = new DOMParser().parseFromString(
+      readFileSync(resolveEvidencePath(manifest.answerBankPath), 'utf8'), 'text/html',
+    );
+    expect(answerBank.querySelector('h1')?.textContent?.trim()).toBeTruthy();
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href^="papercusp-answer-bank.html"]')];
+    expect(links.length).toBeGreaterThanOrEqual(3);
+    for (const link of links) {
+      if (link.hash) expect(answerBank.getElementById(decodeURIComponent(link.hash.slice(1)))).not.toBeNull();
+    }
+  });
+
   it('keeps every generated standalone page discoverable from the full collection', () => {
-    const collectionDir = dirname(sourcePath);
-    const buildScript = readFileSync(resolve(collectionDir, 'build-standalone.sh'), 'utf8');
+    expect(collectionSlugs).toEqual(expect.arrayContaining(reviewedCollectionSlugs));
+    expect(new Set(collectionSlugs).size).toBe(collectionSlugs.length);
 
     for (const slug of collectionSlugs) {
       expect(buildScript, `build omits ${slug}.html`).toContain(`"${slug}.html"`);

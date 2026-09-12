@@ -31,7 +31,10 @@ import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracl
 import { getPresence, listPresence } from '../agent-tools/coordination/presence';
 import { fetchPresenceFleet } from '../agent-tools/coordination/presence-fleet';
 import { sendMessage } from '../agent-tools/coordination/messages';
-import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
+import {
+  ESCALATION_SLA_REROUTE_WAKE_SOURCE,
+  wakeRecipients,
+} from '../agent-tools/coordination/inbox-wake';
 import { coordLog, coordSql, coordWorkspaceId } from '../agent-tools/coordination/log';
 import { AGENT_SESSION_SENDER_PATTERN } from '../agent-tools/coordination/machine-authored';
 import { readEvidence } from '../agent-tools/coordination/relay-provenance';
@@ -533,7 +536,7 @@ const AGENT_ESCALATION_AUTHOR_RE = new RegExp(AGENT_SESSION_SENDER_PATTERN, 'i')
  * transport itself; they are not operators asking another live operator to
  * take action, so aging must never promote them into the SLA reroute lane. */
 const LOOPBACK_ESCALATION_AUTHOR_RE = /^su-loopback(?:$|[-:_])/i;
-export const ESCALATION_REROUTE_OWNER = 'system:escalation-sla-reroute';
+export const ESCALATION_REROUTE_OWNER = ESCALATION_SLA_REROUTE_WAKE_SOURCE;
 const ESCALATION_REROUTE_MSG_PREFIX = 'escalation-sla-reroute:';
 const ESCALATION_REROUTE_MARKER_FIELD = 'escalationRerouteOf';
 const ESCALATION_REVALIDATION_MSG_PREFIX = 'escalation-revalidation:';

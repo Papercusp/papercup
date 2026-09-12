@@ -2058,6 +2058,22 @@ export async function emitScorecard(
     }
 
     const gradedGeneration = await readCurrentGeneration();
+    // EI-22964903794871049: a stale evaluator can produce a complete-looking
+    // scorecard against an old release checkout. The generation stamp is the
+    // detector; make it load-bearing at the write boundary instead of burying
+    // `staleHost` in the persisted observation for a later audit to discover.
+    if (gradedGeneration?.staleHost === true) {
+      return {
+        ok: false as const,
+        code: 'stale_host_generation' as const,
+        error:
+          'scorecard emit refused: the running evaluator host is not proven to execute the querying build; ' +
+          'rerun from a host whose generation matches the deployed build, then emit again',
+        staleHost: true as const,
+        deployedSha: gradedGeneration.deployedSha,
+        gradedGeneration,
+      };
+    }
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
       kind: 'change',
@@ -2197,6 +2213,13 @@ export async function emitScorecard(
       created: result.created,
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
+      ...(gradedGeneration
+        ? {
+            gradedGeneration,
+            staleHost: gradedGeneration.staleHost,
+            deployedSha: gradedGeneration.deployedSha,
+          }
+        : {}),
       // P-013: surfaced loudly — this card does not enter the trend until audited.
       // A bare boolean was NOT loud enough: it says THAT the card is pending but not what
       // settles it, so callers rediscovered the mechanism a gate-refusal later
@@ -2255,7 +2278,7 @@ export default defineTool({
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     returns:
-      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
+      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. A stale running generation returns code `stale_host_generation` with `staleHost`, `deployedSha`, and `gradedGeneration`, and writes no card. Successful emits surface the same `gradedGeneration` stamp (including `staleHost` and `deployedSha`) alongside `ok:true`. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
     chaining:
       'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
@@ -2288,6 +2311,18 @@ export default defineTool({
       created: z.boolean().optional(),
       issueId: z.string().nullable().optional(),
       evidenceFingerprint: z.string().optional(),
+      gradedGeneration: z
+        .object({
+          deployedSha: z.string().nullable(),
+          hostStartedAt: z.string().nullable(),
+          bootHeadSha: z.string().nullable(),
+          scoutCodeHash: z.string().nullable(),
+          staleHost: z.boolean(),
+        })
+        .optional(),
+      staleHost: z.boolean().optional(),
+      deployedSha: z.string().nullable().optional(),
+      code: z.string().optional(),
       canonicalRatings: z.record(z.string(), z.unknown()).optional(),
       error: z.string().optional(),
     })

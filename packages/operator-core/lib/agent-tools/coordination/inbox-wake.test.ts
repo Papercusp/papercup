@@ -25,7 +25,9 @@ import {
   wakeRecipients,
   buildStagedWakeNote,
   isDeliveryLadderWakeSource,
+  isEscalationSlaRerouteWakeSource,
   isOwnerGuiWakeSource,
+  ESCALATION_SLA_REROUTE_WAKE_SOURCE,
   COORD_WAKE_TARGET_TIMEOUT_MS,
 } from './inbox-wake';
 import { ADMIN_COORD_UI_OWNER } from './identity';
@@ -169,6 +171,17 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(r.woken).toBe(1);
   });
 
+  it('the escalation-SLA reroute wake FIRES in manual mode so its time-bound handoff is delivered', async () => {
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
+    const r = await wakeRecipients(['s-1'], {
+      source: ESCALATION_SLA_REROUTE_WAKE_SOURCE,
+      summary: 'take over unacknowledged escalation',
+    });
+    expect(stagePendingWake).not.toHaveBeenCalled();
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ woken: 1, staged: 0, stagedTargets: [] });
+  });
+
   it('a NON-loop wake in manual mode still STAGES (the bypass is scoped to loop sources only)', async () => {
     vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
     const r = await wakeRecipients(['s-1'], { source: 'coord:send', summary: 'peer message' });
@@ -249,6 +262,13 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(isDeliveryLadderWakeSource('system:delivery-ladder')).toBe(true);
     expect(isDeliveryLadderWakeSource(undefined)).toBe(false);
     expect(isDeliveryLadderWakeSource('system:delivery-ladder-extra')).toBe(false);
+  });
+
+  it('isEscalationSlaRerouteWakeSource is exact-match', () => {
+    expect(isEscalationSlaRerouteWakeSource(ESCALATION_SLA_REROUTE_WAKE_SOURCE)).toBe(true);
+    expect(isEscalationSlaRerouteWakeSource(undefined)).toBe(false);
+    expect(isEscalationSlaRerouteWakeSource('')).toBe(false);
+    expect(isEscalationSlaRerouteWakeSource(`${ESCALATION_SLA_REROUTE_WAKE_SOURCE}:extra`)).toBe(false);
   });
 
   // QUARANTINED (flaky: selector resolves against live presence/session state, nondeterministic; de-quarantine + root-cause in WI-1053)

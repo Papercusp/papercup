@@ -29,6 +29,8 @@ import {
   resolvePlanImplementerIdentities,
 } from '../../acceptance-author-identity';
 
+const readRunningGenerationM = vi.hoisted(() => vi.fn());
+
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
   return {
@@ -38,7 +40,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 7 })),
   };
 });
-vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: vi.fn(async () => null) }));
+vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: readRunningGenerationM }));
 vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
 const readAndEvaluateAcceptanceBarLifecycleM = vi.fn();
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
@@ -223,6 +225,7 @@ const RERUN_RECIPE = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  readRunningGenerationM.mockResolvedValue(null);
   sameAuthorM.mockImplementation(async (author, candidate) => author === candidate);
   lineageRelatedM.mockImplementation(async (author, candidate) => author === candidate);
   planImplementersM.mockResolvedValue([]);
@@ -290,6 +293,42 @@ describe('emitScorecard', () => {
       createdBy: 'su-1',
       payloadExtra: { observation: { rubricRef: 'test-rubric' } },
     });
+  });
+
+  it('refuses a stale-host emit before writing an authoritative scorecard', async () => {
+    readRunningGenerationM.mockResolvedValue({
+      deployedSha: 'release-sha',
+      hostStartedAt: '2026-09-11T00:00:00.000Z',
+      bootHeadSha: 'older-sha',
+      scoutCodeHash: 'older-code',
+      staleHost: true,
+    });
+
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'stale_host_generation',
+      staleHost: true,
+      deployedSha: 'release-sha',
+      gradedGeneration: { deployedSha: 'release-sha', staleHost: true },
+    });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the running generation on a successful emit', async () => {
+    const generation = {
+      deployedSha: 'current-sha',
+      hostStartedAt: '2026-09-12T00:00:00.000Z',
+      bootHeadSha: 'current-sha',
+      scoutCodeHash: 'current-code',
+      staleHost: false,
+    };
+    readRunningGenerationM.mockResolvedValue(generation);
+
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+
+    expect(r).toMatchObject({ ok: true, gradedGeneration: generation, staleHost: false, deployedSha: 'current-sha' });
   });
 
   it('stamps the graded rubric revision server-side and passes the rubric ref to the revision reader', async () => {

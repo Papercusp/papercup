@@ -85,6 +85,12 @@ export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
 /** The delivery-ladder rescue wake must not be muted by the manual gate it detects. */
 export const DELIVERY_LADDER_WAKE_SOURCE = 'system:delivery-ladder';
 
+/** The escalation-SLA reroute is a system-owned detector that must reach its
+ * selected live driver even while the global wake mode is manual. Staging this
+ * wake defeats the SLA: there is no separate owner review step for a
+ * time-sensitive system handoff. */
+export const ESCALATION_SLA_REROUTE_WAKE_SOURCE = 'system:escalation-sla-reroute';
+
 /**
  * Is this wake a LOOP's self-wake? A loop wake is the agent driving ITSELF (loop:arm), so it
  * must BYPASS the manual pause/edit gate below: there is no separate owner to release a staged
@@ -102,6 +108,11 @@ export function isLoopWakeSource(source: string | undefined): boolean {
 /** Exact-match detector rescue source; broad system-source matching would bypass the pause. */
 export function isDeliveryLadderWakeSource(source: string | undefined): boolean {
   return source === DELIVERY_LADDER_WAKE_SOURCE;
+}
+
+/** Exact-match detector for the escalation-SLA reroute's mandatory wake. */
+export function isEscalationSlaRerouteWakeSource(source: string | undefined): boolean {
+  return source === ESCALATION_SLA_REROUTE_WAKE_SOURCE;
 }
 
 /**
@@ -298,6 +309,9 @@ export async function wakeRecipients(
   // message for the owner's own review — see isOwnerGuiWakeSource, WI-37858). The
   // delivery-ladder rescue also bypasses it: staging the alarm behind the manual gate
   // would mute the detector whose job is to surface unread directed mail (EI-201236...).
+  // The escalation-SLA reroute likewise bypasses it: staging the system's selected
+  // handoff would make the time-bound remediation depend on an owner noticing and
+  // releasing a review item (EI-22967284569456680).
   // An owner-verified relay is the fourth narrow bypass: staging an authenticated
   // owner resume behind the manual PAUSE gate asks the owner to approve a command
   // they already issued and strands the paused target indefinitely
@@ -309,6 +323,7 @@ export async function wakeRecipients(
     isLoopWakeSource(opts.source) ||
     isOwnerGuiWakeSource(opts.source) ||
     isDeliveryLadderWakeSource(opts.source) ||
+    isEscalationSlaRerouteWakeSource(opts.source) ||
     isOwnerVerifiedRelay(opts.relayProvenance);
   type TargetOutcome =
     | { kind: 'staged'; ownerId: string }

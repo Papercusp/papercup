@@ -149,7 +149,8 @@ describe('priorRespawnNote', () => {
     expect(note).toContain('busy-gate-expired');
     expect(note).toContain('9m ago');
     // The operative correction: an ack is not a landed cut.
-    expect(note).toContain('An acknowledged request is NOT a landed cut');
+    expect(note).toContain('spawning and submitting its first turn are separate steps');
+    expect(note).not.toContain('never cut');
   });
 
   // The age here is load-bearing since P-009: a pending attempt past its re-poll
