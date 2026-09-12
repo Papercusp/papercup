@@ -141,9 +141,11 @@ const COLD_LOOP_SETTLE_UNVERIFIED_CAVEAT =
  * scheduling-delayed on a loaded box) this gives the full gated pipeline room
  * to actually complete and report truthfully instead of timing out on a
  * false negative. Sized comfortably past the doubled busy-gate cap
- * (2 * 180_000 = 360_000ms) with wide margin for host scheduling jitter.
+ * (2 * 180_000 = 360_000ms) with wide margin for host scheduling jitter. Keep
+ * this below the tool's 600s dispatch budget so a legacy-host acknowledgement
+ * can reach the caller before dispatch turns it into an unknown outcome.
  */
-const CARRY_RESPAWN_SOCKET_TIMEOUT_MS = 15 * 60_000;
+const CARRY_RESPAWN_SOCKET_TIMEOUT_MS = 9 * 60_000;
 
 /**
  * compaction-continuity-hardening-2026-07-07 P-003 + EI-8987: ONE best-effort
@@ -442,12 +444,13 @@ export default defineTool({
   // org-app workspace transaction while waiting for those operations, or a
   // saturated pool can reject the compaction request before it queues the cut.
   skipWorkspaceTx: true,
-  // EI-21568390978191082: carry assembly includes transcript ingestion plus
-  // host/socket I/O and can legitimately exceed the flat 55s MCP deadline
-  // under fleet pressure. Declare the real boundary budget so the transport's
-  // effective deadline becomes 125s (timeoutSec + its 5s buffer) instead of
-  // returning outcome=unknown while this mutation continues server-side.
-  timeoutSec: 120,
+  // EI-23098800759403082: a legacy host that predates ack-early can hold the
+  // control socket through the doubled 180s busy-gate window. The former 120s
+  // budget aborted first, then discarded the handler's eventual successful
+  // queue acknowledgement as outcome-unknown while the carry remained live.
+  // Keep dispatch beyond the bounded 9m compatibility wait; ptool sits beyond
+  // the transport's +5s settlement buffer.
+  timeoutSec: 600,
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 10 } },
   args: z.object({

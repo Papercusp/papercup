@@ -42,6 +42,7 @@ import {
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
+  PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS,
@@ -392,13 +393,15 @@ describe('ptool call deadlines', () => {
       name: 'dev:service_health',
       args: { target: 'staging' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    // EI-21562635786542847: carry-respawn's 120s server budget must also
-    // apply when the call is wrapped by tools:invoke.
-    expect(timeoutForTool('session:request-compaction')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
+    // EI-23098800759403082: carry-respawn's 600s server budget + 5s MCP
+    // settlement buffer must also apply when wrapped by tools:invoke.
+    expect(timeoutForTool('session:request-compaction')).toBe(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'session:request-compaction',
       args: { focus: 'resume the current lane' },
-    })).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
+    })).toBe(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS);
+    expect(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS).toBe(610_000);
+    expect(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS).toBeGreaterThan(605_000);
     // EI-21567372634210816: plans:start has a 60s dispatcher default while
     // ptool's ordinary client deadline is 30s; cover both transport routes.
     expect(timeoutForTool('plans:start')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
