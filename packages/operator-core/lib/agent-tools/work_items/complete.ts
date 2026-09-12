@@ -96,10 +96,7 @@ import {
   describeUnprovenContentIdentity,
 } from './completion-freshness';
 export { completionSettlementManifest, completionTreeStamp, completionTreeStampForEvidence };
-export type {
-  CompletionTreeStampProbe,
-  CompletionTreeStampForEvidenceProbe,
-} from './completion-freshness';
+export type { CompletionTreeStampProbe, CompletionTreeStampForEvidenceProbe } from './completion-freshness';
 import { claimsRemediation, evaluateCloseTerminalCriteria } from './terminal-criteria';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 
@@ -122,7 +119,10 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
     { key: 'spec-test-adequacy', description: 'Affected first-class specs have current independently audited proof.' },
     { key: 'design-evidence', description: 'Enforced ratified design cases have current passing evidence.' },
-    { key: 'verification-coverage', description: 'Universal verification claims enumerate a complete population partition.' },
+    {
+      key: 'verification-coverage',
+      description: 'Universal verification claims enumerate a complete population partition.',
+    },
     { key: 'self-review', description: 'Pilot self-review evidence is present and ledger-visible when applicable.' },
     { key: 'gate-red-lineage', description: 'A claimed red-gate repair is admitted on the judged lineage.' },
   ],
@@ -148,11 +148,7 @@ export function contentIdentityAdviceForOrigin(
     `do not re-call \`work_items:complete\` locally.`
   );
 }
-import {
-  isBackedLiveDroveUiClaim,
-  isBackedLiveServiceClaim,
-  verifyLiveDroveUiArtifacts,
-} from '../../completion-audit';
+import { isBackedLiveDroveUiClaim, isBackedLiveServiceClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
 import {
   liveDriveAcceptanceGap,
   liveDriveAcceptanceMessage,
@@ -165,11 +161,7 @@ import {
   type CompletionAuthorityFrom,
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
-import {
-  evaluateCompletionClaims,
-  repoSourceReader,
-  type CompletionClaimsReport,
-} from '../../completion-claims';
+import { evaluateCompletionClaims, repoSourceReader, type CompletionClaimsReport } from '../../completion-claims';
 import { completionClaimBaseline } from '../../completion-claim-recheck';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
 import { untouchedPathsInCompletion } from './untouched-paths';
@@ -180,10 +172,7 @@ import {
   type TestRunLedgerRow,
   type TestingRunInvocation,
 } from './test-result-binding';
-import {
-  gateRedCompletionClaimVerdict,
-  gateRedCompletionClaimWarning,
-} from '../../release/gate-red-completion-claim';
+import { gateRedCompletionClaimVerdict, gateRedCompletionClaimWarning } from '../../release/gate-red-completion-claim';
 import { GATE_RED_STREAK_CONDITION_PREFIX } from '../../work-items-admission';
 import { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX } from '../../coord/actionable-conditions';
 import { renderCompletion } from '../../coord-lifecycle/render';
@@ -310,7 +299,7 @@ const completionSpec = z
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
       `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
-      `Successful bug/capability-gap closes require completion.rootCauseVerification with hypothesis, alternativeHypothesis, a contrastive distinguishingTest, and the observed testResult. ` +
+      `Bug/capability-gap terminal closes require rootCauseVerification v2: {hypothesis,alternativeHypothesis,distinguishingTest,testResult,testProcedure,predictedObservations:{hypothesis,alternativeHypothesis},actualObservation,evidenceRefs}. ` +
       `If verification.coverage.residue is present it may be empty to explicitly declare zero residue; ['none'] remains accepted for compatibility. ` +
       `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
   );
@@ -337,7 +326,9 @@ const specAdequacyCompletionSpec = z
       .array(evidenceCurrentInputSchema.strict())
       .max(500)
       .optional()
-      .describe('Current fingerprints for the exact bound evidence refs; omitted dimensions remain unknown, never pass.'),
+      .describe(
+        'Current fingerprints for the exact bound evidence refs; omitted dimensions remain unknown, never pass.',
+      ),
   })
   .strict()
   .superRefine((attestation, ctx) => {
@@ -1157,8 +1148,7 @@ export function unresolvedPathsInCompletion(
   // root, do not guess", which is a different instruction from omitting the key. Collapsing
   // the two would silently fall back to detection and judge paths against the wrong tree —
   // the same absent-vs-explicitly-empty conflation this whole check exists to catch.
-  const rawRoots =
-    'repoRoots' in probe ? probe.repoRoots : ['repoRoot' in probe ? probe.repoRoot : completionRoot()];
+  const rawRoots = 'repoRoots' in probe ? probe.repoRoots : ['repoRoot' in probe ? probe.repoRoot : completionRoot()];
   const repoRoots = [
     ...new Set(
       (rawRoots ?? [])
@@ -1335,14 +1325,15 @@ export async function completionRepoRootsForWorkspace(
   opts: CompletionRepoRootsForWorkspaceOptions = {},
 ): Promise<string[]> {
   const primaryRoot = 'primaryRoot' in opts ? (opts.primaryRoot ?? null) : detectPapercupRoot();
-  const additionalRoots = 'additionalRoots' in opts
-    ? [...(opts.additionalRoots ?? [])]
-    : [
-        ...discoverKnownHiveCheckoutRoots(),
-        ...declaredPaths
-          .map((path) => completionCheckoutRootForPath(path) ?? checkoutRootForPath(path))
-          .filter((root): root is string => Boolean(root)),
-      ];
+  const additionalRoots =
+    'additionalRoots' in opts
+      ? [...(opts.additionalRoots ?? [])]
+      : [
+          ...discoverKnownHiveCheckoutRoots(),
+          ...declaredPaths
+            .map((path) => completionCheckoutRootForPath(path) ?? checkoutRootForPath(path))
+            .filter((root): root is string => Boolean(root)),
+        ];
   const registryRead = await withBoundedTimeout(
     () => (opts.loadRegistry ?? loadHarnessRegistry)(resolveConcreteWorkspaceId(workspaceId)),
     {
@@ -1420,10 +1411,7 @@ const PATH_CLAIM_ALL_RE =
  * nearer valid git entry and consequently falls back to the superproject, where git's normal
  * fail-soft `null` result preserves this advisory's fail-open behavior.
  */
-function completionHistoryPath(
-  repoRoot: string,
-  relativePath: string,
-): { repoRoot: string; path: string } | undefined {
+function completionHistoryPath(repoRoot: string, relativePath: string): { repoRoot: string; path: string } | undefined {
   const primaryRoot = nodePath.resolve(repoRoot);
   const absolutePath = nodePath.resolve(primaryRoot, relativePath);
   if (absolutePath !== primaryRoot && !absolutePath.startsWith(primaryRoot + nodePath.sep)) return undefined;
@@ -1540,16 +1528,13 @@ function completionHasFilesChanged(completion: unknown): boolean {
  * suspect only in deliverable-facing fields; verification and causal prose
  * routinely quote those references as forensic evidence.
  */
-export function completionEphemeralDeliverableReferences(
-  completion: unknown,
-  evidence: unknown,
-) {
+export function completionEphemeralDeliverableReferences(completion: unknown, evidence: unknown) {
   const deliverableTextParts = (value: unknown): string[] => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
     const record = value as Record<string, unknown>;
     const verification =
       record.verification && typeof record.verification === 'object' && !Array.isArray(record.verification)
-        ? record.verification as Record<string, unknown>
+        ? (record.verification as Record<string, unknown>)
         : {};
     const strings = (entry: unknown): string[] =>
       typeof entry === 'string'
@@ -1614,13 +1599,7 @@ function prescribedItemPaths(item: { payload?: unknown }): string[] {
   const pathValues = ['paths', 'testPaths', 'guardPaths'].flatMap((key) =>
     Array.isArray(payload[key]) ? payload[key] : [],
   );
-  return Array.from(
-    new Set(
-      pathValues
-        .map(repoRelativePath)
-        .filter((path): path is string => Boolean(path)),
-    ),
-  );
+  return Array.from(new Set(pathValues.map(repoRelativePath).filter((path): path is string => Boolean(path))));
 }
 
 function pathMentionedInEvidence(text: string, declaredPath: string): boolean {
@@ -1748,7 +1727,10 @@ export function preExistingChangedPathsInCompletion(
     }
     for (const [historyRoot, paths] of byRepository) {
       try {
-        const times = history(historyRoot, paths.map((entry) => entry.repositoryPath));
+        const times = history(
+          historyRoot,
+          paths.map((entry) => entry.repositoryPath),
+        );
         for (const entry of paths) {
           fallbackTimes.set(entry.originalPath, times.get(entry.repositoryPath) ?? null);
         }
@@ -1879,9 +1861,8 @@ export function prescribedRecurrenceGuardCoverageGap(
   // that structured citation only when it matches a test path declared by the item;
   // an arbitrary passing unit test is not proof of the prescribed recurrence guard.
   const pointsToDeclaredTest =
-    declaredTestPath.some((path) =>
-      structuredEvidenceParts.some((part) => pathMentionedInEvidence(part, path)),
-    ) && !structuredEvidenceParts.some(partNegative);
+    declaredTestPath.some((path) => structuredEvidenceParts.some((part) => pathMentionedInEvidence(part, path))) &&
+    !structuredEvidenceParts.some(partNegative);
   // A disclaimer anywhere still withholds credit from the bare addedTests+path pair (that
   // pair carries no prose of its own to disclaim); it is now evaluated per part, so only a
   // real disclaimer counts, not one manufactured at a field boundary.
@@ -2227,10 +2208,7 @@ function reflectedTerminalStatus(state: string): 'done' | 'dropped' | null {
  * `plans:set-status` updates the canonical plan body and this derived index in the
  * same locked transaction before its dispatch promise resolves.
  */
-async function readCommittedPlanItemStatus(
-  stamp: FinishPlanStamp,
-  ctx: UnifiedToolContext,
-): Promise<string | null> {
+async function readCommittedPlanItemStatus(stamp: FinishPlanStamp, ctx: UnifiedToolContext): Promise<string | null> {
   const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
   const rows = await sql<Array<{ status: string | null }>>`
@@ -2241,7 +2219,9 @@ async function readCommittedPlanItemStatus(
        AND plan_slug = ${stamp.plan_slug}
        AND item_id = ${stamp.item_id}
      LIMIT 1`;
-  const status = String(rows[0]?.status ?? '').trim().toLowerCase();
+  const status = String(rows[0]?.status ?? '')
+    .trim()
+    .toLowerCase();
   return status || null;
 }
 
@@ -2358,9 +2338,7 @@ export async function synchronizeFinishWork(
         }
       } catch (error) {
         planItem = 'failed';
-        errors.push(
-          `plan-item status readback failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        errors.push(`plan-item status readback failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     } else {
       planItem = 'failed';
@@ -2589,9 +2567,7 @@ async function completeOne(
   // refuses before any completion/state write when the caller is not the current assignee — a
   // warning alone is too late once it clears the peer's claim.
   const callerOwnsAssignee =
-    !existing.assignee ||
-    existing.assignee === ident.ownerId ||
-    existing.assignee === ident.adoptedName;
+    !existing.assignee || existing.assignee === ident.ownerId || existing.assignee === ident.adoptedName;
   const assigneeMismatchWarning =
     existing.assignee && !callerOwnsAssignee
       ? `completing ${it.id} but it is currently assigned to '${existing.assignee}', not you ('${ident.ownerId}') — ` +
@@ -2629,10 +2605,7 @@ async function completeOne(
     // keep the existing safety warning rather than silently suppressing it.
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     try {
-      const canonicalRequestedHarness = await potHomeSlugForHarness(
-        workspaceId,
-        harnessMismatch.requested.trim(),
-      );
+      const canonicalRequestedHarness = await potHomeSlugForHarness(workspaceId, harnessMismatch.requested.trim());
       if (canonicalRequestedHarness === harnessMismatch.resolved) harnessMismatch = null;
     } catch {
       // Preserve the warning when canonicalization cannot be established.
@@ -2751,19 +2724,22 @@ async function completeOne(
   // must prove its active clauses too, or a pending/legacy grading audit can never reach
   // the reopen dispatcher. Preserve the administrative exemptions for deprecated/dropped
   // and duplicate closes.
-  const successfulFeatureClose =
-    existing.family === 'feature' && successfulClose && !duplicateCloseCoverageException;
+  const successfulFeatureClose = existing.family === 'feature' && successfulClose && !duplicateCloseCoverageException;
   // Convert-at-pickup defaults to `task`; that label alone cannot establish that
   // a completion is non-code. Let the existing gate compare the actual claim to
   // the kind, including an explicit attestation with no changed-path declaration.
   // It preserves genuine non-code deliverables and refuses contradictory typing.
   const successfulTaskClose =
     isNonCodeWorkItemKind(existing.kind) && successfulClose && !duplicateCloseCoverageException;
+  // An explicit specAdequacy attestation is itself a request to run the gate.
+  // Verification-only feature items can legitimately change no files; ignoring
+  // their attestation would let a pending grading audit disappear at completion.
+  const explicitSpecAdequacyClose = successfulClose && !duplicateCloseCoverageException && Boolean(it.specAdequacy);
   const shouldEvaluateSpecAdequacyAtCompletion =
     closeIntentRequested &&
     (((completionClaimsRemediation || successfulFeatureClose || successfulTaskClose) &&
       completionHasChangedOrDeletedPaths) ||
-      (successfulTaskClose && Boolean(it.specAdequacy)));
+      explicitSpecAdequacyClose);
 
   // ---- CONTRACT-GATE ACCUMULATION (EI-20286699547467039) ---------------------------
   // Every gate from here to the self-review gate below answers the SAME question — "is
@@ -2801,11 +2777,7 @@ async function completeOne(
     applicable: false,
     satisfied: null as boolean | null,
   }));
-  const setContractRequirement = (
-    key: CompletionContractRequirementKey,
-    applicable: boolean,
-    error?: string,
-  ): void => {
+  const setContractRequirement = (key: CompletionContractRequirementKey, applicable: boolean, error?: string): void => {
     const requirement = completionContractRequirements.find((candidate) => candidate.key === key);
     if (!requirement) return;
     requirement.applicable = applicable;
@@ -2819,9 +2791,8 @@ async function completeOne(
     gateRefusals.push(fields ? { error, fields } : { error });
   };
 
-  const assumptionsContractError = closeIntentRequested && it.assumptions === undefined
-    ? ASSUMPTIONS_REQUIRED_MESSAGE
-    : undefined;
+  const assumptionsContractError =
+    closeIntentRequested && it.assumptions === undefined ? ASSUMPTIONS_REQUIRED_MESSAGE : undefined;
   setContractRequirement('assumptions', closeIntentRequested, assumptionsContractError);
   if (assumptionsContractError) refuseGate(assumptionsContractError);
 
@@ -2868,10 +2839,11 @@ async function completeOne(
       'and durable evidenceRefs. No completion record or state transition was written.';
   }
   setContractRequirement('root-cause-verification', rootCauseVerificationRequired, rootCauseVerificationError);
-  if (rootCauseVerificationError) refuseGate(rootCauseVerificationError, {
-    rootCauseVerificationError,
-    missingRootCauseVerificationFields: missingRootCauseFields,
-  });
+  if (rootCauseVerificationError)
+    refuseGate(rootCauseVerificationError, {
+      rootCauseVerificationError,
+      missingRootCauseVerificationFields: missingRootCauseFields,
+    });
 
   // EI-20245220770262027: assigneeMismatchWarning used to be advisory even when this call
   // requested a terminal transition. That let a wrong-id completion apply the state and clear
@@ -2913,30 +2885,33 @@ async function completeOne(
       const gate = await specTestAdequacyCompletionGate({
         workItem: existing,
         attestation: it.specAdequacy,
-        ...(successfulTaskClose ? {
-          changedPaths: [
-            ...(completionEvidenceForGate?.filesChanged ?? []),
-            ...(completionEvidenceForGate?.filesDeleted ?? []),
-          ],
-        } : {}),
+        ...(successfulTaskClose
+          ? {
+              changedPaths: [
+                ...(completionEvidenceForGate?.filesChanged ?? []),
+                ...(completionEvidenceForGate?.filesDeleted ?? []),
+              ],
+            }
+          : {}),
       });
       if (!gate.ok) {
         const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
         const failedGradingAuditTargetIds = gate.failedGradingAuditTargetIds;
-        const gradingAuditDispatch = pendingGradingAuditTargetIds?.length && !it.validateOnly
-          ? await dispatchPendingGradingAudits({
-              targetIds: pendingGradingAuditTargetIds,
-              ctx,
-              harness: existing.harness,
-            }).catch((error) => ({
-              requestedTargetIds: [...pendingGradingAuditTargetIds],
-              receipts: pendingGradingAuditTargetIds.map((issueId) => ({
-                issueId,
-                state: 'failed' as const,
-                reason: error instanceof Error ? error.message : String(error),
-              })),
-            }))
-          : undefined;
+        const gradingAuditDispatch =
+          pendingGradingAuditTargetIds?.length && !it.validateOnly
+            ? await dispatchPendingGradingAudits({
+                targetIds: pendingGradingAuditTargetIds,
+                ctx,
+                harness: existing.harness,
+              }).catch((error) => ({
+                requestedTargetIds: [...pendingGradingAuditTargetIds],
+                receipts: pendingGradingAuditTargetIds.map((issueId) => ({
+                  issueId,
+                  state: 'failed' as const,
+                  reason: error instanceof Error ? error.message : String(error),
+                })),
+              }))
+            : undefined;
         const gradingAuditRetryGuidance =
           pendingGradingAuditTargetIds?.length && failedGradingAuditTargetIds?.length
             ? 'Retry after binding current proof, emitting terminal scorecards, settling any pending grading audits, and repairing the failed grading-integrity findings before emitting fresh terminal scorecards.'
@@ -2976,10 +2951,7 @@ async function completeOne(
       const specAdequacyError =
         `refusing terminal completion for '${it.id}': spec-test-adequacy gate could not establish a current verdict (${error instanceof Error ? error.message : String(error)}). ` +
         'This is retryable; no completion record or state transition was written.';
-      refuseGate(
-        specAdequacyError,
-        { specAdequacy: { applicable: true, retryable: true, checked: [] } },
-      );
+      refuseGate(specAdequacyError, { specAdequacy: { applicable: true, retryable: true, checked: [] } });
       setContractRequirement('spec-test-adequacy', true, specAdequacyError);
     }
   }
@@ -3027,11 +2999,12 @@ async function completeOne(
     );
 
     const designEvidenceEnforced = 'enforced' in outcome && outcome.enforced;
-    const designEvidenceError = outcome.status === 'unsatisfied' && designEvidenceEnforced
-      ? renderDesignEvidenceRefusal(it.id, outcome)
-      : outcome.status === 'unavailable' && designEvidenceEnforced
-        ? `refusing terminal completion for '${it.id}': ${outcome.report}. This is retryable; no completion record or state transition was written.`
-        : undefined;
+    const designEvidenceError =
+      outcome.status === 'unsatisfied' && designEvidenceEnforced
+        ? renderDesignEvidenceRefusal(it.id, outcome)
+        : outcome.status === 'unavailable' && designEvidenceEnforced
+          ? `refusing terminal completion for '${it.id}': ${outcome.report}. This is retryable; no completion record or state transition was written.`
+          : undefined;
     const designEvidenceApplicable = designEvidenceEnforced;
     setContractRequirement('design-evidence', designEvidenceApplicable, designEvidenceError);
     if (designEvidenceError) refuseGate(designEvidenceError);
@@ -3095,12 +3068,11 @@ async function completeOne(
   // `completion.duplicateOf` carry an unrelated population partition.
   const verificationCoverageApplicable =
     closeIntentRequested &&
-      !duplicateCloseCoverageException &&
-      isVerificationWorkItem(existing) &&
-      claimsUniversalVerification(it.completion);
+    !duplicateCloseCoverageException &&
+    isVerificationWorkItem(existing) &&
+    claimsUniversalVerification(it.completion);
   const verificationCoverageGap =
-    (verificationCoverageApplicable &&
-      !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage));
+    verificationCoverageApplicable && !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage);
   const misplacedResidueEntries = misplacedResiduePopulationEntries(completionEvidenceForGate?.coverage);
   const verificationCoverageError = verificationCoverageGap
     ? // EI-20223460482316333 / EI-20224260070669261 / EI-20225113964896785 /
@@ -3111,8 +3083,8 @@ async function completeOne(
       // acted on is a wall, not a gate. The exact path + the two rules that actually
       // fail (total partition, explicit residue field) are now in the message itself.
       misplacedResidueEntries.length > 0
-        ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but population entries ${misplacedResidueEntries.map((entry) => JSON.stringify(entry)).join(', ')} are in residue at completion.verification.coverage (or the equivalent top-level completion.coverage alias). Residue is not a partition bucket; move those entries to checked, notChecked, or notApplicable. ${COMPLETION_COVERAGE_CONTRACT}`
-        : `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Add it at completion.verification.coverage (or the equivalent top-level completion.coverage alias). ${COMPLETION_COVERAGE_CONTRACT} Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
+      ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but population entries ${misplacedResidueEntries.map((entry) => JSON.stringify(entry)).join(', ')} are in residue at completion.verification.coverage (or the equivalent top-level completion.coverage alias). Residue is not a partition bucket; move those entries to checked, notChecked, or notApplicable. ${COMPLETION_COVERAGE_CONTRACT}`
+      : `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Add it at completion.verification.coverage (or the equivalent top-level completion.coverage alias). ${COMPLETION_COVERAGE_CONTRACT} Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
     : undefined;
   // EI-20962416980274656: this gate is deterministic from the submitted record,
   // so reject at the completion boundary BEFORE constructing/persisting/emitting a
@@ -3148,9 +3120,7 @@ async function completeOne(
     // lookback rather than scanning the item's whole lifetime, which would let a review
     // performed weeks ago corroborate today's close.
     const takenAtMs = existing?.takenAt ? Date.parse(existing.takenAt) : NaN;
-    const sinceMs = Number.isFinite(takenAtMs)
-      ? takenAtMs
-      : Date.now() - SELF_REVIEW_UNCLAIMED_LOOKBACK_MS;
+    const sinceMs = Number.isFinite(takenAtMs) ? takenAtMs : Date.now() - SELF_REVIEW_UNCLAIMED_LOOKBACK_MS;
 
     const { sql } = getOrgPg();
     const query = selfReviewLedgerQuery({
@@ -3212,11 +3182,7 @@ async function completeOne(
   if (selfReviewError) {
     refuseGate(selfReviewError, { selfReviewError });
   }
-  setContractRequirement(
-    'self-review',
-    closeIntentRequested && itemIsArmB(existing),
-    selfReviewError,
-  );
+  setContractRequirement('self-review', closeIntentRequested && itemIsArmB(existing), selfReviewError);
 
   // ---- P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3) ----
   // A completion that claims a gate red fixed — by its prose, or because the item IS the
@@ -3415,12 +3381,13 @@ async function completeOne(
     ...(completionEvidenceForGate?.filesChanged ?? []),
     ...(completionEvidenceForGate?.filesDeleted ?? []),
   ];
-  const hasAbsoluteCheckoutPath = declaredCompletionPaths.some(
-    (path) => Boolean(completionCheckoutRootForPath(path) ?? checkoutRootForPath(path)),
+  const hasAbsoluteCheckoutPath = declaredCompletionPaths.some((path) =>
+    Boolean(completionCheckoutRootForPath(path) ?? checkoutRootForPath(path)),
   );
-  const registeredRepoRoots = initialUnresolvedPaths || hasAbsoluteCheckoutPath
-    ? await completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
-    : undefined;
+  const registeredRepoRoots =
+    initialUnresolvedPaths || hasAbsoluteCheckoutPath
+      ? await completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
+      : undefined;
 
   // P-001 / D-016 (design-to-code-coverage-seam-2026-09-02): make `filesChanged` FALSIFIABLE.
   //
@@ -3459,7 +3426,10 @@ async function completeOne(
           [existing.createdAt, existing.takenAt]
             .map((value) => (value ? Date.parse(String(value)) : NaN))
             .filter((ms) => Number.isFinite(ms))
-            .reduce<number | undefined>((earliest, ms) => (earliest === undefined ? ms : Math.min(earliest, ms)), undefined),
+            .reduce<number | undefined>(
+              (earliest, ms) => (earliest === undefined ? ms : Math.min(earliest, ms)),
+              undefined,
+            ),
           { repoRoots: registeredRepoRoots ?? [completionRoot()].filter((r): r is string => r !== null) },
         )
       : undefined;
@@ -3680,11 +3650,7 @@ async function completeOne(
         })
     : undefined;
   const completionEvidenceToPersist: PersistedCompletionEvidence | undefined = (() => {
-    const base = withClaimBaseline(
-      completionEvidenceBeforeStamp,
-      claimVerdicts,
-      new Date().toISOString(),
-    );
+    const base = withClaimBaseline(completionEvidenceBeforeStamp, claimVerdicts, new Date().toISOString());
     if (!base || !treeStamp) return base;
     const stamped = { ...base, treeStamp };
     const settlementManifest = completionSettlementManifest(stamped);
@@ -3722,11 +3688,7 @@ async function completeOne(
       // survivor without downgrading an otherwise evidenced duplicate close. The persisted
       // `terminal_reason` column still comes from the requested state in work-items.ts.
       status: String(effectiveState ?? ''),
-      terminalReason: duplicateCloseCoverageException
-        ? 'duplicate'
-        : effectiveState
-          ? String(effectiveState)
-          : null,
+      terminalReason: duplicateCloseCoverageException ? 'duplicate' : effectiveState ? String(effectiveState) : null,
       filesChanged: completionEvidenceForGate?.filesChanged,
       filesDeleted: completionEvidenceForGate?.filesDeleted,
       treeStamp,
@@ -3771,10 +3733,7 @@ async function completeOne(
   // advisory detector encounters malformed input.
   let ephemeralDeliverableWarning: string | undefined;
   try {
-    const references = completionEphemeralDeliverableReferences(
-      it.completion,
-      completionEvidenceToPersist,
-    );
+    const references = completionEphemeralDeliverableReferences(it.completion, completionEvidenceToPersist);
     ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(`completion for ${it.id}`, references);
   } catch {
     /* fail-open: the completion record must never be lost to an advisory check */
@@ -4251,8 +4210,7 @@ async function completeOne(
     computed: completionAuthority,
     authorityByEvidence,
     declaredFilesCount:
-      (completionEvidenceForGate?.filesChanged?.length ?? 0) +
-      (completionEvidenceForGate?.filesDeleted?.length ?? 0),
+      (completionEvidenceForGate?.filesChanged?.length ?? 0) + (completionEvidenceForGate?.filesDeleted?.length ?? 0),
     inProcessContentIdentityMissing: committedContentIdentityMissing,
   });
   // The change is worthless if it is silent. An agent whose close just landed `proposed`
@@ -4270,8 +4228,7 @@ async function completeOne(
   // per-path identities behind that verdict are already computed; this only surfaces them.
   const contentIdentityDetail = describeUnprovenContentIdentity(
     unprovenContentIdentityPaths(treeStamp),
-    (completionEvidenceForGate?.filesChanged?.length ?? 0) +
-      (completionEvidenceForGate?.filesDeleted?.length ?? 0),
+    (completionEvidenceForGate?.filesChanged?.length ?? 0) + (completionEvidenceForGate?.filesDeleted?.length ?? 0),
   );
   const originAwareContentIdentityDetail = contentIdentityAdviceForOrigin(
     existing.origin,
@@ -4286,32 +4243,32 @@ async function completeOne(
           ? originAwareContentIdentityDetail
             ? originAwareContentIdentityDetail
             : unresolvableContentIdentityPaths(treeStamp).length > 0
-            ? // WI-42441: this is the SERVER's resolution failure, not the closer's tree
-              // hygiene. The generic advice below is unfollowable here — re-running from a
-              // perfectly committed tree reproduces it exactly — so say what actually
-              // happened and do not send them to re-verify work that is already correct.
-              `The server could NOT RESOLVE the committed content for ${unresolvableContentIdentityPaths(treeStamp)
-                .map((entry) => `\`${entry.path}\` (${entry.headBlobUnresolvable})`)
-                .join('; ')}. This is a resolution failure on the server side, NOT a problem with your tree: ` +
-              `re-closing from a committed tree will reproduce it identically. Your other evidence was accepted. ` +
-              `Settlement will upgrade this close automatically once the path resolves; if it persists, file it ` +
-              `against the completion content-identity resolver rather than re-verifying.`
-            : // No per-path identity was recorded at all, so there is no fact to name here.
-              // Keep the rule-level text rather than inventing a per-path story we do not have.
-              contentIdentityDetail ??
-              `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`
+              ? // WI-42441: this is the SERVER's resolution failure, not the closer's tree
+                // hygiene. The generic advice below is unfollowable here — re-running from a
+                // perfectly committed tree reproduces it exactly — so say what actually
+                // happened and do not send them to re-verify work that is already correct.
+                `The server could NOT RESOLVE the committed content for ${unresolvableContentIdentityPaths(treeStamp)
+                  .map((entry) => `\`${entry.path}\` (${entry.headBlobUnresolvable})`)
+                  .join('; ')}. This is a resolution failure on the server side, NOT a problem with your tree: ` +
+                `re-closing from a committed tree will reproduce it identically. Your other evidence was accepted. ` +
+                `Settlement will upgrade this close automatically once the path resolves; if it persists, file it ` +
+                `against the completion content-identity resolver rather than re-verifying.`
+              : // No per-path identity was recorded at all, so there is no fact to name here.
+                // Keep the rule-level text rather than inventing a per-path story we do not have.
+                (contentIdentityDetail ??
+                `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`)
           : insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
-          ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
-            `be true: if this close added or changed tests, it changed at least one file, and a completion ` +
-            `nobody can locate is the exact claim this gate exists to refuse. To settle it, re-call ` +
-            `work_items:complete for this id with \`filesChanged\` listing the test file(s) you touched — ` +
-            `real paths only, never a plausible-looking guess. If it did NOT add tests, pass ` +
-            `\`addedTests: false\` instead; that is not a workaround, it is the accurate record.`
-          : `\`committed\` requires \`verifiedHow\` ('unit'|'integration'|'live-drove-ui'|'manual'|'already-passing') ` +
-            `PLUS at least one of \`testsRun\` / \`testResult\`. \`filesChanged\` and \`addedTests\` do NOT qualify — ` +
-            `both say what changed, neither says anything was checked. To settle it, re-call ` +
-            `work_items:complete for this id with those fields filled; if the work genuinely cannot be verified, ` +
-            `say so in \`deferred\` and leave it proposed.`)
+            ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
+              `be true: if this close added or changed tests, it changed at least one file, and a completion ` +
+              `nobody can locate is the exact claim this gate exists to refuse. To settle it, re-call ` +
+              `work_items:complete for this id with \`filesChanged\` listing the test file(s) you touched — ` +
+              `real paths only, never a plausible-looking guess. If it did NOT add tests, pass ` +
+              `\`addedTests: false\` instead; that is not a workaround, it is the accurate record.`
+            : `\`committed\` requires \`verifiedHow\` ('unit'|'integration'|'live-drove-ui'|'manual'|'already-passing') ` +
+              `PLUS at least one of \`testsRun\` / \`testResult\`. \`filesChanged\` and \`addedTests\` do NOT qualify — ` +
+              `both say what changed, neither says anything was checked. To settle it, re-call ` +
+              `work_items:complete for this id with those fields filled; if the work genuinely cannot be verified, ` +
+              `say so in \`deferred\` and leave it proposed.`)
       : undefined;
 
   // Fill provenance defaults so the rendered notification is complete (D-006).
@@ -4724,7 +4681,9 @@ export default defineTool({
       return typeof status === 'string' && CLOSE_INTENT_STATES.has(status.trim().toLowerCase());
     };
     const entries: Record<string, unknown>[] = Array.isArray(root.items)
-      ? root.items.filter((it): it is Record<string, unknown> => Boolean(it) && typeof it === 'object' && !Array.isArray(it))
+      ? root.items.filter(
+          (it): it is Record<string, unknown> => Boolean(it) && typeof it === 'object' && !Array.isArray(it),
+        )
       : [root];
     const needsAssumptions = entries.some(
       (entry) => hasCloseIntent(entry, root.state) && (entry.assumptions ?? root.assumptions) === undefined,

@@ -46,8 +46,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
         dbMocks.planItemStatusRows(strings, ...values);
       return {
         sql: Object.assign(sql, {
-          begin: async <T>(callback: (tx: typeof sql) => Promise<T>): Promise<T> =>
-            callback(sql),
+          begin: async <T>(callback: (tx: typeof sql) => Promise<T>): Promise<T> => callback(sql),
         }),
       };
     },
@@ -682,72 +681,67 @@ describe('work_items:complete (keyed-array)', () => {
     );
   });
 
-    // EI-21462047954123123: a checkpoint holding checks is FOLDED into the persisted
-    // `_completionEvidence` before the terminal clear wipes it — "see the checkpoint"
-    // citations must land on a surface that survives the close.
-    it('folds non-empty checkpoint checks into _completionEvidence before clearing', async () => {
-      // The attach seam fires on the ALREADY-TERMINAL re-attestation path (no `state`
-      // passed) — exactly the close shape whose evidence cites the checkpoint.
-      const settled = { ...item, state: 'passed' };
-      getWorkItem.mockResolvedValue(settled);
-      getWorkItemCheckpoint.mockResolvedValue(
-        [
-          '## Did',
-          'verification pass done',
-          '',
-          '## Checks',
-          '- ✓ [#gate] gate is green — re-check: state:read',
-          '  Verified 10:00Z: 30/30 passed',
-          '- ? [#audit] audits are terminal — re-check: read audit state — evidence: audit remains pending',
-          '- [ ] main is at abc123 — re-check: git rev-parse main',
-        ].join('\n'),
-      );
-      const r = await one({ id: 'F-12', completion: { summary: 'shipped' } });
-      expect(r.ok).toBe(true);
-      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
-        expect.objectContaining({ workItemId: 'F-12' }),
-        null,
-      );
-      const evidenceCall = attachCompletionEvidenceToSettledItem.mock.calls.find((c) =>
-        JSON.stringify(c).includes('checkpointChecksCarried'),
-      );
-      expect(evidenceCall).toBeTruthy();
-      const carried = JSON.stringify(evidenceCall);
-      expect(carried).toContain('gate is green');
-      expect(carried).toContain('"observed":"audit remains pending"');
-      expect(carried).toContain('main is at abc123');
-      expect(carried).toContain('verification pass done');
-      expect(carried).toContain('checkpointProseSnapshot');
-    });
+  // EI-21462047954123123: a checkpoint holding checks is FOLDED into the persisted
+  // `_completionEvidence` before the terminal clear wipes it — "see the checkpoint"
+  // citations must land on a surface that survives the close.
+  it('folds non-empty checkpoint checks into _completionEvidence before clearing', async () => {
+    // The attach seam fires on the ALREADY-TERMINAL re-attestation path (no `state`
+    // passed) — exactly the close shape whose evidence cites the checkpoint.
+    const settled = { ...item, state: 'passed' };
+    getWorkItem.mockResolvedValue(settled);
+    getWorkItemCheckpoint.mockResolvedValue(
+      [
+        '## Did',
+        'verification pass done',
+        '',
+        '## Checks',
+        '- ✓ [#gate] gate is green — re-check: state:read',
+        '  Verified 10:00Z: 30/30 passed',
+        '- ? [#audit] audits are terminal — re-check: read audit state — evidence: audit remains pending',
+        '- [ ] main is at abc123 — re-check: git rev-parse main',
+      ].join('\n'),
+    );
+    const r = await one({ id: 'F-12', completion: { summary: 'shipped' } });
+    expect(r.ok).toBe(true);
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'F-12' }), null);
+    const evidenceCall = attachCompletionEvidenceToSettledItem.mock.calls.find((c) =>
+      JSON.stringify(c).includes('checkpointChecksCarried'),
+    );
+    expect(evidenceCall).toBeTruthy();
+    const carried = JSON.stringify(evidenceCall);
+    expect(carried).toContain('gate is green');
+    expect(carried).toContain('"observed":"audit remains pending"');
+    expect(carried).toContain('main is at abc123');
+    expect(carried).toContain('verification pass done');
+    expect(carried).toContain('checkpointProseSnapshot');
+  });
 
-    it('carries a bounded prose checkpoint snapshot before terminal cleanup', async () => {
-      const prose = `## Did\nnamed prose survives the clear\n\n## Baseline\nbaseline prose survives the clear\n${'x'.repeat(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS + 200)}`;
-      getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
-      getWorkItemCheckpoint.mockResolvedValue(prose);
+  it('carries a bounded prose checkpoint snapshot before terminal cleanup', async () => {
+    const prose = `## Did\nnamed prose survives the clear\n\n## Baseline\nbaseline prose survives the clear\n${'x'.repeat(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS + 200)}`;
+    getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
+    getWorkItemCheckpoint.mockResolvedValue(prose);
 
-      const r = await one({ id: 'F-12', completion: { summary: 'shipped' } });
+    const r = await one({ id: 'F-12', completion: { summary: 'shipped' } });
 
-      expect(r.ok).toBe(true);
-      const [, options] = attachCompletionEvidenceToSettledItem.mock.calls[0] as [
-        string,
-        { completionEvidence?: Record<string, unknown> },
-      ];
-      const snapshot = options.completionEvidence?.checkpointProseSnapshot;
-      expect(snapshot).toEqual(expect.stringContaining('named prose survives the clear'));
-      expect(snapshot).toEqual(expect.stringContaining('baseline prose survives the clear'));
-      expect(typeof snapshot).toBe('string');
-      expect((snapshot as string).length).toBe(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS);
-      expect((snapshot as string).endsWith('…[truncated]')).toBe(true);
-    });
+    expect(r.ok).toBe(true);
+    const [, options] = attachCompletionEvidenceToSettledItem.mock.calls[0] as [
+      string,
+      { completionEvidence?: Record<string, unknown> },
+    ];
+    const snapshot = options.completionEvidence?.checkpointProseSnapshot;
+    expect(snapshot).toEqual(expect.stringContaining('named prose survives the clear'));
+    expect(snapshot).toEqual(expect.stringContaining('baseline prose survives the clear'));
+    expect(typeof snapshot).toBe('string');
+    expect((snapshot as string).length).toBe(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS);
+    expect((snapshot as string).endsWith('…[truncated]')).toBe(true);
+  });
 
-    it('writes no checkpointChecksCarried when the checkpoint is empty or absent', async () => {
-      getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
-      await one({ id: 'F-12', completion: { summary: 'shipped' } });
-      expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
-      expect(JSON.stringify(attachCompletionEvidenceToSettledItem.mock.calls)).not.toContain(
-        'checkpointChecksCarried',
-      );
-    });
+  it('writes no checkpointChecksCarried when the checkpoint is empty or absent', async () => {
+    getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
+    await one({ id: 'F-12', completion: { summary: 'shipped' } });
+    expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
+    expect(JSON.stringify(attachCompletionEvidenceToSettledItem.mock.calls)).not.toContain('checkpointChecksCarried');
+  });
 
   it('synchronously converges a linked plan item and claim release before reporting success', async () => {
     const linked = {
@@ -1488,8 +1482,7 @@ describe('work_items:complete (keyed-array)', () => {
           summary: 'fixed the service startup path',
           verification: {
             testsRun: 'dev:restart then systemctl --user show papercup-staging-api.service',
-            testResult:
-              'ActiveState=active; NRestarts=0; MainPID=4242; GET http://localhost:3170/api/health -> 200',
+            testResult: 'ActiveState=active; NRestarts=0; MainPID=4242; GET http://localhost:3170/api/health -> 200',
             verifiedHow: 'live-service',
           },
         },
@@ -1595,7 +1588,9 @@ describe('work_items:complete (keyed-array)', () => {
     );
     const persisted = setWorkItemStateWithAliasInfo.mock.calls[0][2].completionEvidence;
     expect(persisted?.settlementManifest).toMatchObject({
-      version: 1, generation: 1, normalizedPaths: ['packages/operator-core/package.json'],
+      version: 1,
+      generation: 1,
+      normalizedPaths: ['packages/operator-core/package.json'],
     });
     expect(persisted?.settlementManifest?.evidenceHash).toMatch(/^[0-9a-f]{64}$/);
     expect(setWorkItemStateWithAliasInfo.mock.calls[0][2]).not.toHaveProperty('completionRef');
@@ -1921,8 +1916,8 @@ describe('work_items:complete (keyed-array)', () => {
         workItem: linkedTask,
         attestation: proof,
         changedPaths: [
-          ...('filesChanged' in completion ? completion.filesChanged ?? [] : []),
-          ...('filesDeleted' in completion ? completion.filesDeleted ?? [] : []),
+          ...('filesChanged' in completion ? (completion.filesChanged ?? []) : []),
+          ...('filesDeleted' in completion ? (completion.filesDeleted ?? []) : []),
         ],
       });
       expect(r).toMatchObject({ ok: false, specAdequacy: { applicable: true, retryable: true } });
@@ -2017,7 +2012,12 @@ describe('work_items:complete (keyed-array)', () => {
       expect(complete.guidance?.when).toContain('top-level siblings of `completion`');
       expect(complete.guidance?.when).toContain('auto-hoisted');
       const parsed = (
-        complete.args as { safeParse: (x: unknown) => { success: boolean; data?: { specAdequacy?: unknown; completion?: { specAdequacy?: unknown } } } }
+        complete.args as {
+          safeParse: (x: unknown) => {
+            success: boolean;
+            data?: { specAdequacy?: unknown; completion?: { specAdequacy?: unknown } };
+          };
+        }
       ).safeParse({
         id: 'WI-101',
         state: 'resolved',
@@ -2138,6 +2138,46 @@ describe('work_items:complete (keyed-array)', () => {
         id: 'F-101',
         state: 'passed',
         completion: { summary: 'shipped', filesChanged: [behaviorChangePath] },
+        specAdequacy,
+      });
+
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
+        workItem: linkedFeature,
+        attestation: specAdequacy,
+      });
+      expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
+        targetIds: pendingTargets,
+        ctx,
+        harness: 'papercusp',
+      });
+      expect(r).toMatchObject({
+        ok: false,
+        specAdequacy: { gradingAuditDispatch: dispatchResult },
+      });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('honors explicit spec adequacy on a successful feature close with no changed paths', async () => {
+      getWorkItem.mockResolvedValue(linkedFeature);
+      const pendingTargets = ['EI-feature-verification-audit'];
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'SPEC-004-01@1: grading audit pending',
+        checked: [],
+        pendingGradingAuditTargetIds: pendingTargets,
+      });
+      const dispatchResult = {
+        requestedTargetIds: pendingTargets,
+        receipts: [{ issueId: pendingTargets[0], state: 'routed' as const, conversationId: 'audit-verification' }],
+      };
+      dispatchPendingGradingAudits.mockResolvedValue(dispatchResult);
+
+      const r = await one({
+        id: 'F-101',
+        state: 'passed',
+        completion: { summary: 'verification-only feature complete' },
         specAdequacy,
       });
 
@@ -2294,7 +2334,11 @@ describe('work_items:complete (keyed-array)', () => {
       });
       const dispatchResult = {
         requestedTargetIds: pendingTargets,
-        receipts: pendingTargets.map((issueId) => ({ issueId, state: 'routed' as const, conversationId: `audit-${issueId}` })),
+        receipts: pendingTargets.map((issueId) => ({
+          issueId,
+          state: 'routed' as const,
+          conversationId: `audit-${issueId}`,
+        })),
       };
       dispatchPendingGradingAudits.mockResolvedValue(dispatchResult);
 
@@ -2780,7 +2824,13 @@ describe('work_items:complete (keyed-array)', () => {
     });
 
     it('also refuses issue terminal inference from completion.status when another agent owns the item', async () => {
-      getWorkItem.mockResolvedValue({ ...item, family: 'issue', kind: 'bug', state: 'open', assignee: 'su-someone-else' });
+      getWorkItem.mockResolvedValue({
+        ...item,
+        family: 'issue',
+        kind: 'bug',
+        state: 'open',
+        assignee: 'su-someone-else',
+      });
       const r = await one({
         id: 'F-12',
         completion: { summary: 'must not infer-close the peer item', status: 'resolved', tests: 'not run' },
@@ -2916,9 +2966,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.typeEvidenceWarning).toContain(
         'npm run lint:tsc:operator -- --files=apps/operator/lib/mcp-proxy/proxy.ts,apps/operator/lib/mcp-proxy/proxy.test.ts',
       );
-      expect(r.typeEvidenceWarning).not.toContain(
-        'npm run lint:tsc -- --files=apps/operator/lib/mcp-proxy',
-      );
+      expect(r.typeEvidenceWarning).not.toContain('npm run lint:tsc -- --files=apps/operator/lib/mcp-proxy');
     });
 
     it('stays silent when the caller already cited a typecheck', async () => {
@@ -3737,7 +3785,13 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
   });
 
   it('does not treat a loopback URL in forensic verification as the deliverable', async () => {
-    getWorkItem.mockResolvedValue({ ...item, id: 'WI-loopback-forensics', kind: 'task', family: 'issue', state: 'open' });
+    getWorkItem.mockResolvedValue({
+      ...item,
+      id: 'WI-loopback-forensics',
+      kind: 'task',
+      family: 'issue',
+      state: 'open',
+    });
 
     const r = await one({
       id: 'WI-loopback-forensics',
@@ -3752,7 +3806,13 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
   });
 
   it('still warns when completion summary presents a loopback URL as the deliverable', async () => {
-    getWorkItem.mockResolvedValue({ ...item, id: 'WI-loopback-deliverable', kind: 'task', family: 'issue', state: 'open' });
+    getWorkItem.mockResolvedValue({
+      ...item,
+      id: 'WI-loopback-deliverable',
+      kind: 'task',
+      family: 'issue',
+      state: 'open',
+    });
 
     const r = await one({
       id: 'WI-loopback-deliverable',
@@ -3848,20 +3908,33 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
-    it.each(['', '   '])(
-      'EI-22691088505562531: treats blank optional duplicateOf %j as omission',
-      (duplicateOf) => {
-        const out = coerceCompletionShape({ summary: 's', duplicateOf }) as Record<string, unknown>;
-        expect(out).not.toHaveProperty('duplicateOf');
-      },
-    );
+    it.each(['', '   '])('EI-22691088505562531: treats blank optional duplicateOf %j as omission', (duplicateOf) => {
+      const out = coerceCompletionShape({ summary: 's', duplicateOf }) as Record<string, unknown>;
+      expect(out).not.toHaveProperty('duplicateOf');
+    });
 
     it('EI-22691088505562531: preserves a non-empty duplicateOf target', () => {
       const out = coerceCompletionShape({ summary: 's', duplicateOf: 'EI-survivor' }) as Record<string, unknown>;
       expect(out.duplicateOf).toBe('EI-survivor');
     });
 
-    it.each(['none', 'None', 'NONE', 'n/a', 'N/A', 'na', 'nil', 'null', 'nothing', 'no files', 'no files changed', 'no changes', 'no change', '-', '  none  '])(
+    it.each([
+      'none',
+      'None',
+      'NONE',
+      'n/a',
+      'N/A',
+      'na',
+      'nil',
+      'null',
+      'nothing',
+      'no files',
+      'no files changed',
+      'no changes',
+      'no change',
+      '-',
+      '  none  ',
+    ])(
       'EI-22166136861574482: normalizes the no-code-change sentinel %j to an empty filesChanged array, not a fabricated path',
       (sentinel) => {
         const out = coerceCompletionShape({ summary: 's', filesChanged: sentinel }) as { filesChanged: unknown };
@@ -3887,18 +3960,24 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         summary: 's',
         filesChanged: ['none.txt', 'src/na/config.ts', 'packages/operator-core/lib/none-of-the-above.ts'],
       }) as { filesChanged: unknown };
-      expect(out.filesChanged).toEqual(['none.txt', 'src/na/config.ts', 'packages/operator-core/lib/none-of-the-above.ts']);
+      expect(out.filesChanged).toEqual([
+        'none.txt',
+        'src/na/config.ts',
+        'packages/operator-core/lib/none-of-the-above.ts',
+      ]);
     });
 
     it('accepts server-generated root treeStamp and settlementManifest on a read→retry (EI-21599866958764530)', () => {
       const treeStamp = {
         repositoryRoot: '/repo',
         headSha: 'a'.repeat(40),
-        contentIdentity: [{
-          path: 'src/fix.ts',
-          workingTreeBlobSha: 'b'.repeat(40),
-          headBlobSha: 'b'.repeat(40),
-        }],
+        contentIdentity: [
+          {
+            path: 'src/fix.ts',
+            workingTreeBlobSha: 'b'.repeat(40),
+            headBlobSha: 'b'.repeat(40),
+          },
+        ],
       };
       const settlementManifest = {
         version: 1,
@@ -4042,9 +4121,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('still accepts a genuine comma-separated filesChanged path list (EI-21471221125941096, unaffected)', () => {
-      const result = (
-        complete.args as { safeParse: (value: unknown) => { success: boolean; data?: any } }
-      ).safeParse({
+      const result = (complete.args as { safeParse: (value: unknown) => { success: boolean; data?: any } }).safeParse({
         id: 'WI-2',
         completion: {
           summary: 'landed',
@@ -4069,9 +4146,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         id: 'WI-1',
         completion: {
           summary: 'landed',
-          filesChanged: [
-            'packages/operator-core/lib/sync/hyperbee/projections/**/*.ts (writer contract sweep)',
-          ],
+          filesChanged: ['packages/operator-core/lib/sync/hyperbee/projections/**/*.ts (writer contract sweep)'],
         },
       });
 
@@ -4115,9 +4190,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       // Regression guard: `[` / `]` are deliberately EXCLUDED from the glob detector
       // because this repo has real, legitimate filesChanged paths built from bracketed
       // dynamic-route segments (e.g. the WI-2142463 close named this exact path).
-      const result = (
-        complete.args as { safeParse: (value: unknown) => { success: boolean; data?: any } }
-      ).safeParse({
+      const result = (complete.args as { safeParse: (value: unknown) => { success: boolean; data?: any } }).safeParse({
         id: 'WI-2',
         completion: {
           summary: 'landed',
@@ -4126,9 +4199,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data?.completion.filesChanged).toEqual([
-        'apps/web/app/api/zero-proxy/[...path]/route.ts',
-      ]);
+      expect(result.data?.completion.filesChanged).toEqual(['apps/web/app/api/zero-proxy/[...path]/route.ts']);
     });
 
     it('an array in a string-typed field is joined (the "tests: expected string, received array")', () => {
@@ -4323,9 +4394,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('hoists the "none" sentinel too', () => {
-      expect(
-        hoistMisplacedCompletionFields({ id: 'WI-1', completion: { summary: 's', assumptions: 'none' } }),
-      ).toEqual({ id: 'WI-1', completion: { summary: 's' }, assumptions: 'none' });
+      expect(hoistMisplacedCompletionFields({ id: 'WI-1', completion: { summary: 's', assumptions: 'none' } })).toEqual(
+        { id: 'WI-1', completion: { summary: 's' }, assumptions: 'none' },
+      );
     });
 
     it('hoists `specAdequacy` and `outputPayload` nested inside `completion`, together, up to the top level', () => {
@@ -4696,9 +4767,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('accepts persisted checkpoint metadata on retry but still rejects unrelated completion keys (EI-21582975345203826)', () => {
-      const retry = (
-        complete.args as { safeParse: (x: unknown) => { success: boolean; data?: any } }
-      ).safeParse({
+      const retry = (complete.args as { safeParse: (x: unknown) => { success: boolean; data?: any } }).safeParse({
         id: 'EI-21582975345203826',
         completion: {
           summary: 'retry stored evidence',
@@ -4716,7 +4785,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(retry.data.completion).not.toHaveProperty('checkpointProseSnapshot');
 
       const unrelated = (
-        complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } }
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
       ).safeParse({
         id: 'EI-21582975345203826',
         completion: {
@@ -4725,7 +4796,12 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         },
       });
       expect(unrelated.success).toBe(false);
-      expect(unrelated.error?.issues.map((issue) => issue.message).join(' ').toLowerCase()).toContain('unrecognized');
+      expect(
+        unrelated.error?.issues
+          .map((issue) => issue.message)
+          .join(' ')
+          .toLowerCase(),
+      ).toContain('unrecognized');
       expect(unrelated.error?.issues.map((issue) => issue.message).join(' ')).toContain('unrelatedField');
     });
   });
@@ -4942,7 +5018,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('names it for a bulk items[] close, including one inheriting the top-level state', () => {
-      expect(preconditions({ state: 'resolved', items: [{ id: 'WI-1', completion: { summary: 'x' } }] })).toHaveLength(1);
+      expect(preconditions({ state: 'resolved', items: [{ id: 'WI-1', completion: { summary: 'x' } }] })).toHaveLength(
+        1,
+      );
       expect(preconditions({ items: [{ id: 'WI-1', state: 'done', completion: { summary: 'x' } }] })).toHaveLength(1);
     });
 
@@ -5019,9 +5097,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     // make the assertions above falsifiable: a detector that fired on any `completion` at all,
     // or on any key merely containing "treeStamp", would pass every test above and fail these.
     it('stays silent for completions that send no stamp at all', () => {
-      expect(preconditions({ id: 'WI-1', completion: { summary: 'x', verification: { filesChanged: ['a.ts'] } } })).toEqual(
-        [],
-      );
+      expect(
+        preconditions({ id: 'WI-1', completion: { summary: 'x', verification: { filesChanged: ['a.ts'] } } }),
+      ).toEqual([]);
       expect(preconditions({ id: 'WI-1', completion: { summary: 'x', verification: {} } })).toEqual([]);
       expect(preconditions({ id: 'WI-1', completion: { summary: 'mentions treeStamp in prose only' } })).toEqual([]);
     });
@@ -5140,7 +5218,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
       // Presence is conditional on lifecycle intent, so the handler (not zod) owns
       // the terminal-close refusal after status inference and top-level state fallback.
-      const terminalWithoutAssumptions = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+      const terminalWithoutAssumptions = (
+        complete.args as { safeParse: (x: unknown) => { success: boolean } }
+      ).safeParse({
         id: 'WI-1',
         state: 'resolved',
         completion: { summary: 'fixed' },
@@ -5162,7 +5242,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     it('documents nested verification evidence and the legacy top-level aliases (EI-20224652919070419)', () => {
       const description = (complete as { description?: string }).description ?? '';
-      const when = ((complete as { guidance?: { when?: string } }).guidance?.when ?? '');
+      const when = (complete as { guidance?: { when?: string } }).guidance?.when ?? '';
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ properties?: { completion?: unknown } }>;
         oneOf?: Array<{ properties?: { completion?: unknown } }>;
@@ -5200,7 +5280,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('accepts the documented nested verification shape while keeping completion fields outside it', () => {
-      const schema = complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } };
+      const schema = complete.args as {
+        safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+      };
       const valid = schema.safeParse({
         id: 'WI-1',
         state: 'resolved',
@@ -5500,9 +5582,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         state: 'resolved',
         completion: { summary: 'fixed it', verifiedHow: 'unit', testResult: '26/26 green', filesChanged: ['a.ts'] },
       });
-      const consulted = getFlag.mock.calls.some(
-        (c: unknown[]) => c[0] === 'papercusp-terminal-criteria-enforcement',
-      );
+      const consulted = getFlag.mock.calls.some((c: unknown[]) => c[0] === 'papercusp-terminal-criteria-enforcement');
       expect(consulted).toBe(false);
     });
   });
