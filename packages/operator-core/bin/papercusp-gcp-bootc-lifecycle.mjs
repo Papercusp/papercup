@@ -12,13 +12,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat } from 'node:fs/promises';
 
-import {
-  fail,
-  gcloudJson,
-  main,
-  run,
-  runOrThrow,
-} from './gcp-ephemeral.mjs';
+import { fail, gcloudJson, main, run, runOrThrow } from './gcp-ephemeral.mjs';
 import {
   P305_LIFECYCLE_SCHEMA_VERSION,
   buildP305PhaseProbeScript,
@@ -94,10 +88,9 @@ async function waitForForwardedRegistry(session, updateImageReference) {
   let lastError = 'not-attempted';
   for (let attempt = 0; attempt < 12; attempt += 1) {
     try {
-      await session.runRootCommand(
-        `skopeo inspect --tls-verify=false --format '{{.Digest}}' ${quotedReference}`,
-        { timeoutMs: 2 * 60 * 1000 },
-      );
+      await session.runRootCommand(`skopeo inspect --tls-verify=false --format '{{.Digest}}' ${quotedReference}`, {
+        timeoutMs: 2 * 60 * 1000,
+      });
       return;
     } catch (error) {
       lastError = error.message;
@@ -130,10 +123,7 @@ async function deleteCloudResource(args, label) {
 async function lifecycle(input) {
   const request = normalizeP305LifecycleInput(input);
   const artifact = await requireExactArtifact(request.initialGceTarPath, request.initialGceTarSha256);
-  const controllerRegistry = await requireControllerRegistryReference(
-    request.updateRepository,
-    request.updateDigest,
-  );
+  const controllerRegistry = await requireControllerRegistryReference(request.updateRepository, request.updateDigest);
   // The VM helper checks again before boot, but uploads and image imports are also
   // billable mutations. Reject missing IAP ingress or NAT before creating either.
   await assertCleanRoomIapReachable(request.projectId, request.subnetwork, request.zone);
@@ -176,13 +166,7 @@ async function lifecycle(input) {
       ['compute', 'images', 'create', imageName, `--source-uri=${objectUri}`, `--project=${request.projectId}`],
       { timeoutMs: 30 * 60 * 1000 },
     );
-    const imported = await gcloudJson([
-      'compute',
-      'images',
-      'describe',
-      imageName,
-      `--project=${request.projectId}`,
-    ]);
+    const imported = await gcloudJson(['compute', 'images', 'describe', imageName, `--project=${request.projectId}`]);
     if (imported?.status !== 'READY' || imported?.selfLink?.endsWith(`/images/${imageName}`) !== true) {
       fail(`imported image ${imageName} did not resolve READY with the expected immutable identity`);
     }

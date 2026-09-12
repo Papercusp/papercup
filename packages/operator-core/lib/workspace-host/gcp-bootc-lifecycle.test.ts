@@ -104,7 +104,9 @@ describe('P-305 provider preflight boundary', () => {
         writeFileSync(callsPath, '');
         // Run the actual CLI with a hermetic provider executable. Every command is recorded;
         // even the ready control stops at upload, so this test can never create cloud resources.
-        writeFileSync(join(fixtureDir, 'gcloud'), `#!${process.execPath}
+        writeFileSync(
+          join(fixtureDir, 'gcloud'),
+          `#!${process.execPath}
 const { appendFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 appendFileSync(process.env.P305_TEST_CALLS, JSON.stringify(args) + '\\n');
@@ -133,29 +135,45 @@ if (args.slice(0, 4).join(' ') === 'compute networks subnets describe') {
   process.exit(18);
 }
 console.log(JSON.stringify(result));
-`, { mode: 0o700 });
-        const result = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+`,
+          { mode: 0o700 },
+        );
+        const result = spawnSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '--eval',
+            `
           globalThis.fetch = async () => new Response(null, {
             status: 200, headers: { 'docker-content-digest': ${JSON.stringify(DIGEST)} }
           });
           process.argv = [process.execPath, 'p305-test-cli', '--json-stdin'];
           await import(${JSON.stringify(pathToFileURL(RUNNER_SOURCE).href)});
-        `], {
-          input: JSON.stringify({
-            ...BASE,
-            initialGceTarPath: artifactPath,
-            initialGceTarSha256: createHash('sha256').update(artifact).digest('hex'),
-          }),
-          env: { ...process.env, PATH: fixtureDir, P305_TEST_CALLS: callsPath, P305_TEST_SCENARIO: scenario },
-          encoding: 'utf8',
-          timeout: 15_000,
-        });
+        `,
+          ],
+          {
+            input: JSON.stringify({
+              ...BASE,
+              initialGceTarPath: artifactPath,
+              initialGceTarSha256: createHash('sha256').update(artifact).digest('hex'),
+            }),
+            env: { ...process.env, PATH: fixtureDir, P305_TEST_CALLS: callsPath, P305_TEST_SCENARIO: scenario },
+            encoding: 'utf8',
+            timeout: 15_000,
+          },
+        );
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(1);
-        const calls = readFileSync(callsPath, 'utf8').trim().split('\n').filter(Boolean)
+        const calls = readFileSync(callsPath, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
           .map((line) => JSON.parse(line) as string[]);
         const commands = calls.map((args) => args.join(' '));
-        expect(commands.some((command) => command.startsWith('compute firewall-rules list')), result.stderr).toBe(true);
+        expect(
+          commands.some((command) => command.startsWith('compute firewall-rules list')),
+          result.stderr,
+        ).toBe(true);
         if (scenario === 'ready') {
           expect(result.stderr).toContain('hermetic-upload-boundary');
           const natIndex = commands.findIndex((command) => command.startsWith('compute routers nats list'));
@@ -164,7 +182,9 @@ console.log(JSON.stringify(result));
           expect(uploadIndex).toBeGreaterThan(natIndex);
         } else {
           expect(result.stderr).toContain(scenario === 'missing-iap' ? 'no INGRESS firewall rule' : 'no Cloud NAT');
-          expect(calls.filter((args) => args.some((arg) => ['cp', 'create', 'delete', 'rm'].includes(arg)))).toEqual([]);
+          expect(calls.filter((args) => args.some((arg) => ['cp', 'create', 'delete', 'rm'].includes(arg)))).toEqual(
+            [],
+          );
         }
       } finally {
         rmSync(fixtureDir, { recursive: true, force: true });
@@ -192,9 +212,9 @@ describe('private IAP argv', () => {
       '--command',
       'id',
     ]);
-    expect(
-      buildIapScpArgs({ ...session, sourcePath: '/tmp/probe.sh', remotePath: '/tmp/probe.sh' }),
-    ).toContain('--tunnel-through-iap');
+    expect(buildIapScpArgs({ ...session, sourcePath: '/tmp/probe.sh', remotePath: '/tmp/probe.sh' })).toContain(
+      '--tunnel-through-iap',
+    );
   });
 
   it('reverse-forwards only guest and controller loopback, with forward failure fatal', () => {
@@ -203,9 +223,7 @@ describe('private IAP argv', () => {
     expect(args).toContain('127.0.0.1:5096:127.0.0.1:5096');
     expect(args).toContain('ExitOnForwardFailure=yes');
     expect(args).not.toContain('-g');
-    expect(() => buildIapReverseTunnelArgs({ ...session, remotePort: 5096, localHost: '0.0.0.0' })).toThrow(
-      /loopback/,
-    );
+    expect(() => buildIapReverseTunnelArgs({ ...session, remotePort: 5096, localHost: '0.0.0.0' })).toThrow(/loopback/);
   });
 
   it('binds the child-process spawn used by the reverse-tunnel runtime path', () => {
@@ -240,9 +258,7 @@ describe('P-305 guest lifecycle contract', () => {
     expect(script).toContain("'default:user:papercusp-agent:rwx'");
     expect(script).toContain('/var/lib/papercusp/p305-lifecycle');
     expect(script).not.toContain('rm -rf');
-    expect(script).toContain(
-      `expected_sentinel_sha='${createHash('sha256').update(SENTINEL, 'utf8').digest('hex')}'`,
-    );
+    expect(script).toContain(`expected_sentinel_sha='${createHash('sha256').update(SENTINEL, 'utf8').digest('hex')}'`);
     expect(script).toContain(`${P305_LIFECYCLE_MARKER} phase=%s`);
   });
 
@@ -346,9 +362,7 @@ describe('P-305 guest lifecycle contract', () => {
       source.indexOf('objectUploaded = true'),
     );
     expect(source.indexOf('objectUploaded = true')).toBeLessThan(source.indexOf("['storage', 'cp'"));
-    expect(source.indexOf('imageCreated = true')).toBeLessThan(
-      source.indexOf("['compute', 'images', 'create'"),
-    );
+    expect(source.indexOf('imageCreated = true')).toBeLessThan(source.indexOf("['compute', 'images', 'create'"));
     expect(source).toContain('privateIngressOnly: session.publicIpv4Assigned === false');
     expect(source).toContain('const hostPrepareDiagnostics = parseP305HostPrepareDiagnostics(details.stderr)');
     expect(source).toContain('...(hostPrepareDiagnostics ? { hostPrepareDiagnostics } : {})');
