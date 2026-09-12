@@ -29,7 +29,12 @@ const PALETTE_HISTORY_CAP: usize = 50;
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingSuTurn {
     pub command_id: String,
+    /// Exact payload accepted by the engine, including attachment references.
     pub content: String,
+    /// Editor bytes before attachment references were joined at dispatch.
+    pub draft: String,
+    /// Attachment snapshot owned by this in-flight turn.
+    pub attachment_references: Vec<String>,
     pub command: Option<Value>,
     pub uncertain: bool,
     pub error: Option<String>,
@@ -2837,6 +2842,8 @@ impl App {
             return;
         }
         let text = pending.content.clone();
+        let draft = pending.draft.clone();
+        let attachment_references = pending.attachment_references.clone();
         let turn_id = pending
             .command
             .as_ref()
@@ -2845,10 +2852,16 @@ impl App {
             .unwrap_or_else(|| format!("pui-turn-{command_id}"));
         self.su_pending_turn = None;
         self.su_active_command_id = Some(command_id.to_string());
-        if self.chat_input == text {
+        if self.chat_input == draft {
             self.chat_input.clear();
         }
-        self.chat_history_push(&text);
+        // Clear only what THIS accepted turn carried. If the owner attached a
+        // different file after dispatch, it belongs to the next draft and must
+        // survive this acknowledgement.
+        for reference in attachment_references {
+            self.attachments.remove(&reference);
+        }
+        self.chat_history_push(&draft);
         if self.su_rendered_owner_turns.insert(turn_id) {
             self.chat_messages.push(ChatMessage::user(&text));
         }
@@ -2864,7 +2877,7 @@ impl App {
             pending.uncertain = uncertain;
             pending.error = Some(message.to_string());
             if self.chat_input.is_empty() {
-                self.chat_input = pending.content.clone();
+                self.chat_input = pending.draft.clone();
             }
         }
         self.finish_chat_turn();
@@ -3069,7 +3082,15 @@ impl App {
         // Resolve the highlighted path to an OWNED string first, so the
         // immutable borrow of the picker ends before the mutations below.
         let choice = match self.open_file_picker.as_ref() {
-            Some(picker) => picker.matches().get(picker.selected).map(|s| s.to_string()),
+            Some(picker) => picker
+                .matches()
+                .get(picker.selected)
+                .map(|s| s.to_string())
+                // An explicit path absent from the bounded listing still
+                // reaches `attach`. That is how unreadable/cross-project
+                // inputs are refused WITH their real reason instead of being
+                // collapsed into a generic "no match" message.
+                .or_else(|| (!picker.query.trim().is_empty()).then(|| picker.query.clone())),
             None => return Action::Render,
         };
         let Some(choice) = choice else {
@@ -3990,8 +4011,9 @@ impl App {
     /// queued path would drift off the interactive one: `su_dispatch_decision`
     /// reads the conversation's persisted class (P-013) and is not reproducible
     /// by eye at a second call site.
-    fn dispatch_chat_turn(&mut self, text: String) -> Option<Action> {
-        if text.trim().is_empty() {
+    fn dispatch_chat_turn(&mut self, draft: String) -> Option<Action> {
+        let submitted = self.attachments.attach_to_prompt(&draft);
+        if submitted.trim().is_empty() {
             return None;
         }
         // P-013: every writable PUI conversation now uses the typed
@@ -4020,14 +4042,17 @@ impl App {
         let text = if let Some(pending) = self.su_pending_turn.as_ref().filter(|p| p.uncertain) {
             pending.content.clone()
         } else {
+            let attachment_references = self.attachments.references();
             self.su_pending_turn = Some(PendingSuTurn {
                 command_id: format!("pui-{}", crate::command_nonce()),
-                content: text.clone(),
+                content: submitted.clone(),
+                draft,
+                attachment_references,
                 command: None,
                 uncertain: false,
                 error: None,
             });
-            text
+            submitted
         };
         self.chat_streaming = true;
         self.chat_scroll = 0;
@@ -17593,6 +17618,39 @@ mod tests {
     }
 
     #[test]
+    fn selected_attachment_reference_reaches_the_accepted_turn_and_then_clears() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("context.md"), "project context").unwrap();
+        let mut app = composing("  inspect this λ  ");
+        app.project_root = tmp.path().to_path_buf();
+        app.attachments.add(
+            crate::file_picker::attach(tmp.path(), std::path::Path::new("context.md")).unwrap(),
+        );
+
+        let action = app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let submitted = match action {
+            Action::OpenSuSession {
+                initial_turn: Some(text),
+                ..
+            } => text,
+            other => panic!("attachment turn must open the SU session, got {other:?}"),
+        };
+        assert_eq!(submitted, "  inspect this λ  \n@context.md");
+        let pending = app.su_pending_turn.clone().unwrap();
+        assert_eq!(pending.draft, "  inspect this λ  ");
+        assert_eq!(pending.attachment_references, vec!["@context.md"]);
+        assert_eq!(app.chat_input, "  inspect this λ  ");
+        assert_eq!(app.attachments.len(), 1);
+
+        app.acknowledge_su_turn(&pending.command_id);
+
+        assert!(app.chat_input.is_empty());
+        assert!(app.attachments.is_empty());
+        assert_eq!(app.chat_history.last().map(String::as_str), Some("  inspect this λ  "));
+        assert_eq!(app.chat_messages.last().map(|m| m.content.as_str()), Some(submitted.as_str()));
+    }
+
+    #[test]
     fn su_refusal_releases_busy_and_unknown_retry_keeps_the_command() {
         let mut app = composing("do it once");
         app.on_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -17738,6 +17796,8 @@ mod tests {
         app.su_pending_turn = Some(PendingSuTurn {
             command_id: "pui-outstanding".into(),
             content: "first".into(),
+            draft: "first".into(),
+            attachment_references: Vec::new(),
             command: None,
             uncertain: true,
             error: Some("connection lost".into()),

@@ -8409,6 +8409,8 @@ mod tests {
         app.su_pending_turn = Some(crate::app::PendingSuTurn {
             command_id: "pui-1".into(),
             content: "first".into(),
+            draft: "first".into(),
+            attachment_references: Vec::new(),
             command: None,
             uncertain: false,
             error: None,

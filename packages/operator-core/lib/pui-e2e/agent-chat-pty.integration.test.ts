@@ -2176,6 +2176,80 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     } finally { await pane.stop().catch(() => {}); }
   });
 
+  // PUI-FILE-CONTEXT — the selected project-scoped stable reference reaches
+  // the next accepted prompt. Its authorization falsifier has two halves:
+  // an explicit same-basename path OUTSIDE the project must be refused, and
+  // the whole flow must remain usable through the real PTY (no native UI).
+  test('PUI-FILE-CONTEXT: selecting a project file attaches only its stable reference to the next accepted prompt', async () => {
+    const draft = 'PUI file context clause probe';
+    const relativePath = 'AGENTS.md';
+    const stableReference = `@${relativePath}`;
+    const projectBytes = readFileSync(path.join(REPO_ROOT, relativePath));
+    const outsideDir = path.join(home, 'other-project');
+    const outsidePath = path.join(outsideDir, relativePath);
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(outsidePath, 'same basename, wrong project');
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(draft);
+
+      // Name a real same-basename file outside the active project. It is not
+      // in the bounded listing, so Enter exercises the explicit-path refusal
+      // path rather than a selected in-project row.
+      pane.write('@');
+      await pane.waitFor('Attach a file');
+      pane.write(outsidePath);
+      pane.enter();
+      await pane.waitFor('outside this project');
+      expect(pane.screen()).not.toContain(`Attached ${outsidePath}`);
+      expect(scriptedEngine.requests).toHaveLength(0);
+
+      // Re-open cleanly and choose the active project's namesake.
+      pane.escape();
+      pane.write('@');
+      await pane.waitFor('Attach a file');
+      pane.write(relativePath);
+      await pane.waitFor(relativePath);
+      pane.enter();
+      await pane.waitFor(`Attached ${relativePath} · text · ${stableReference}`);
+
+      // Enter toggles the attachment OFF without touching the file, then ON
+      // again for the send. The byte comparison makes the safety claim about
+      // the file itself rather than about the transient list state.
+      pane.enter();
+      await pane.waitFor(`Removed ${relativePath}`);
+      expect(readFileSync(path.join(REPO_ROOT, relativePath))).toEqual(projectBytes);
+      pane.enter();
+      await pane.waitFor(`Attached ${relativePath} · text · ${stableReference}`);
+
+      pane.escape();
+      await pane.waitFor(`${relativePath} · text · ${stableReference}`);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      const accepted = `${draft}\n${stableReference}`;
+      await vi.waitFor(() => expect(scriptedEngine.requests).toEqual([accepted]), {
+        timeout: 30_000,
+        interval: 100,
+      });
+      const saved = await waitForSavedTurn(accepted);
+      expect(saved.transcript.some((turn) => turn.role === 'user' && turn.content === accepted)).toBe(true);
+      expect(scriptedEngine.requests[0]).not.toContain(outsidePath);
+
+      console.info('PUI_FILE_CONTEXT_ACCEPTANCE', JSON.stringify({
+        binary: bin,
+        binarySha256,
+        project: REPO_ROOT,
+        selected: relativePath,
+        stableReference,
+        refusedOutsideProject: true,
+        acceptedTurn: accepted,
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
   // PUI-QUESTION — an inline native question is asked, answered and delivered
   // back inside the PUI. Falsifier: "answer lost/misattributed/needs the native
   // interface." Each of those three is decided separately below, because they

@@ -72,7 +72,11 @@ function judge(overrides: Partial<typeof LIVE> = {}) {
 describe('PUI composer file-picker documentation claims', () => {
   describe('fixture controls (the detector must be able to fail)', () => {
     it('rejects prose with no @ key handler wired to the picker', () => {
-      const verdict = judgeComposerPickerClaims({ appRs: APP.replace("KeyCode::Char('@')", "KeyCode::Char('x')"), uiRs: UI, pickerRs: PICKER });
+      const verdict = judgeComposerPickerClaims({
+        appRs: APP.replace("KeyCode::Char('@')", "KeyCode::Char('x')"),
+        uiRs: UI,
+        pickerRs: PICKER,
+      });
       expect(verdict.ok).toBe(false);
       expect(verdict.violations.join('\n')).toMatch(/no KeyCode::Char\('@'\) handler/);
     });
@@ -138,7 +142,7 @@ describe('PUI composer file-picker documentation claims', () => {
       const verdict = judgeComposerPickerClaims({
         appRs: APP,
         uiRs: UI,
-        pickerRs: PICKER.replace("    pub fn reason(&self) -> &'static str { \"outside project\" }\n", ''),
+        pickerRs: PICKER.replace('    pub fn reason(&self) -> &\'static str { "outside project" }\n', ''),
       });
       expect(verdict.ok).toBe(false);
       expect(verdict.violations.join('\n')).toMatch(/no reason\(\) accessor/);

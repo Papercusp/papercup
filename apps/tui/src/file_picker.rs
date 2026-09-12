@@ -249,6 +249,36 @@ impl Attachments {
     pub fn contains(&self, reference: &str) -> bool {
         self.items.iter().any(|a| a.reference == reference)
     }
+
+    /// Stable references in the order the owner selected them.
+    ///
+    /// The next accepted prompt carries exactly these values. Returning owned
+    /// strings lets the in-flight turn retain its snapshot while the composer
+    /// starts collecting attachments for a later turn.
+    pub fn references(&self) -> Vec<String> {
+        self.items.iter().map(|a| a.reference.clone()).collect()
+    }
+
+    /// Append the selected project-scoped references to the exact draft bytes.
+    ///
+    /// Attachments live beside the editor so undo/history cannot rewrite them,
+    /// but the engine protocol accepts one text prompt. Joining only at this
+    /// boundary keeps the draft byte-identical in the editor/history while the
+    /// accepted turn receives every explicit stable reference.
+    pub fn attach_to_prompt(&self, draft: &str) -> String {
+        let references = self.references().join("\n");
+        if references.is_empty() {
+            return draft.to_string();
+        }
+        if draft.is_empty() {
+            return references;
+        }
+        if draft.ends_with('\n') {
+            format!("{draft}{references}")
+        } else {
+            format!("{draft}\n{references}")
+        }
+    }
 }
 
 /// Directory names never worth offering. Build output and dependency trees are
@@ -473,5 +503,33 @@ mod tests {
 
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments.rows(), vec!["src/main.rs · text · @src/main.rs"]);
+    }
+
+    #[test]
+    fn selected_references_are_attached_to_the_prompt_without_rewriting_the_draft() {
+        let (_tmp, root, _outside) = fixture();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("shot.PNG"), "image").unwrap();
+        let mut attachments = Attachments::default();
+        attachments.add(attach(&root, Path::new("src/main.rs")).unwrap());
+        attachments.add(attach(&root, Path::new("shot.PNG")).unwrap());
+
+        let draft = "  inspect these λ  ";
+        assert_eq!(
+            attachments.attach_to_prompt(draft),
+            "  inspect these λ  \n@src/main.rs\n@shot.PNG"
+        );
+        assert_eq!(draft, "  inspect these λ  ", "the editor draft is not mutated");
+        assert_eq!(
+            attachments.references(),
+            vec!["@src/main.rs".to_string(), "@shot.PNG".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_empty_attachment_list_leaves_every_draft_byte_unchanged() {
+        let attachments = Attachments::default();
+        let draft = "  exact draft λ  \n";
+        assert_eq!(attachments.attach_to_prompt(draft), draft);
     }
 }
