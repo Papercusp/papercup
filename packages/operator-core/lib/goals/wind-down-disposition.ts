@@ -29,6 +29,7 @@ import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { areAcceptanceLineageRelated } from '../acceptance-author-identity';
 import { rubricVettingConsultHint } from '../consult/selection-policies';
+import type { RubricEvidenceCurrentness, RubricEvidenceIdentity } from '../rubrics';
 
 export const GOAL_DISPOSITIONS = ['achieved', 'killed', 'handoff'] as const;
 export type GoalDisposition = (typeof GOAL_DISPOSITIONS)[number];
@@ -287,6 +288,8 @@ export interface GoalAcceptanceVerdict {
 /** Structural slice of a Rubric the gate reads (keeps the test seam import-free). */
 export interface GoalAcceptanceRubricRef {
   rubricId: string;
+  revision?: number | null;
+  criteriaHash?: string | null;
   criteria: unknown[];
   proposedBy?: string | null;
   createdBy?: string | null;
@@ -295,6 +298,8 @@ export interface GoalAcceptanceRubricRef {
 /** Structural slice of a scorecard row the gate reads. */
 export interface GoalAcceptanceCard {
   createdBy?: string | null;
+  rubricRevision?: number | null;
+  criteriaHash?: string | null;
   rubricResolved: boolean;
   missingKeys: string[];
   synthesized?: boolean;
@@ -302,6 +307,7 @@ export interface GoalAcceptanceCard {
     consultId?: string | null;
     workItemId?: string | null;
     rubricRevision?: number | null;
+    criteriaHash?: string | null;
   } | null;
 }
 
@@ -313,6 +319,10 @@ export interface GoalAcceptanceGateDeps {
    *  gate's recorded ruling). */
   getMetaRubric: () => Promise<unknown | null>;
   getRubricRevision: (rubricId: string) => Promise<number | null>;
+  classifyRubricCurrentness: (
+    recorded: RubricEvidenceIdentity,
+    live: RubricEvidenceIdentity,
+  ) => RubricEvidenceCurrentness;
   listCards: (filter: { rubricRef: string; subjectRef?: string }) => Promise<GoalAcceptanceCard[]>;
   metaRubricId: string;
   /** Identity relation used to exclude the goal/rubric author's spawn lineage. */
@@ -343,6 +353,7 @@ async function defaultGoalAcceptanceGateDeps(): Promise<GoalAcceptanceGateDeps> 
     getRubricForGoal: (goalId) => rubrics.getAcceptanceRubricForGoal(goalId),
     getMetaRubric: () => rubrics.getRubric(rubrics.META_ACCEPTANCE_RUBRIC_ID),
     getRubricRevision: (rubricId) => rubrics.getRubricPlanRevision(rubricId),
+    classifyRubricCurrentness: rubrics.classifyRubricEvidenceCurrentness,
     listCards: async (filter) => scorecards.listScorecards({ ...filter, limit: 50 }),
     metaRubricId: rubrics.META_ACCEPTANCE_RUBRIC_ID,
   };
@@ -377,6 +388,7 @@ export async function evaluateGoalAcceptanceGate(
           `with disposition:'achieved'. Or, honestly: 'killed' / 'handoff' need no acceptance evidence.`,
       };
     }
+    const rubricRevision = await deps.getRubricRevision(rubric.rubricId);
 
     // The VETTING attestation (D-001 §3-4): a complete meta-scorecard with a linked
     // consult, on the CURRENT rubric revision. Skipped when no meta-rubric is
@@ -384,14 +396,19 @@ export async function evaluateGoalAcceptanceGate(
     // deadlock) — the plan gate records the same ruling.
     const meta = await deps.getMetaRubric();
     if (meta && rubric.criteria.length > 0 && rubric.rubricId !== deps.metaRubricId) {
-      const revision = await deps.getRubricRevision(rubric.rubricId);
       const metaCards = (await deps.listCards({ rubricRef: deps.metaRubricId, subjectRef: rubric.rubricId })).filter(
         (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized,
       );
       // WI-41477: either critique channel counts — a get_feedback consult, or the
       // review work-item a launched independent reviewer's comments land on.
       const vettedCards = metaCards.filter((s) => s.vetting?.consultId || s.vetting?.workItemId);
-      const current = vettedCards.find((s) => revision == null || s.vetting?.rubricRevision === revision);
+      const current = vettedCards.find(
+        (card) =>
+          deps.classifyRubricCurrentness(
+            { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
+            { revision: rubricRevision, criteriaHash: rubric.criteriaHash },
+          ).state === 'current',
+      );
       if (!current) {
         const stale = vettedCards.length > 0;
         return {
@@ -419,7 +436,14 @@ export async function evaluateGoalAcceptanceGate(
     // The GRADING: complete, agent-emitted, by a NON-owner of the goal (and not the
     // rubric's own author — self-graded homework satisfies neither ruling).
     const cards = (await deps.listCards({ rubricRef: rubric.rubricId })).filter(
-      (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized,
+      (card) =>
+        card.rubricResolved &&
+        card.missingKeys.length === 0 &&
+        !card.synthesized &&
+        deps.classifyRubricCurrentness(
+          { revision: card.rubricRevision, criteriaHash: card.criteriaHash },
+          { revision: rubricRevision, criteriaHash: rubric.criteriaHash },
+        ).state === 'current',
     );
     if (cards.length === 0) {
       return {
