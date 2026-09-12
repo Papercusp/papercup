@@ -10,7 +10,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/pg-bounded-txn.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
 
@@ -42,6 +42,38 @@ describe('boundedOrgTxn', () => {
     // The set_config calls carry the configured timeouts as 'Nms' bound params.
     expect(vals).toContain('6789ms'); // lock_timeout
     expect(vals).toContain('12345ms'); // statement_timeout
+  });
+
+  it('cancels an active postgres query when the caller aborts the transaction', async () => {
+    let resolveSlowStart!: () => void;
+    const slowStarted = new Promise<void>((resolve) => {
+      resolveSlowStart = resolve;
+    });
+    const cancel = vi.fn();
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) =>
+        cb(((strings: TemplateStringsArray, ..._values: unknown[]) => {
+          if (strings.join('?').includes('set_config')) return Promise.resolve([]);
+          const pending = new Promise<unknown[]>(() => {});
+          resolveSlowStart();
+          return Object.assign(pending, { cancel });
+        }) as never),
+    } as never;
+    const controller = new AbortController();
+    const transaction = boundedOrgTxn(
+      async (tx) => {
+        await (tx as never as (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>)`
+          SELECT slow_claim_query()
+        `;
+      },
+      { client, signal: controller.signal },
+    );
+
+    await slowStarted;
+    controller.abort();
+
+    await expect(transaction).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('fails a stalled admin-pool acquisition before entering fn', async () => {
