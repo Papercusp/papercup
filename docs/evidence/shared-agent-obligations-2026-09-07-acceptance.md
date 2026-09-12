@@ -52,6 +52,17 @@ router's final line reports `skippedTests=unknown`; therefore this record does
 not invent an aggregate test or skip count. The narrower R-6 run above is the
 measured 48-test/zero-skip result.
 
+After the detached integration-ledger repair reached the staging process, the
+same router ran `packages/operator-core/lib/sync-resolver/goals.integration.test.ts`
+as durable recovery run `7863c1e1-d441-4a4d-a8a4-0808973bb152`. The run passed
+one requested/executed/matched file with zero skips at path-clean HEAD
+`4ce27caa8d`. Its parent-side JSON artifact produced real harness ledger row
+**17822269**, whose exact file, `papercusp-workspace` / `papercusp` scope,
+commit, pass status and run-group ID were read back through `testing:runs`.
+The loaded staging build `5c71f8c978` is a descendant of repair commit
+`979beb15c`. Binding **3721** replaces the unbacked same-ref integration row
+3537 for current adequacy selection.
+
 Outside-lineage review `WI-10001060` reproduced the exact D-017 amendment and
 posted authenticated approval `thread-post:202910`. The approved write advanced
 the acceptance rubric from revision 6 to 7 and the subject plan from revision 55
@@ -132,6 +143,14 @@ The fifth rig successfully ran the real desktop at PID 3924823, display :91, por
 <a id="R-7-P-008-e2e-current-a8089380dd"></a>
 The exact parity sample was degraded at generation `9fdb18df0f498e361ca3`, observed 09:13:46.539Z, with a turn-start receipt of one delivered entry, seven omitted, 255 characters and 64 estimated tokens. The screenshot is a separate later refresh at generation `6f9c85c1cfaf49675789`, observed 09:15:11.225Z. Complete payload, DOM observations and journey checks are in [the GUI record](shared-agent-obligations-2026-09-07-gui-journey.json); [the screenshot](shared-agent-obligations-2026-09-07-goal-mode-state.png) was visually inspected. This exercises the live degraded/unknown path. Known/no-demand cases remain covered by component and PostgreSQL integration tests; no live opportunity was induced.
 
+The committed operational receipt
+[gui-operational-test.json](shared-agent-obligations-2026-09-07-gui-operational-test.json)
+is recorded as harness ledger row **17815505** (pass, commit `53edba367e`,
+2026-09-07T09:13:46.539Z–09:15:11.225Z). Binding **3722** measures the current
+GUI/resolver source and all three committed journey artifacts while preserving
+that historical execution time and tested SHA `ddb59a866e`; it does not claim
+the desktop journey was rerun on today's staging build.
+
 Independent review WI-10000514 is complete: acceptance grading EI-22599793240835202 rates R-1 through R-5 and R-7 pass, and R-6 partial. The reviewer independently reran the ten core files (277 passed, zero failed/skipped), audited the GUI records and reproduced the negative deployment result. Their exact scope and repair are recorded in WI-10000514#200262. The four PostgreSQL legs were verified from the recorded router evidence, not independently rerun by that reviewer.
 
 Follow-up **WI-10000528** is also complete. Audit **EI-22609326366147036** passed the repaired attestation on all six criteria at 13:25:33Z; the reviewer executed its probes, verified the log hashes and read the named assertions. Refreshed independent acceptance **EI-22609569466831718**, rubric revision 6, again rates six criteria pass and R-6 partial. The earlier R-6 pass on EI-22529780338394678 is rubric revision 3 and itself discloses `deployed:false`; neither historical card can decide current revision 8. Current independent grading and author acceptance are still required. A staging acceptance must not be reported as deployed-main shipment.
@@ -191,3 +210,10 @@ The following anchors identify the additional current-revision check witnesses i
 - <a id="R-2-P-007-additional-checks-e9f641f0a5"></a>R-2 / P-007: the same integrated launch-boundary checks.
 - <a id="R-5-P-004-additional-checks-e9f641f0a5"></a>R-5 / P-004: OMP port budget and hung-dispatch controls.
 - <a id="R-5-P-007-additional-checks-e9f641f0a5"></a>R-5 / P-007: the same injection-port controls.
+
+For the revision-5 P-008 acceptance subset, the ledger-backed binding IDs are
+3613 (R-6 provider unit), 3614 (R-6 negative control), 3615 (R-7 reader unit),
+3616 (R-7 absent-payload counterexample), 3721 (R-7 PostgreSQL integration),
+and 3722 (R-7 operational E2E). An exact evaluation selecting only those six
+logical references returned two clause passes, zero failures/unknowns and no
+would-block reasons on evaluator build `5c71f8c978`.
