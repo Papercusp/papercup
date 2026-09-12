@@ -622,6 +622,17 @@ function checkpointBodySpec(): z.ZodType<string | null | undefined> {
 }
 
 /**
+ * EI-22930559578035772: keep one identity for the compatibility body schema.
+ *
+ * The shorthand and `items[]` shapes expose the same input contract. Building
+ * the preprocess/union twice made Zod serialize the structured carry-note
+ * compatibility object twice, adding ~10KB to the published tool schema. A
+ * stable metadata id lets Zod place this shared schema in `$defs` and emit a
+ * `$ref` at each use while preserving the parser's preprocess behavior.
+ */
+const checkpointBodySchema = checkpointBodySpec().meta({ id: 'work-items-checkpoint-body-v1' });
+
+/**
  * P-013 compatibility: `rowsMode` controls only supplied check rows. The
  * default is merge so a subset update cannot silently retire carried rows;
  * explicit `replace` remains the retirement path. `merge` makes an additive
@@ -882,6 +893,10 @@ function checksSpec() {
     );
 }
 
+/** EI-22930559578035772: the checks/probe compatibility tree is shared by the
+ * shorthand and `items[]` forms so the published schema carries it once. */
+const checksSchema = checksSpec().meta({ id: 'work-items-checks-v1' });
+
 /**
  * P-017 (effort-scoped-continuity-2026-09-02, D-007/D-009): the durable half of a
  * checkpoint, posted to a THREAD in the same round-trip.
@@ -925,7 +940,7 @@ const itemSpec = z.object({
    *  only patches that preserve the stored body (EI-19447043119380534,
    *  EI-20232161144151845), or alongside `clear:true`. Blank strings require
    *  confirmClear:true (EI-21020695928840897). */
-  checkpoint: checkpointBodySpec().describe(
+  checkpoint: checkpointBodySchema.describe(
     'compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks` or `dependsOn` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
   ),
   clear: looseBoolean().describe(
@@ -961,7 +976,7 @@ const itemSpec = z.object({
   ),
   retireIds: retireIdsSpec(),
   dependsOn: dependsOnSpec(),
-  checks: checksSpec(),
+  checks: checksSchema,
   learned: learnedSpec(),
   learnedLevel: learnedLevelSpec(),
   unchanged: looseBoolean().describe(
@@ -1071,7 +1086,7 @@ export default defineTool({
        *  only patches that preserve the stored body (EI-19447043119380534,
        *  EI-20232161144151845), or alongside `clear:true`. Blank strings require
        *  confirmClear:true (EI-21020695928840897). */
-      checkpoint: checkpointBodySpec().describe(
+      checkpoint: checkpointBodySchema.describe(
         'single shorthand: compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks` or `dependsOn` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
       ),
       clear: looseBoolean().describe(
@@ -1109,7 +1124,7 @@ export default defineTool({
           "`confirmRetire` (EI-21923095696933477): name exactly the carried row ids/claims a rowsMode:'replace' " +
           'should retire, and the write refuses on any mismatch instead of trusting a blind confirmRetire:true.',
       ),
-      checks: checksSpec(),
+      checks: checksSchema,
       dependsOn: dependsOnSpec(),
       learned: learnedSpec(),
       learnedLevel: learnedLevelSpec(),
