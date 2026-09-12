@@ -28,6 +28,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
 import {
+  classifyRubricEvidenceCurrentness,
   getAcceptanceRubricsForPlan,
   getRetiredAcceptanceRubricsForPlan,
   getRubric,
@@ -975,12 +976,20 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       // inject). WI-41477: either channel counts — a get_feedback consult, or the
       // review work-item a launched independent reviewer's comments land on.
       const vettedCards = metaCards.filter((s) => s.vetting?.consultId || s.vetting?.workItemId);
-      const current = vettedCards.find((s) => currentRevision == null || s.vetting?.rubricRevision === currentRevision);
+      const currentness = vettedCards.map((card) => ({
+        card,
+        verdict: classifyRubricEvidenceCurrentness(
+          { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
+          { revision: currentRevision, criteriaHash: rubric.criteriaHash },
+        ),
+      }));
+      const current = currentness.find((entry) => entry.verdict.state === 'current')?.card;
       if (!current) {
         const vettedRevisions = [
           ...new Set(vettedCards.map((s) => s.vetting?.rubricRevision).filter((v) => v != null)),
         ];
-        const stale = vettedCards.length > 0;
+        const stale = currentness.some((entry) => entry.verdict.state === 'stale');
+        const unknown = currentness.some((entry) => entry.verdict.state === 'unknown');
         // A subject-less historical meta-card cannot be returned by the
         // subjectRef-filtered read above, but it is still useful diagnostic
         // evidence: it explains how an emitter could believe vetting happened
@@ -1002,7 +1011,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 : ` plus vettingConsult:'<consult conversation_id>' (or vettingWorkItem:'<review WI-/EI- id>').`)
             : '';
         const staleDiagnostic =
-          stale && vettedCards.length > 0
+          vettedCards.length > 0
             ? ` The linked attestation card(s) ${vettedCards
                 .slice(0, 3)
                 .map((s) => s.issueId)
@@ -1012,10 +1021,11 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           satisfied: false,
           code: 'acceptance_rubric_unvetted',
           rubricId: rubric.rubricId,
-          message: stale
+          message: stale || unknown
             ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
-              `revision ${vettedRevisions.join('/') || '(unrecorded)'} but the rubric is now at revision ` +
-              `${currentRevision} — the content changed after vetting, so the attestation no longer covers what ` +
+              `revision ${vettedRevisions.join('/') || '(unrecorded)'} but the rubric identity now in force is ` +
+              `revision ${currentRevision ?? '(unrecorded)'}, criteriaHash ${rubric.criteriaHash ?? '(unrecorded)'}. ` +
+              `${unknown ? 'The recorded/live identity is incomplete, so currentness cannot be established' : 'The graded criteria or method changed after vetting'}; the attestation no longer covers what ` +
               `ships. Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<consult conversation_id>', ratings:{ <every meta criterion> } }. Citing the SAME ` +
@@ -1059,7 +1069,11 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       s.rubricResolved &&
       s.missingKeys.length === 0 &&
       !s.synthesized &&
-      (!requireCurrentBarGrading || (rubric.revision != null && s.rubricRevision === rubric.revision)),
+      (!requireCurrentBarGrading ||
+        classifyRubricEvidenceCurrentness(
+          { revision: s.rubricRevision, criteriaHash: s.criteriaHash },
+          { revision: rubric.revision, criteriaHash: rubric.criteriaHash },
+        ).state === 'current'),
   );
   // WI-2141007: `createdBy` FIRST, matching `scorecards:emit` and
   // `grader-eligibility.ts`. This file previously read `proposedBy ?? createdBy`
