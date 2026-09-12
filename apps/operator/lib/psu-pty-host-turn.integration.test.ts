@@ -21,7 +21,7 @@
  * each test asserts its socket+meta are removed on child exit.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
@@ -31,6 +31,8 @@ import {
   socketPathFor,
   metaPathFor,
   eventLogPathForOwner,
+  KICKOFF_PROOF_PATH_ENV,
+  KICKOFF_PROOF_TOKEN_ENV,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side discovery + inject seam (operator-core published
 // subpath). Importing it keeps this an integration test of the actual chain a
@@ -80,6 +82,107 @@ async function waitForHost(
 function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
+
+describe('Codex carry first turn on a continuously repainting fresh composer', () => {
+  it.each(['ready', 'launch-ready', 'owner-input', 'not-ready'] as const)(
+    '%s: requires startup proof, preserves owner input, and records actual submission',
+    async (scenario) => {
+      const root = mkdtempSync(join(tmpdir(), 'codex-carry-redraw-'));
+      const ownerId = uniqueOwner(`CARRY-${scenario}`);
+      const nativePath = join(root, 'sessions', '2026', '09', '12', 'rollout-fresh.jsonl');
+      mkdirSync(join(root, 'sessions', '2026', '09', '12'), { recursive: true });
+      const marker = '⟦turn-origin:self-compaction nonce:1234567890abcdef⟧';
+      const proofPath = join(root, 'kickoff-proof.json');
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      const { captured, io, type } = bridgedIo();
+      const freshCode = [
+        "const fs=require('node:fs');process.stdin.setRawMode(true);",
+        "process.stdout.write('FRESH-BOOT\\n');",
+        scenario === 'not-ready' ? '' : "setTimeout(()=>process.stdout.write('100% context left\\n'),150);",
+        "setInterval(()=>process.stdout.write('IDLE-REPAINT\\n'),15);",
+        "let line='';process.stdin.on('data',data=>{for(const c of data.toString()){",
+        "if(c==='\\u0004')process.exit(0);",
+        "if(c==='\\r'){if(line){fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');line='';process.stdout.write('SUBMITTED\\n');}}else line+=c;}});",
+        'setTimeout(()=>process.exit(0),4000);',
+      ].join('');
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', scenario === 'launch-ready' ? freshCode : "process.stdout.write('OLD-READY\\n');setTimeout(()=>process.exit(0),4000);"],
+        kickoff: scenario === 'launch-ready' ? `${marker}\nContinue the saved task` : null,
+        cwd: root,
+        env: hermeticEnv({
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: root,
+          CARRY_NATIVE_PATH: nativePath,
+          [KICKOFF_PROOF_PATH_ENV]: proofPath,
+          [KICKOFF_PROOF_TOKEN_ENV]: '0123456789abcdef0123456789abcdef0123456789abcdef',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '20',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '650',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '200',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+        }),
+        ownerId,
+        io,
+        bridgeTty: true,
+        nativePersistenceTimeoutMs: 300,
+        mintCarryRespawnArgs: () => ({ args: ['-e', freshCode], nativeId: null }),
+        onExit: () => {},
+      });
+      try {
+        if (scenario !== 'launch-ready') {
+          expect(await waitForOutput(captured, 'OLD-READY')).toBe(true);
+          await injectIntoHost(socketPathFor(ownerId), {
+            mode: 'carry-respawn',
+            data: `${marker}\nContinue the saved task`,
+            systemPromptAddendum: 'saved task',
+            ownerId,
+          });
+        }
+        expect(await waitForOutput(captured, 'FRESH-BOOT')).toBe(true);
+        if (scenario === 'launch-ready') {
+          expect(await waitForOutput(captured, 'SUBMITTED')).toBe(true);
+          const deadline = Date.now() + 2000;
+          while (!readFileSync(proofPath, 'utf8') && Date.now() < deadline) await sleep(20);
+          expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toMatchObject({ persisted: true });
+          expect(readFileSync(nativePath, 'utf8').trim().split('\n')).toHaveLength(1);
+          return;
+        }
+        if (scenario === 'owner-input') type('owner draft');
+        let terminal: Record<string, unknown> | undefined;
+        const deadline = Date.now() + 2500;
+        while (!terminal && Date.now() < deadline) {
+          if (existsSync(eventLogPathForOwner(ownerId))) {
+            terminal = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+              .trim().split('\n').map((line) => JSON.parse(line))
+              .find((row) => ['respawn-carry-delivered', 'respawn-carry-dropped'].includes(row.kind));
+          }
+          if (!terminal) await sleep(20);
+        }
+        if (scenario === 'ready') {
+          expect(terminal).toMatchObject({ kind: 'respawn-carry-delivered', turnStartVerified: true });
+          const turns = readFileSync(nativePath, 'utf8').trim().split('\n');
+          expect(turns).toHaveLength(1);
+          expect(JSON.parse(turns[0]).payload.content[0].text).toContain(marker);
+        } else {
+          expect(terminal?.kind).toBe('respawn-carry-dropped');
+          expect(existsSync(nativePath)).toBe(false);
+          if (scenario === 'owner-input') expect(terminal?.reason).toBe('fresh-child-owner-input');
+        }
+      } finally {
+        await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    10000,
+  );
+});
 
 it('quota wall during launch kickoff preserves the host and publishes recovery through discovery', async () => {
   const ownerId = uniqueOwner('QUOTA-STARTUP');

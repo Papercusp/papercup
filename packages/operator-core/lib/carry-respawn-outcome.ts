@@ -47,8 +47,9 @@ const RESPAWN_IN_FLIGHT = new Set(['respawn-rearm-queued', 'respawn-rearm-supers
 export type PriorRespawnOutcome = 'delivered' | 'dropped' | 'pending' | 'none';
 
 export interface PriorRespawn {
-  /** delivered = a cut actually fired; dropped = it terminally failed; pending =
-   *  an attempt is still re-polling; none = this session has no respawn history. */
+  /** delivered = the successor received its continuation; dropped = it
+   * terminally failed; pending = the cut or its first prompt is still awaiting
+   * delivery; none = this session has no respawn history. */
   outcome: PriorRespawnOutcome;
   /** The host's own reason string on a drop (busy-gate-expired / carry-stale /
    *  superseded / rearm-error), when it recorded one. */
@@ -85,14 +86,11 @@ export function deriveLastRespawnOutcome(
     let outcome: PriorRespawnOutcome | null = null;
     if (RESPAWN_TERMINAL_FAIL.has(kind)) outcome = 'dropped';
     else if (RESPAWN_TERMINAL_OK.has(kind)) outcome = 'delivered';
-    // WI-41504: `respawned` is a SHARED native-session event. A real requested
-    // carry cut stamps mode=carry-respawn, but Claude's same-process internal
-    // re-exec stamps mode=self-relaunch. Treating every `respawned` as carry
-    // success made a self-relaunch newer than `respawn-rearm-queued` mask the
-    // still-unresolved request as delivered. Only the mode that actually cuts
-    // into the deterministic carry is success; every other respawn mode is
-    // unrelated lifecycle noise, so scanning continues to the pending/drop row.
-    else if (kind === 'respawned' && row.mode === 'carry-respawn') outcome = 'delivered';
+    // A spawned process is not a delivered continuation. WI-10001066 opened a
+    // fresh Codex child but dropped its first prompt minutes later. Keep that
+    // interval pending until the host's native-turn verification settles it.
+    // Other respawn modes remain unrelated lifecycle noise (WI-41504).
+    else if (kind === 'respawned' && row.mode === 'carry-respawn') outcome = 'pending';
     else if (RESPAWN_IN_FLIGHT.has(kind)) outcome = 'pending';
     if (!outcome) continue;
     const ts = typeof row.ts === 'string' ? row.ts : undefined;

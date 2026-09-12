@@ -16,7 +16,6 @@
  * from that oracle: a dead owner's own lease cannot prove the owner alive.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
 import { fileLockCoordinationDomain, lockDomainForProjectDir } from './agent-tools/locks/coordination-domain';
 import { releaseAllOwnedLocks } from './agent-tools/locks/release-all-owned';
 import { closeAdoptedTerminalSessions } from './task-manager/adopt-terminal-session';
@@ -51,7 +50,7 @@ export interface SessionEndLeaseReleaseDeps {
    */
   loadProtectedOwners?: (endingOwnerId: string) => Promise<ReadonlySet<string>>;
   releaseLocks?: typeof releaseAllOwnedLocks;
-  releaseWorkItems?: typeof releaseAllWorkItemLeasesForOwner;
+  releaseWorkItems?: typeof import('./work-item-lease-release').releaseAllWorkItemLeasesForOwner;
   listTasks?: typeof listTasks;
   killTask?: typeof killTask;
   closeAdoptedTerminalSessions?: typeof closeAdoptedTerminalSessions;
@@ -263,9 +262,19 @@ export async function runSessionEndLeaseRelease(
   const primaryCoordinationDomain = row.cwd?.trim()
     ? lockDomainForProjectDir(row.cwd.trim())
     : fileLockCoordinationDomain();
+  // Keep the work-item lease implementation out of this module's eager graph:
+  // work-item-lease-release -> work-items -> … -> adv-sessions, while
+  // adv-sessions dynamically imports this hook after recording an end. The
+  // dependency is needed only once the delayed cleanup actually runs, so load
+  // it here and keep a failed import scoped to the independent work-item leg.
+  const workItemsPromise = deps.releaseWorkItems
+    ? deps.releaseWorkItems(ownerId)
+    : import('./work-item-lease-release').then(({ releaseAllWorkItemLeasesForOwner }) =>
+        releaseAllWorkItemLeasesForOwner(ownerId),
+      );
   const [locks, workItems, tasks] = await Promise.allSettled([
     (deps.releaseLocks ?? releaseAllOwnedLocks)({ ownerId, primaryCoordinationDomain }),
-    (deps.releaseWorkItems ?? releaseAllWorkItemLeasesForOwner)(ownerId),
+    workItemsPromise,
     reapAgentSessionTasks(),
   ]);
 

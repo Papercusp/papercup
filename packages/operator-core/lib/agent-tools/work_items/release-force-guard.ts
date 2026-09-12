@@ -55,7 +55,10 @@ export type ForceTransitionSurface = 'work_items' | 'plan_items';
  * were fed into a bare `Math.max`, so the freshest one alone certified "live" and
  * blocked a force-release of an abandoned claim). This bounds how long BOTH activity
  * signals may go stale before a fresh-heartbeat-only holder is reclassified from
- * "live" to "warm-idle" (the reaper case, WI-4198 leg (a)) — deliberately generous
+ * "live" to "warm-idle" (the reaper case, WI-4198 leg (a)). An item that has not
+ * recorded its first checkpoint has no item-progress signal yet; that explicit
+ * absence must not protect an abandoned claim, while a present lastActiveAt remains
+ * mandatory evidence of stale real activity. The window is deliberately generous
  * (3x PRESENCE_STALE_MS = 30min) so a holder genuinely mid-way through one long
  * operation is never misclassified: a working agent's own tool calls bump
  * lastActiveAt on a cadence far tighter than this, and a held item's own checkpoint
@@ -319,15 +322,17 @@ export async function assessForceRelease(
   const presenceLive = !recordedEnded && freshest != null && now - freshest < PRESENCE_STALE_MS;
 
   // EI-18712366018708650: demote the specific "heartbeat is the only fresh signal"
-  // shape to warm-idle. Both activity signals must be PRESENT (never inferred from
-  // missing data — a null lastActiveAt/itemLastProgressAt proves nothing) and both
-  // provably stale beyond the generous WARM_IDLE_ACTIVITY_STALE_MS window.
+  // shape to warm-idle. lastActiveAt must be PRESENT and provably stale beyond the
+  // generous WARM_IDLE_ACTIVITY_STALE_MS window. itemLastProgressAt is different:
+  // NULL means the item has never recorded progress, so it cannot be evidence that
+  // this claim is alive; a present value must still parse and be stale. We continue
+  // to fail closed when the real liveness signal (lastActiveAt) is missing.
   const heartbeatFresh = Number.isFinite(heartbeatTs) && now - heartbeatTs < PRESENCE_STALE_MS;
-  const bothActivitySignalsStale =
+  const activitySignalsStale =
     Number.isFinite(lastActiveTs) &&
-    Number.isFinite(itemProgressTs) &&
     now - lastActiveTs >= WARM_IDLE_ACTIVITY_STALE_MS &&
-    now - itemProgressTs >= WARM_IDLE_ACTIVITY_STALE_MS;
+    (input.itemLastProgressAt == null ||
+      (Number.isFinite(itemProgressTs) && now - itemProgressTs >= WARM_IDLE_ACTIVITY_STALE_MS));
   // EI-21377805080867612: Codex can remain inside one long turn while polling an
   // exec session at tool boundaries. Those calls are durable, genuine activity
   // even when presence.lastActiveAt and work-item checkpoints do not move. The
@@ -336,7 +341,7 @@ export async function assessForceRelease(
   // unknown and preserves the pre-existing two-signal rule.
   const recentToolInvocation =
     Number.isFinite(lastToolInvocationTs) && now - lastToolInvocationTs < WARM_IDLE_ACTIVITY_STALE_MS;
-  const warmIdle = presenceLive && heartbeatFresh && bothActivitySignalsStale && !recentToolInvocation;
+  const warmIdle = presenceLive && heartbeatFresh && activitySignalsStale && !recentToolInvocation;
   // EI-18907586326157984: EITHER signal is now sufficient to declare the holder not
   // live — the raw heartbeat/activity heuristic (unchanged), OR the shared oracle
   // affirmatively saying the session is `ended`/`suspect`. Only when BOTH say "live"

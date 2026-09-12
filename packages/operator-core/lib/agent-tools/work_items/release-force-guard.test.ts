@@ -172,6 +172,17 @@ describe('assessForceRelease — liveness leg (a)', () => {
     expect(v.holderLiveness.freshestAgeMs).toBe(44_000);
   });
 
+  it('EI-22949563449232791: stale lastActiveAt + NULL item progress → warm-idle, force allowed', async () => {
+    // A newly claimed item can have no checkpoint yet. Once the holder's real
+    // activity signal is stale, that absence must not make its claim unreclaimable.
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({ holder: { heartbeatAt: iso(44_000), lastActiveAt: iso(min(171)), agentRole: 'su' } }),
+    );
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-warm-idle' });
+    expect(v.holderLiveness).toMatchObject({ live: false, warmIdle: true, itemLastProgressAt: null });
+  });
+
   it('EI-21377805080867612: a fresh tool invocation vetoes warm-idle during a long Codex polling turn', async () => {
     const v = await assessForceRelease(
       { ...base, itemLastProgressAt: iso(min(180)), releaseRequest: expiredReclaimRequest },

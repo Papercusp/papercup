@@ -236,7 +236,12 @@ new artifact. The service launches through
 `scripts/start-web.mjs`, which resolves that pointer once and keeps serving the
 immutable selected generation. A later or concurrent build therefore cannot
 delete the running process's JS/CSS/static files while preparing the next
-generation. The checked-in
+generation. The service uses `Type=notify`: the launcher keeps systemd in
+`activating` until a bounded `127.0.0.1:3801` HTTP probe first returns 200, then
+sends `READY=1`. After startup it sends the systemd watchdog heartbeat only
+after a fresh successful HTTP probe; a bounded probe failure terminates the
+launcher and makes the unit fail/restart instead of remaining `active` while
+the backend blackholes. The checked-in
 `papercusp-cloud-portal.service.in` is a machine-neutral template; the deploy
 helper resolves the external Portal checkout and Node binary at install time.
 The Portal's own `.env.local` remains in that external checkout and is loaded by
@@ -255,7 +260,8 @@ export PAPERCUSP_CLOUD_PORTAL_NODE="$HOME/.local/node25/bin/node"
 bash ./deploy-cloud-portal.sh --install-only
 systemd-analyze verify "$HOME/.config/systemd/user/papercusp-cloud-portal.service"
 systemctl --user show papercusp-cloud-portal.service \
-  -p ActiveState -p MainPID -p ControlGroup -p ExecStart
+  -p ActiveState -p SubState -p MainPID -p ControlGroup -p ExecStart \
+  -p Type -p NotifyAccess -p WatchdogUSec
 ```
 
 Use the explicit handoff mode for an existing terminal-scoped `next dev`; the

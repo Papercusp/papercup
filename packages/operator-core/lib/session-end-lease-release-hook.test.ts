@@ -401,4 +401,14 @@ describe('markAdvSessionEnded wiring', () => {
     expect(successfulUpdate).toContain("import('./session-end-lease-release-hook')");
     expect(successfulUpdate).toContain('scheduleSessionEndLeaseRelease(id)');
   });
+
+  it('keeps the delayed lease hook free of an eager work-item module edge', () => {
+    const source = readFileSync(new URL('./session-end-lease-release-hook.ts', import.meta.url), 'utf8');
+
+    // work-item-lease-release -> work-items -> … -> adv-sessions closes the
+    // dynamic hook edge back into this module. The production dependency must
+    // stay lazy so merely importing adv-sessions cannot evaluate this cycle.
+    expect(source).not.toContain("from './work-item-lease-release'");
+    expect(source).toContain("import('./work-item-lease-release')");
+  });
 });

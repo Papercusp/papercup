@@ -2002,13 +2002,17 @@ describe('template_data persistence boundary — the set-template-data door', ()
     };
     const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
     expect(preview).toMatchObject({
-      changedBars: ['R-3'],
+      // The fixture's authored check uses the seed test path; this amendment
+      // intentionally binds the complete set to a different runnable check,
+      // so R-1 and R-2 change alongside the newly declared R-3.
+      changedBars: ['R-1', 'R-2', 'R-3'],
       approvalRequired: true,
       projectionCount: 3,
       // rubric starts at 2, not 1: seeding now authors METHOD/check first.
-      revisionMovement: { rubric: { from: 2, to: 3 }, subject: { from: 2, to: 3 } },
+      revisionMovement: { rubric: { from: 2, to: 3 }, subject: { from: 3, to: 4 } },
     });
-    expect(preview!.approval.bars).toEqual([expect.objectContaining({ barKey: 'R-3', priorBarHash: null })]);
+    expect(preview!.approval.bars.map(({ barKey }) => barKey)).toEqual(['R-1', 'R-2', 'R-3']);
+    expect(preview!.approval.bars).toContainEqual(expect.objectContaining({ barKey: 'R-3', priorBarHash: null }));
     expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-3', kinds: ['added'] }));
 
     const approvalRef = await postApproval(amendment);
@@ -2054,7 +2058,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
         FROM harness_shared.harness_plans
        WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
          AND plan_slug=${seeded.subject}`;
-    expect(Number(pinned!.version)).toBe(3);
+    // The raw fixture edit bumps the authored subject from the queried version,
+    // and the accepted BAR amendment pins the subsequent subject revision.
+    expect(Number(pinned!.version)).toBe(Number(subject!.version) + 2);
     // DERIVED, matching this file's own convention for this exact property (the atomic-author
     // test asserts it as after!.revision, the replay test as current!.revision) and the
     // barSetHash line directly below. The concrete arithmetic stays pinned by revisionMovement
@@ -2232,7 +2238,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(preview!.projectionCount).toBe(2);
     expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-1', kinds: ['bar-meaning', 'evidence-plane'] }));
     // rubric starts at 2, not 1: seeding now authors METHOD/check first.
-    expect(preview!.revisionMovement).toMatchObject({ rubric: { from: 2, to: 3 }, subject: { from: 1, to: 2 } });
+    expect(preview!.revisionMovement).toMatchObject({ rubric: { from: 2, to: 3 }, subject: { from: 2, to: 3 } });
     expect(preview!.approval.bars[0]!.priorBarHash).toBe(before!.criteria[0]!.barHash);
     expect(preview!.approval.bars[0]!.nextBarHash).not.toBe(before!.criteria[0]!.barHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);

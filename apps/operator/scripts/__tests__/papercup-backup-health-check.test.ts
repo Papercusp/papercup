@@ -36,6 +36,23 @@ describe('papercup-backup-health-check.sh', () => {
     expect(output).not.toMatch(/FAIL/);
   }, 150_000);
 
+  it('keeps the degraded workspace-dump filing title stable for work-item dedupe', () => {
+    const health = readFileSync(SCRIPT, 'utf8');
+
+    // work_items:create fingerprints the admission title. Age is intentionally
+    // measured in the body: including it in TITLE would turn each health-check
+    // tick into a new critical item as the artifact gets older.
+    expect(health).toContain(
+      'TITLE="Workspace DB dump is stale after its latest snapshot hook degraded: $art"',
+    );
+    expect(health).not.toContain(
+      'TITLE="Workspace DB dump is stale after its latest snapshot hook degraded: $art is ${age_hours}h old"',
+    );
+    expect(health).toContain(
+      "BODY=\"The optional per-workspace dump '$f' is ${age_hours} hours old",
+    );
+  });
+
   it("keeps the health probe's producer-fit policy synchronized with db-backup.sh", () => {
     const health = readFileSync(SCRIPT, 'utf8');
     const producer = readFileSync(PRODUCER, 'utf8');

@@ -13,7 +13,11 @@ StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
-Type=simple
+# The launcher announces READY=1 only after the bounded localhost HTTP probe
+# receives 200. Its watchdog heartbeat is likewise conditional on a current
+# successful probe, so `active` cannot outlive a blackholed backend.
+Type=notify
+NotifyAccess=all
 WorkingDirectory=@PORTAL_ROOT@
 # Runtime configuration remains in the external app checkout and is read by
 # systemd rather than copied into the standalone artifact or this unit.
@@ -22,6 +26,10 @@ Environment=NODE_ENV=production
 Environment=HOSTNAME=127.0.0.1
 Environment=PORT=@PORT@
 Environment=PORTAL_RUNTIME_ROOT=@RUNTIME_ROOT@
+Environment=PORTAL_HEALTH_PATH=/
+Environment=PORTAL_READINESS_TIMEOUT_MS=60000
+Environment=PORTAL_READINESS_INTERVAL_MS=500
+Environment=PORTAL_READINESS_REQUEST_TIMEOUT_MS=5000
 Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
 # Generated releases live beside the checkout, not under it: a standalone trace
 # must never copy its own release history into the next generation. start-web
@@ -29,6 +37,7 @@ Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/
 ExecStart=@NODE@ @START_WEB@
 Restart=on-failure
 RestartSec=3s
+WatchdogSec=15s
 TimeoutStartSec=120s
 TimeoutStopSec=15s
 KillSignal=SIGTERM

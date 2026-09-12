@@ -177,6 +177,10 @@ describe("Cloud Portal systemd deployment contract", () => {
       expect(result.stdout).toContain(`ExecStart=${process.execPath} `);
       expect(result.stdout).toContain("Environment=NODE_ENV=production");
       expect(result.stdout).toContain("Environment=HOSTNAME=127.0.0.1");
+      expect(result.stdout).toContain("Type=notify");
+      expect(result.stdout).toContain("NotifyAccess=all");
+      expect(result.stdout).toContain("WatchdogSec=15s");
+      expect(result.stdout).toContain("Environment=PORTAL_READINESS_TIMEOUT_MS=60000");
       expect(result.stdout).toContain(
         `Environment=PORTAL_RUNTIME_ROOT=${files.runtimeRoot.replaceAll(" ", "\\ ")}`,
       );
@@ -240,6 +244,9 @@ esac
       expect(installed).toContain("Environment=NODE_ENV=production");
       expect(installed).toContain("EnvironmentFile=-");
       expect(installed).toContain("scripts/start-web.mjs");
+      expect(installed).toContain("Type=notify");
+      expect(installed).toContain("NotifyAccess=all");
+      expect(installed).toContain("WatchdogSec=15s");
       expect(readFileSync(files.logPath, "utf8")).toBe(
         "--user daemon-reload\n--user enable papercusp-cloud-portal.service\n",
       );

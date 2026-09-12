@@ -4810,6 +4810,9 @@ export function hostThroughPty(o) {
   // fields only (the read-side contract in operator-core psu-pty-discovery.ts
   // tolerates their absence for files written by older hosts).
   const activity = makeActivityTracker();
+  // Only actual owner input advances this epoch; terminal capability replies
+  // cannot invalidate an untouched successor's first-prompt readiness.
+  let ownerInputGeneration = 0;
   // WI-1386682 (1): quota-wall detector, fed the same raw bytes as `activity`
   // (wireChildData below). A stable object with its own reset() — unlike
   // childStartupOutput/childStartupReady this is not reassigned per recycle,
@@ -5283,12 +5286,16 @@ export function hostThroughPty(o) {
     onDrop = () => {},
     requireInitialOutput = false,
     terminateOnSubmitVerifyExhaustion = true,
+    freshChildOwnerInputGeneration = null,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
     const injectChild = child; // bail if a newer recycle supersedes this one
     const deadline = Date.now() + budgetMs;
     let attempts = 0;
     let dropReason = 'never-settled';
+    const freshChildWasInterrupted = () =>
+      freshChildOwnerInputGeneration !== null &&
+      ownerInputGeneration !== freshChildOwnerInputGeneration;
     try {
       // A scripted resume/port begins this task before wireChildData() is
       // reached later in host setup. Yield until the listener has observed at
@@ -5298,6 +5305,7 @@ export function hostThroughPty(o) {
       while (
         requireInitialOutput &&
         !childStartupReady &&
+        !freshChildWasInterrupted() &&
         !(
           childStartupFirstOutputAt > 0 &&
           Date.now() - childStartupFirstOutputAt >= startupMarkerFallbackMs
@@ -5351,6 +5359,10 @@ export function hostThroughPty(o) {
           lastResortSpent = true;
         }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+        if (freshChildWasInterrupted()) {
+          dropReason = 'fresh-child-owner-input';
+          break;
+        }
         attempts++;
         const recoveryBeforeBusy = await waitForClaudeResumeCompaction(deadline);
         if (!recoveryBeforeBusy.ready) {
@@ -5358,7 +5370,15 @@ export function hostThroughPty(o) {
           break;
         }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
-        const atPrompt = await agentBusyGate.waitAtPrompt();
+        // WI-10001066: a fresh Codex child has no submitted turn yet, but its
+        // idle composer can repaint continuously. Positive startup proof plus
+        // no intervening owner input establishes readiness without requiring
+        // raw PTY silence. Reused children and heuristic startup fallbacks
+        // still take the ordinary busy gate.
+        const freshPromptReady = freshChildOwnerInputGeneration !== null && childStartupReady;
+        const atPrompt = freshPromptReady
+          ? { deferred: false }
+          : await agentBusyGate.waitAtPrompt();
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         if (!atPrompt.deferred) {
           // The menu can be painted while the ordinary quiet gate is settling.
@@ -5370,6 +5390,10 @@ export function hostThroughPty(o) {
             break;
           }
           if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+          if (freshChildWasInterrupted()) {
+            dropReason = 'fresh-child-owner-input';
+            break;
+          }
           if (quotaBlockDetector.isBlocked()) {
             await verifySubmitted(label);
             dropReason = 'submit-verification-aborted-quota-blocked';
@@ -5443,6 +5467,8 @@ export function hostThroughPty(o) {
                 ? 'submit verification exhausted without observing output after a resubmit'
                 : dropReason.startsWith('submit-verification-aborted-')
                   ? `submit verification aborted (${dropReason.slice('submit-verification-aborted-'.length)})`
+              : dropReason === 'fresh-child-owner-input'
+                ? 'the owner used the fresh child before its carry prompt was submitted'
               : dropReason === 'resume-compaction-timeout'
                 ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
               : 'the child never settled to its prompt'
@@ -5455,13 +5481,9 @@ export function hostThroughPty(o) {
     return { delivered: false, reason: dropReason, attempts };
   };
 
-  // Launch KICKOFF (P-011/D-008): the launcher passes the first-turn text for a
-  // SCRIPTED resume/fork (`psu --no-picker --resume=… --kickoff=<text>`, or the
-  // spawn-safe PAPERCUSP_KICKOFF_PROMPT env). A FRESH launch does not come
-  // through here — its kickoff rides the CLI's positional prompt arg
-  // (kickoffPositionalArgs); a resume has no such seam, which is exactly the gap
-  // this closes. Fire-and-forget: the session is usable while we wait for its
-  // prompt, and a failure is loud (above), never silent.
+  // Scripted fresh launches and resumes share the managed first-turn seam;
+  // prompts stay out of argv. Only a fresh Codex thread can use startup proof
+  // instead of output silence. Resume/fork may already be running a turn.
   if (launchKickoff) {
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
@@ -5469,6 +5491,10 @@ export function hostThroughPty(o) {
         text: launchKickoff,
         label,
         requireInitialOutput: true,
+        freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' &&
+          !args.some((arg) => arg === 'resume' || arg === 'fork')
+          ? ownerInputGeneration
+          : null,
         // The managed kickoff's native transcript proof owns its failure
         // timeout and child kill. Do not let the generic submit verifier tear
         // down the host before that proof can observe a late marker.
@@ -6900,6 +6926,7 @@ export function hostThroughPty(o) {
     // Conservative by construction: only unambiguous terminal-authored string
     // sequences are filtered, so arrow/function/keypad keys still count.
     if (ownerInputDetector.sawOwnerInput(input)) {
+      ownerInputGeneration++;
       idleGate.touch();
       activity.touchInput();
       // owner-presence-human-turn-signal-2026-07-11 P-003: a real human keystroke into
@@ -7295,6 +7322,7 @@ export function hostThroughPty(o) {
       let recycleArgs;
       let nativeId;
       let launchContextPath = null;
+      let freshChildOwnerInputGeneration = null;
       try {
         const minted = systemPromptAddendum
           ? mintCarryRespawnArgs(args, {
@@ -7528,6 +7556,9 @@ export function hostThroughPty(o) {
         } catch {
           /* the terminal bridge is advisory — never let it break the respawn */
         }
+        freshChildOwnerInputGeneration = systemPromptAddendum && agentHint === 'codex'
+          ? ownerInputGeneration
+          : null;
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
@@ -7640,6 +7671,7 @@ export function hostThroughPty(o) {
           // false = the successor boots with NO first prompt (P-010 answered case)
           // and waits for its loop/coord wake — expected, but worth seeing.
           firstPrompt: Boolean(carryText),
+          capMs: recycleCarryInjectBudgetMs,
           // P-002: did this successor get a FRESH base persona, or inherit the
           // predecessor's render? The whole point of the fix, so it is observable
           // per respawn rather than inferable only from a prompt diff.
@@ -7688,6 +7720,7 @@ export function hostThroughPty(o) {
         // A fresh child can be output-quiet before its input handler exists.
         // Apply the same backend-aware boot proof as a scripted resume/port.
         requireInitialOutput: true,
+        freshChildOwnerInputGeneration,
         onDrop: recordCarryDrop,
       });
       let turnStartProof = null;

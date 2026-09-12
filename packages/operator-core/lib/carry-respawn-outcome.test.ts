@@ -56,7 +56,7 @@ describe('deriveLastRespawnOutcome', () => {
     expect(out.reason).toBeUndefined();
   });
 
-  it('counts only respawned mode=carry-respawn as a requested cut', () => {
+  it('keeps a spawned successor pending until its continuation turn is delivered', () => {
     const firstRealWindow = [
       {
         ts: '2026-08-22T20:00:35.220Z',
@@ -65,7 +65,11 @@ describe('deriveLastRespawnOutcome', () => {
         nativeId: '895c7c97-6cf4-4585-837d-238c7fdd93e3',
       },
     ];
-    expect(deriveLastRespawnOutcome(firstRealWindow, { now: NOW }).outcome).toBe('delivered');
+    expect(deriveLastRespawnOutcome(firstRealWindow, { now: NOW }).outcome).toBe('pending');
+    expect(deriveLastRespawnOutcome([
+      ...firstRealWindow,
+      { ts: '2026-08-22T20:01:00.000Z', kind: 'respawn-carry-delivered', turnStartVerified: true },
+    ], { now: NOW }).outcome).toBe('delivered');
   });
 
   it('a newer Claude self-relaunch does NOT turn an unresolved requested cut into success', () => {

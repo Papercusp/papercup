@@ -1,6 +1,6 @@
 # Shared agent obligations — current acceptance evidence
 
-Plan: `shared-agent-obligations-and-briefs-2026-09-05`, revision 55.
+Plan: `shared-agent-obligations-and-briefs-2026-09-05`, revision 56.
 Work item: `WI-2147072` / P-008. This is an in-progress evidence record; shipment is not yet verified.
 
 ## Staging acceptance refresh — 2026-09-12
@@ -10,7 +10,8 @@ Owner decision D-017 changes the remaining P-008 acceptance plane from deployed
 the pilot, tests, GUI journey, independent review, residue, rollback, and honest
 scope requirements. Staging evidence must not be called a deployed-main result.
 
-The staging `/api/health` response reported SHA
+<a id="R-6-P-008-live-staging-a8089380dd"></a>
+The initial staging `/api/health` response reported SHA
 `c20a63f79e44c7d20d492837712fe447c91f50d9`. The health writer resolves
 `getBuildInfo().sha` once at operator module load (`apps/operator/bin/serve.ts`)
 and the resolver returns the checkout Git SHA for an unbundled build
@@ -21,9 +22,12 @@ Git object reads at the staging SHA resolve all six required source paths:
 `agent-obligation-providers.ts`, `agent-obligation-reminders.ts`,
 `turn-start-orientation.ts`, and `sync-resolver/goals.ts`. The staging tree also
 contains the shared-reader call sites in turn-start orientation, fleet leader
-brief, and goal-state composition. The scoped current working copies and tests
-have no diff from that staging SHA.
+brief, and goal-state composition. After the BAR-snapshot repair restarted the
+operator, a fresh health read reported `a8089380dd4ac85562e14f3a71d9889578528864`.
+The scoped source and test files are byte-identical between that current staging
+commit, the canonical working tree, and the clean full-rubric run at `1bd43fdbbe`.
 
+<a id="R-6-P-008-unit-staging-a8089380dd"></a>
 Fresh R-6 replication through `testing:run` is run
 `9ec12f35-6a70-4ccf-af77-7921b13929f2`: 48 passed, zero failed/skipped across
 `agent-obligation-providers.test.ts` (25) and
@@ -38,6 +42,7 @@ observed zero false interventions. These remain deterministic fixture
 opportunities—not completed live LLM cycles. Live behavior/canary residue remains
 explicitly unexercised where the prior record says so.
 
+<a id="R-7-P-008-current-a8089380dd"></a>
 The full current rubric file set was also routed in detached recovery run
 `5e4b89a8-5fe2-4e1f-aa62-5f30d129b56e` at clean HEAD
 `1bd43fdbbed16aacf8fdad5cae7494e65b2fc91f`. All 20 requested files matched,
@@ -47,20 +52,23 @@ router's final line reports `skippedTests=unknown`; therefore this record does
 not invent an aggregate test or skip count. The narrower R-6 run above is the
 measured 48-test/zero-skip result.
 
-Rubric revision 6 still declares R-6 on the `deployed` evidence plane. D-017 has
-been recorded and the required activation re-audit correctly refused to certify
-the plan until that mismatch is repaired (`WI-10001058`). The documented
-`rubrics:amend` preview is currently blocked by the independently owned
-BAR-snapshot repair `EI-23069125479585944`. No final grade, author acceptance,
-P-008 completion, or shipment is claimed by this refresh alone.
+Outside-lineage review `WI-10001060` reproduced the exact D-017 amendment and
+posted authenticated approval `thread-post:202910`. The approved write advanced
+the acceptance rubric from revision 6 to 7 and the subject plan from revision 55
+to 56; activation audit 12 then reseeded the unchanged seven-BAR contract as
+rubric revision 8. R-6 now declares the `live` evidence plane. The current
+BAR-set hash is `0d6a0058d1117cd87e258a245069da7911167438f24cba26551aa55cb25f38d7`.
+Audit 12 carried all 17 source-conversation mappings and has no unresolved
+blocker. This refresh establishes the current evidence contract, not deployed
+`main`; final independent grading and author acceptance remain separate steps.
 
 ## Contract
 
 Acceptance rubric revision 5 preserves the seven existing outcomes and adds the required test layers. Independent approval is WI-10000444, thread-post:200074. A fresh complete amendment preview matched that approval before the CAS write from rubric 4 / plan 52. The resulting bar-set hash is `ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f`.
 
-The current rubric is revision **6**, criteria hash `ac834b178cce464cdfc38ca56ab120c8f24e36be583f04193791623a9da2986e`. It adds the concrete structured-check files requested in independent critique WI-10000492#200159 and clarifies the external GUI-journey evidence. BAR meanings, hashes, required layers and evidence planes are unchanged. Independent follow-up WI-10000511#200173 passes all six meta criteria. The attestation EI-22595027678539732 failed its independent grading-integrity audit EI-22599330104926621 on evidence form: its sampled strings lacked repeatable probes. The reviewer confirmed the sampled substantive claims. Replacement attestation **EI-22608924825300338**, emitted 13:19Z, supplies explicit tool calls, full critique references and repository-resident logs. Its independent audit **EI-22609326366147036** passed at 13:25:33Z; it supersedes the failed card without changing the rubric.
+The current rubric is revision **8**, criteria hash `66ee1e1ce8d03771ba79cca4acbe89b2d5123a1c875ed136c5be5142c34e3d95`. It preserves the concrete structured-check files requested in independent critique WI-10000492#200159 and the external GUI-journey evidence. D-017 changes only R-6's structural evidence plane from `deployed` to `live`; the canonical hash refresh re-pins all seven BARs without changing the other criterion fields. Independent follow-up WI-10000511#200173 passes all six meta criteria. The attestation EI-22595027678539732 failed its independent grading-integrity audit EI-22599330104926621 on evidence form: its sampled strings lacked repeatable probes. The reviewer confirmed the sampled substantive claims. Replacement attestation **EI-22608924825300338**, emitted 13:19Z, supplies explicit tool calls, full critique references and repository-resident logs. Its independent audit **EI-22609326366147036** passed at 13:25:33Z; it supersedes the failed card without changing the rubric.
 
-R-1 through R-5 require tree evidence. R-6 additionally requires containing deployment evidence. R-7 additionally requires a real cockpit journey; staging or an isolated current build is admissible. Component tests cannot satisfy that journey. Decisions D-011 and D-015 retain unexercised live-agent behavior and canary residue.
+R-1 through R-5 require tree evidence. Under D-017, R-6 requires current staging/live evidence while final deployed-main shipment remains separately reportable. R-7 additionally requires a real cockpit journey; staging or an isolated current build is admissible. Component tests cannot satisfy that journey. Decisions D-011 and D-015 retain unexercised live-agent behavior and canary residue.
 
 ## Current automated execution
 
@@ -89,7 +97,7 @@ The original logs are now durable, byte-for-byte copies in this repository. Read
 
 The later model-authority change in the shared launch code exposed three stale test assumptions. Repair **EI-22610286535025427** updates the missing-model case to require refusal and supplies explicit models to the existing kickoff/capacity fixtures. The [new run log](shared-agent-obligations-2026-09-07-model-authority-tests.txt) records **292 passed, zero failed/skipped**, at base `52db2dd1e9` plus the [exact local test patch](shared-agent-obligations-2026-09-07-model-authority-tests.patch), from 13:41:52Z through 13:42:24Z. Its `uncommittedPaths=1/2` stamp is preserved: this is local-build evidence. Bindings **1438–1440** carry the updated raw source/test snapshots; all 19 explicit-current adequacy clauses passed again. The replay payload above now uses these fingerprints.
 
-For the exact criterion models, methods, failure observations and detector paths, call `rubrics:get {"rubricRef":"shared-agent-obligations-and-briefs-2026-09-05-acceptance","revision":6}` against staging `http://127.0.0.1:3170`; assert `results[0].rubric.revision === 6` and the criteria hash above. Read the independent counterexample partition with `work_items:get {"id":"WI-10000492","harness":"papercusp","detail":true,"threadLimit":3}` (post 200159) and the detector repair confirmation with the same call for `WI-10000511` (post 200173). Both posts are authored by su-9b55680f, independently of the attestation author.
+For the exact criterion models, methods, failure observations and detector paths, call `rubrics:get {"rubricRef":"shared-agent-obligations-and-briefs-2026-09-05-acceptance"}` against staging `http://127.0.0.1:3170`; assert `results[0].rubric.revision === 8` and the criteria hash above. Read the independent counterexample partition with `work_items:get {"id":"WI-10000492","harness":"papercusp","detail":true,"threadLimit":3}` (post 200159), the detector repair confirmation with the same call for `WI-10000511` (post 200173), and the D-017 amendment approval in `WI-10001060` post 202910. These records are outside the implementation author's lineage.
 
 The PostgreSQL goals checks execute the actual goal detail resolver, including the holder's exact turn-start obligation projection and canonical portfolio. The owner-report integration checks verify the newest complete exact-goal evidence across reporting channels and reject incomplete, wrong-subject, wrong-owner, wrong-workspace, and non-human rows.
 
@@ -123,13 +131,13 @@ The exact parity sample was degraded at generation `9fdb18df0f498e361ca3`, obser
 
 Independent review WI-10000514 is complete: acceptance grading EI-22599793240835202 rates R-1 through R-5 and R-7 pass, and R-6 partial. The reviewer independently reran the ten core files (277 passed, zero failed/skipped), audited the GUI records and reproduced the negative deployment result. Their exact scope and repair are recorded in WI-10000514#200262. The four PostgreSQL legs were verified from the recorded router evidence, not independently rerun by that reviewer.
 
-Follow-up **WI-10000528** is also complete. Audit **EI-22609326366147036** passed the repaired attestation on all six criteria at 13:25:33Z; the reviewer executed its probes, verified the log hashes and read the named assertions. Refreshed independent acceptance **EI-22609569466831718**, rubric revision 6, again rates six criteria pass and R-6 partial. The earlier R-6 pass on EI-22529780338394678 is rubric revision 3 and itself discloses `deployed:false`; D-016 makes that old pin ineligible for current acceptance. It cannot establish shipment. Still required: final containing deployment, eligible final grading and acceptance, final audit and ship transition.
+Follow-up **WI-10000528** is also complete. Audit **EI-22609326366147036** passed the repaired attestation on all six criteria at 13:25:33Z; the reviewer executed its probes, verified the log hashes and read the named assertions. Refreshed independent acceptance **EI-22609569466831718**, rubric revision 6, again rates six criteria pass and R-6 partial. The earlier R-6 pass on EI-22529780338394678 is rubric revision 3 and itself discloses `deployed:false`; neither historical card can decide current revision 8. Current independent grading and author acceptance are still required. A staging acceptance must not be reported as deployed-main shipment.
 
 The runtime check at **2026-09-07T10:23:22.946735Z** found the deployment requirement unmet. The serving operator's `/api/health` reported `e66be3c4ff`. Its build identity is resolved at module load in `apps/operator/bin/serve.ts` and cached by `getBuildInfo()`. Git object reads at that reported revision could not resolve the four obligation engine, reader, provider and reminder source files. The GUI section and model matching current bytes therefore did not establish deployment of the underlying feature. This timestamped negative shipment observation is recorded as WI-2147072 comment200245.
 
 The later final-evidence read at **2026-09-07T13:22:11.520027Z** still reported `e66be3c4ff`. The commit resolved, each of the same four paths was absent at that commit, and the staging positive control resolved all four. R-6 remains unmet. This verifies the serving feature identity; it does not report or operate the live release gate. Independent follow-up **WI-10000528** completed the repaired attestation audit and acceptance-grade refresh.
 
-Accountable author decision **EI-22611006002466663**, recorded at 13:50Z, is **reject shipment pending containing deployment**. The server verified succession from the ended rubric author, based on the held WI-2147072; no identity rebind was used. P-008 and the plan remain open. After a deployment notification, verify the serving build contains the feature, refresh final evidence and independent grading as needed, and record a new acceptance decision before shipping the plan.
+Accountable author decision **EI-22611006002466663**, recorded at 13:50Z, is the historical **reject shipment pending containing deployment** under rubric revision 6. The server verified succession from the ended rubric author, based on the held WI-2147072; no identity rebind was used. D-017 supersedes deployed-main containment only as the P-008 acceptance prerequisite. Revision-8 evidence must therefore receive a new independent grade and author decision before P-008 closes, while final deployed-main shipment remains truthfully unverified.
 
 ## Proof binding index
 

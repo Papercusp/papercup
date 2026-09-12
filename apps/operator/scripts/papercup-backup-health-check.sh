@@ -1598,7 +1598,11 @@ for art in $BACKUP_ARTIFACTS __OPTIONAL_ARTIFACTS_FOLLOW__ $BACKUP_OPTIONAL_ARTI
       continue
     fi
     if [ "$ART_OPTIONAL" = 1 ]; then
-      TITLE="Workspace DB dump is stale after its latest snapshot hook degraded: $art is ${age_hours}h old"
+      # Keep the admission title stable for this artifact. work_items:create derives
+      # its dedupe identity from the title, so putting the changing age in it would
+      # mint a new critical item every health-check tick. The measurement belongs in
+      # the body, where it can stay current without changing the condition identity.
+      TITLE="Workspace DB dump is stale after its latest snapshot hook degraded: $art"
       BODY="The optional per-workspace dump '$f' is ${age_hours} hours old (${size}B), and its companion hook.log records a newer final outcome of 'hook done (degraded)'. This is a proven failed attempt after the last good artifact, not elapsed idle time under an event-only policy.
 
 Read ${f%/*}/hook.log for the pg FAIL/SKIP cause and the matching backup_snapshots row. The workspace hook writes PID/sequence-scoped transactions; check for dead-writer '${f}.*.tmp' files, which consume the headroom needed for recovery."
