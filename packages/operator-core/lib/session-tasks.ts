@@ -9,6 +9,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { SessionTaskBlockerRefValidationError, validateSessionTaskBlockerRef } from './session-task-blocker-ref';
+import { sanitizePersistedText } from './text-safety';
 
 export const SESSION_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'dropped'] as const;
 
@@ -161,8 +162,18 @@ function optionalText(value: string | undefined, field: string, max: number): st
   return present(value, field, max);
 }
 
+/** Normalize model-authored values before they become PostgreSQL text values. */
+function persistedText(value: string | undefined, field: string, max: number): string {
+  return present(sanitizePersistedText(value), field, max);
+}
+
+function optionalPersistedText(value: string | undefined, field: string, max: number): string | null {
+  if (value === undefined) return null;
+  return persistedText(value, field, max);
+}
+
 function validatedBlockerRef(value: string | undefined): string {
-  const blockerRef = present(value, 'blocker_ref', 2_000);
+  const blockerRef = persistedText(value, 'blocker_ref', 2_000);
   try {
     validateSessionTaskBlockerRef(blockerRef);
   } catch (error) {
@@ -285,9 +296,9 @@ function validateSeed(seed: SessionTaskSeed, position: number, now: string, idFa
   if (!(SESSION_TASK_STATUSES as readonly string[]).includes(status)) {
     fail('status_invalid', 'tasks:ops — invalid task status `' + String(status) + '`.');
   }
-  const content = present(seed.content, 'content', 4_000);
-  const activeForm = seed.activeForm === undefined ? content : present(seed.activeForm, 'activeForm', 500);
-  const blockerRef = optionalText(seed.blockerRef, 'blocker_ref', 2_000);
+  const content = persistedText(seed.content, 'content', 4_000);
+  const activeForm = seed.activeForm === undefined ? content : persistedText(seed.activeForm, 'activeForm', 500);
+  const blockerRef = optionalPersistedText(seed.blockerRef, 'blocker_ref', 2_000);
   if (status === 'blocked' && !blockerRef) {
     fail('blocker_ref_required', 'tasks:ops — an initialized blocked task requires `blocker_ref`.');
   }
@@ -295,7 +306,7 @@ function validateSeed(seed: SessionTaskSeed, position: number, now: string, idFa
     fail('blocker_ref_unexpected', 'tasks:ops — `blocker_ref` is valid only when status is blocked.');
   }
   if (blockerRef) validatedBlockerRef(blockerRef);
-  const id = seed.id === undefined ? idFactory() : present(seed.id, 'id', 160);
+  const id = seed.id === undefined ? idFactory() : persistedText(seed.id, 'id', 160);
   return {
     id,
     content,
@@ -325,7 +336,7 @@ export function reduceSessionTasks(
     ...task,
     links: task.links.map((link) => ({ ...link })),
   }));
-  const explanation = optionalText(args.explanation, 'explanation', 2_000);
+  const explanation = optionalPersistedText(args.explanation, 'explanation', 2_000);
 
   if (op === 'view') {
     assertAllowedFields(args, op, []);
@@ -357,8 +368,8 @@ export function reduceSessionTasks(
 
   if (op === 'append') {
     assertAllowedFields(args, op, ['content', 'activeForm', 'explanation']);
-    const content = present(args.content, 'content', 4_000);
-    const activeForm = args.activeForm === undefined ? content : present(args.activeForm, 'activeForm', 500);
+    const content = persistedText(args.content, 'content', 4_000);
+    const activeForm = args.activeForm === undefined ? content : persistedText(args.activeForm, 'activeForm', 500);
     const id = options.idFactory();
     const task: SessionTask = {
       id,
@@ -383,8 +394,8 @@ export function reduceSessionTasks(
   if (op === 'link') {
     assertAllowedFields(args, op, ['taskId', 'workItemId', 'workItemHarness', 'relation', 'explanation']);
     const nextLink: SessionTaskWorkItemLink = {
-      workItemId: present(args.workItemId, 'work_item_id', 240),
-      workItemHarness: optionalText(args.workItemHarness, 'work_item_harness', 240),
+      workItemId: persistedText(args.workItemId, 'work_item_id', 240),
+      workItemHarness: optionalPersistedText(args.workItemHarness, 'work_item_harness', 240),
       relation: normalizeRelation(args.relation),
     };
     const existingFor = target.links.find((link) => link.relation === 'for');
@@ -407,8 +418,8 @@ export function reduceSessionTasks(
 
   if (op === 'unlink') {
     assertAllowedFields(args, op, ['taskId', 'workItemId', 'workItemHarness', 'relation', 'explanation']);
-    const workItemId = present(args.workItemId, 'work_item_id', 240);
-    const workItemHarness = optionalText(args.workItemHarness, 'work_item_harness', 240);
+    const workItemId = persistedText(args.workItemId, 'work_item_id', 240);
+    const workItemHarness = optionalPersistedText(args.workItemHarness, 'work_item_harness', 240);
     const nextLinks = target.links.filter(
       (link) =>
         !(
@@ -436,8 +447,8 @@ export function reduceSessionTasks(
   if (op === 'edit') {
     assertAllowedFields(args, op, ['taskId', 'content', 'activeForm', 'expectedUpdatedAt', 'explanation']);
     assertExpectedRevision(target, args.expectedUpdatedAt);
-    const content = present(args.content, 'content', 4_000);
-    const activeForm = args.activeForm === undefined ? content : present(args.activeForm, 'activeForm', 500);
+    const content = persistedText(args.content, 'content', 4_000);
+    const activeForm = args.activeForm === undefined ? content : persistedText(args.activeForm, 'activeForm', 500);
     tasks[targetIndex] = {
       ...target,
       content,
@@ -454,7 +465,7 @@ export function reduceSessionTasks(
     if (target.status === 'completed' || target.status === 'dropped') {
       fail('task_terminal', 'tasks:ops — cannot start terminal task `' + taskId + '` (' + target.status + ').');
     }
-    const activeForm = args.activeForm === undefined ? target.activeForm : present(args.activeForm, 'activeForm', 500);
+    const activeForm = args.activeForm === undefined ? target.activeForm : persistedText(args.activeForm, 'activeForm', 500);
     const next = tasks.map((task) => {
       if (task.id === taskId) {
         return {

@@ -120,6 +120,24 @@ describe('reduceSessionTasks', () => {
     );
   });
 
+  it('sanitizes NUL and other database-invalid controls from persisted task text', () => {
+    const out = reduce([], {
+      op: 'init',
+      explanation: `plan${String.fromCharCode(0)} explanation`,
+      tasks: [{
+        content: `step${String.fromCharCode(0, 1)} text`,
+        activeForm: `doing${String.fromCharCode(127)} step`,
+      }],
+    });
+
+    expect(out.tasks[0]).toMatchObject({
+      content: 'step text',
+      activeForm: 'doing step',
+      explanation: 'plan explanation',
+    });
+    expect(JSON.stringify(out)).not.toContain(String.fromCharCode(0));
+  });
+
   it('start demotes the prior active task without mutating the input', () => {
     const current = [
       task({ id: 'task-a', status: 'in_progress' }),
