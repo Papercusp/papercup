@@ -5,6 +5,7 @@ import {
   dispatchPendingGradingAudits,
   GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   GRADING_AUDIT_DISPATCH_LIMIT,
+  GRADING_AUDIT_FAILURE_BACKOFF_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS,
@@ -122,14 +123,54 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
-  it('reports routing failure without launching past an uncertain persisted dispatch', async () => {
+  it('surfaces and backs off a routing failure, then a healthy retry creates exactly one consult', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-fault')]);
-    d.route.mockRejectedValue(new Error('lineage unavailable'));
-    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-fault'], ctx }, d);
-    expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: 'lineage unavailable' });
-    expect(d.launch).not.toHaveBeenCalled();
-    expect(d.release).toHaveBeenCalledOnce();
+    const now = Date.parse('2026-09-13T05:39:00.000Z');
+    const backoff = {
+      until: new Date(now + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString(),
+      source: 'retry-window' as const,
+      code: 'dispatch_exception',
+      recordedAt: new Date(now).toISOString(),
+      reason: 'lineage unavailable',
+    };
+    d.route
+      .mockRejectedValueOnce(new Error('lineage unavailable'))
+      .mockResolvedValueOnce({ state: 'routed', conversationId: 'healthy-consult' });
+    d.reserve
+      .mockResolvedValueOnce({ status: 'claimed' })
+      .mockResolvedValueOnce({ status: 'dispatch-backoff', backoff })
+      .mockResolvedValueOnce({ status: 'claimed' });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failed = await dispatchPendingGradingAudits({ targetIds: ['EI-fault'], ctx }, { ...d, now: () => now });
+      const suppressed = await dispatchPendingGradingAudits(
+        { targetIds: ['EI-fault'], ctx },
+        { ...d, now: () => now + 60_000 },
+      );
+      const recovered = await dispatchPendingGradingAudits(
+        { targetIds: ['EI-fault'], ctx },
+        { ...d, now: () => now + GRADING_AUDIT_FAILURE_BACKOFF_MS + 1 },
+      );
+
+      expect(failed.receipts[0]).toMatchObject({ state: 'failed', reason: 'lineage unavailable' });
+      expect(d.release).toHaveBeenCalledWith('EI-fault', 'grading-audit:EI-fault', {
+        workspaceId: 'ws-test',
+        backoff,
+      });
+      expect(warning).toHaveBeenCalledWith(
+        '[grading-integrity] pending audit dispatch failed for EI-fault: lineage unavailable',
+      );
+      expect(suppressed.receipts[0]).toMatchObject({
+        state: 'skipped',
+        reason: expect.stringContaining(`re-dispatch suppressed until ${backoff.until}`),
+      });
+      expect(recovered.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'healthy-consult' });
+      expect(d.route).toHaveBeenCalledTimes(2);
+      expect(d.launch).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it('serializes concurrent routed dispatches through the existing card reservation', async () => {
@@ -428,13 +469,26 @@ describe('dispatchPendingGradingAudits', () => {
     d.listScorecards.mockResolvedValue([card('EI-launch-failure')]);
     d.launch.mockResolvedValue({ isError: true, content: [{ text: 'launch refused' }] } as LaunchResult);
 
-    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-launch-failure'], ctx }, d);
+    const now = Date.parse('2026-09-13T05:39:00.000Z');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-launch-failure'], ctx },
+      { ...d, now: () => now },
+    );
+    warning.mockRestore();
 
     expect(result.receipts).toEqual([
       expect.objectContaining({ issueId: 'EI-launch-failure', state: 'failed', reason: 'launch refused' }),
     ]);
     expect(d.release).toHaveBeenCalledWith('EI-launch-failure', 'grading-audit:EI-launch-failure', {
       workspaceId: 'ws-test',
+      backoff: {
+        until: new Date(now + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString(),
+        source: 'retry-window',
+        code: 'launch_failed',
+        recordedAt: new Date(now).toISOString(),
+        reason: 'launch refused',
+      },
     });
   });
 
