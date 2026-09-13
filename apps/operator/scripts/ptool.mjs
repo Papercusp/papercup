@@ -2032,6 +2032,7 @@ export async function callToolWithReplayRecovery(
  * Explicitly replay one exact code:run body after an unknown transport result.
  * This is intentionally separate from normal recovery so catalog annotations
  * and generic per-call retry budgets cannot opt a request into replay.
+ * @param {{reconnect?: () => Promise<any>, timeoutMs?: number, maxAttempts?: number}} [options]
  */
 export async function retryCodeRunWithProof(
   client,

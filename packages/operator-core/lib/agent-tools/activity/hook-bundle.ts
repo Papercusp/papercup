@@ -171,7 +171,7 @@ export async function hasOwnerRelevantCoordDelta(
          AND jsonb_typeof(body->'to') = 'array'
          -- Keep JSONB membership in PostgreSQL's native operator form so the
          -- coord_event_log recipient GIN index can answer this predicate. The
-         -- equivalent jsonb_exists(...) function form falls back to a parallel
+         -- equivalent JSONB membership function form falls back to a parallel
          -- sequential scan of the messages surface.
          AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
     ) AS relevant

@@ -470,6 +470,7 @@ export function callToolWithReplayRecovery(client: any, params: any, { reconnect
  * Explicitly replay one exact code:run body after an unknown transport result.
  * This is intentionally separate from normal recovery so catalog annotations
  * and generic per-call retry budgets cannot opt a request into replay.
+ * @param {{reconnect?: () => Promise<any>, timeoutMs?: number, maxAttempts?: number}} [options]
  */
 export function retryCodeRunWithProof(client: any, params: any, replayProof: any, { reconnect, timeoutMs, maxAttempts, }?: {
     timeoutMs?: number | undefined;
@@ -691,6 +692,7 @@ export const PTOOL_POST_CONNECT_RETRIES: 0;
  * Explicitly replay one exact code:run body after an unknown transport result.
  * This is intentionally separate from normal recovery so catalog annotations
  * and generic per-call retry budgets cannot opt a request into replay.
+ * @param {{reconnect?: () => Promise<any>, timeoutMs?: number, maxAttempts?: number}} [options]
  */
 export function replayCodeRunWithProof(client: any, params: any, replayProof: any, { reconnect, timeoutMs, maxAttempts, }?: {
     timeoutMs?: number | undefined;
