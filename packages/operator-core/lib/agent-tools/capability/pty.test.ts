@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => {
     return true;
   });
   const killPty = vi.fn(() => true);
+  const killTask = vi.fn();
 
   return {
     state,
@@ -78,6 +79,7 @@ const mocks = vi.hoisted(() => {
     resizePty,
     getScreenSerialization,
     killPty,
+    killTask,
     getTask: vi.fn(async () => state.task),
     scrubExecEnv: vi.fn(() => ({ PATH: '/usr/bin', HOME: '/home/test' })),
   };
@@ -90,6 +92,7 @@ vi.mock('../../task-manager/enroll-sync', () => ({
   syncEnrolmentScopePath: mocks.syncEnrolmentScopePath,
 }));
 vi.mock('../../task-manager/store', () => ({ getTask: mocks.getTask }));
+vi.mock('../../task-manager/control', () => ({ killTask: mocks.killTask }));
 vi.mock('../../pty-bridge', () => ({
   spawnPty: mocks.spawnPty,
   spawnGovernedPty: (opts: unknown) => mocks.spawnPty(opts),
@@ -146,6 +149,12 @@ beforeEach(() => {
   mocks.state.writes = [];
   mocks.state.resizes = [];
   vi.clearAllMocks();
+  mocks.killTask.mockResolvedValue({
+    ok: true,
+    taskId: 'mptysession001',
+    action: 'kill',
+    detail: 'scope pc-mptysession001.scope signalled SIGTERM — verified empty',
+  });
   mocks.beginSyncEnrolment.mockImplementation(() => ({
     taskId: 'mptysession001',
     confined: true,
@@ -337,6 +346,29 @@ describe('interactive PTY capability family', () => {
       reattachment: 'not_applicable',
       replacement_started: false,
     });
+    expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
+  });
+
+  it('kills a live PTY through the durable task manager after its local handle is lost', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    mocks.state.handle = null;
+    mocks.state.task = {
+      ...mocks.state.task,
+      confined: true,
+      scopeUnit: 'pc-mptysession001.scope',
+    };
+
+    const result = await ptyKillTool.handler({ task_id: 'mptysession001' }, ctx('su-a'));
+
+    expect(parseText(result)).toEqual({
+      ok: true,
+      task_id: 'mptysession001',
+      killed: true,
+      via: 'task-manager',
+      detail: 'scope pc-mptysession001.scope signalled SIGTERM — verified empty',
+    });
+    expect(mocks.killTask).toHaveBeenCalledWith('mptysession001');
+    expect(mocks.killPty).not.toHaveBeenCalled();
     expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
   });
 

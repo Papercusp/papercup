@@ -26,6 +26,7 @@ import {
   finishSyncEnrolment,
   syncEnrolmentScopePath,
 } from '../../task-manager/enroll-sync';
+import { killTask } from '../../task-manager/control';
 import { getTask } from '../../task-manager/store';
 import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
@@ -105,7 +106,12 @@ function taskBelongsToCaller(task: TaskRow, taskId: string, caller: CallerScope)
 
 async function attachTask(taskId: string, ctx: PtyToolContext): Promise<
   | { ok: true; attachment: Attachment }
-  | { ok: false; result: ReturnType<typeof errorResult> }
+  | {
+      ok: false;
+      result: ReturnType<typeof errorResult>;
+      task?: TaskRow;
+      handleUnavailable?: boolean;
+    }
 > {
   const caller = callerScope(ctx);
   if (!caller) return { ok: false, result: errorResult('concrete_scope_required') };
@@ -156,6 +162,8 @@ async function attachTask(taskId: string, ctx: PtyToolContext): Promise<
         advice:
           'The authorized ledger row is still live, but its process-local PTY handle was lost (for example by an operator restart). This session cannot be reattached; open a new capability:pty_open session. No replacement was started automatically.',
       }),
+      task,
+      handleUnavailable: true,
     };
   }
 
@@ -453,7 +461,35 @@ export const ptyKillTool = defineTool({
   }),
   async handler(args, ctx: PtyToolContext) {
     const attached = await attachTask(args.task_id, ctx);
-    if (!attached.ok) return attached.result;
+    if (!attached.ok) {
+      // The PTY handle is process-local, but the task ledger is durable. A
+      // restart can therefore leave a live PTY row that this worker cannot
+      // resolve by handle. `killTask` is the existing cgroup/verified-pid
+      // control path; use it only after attachTask has authenticated and
+      // classified this exact caller-owned live row. Never fall back for
+      // foreign, malformed, or already-terminal rows.
+      if (!attached.handleUnavailable || !attached.task) return attached.result;
+      const outcome = await killTask(args.task_id);
+      const payload = outcome.ok
+        ? {
+            ok: true,
+            task_id: args.task_id,
+            killed: true,
+            via: 'task-manager',
+            ...(outcome.detail ? { detail: outcome.detail } : {}),
+          }
+        : {
+            ok: false,
+            task_id: args.task_id,
+            reason: outcome.error,
+            via: 'task-manager',
+            ...(outcome.detail ? { detail: outcome.detail } : {}),
+          };
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+        isError: !outcome.ok,
+      };
+    }
     const { handle, caller } = attached.attachment;
     if (!killPty(handle.id, caller.accessScope)) {
       return errorResult('pty_session_unavailable', { task_id: args.task_id });
