@@ -18,6 +18,8 @@ import {
   getMcpAdmissionSnapshot,
   resetMcpAdmissionForTests,
   isBoundedDevTelemetryArgs,
+  isBoundedCoordPresenceArgs,
+  isBoundedCoordRosterArgs,
 } from './mcp-admission';
 
 afterEach(() => resetMcpAdmissionForTests());
@@ -91,6 +93,65 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       { id: 'EI-1', threadLimit: 1 },
     ]) {
       expect(classifyMcpBody(toolsCall(12, 'work_items:get', args))).toEqual({ sheddable: true, id: 12 });
+    }
+  });
+
+  it.each([
+    ['owner', { owner: 'su-target' }],
+    ['ownerId', { ownerId: 'su-target' }],
+    ['owners', { owners: ['su-target', 'su-peer'] }],
+    ['ownerIds', { ownerIds: ['su-target', 'su-peer'] }],
+  ])('admits bounded targeted coord:presence selector %s under critical pressure', (_label, args) => {
+    const body = toolsCall(31, 'coord:presence', args);
+    expect(isBoundedCoordPresenceArgs(args)).toBe(true);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits targeted coord:presence aliases through tools:invoke and rejects broad/project-only reads', () => {
+    const deferred = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 32,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp_su__coord_presence', args: { ownerIds: ['su-target'] } },
+      },
+    });
+    expect(classifyMcpBody(deferred)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(deferred)).toBe('diagnostic');
+    for (const args of [{}, { project: 'ids' }, { owner: 'su-target', owners: ['su-peer'] }, { owners: [] }]) {
+      expect(isBoundedCoordPresenceArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(33, 'coord:presence', args))).toEqual({ sheddable: true, id: 33 });
+    }
+  });
+
+  it.each([
+    ['default live', { owner: 'su-target' }],
+    ['live', { view: 'live', owner: 'su-target' }],
+    ['members', { view: 'members', owner: 'su-target' }],
+  ])('admits bounded targeted coord:roster %s under critical pressure', (_label, args) => {
+    const body = toolsCall(34, 'coord:roster', args);
+    expect(isBoundedCoordRosterArgs(args)).toBe(true);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits targeted coord:roster through tools:invoke but preserves broad/project-only shedding', () => {
+    const deferred = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 35,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp_su__coord_roster', args: { view: 'members', owner: 'su-target' } },
+      },
+    });
+    expect(classifyMcpBody(deferred)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(deferred)).toBe('diagnostic');
+    for (const args of [{ view: 'live' }, { view: 'live', project: 'ids' }, { view: 'claims', owner: 'su-target' }, { owner: '' }]) {
+      expect(isBoundedCoordRosterArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(36, 'coord:roster', args))).toEqual({ sheddable: true, id: 36 });
     }
   });
 
