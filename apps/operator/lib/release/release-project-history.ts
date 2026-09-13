@@ -82,12 +82,21 @@ export function releaseProjectHistory(
 /** Self-hosted assets: no live operator, database, or public CDN is needed. */
 export async function buildReleaseHistoryAssets(outDir: string): Promise<void> {
   const here = path.dirname(fileURLToPath(import.meta.url));
+  const root = path.resolve(here, '../../../..');
   const assets = path.join(outDir, 'assets');
   fs.mkdirSync(outDir, { recursive: true });
   const staged = fs.mkdtempSync(path.join(outDir, '.history-assets-'));
   try {
     await build({
-    entryPoints: { 'project-history': path.join(here, 'release-project-history-client.tsx') },
+    // Keep the executed browser entry repo-relative and literal: the module-reachability
+    // guard can then prove this file is a production caller even though esbuild loads it
+    // by path rather than through a JavaScript import edge.
+    entryPoints: {
+      'project-history': path.join(
+        root,
+        'apps/operator/lib/release/release-project-history-client.tsx',
+      ),
+    },
     outdir: staged,
     bundle: true,
     splitting: true,
