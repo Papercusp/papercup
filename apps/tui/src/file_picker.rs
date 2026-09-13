@@ -221,7 +221,11 @@ impl Attachments {
     /// reference being stable: selecting the same file twice must not put two
     /// copies of its contents in front of the agent.
     pub fn add(&mut self, attachment: Attachment) -> bool {
-        if self.items.iter().any(|a| a.reference == attachment.reference) {
+        if self
+            .items
+            .iter()
+            .any(|a| a.reference == attachment.reference)
+        {
             return false;
         }
         self.items.push(attachment);
@@ -420,7 +424,10 @@ mod tests {
         let refused = attach(&root, Path::new("../other-project/secret.txt"))
             .expect_err("`..` traversal must not escape the project");
 
-        assert!(matches!(refused, Refusal::OutsideProject { .. }), "{refused:?}");
+        assert!(
+            matches!(refused, Refusal::OutsideProject { .. }),
+            "{refused:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -435,7 +442,10 @@ mod tests {
         let refused = attach(&root, Path::new("link.txt"))
             .expect_err("an out-of-tree symlink must be refused");
 
-        assert!(matches!(refused, Refusal::OutsideProject { .. }), "{refused:?}");
+        assert!(
+            matches!(refused, Refusal::OutsideProject { .. }),
+            "{refused:?}"
+        );
     }
 
     #[test]
@@ -448,7 +458,11 @@ mod tests {
         let refused = attach(&root, Path::new("does/not/exist/main.rs")).expect_err("must refuse");
 
         assert!(matches!(refused, Refusal::Unreadable { .. }), "{refused:?}");
-        assert!(refused.reason().contains("unreadable"), "{}", refused.reason());
+        assert!(
+            refused.reason().contains("unreadable"),
+            "{}",
+            refused.reason()
+        );
     }
 
     #[test]
@@ -467,9 +481,18 @@ mod tests {
         fs::write(root.join("bundle.tar"), "x").unwrap();
         fs::write(root.join("notes.md"), "x").unwrap();
 
-        assert_eq!(attach(&root, Path::new("shot.PNG")).unwrap().kind, AttachmentKind::Image);
-        assert_eq!(attach(&root, Path::new("bundle.tar")).unwrap().kind, AttachmentKind::Binary);
-        assert_eq!(attach(&root, Path::new("notes.md")).unwrap().kind, AttachmentKind::Text);
+        assert_eq!(
+            attach(&root, Path::new("shot.PNG")).unwrap().kind,
+            AttachmentKind::Image
+        );
+        assert_eq!(
+            attach(&root, Path::new("bundle.tar")).unwrap().kind,
+            AttachmentKind::Binary
+        );
+        assert_eq!(
+            attach(&root, Path::new("notes.md")).unwrap().kind,
+            AttachmentKind::Text
+        );
     }
 
     #[test]
@@ -502,7 +525,10 @@ mod tests {
         assert!(!attachments.add(attach(&root, &root.join("src/main.rs")).unwrap()));
 
         assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments.rows(), vec!["src/main.rs · text · @src/main.rs"]);
+        assert_eq!(
+            attachments.rows(),
+            vec!["src/main.rs · text · @src/main.rs"]
+        );
     }
 
     #[test]
@@ -519,7 +545,10 @@ mod tests {
             attachments.attach_to_prompt(draft),
             "  inspect these λ  \n@src/main.rs\n@shot.PNG"
         );
-        assert_eq!(draft, "  inspect these λ  ", "the editor draft is not mutated");
+        assert_eq!(
+            draft, "  inspect these λ  ",
+            "the editor draft is not mutated"
+        );
         assert_eq!(
             attachments.references(),
             vec!["@src/main.rs".to_string(), "@shot.PNG".to_string()]

@@ -3196,10 +3196,10 @@ impl App {
                 self.open_change_card = None;
                 Some(Action::Render)
             }
-            KeyCode::Char('y') => Some(self.copy_open_change_card(crate::chat_copy::CopyForm::Rendered)),
-            KeyCode::Char('Y') => {
-                Some(self.copy_open_change_card(crate::chat_copy::CopyForm::Raw))
+            KeyCode::Char('y') => {
+                Some(self.copy_open_change_card(crate::chat_copy::CopyForm::Rendered))
             }
+            KeyCode::Char('Y') => Some(self.copy_open_change_card(crate::chat_copy::CopyForm::Raw)),
             KeyCode::Char('j') | KeyCode::Down => Some(self.scroll_change_card(1, height)),
             KeyCode::Char('k') | KeyCode::Up => Some(self.scroll_change_card(-1, height)),
             KeyCode::PageDown => Some(self.scroll_change_card(10, height)),
@@ -3248,7 +3248,10 @@ impl App {
             },
             open.card.message_index,
         );
-        let Some(cur) = cards.iter().position(|c| c.tool_index == open.card.tool_index) else {
+        let Some(cur) = cards
+            .iter()
+            .position(|c| c.tool_index == open.card.tool_index)
+        else {
             return Action::Render;
         };
         let next = if delta < 0 {
@@ -4071,7 +4074,8 @@ impl App {
             .next_back()
             .map(|(offset, _)| offset)
             .unwrap_or(0);
-        self.chat_input.replace_range(previous..self.chat_cursor, "");
+        self.chat_input
+            .replace_range(previous..self.chat_cursor, "");
         self.chat_cursor = previous;
         self.chat_cursor_input_len = self.chat_input.len();
         Action::Render
@@ -8676,7 +8680,10 @@ impl App {
                 let chat = match result {
                     Ok(chat)
                         if chat.continued_from_chat_id.as_deref()
-                            == Some(source_chat_id.as_str()) => chat,
+                            == Some(source_chat_id.as_str()) =>
+                    {
+                        chat
+                    }
                     Ok(_) => {
                         self.last_error = Some(
                             "sessions: continued chat omitted or mismatched source lineage".into(),
@@ -10992,9 +10999,7 @@ impl App {
                     self.chat_history_or_vertical(1);
                     Action::Render
                 }
-                KeyCode::Backspace => {
-                    self.chat_delete_backward()
-                }
+                KeyCode::Backspace => self.chat_delete_backward(),
                 KeyCode::Delete => self.chat_delete_forward(),
                 KeyCode::Left => {
                     self.chat_move_horizontal(-1);
@@ -13194,6 +13199,18 @@ mod tests {
         }
     }
 
+    fn agent_chat_browser_entry(label: &str, chat_id: &str, harness: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: format!("agent-chat:{chat_id}"),
+            label: label.into(),
+            source: "agent_chat".into(),
+            session_state: Some("recorded".into()),
+            agent_chat_id: Some(chat_id.into()),
+            session_harness: Some(harness.into()),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn session_browser_filters_shared_rows_and_reuses_crew_action() {
         let mut app = App::new();
@@ -13350,6 +13367,225 @@ mod tests {
             SessionTranscriptAvailability::Unavailable
         );
         assert!(!unavailable.session_browser.transcript_loading);
+    }
+
+    #[test]
+    fn session_browser_rename_requires_printable_input_and_emits_exact_chat_target() {
+        let mut app = App::new();
+        app.session_browser.when_idx = 2;
+        app.session_browser.rows = vec![agent_chat_browser_entry(
+            "Legacy title",
+            "chat-legacy",
+            "paper cup",
+        )];
+
+        assert_eq!(
+            app.session_browser_key(KeyCode::Char('e'), KeyModifiers::NONE),
+            Some(Action::Render)
+        );
+        assert!(app.session_browser.rename.is_some());
+        assert_eq!(
+            app.session_browser_key(KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::Render),
+            "a blank rename stays open instead of issuing a write"
+        );
+        assert!(app.session_browser.rename.is_some());
+        assert!(app.session_browser.mutation_key.is_none());
+
+        for ch in "  Clear title  ".chars() {
+            app.session_browser_key(KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        let action = app
+            .session_browser_key(KeyCode::Enter, KeyModifiers::NONE)
+            .expect("rename editor owns Enter");
+        assert!(matches!(
+            action,
+            Action::RenameAgentChat {
+                ref session_key,
+                ref harness,
+                ref chat_id,
+                ref title,
+            } if session_key == "agent_chat:chat-legacy"
+                && harness == "paper cup"
+                && chat_id == "chat-legacy"
+                && title == "  Clear title  "
+        ));
+        assert_eq!(
+            app.session_browser.mutation_key.as_deref(),
+            Some("agent_chat:chat-legacy")
+        );
+        assert!(app.session_browser.rename.is_none());
+    }
+
+    #[test]
+    fn session_browser_archive_requires_confirmation_and_cancel_never_mutates() {
+        let mut app = App::new();
+        app.session_browser.when_idx = 2;
+        app.session_browser.rows = vec![agent_chat_browser_entry(
+            "Archive me",
+            "chat-archive",
+            "papercusp",
+        )];
+
+        app.session_browser_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.session_browser.archive_confirm.is_some());
+        assert_eq!(
+            app.session_browser_key(KeyCode::Char('n'), KeyModifiers::NONE),
+            Some(Action::Render)
+        );
+        assert!(app.session_browser.archive_confirm.is_none());
+        assert!(app.session_browser.mutation_key.is_none());
+
+        app.session_browser_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        let action = app
+            .session_browser_key(KeyCode::Enter, KeyModifiers::NONE)
+            .expect("archive confirmation owns Enter");
+        assert!(matches!(
+            action,
+            Action::ArchiveAgentChat {
+                ref session_key,
+                ref harness,
+                ref chat_id,
+            } if session_key == "agent_chat:chat-archive"
+                && harness == "papercusp"
+                && chat_id == "chat-archive"
+        ));
+        assert_eq!(
+            app.session_browser.mutation_key.as_deref(),
+            Some("agent_chat:chat-archive")
+        );
+    }
+
+    #[test]
+    fn session_browser_continue_rejects_stale_or_wrong_lineage_and_preserves_draft() {
+        fn continued_chat(source: &str, successor: &str) -> crate::agent_chats::AgentChat {
+            serde_json::from_value(serde_json::json!({
+                "id": successor,
+                "role": "operator",
+                "title": "Legacy · continued",
+                "su_runtime_class": "su-session",
+                "continued_from_chat_id": source,
+                "continued_from_turn_count": 2,
+                "transcript": [
+                    {"role":"user", "content":"historic question", "ts":"2026-09-01T00:00:00Z"},
+                    {"role":"assistant", "content":"historic answer", "ts":"2026-09-01T00:00:01Z"}
+                ]
+            }))
+            .expect("continued chat fixture")
+        }
+
+        let mut app = App::new();
+        app.session_browser.when_idx = 2;
+        app.session_browser.rows = vec![agent_chat_browser_entry(
+            "Legacy",
+            "chat-source",
+            "papercusp",
+        )];
+        app.chat_input = "exact draft — do not send".into();
+        app.su_backend = Some(crate::su_session::SuSessionBackend::Codex);
+
+        let action = app
+            .session_browser_key(KeyCode::Char('K'), KeyModifiers::SHIFT)
+            .expect("Sessions owns uppercase K");
+        assert!(matches!(
+            action,
+            Action::ContinueAgentChat {
+                ref session_key,
+                ref harness,
+                ref source_chat_id,
+            } if session_key == "agent_chat:chat-source"
+                && harness == "papercusp"
+                && source_chat_id == "chat-source"
+        ));
+
+        assert_eq!(
+            app.update(Event::SessionBrowserContinued {
+                session_key: "agent_chat:some-other-chat".into(),
+                source_chat_id: "some-other-chat".into(),
+                harness: "papercusp".into(),
+                result: Ok(continued_chat("some-other-chat", "stale-successor")),
+            }),
+            Action::None,
+            "a late result for another selection must be inert"
+        );
+        assert_eq!(app.chat_input, "exact draft — do not send");
+        assert_eq!(
+            app.session_browser.mutation_key.as_deref(),
+            Some("agent_chat:chat-source")
+        );
+
+        assert_eq!(
+            app.update(Event::SessionBrowserContinued {
+                session_key: "agent_chat:chat-source".into(),
+                source_chat_id: "chat-source".into(),
+                harness: "papercusp".into(),
+                result: Ok(continued_chat("wrong-source", "wrong-successor")),
+            }),
+            Action::Render
+        );
+        assert_eq!(app.chat_input, "exact draft — do not send");
+        assert!(app.agent_chat_id.is_none());
+        assert!(app
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("mismatched source lineage")));
+
+        app.session_browser_key(KeyCode::Char('K'), KeyModifiers::SHIFT);
+        let action = app.update(Event::SessionBrowserContinued {
+            session_key: "agent_chat:chat-source".into(),
+            source_chat_id: "chat-source".into(),
+            harness: "papercusp".into(),
+            result: Ok(continued_chat("chat-source", "chat-successor")),
+        });
+        assert!(matches!(
+            action,
+            Action::OpenContinuedSuSession {
+                ref harness,
+                ref chat_id,
+                ref role,
+                backend: crate::su_session::SuSessionBackend::Codex,
+                ..
+            } if harness == "papercusp"
+                && chat_id == "chat-successor"
+                && role == "operator"
+        ));
+        assert_eq!(
+            app.chat_input, "exact draft — do not send",
+            "continuation must preserve the owner's unsent draft byte-for-byte"
+        );
+        assert_eq!(app.agent_chat_id.as_deref(), Some("chat-successor"));
+        assert_eq!(app.chat_messages.len(), 2);
+        assert_eq!(app.tab, Tab::Operator);
+        assert!(app
+            .session_note
+            .as_deref()
+            .is_some_and(|note| note.contains("draft preserved")));
+    }
+
+    #[test]
+    fn session_browser_mutations_are_disabled_without_agent_chat_provenance() {
+        let mut app = App::new();
+        app.session_browser.when_idx = 2;
+        app.session_browser.rows = vec![switcher_entry("native history", "ended", 42)];
+
+        for key in ['e', 'd', 'K'] {
+            assert_eq!(
+                app.session_browser_key(
+                    KeyCode::Char(key),
+                    if key == 'K' {
+                        KeyModifiers::SHIFT
+                    } else {
+                        KeyModifiers::NONE
+                    },
+                ),
+                Some(Action::Render)
+            );
+            assert!(app.session_browser.mutation_key.is_none());
+            assert!(app
+                .notifs
+                .last()
+                .is_some_and(|notif| notif.message.contains("native history")));
+        }
     }
 
     #[test]
@@ -18145,8 +18381,14 @@ mod tests {
 
         assert!(app.chat_input.is_empty());
         assert!(app.attachments.is_empty());
-        assert_eq!(app.chat_history.last().map(String::as_str), Some("  inspect this λ  "));
-        assert_eq!(app.chat_messages.last().map(|m| m.content.as_str()), Some(submitted.as_str()));
+        assert_eq!(
+            app.chat_history.last().map(String::as_str),
+            Some("  inspect this λ  ")
+        );
+        assert_eq!(
+            app.chat_messages.last().map(|m| m.content.as_str()),
+            Some(submitted.as_str())
+        );
     }
 
     #[test]
@@ -18510,7 +18752,10 @@ mod tests {
         let mut app = running_turn("first");
         app.chat_input = "second".into();
         app.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.chat_input.is_empty(), "fixture: queuing frees the composer");
+        assert!(
+            app.chat_input.is_empty(),
+            "fixture: queuing frees the composer"
+        );
 
         app.reset_agent_chat_binding();
 
@@ -21036,7 +21281,10 @@ mod tests {
         // An empty undo stack is INERT, never a clear — an undo that wiped the
         // line here would BE the data loss the feature exists to prevent.
         a.update(ctrl_z());
-        assert_eq!(a.chat_input, draft, "undo with nothing to undo must not clear");
+        assert_eq!(
+            a.chat_input, draft,
+            "undo with nothing to undo must not clear"
+        );
 
         // Successive pastes unwind one at a time, newest first.
         a.update(Event::Paste("one".into()));
@@ -21237,7 +21485,9 @@ mod tests {
     fn chat_app(n: usize) -> App {
         let mut a = App::new();
         a.tab = Tab::Operator;
-        a.chat_messages = (0..n).map(|i| ChatMessage::user(&format!("m{i}"))).collect();
+        a.chat_messages = (0..n)
+            .map(|i| ChatMessage::user(&format!("m{i}")))
+            .collect();
         a
     }
 
@@ -21259,8 +21509,7 @@ mod tests {
     fn card_app(n: usize) -> App {
         let mut a = chat_app(2);
         let last = a.chat_messages.len() - 1;
-        a.chat_messages[last].tools =
-            (0..n).map(|i| edit_call(&format!("f{i}.rs"))).collect();
+        a.chat_messages[last].tools = (0..n).map(|i| edit_call(&format!("f{i}.rs"))).collect();
         a
     }
 
@@ -21292,7 +21541,10 @@ mod tests {
         let open = a.open_change_card.as_ref().expect("card must open");
         assert_eq!(open.card.path, "f0.rs");
         assert_eq!(open.scroll, 0);
-        assert!(!a.chat_composing, "expansion must not also open the composer");
+        assert!(
+            !a.chat_composing,
+            "expansion must not also open the composer"
+        );
     }
 
     #[test]
@@ -21324,7 +21576,11 @@ mod tests {
             Action::CopyToClipboard { sequence } => assert!(sequence.contains("\x1b]52;c;")),
             other => panic!("y must copy the open card, got {other:?}"),
         }
-        let ack = a.toast.as_ref().map(|t| t.message.clone()).unwrap_or_default();
+        let ack = a
+            .toast
+            .as_ref()
+            .map(|t| t.message.clone())
+            .unwrap_or_default();
         assert!(ack.contains("edit card"), "copied the wrong subject: {ack}");
 
         a.on_key(KeyCode::Esc, KeyModifiers::NONE);
@@ -21341,7 +21597,11 @@ mod tests {
         a.step_chat_focus(0);
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         a.on_key(KeyCode::Char('Y'), KeyModifiers::NONE);
-        let ack = a.toast.as_ref().map(|t| t.message.clone()).unwrap_or_default();
+        let ack = a
+            .toast
+            .as_ref()
+            .map(|t| t.message.clone())
+            .unwrap_or_default();
         assert!(ack.starts_with("Copied edit card raw"), "{ack}");
     }
 
@@ -21398,8 +21658,10 @@ mod tests {
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         let before = a.open_change_card.clone().unwrap();
 
-        a.chat_messages
-            .insert(0, crate::models::ChatMessage::user("an earlier turn arrived"));
+        a.chat_messages.insert(
+            0,
+            crate::models::ChatMessage::user("an earlier turn arrived"),
+        );
         a.chat_messages
             .push(crate::models::ChatMessage::assistant("and a newer one"));
 
@@ -21420,9 +21682,15 @@ mod tests {
         let mut a = chat_app(3);
         a.chat_scroll = 0;
         a.update(ev(KeyCode::Char('k')));
-        assert_eq!(a.chat_scroll, 1, "k must still scroll one line into history");
+        assert_eq!(
+            a.chat_scroll, 1,
+            "k must still scroll one line into history"
+        );
         a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.chat_scroll, 0, "j must still scroll one line toward latest");
+        assert_eq!(
+            a.chat_scroll, 0,
+            "j must still scroll one line toward latest"
+        );
         assert_eq!(
             a.chat_focus, None,
             "scrolling must not set the copy cursor — they are separate gestures"
@@ -21466,7 +21734,11 @@ mod tests {
             "no clipboard write is owed, got {action:?}"
         );
         let toast = a.toast.as_ref().expect("must acknowledge the refusal");
-        assert!(toast.message.contains("No raw payload"), "{}", toast.message);
+        assert!(
+            toast.message.contains("No raw payload"),
+            "{}",
+            toast.message
+        );
     }
 
     #[test]

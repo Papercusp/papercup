@@ -954,10 +954,7 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Theme::dim(),
             )),
-            Line::from(Span::styled(
-                action_line,
-                Theme::dim(),
-            )),
+            Line::from(Span::styled(action_line, Theme::dim())),
         ]),
         chunks[2],
     );
@@ -3305,14 +3302,22 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             .saturating_add(1)
             .saturating_add(2)
             .saturating_add(column as u16)
-            .min(composer_area.x.saturating_add(composer_area.width.saturating_sub(2)));
+            .min(
+                composer_area
+                    .x
+                    .saturating_add(composer_area.width.saturating_sub(2)),
+            );
         let y = composer_area
             .y
             .saturating_add(1)
             .saturating_add(selection_row_count as u16)
             .saturating_add(app.attachments.len() as u16)
             .saturating_add(row.min(u16::MAX as usize) as u16)
-            .min(composer_area.y.saturating_add(composer_area.height.saturating_sub(2)));
+            .min(
+                composer_area
+                    .y
+                    .saturating_add(composer_area.height.saturating_sub(2)),
+            );
         f.set_cursor_position(Position::new(x, y));
     }
 }
@@ -4390,9 +4395,8 @@ fn draw_change_card(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(rows).style(Theme::popup()).block(
-            Theme::popup_block(Line::from(trunc(&head, inner_w))).title_bottom(Line::from(
-                Span::styled(trunc(foot, inner_w), Theme::dim()),
-            )),
+            Theme::popup_block(Line::from(trunc(&head, inner_w)))
+                .title_bottom(Line::from(Span::styled(trunc(foot, inner_w), Theme::dim()))),
         ),
         area,
     );
@@ -8407,13 +8411,17 @@ mod tests {
     fn an_undelivered_line_renders_and_is_not_dressed_up_as_a_sent_message() {
         let mut app = App::new();
         app.tab = Tab::Operator;
-        app.chat_messages.push(crate::models::ChatMessage::user("a sent turn"));
+        app.chat_messages
+            .push(crate::models::ChatMessage::user("a sent turn"));
         app.chat_messages
             .push(crate::models::ChatMessage::undelivered("this never went"));
 
         let text = render(&app, 100, 24);
 
-        assert!(text.contains("this never went"), "the text must survive: {text}");
+        assert!(
+            text.contains("this never went"),
+            "the text must survive: {text}"
+        );
         assert!(
             text.contains("undelivered"),
             "and must be labelled as not-sent: {text}"
@@ -8466,7 +8474,10 @@ mod tests {
         app.chat_queued.push("second".into());
         let text = render(&app, 100, 16);
         assert!(text.contains("1 queued"), "{text}");
-        assert!(text.contains("Ctrl+X"), "cancelling must stay discoverable: {text}");
+        assert!(
+            text.contains("Ctrl+X"),
+            "cancelling must stay discoverable: {text}"
+        );
 
         app.chat_queued.push("third".into());
         let text = render(&app, 100, 16);
@@ -9073,12 +9084,12 @@ mod tests {
     fn an_open_change_card_paints_its_diff_and_its_keys() {
         let text = render(&card_app(0), 120, 40);
         for expected in [
-            " alpha",  // context keeps the gutter column
-            "-bravo",  // removed
-            "+BRAVO",  // added
+            " alpha", // context keeps the gutter column
+            "-bravo", // removed
+            "+BRAVO", // added
             "@@ hunk 1/1 @@",
-            "app.rs",   // the frame's pager status line names the file
-            "1-7/7",    // ...and where in it the reader is
+            "app.rs",    // the frame's pager status line names the file
+            "1-7/7",     // ...and where in it the reader is
             "Esc close", // the key footer
             "y copy",
         ] {
