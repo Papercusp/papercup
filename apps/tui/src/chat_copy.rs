@@ -181,7 +181,10 @@ pub fn block_at(messages: &[ChatMessage], idx: usize) -> Option<CopyBlock> {
             let mut pv = Map::new();
             pv.insert("engine".into(), Value::String(p.engine.clone()));
             pv.insert("model".into(), Value::String(p.model.clone()));
-            pv.insert("accountRoute".into(), Value::String(p.account_route.clone()));
+            pv.insert(
+                "accountRoute".into(),
+                Value::String(p.account_route.clone()),
+            );
             obj.insert("provenance".into(), Value::Object(pv));
         }
         if !m.tools.is_empty() {
@@ -720,7 +723,10 @@ mod tests {
 
         // (b) secret-shaped KEY, over a shapeless opaque value.
         let out = redact_text("ANTHROPIC_API_KEY=totallyOpaqueValue0123456789");
-        assert!(!out.contains("totallyOpaqueValue"), "keyed secret leaked: {out}");
+        assert!(
+            !out.contains("totallyOpaqueValue"),
+            "keyed secret leaked: {out}"
+        );
         assert!(
             out.contains("ANTHROPIC_API_KEY="),
             "which secret it was is part of the signal: {out}"
@@ -755,7 +761,10 @@ mod tests {
     fn aws_access_key_id_is_redacted_but_lookalikes_are_not() {
         assert!(token_is_secret(&fake_aws_key_id()));
         assert!(!token_is_secret(&format!("{}{}", "AK", "IASHORT")));
-        assert!(!token_is_secret(&format!("{}{}", "AS", "IAlowercasetail1234")));
+        assert!(!token_is_secret(&format!(
+            "{}{}",
+            "AS", "IAlowercasetail1234"
+        )));
     }
 
     #[test]

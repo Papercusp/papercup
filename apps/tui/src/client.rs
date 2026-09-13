@@ -502,14 +502,17 @@ fn merge_session_switcher_rows(
         let agent_chat_id = (source == "agent_chat").then(|| session_id.to_string());
         let already_present = rows.iter().position(|row| {
             row.agent_chat_id.as_deref() == agent_chat_id.as_deref()
-                || row.native_session
-                .as_ref()
-                .and_then(|native| {
-                    models::ConversationContextProjectionTarget::from_native_session(native, None)
-                })
-                .is_some_and(|target| {
-                    target.source_kind == source && target.session_id == session_id
-                })
+                || row
+                    .native_session
+                    .as_ref()
+                    .and_then(|native| {
+                        models::ConversationContextProjectionTarget::from_native_session(
+                            native, None,
+                        )
+                    })
+                    .is_some_and(|target| {
+                        target.source_kind == source && target.session_id == session_id
+                    })
                 || (!owner.is_empty() && row.owner_id == owner)
         });
         if let Some(index) = already_present {
@@ -4164,6 +4167,79 @@ mod tests {
                 ..
             }) if id == "recorded-only"
         ));
+    }
+
+    #[test]
+    fn session_switcher_merge_preserves_exact_agent_chat_identity_and_harness() {
+        let hits = serde_json::json!({ "results": [
+            {
+                "ref": "session_turn:agent_chat:chat-42:2",
+                "excerpt": "historic answer",
+                "provenance": {
+                    "source_kind": "agent_chat",
+                    "session_id": "chat-42",
+                    "harness_slug": "papercusp",
+                    "owner": "su-history",
+                    "ts": "2026-09-01T00:00:01Z"
+                }
+            },
+            {
+                "ref": "session_turn:codex:native-42:2",
+                "excerpt": "native answer",
+                "provenance": {
+                    "source_kind": "codex",
+                    "session_id": "native-42",
+                    "harness_slug": "must-not-be-used",
+                    "owner": "su-native",
+                    "ts": "2026-09-01T00:00:01Z"
+                }
+            }
+        ]});
+
+        let rows = merge_session_switcher_rows(Vec::new(), &hits);
+        assert_eq!(rows.len(), 2);
+        let chat = rows
+            .iter()
+            .find(|row| row.source == "agent_chat")
+            .expect("agent-chat search hit becomes a Sessions row");
+        assert_eq!(chat.agent_chat_id.as_deref(), Some("chat-42"));
+        assert_eq!(chat.session_harness.as_deref(), Some("papercusp"));
+        assert!(chat.native_session.is_none());
+
+        let native = rows
+            .iter()
+            .find(|row| row.source == "codex")
+            .expect("native search hit remains visible");
+        assert!(native.agent_chat_id.is_none());
+        assert!(
+            native.session_harness.is_none(),
+            "ambient/native provenance must never authorize an agent-chat mutation"
+        );
+    }
+
+    #[test]
+    fn session_switcher_merge_enriches_matching_roster_row_with_agent_chat_provenance() {
+        let roster = vec![RosterEntry {
+            owner_id: "su-live".into(),
+            label: "live session".into(),
+            source: "codex".into(),
+            session_state: Some("live".into()),
+            ..Default::default()
+        }];
+        let hits = serde_json::json!({ "results": [{
+            "ref": "session_turn:agent_chat:chat-live:3",
+            "provenance": {
+                "source_kind": "agent_chat",
+                "session_id": "chat-live",
+                "harness_slug": "papercusp",
+                "owner": "su-live"
+            }
+        }]});
+
+        let rows = merge_session_switcher_rows(roster, &hits);
+        assert_eq!(rows.len(), 1, "owner-identical live/indexed rows dedupe");
+        assert_eq!(rows[0].agent_chat_id.as_deref(), Some("chat-live"));
+        assert_eq!(rows[0].session_harness.as_deref(), Some("papercusp"));
     }
 
     #[test]

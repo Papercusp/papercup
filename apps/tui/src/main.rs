@@ -1431,11 +1431,16 @@ async fn run<B: Backend>(
                 Action::CopyToClipboard { sequence } => {
                     use std::io::Write as _;
                     let mut out = stdout();
-                    if out.write_all(sequence.as_bytes()).and_then(|()| out.flush()).is_err() {
+                    if out
+                        .write_all(sequence.as_bytes())
+                        .and_then(|()| out.flush())
+                        .is_err()
+                    {
                         app.toast = Some(models::Notif {
                             level: "error".to_string(),
-                            message: "Clipboard write failed — the terminal did not accept the copy"
-                                .to_string(),
+                            message:
+                                "Clipboard write failed — the terminal did not accept the copy"
+                                    .to_string(),
                             harness: None,
                             ts: None,
                         });

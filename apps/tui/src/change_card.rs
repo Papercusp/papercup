@@ -278,8 +278,20 @@ fn pick<'a>(v: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
 }
 
 const PATH_KEYS: &[&str] = &["file_path", "filePath", "path", "file", "notebook_path"];
-const OLD_KEYS: &[&str] = &["old_string", "oldString", "old_str", "oldText", "old_source"];
-const NEW_KEYS: &[&str] = &["new_string", "newString", "new_str", "newText", "new_source"];
+const OLD_KEYS: &[&str] = &[
+    "old_string",
+    "oldString",
+    "old_str",
+    "oldText",
+    "old_source",
+];
+const NEW_KEYS: &[&str] = &[
+    "new_string",
+    "newString",
+    "new_str",
+    "newText",
+    "new_source",
+];
 const CONTENT_KEYS: &[&str] = &["content", "contents", "text", "file_text"];
 
 /// Build the card for one tool call, or `None` when it is not a file edit.
@@ -712,7 +724,10 @@ mod tests {
         let body = c.render();
         assert!(body.contains("+one"), "{body}");
         assert!(body.contains("+two"), "{body}");
-        assert!(!body.contains("\n-"), "nothing may render as removed: {body}");
+        assert!(
+            !body.contains("\n-"),
+            "nothing may render as removed: {body}"
+        );
     }
 
     #[test]
@@ -798,7 +813,10 @@ mod tests {
         assert!(c.title().contains("FAILED"), "{}", c.title());
         let body = c.render();
         assert!(body.contains("not_found"), "{body}");
-        assert!(body.contains("-a"), "the attempt itself must survive: {body}");
+        assert!(
+            body.contains("-a"),
+            "the attempt itself must survive: {body}"
+        );
     }
 
     #[test]
