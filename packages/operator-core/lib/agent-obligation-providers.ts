@@ -412,7 +412,6 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     const refusal = launch.refusal;
     return defineAgentObligation({
       ...common,
-      scope: { ...scope, planSlug: selected.slug },
       title:
         refusal.reason === 'goal_budget_exceeded'
           ? `Goal budget blocks placement of ${selected.slug}`
@@ -445,7 +444,6 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   const isAdmitting = placement.state === 'admitting';
   return defineAgentObligation({
     ...common,
-    scope: { ...scope, planSlug: selected.slug },
     title: isUnplaced
       ? `Place goal plan ${selected.slug}`
       : isAdmitting

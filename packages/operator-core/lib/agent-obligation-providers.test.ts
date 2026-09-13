@@ -9,6 +9,7 @@ import {
   type PlanPlacementProviderInput,
 } from './agent-obligation-providers';
 import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
+import { compileGoalPlanPlacement } from './goal-launch-settings';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -282,6 +283,88 @@ describe('frozen provider matrix: plan placement (6 opportunities)', () => {
 });
 
 describe('plan placement preserves canonical launch evidence', () => {
+  it.each(['paused', 'achieved', 'killed'])('never restarts a %s goal with unfinished plans', (status) => {
+    const stopped = portfolio([worklistPlan(placement('unplaced', 'launch-plan-fleet'))]);
+    stopped.goal.status = status;
+    const result = planPlacementObligation(
+      planInput(knownPlacement({ portfolio: stopped, launch: launch(), evidenceRef: 'cohort:stopped' })),
+    );
+
+    expect(result).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
+    expect(result.action).toBeUndefined();
+    expect(result.changeSignal).toBeUndefined();
+    expect(buildAgentObligationAgenda({ planPlacement: planInput(
+      knownPlacement({ portfolio: stopped, launch: launch(), evidenceRef: 'cohort:stopped' }),
+    ) }, NOW).primary).toEqual([]);
+  });
+
+  it.each([null, 'unrecognized'])('keeps unresolved goal lifecycle %s unknown', (status) => {
+    const unresolved = portfolio([worklistPlan(placement('unplaced', 'launch-plan-fleet'))]);
+    unresolved.goal.status = status;
+    const result = planPlacementObligation(
+      planInput(knownPlacement({ portfolio: unresolved, launch: launch(), evidenceRef: 'cohort:lifecycle' })),
+    );
+    expect(result).toMatchObject({
+      status: 'unknown',
+      action: { kind: 'inspect' },
+      measurementFailure: { code: 'goal-lifecycle-unresolved' },
+    });
+    expect(result.action?.tool).toBeUndefined();
+  });
+
+  it('does not turn a different goal portfolio into placement instructions', () => {
+    const wrong = portfolio([worklistPlan(placement('unplaced', 'launch-plan-fleet'))]);
+    wrong.goal.id = 'other-goal';
+    const result = planPlacementObligation(
+      planInput(knownPlacement({ portfolio: wrong, launch: launch(), evidenceRef: 'cohort:wrong-goal' })),
+    );
+    expect(result).toMatchObject({
+      status: 'unknown',
+      action: { kind: 'inspect' },
+      measurementFailure: { code: 'goal-portfolio-scope-mismatch' },
+    });
+    expect(result.action?.tool).toBeUndefined();
+  });
+
+  it('advances an eligible plan past a blocked predecessor and clears only on canonical placement effect', () => {
+    const compile = (slug: string, source: unknown = {}) => compileGoalPlanPlacement({
+      plan: { harness: 'papercusp', slug, ambiguousMatches: 1 },
+      status: 'ready',
+      itemStatuses: ['todo'],
+      actionableItemId: slug === 'waiting-plan' ? null : 'P-001',
+      source,
+      now: new Date(NOW),
+    });
+    const waiting = worklistPlan(compile('waiting-plan'), 'waiting-plan');
+    const eligible = worklistPlan(compile('ready-plan'), 'ready-plan');
+    const observe = (plans: GoalPortfolioBrief['worklist']) => planPlacementObligation(
+      planInput(knownPlacement({ portfolio: portfolio(plans), launch: launch(), evidenceRef: 'cohort:progress' })),
+    );
+
+    expect(observe([waiting, eligible])).toMatchObject({
+      status: 'due',
+      scope: { planSlug: 'ready-plan' },
+      action: { kind: 'delegate', args: { plan: 'ready-plan' } },
+    });
+    // A declaration/empty transaction cannot clear the required placement.
+    expect(observe([eligible]).status).toBe('due');
+    const working = worklistPlan(compile('ready-plan', {
+      claims: [{ itemId: 'P-001', ownerId: 'su-member', fleetSlug: 'ready-fleet', holderLive: true }],
+      fleet: {
+        slug: 'ready-fleet', leaderOwnerId: 'su-independent', leaderLive: true,
+        liveMembers: 1, target: 1, launchTransaction: { state: 'verified' },
+      },
+    }), 'ready-plan');
+    expect(observe([working]).status).toBe('satisfied');
+    expect(observe([working]).action).toBeUndefined();
+    // The already-owned plan stays untouched; its independent wait is still visible.
+    expect(observe([waiting, working])).toMatchObject({
+      status: 'blocked',
+      scope: { planSlug: 'waiting-plan' },
+      action: { kind: 'repair', targetRef: waiting.ref },
+    });
+  });
+
   it('uses the portfolio transaction tool call, including spawned leadership, unchanged', () => {
     const result = planPlacementObligation(
       planInput(
