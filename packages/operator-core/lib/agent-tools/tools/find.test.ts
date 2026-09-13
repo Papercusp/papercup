@@ -126,7 +126,8 @@ describe('tools:find tool registration', () => {
     // args schema accepts a query, rejects an empty one.
     expect(def.args.safeParse({ query: 'feature flag' }).success).toBe(true);
     expect(def.args.safeParse({ query: '' }).success).toBe(false);
-    expect(def.args.safeParse({}).success).toBe(false);
+    const missing = def.args.safeParse({});
+    expect(missing.success).toBe(false);
   });
 
   it('accepts legacy q and normalizes it to query, with query taking precedence', () => {
@@ -266,6 +267,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(self).toBeDefined();
     // tools:find takes { query, limit? } → its arg-schema text mentions the query arg.
     expect(self?.argSchema).toContain('query');
+    expect(self?.argSchema).toContain('query?:');
     expect(self?.argSchema).toContain('q');
     expect(self?.argSchema).toContain('Compatibility alias for `query`');
     // The embed text folds name + description + arg schema.
