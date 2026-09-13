@@ -520,6 +520,9 @@ export interface FrozenCandidateRepairQueue {
    * cycle that failed to converge.
    */
   convergenceRounds?: readonly FrozenRepairConvergenceRound[];
+  /** Complete selective measurement, not a green/promotion certificate. Old readers may
+   * drop it safely: the next verifier falls back to the cumulative admission radius. */
+  selectiveCoverage?: FrozenRepairSelectiveCoverage;
   /**
    * P-002 — the NON-TEST gate legs (lint / perf / desktop / delta) as first-class members of
    * this cycle, with the same lifecycle a test file has: named, admitted by their own
@@ -655,6 +658,62 @@ export interface FrozenRepairRetestRequest {
   candidate: string;
   repairHead: string;
   requestedAtMs: number;
+}
+
+export interface FrozenRepairSelectiveCoverage {
+  schemaVersion: 1;
+  candidate: string;
+  head: string;
+}
+
+/** Invalid optional proof never invalidates the queue itself; it only disables reuse. */
+export function parseFrozenRepairSelectiveCoverage(
+  value: unknown,
+  candidate: string,
+): FrozenRepairSelectiveCoverage | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  const sha = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{40,64}$/.test(s);
+  if (v.schemaVersion !== 1 || v.candidate !== candidate || !sha(v.candidate) || !sha(v.head)) return undefined;
+  return { schemaVersion: 1, candidate: v.candidate, head: v.head };
+}
+
+/** The receipt covers all prior radius obligations; only an unbroken, proved admission
+ * suffix may narrow the next selector. Age and convergence COUNTS are never proof. */
+export function selectFrozenRepairAdmissionPaths(queue: FrozenCandidateRepairQueue): {
+  paths: string[];
+  mode: 'delta' | 'cumulative';
+  reason: string;
+} {
+  const admissions = queue.admissions ?? [];
+  const fallback = (reason: string) => ({
+    paths: [...new Set(admissions.flatMap((entry) => entry.paths))].sort(),
+    mode: 'cumulative' as const,
+    reason,
+  });
+  const coverage = parseFrozenRepairSelectiveCoverage(queue.selectiveCoverage, queue.candidate);
+  if (!coverage) return fallback('no-complete-coverage');
+  if (coverage.head === queue.repairHead) return { paths: [], mode: 'delta', reason: 'head-already-covered' };
+  const start = admissions.findIndex((entry) => entry.fromRepairHead === coverage.head);
+  if (start < 0) return fallback('coverage-head-not-in-ledger');
+  let head = coverage.head;
+  const seen = new Set([head]);
+  const paths = new Set<string>();
+  for (const entry of admissions.slice(start)) {
+    if (entry.fromRepairHead !== head || !/^[0-9a-f]{40,64}$/.test(entry.toRepairHead) ||
+        seen.has(entry.toRepairHead)) return fallback('admission-chain-discontinuous');
+    if (entry.paths.length === 0 || entry.paths.some((p) =>
+      !p || normalizeRepoPath(p) !== p || p.startsWith('/') ||
+      p.split('/').some((part) => !part || part === '.' || part === '..') ||
+      !Object.prototype.hasOwnProperty.call(entry.blobs, p) ||
+      (entry.blobs[p] !== null && !/^[0-9a-f]{40,64}$/.test(entry.blobs[p] ?? '')),
+    )) return fallback('admission-path-proof-incomplete');
+    for (const p of entry.paths) paths.add(p);
+    head = entry.toRepairHead;
+    seen.add(head);
+  }
+  if (head !== queue.repairHead) return fallback('admission-chain-wrong-head');
+  return { paths: [...paths].sort(), mode: 'delta', reason: 'complete-admission-suffix' };
 }
 
 export type FrozenRepairRetestDecision =
@@ -1511,6 +1570,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
    * the strictly smaller failure, and it is visible (rounds read as absent).
    */
   const convergenceRounds = parseConvergenceRounds(row.convergenceRounds);
+  const selectiveCoverage = parseFrozenRepairSelectiveCoverage(row.selectiveCoverage, row.candidate);
   // P-002 legs are observability on the same terms as rounds above: malformed entries are
   // dropped individually, never failing the parse of a live queue.
   const legs = parseRepairLegStates(row.legs);
@@ -1569,6 +1629,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(dispatchReservation ? { dispatchReservation } : {}),
     ...(admissionPrecheck ? { admissionPrecheck } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
+    ...(selectiveCoverage ? { selectiveCoverage } : {}),
     ...(legs.length > 0 ? { legs } : {}),
     ...(admissions.length > 0 ? { admissions } : {}),
     ...(retestRequested ? { retestRequested } : {}),
@@ -2373,7 +2434,11 @@ export function frozenRepairHeadAwaitsVerification(queue: FrozenCandidateRepairQ
  * a historical prefix and never adopts the moving staging tip. */
 export function markFrozenRepairVerificationRed(
   queue: FrozenCandidateRepairQueue,
-  input: RepairSignatureRedInput & { repairHead: string; nowMs: number },
+  input: RepairSignatureRedInput & {
+    repairHead: string;
+    nowMs: number;
+    selectiveCoverage?: FrozenRepairSelectiveCoverage;
+  },
 ): FrozenCandidateRepairQueue {
   requirePhase(queue, 'ready-to-verify', 'red repair verification');
   requireCurrentHead(queue, input.repairHead);
@@ -2387,6 +2452,10 @@ export function markFrozenRepairVerificationRed(
     head: input.repairHead,
     round,
   });
+  const coverage = parseFrozenRepairSelectiveCoverage(input.selectiveCoverage, queue.candidate);
+  if (input.selectiveCoverage && (!coverage || coverage.head !== input.repairHead)) {
+    throw new Error('selective coverage must describe the exact measured repair head');
+  }
   return {
     ...queue,
     phase: 'awaiting-fixer',
@@ -2401,6 +2470,7 @@ export function markFrozenRepairVerificationRed(
     }),
     failingTests: boundedFailures(failingTests),
     signature,
+    ...(coverage ? { selectiveCoverage: coverage } : {}),
   };
 }
 

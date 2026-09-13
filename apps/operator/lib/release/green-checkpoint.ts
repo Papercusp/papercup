@@ -141,6 +141,7 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   recordFrozenRepairSupersededRed,
+  selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
   buildFrozenRepairStatusIdentity,
   classifyRepairSignature,
@@ -152,6 +153,7 @@ import {
   type RepairSignatureInput,
   type RepairSignatureKind,
   type FrozenRepairRetestRequest,
+  type FrozenRepairSelectiveCoverage,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import type {
   FreezeAndConvergeDisposition,
@@ -725,14 +727,7 @@ export interface CheckpointDeps {
   runTestsAtRef?(
     ref: string,
     files: FailingFile[],
-  ): Promise<{
-    pass: boolean;
-    summary: string;
-    /** DIAGNOSTIC per-file breakdown, present only when the group run FAILED and the split
-     *  completed for EVERY file (see {@link splitTipFailuresPerFile}). Never consulted for the
-     *  pass/fail verdict — `pass` above remains the sole verdict input. */
-    perFile?: TipPerFileResult[];
-  }>;
+  ): Promise<TargetedFileResult>;
   /** EI-18759362119598634: the LINT/TYPECHECK sibling of `runTestsAtRef` — re-run
    *  EXACTLY these non-test GATE signatures (see {@link NON_TEST_GATE_SCRIPTS}) at
    *  `ref`, for a red whose `failingTests` are entirely gate ids and therefore never
@@ -4825,7 +4820,7 @@ export function rescueGateIdsFrom(
 export type RepairHeadVerification =
   /** Every selective leg passed AT the repair head; the full canonical gate at that same sha
    *  is the promotion proof (P-007). */
-  | { kind: "green"; summary: string }
+  | { kind: "green"; summary: string; selectiveCoverage?: FrozenRepairSelectiveCoverage }
   /** At least one leg is still red AT the repair head. `signature` is the FRESH typed
    *  signature (P-006: files as `test-file` + their `workspace-task`, gates as the entries
    *  they were re-run from) and `failingTests` its flat projection, for the re-queued row. */
@@ -4834,6 +4829,7 @@ export type RepairHeadVerification =
       failingTests: string[];
       signature: RepairSignatureInput[];
       summary: string;
+      selectiveCoverage?: FrozenRepairSelectiveCoverage;
     }
   /** A typed post-suite leg is present, so the FULL gate at the repair head is the only
    *  runner that can re-measure it. Repair-radius widening never produces this verdict. */
@@ -5604,8 +5600,10 @@ export async function verifyRepairHead(
     failingFiles.map((f) => [failingFileKey(f), f]),
   );
   const gates = new Set<string>(gateIds);
-  const admitted = admittedPathsOf(queue);
-  let radiusNote = "no admitted paths";
+  const selection = selectFrozenRepairAdmissionPaths(queue);
+  const admitted = selection.paths;
+  const selectionNote = `REPAIR_RADIUS mode=${selection.mode} reason=${selection.reason} paths=${admitted.length}`;
+  let radiusNote = `${selectionNote}; no admitted paths`;
   if (admitted.length > 0) {
     if (!deps.affectedTestsAtRef) {
       return {
@@ -5633,7 +5631,7 @@ export async function verifyRepairHead(
     }
     for (const f of radius.files) files.set(failingFileKey(f), f);
     for (const id of radius.gateIds) gates.add(id);
-    radiusNote = `${admitted.length} admitted path(s) → ${radius.summary}`;
+    radiusNote = `${selectionNote}; ${admitted.length} admitted path(s) → ${radius.summary}`;
   }
 
   const fileList = [...files.values()];
@@ -5666,6 +5664,25 @@ export async function verifyRepairHead(
       summary: `targeted gate outcomes are incomplete or inconsistent at repair head ${at}; no failure obligation was discharged`,
     };
   }
+  const fileOutcomes = fileRun?.perWorkspace === undefined
+    ? null
+    : validateTargetedFileOutcomes(fileRun, fileList, head);
+  if (fileRun?.perWorkspace !== undefined && fileOutcomes === null) {
+    return {
+      kind: "unavailable",
+      summary: `targeted file outcomes are incomplete or inconsistent at repair head ${at}; no failure obligation was discharged`,
+    };
+  }
+  // Only actual complete group measurements can advance coverage. A diagnostic
+  // per-file retry is not coexecution proof, and an aggregate-only legacy response
+  // cannot tell us whether a failing batch stopped before its final workspace.
+  const completeFiles = !fileRun || (fileOutcomes !== null && fileRun.coverageComplete === true &&
+    fileOutcomes.every((entry) => entry.status !== "errored"));
+  const completeGates = !gateRun || (gateOutcomes !== null && gateRun.coverageComplete === true &&
+    gateOutcomes.every((entry) => entry.status === "pass" || entry.status === "fail"));
+  const selectiveCoverage: FrozenRepairSelectiveCoverage | undefined = completeFiles && completeGates
+    ? { schemaVersion: 1, candidate: queue.candidate, head }
+    : undefined;
 
   // P-006: the fresh signature is TYPED — a failing file is its `test-file` entry plus the
   // `workspace-task` marker for its workspace; a failing gate is re-emitted from the entry it
@@ -5678,11 +5695,18 @@ export async function verifyRepairHead(
   if (fileRun && !fileRun.pass) {
     // The diagnostic per-file split names exactly which files failed alone; without it the
     // whole file set is the honest signature (a subset would be evidence nobody collected).
+    const diagnosticKeys = new Set(fileRun.perFile?.map(failingFileKey));
     const split =
-      fileRun.perFile && fileRun.perFile.length === fileList.length
+      fileRun.perFile && fileRun.perFile.length === fileList.length &&
+      diagnosticKeys.size === fileList.length && fileList.every((f) => diagnosticKeys.has(failingFileKey(f))) &&
+      fileRun.perFile.every((f) => typeof f.pass === "boolean")
         ? fileRun.perFile.filter((r) => !r.pass)
         : [];
-    for (const f of split.length > 0 ? split : fileList) {
+    const unresolvedFiles = fileOutcomes
+      ? fileOutcomes.filter((entry) => entry.status !== "pass")
+        .flatMap((entry) => entry.files.map((file) => ({ workspace: entry.workspace, file })))
+      : split.length > 0 ? split : fileList;
+    for (const f of unresolvedFiles) {
       emit({
         kind: "test-file",
         id: f.file,
@@ -5724,13 +5748,15 @@ export async function verifyRepairHead(
       kind: "red",
       failingTests: [...fresh.keys()],
       signature: [...fresh.values()],
+      ...(selectiveCoverage ? { selectiveCoverage } : {}),
       summary:
         `still red at repair head ${at}: ` +
-        [fileRun?.summary, gateRun?.summary].filter(Boolean).join("; "),
+        [fileRun?.summary, gateRun?.summary, radiusNote].filter(Boolean).join("; "),
     };
   }
   return {
     kind: "green",
+    ...(selectiveCoverage ? { selectiveCoverage } : {}),
     summary:
       `every selective leg passed at repair head ${at} ` +
       `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}); ` +
@@ -5939,6 +5965,48 @@ export function resolveGateRuns(
     }
   }
   return [...runs.values()];
+}
+
+export interface TargetedFileOutcome {
+  workspace: string;
+  files: string[];
+  /** Group result, never inferred from one-file diagnostic retries. */
+  status: "pass" | "fail" | "errored";
+}
+
+export interface TargetedFileResult {
+  pass: boolean;
+  summary: string;
+  /** Diagnostic-only: individual passes do not overturn a failed coexecution group. */
+  perFile?: TipPerFileResult[];
+  perWorkspace?: TargetedFileOutcome[];
+  measuredHead?: string;
+  coverageComplete?: boolean;
+}
+
+export function validateTargetedFileOutcomes(
+  result: TargetedFileResult,
+  requested: readonly FailingFile[],
+  head: string,
+): TargetedFileOutcome[] | null {
+  if (result.measuredHead !== head || !Array.isArray(result.perWorkspace)) return null;
+  const expected = new Set(requested.map(failingFileKey));
+  const seen = new Set<string>();
+  const groups = new Set<string>();
+  for (const group of result.perWorkspace) {
+    if (!group || typeof group.workspace !== "string" || groups.has(group.workspace) ||
+        !Array.isArray(group.files) || group.files.length === 0 ||
+        !["pass", "fail", "errored"].includes(group.status)) return null;
+    groups.add(group.workspace);
+    for (const file of group.files) {
+      if (typeof file !== "string") return null;
+      const key = failingFileKey({ workspace: group.workspace, file });
+      if (!expected.has(key) || seen.has(key)) return null;
+      seen.add(key);
+    }
+  }
+  if (seen.size !== expected.size || result.pass !== result.perWorkspace.every((g) => g.status === "pass")) return null;
+  return result.perWorkspace;
 }
 
 export interface TargetedGateOutcome {
@@ -10812,6 +10880,7 @@ async function runGreenCheckpointInner(
         }
       }
       if (verification.kind === "red") {
+        const selectiveCoverage = verification.selectiveCoverage;
         const canRequeue = Boolean(deps.writeFrozenRepairQueue);
         if (canRequeue) {
           // P-006: the selective verification re-ran EVERY entry (that is what `selective`
@@ -10846,6 +10915,7 @@ async function runGreenCheckpointInner(
                   repairHead: candidate,
                   ...supersededRedInput,
                   nowMs: Date.now(),
+                  ...(selectiveCoverage ? { selectiveCoverage } : {}),
                 }),
               (fresh) => {
                 supersededBy = fresh;
@@ -18690,6 +18760,7 @@ export function realCheckpointDeps(
       env.VITEST_MAX_FORKS = "1";
       env.VITEST_MAX_THREADS = "1";
       const summaries: string[] = [headNote];
+      const perWorkspace: TargetedFileOutcome[] = [];
       for (const [workspace, wsFiles] of byWorkspace) {
         const bashFiles = wsFiles.filter((file) =>
           /\.selftest\.sh$/.test(file),
@@ -18722,6 +18793,7 @@ export function realCheckpointDeps(
           );
         }
         let workspacePassed = true;
+        let workspaceErrored = false;
         for (const invocation of invocations) {
           const r = await exec(invocation.cmd, invocation.args, {
             cwd: invocation.cwd,
@@ -18732,11 +18804,21 @@ export function realCheckpointDeps(
             code: 1,
             stdout: "",
             stderr: String(e),
+            executionError: true,
           }));
           if (r.code !== 0) workspacePassed = false;
+          if (("executionError" in r && r.executionError) || !Number.isInteger(r.code)) workspaceErrored = true;
         }
         summaries.push(`${workspace}: ${workspacePassed ? "pass" : "FAIL"}`);
-        if (!workspacePassed) {
+        perWorkspace.push({
+          workspace,
+          files: [...new Set(wsFiles)],
+          status: workspaceErrored ? "errored" : workspacePassed ? "pass" : "fail",
+        });
+      }
+      const pass = perWorkspace.every((entry) => entry.status === "pass");
+      let perFile: TipPerFileResult[] | undefined;
+      if (!pass) {
           // The group verdict is FINAL here (`pass:false`, unchanged). Everything below is
           // DIAGNOSTIC — re-run each named file ALONE so the held-gate verdict can name which
           // files are genuinely broken at tip and which are already green, instead of telling
@@ -18745,7 +18827,7 @@ export function realCheckpointDeps(
           // Timing is safe by construction: a FAILED group run always classifies `real-red`, so
           // no auto-refire is pending and these extra minutes cannot starve a rescue. The only
           // cost is delaying a verdict that is not going to change.
-          const perFile = await splitTipFailuresPerFile(
+          perFile = await splitTipFailuresPerFile(
             files,
             async (wsName, file) => {
               const invocation = resolveWorkspaceFileTestInvocation(
@@ -18774,10 +18856,15 @@ export function realCheckpointDeps(
               `per-file split: ${still}/${perFile.length} still fail alone at tip`,
             );
           }
-          return { pass: false, summary: summaries.join("; "), perFile };
-        }
       }
-      return { pass: true, summary: summaries.join("; ") };
+      return {
+        pass,
+        summary: summaries.join("; "),
+        ...(perFile ? { perFile } : {}),
+        perWorkspace,
+        measuredHead: verifiedHead,
+        coverageComplete: verifiedHead === ref && perWorkspace.every((entry) => entry.status !== "errored"),
+      };
     },
     async runPostSuiteAtRef(ref) {
       const verifiedHead = await revParse(cfg.checkpointRoot, "HEAD");

@@ -7,11 +7,13 @@ import {
   makeTestWorkspaceResolver,
   repairSignatureFromVerdict,
   verifyRepairHead,
+  validateTargetedFileOutcomes,
   type FailingFile,
   type RepairHeadVerificationDeps,
 } from "./green-checkpoint";
 import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+  markFrozenRepairVerificationRed,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
   type RepairSignatureEntry,
@@ -265,6 +267,106 @@ describe("P-006 repairSignatureFromVerdict — a verdict names WHICH kinds it me
 });
 
 describe("P-006 verifyRepairHead — the typed signature drives the runners, at the repair head only", () => {
+  it("carries complete coverage across ordinary repair rounds and selects only the new admission radius", async () => {
+    const nextHead = "d".repeat(40);
+    const firstAdmission: FrozenRepairAdmission = {
+      atMs: 2, actor: "test", source: { ref: "staging", sha: HEAD },
+      fromRepairHead: CANDIDATE, toRepairHead: HEAD,
+      paths: ["lib/first.ts"], unchanged: [], blobs: { "lib/first.ts": "e".repeat(40) },
+    };
+    const initial = queueWith([entry({ kind: "lint-leg", id: "lint:remaining" })], { admissions: [firstAdmission] });
+    const selected: string[][] = [];
+    const executed: string[][] = [];
+    const deps: RepairHeadVerificationDeps = {
+      affectedTestsAtRef: async (_head, paths) => {
+        selected.push(paths);
+        return {
+          files: paths.map((p) => ({ workspace: CORE, file: p.replace(".ts", ".test.ts") })),
+          gateIds: [], summary: "exact radius",
+        };
+      },
+      runTestsAtRef: async (head, files) => {
+        executed.push(files.map((f) => f.file));
+        return {
+          pass: true, summary: "all groups passed", measuredHead: head, coverageComplete: true,
+          perWorkspace: [{ workspace: CORE, files: files.map((f) => f.file), status: "pass" }],
+        };
+      },
+      runGateAtRef: async (head, ids) => ({
+        pass: false, summary: "remaining lint failed", measuredHead: head, coverageComplete: true,
+        perGate: ids.map((id) => ({ id, status: "fail" as const })),
+      }),
+    };
+    const first = await verifyRepairHead(deps, initial);
+    if (first.kind !== "red") throw new Error("expected first red");
+    expect(first.selectiveCoverage).toEqual({ schemaVersion: 1, candidate: CANDIDATE, head: HEAD });
+    const measured = markFrozenRepairVerificationRed(initial, {
+      repairHead: HEAD, nowMs: 3, failingTests: first.failingTests,
+      signature: first.signature, selectiveCoverage: first.selectiveCoverage,
+    });
+    const next: FrozenCandidateRepairQueue = {
+      ...measured, phase: "ready-to-verify", repairHead: nextHead,
+      admissions: [firstAdmission, {
+        ...firstAdmission, fromRepairHead: HEAD, toRepairHead: nextHead,
+        paths: ["lib/second.ts"], blobs: { "lib/second.ts": "f".repeat(40) },
+      }],
+    };
+    const second = await verifyRepairHead(deps, next);
+    expect(second).toMatchObject({ kind: "red", failingTests: ["lint:remaining"] });
+    expect(second.summary).toContain("REPAIR_RADIUS mode=delta");
+    expect(selected).toEqual([["lib/first.ts"], ["lib/second.ts"]]);
+    expect(executed).toEqual([["lib/first.test.ts"], ["lib/second.test.ts"]]);
+  });
+
+  it("retains a failed coexecution group even when every diagnostic file passes alone", async () => {
+    const files = [{ workspace: CORE, file: "lib/a.test.ts" }, { workspace: WEB, file: "lib/b.test.ts" }];
+    const queue = queueWith(files.flatMap((f) => [
+      entry({ kind: "test-file", id: f.file, workspace: f.workspace }),
+      entry({ kind: "workspace-task", id: f.workspace, workspace: f.workspace }),
+    ]));
+    const deps: RepairHeadVerificationDeps = {
+      runTestsAtRef: async () => ({
+        pass: false, summary: "core group fails, web passes", measuredHead: HEAD, coverageComplete: true,
+        perFile: files.map((f) => ({ ...f, pass: true })),
+        perWorkspace: [
+          { workspace: CORE, files: [files[0]!.file], status: "fail" },
+          { workspace: WEB, files: [files[1]!.file], status: "pass" },
+        ],
+      }),
+    };
+    const result = await verifyRepairHead(deps, queue);
+    expect(result).toMatchObject({
+      kind: "red", failingTests: ["lib/a.test.ts", CORE],
+      selectiveCoverage: { head: HEAD, candidate: CANDIDATE },
+    });
+  });
+
+  it("does not mint coverage from a legacy aggregate or an errored group", async () => {
+    const queue = queueWith([entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE })]);
+    const { deps } = recordingDeps({ filesPass: false });
+    expect(await verifyRepairHead(deps, queue)).not.toHaveProperty("selectiveCoverage");
+    deps.runTestsAtRef = async () => ({
+      pass: false, summary: "spawn failed", measuredHead: HEAD, coverageComplete: true,
+      perWorkspace: [{ workspace: CORE, files: ["lib/a.test.ts"], status: "errored" }],
+    });
+    const result = await verifyRepairHead(deps, queue);
+    expect(result.kind).toBe("red");
+    expect(result).not.toHaveProperty("selectiveCoverage");
+  });
+
+  it("requires exact file population and head before using a group result", () => {
+    const files = [{ workspace: CORE, file: "lib/a.test.ts" }];
+    const result = {
+      pass: true, summary: "pass", measuredHead: HEAD,
+      perWorkspace: [{ workspace: CORE, files: ["lib/a.test.ts"], status: "pass" as const }],
+    };
+    expect(validateTargetedFileOutcomes(result, files, HEAD)).toEqual(result.perWorkspace);
+    expect(validateTargetedFileOutcomes({ ...result, measuredHead: CANDIDATE }, files, HEAD)).toBeNull();
+    expect(validateTargetedFileOutcomes({ ...result, perWorkspace: [] }, files, HEAD)).toBeNull();
+    expect(validateTargetedFileOutcomes({ ...result, perWorkspace: [...result.perWorkspace, ...result.perWorkspace] }, files, HEAD)).toBeNull();
+    expect(validateTargetedFileOutcomes({ ...result, perWorkspace: [{ workspace: WEB, files: ["lib/a.test.ts"], status: "pass" }] }, files, HEAD)).toBeNull();
+  });
+
   it("retains only the actual failing gate after a complete per-task measurement", async () => {
     const queue = queueWith([
       entry({ kind: "lint-leg", id: "lint:good" }),
