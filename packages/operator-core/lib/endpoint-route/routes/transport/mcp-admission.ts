@@ -199,6 +199,8 @@ const CRITICAL_SCHEDULER_STATES = new Set(['open', 'failing']);
 const CRITICAL_LOOP_STATUS_MAX_STRING_CHARS = 120;
 const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
+const COORD_SEND_NAME = normalizeMcpName('coord:send');
+const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
@@ -227,6 +229,10 @@ const COORD_PRESENCE_NAME = normalizeMcpName('coord:presence');
 const COORD_ROSTER_NAME = normalizeMcpName('coord:roster');
 const CRITICAL_TARGET_OWNER_MAX_STRING_CHARS = 120;
 const CRITICAL_TARGET_OWNER_MAX_COUNT = 50;
+const CRITICAL_COORD_SEND_MAX_SUMMARY_CHARS = 600;
+const CRITICAL_COORD_SEND_MAX_BODY_CHARS = 600;
+const CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS = 200;
+const CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS = 600;
 
 const PLAN_CLASS_RUBRIC_REFS = new Set([
   'plan-class-feature-ship',
@@ -778,6 +784,75 @@ function isBoundedWorkItemsCheckpointArgs(args: unknown): boolean {
   );
 }
 
+function isBoundedCriticalText(value: unknown, max: number, oneLine = false): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    value.length <= max &&
+    (!oneLine || (!value.includes('\n') && !value.includes('\r')))
+  );
+}
+
+/**
+ * Preserve the smallest useful coordination message while critical pressure is
+ * shedding ordinary tools. This is intentionally stricter than coord:send's
+ * normal schema: one concrete recipient, one plain text section, and only the
+ * core envelope fields. Wakes, audience selectors, replies, provenance, and
+ * other enrichment remain on the retryable path so this reserve cannot become
+ * a second coordination/bulkhead lane.
+ */
+export function isBoundedCoordSendArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['to', 'summary', 'expects', 'body']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!Array.isArray(args.to) || args.to.length !== 1) return false;
+  const recipient = args.to[0];
+  if (
+    !isBoundedCriticalText(recipient, CRITICAL_TARGET_OWNER_MAX_STRING_CHARS, true) ||
+    recipient === '*' ||
+    recipient === 'human' ||
+    recipient.startsWith('@')
+  ) {
+    return false;
+  }
+  if (!isBoundedCriticalText(args.summary, CRITICAL_COORD_SEND_MAX_SUMMARY_CHARS, true)) return false;
+  if (!['ack', 'answer', 'action', 'none'].includes(args.expects as string)) return false;
+  if (args.expects !== 'none' && args.expects !== 'ack' && args.body === undefined) return false;
+  if (args.body === undefined) return true;
+  if (!Array.isArray(args.body) || args.body.length !== 1) return false;
+  const section = args.body[0];
+  return (
+    isRecord(section) &&
+    Object.keys(section).length === 1 &&
+    isBoundedCriticalText(section.text, CRITICAL_COORD_SEND_MAX_BODY_CHARS)
+  );
+}
+
+function isBoundedWorkItemComment(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    isBoundedCriticalText(value.id, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true) &&
+    isBoundedCriticalText(value.body, CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS)
+  );
+}
+
+/**
+ * Admit only one inline comment or one-item batch during critical pressure.
+ * `comment` is a useful normal-path alias, but deliberately excluded here so
+ * the reserve has one unambiguous text field and no handler-side enrichment.
+ */
+export function isBoundedWorkItemsCommentArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const hasInline = args.id !== undefined || args.body !== undefined;
+  const hasItems = args.items !== undefined;
+  if (hasInline === hasItems) return false;
+  if (hasItems) {
+    return Array.isArray(args.items) && args.items.length === 1 && isBoundedWorkItemComment(args.items[0]);
+  }
+  return Object.keys(args).length === 2 && isBoundedWorkItemComment(args);
+}
+
 /**
  * A grading-integrity audit needs one scorecard's complete evidence while the
  * operator is under pressure. Require both selective predicates and reject a
@@ -1063,6 +1138,8 @@ function isBoundedJudgeGradingAuditEmitArgs(args: unknown, requestUrl?: string):
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, requestUrl?: string): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
+  if (normalized === COORD_SEND_NAME) return isBoundedCoordSendArgs(args);
+  if (normalized === WORK_ITEMS_COMMENT_NAME) return isBoundedWorkItemsCommentArgs(args);
   if (normalized === COORD_PRESENCE_NAME) return isBoundedCoordPresenceArgs(args);
   if (normalized === COORD_ROSTER_NAME) return isBoundedCoordRosterArgs(args);
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
