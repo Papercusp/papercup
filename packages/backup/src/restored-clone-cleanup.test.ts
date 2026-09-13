@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Sql } from 'postgres';
 import { configureBackup } from './config';
 import {
   DEFAULT_RESTORED_CLONE_MAX_AGE_MS,
@@ -30,7 +31,7 @@ beforeEach(async () => {
   await mkdir(workspace, { recursive: true });
   sql.mockReset().mockResolvedValue([]);
   configureBackup({
-    getSql: () => sql,
+    getSql: () => sql as unknown as Sql,
     workspacesRoot: () => root,
     ensureSchema: async () => {},
     getHarnessAdminUrl: () => ({ url: 'postgres://test', source: 'test' }),
@@ -111,7 +112,7 @@ describe('sweepRestoredClones', () => {
     const path = await clone();
     await age(path, DEFAULT_RESTORED_CLONE_MAX_AGE_MS + 1_000);
     await writeFile(
-      join(workspace, '.broken-op-live.meta.json'),
+      join(root, '.broken-op-live.meta.json'),
       JSON.stringify({ broken: '/broken', live: workspace, promotedFrom: path }),
     );
 

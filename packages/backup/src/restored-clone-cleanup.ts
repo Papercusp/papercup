@@ -14,7 +14,7 @@
  */
 
 import { lstat, readFile, readdir, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { backupHost } from './config';
 
 /** Keep an unpromoted clone inspectable for at least 30 days by default. */
@@ -106,28 +106,35 @@ async function activeRestoreTargets(workspaceId: string): Promise<ProofResult<Se
 }
 
 /**
- * Read promotion sidecars at the workspace root. `promoteRestore` writes
- * `<broken-dir>.meta.json` beside the live workspace (the default live target
- * is the workspace root), and `promotedFrom` is the authoritative clone-path
- * reference. A malformed or unreadable generated sidecar invalidates the
- * proof instead of allowing cleanup to guess.
+ * Read promotion sidecars beside the workspace and at the workspace root.
+ * `promoteRestore` writes `<broken-dir>.meta.json` beside the live workspace;
+ * the default live target is the workspace root, so its sidecar is a sibling
+ * of this workspace directory rather than an entry inside it. `promotedFrom`
+ * is the authoritative clone-path reference. A malformed or unreadable
+ * generated sidecar invalidates the proof instead of allowing cleanup to guess.
  */
 async function promotionReferences(workspaceRoot: string): Promise<ProofResult<Set<string>>> {
   try {
-    const entries = await readdir(workspaceRoot, { withFileTypes: true });
     const refs = new Set<string>();
-    for (const entry of entries) {
-      if (!entry.name.startsWith('.broken-') || !entry.name.endsWith('.meta.json')) continue;
-      if (!entry.isFile() || entry.isSymbolicLink()) {
-        return { known: false, value: new Set() };
+    // The default live target is the workspace root, making its broken dir
+    // (and sidecar) a sibling of that root. Explicit nested live targets put
+    // the sidecar inside workspaceRoot. Read both locations to cover both
+    // layouts while keeping the scan one level deep.
+    for (const sidecarRoot of new Set([workspaceRoot, dirname(workspaceRoot)])) {
+      const entries = await readdir(sidecarRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.name.startsWith('.broken-') || !entry.name.endsWith('.meta.json')) continue;
+        if (!entry.isFile() || entry.isSymbolicLink()) {
+          return { known: false, value: new Set() };
+        }
+        const body = JSON.parse(await readFile(join(sidecarRoot, entry.name), 'utf8')) as {
+          promotedFrom?: unknown;
+        };
+        if (typeof body.promotedFrom !== 'string' || body.promotedFrom.length === 0) {
+          return { known: false, value: new Set() };
+        }
+        refs.add(resolve(body.promotedFrom));
       }
-      const body = JSON.parse(await readFile(join(workspaceRoot, entry.name), 'utf8')) as {
-        promotedFrom?: unknown;
-      };
-      if (typeof body.promotedFrom !== 'string' || body.promotedFrom.length === 0) {
-        return { known: false, value: new Set() };
-      }
-      refs.add(resolve(body.promotedFrom));
     }
     return { known: true, value: refs };
   } catch {
