@@ -236,6 +236,55 @@ describe('boot-apply runner mechanics (§A1)', () => {
     expect(rows.map((r) => r.filename)).toEqual(['910-good.sql', '912-good.sql']);
   });
 
+  it('retries an idempotent statement-breakpoint migration after an earlier chunk committed', async () => {
+    const filename = '913-breakpoint-retry.sql';
+    const dir = makeSqlDir({
+      [filename]: [
+        'CREATE TABLE IF NOT EXISTS harness_shared.boot_breakpoint_a (id int);',
+        '--> statement-breakpoint',
+        'CREATE TABLE no_such_schema_xyz.breakpoint_b (id int);',
+      ].join('\n'),
+    });
+
+    const first = await applyPendingMigrations({
+      client: bootClient,
+      sqlDir: dir,
+      continueOnError: true,
+      log: () => {},
+    });
+    expect(first.appliedCount).toBe(0);
+    expect(first.failed.map((failure) => failure.file)).toEqual([filename]);
+    const afterFailure = await rootSql<{ first_chunk: string | null; recorded: boolean }[]>`
+      SELECT to_regclass('harness_shared.boot_breakpoint_a')::text AS first_chunk,
+             EXISTS (
+               SELECT 1 FROM harness_shared.schema_migrations WHERE filename = ${filename}
+             ) AS recorded`;
+    expect(afterFailure[0]).toEqual({
+      first_chunk: 'harness_shared.boot_breakpoint_a',
+      recorded: false,
+    });
+
+    writeFileSync(
+      join(dir, filename),
+      [
+        'CREATE TABLE IF NOT EXISTS harness_shared.boot_breakpoint_a (id int);',
+        '--> statement-breakpoint',
+        'CREATE TABLE IF NOT EXISTS harness_shared.boot_breakpoint_b (id int);',
+      ].join('\n'),
+    );
+    const second = await applyPendingMigrations({ client: bootClient, sqlDir: dir, log: () => {} });
+    expect(second).toMatchObject({ appliedCount: 1, failed: [] });
+    const afterRetry = await rootSql<{ second_chunk: string | null; recorded: boolean }[]>`
+      SELECT to_regclass('harness_shared.boot_breakpoint_b')::text AS second_chunk,
+             EXISTS (
+               SELECT 1 FROM harness_shared.schema_migrations WHERE filename = ${filename}
+             ) AS recorded`;
+    expect(afterRetry[0]).toEqual({
+      second_chunk: 'harness_shared.boot_breakpoint_b',
+      recorded: true,
+    });
+  });
+
   it('the DEFAULT (fail-loud) runner THROWS on a broken migration', async () => {
     const dir = makeSqlDir({ '920-bad.sql': 'CREATE TABLE no_such_schema_xyz.bad2 (id int);' });
     await expect(applyPendingMigrations({ client: bootClient, sqlDir: dir, log: () => {} })).rejects.toThrow();

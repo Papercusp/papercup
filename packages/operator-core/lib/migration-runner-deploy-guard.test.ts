@@ -6,10 +6,10 @@ import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedde
 
 const dirs: string[] = [];
 
-function fixtureDir() {
+function fixtureDir(sql = 'SELECT 1;') {
   const dir = mkdtempSync(join(tmpdir(), 'migration-runner-guard-'));
   dirs.push(dir);
-  writeFileSync(join(dir, '001-guard.sql'), 'SELECT 1;', 'utf8');
+  writeFileSync(join(dir, '001-guard.sql'), sql, 'utf8');
   return dir;
 }
 
@@ -57,6 +57,24 @@ describe('migration runner beforeApply guard', () => {
 
     expect(result).toMatchObject({ appliedCount: 1, totalKnown: 1, failed: [] });
     expect(client.unsafe.mock.calls.some(([sql]) => sql.includes('BEGIN;'))).toBe(true);
+  });
+
+  it('commits statement-breakpoint chunks separately and records only the final chunk', async () => {
+    const client = fakeClient();
+    const result = await applyPendingMigrations({
+      client,
+      sqlDir: fixtureDir('SELECT 1;\n--> statement-breakpoint\nSELECT 2;'),
+    });
+
+    expect(result).toMatchObject({ appliedCount: 1, totalKnown: 1, failed: [] });
+    const transactions = client.unsafe.mock.calls
+      .map(([sql]) => sql)
+      .filter((sql) => sql.includes('BEGIN;'));
+    expect(transactions).toHaveLength(2);
+    expect(transactions[0]).toContain('SELECT 1;');
+    expect(transactions[0]).not.toContain('INSERT INTO harness_shared.schema_migrations');
+    expect(transactions[1]).toContain('SELECT 2;');
+    expect(transactions[1]).toContain('INSERT INTO harness_shared.schema_migrations');
   });
 
   it('does not call the guard again for a file already recorded in schema_migrations', async () => {
