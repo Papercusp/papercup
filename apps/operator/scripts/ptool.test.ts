@@ -596,6 +596,15 @@ describe('ptool call deadlines', () => {
       },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('locks:acquire')).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    // EI-22593064345817096: release can share the lock store's transaction
+    // contention/retry path, so cover both transport routes and keep its
+    // client deadline outside the ordinary 30s cutoff.
+    expect(timeoutForTool('locks:release')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'locks:release',
+      args: { lock_id: '00000000-0000-0000-0000-000000000000' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('locks:release')).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:set-plan-status',
       args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },
