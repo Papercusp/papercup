@@ -3,6 +3,30 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/templates-mirror-sync.mjs and regenerate.
 /**
+ * Parse a canonical GitHub HTTPS or SSH remote into its repository identity.
+ *
+ * Git accepts both `https://github.com/Owner/repo.git` and the scp-shaped
+ * `git@github.com:Owner/repo.git` form. Comparing the parsed owner/repo keeps
+ * the push guard fail-closed for every other host or repository without
+ * rejecting equivalent transport forms.
+ *
+ * @param {string} remote
+ * @returns {{ owner: string, repo: string } | null}
+ */
+export function parseGithubRemote(remote: string): {
+    owner: string;
+    repo: string;
+} | null;
+/**
+ * Compare the parsed GitHub identity, rather than the spelling of its remote.
+ * GitHub repository names are case-insensitive, while the parser remains
+ * deliberately strict about host and URL shape.
+ *
+ * @param {string} remote
+ * @returns {boolean}
+ */
+export function isMirrorRemote(remote: string): boolean;
+/**
  * Recursively list files under dir as dir-relative paths (posix slashes).
  *
  * @param {string} dir
