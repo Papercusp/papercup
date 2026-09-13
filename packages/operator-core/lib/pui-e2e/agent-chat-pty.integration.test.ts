@@ -3129,7 +3129,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const launchResponses = first.responses.filter((entry) => entry.path === '/api/adv/sessions/launch-su');
         expect(launchResponses).toEqual([
           expect.objectContaining({
-            model: process.env.PUI_REAL_MODEL,
+            ...(process.env.PUI_REAL_MODEL ? { model: process.env.PUI_REAL_MODEL } : {}),
             mode: process.env.PUI_REAL_MODE,
             account: process.env.PUI_REAL_ACCOUNT ?? 'default',
             carry: 'warm',
