@@ -155,7 +155,7 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     const statements: string[] = [];
     h.sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       statements.push(strings.join(' '));
-      return originalSql(strings, ...values);
+      return (originalSql as unknown as (...args: unknown[]) => unknown)(strings, ...values);
     }) as unknown as postgres.Sql;
     try {
       const rubric = await rubrics.getRubric('direct-id-fast-path');
@@ -420,17 +420,23 @@ Preserve this plan body.
       subjectPlan,
       characteristic: 'composition-validation',
       title: 'Composition acceptance parent',
-      criteria: [{
-        key: 'outcome',
-        title: 'Outcome',
-        driftMarkers: 'the outcome regresses',
-        check: { kind: 'instrument', instrumentKey: 'none' },
-      }],
+      criteria: [
+        {
+          key: 'outcome',
+          title: 'Outcome',
+          driftMarkers: 'the outcome regresses',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        },
+      ],
       by: 'acceptance-author',
     });
 
     await expect(
-      rubrics.proposeRubric({ rubricId: 'composition-non-standard', ...validInput, composes: ['composition-acceptance-parent'] }),
+      rubrics.proposeRubric({
+        rubricId: 'composition-non-standard',
+        ...validInput,
+        composes: ['composition-acceptance-parent'],
+      }),
     ).rejects.toThrow(/composes non-standard rubric/i);
     expect(await rubrics.getRubric('composition-non-standard')).toBeNull();
 
@@ -465,7 +471,13 @@ Preserve this plan body.
   });
 
   it('ratify flips proposed → active and records the TRUE ratifier, not the author (EI-10751)', async () => {
-    await rubrics.proposeRubric({ rubricId: 'x', characteristic: 'c', title: 'X', criteria: sampleCriteria, by: 'author-a' });
+    await rubrics.proposeRubric({
+      rubricId: 'x',
+      characteristic: 'c',
+      title: 'X',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
     const active = await rubrics.ratifyRubric('x', 'queen-1');
     expect(active?.status).toBe('active');
     // The old projection collapsed ratifiedBy onto the plan owner — a fabricated
@@ -489,7 +501,14 @@ Preserve this plan body.
       by: 'author-a',
     });
     const afterPropose = await db.adminSql<
-      { seq: number; content_hash: string; author_id: string; author_kind: string; rationale: string | null; content_snapshot: string }[]
+      {
+        seq: number;
+        content_hash: string;
+        author_id: string;
+        author_kind: string;
+        rationale: string | null;
+        content_snapshot: string;
+      }[]
     >`
       SELECT seq, content_hash, author_id, author_kind, rationale, content_snapshot
         FROM harness_shared.plan_revisions
@@ -679,15 +698,35 @@ Preserve this plan body.
   });
 
   it('D-012 enforced on persisted provenance: the proposer cannot ratify their own proposal', async () => {
-    await rubrics.proposeRubric({ rubricId: 'selfy', characteristic: 'c', title: 'S', criteria: sampleCriteria, by: 'author-a' });
-    await expect(rubrics.ratifyRubric('selfy', 'author-a')).rejects.toThrow(/author ≠ ratifier|cannot ratify their own/i);
+    await rubrics.proposeRubric({
+      rubricId: 'selfy',
+      characteristic: 'c',
+      title: 'S',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
+    await expect(rubrics.ratifyRubric('selfy', 'author-a')).rejects.toThrow(
+      /author ≠ ratifier|cannot ratify their own/i,
+    );
     expect((await rubrics.getRubric('selfy'))?.status).toBe('proposed'); // nothing flipped
   });
 
   it('a re-propose moves the proposer of record to the reviser and DROPS the old ratification', async () => {
-    await rubrics.proposeRubric({ rubricId: 'rev', characteristic: 'c', title: 'v1', criteria: sampleCriteria, by: 'author-a' });
+    await rubrics.proposeRubric({
+      rubricId: 'rev',
+      characteristic: 'c',
+      title: 'v1',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
     await rubrics.ratifyRubric('rev', 'queen-1');
-    const revised = await rubrics.proposeRubric({ rubricId: 'rev', characteristic: 'c', title: 'v2', criteria: sampleCriteria, by: 'reviewer-b' });
+    const revised = await rubrics.proposeRubric({
+      rubricId: 'rev',
+      characteristic: 'c',
+      title: 'v2',
+      criteria: sampleCriteria,
+      by: 'reviewer-b',
+    });
     expect(revised.proposedBy).toBe('reviewer-b'); // NOT the plan owner (author-a)
     expect(revised.status).toBe('proposed'); // a revision needs re-ratification…
     expect(revised.ratifiedBy).toBeNull(); // …and the stale ratification is gone
@@ -698,7 +737,13 @@ Preserve this plan body.
   });
 
   it('amendRubric on an ACTIVE rubric preserves the ratifier of record (status is preserved, so provenance must be too)', async () => {
-    await rubrics.proposeRubric({ rubricId: 'amendee', characteristic: 'c', title: 'A', criteria: sampleCriteria, by: 'author-a' });
+    await rubrics.proposeRubric({
+      rubricId: 'amendee',
+      characteristic: 'c',
+      title: 'A',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
     await rubrics.ratifyRubric('amendee', 'queen-1');
     const amended = await rubrics.amendRubric({
       rubricId: 'amendee',
@@ -789,9 +834,11 @@ Preserve this plan body.
       ),
     );
 
-    const [row] = await db.adminSql<{
-      template_data: { methodRef?: string; criteria: { key: string; replication?: string }[] };
-    }[]>`
+    const [row] = await db.adminSql<
+      {
+        template_data: { methodRef?: string; criteria: { key: string; replication?: string }[] };
+      }[]
+    >`
       SELECT template_data
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${activeWorkspaceId()}
@@ -841,14 +888,16 @@ Preserve this plan body.
       title: 'Acceptance round-trip',
       // Acceptance criteria may omit model/method, but the authoring contract
       // requires a concrete drift marker so the outcome remains falsifiable.
-      criteria: [{
-        key: 'outcome',
-        title: 'Outcome',
-        model: '',
-        method: '',
-        driftMarkers: 'the outcome regresses',
-        check: { kind: 'instrument', instrumentKey: 'none' },
-      }],
+      criteria: [
+        {
+          key: 'outcome',
+          title: 'Outcome',
+          model: '',
+          method: '',
+          driftMarkers: 'the outcome regresses',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        },
+      ],
       by: 'su-test',
     });
     expect(first.status).toBe('active');
@@ -958,32 +1007,38 @@ Preserve this plan body.
       subjectPlan,
       characteristic: 'acceptance-uniqueness',
       title: 'Acceptance uniqueness first',
-      criteria: [{
-        key: 'outcome',
-        title: 'Outcome',
-        driftMarkers: 'the outcome regresses',
-        check: { kind: 'instrument', instrumentKey: 'none' },
-      }],
+      criteria: [
+        {
+          key: 'outcome',
+          title: 'Outcome',
+          driftMarkers: 'the outcome regresses',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        },
+      ],
       by: 'su-first',
     });
 
-    const refusal = await rubrics.proposeRubric({
-      rubricId: 'acceptance-unique-second',
-      kind: 'acceptance',
-      subjectPlan,
-      characteristic: 'acceptance-uniqueness',
-      title: 'Acceptance uniqueness second',
-      criteria: [{
-        key: 'outcome',
-        title: 'Outcome',
-        driftMarkers: 'the outcome regresses',
-        check: { kind: 'instrument', instrumentKey: 'none' },
-      }],
-      by: 'su-second',
-    }).then(
-      () => null,
-      (error: unknown) => error,
-    );
+    const refusal = await rubrics
+      .proposeRubric({
+        rubricId: 'acceptance-unique-second',
+        kind: 'acceptance',
+        subjectPlan,
+        characteristic: 'acceptance-uniqueness',
+        title: 'Acceptance uniqueness second',
+        criteria: [
+          {
+            key: 'outcome',
+            title: 'Outcome',
+            driftMarkers: 'the outcome regresses',
+            check: { kind: 'instrument', instrumentKey: 'none' },
+          },
+        ],
+        by: 'su-second',
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
     expect(refusal).toBeInstanceOf(Error);
     expect((refusal as Error).message).toMatch(/already has an active acceptance rubric.*acceptance-unique-first/i);
     expect((refusal as Error).message).toMatch(
@@ -1079,12 +1134,14 @@ Preserve this plan body.
               'Retired acceptance subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
               false, NULL, '{}'::text::jsonb, NULL, 'local')`;
 
-    const initialCriteria = [{
-      key: 'original-outcome',
-      title: 'Original outcome',
-      driftMarkers: 'the original outcome regresses',
-      check: { kind: 'instrument' as const, instrumentKey: 'none' },
-    }];
+    const initialCriteria = [
+      {
+        key: 'original-outcome',
+        title: 'Original outcome',
+        driftMarkers: 'the original outcome regresses',
+        check: { kind: 'instrument' as const, instrumentKey: 'none' },
+      },
+    ];
     const first = await rubrics.proposeRubric({
       rubricId,
       kind: 'acceptance',
@@ -1124,10 +1181,7 @@ Preserve this plan body.
     });
 
     expect(revised.status).toBe('retired');
-    expect(revised.criteria.map((criterion) => criterion.key)).toEqual([
-      'original-outcome',
-      'added-after-ship',
-    ]);
+    expect(revised.criteria.map((criterion) => criterion.key)).toEqual(['original-outcome', 'added-after-ship']);
     const [rubricPlan] = await db.adminSql<{ status: string }[]>`
       SELECT status
         FROM harness_shared.harness_plans
@@ -1137,8 +1191,22 @@ Preserve this plan body.
   });
 
   it('re-propose is an idempotent upsert — updates content, never a duplicate row', async () => {
-    await rubrics.proposeRubric({ rubricId: 'seed', characteristic: 'c', title: 'v1', criteria: sampleCriteria, status: 'active', by: 'seed' });
-    const r2 = await rubrics.proposeRubric({ rubricId: 'seed', characteristic: 'c', title: 'v2', criteria: sampleCriteria, status: 'active', by: 'seed' });
+    await rubrics.proposeRubric({
+      rubricId: 'seed',
+      characteristic: 'c',
+      title: 'v1',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 'seed',
+    });
+    const r2 = await rubrics.proposeRubric({
+      rubricId: 'seed',
+      characteristic: 'c',
+      title: 'v2',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 'seed',
+    });
     expect(r2.title).toBe('v2');
     expect(r2.status).toBe('active');
     const all = await rubrics.listRubrics({});
@@ -1169,7 +1237,13 @@ Preserve this plan body.
     // row kept v1's 2 criteria / 4-value scale / short description while reporting ok.
     const threeCriteria = [
       ...sampleCriteria,
-      { key: 'third-criterion', title: 'Third', model: 'a third model', method: 'a third method', driftMarkers: 'third drift' },
+      {
+        key: 'third-criterion',
+        title: 'Third',
+        model: 'a third model',
+        method: 'a third method',
+        driftMarkers: 'third drift',
+      },
     ];
     const sixValueScale = ['exemplary', 'pass', 'partial', 'fail', 'severe', 'unknown'];
     const r2 = await rubrics.proposeRubric({
@@ -1187,7 +1261,9 @@ Preserve this plan body.
     expect(r2.ratingScale).toEqual(sixValueScale);
     expect(r2.description).toContain('longer v2');
     // …AND the RAW template_data jsonb in the DB actually changed (the bug left it at v1).
-    const [row] = await db.adminSql<{ version: number; template_data: { criteria: unknown[]; ratingScale: string[]; description: string } }[]>`
+    const [row] = await db.adminSql<
+      { version: number; template_data: { criteria: unknown[]; ratingScale: string[]; description: string } }[]
+    >`
       SELECT version, template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'drift-check' AND template = 'rubric'`;
     expect(row.template_data.criteria).toHaveLength(3);
@@ -1241,7 +1317,13 @@ Preserve this plan body.
 
 describe('autoRatifyRubricOnFirstScorecard — grading a proposed rubric IS adoption (WI-5415)', () => {
   it('ratifies a PROPOSED rubric the first time a DIFFERENT agent grades it', async () => {
-    await rubrics.proposeRubric({ rubricId: 'gr', characteristic: 'c', title: 'Gr', criteria: sampleCriteria, by: 'author-a' });
+    await rubrics.proposeRubric({
+      rubricId: 'gr',
+      characteristic: 'c',
+      title: 'Gr',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
     const result = await rubrics.autoRatifyRubricOnFirstScorecard('gr', 'grader-b');
     expect(result?.status).toBe('active');
     expect(result?.ratifiedBy).toBe('grader-b');
@@ -1251,7 +1333,13 @@ describe('autoRatifyRubricOnFirstScorecard — grading a proposed rubric IS adop
   });
 
   it('D-012: is a no-op when the grader IS the rubric proposer — stays proposed', async () => {
-    await rubrics.proposeRubric({ rubricId: 'self', characteristic: 'c', title: 'Self', criteria: sampleCriteria, by: 'author-a' });
+    await rubrics.proposeRubric({
+      rubricId: 'self',
+      characteristic: 'c',
+      title: 'Self',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
     const result = await rubrics.autoRatifyRubricOnFirstScorecard('self', 'author-a');
     expect(result).toBeNull();
     const stored = await rubrics.getRubric('self');
@@ -1259,7 +1347,14 @@ describe('autoRatifyRubricOnFirstScorecard — grading a proposed rubric IS adop
   });
 
   it('is a no-op on an already-ACTIVE rubric (nothing to adopt)', async () => {
-    await rubrics.proposeRubric({ rubricId: 'already', characteristic: 'c', title: 'Already', criteria: sampleCriteria, status: 'active', by: 'author-a' });
+    await rubrics.proposeRubric({
+      rubricId: 'already',
+      characteristic: 'c',
+      title: 'Already',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 'author-a',
+    });
     const result = await rubrics.autoRatifyRubricOnFirstScorecard('already', 'grader-b');
     expect(result).toBeNull();
     const stored = await rubrics.getRubric('already');
@@ -1273,8 +1368,21 @@ describe('autoRatifyRubricOnFirstScorecard — grading a proposed rubric IS adop
 
 describe('list / get / search over written rubrics', () => {
   beforeEach(async () => {
-    await rubrics.proposeRubric({ rubricId: 'active-a', characteristic: 'hive-coordination', title: 'Active A', criteria: sampleCriteria, status: 'active', by: 's' });
-    await rubrics.proposeRubric({ rubricId: 'proposed-b', characteristic: 'memory-recall', title: 'Proposed B', criteria: sampleCriteria, by: 's' });
+    await rubrics.proposeRubric({
+      rubricId: 'active-a',
+      characteristic: 'hive-coordination',
+      title: 'Active A',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 's',
+    });
+    await rubrics.proposeRubric({
+      rubricId: 'proposed-b',
+      characteristic: 'memory-recall',
+      title: 'Proposed B',
+      criteria: sampleCriteria,
+      by: 's',
+    });
   });
 
   it('list orders active-first, then proposed', async () => {
@@ -1284,7 +1392,9 @@ describe('list / get / search over written rubrics', () => {
 
   it('list filters by status and by characteristic', async () => {
     expect((await rubrics.listRubrics({ status: 'active' })).map((r) => r.rubricId)).toEqual(['active-a']);
-    expect((await rubrics.listRubrics({ characteristic: 'memory-recall' })).map((r) => r.rubricId)).toEqual(['proposed-b']);
+    expect((await rubrics.listRubrics({ characteristic: 'memory-recall' })).map((r) => r.rubricId)).toEqual([
+      'proposed-b',
+    ]);
   });
 
   it('get returns the full criteria; unknown id → null', async () => {
@@ -1369,12 +1479,23 @@ describe('template_data persistence boundary — the set-template-data door', ()
     if (!classRubricSeeded) {
       await insertRubricPlan('plan-class-feature-ship', { workspaceId, title: 'Plan class — feature ship' });
     }
-    const seeded = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
-      executor: tx as never, workspaceId, harnessSlug: 'papercusp', planSlug: subject,
-      planContent: content, planTitle: 'METHOD pins', planStatus: 'active', planVersion: 1,
-      adoptionEpoch: 1, cohort: 'post-epoch', classRef: 'plan-class-feature-ship', actorId: 'su-test',
-      now: new Date('2026-09-05T00:00:00Z'),
-    }));
+    const seeded = await db.adminSql.begin((tx) =>
+      seedAcceptanceBarsInTransaction({
+        executor: tx as never,
+        workspaceId,
+        harnessSlug: 'papercusp',
+        planSlug: subject,
+        planContent: content,
+        planTitle: 'METHOD pins',
+        planStatus: 'active',
+        planVersion: 1,
+        adoptionEpoch: 1,
+        cohort: 'post-epoch',
+        classRef: 'plan-class-feature-ship',
+        actorId: 'su-test',
+        now: new Date('2026-09-05T00:00:00Z'),
+      }),
+    );
     expect(seeded.ok).toBe(true);
     if (!seeded.ok) throw new Error(seeded.message);
     // acceptance-bar-seed deliberately leaves METHOD/checks blank for the author
@@ -1406,16 +1527,16 @@ describe('template_data persistence boundary — the set-template-data door', ()
     'activation re-audit preserves an unchanged %s clause and its exact evidence revision',
     async (lifecycleStatus) => {
       const { workspaceId, subject, rubricSlug } = await seedBarContract(`reaudit-${lifecycleStatus}`);
-      const { listSpecClauses, setSpecClause, specClauseContentHash } = await import('./agent-tools/plans/spec-clauses-store');
+      const { listSpecClauses, setSpecClause, specClauseContentHash } =
+        await import('./agent-tools/plans/spec-clauses-store');
       const { recordCurrentActivationAudit } = await import('./plan-audits');
       const scope = { harnessSlug: 'papercusp', planSlug: subject };
       const initial = await listSpecClauses(scope);
       expect(initial).toHaveLength(2);
       expect(initial.map((clause) => clause.lifecycleStatus)).toEqual(['draft', 'draft']);
       const draft = initial[0]!;
-      const exemption = lifecycleStatus === 'exempt'
-        ? { reason: 'This clause requires a non-automated review.' }
-        : undefined;
+      const exemption =
+        lifecycleStatus === 'exempt' ? { reason: 'This clause requires a non-automated review.' } : undefined;
       const write = {
         ...draft,
         ...scope,
@@ -1437,9 +1558,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
       // Permanent pre-fix control: the old re-audit projection either demoted
       // a reviewed clause or preserved `exempt` while dropping its paired
       // exemption payload. Both change the current evidence revision.
-      const preFixReplay = lifecycleStatus === 'exempt'
-        ? { ...write, exemption: undefined }
-        : { ...write, lifecycleStatus: 'draft' as const };
+      const preFixReplay =
+        lifecycleStatus === 'exempt'
+          ? { ...write, exemption: undefined }
+          : { ...write, lifecycleStatus: 'draft' as const };
       expect(specClauseContentHash(preFixReplay)).not.toBe(reviewed.contentHash);
 
       await db.adminSql`
@@ -1452,143 +1574,191 @@ describe('template_data persistence boundary — the set-template-data door', ()
          WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
       const rubricBefore = await rubrics.getRubric(rubricSlug);
       const audit = await recordCurrentActivationAudit({
-        workspaceId, harnessSlug: 'papercusp', planSlug: subject, createdBy: 'audit-reviewer',
+        workspaceId,
+        harnessSlug: 'papercusp',
+        planSlug: subject,
+        createdBy: 'audit-reviewer',
         classRef: 'plan-class-feature-ship',
         activation: {
           sourceRanges: [{ sourceKind: 'codex', sessionId: 'reaudit-fixture', fromTurn: 0, toTurn: 0 }],
           mappings: ['P-001', 'P-002'].map((item, index) => ({
-            id: `M-00${index + 1}`, sourceRefs: ['session_turn:codex:reaudit-fixture:0'],
-            requirement: `Preserve outcome ${index + 1}`, planTargets: [item], disposition: 'covered' as const,
+            id: `M-00${index + 1}`,
+            sourceRefs: ['session_turn:codex:reaudit-fixture:0'],
+            requirement: `Preserve outcome ${index + 1}`,
+            planTargets: [item],
+            disposition: 'covered' as const,
           })),
-          repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [],
+          repairedOmissions: [],
+          rejectedOrSuperseded: [],
+          unresolvedBlockers: [],
         },
       });
       expect(audit.ok).toBe(true);
       // Exact equality includes the revision, content hash, acceptance author,
       // acceptance time, and the untouched sibling's draft lifecycle.
       expect(await listSpecClauses(scope)).toEqual(before);
-      expect((await listSpecClauses({ ...scope, includeHistory: true }))).toHaveLength(3);
+      expect(await listSpecClauses({ ...scope, includeHistory: true })).toHaveLength(3);
       expect((await rubrics.getRubric(rubricSlug))?.revision).toBe(rubricBefore?.revision);
     },
   );
 
-  it.each(['class', 'method'] as const)('preserves authored atomic clauses across a %s-only rubric revision', async (change) => {
-    const seeded = await seedBarContract(`atomic-preservation-${change}`);
-    const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
-    const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
-    const draft = (await listSpecClauses(scope))[0]!;
-    const authored = {
-      behavior: 'The selected task remains complete after restarting the application.',
-      behaviorClass: 'lifecycle' as const,
-      requiredEvidence: ['Restart the application and read the selected task.'],
-      requiredTestLayers: ['e2e', 'integration'],
-      falsifier: { observation: 'The completed task reopens after restart.', probeMethod: 'Restart after completing one task.' },
-      lifecycleStatus: 'accepted' as const,
-    };
-    await setSpecClause({ ...draft, ...scope, ...authored, expectedRevision: draft.revision, actorId: 'atomic-author' });
-    const before = (await listSpecClauses(scope))[0]!;
-    const rubricBefore = await rubrics.getRubric(seeded.rubricSlug);
-    if (change === 'class') {
-      // Re-affirm the SEEDED class, do not swap to a different one. amendRubric
-      // deliberately refuses to REPLACE an existing acceptance class (rubrics.ts
-      // — "an existing acceptance class cannot be replaced through this
-      // amendment"): the class defines the bar-set the rubric inherits, so
-      // swapping it mid-flight would invalidate the BAR contract. That guard
-      // landed 2026-09-06 and this fixture predates it, which is why it began
-      // refusing. A class-only revision is legal as an initial assignment or a
-      // re-affirmation, and the re-affirmation still writes a full revision
-      // (only an all-fields-undefined patch is "nothing to amend"), so this
-      // keeps exercising what the test is named for: authored atomic clauses
-      // surviving a rubric revision whose ONLY input is classRef.
-      await rubrics.amendRubric({ rubricId: seeded.rubricSlug, classRef: 'plan-class-feature-ship' });
-    } else {
-      await rubrics.amendRubric({ rubricId: seeded.rubricSlug, criterion: {
-        key: rubricBefore!.criteria[0]!.key, field: 'method', mode: 'append', text: 'Inspect the restart evidence.',
-      } });
-    }
-    const rubricAfter = await rubrics.getRubric(seeded.rubricSlug);
-    const after = (await listSpecClauses(scope))[0]!;
-    expect(rubricAfter!.barSetHash).toBe(rubricBefore!.barSetHash);
-    expect(after).toMatchObject(authored);
-    expect(after.revision).toBe(before.revision + 1);
-    expect(after.sourceBar).toEqual({ ...before.sourceBar, rubricRevision: rubricAfter!.revision });
-    expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter!.revision}:${before.sourceBar!.barKey}`);
-  });
+  it.each(['class', 'method'] as const)(
+    'preserves authored atomic clauses across a %s-only rubric revision',
+    async (change) => {
+      const seeded = await seedBarContract(`atomic-preservation-${change}`);
+      const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+      const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
+      const draft = (await listSpecClauses(scope))[0]!;
+      const authored = {
+        behavior: 'The selected task remains complete after restarting the application.',
+        behaviorClass: 'lifecycle' as const,
+        requiredEvidence: ['Restart the application and read the selected task.'],
+        requiredTestLayers: ['e2e', 'integration'],
+        falsifier: {
+          observation: 'The completed task reopens after restart.',
+          probeMethod: 'Restart after completing one task.',
+        },
+        lifecycleStatus: 'accepted' as const,
+      };
+      await setSpecClause({
+        ...draft,
+        ...scope,
+        ...authored,
+        expectedRevision: draft.revision,
+        actorId: 'atomic-author',
+      });
+      const before = (await listSpecClauses(scope))[0]!;
+      const rubricBefore = await rubrics.getRubric(seeded.rubricSlug);
+      if (change === 'class') {
+        // Re-affirm the SEEDED class, do not swap to a different one. amendRubric
+        // deliberately refuses to REPLACE an existing acceptance class (rubrics.ts
+        // — "an existing acceptance class cannot be replaced through this
+        // amendment"): the class defines the bar-set the rubric inherits, so
+        // swapping it mid-flight would invalidate the BAR contract. That guard
+        // landed 2026-09-06 and this fixture predates it, which is why it began
+        // refusing. A class-only revision is legal as an initial assignment or a
+        // re-affirmation, and the re-affirmation still writes a full revision
+        // (only an all-fields-undefined patch is "nothing to amend"), so this
+        // keeps exercising what the test is named for: authored atomic clauses
+        // surviving a rubric revision whose ONLY input is classRef.
+        await rubrics.amendRubric({ rubricId: seeded.rubricSlug, classRef: 'plan-class-feature-ship' });
+      } else {
+        await rubrics.amendRubric({
+          rubricId: seeded.rubricSlug,
+          criterion: {
+            key: rubricBefore!.criteria[0]!.key,
+            field: 'method',
+            mode: 'append',
+            text: 'Inspect the restart evidence.',
+          },
+        });
+      }
+      const rubricAfter = await rubrics.getRubric(seeded.rubricSlug);
+      const after = (await listSpecClauses(scope))[0]!;
+      expect(rubricAfter!.barSetHash).toBe(rubricBefore!.barSetHash);
+      expect(after).toMatchObject(authored);
+      expect(after.revision).toBe(before.revision + 1);
+      expect(after.sourceBar).toEqual({ ...before.sourceBar, rubricRevision: rubricAfter!.revision });
+      expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter!.revision}:${before.sourceBar!.barKey}`);
+    },
+  );
 
   it.each(['layers', 'model', 'falsifier', 'plane'] as const)(
-    'preserves reviewed scenarios and causal pairing only for test-layer changes (%s)', async (change) => {
-    const seeded = await seedBarContract(`atomic-layer-preservation-${change}`, { authorMethods: true });
-    const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
-    const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
-    const draft = (await listSpecClauses(scope))[0]!;
-    const authored = {
-      behavior: 'The selected task remains complete after restarting the application.',
-      behaviorClass: 'lifecycle' as const,
-      requiredEvidence: ['tree', 'Restart the application and read the selected task.'],
-      requiredTestLayers: ['e2e', 'integration'],
-      mutationRequired: true,
-      falsifier: {
-        observation: 'The completed task reopens after restart.',
-        probeMethod: 'Restart after completing one task; compare the broken and repaired cases.',
-        causalPairing: 'one-to-one' as const,
-        requiredScenarios: ['restart.broken', 'restart.repaired'],
-      },
-      lifecycleStatus: 'accepted' as const,
-    };
-    await setSpecClause({ ...draft, ...scope, ...authored, expectedRevision: draft.revision, actorId: 'atomic-author' });
-    const before = (await listSpecClauses(scope))[0]!;
-    const rubricBefore = (await rubrics.getRubric(seeded.rubricSlug))!;
-    const amendment = {
-      rubricId: seeded.rubricSlug,
-      actorId: 'amendment-actor',
-      reason: 'Require browser and integration proof without replacing the reviewed behavior.',
-      criteria: rubricBefore.criteria.map((criterion) => criterion.barKey === before.sourceBar!.barKey
-        ? {
-            ...criterion, requiredTestLayers: ['browser', 'integration'], method: `${criterion.method}\nInspect browser proof.`,
-            ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
-            ...(change === 'falsifier' ? { driftMarkers: 'The changed outcome is absent.' } : {}),
-            ...(change === 'plane' ? { evidencePlane: 'live' as const } : {}),
-          }
-        : criterion),
-    };
-    const rubricAfter = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
-    const after = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
-
-    expect(rubricAfter.barSetHash).not.toBe(rubricBefore.barSetHash);
-    if (change === 'layers') {
-      expect(after).toMatchObject({ ...authored, requiredEvidence: before.requiredEvidence,
-        requiredTestLayers: ['browser', 'e2e', 'integration'] });
-    } else {
-      const criterion = rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!;
-      expect(after.behavior).toBe(criterion.model);
-      expect(after.falsifier).toEqual({ observation: criterion.driftMarkers });
-      expect(after.requiredTestLayers).toEqual(['browser', 'integration']);
-      expect(after.behaviorClass).not.toBe('lifecycle');
-      if (change === 'plane') expect(after.requiredEvidence).toContain('live');
-    }
-    expect(after.revision).toBe(before.revision + 1);
-    expect(after.sourceBar).toMatchObject({
-      rubricRevision: rubricAfter.revision, barSetHash: rubricAfter.barSetHash,
-      barHash: rubricAfter.criteria.find((criterion) => criterion.barKey === before.sourceBar!.barKey)!.barHash,
-    });
-    expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter.revision}:${before.sourceBar!.barKey}`);
-    expect((await listSpecClauses({ ...scope, includeHistory: true })).find((clause) =>
-      clause.specId === before.specId && clause.revision === before.revision))
-      .toEqual({ ...before, currentRevision: after.revision });
-    if (change === 'layers') {
-      const replacement = { ...amendment,
-        reason: 'Replace the canonical layers while retaining the atomic e2e requirement.',
-        criteria: rubricAfter.criteria.map((criterion) => criterion.barKey === before.sourceBar!.barKey
-          ? { ...criterion, requiredTestLayers: ['component'] } : criterion),
+    'preserves reviewed scenarios and causal pairing only for test-layer changes (%s)',
+    async (change) => {
+      const seeded = await seedBarContract(`atomic-layer-preservation-${change}`, { authorMethods: true });
+      const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+      const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
+      const draft = (await listSpecClauses(scope))[0]!;
+      const authored = {
+        behavior: 'The selected task remains complete after restarting the application.',
+        behaviorClass: 'lifecycle' as const,
+        requiredEvidence: ['tree', 'Restart the application and read the selected task.'],
+        requiredTestLayers: ['e2e', 'integration'],
+        mutationRequired: true,
+        falsifier: {
+          observation: 'The completed task reopens after restart.',
+          probeMethod: 'Restart after completing one task; compare the broken and repaired cases.',
+          causalPairing: 'one-to-one' as const,
+          requiredScenarios: ['restart.broken', 'restart.repaired'],
+        },
+        lifecycleStatus: 'accepted' as const,
       };
-      await rubrics.amendRubric({ ...replacement, approvalRef: await postApproval(replacement) });
-      const replaced = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
-      expect(replaced.requiredTestLayers).toEqual(['component', 'e2e']);
-      expect(replaced.behavior).toBe(before.behavior);
-      expect(replaced.falsifier).toEqual(before.falsifier);
-      expect(replaced.behaviorClass).toBe(before.behaviorClass);
-    }
-  });
+      await setSpecClause({
+        ...draft,
+        ...scope,
+        ...authored,
+        expectedRevision: draft.revision,
+        actorId: 'atomic-author',
+      });
+      const before = (await listSpecClauses(scope))[0]!;
+      const rubricBefore = (await rubrics.getRubric(seeded.rubricSlug))!;
+      const amendment = {
+        rubricId: seeded.rubricSlug,
+        actorId: 'amendment-actor',
+        reason: 'Require browser and integration proof without replacing the reviewed behavior.',
+        criteria: rubricBefore.criteria.map((criterion) =>
+          criterion.barKey === before.sourceBar!.barKey
+            ? {
+                ...criterion,
+                requiredTestLayers: ['browser', 'integration'],
+                method: `${criterion.method}\nInspect browser proof.`,
+                ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
+                ...(change === 'falsifier' ? { driftMarkers: 'The changed outcome is absent.' } : {}),
+                ...(change === 'plane' ? { evidencePlane: 'live' as const } : {}),
+              }
+            : criterion,
+        ),
+      };
+      const rubricAfter = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+      const after = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
+
+      expect(rubricAfter.barSetHash).not.toBe(rubricBefore.barSetHash);
+      if (change === 'layers') {
+        expect(after).toMatchObject({
+          ...authored,
+          requiredEvidence: before.requiredEvidence,
+          requiredTestLayers: ['browser', 'e2e', 'integration'],
+        });
+      } else {
+        const criterion = rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!;
+        expect(after.behavior).toBe(criterion.model);
+        expect(after.falsifier).toEqual({ observation: criterion.driftMarkers });
+        expect(after.requiredTestLayers).toEqual(['browser', 'integration']);
+        expect(after.behaviorClass).not.toBe('lifecycle');
+        if (change === 'plane') expect(after.requiredEvidence).toContain('live');
+      }
+      expect(after.revision).toBe(before.revision + 1);
+      expect(after.sourceBar).toMatchObject({
+        rubricRevision: rubricAfter.revision,
+        barSetHash: rubricAfter.barSetHash,
+        barHash: rubricAfter.criteria.find((criterion) => criterion.barKey === before.sourceBar!.barKey)!.barHash,
+      });
+      expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter.revision}:${before.sourceBar!.barKey}`);
+      expect(
+        (await listSpecClauses({ ...scope, includeHistory: true })).find(
+          (clause) => clause.specId === before.specId && clause.revision === before.revision,
+        ),
+      ).toEqual({ ...before, currentRevision: after.revision });
+      if (change === 'layers') {
+        const replacement = {
+          ...amendment,
+          reason: 'Replace the canonical layers while retaining the atomic e2e requirement.',
+          criteria: rubricAfter.criteria.map((criterion) =>
+            criterion.barKey === before.sourceBar!.barKey
+              ? { ...criterion, requiredTestLayers: ['component'] }
+              : criterion,
+          ),
+        };
+        await rubrics.amendRubric({ ...replacement, approvalRef: await postApproval(replacement) });
+        const replaced = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
+        expect(replaced.requiredTestLayers).toEqual(['component', 'e2e']);
+        expect(replaced.behavior).toBe(before.behavior);
+        expect(replaced.falsifier).toEqual(before.falsifier);
+        expect(replaced.behaviorClass).toBe(before.behaviorClass);
+      }
+    },
+  );
 
   it('previews a missing class bind without vetting an incomplete started BAR contract', async () => {
     const seeded = await seedBarContract('class-bind-preview-subject');
@@ -1819,12 +1989,14 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
     expect(after!.revision).toBe(before.revision! + 1);
 
-    const edges = await db.adminSql<{
-      work_item_id: string;
-      spec_id: string;
-      spec_revision: number;
-      current_revision: number;
-    }[]>`
+    const edges = await db.adminSql<
+      {
+        work_item_id: string;
+        spec_id: string;
+        spec_revision: number;
+        current_revision: number;
+      }[]
+    >`
       SELECT e.work_item_id, e.spec_id, e.spec_revision, c.current_revision
         FROM harness_shared.work_item_spec_revision_edges e
         JOIN harness_shared.plan_spec_clauses c
@@ -1854,13 +2026,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
        WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
          AND plan_slug=${seeded.rubricSlug}`;
     const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
-    const legacyHashByBar = new Map(canonical.criteria.map((criterion) => [
-      criterion.barKey!,
-      rubrics.computeAcceptanceBarHash({ ...criterion, check: undefined }),
-    ]));
-    const legacyBarSetHash = hashPlanContent(JSON.stringify(
-      [...legacyHashByBar.entries()].sort(([a], [b]) => a.localeCompare(b)),
-    ));
+    const legacyHashByBar = new Map(
+      canonical.criteria.map((criterion) => [
+        criterion.barKey!,
+        rubrics.computeAcceptanceBarHash({ ...criterion, check: undefined }),
+      ]),
+    );
+    const legacyBarSetHash = hashPlanContent(
+      JSON.stringify([...legacyHashByBar.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    );
     const legacyTemplateData = {
       ...stored!.template_data,
       criteria: stored!.template_data.criteria.map((criterion) => ({
@@ -1883,17 +2057,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
          WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
            AND plan_slug=${subject}`;
       for (const clause of clauses) {
-        const result = await setSpecClause({
-          ...clause,
-          planSlug: subject,
-          expectedRevision: clause.revision,
-          sourceBar: {
-            ...clause.sourceBar!,
-            barHash: legacyHashByBar.get(clause.sourceBar!.barKey)!,
-            barSetHash: legacyBarSetHash,
+        const result = await setSpecClause(
+          {
+            ...clause,
+            planSlug: subject,
+            expectedRevision: clause.revision,
+            sourceBar: {
+              ...clause.sourceBar!,
+              barHash: legacyHashByBar.get(clause.sourceBar!.barKey)!,
+              barSetHash: legacyBarSetHash,
+            },
+            actorId: 'legacy-hash-fixture',
           },
-          actorId: 'legacy-hash-fixture',
-        }, { executor: tx as never, workspaceId, harnessSlug: 'papercusp' });
+          { executor: tx as never, workspaceId, harnessSlug: 'papercusp' },
+        );
         expect(result.status).toBe('revised');
       }
     });
@@ -1935,23 +2112,34 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const data = await storedTemplateData(seeded.rubricSlug);
     const preview = await rubrics.previewAcceptanceBarAmendment({
-      rubricId: seeded.rubricSlug, actorId: 'method-author',
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
       criterion: { key: before!.criteria[0]!.key, field: 'method', mode: 'replace', text: 'Run the current fixture.' },
     });
-    expect(preview).toMatchObject({ approvalRequired: false, priorBarSetHash: before!.barSetHash,
-      nextBarSetHash: before!.barSetHash, cohortDisposition: { cohort: 'post-epoch', action: 'preserve' } });
+    expect(preview).toMatchObject({
+      approvalRequired: false,
+      priorBarSetHash: before!.barSetHash,
+      nextBarSetHash: before!.barSetHash,
+      cohortDisposition: { cohort: 'post-epoch', action: 'preserve' },
+    });
     expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-1', kinds: ['method-only'] }));
     expect(preview!.sourceSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
-    const next = { ...data, criteria: data.criteria.map((criterion) => ({
-      ...criterion, method: 'Execute the current integration fixture.',
-      check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
-    })) };
+    const next = {
+      ...data,
+      criteria: data.criteria.map((criterion) => ({
+        ...criterion,
+        method: 'Execute the current integration fixture.',
+        check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      })),
+    };
     const written = await setTemplateDataDoor(seeded.rubricSlug, next);
     expect(written.kind).toBe('applied');
     const after = await rubrics.getRubric(seeded.rubricSlug);
     expect(after!.barSetHash).toBe(before!.barSetHash);
-    expect(after!.criteria.map((criterion) => criterion.barHash)).toEqual(before!.criteria.map((criterion) => criterion.barHash));
+    expect(after!.criteria.map((criterion) => criterion.barHash)).toEqual(
+      before!.criteria.map((criterion) => criterion.barHash),
+    );
     const [pin] = await db.adminSql`SELECT acceptance_bar_rubric_revision FROM harness_shared.harness_plans
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
     expect(Number(pin.acceptance_bar_rubric_revision)).toBe(after!.revision);
@@ -1981,14 +2169,29 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const [clauseRow] = await db.adminSql`SELECT current_revision FROM harness_shared.plan_spec_clauses
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
         AND plan_slug=${subject} AND spec_id='AUTO-BAR-R-1-P-001'`;
-    const divergent = await db.adminSql.begin((tx) => setSpecClause({
-      planSlug: subject, specId: 'AUTO-BAR-R-1-P-001', expectedRevision: Number(clauseRow!.current_revision),
-      planItemId: 'P-001', behavior: after!.criteria[0]!.model,
-      behaviorClass: 'happy-path', lifecycleStatus: 'draft', actorId: 'fixture',
-      sourceBar: { barKey: 'R-999', barHash: after!.criteria[0]!.barHash!,
-        barSetHash: after!.barSetHash!, rubricSlug: seeded.rubricSlug,
-        rubricRevision: after!.revision!, evidencePlane: 'tree' },
-    }, { executor: tx as never, workspaceId, harnessSlug: 'papercusp' }));
+    const divergent = await db.adminSql.begin((tx) =>
+      setSpecClause(
+        {
+          planSlug: subject,
+          specId: 'AUTO-BAR-R-1-P-001',
+          expectedRevision: Number(clauseRow!.current_revision),
+          planItemId: 'P-001',
+          behavior: after!.criteria[0]!.model,
+          behaviorClass: 'happy-path',
+          lifecycleStatus: 'draft',
+          actorId: 'fixture',
+          sourceBar: {
+            barKey: 'R-999',
+            barHash: after!.criteria[0]!.barHash!,
+            barSetHash: after!.barSetHash!,
+            rubricSlug: seeded.rubricSlug,
+            rubricRevision: after!.revision!,
+            evidencePlane: 'tree',
+          },
+        },
+        { executor: tx as never, workspaceId, harnessSlug: 'papercusp' },
+      ),
+    );
     expect(divergent.status).toBe('revised');
     await expect(setTemplateDataDoor(seeded.rubricSlug, next)).rejects.toThrow(/acceptance_bar_revision_/);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(after!.revision);
@@ -2000,18 +2203,30 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const amendment = {
       rubricId: seeded.rubricSlug,
-      criterion: { key: before!.criteria[0]!.key, field: 'driftMarkers' as const,
-        mode: 'replace' as const, text: 'The first outcome is absent after the transaction commits.' },
-      actorId: 'amendment-actor', reason: 'Make the falsifier observable.',
+      criterion: {
+        key: before!.criteria[0]!.key,
+        field: 'driftMarkers' as const,
+        mode: 'replace' as const,
+        text: 'The first outcome is absent after the transaction commits.',
+      },
+      actorId: 'amendment-actor',
+      reason: 'Make the falsifier observable.',
       approvedBy: 'outside-reviewer',
     };
-    await expect(rubrics.amendRubric({ ...amendment, approvalRef: 'fixture:outside-approval' }))
-      .rejects.toThrow('acceptance_bar_approval_required');
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef: 'fixture:outside-approval' })).rejects.toThrow(
+      'acceptance_bar_approval_required',
+    );
     const approvalRef = await postApproval(amendment);
-    await expect(rubrics.amendRubric({ ...amendment, approvalRef, approvedBy: 'spoofed-reviewer' }))
-      .rejects.toThrow('acceptance_bar_approval_author_mismatch');
-    const accepted = { ...amendment, approvalRef, approvedAt: '2000-01-01T00:00:00Z',
-      idempotencyKey: 'semantic-amendment-replay', expectedRubricRevision: before!.revision };
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef, approvedBy: 'spoofed-reviewer' })).rejects.toThrow(
+      'acceptance_bar_approval_author_mismatch',
+    );
+    const accepted = {
+      ...amendment,
+      approvalRef,
+      approvedAt: '2000-01-01T00:00:00Z',
+      idempotencyKey: 'semantic-amendment-replay',
+      expectedRubricRevision: before!.revision,
+    };
     const after = await rubrics.amendRubric(accepted);
     expect(after).not.toBeNull();
     const current = await rubrics.getRubric(seeded.rubricSlug);
@@ -2020,15 +2235,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const replayed = await rubrics.amendRubric(accepted);
     expect(replayed!.barSetHash).toBe(current!.barSetHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
-    await expect(rubrics.amendRubric({ ...accepted, reason: 'Reuse the token for a different request.' }))
-      .rejects.toThrow('acceptance_bar_amendment_replay_conflict');
+    await expect(
+      rubrics.amendRubric({ ...accepted, reason: 'Reuse the token for a different request.' }),
+    ).rejects.toThrow('acceptance_bar_amendment_replay_conflict');
     const projections = await db.adminSql`SELECT r.source_rubric_revision, r.source_bar_set_hash
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
       WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${subject}
         AND r.revision=c.current_revision ORDER BY c.spec_id`;
     expect(projections).toHaveLength(2);
-    expect(projections.map((row) => Number(row.source_rubric_revision))).toEqual([current!.revision, current!.revision]);
+    expect(projections.map((row) => Number(row.source_rubric_revision))).toEqual([
+      current!.revision,
+      current!.revision,
+    ]);
     expect(projections.map((row) => row.source_bar_set_hash)).toEqual([current!.barSetHash, current!.barSetHash]);
     const [subjectBeforeFailure] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision
       FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
@@ -2036,15 +2255,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(Number(subjectBeforeFailure.acceptance_bar_rubric_revision)).toBe(current!.revision);
     expect(subjectBeforeFailure.content).toContain('Approved-By: outside-reviewer');
     expect(subjectBeforeFailure.content).not.toContain('Approved-At: 2000-01-01');
-    const nextAmendment = { ...amendment,
+    const nextAmendment = {
+      ...amendment,
       criterion: { ...amendment.criterion, text: 'The first outcome is absent or has the wrong value.' },
     };
-    await expect(rubrics.amendRubric({ ...nextAmendment, approvalRef }))
-      .rejects.toThrow('acceptance_bar_approval_stale_or_mismatched');
-    await expect(rubrics.amendRubric({ ...nextAmendment,
-      approvalRef: await postApproval(nextAmendment),
-      faultInjection: 'after-projection',
-    })).rejects.toThrow('acceptance_bar_amendment_fault_injected:after-projection');
+    await expect(rubrics.amendRubric({ ...nextAmendment, approvalRef })).rejects.toThrow(
+      'acceptance_bar_approval_stale_or_mismatched',
+    );
+    await expect(
+      rubrics.amendRubric({
+        ...nextAmendment,
+        approvalRef: await postApproval(nextAmendment),
+        faultInjection: 'after-projection',
+      }),
+    ).rejects.toThrow('acceptance_bar_amendment_fault_injected:after-projection');
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
     const [subjectAfterFailure] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision
       FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
@@ -2280,23 +2504,41 @@ describe('template_data persistence boundary — the set-template-data door', ()
       (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner)
       VALUES (${workspaceId},'papercusp',${subject},'# Export',md5('# Export'),1,'Export','active','su-test')`;
     const proposed = await rubrics.proposeRubric({
-      rubricId: 'unified-proposal-acceptance', kind: 'acceptance', subjectPlan: subject,
-      characteristic: 'plan-acceptance', title: 'Complete export', by: 'requirement-author',
-      criteria: [{
-        key: 'complete-export', title: 'Complete export',
-        intent: { request: 'Export every record.', sourceRefs: ['request:export'] },
-        acceptance: { condition: 'The export contains every selected record.',
-          falsifier: 'A selected record is missing.', requiredScope: ['tree'],
-          requiredTestLayers: ['integration'], evidencePlane: 'tree',
-          role: 'outcome', mandatory: true, passRatings: ['healthy'] },
-        verification: { method: 'Run the export fixture.',
-          check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] } },
-      }],
+      rubricId: 'unified-proposal-acceptance',
+      kind: 'acceptance',
+      subjectPlan: subject,
+      characteristic: 'plan-acceptance',
+      title: 'Complete export',
+      by: 'requirement-author',
+      criteria: [
+        {
+          key: 'complete-export',
+          title: 'Complete export',
+          intent: { request: 'Export every record.', sourceRefs: ['request:export'] },
+          acceptance: {
+            condition: 'The export contains every selected record.',
+            falsifier: 'A selected record is missing.',
+            requiredScope: ['tree'],
+            requiredTestLayers: ['integration'],
+            evidencePlane: 'tree',
+            role: 'outcome',
+            mandatory: true,
+            passRatings: ['healthy'],
+          },
+          verification: {
+            method: 'Run the export fixture.',
+            check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+          },
+        },
+      ],
     });
     expect(proposed.criteria[0]).toMatchObject({
-      key: 'complete-export', intent: { request: 'Export every record.', sourceRefs: ['request:export'] },
-      model: 'The export contains every selected record.', driftMarkers: 'A selected record is missing.',
-      method: 'Run the export fixture.', requiredTestLayers: ['integration'],
+      key: 'complete-export',
+      intent: { request: 'Export every record.', sourceRefs: ['request:export'] },
+      model: 'The export contains every selected record.',
+      driftMarkers: 'A selected record is missing.',
+      method: 'Run the export fixture.',
+      requiredTestLayers: ['integration'],
       check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
     });
     const stored = await storedTemplateData(proposed.rubricId);
@@ -2309,13 +2551,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
     const key = before.criteria[0]!.key;
     const amendment = {
-      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: 'Require integration proof of the outcome.',
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Require integration proof of the outcome.',
       requirement: { key, acceptance: { requiredTestLayers: ['integration'] } },
     };
     const proofDepthPreview = await rubrics.previewAcceptanceBarAmendment(amendment);
-    expect(proofDepthPreview!.changes).toContainEqual(expect.objectContaining({
-      barKey: 'R-1', kinds: ['bar-meaning'], fields: ['requiredTestLayers'],
-    }));
+    expect(proofDepthPreview!.changes).toContainEqual(
+      expect.objectContaining({
+        barKey: 'R-1',
+        kinds: ['bar-meaning'],
+        fields: ['requiredTestLayers'],
+      }),
+    );
     await expect(rubrics.amendRubric(amendment)).rejects.toThrow('acceptance_bar_approval_required');
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
     const changed = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
@@ -2324,25 +2572,37 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(changed.criteria[0]!.barHash).not.toBe(before.criteria[0]!.barHash);
     expect(changed.criteria[1]).toEqual(before.criteria[1]);
 
-    const method = { method: 'Run the integration fixture and compare every output record.',
-      check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] } };
-    const preview = await rubrics.previewAcceptanceBarAmendment({ rubricId: seeded.rubricSlug,
-      actorId: 'method-author', requirement: { key, verification: method } });
+    const method = {
+      method: 'Run the integration fixture and compare every output record.',
+      check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment({
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      requirement: { key, verification: method },
+    });
     expect(preview).toMatchObject({ approvalRequired: false, nextBarSetHash: changed.barSetHash });
-    const verified = (await rubrics.amendRubric({ rubricId: seeded.rubricSlug,
-      actorId: 'method-author', requirement: { key, verification: method } }))!;
+    const verified = (await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      requirement: { key, verification: method },
+    }))!;
     expect(verified.barSetHash).toBe(changed.barSetHash);
     expect(verified.criteria[0]).toMatchObject({ ...method, barHash: changed.criteria[0]!.barHash });
     expect(verified.criteria[1]).toEqual(changed.criteria[1]);
 
     // The complete-set door must normalize before its transaction's check/path
     // preflight too; no flat method/check is supplied by this caller.
-    const replaced = (await rubrics.amendRubric({ rubricId: seeded.rubricSlug, actorId: 'method-author',
-      criteria: verified.criteria.map(({ model, bar: _bar, driftMarkers, method: oldMethod,
-        check, replication, ...criterion }) => ({ ...criterion,
-        acceptance: { condition: model, falsifier: driftMarkers },
-        verification: { method: oldMethod, ...(check ? { check } : {}), ...(replication ? { replication } : {}) },
-      })),
+    const replaced = (await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      criteria: verified.criteria.map(
+        ({ model, bar: _bar, driftMarkers, method: oldMethod, check, replication, ...criterion }) => ({
+          ...criterion,
+          acceptance: { condition: model, falsifier: driftMarkers },
+          verification: { method: oldMethod, ...(check ? { check } : {}), ...(replication ? { replication } : {}) },
+        }),
+      ),
     }))!;
     expect(replaced.barSetHash).toBe(verified.barSetHash);
     expect(replaced.criteria[0]).toMatchObject(method);
@@ -2364,21 +2624,25 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const seeded = await seedBarContract('plane-approval-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const amendment = {
-      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: 'Require observed live behavior.',
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Require observed live behavior.',
       criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: 'live' as const },
     };
     const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
     expect(preview!.changedBars).toEqual(['R-1']);
     expect(preview!.projectionCount).toBe(2);
-    expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-1', kinds: ['bar-meaning', 'evidence-plane'] }));
+    expect(preview!.changes).toContainEqual(
+      expect.objectContaining({ barKey: 'R-1', kinds: ['bar-meaning', 'evidence-plane'] }),
+    );
     // rubric starts at 2, not 1: seeding now authors METHOD/check first.
     expect(preview!.revisionMovement).toMatchObject({ rubric: { from: 2, to: 3 }, subject: { from: 2, to: 3 } });
     expect(preview!.approval.bars[0]!.priorBarHash).toBe(before!.criteria[0]!.barHash);
     expect(preview!.approval.bars[0]!.nextBarHash).not.toBe(before!.criteria[0]!.barHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
-    await expect(rubrics.amendRubric({ ...amendment,
-      approvalRef: await postApproval(amendment, 'amendment-actor'),
-    })).rejects.toThrow('acceptance_bar_approval_in_implementer_lineage');
+    await expect(
+      rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment, 'amendment-actor') }),
+    ).rejects.toThrow('acceptance_bar_approval_in_implementer_lineage');
     const approvalRef = await postApproval(amendment);
     const after = await rubrics.amendRubric({ ...amendment, approvalRef });
     expect(after!.criteria[0]!.evidencePlane).toBe('live');
@@ -2396,7 +2660,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const seeded = await seedBarContract('concurrent-bar-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const inputs = ['live', 'deployed'].map((evidencePlane) => ({
-      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: `Require ${evidencePlane} evidence.`,
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: `Require ${evidencePlane} evidence.`,
       expectedRubricRevision: before!.revision,
       criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: evidencePlane as 'live' | 'deployed' },
     }));
@@ -2435,7 +2701,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const seeded = await seedBarContract('sequential-stale-cas-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const inputs = ['live', 'deployed'].map((evidencePlane) => ({
-      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: `Require ${evidencePlane} evidence.`,
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: `Require ${evidencePlane} evidence.`,
       expectedRubricRevision: before!.revision,
       criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: evidencePlane as 'live' | 'deployed' },
     }));
@@ -2499,12 +2767,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     // The refusal rolls back inside the lock — the stored rubric is untouched.
     const after = await storedTemplateData('guarded-rubric');
     expect(after.criteria.map((c) => c.key)).toEqual(before.criteria.map((c) => c.key));
-    expect((await rubrics.getRubric('guarded-rubric'))?.criteria).toHaveLength(
-      before.criteria.length,
-    );
+    expect((await rubrics.getRubric('guarded-rubric'))?.criteria).toHaveLength(before.criteria.length);
   });
 
-  it('cannot CLEAR a rubric\'s template_data through this door either', async () => {
+  it("cannot CLEAR a rubric's template_data through this door either", async () => {
     await seedRubric('clearable-rubric');
     // A clear erases every criterion at once, so it must never reach the column. This
     // door stops it one step EARLIER than the loss-guard — the registry schema refuses
@@ -2542,7 +2808,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     );
   });
 
-  it('leaves a NON-rubric plan\'s structured data alone (the guard is scoped, not global)', async () => {
+  it("leaves a NON-rubric plan's structured data alone (the guard is scoped, not global)", async () => {
     // A parameterized plan writes template_data too, and its input VALUES may perfectly
     // well contain a shrinking `criteria` array. The guard keys off the plan being a
     // rubric, not off the data merely looking like one — otherwise every plan-input
