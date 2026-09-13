@@ -38,6 +38,7 @@ import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './releva
 import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
+import { proseProfilePredicateSql } from '../search/prose-vector-dims';
 
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
  * question similarity clears this is served from the archive (create +
@@ -866,7 +867,9 @@ export async function getFeedbackCore(
   //     not migrated throws, and the leg degrades to normal routing (the
   //     per-source degrade contract) — the INSERT then also skips the column.
   const archiveFloor = req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
-  const qVecStr = route.queryVec && route.queryVec.length > 0 ? JSON.stringify(route.queryVec) : null;
+  const qVecStr = route.queryVec && route.queryVec.length > 0 && route.queryProfile
+    ? JSON.stringify(route.queryVec)
+    : null;
   let embeddingColumnOk = false;
   let archiveHit: ConsultArchiveRow | null = null;
   if (qVecStr) {
@@ -878,6 +881,7 @@ export async function getFeedbackCore(
          WHERE workspace_id = ${req.workspaceId}
            AND state = 'closed_answered'
            AND query_embedding IS NOT NULL
+           AND ${proseProfilePredicateSql(sql, route.queryProfile, 'query_embedding_profile', 'query_embedding_mode')}
            AND (outcome->>'source' IS DISTINCT FROM 'archive')
            AND (responder_id IS NULL OR responder_id <> ALL(${excludeOwners}::text[]))
       ORDER BY query_embedding <=> ${qVecStr}::vector
@@ -946,13 +950,14 @@ export async function getFeedbackCore(
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, outcome, closed_at, wakes_used,
-         depth, parent_consult_id, query_embedding)
+         depth, parent_consult_id, query_embedding, query_embedding_mode, query_embedding_profile)
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
          NULL, 'closed_answered', ${req.question}, ${latency},
          ${originRef}, ${sql.json(route.snapshot as never)},
          ${sql.json(outcome as never)}, now(), 0,
-         ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
+         ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector,
+         ${route.queryMode}, ${route.queryProfile!.profileId})
     `;
     return {
       ok: true,
@@ -1112,12 +1117,13 @@ export async function getFeedbackCore(
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, expires_at, wakes_used,
-         depth, parent_consult_id, query_embedding)
+         depth, parent_consult_id, query_embedding, query_embedding_mode, query_embedding_profile)
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
          ${finalChosen?.ownerId ?? null}, ${provisionalState}, ${req.question}, ${latency},
          ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
-         ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
+         ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector,
+         ${route.queryMode}, ${route.queryProfile!.profileId})
     `;
   } else {
     await sql`
