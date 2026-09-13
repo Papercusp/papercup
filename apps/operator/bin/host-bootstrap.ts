@@ -73,6 +73,7 @@ import {
   governedExecutionRuntime,
 } from '@papercusp/operator-core/lib/resource-governor/execution';
 import { agentMcpBootstrapFailureCode } from '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-error';
+import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
 
 /**
  * All of this module's mutable state, pinned together at module scope ONCE.
@@ -94,10 +95,12 @@ const BOOTSTRAP_STATE = pinModuleState<{
   ran: boolean;
   packagedMcpProxyProcess: ChildProcess | null;
   packagedMcpProxyShutdownRequested: boolean;
+  requestMigrationGateFlights: Map<string, Promise<void>>;
 }>('@papercusp/web.host-bootstrap', () => ({
   ran: false,
   packagedMcpProxyProcess: null,
   packagedMcpProxyShutdownRequested: false,
+  requestMigrationGateFlights: new Map(),
 }));
 
 // Declared AFTER the pin on purpose: host-bootstrap.startup-guards.test.ts slices
@@ -282,21 +285,33 @@ async function stopPackagedMcpProxy(): Promise<void> {
  */
 export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void> {
   if (!backgroundWorkersEnabled()) {
-    const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
-    const migrationResult = await applyPendingMigrationsAtBoot();
-    if (!migrationResult || migrationResult.failed.length > 0) {
-      const failureSummary = migrationResult
-        ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed
-            .map((failure) => `${failure.file}: ${failure.error}`)
-            .join('; ')}`
-        : 'migration state could not be determined';
-      throw new Error(`[host-bootstrap] request-only migration preflight failed: ${failureSummary}`);
-    }
-    const { markMigrationsAppliedForRequestGate } = await import(
-      '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
+    // runBootstrap's endpoint-IPC listener and hono-host's request-server gate
+    // reach this concurrently. They used to run TWO boot-migration clients:
+    // one could return null while its twin succeeded, leaving HTTP healthy but
+    // silently suppressing the native agent listener as a generic runtime
+    // error. Share one exact preflight (success or failure) across the burst.
+    // The generic helper clears after settlement, so a genuinely later call
+    // remains a fresh safety check rather than replaying stale migration state.
+    return dedupeInFlight(
+      BOOTSTRAP_STATE.requestMigrationGateFlights,
+      'request-only-boot-migration',
+      async () => {
+        const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
+        const migrationResult = await applyPendingMigrationsAtBoot();
+        if (!migrationResult || migrationResult.failed.length > 0) {
+          const failureSummary = migrationResult
+            ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed
+                .map((failure) => `${failure.file}: ${failure.error}`)
+                .join('; ')}`
+            : 'migration state could not be determined';
+          throw new Error(`[host-bootstrap] request-only migration preflight failed: ${failureSummary}`);
+        }
+        const { markMigrationsAppliedForRequestGate } = await import(
+          '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
+        );
+        markMigrationsAppliedForRequestGate();
+      },
     );
-    markMigrationsAppliedForRequestGate();
-    return;
   }
   try {
     const { awaitMigrationsAppliedForRequestGate } = await import(
