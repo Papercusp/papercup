@@ -752,6 +752,53 @@ describe('bounded inactive artifact reclaim (EI-21150371868241728)', () => {
     }
   });
 
+  it('reclaims an explicitly configured tagged target with a non-legacy basename, but never an untagged one', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-configured-cargo-reclaim-'));
+    const configuredTarget = resolve(root, 'cargo-target');
+    const untaggedTarget = resolve(root, 'other-target');
+
+    try {
+      for (const target of [configuredTarget, untaggedTarget]) {
+        mkdirSync(resolve(target, 'debug'), { recursive: true });
+        writeFileSync(resolve(target, 'debug', 'artifact'), 'x');
+        age(resolve(target, 'debug'));
+        age(target);
+      }
+      ensureCargoCacheTag(configuredTarget);
+      age(configuredTarget);
+
+      const configured = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [configuredTarget],
+        configuredTargetDir: configuredTarget,
+        now: Date.now(),
+        policy: { ...stalePolicy, maxEntries: 4 },
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+      });
+      const untagged = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [untaggedTarget],
+        configuredTargetDir: untaggedTarget,
+        now: Date.now(),
+        policy: { ...stalePolicy, maxEntries: 4 },
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+      });
+
+      expect(configured.reclaimed).toBe(1);
+      expect(existsSync(resolve(configuredTarget, 'debug'))).toBe(false);
+      expect(untagged.reclaimed).toBe(0);
+      expect(existsSync(resolve(untaggedTarget, 'debug', 'artifact'))).toBe(true);
+      expect(untagged.skipped).toContainEqual({
+        path: untaggedTarget,
+        reason: 'configured target lacks canonical CACHEDIR.TAG',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('stamps producer ownership and keeps explicit rig retention visible to the reaper', () => {
     expect(VERIFY_SOURCE).toContain('write_run_marker "$$"');
     expect(VERIFY_SOURCE).toContain('write_run_marker "$PORT_LOCK_KEEPER_PID"');

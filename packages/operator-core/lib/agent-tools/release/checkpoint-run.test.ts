@@ -1420,7 +1420,9 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       expect.objectContaining({ candidate: CURRENT }),
       { reconcileTerminalRepairQueueForSuccessor: true },
     );
-    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({ candidate: CURRENT }));
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ candidate: CURRENT, candidateSource: 'current-quiet-cut' }),
+    );
     expect(result).toMatchObject({
       ok: true,
       willJudge: { candidate: CURRENT, candidateSource: 'current-quiet-cut' },
@@ -1491,6 +1493,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(launchSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         candidate: QUEUE_HEAD,
+        candidateSource: 'frozen-repair-queue',
         logicalAttemptId: expect.any(String),
       }),
     );
@@ -1562,6 +1565,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(launchSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         candidate: QUEUE_HEAD,
+        candidateSource: 'frozen-repair-queue',
         logicalAttemptId: expect.any(String),
       }),
     );
@@ -1944,6 +1948,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(launchSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         candidate: CURRENT,
+        candidateSource: 'current-quiet-cut',
         logicalAttemptId: expect.any(String),
       }),
     );

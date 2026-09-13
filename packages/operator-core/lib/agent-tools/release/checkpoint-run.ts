@@ -95,6 +95,10 @@ import {
   buildCheckpointEligibilitySnapshot,
   type CheckpointEligibilityPredicate,
 } from '../../release/checkpoint-eligibility-snapshot';
+import {
+  isCheckpointCandidateSource,
+  type CheckpointCandidateSource,
+} from '../../release/checkpoint-candidate-source';
 
 type SeeAlsoContext = { harnessSlug?: unknown };
 
@@ -1190,6 +1194,15 @@ export default defineTool({
         : null;
     const launchCandidate =
       requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
+    // The detached producer must receive the same provenance decision as the candidate. Keep
+    // `unresolved` confined to preflight/refusal responses: serializing it would make the
+    // producer fall back to a misleading tip source, which is the original frozen-lineage bug.
+    const launchCandidateSource: CheckpointCandidateSource =
+      requiredAncestorPreflight && isCheckpointCandidateSource(requiredAncestorPreflight.candidateSource)
+        ? requiredAncestorPreflight.candidateSource
+        : frozenRepairQueuePreflight && isCheckpointCandidateSource(frozenRepairQueuePreflight.candidateSource)
+          ? frozenRepairQueuePreflight.candidateSource
+          : 'current-quiet-cut';
     const frozenLineageIdentity =
       requiredAncestorPreflight?.frozenLineageIdentity ??
       frozenRepairQueuePreflight?.frozenLineageIdentity ??
@@ -1743,6 +1756,7 @@ export default defineTool({
       force: args.force,
       replaceStale: args.replaceStale,
       ...(launchCandidate ? { candidate: launchCandidate } : {}),
+      candidateSource: launchCandidateSource,
       logicalAttemptId,
     });
     if (
@@ -2077,10 +2091,7 @@ export default defineTool({
       ? {
           ...result.willJudge,
           candidate: transportedCandidateSha,
-          candidateSource:
-            requiredAncestorPreflight?.candidateSource ??
-            frozenRepairQueuePreflight?.candidateSource ??
-            'current-quiet-cut',
+          candidateSource: launchCandidateSource,
         }
       : null;
     const containment = result.launched

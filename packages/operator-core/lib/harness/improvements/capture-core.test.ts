@@ -917,8 +917,65 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     ]);
   });
 
+  it('does not promote or rewrite a known cross-class row sharing the report watchdog key', async () => {
+    const reportKey = 'repeated-tool-error:work_items:get:structural:same-message-shape';
+    const prior = existing({
+      id: 'EI-CROSS-CLASS',
+      title: 'same report-shaped title',
+      kind: 'change',
+      scope: 'operator',
+      payload: {
+        lane: 'observation',
+        watchdogKey: reportKey,
+        toolFailureProbation: {
+          state: 'probation',
+          class: 'structural',
+          classKey: 'repeated-tool-error-class:work_items:get:structural:schema-old~field-old:runtime-old',
+          watchdogKey: reportKey,
+          reporters: ['su-a'],
+        },
+      },
+    });
+    const updateIssuePatch = vi.fn(async () => existing({ ...prior }));
+    const mergeIssuePayload = vi.fn(async () => existing({ ...prior }));
+    const d = {
+      ...deps({ found: [prior] }),
+      findIssuesByToolFailureClassKeys: async () => [],
+      findIssuesByWatchdogKeys: async () => [prior],
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      updateIssuePatch,
+      mergeIssuePayload,
+    } satisfies CaptureDeps;
+
+    const result = await captureImprovement(
+      {
+        title: prior.title,
+        kind: 'bug',
+        watchdogKey: reportKey,
+        createdBy: 'su-b',
+        payloadExtra: {
+          toolFailureProbation: {
+            state: 'promoted',
+            class: 'structural',
+            classKey: 'repeated-tool-error-class:work_items:get:structural:schema-new~field-new:runtime-new',
+            watchdogKey: reportKey,
+            directEvidence: true,
+            reporters: ['su-b'],
+          },
+        },
+      },
+      d,
+    );
+
+    expect(result).toMatchObject({ created: true });
+    expect(d.created).toHaveLength(1);
+    expect(updateIssuePatch).not.toHaveBeenCalled();
+    expect(mergeIssuePayload).not.toHaveBeenCalled();
+  });
+
   it('promotes an exact-title probation row when direct evidence has a different message fingerprint', async () => {
     const title = 'ptool work_items:get exits silently with empty output after delayed invocation';
+    const classKey = 'repeated-tool-error-class:work_items:get:structural:schema-42~field-required:runtime-7';
     const prior = existing({
       id: 'EI-TITLE-PROBATION',
       title,
@@ -930,6 +987,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         toolFailureProbation: {
           state: 'probation',
           class: 'structural',
+          classKey,
           watchdogKey: 'repeated-tool-error:work_items:get:structural:first-shape',
           intendedKind: 'bug',
           reporters: ['su-a'],
@@ -964,6 +1022,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
           toolFailureProbation: {
             state: 'promoted',
             class: 'structural',
+            classKey,
             watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
             intendedKind: 'bug',
             directEvidence: true,

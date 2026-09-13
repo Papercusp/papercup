@@ -8,13 +8,18 @@
  * the reader can use the same parser and identity rules.
  */
 
+import {
+  isCheckpointCandidateSource,
+  type CheckpointCandidateSource,
+} from './checkpoint-candidate-source';
+
 export const CANDIDATE_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 export const CANDIDATE_SNAPSHOT_MAX_AGE_MS = 3 * 60 * 60_000;
 export const CANDIDATE_SNAPSHOT_MAX_FAILURES = 32;
 export const CANDIDATE_SNAPSHOT_MAX_POST_SUITE_LEGS = 32;
 export const CANDIDATE_SNAPSHOT_MAX_TEXT = 1000;
 
-export type CandidateSnapshotSource = 'pinned' | 'tip';
+export type CandidateSnapshotSource = CheckpointCandidateSource;
 export type CandidateSnapshotRetriageClassification = 'real-red' | 'stale-candidate' | 'unknown' | 'none';
 export type CandidateSnapshotPostSuiteStatus = 'passed' | 'failed' | 'skipped';
 
@@ -233,7 +238,7 @@ export function buildCandidateSnapshot(
     candidate,
     base: boundedSha(input.base),
     runId: boundedRunId(input.runId),
-    source: input.source === 'pinned' ? 'pinned' : 'tip',
+    source: input.source ?? 'tip',
     observedAtMs: nowMs,
     selectedAtMs:
       typeof input.selectedAtMs === 'number' && Number.isFinite(input.selectedAtMs)
@@ -276,7 +281,12 @@ export function parseCandidateSnapshot(raw: unknown): CandidateSnapshot | null {
   const candidate = boundedSha(value.candidate);
   const runId = boundedRunId(value.runId);
   const base = boundedSha(value.base);
-  const source = value.source === 'pinned' || value.source === 'tip' ? value.source : null;
+  const source =
+    value.source === undefined
+      ? ('tip' as const)
+      : isCheckpointCandidateSource(value.source)
+        ? value.source
+        : null;
   const observedAtMs =
     typeof value.observedAtMs === 'number' && Number.isFinite(value.observedAtMs)
       ? value.observedAtMs

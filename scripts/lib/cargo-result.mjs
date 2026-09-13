@@ -292,6 +292,16 @@ function safeStat(path) {
   try { return statSync(path); } catch { return null; }
 }
 
+function hasCanonicalCargoCacheTag(root) {
+  const tagPath = join(root, 'CACHEDIR.TAG');
+  try {
+    const stat = lstatSync(tagPath);
+    return stat.isFile() && readFileSync(tagPath, 'utf8') === CARGO_CACHE_TAG;
+  } catch {
+    return false;
+  }
+}
+
 const FILESYSTEM_BLOCK_SIZE_BYTES = 512;
 
 function allocatedBytes(stat) {
@@ -687,11 +697,30 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
     if (result.reclaimed >= policy.maxEntries) break;
   }
 
-  const roots = options.cargoRoots ?? knownCargoRoots(homeDir, options.configuredTargetDir ?? process.env.CARGO_TARGET_DIR);
-  for (const root of roots) {
+  const configuredTargetDir = options.configuredTargetDir ?? process.env.CARGO_TARGET_DIR;
+  const configuredRoot = configuredTargetDir
+    ? resolve(process.cwd(), configuredTargetDir)
+    : null;
+  const roots = options.cargoRoots ?? knownCargoRoots(homeDir, configuredTargetDir);
+  for (const candidateRoot of roots) {
     if (result.reclaimed >= policy.maxEntries) break;
+    const root = resolve(candidateRoot);
     const name = root.split('/').pop() ?? '';
-    if (!CARGO_TARGET_NAME_RE.test(name) || !safeStat(root)?.isDirectory()) continue;
+    const legacyNamedRoot = CARGO_TARGET_NAME_RE.test(name);
+    const configuredTaggedRoot =
+      configuredRoot === root && hasCanonicalCargoCacheTag(root);
+    // A config-resolved target may have any basename (`/mnt/data/cargo-target`
+    // on the production host), so name matching alone strands the exact cache
+    // admission is meant to reclaim. Preserve the narrow deletion boundary:
+    // a non-legacy name is eligible only when it is the exact configured path
+    // AND carries Cargo's canonical cache-directory marker. An arbitrary path
+    // supplied through `cargoRoots` never gains deletion authority by itself.
+    if ((!legacyNamedRoot && !configuredTaggedRoot) || !safeStat(root)?.isDirectory()) {
+      if (!legacyNamedRoot && configuredRoot === root && !configuredTaggedRoot) {
+        result.skipped.push({ path: root, reason: 'configured target lacks canonical CACHEDIR.TAG' });
+      }
+      continue;
+    }
     if (existsSync(join(root, '.papercusp-keep'))) {
       result.skipped.push({ path: root, reason: 'explicit keep marker' });
       continue;

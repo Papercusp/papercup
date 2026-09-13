@@ -235,6 +235,54 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain("--candidate-source 'tip'");
   });
 
+  it.each(['pinned', 'tip', 'frozen-repair-queue', 'current-quiet-cut'] as const)(
+    'EI-224436: transports the exact runnable candidate source %s',
+    (candidateSource) => {
+      const candidate = 'a'.repeat(40);
+      const inner = buildCheckpointSystemdArgv(
+        '/tree',
+        '/tmp/cp.log',
+        '/usr/bin:/bin',
+        false,
+        undefined,
+        null,
+        'shared',
+        candidate,
+        undefined,
+        undefined,
+        '/tree',
+        {},
+        [],
+        candidateSource,
+      ).at(-1)!;
+
+      expect(inner).toContain(`--candidate '${candidate}' --candidate-source '${candidateSource}'`);
+    },
+  );
+
+  it('EI-224436: keeps unresolved preflight values out of the detached CLI', () => {
+    const candidate = 'a'.repeat(40);
+    const inner = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin:/bin',
+      false,
+      undefined,
+      null,
+      'shared',
+      candidate,
+      undefined,
+      undefined,
+      '/tree',
+      {},
+      [],
+      'unresolved' as never,
+    ).at(-1)!;
+
+    expect(inner).toContain("--candidate-source 'tip'");
+    expect(inner).not.toContain("--candidate-source 'unresolved'");
+  });
+
   it('EI-211596: never forwards an unvalidated candidate into the bash command', () => {
     const inner = buildCheckpointSystemdArgv(
       '/tree',
@@ -589,6 +637,27 @@ describe('launchDetachedCheckpoint', () => {
     expect(r.argv.at(-1)).toContain(`green-checkpoint.ts --candidate '${candidate}'`);
     expect(r.argv.at(-1)).toContain("--candidate-source 'tip'");
   });
+
+  it.each(['pinned', 'tip', 'frozen-repair-queue', 'current-quiet-cut'] as const)(
+    'EI-224436: reports the exact %s source in willJudge and argv',
+    async (candidateSource) => {
+      const candidate = 'b'.repeat(40);
+      const child = fakeChild();
+      const spawnFn = vi.fn(() => child) as never;
+      const execFn = vi.fn(() => ({ status: 0, stdout: candidate, stderr: '' }));
+
+      const p = launchDetachedCheckpoint(
+        { root: '/tree', force: true, candidate, candidateSource },
+        spawnFn,
+        execFn,
+      );
+      child.emit('close', 0);
+      const result = await p;
+
+      expect(result).toMatchObject({ launched: true, willJudge: { candidate, candidateSource } });
+      expect(result.argv.at(-1)).toContain(`--candidate '${candidate}' --candidate-source '${candidateSource}'`);
+    },
+  );
 
   it('EI-211596: rejects an invalid explicit candidate before spawn', async () => {
     const spawnFn = vi.fn();

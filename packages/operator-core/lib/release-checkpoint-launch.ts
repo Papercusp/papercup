@@ -51,6 +51,10 @@ import { admitCheckpointMemory, type CheckpointMemoryAdmission } from './release
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
 import type { CheckpointEligibilitySnapshot } from './release/checkpoint-eligibility-snapshot';
 import {
+  isCheckpointCandidateSource,
+  type CheckpointCandidateSource,
+} from './release/checkpoint-candidate-source';
+import {
   callerEditsInCandidate,
   containingSubmodulePath,
   excludedCommitsTouchingPath,
@@ -190,6 +194,8 @@ export interface LaunchCheckpointResult {
   willJudge?: {
     /** The commit predicted to be judged (post quiet-cut). */
     candidate: string | null;
+    /** Provenance selected for the detached producer. */
+    candidateSource?: CheckpointCandidateSource;
     /** The true tip of the integration branch BEFORE any quiet-cut step-back. */
     tip: string | null;
     /** Did the quiet-cut step the candidate back from the tip? */
@@ -1783,6 +1789,8 @@ export function buildCheckpointSystemdArgv(
   extraEnv: Record<string, string> = {},
   /** Inherited environment keys that must be removed for a subject run. */
   clearEnv: string[] = [],
+  /** Exact runnable provenance. Invalid/preflight-only values are never forwarded. */
+  candidateSource?: CheckpointCandidateSource | null,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -1810,7 +1818,7 @@ export function buildCheckpointSystemdArgv(
   const gateEnv = `${partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : ''}${capacity}`;
   const candidateArg =
     candidateSha && /^[0-9a-f]{40}$/.test(candidateSha)
-      ? ` --candidate '${candidateSha}' --candidate-source 'tip'`
+      ? ` --candidate '${candidateSha}' --candidate-source '${isCheckpointCandidateSource(candidateSource) ? candidateSource : 'tip'}'`
       : '';
   // Keep detached manual runs under the same cgroup memory policy as the periodic gate.
   // The capacity argument is the already-validated contract forwarded below; an omitted or
@@ -1984,6 +1992,8 @@ export interface LaunchCheckpointOpts {
   clearEnv?: string[];
   /** Exact preflight-resolved candidate to transport across the detached CLI seam. */
   candidate?: string | null;
+  /** Exact runnable provenance to transport with the candidate. */
+  candidateSource?: CheckpointCandidateSource | null;
   /** Skip the pre-launch active-run check (WI-1562) and attempt the launch regardless.
    *  ⚠ WI-6962: this was documented as safe because "systemd's own same-unit collision guard
    *  is still the final backstop". THAT IS FALSE, and the false belief is what made the
@@ -2796,6 +2806,12 @@ export async function launchDetachedCheckpoint(
   const current = currentCheckpointCandidate(subjectRoot, execFn);
   const tipSha = current.current_head;
   const candidateSha = opts.candidate ?? current.current_candidate;
+  // Keep the provenance in lockstep with the candidate forwarded below. Invalid or omitted
+  // values retain the legacy tip default; preflight-owned callers pass one of the exact
+  // runnable sources so a frozen repair head cannot be mislabeled as tip.
+  const candidateSource: CheckpointCandidateSource = isCheckpointCandidateSource(opts.candidateSource)
+    ? opts.candidateSource
+    : 'tip';
   // WI-4494: this run records its own verdict. Explicit opt-out (`target: null`) is honoured;
   // omitted ⇒ the operator-home gate, which is this launcher's documented scope. Hoisted so
   // the P-001 fire ANCHOR (in the close handler below) and the argv env stamps can never
@@ -2818,6 +2834,7 @@ export async function launchDetachedCheckpoint(
     subjectRoot,
     opts.extraEnv,
     opts.clearEnv,
+    candidateSource,
   );
 
   // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this
@@ -2832,6 +2849,7 @@ export async function launchDetachedCheckpoint(
       : [];
   const willJudge: LaunchCheckpointResult['willJudge'] = {
     candidate: candidateSha,
+    candidateSource,
     tip: tipSha,
     quietCutApplied,
     quietCutSec: current.quiet_cut_sec,

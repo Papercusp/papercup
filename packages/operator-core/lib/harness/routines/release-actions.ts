@@ -101,6 +101,7 @@ import {
   parseCandidateSnapshot,
   type CandidateSnapshot,
 } from '../../release/candidate-snapshot';
+import type { CheckpointCandidateSource } from '../../release/checkpoint-candidate-source';
 
 // Kept as exports from this historical module for callers/tests that already
 // use the release-actions config surface. The implementation is shared with
@@ -598,7 +599,7 @@ export function buildScheduledCheckpointShell(
  * candidate-bound red result. Best-effort: a wake failure must not change gate recording.
  */
 function isPinnedCheckpointVerdict(
-  verdict: { candidateSource?: 'pinned' | 'tip'; diagnostic?: 'candidate-pinned' } | null | undefined,
+  verdict: { candidateSource?: CheckpointCandidateSource; diagnostic?: 'candidate-pinned' } | null | undefined,
 ): boolean {
   return verdict?.candidateSource === 'pinned' || verdict?.diagnostic === 'candidate-pinned';
 }
@@ -1010,7 +1011,7 @@ export interface CheckpointVerdict {
   reason: string;
   green?: boolean | null;
   /** Canonical provenance: pinned diagnostics never mutate the live gate. */
-  candidateSource?: 'pinned' | 'tip';
+  candidateSource?: CheckpointCandidateSource;
   /** Compatibility field for older producers that predate candidateSource. */
   diagnostic?: 'candidate-pinned';
   candidate?: string;
@@ -3436,7 +3437,7 @@ export async function trackGateStall(
     promotionPending?: boolean;
     green?: boolean | null;
     runId?: string;
-    candidateSource?: 'pinned' | 'tip';
+    candidateSource?: CheckpointCandidateSource;
     diagnostic?: 'candidate-pinned';
     /** WI-22344736163383832: producer selection timestamp carried into the snapshot. */
     selectedAtMs?: number;
@@ -3580,7 +3581,7 @@ export async function trackGateStall(
       candidate: snapshotCandidate,
       base: from,
       runId: options.runId,
-      source: options.candidateSource === 'pinned' ? 'pinned' : 'tip',
+      source: options.candidateSource ?? 'tip',
       selectedAtMs: options.selectedAtMs,
       candidateCommittedAt: staleness.candidateCommittedAt,
       commitsBehindTip: staleness.commitsBehindTip,

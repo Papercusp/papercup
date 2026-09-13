@@ -949,6 +949,27 @@ function toolFailureProbationOf(
     : null;
 }
 
+/**
+ * Guard fallback promotion against a known stable-class mismatch.
+ *
+ * Migration 865 arbitrates the broad top-level watchdog identity, while the
+ * nested classKey is the stable tool-failure contract/revision identity. A
+ * legacy row may not carry classKey at all, so absence on either side remains
+ * compatible; only two present, different class keys prove that the rows are
+ * different failure classes.
+ */
+function compatibleToolFailureClassIdentity(
+  issue: EngineerIssue,
+  incoming: ToolFailureProbationPayload | null | undefined,
+): boolean {
+  const prior = toolFailureProbationOf((issue.payload as Record<string, unknown> | null) ?? {});
+  const priorClassKey = prior?.classKey;
+  const incomingClassKey = incoming?.classKey;
+  const priorKnown = typeof priorClassKey === 'string' && priorClassKey.length > 0;
+  const incomingKnown = typeof incomingClassKey === 'string' && incomingClassKey.length > 0;
+  return !priorKnown || !incomingKnown || priorClassKey === incomingClassKey;
+}
+
 function initialImplementationReadiness(reviewRequired: boolean): ImplementationReadinessState {
   return createImplementationReadiness(
     reviewRequired
@@ -1019,6 +1040,7 @@ async function reconcileToolFailurePromotionCollision(
     if (candidate.id === prior.id || !isWatchdogNonTerminal(candidate)) return false;
     const payload = (candidate.payload as Record<string, unknown> | null) ?? {};
     return (
+      compatibleToolFailureClassIdentity(candidate, incomingProbation) &&
       issueWatchdogLane(candidate) !== 'observation' &&
       typeof payload.watchdogKey === 'string' &&
       uniqueKeys.includes(payload.watchdogKey) &&
@@ -1101,6 +1123,7 @@ async function promoteToolFailureProbation(
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
   const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
+  if (!compatibleToolFailureClassIdentity(prior, incomingProbation)) return null;
   const reporters = [
     ...new Set(
       [
@@ -1379,6 +1402,7 @@ async function coalesceWatchdogWinner(args: {
     issueWatchdogLane(prior) === 'observation' &&
     priorProbation?.state === 'probation' &&
     incomingProbation &&
+    compatibleToolFailureClassIdentity(prior, incomingProbation) &&
     priorReporters.length > 0 &&
     independentReporter
   ) {
@@ -1711,6 +1735,7 @@ export async function captureImprovement(
         i.state === 'open' &&
         payload.lane === 'observation' &&
         toolFailureProbationOf(payload)?.state === 'probation' &&
+        compatibleToolFailureClassIdentity(i, incomingProbation) &&
         effectiveOrigin(i.signalOrigin) === origin &&
         issueScopeMatchesCapture(i, input.scope)
       );
@@ -1741,7 +1766,11 @@ export async function captureImprovement(
         };
       }
     }
-    exactKeyIssues = exactKeyIssues.filter((issue) => sameWatchdogIdentity(issue, input, origin));
+    exactKeyIssues = exactKeyIssues.filter(
+      (issue) =>
+        sameWatchdogIdentity(issue, input, origin) &&
+        compatibleToolFailureClassIdentity(issue, incomingProbation),
+    );
     // WI-39594: an OPEN same-lane exact-key row COALESCES — a keyed detector
     // re-fire refreshes the standing row (repeatCount bump, latest title/body)
     // instead of forking a sibling. Runs BEFORE the fuzzy nets and BEFORE the
@@ -2005,6 +2034,7 @@ export async function captureImprovement(
         candidate.title === input.title &&
         issueWatchdogLane(candidate) === 'observation' &&
         toolFailureProbationOf(payload)?.state === 'probation' &&
+        compatibleToolFailureClassIdentity(candidate, incomingProbation) &&
         effectiveOrigin(candidate.signalOrigin) === origin &&
         issueScopeMatchesCapture(candidate, input.scope)
       );
@@ -2378,7 +2408,7 @@ export async function captureImprovement(
       (i) =>
         i.state === 'open' &&
         (i.payload as Record<string, unknown> | undefined)?.lane === 'observation' &&
-        (!incomingProbation?.classKey || toolFailureProbationOf(i.payload as Record<string, unknown> | null)?.classKey === incomingProbation.classKey) &&
+        compatibleToolFailureClassIdentity(i, incomingProbation) &&
         sameWatchdogIdentity(i, input, origin),
     );
     if (prior) {
@@ -2745,7 +2775,10 @@ export async function captureImprovement(
       throw error;
     });
     const winner = raced.find(
-      (candidate) => isWatchdogNonTerminal(candidate) && sameWatchdogIdentity(candidate, input, origin),
+      (candidate) =>
+        isWatchdogNonTerminal(candidate) &&
+        sameWatchdogIdentity(candidate, input, origin) &&
+        compatibleToolFailureClassIdentity(candidate, incomingProbation),
     );
     if (!winner) throw error;
     return coalesceWatchdogWinner({

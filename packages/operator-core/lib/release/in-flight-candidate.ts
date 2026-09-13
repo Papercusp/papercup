@@ -40,6 +40,10 @@
  */
 import { mergeGateHealth } from './gate-health-merge';
 import type { GateVerdictTarget } from './gate-verdict-target';
+import {
+  isCheckpointCandidateSource,
+  type CheckpointCandidateSource,
+} from './checkpoint-candidate-source';
 
 /** Bounded by green-checkpoint.ts's `SELF_WATCHDOG_MS` (3h), matching
  *  {@link import('./in-flight-retriage').IN_FLIGHT_RETRIAGE_MAX_AGE_MS}: a run that hangs past
@@ -51,8 +55,8 @@ export const IN_FLIGHT_CANDIDATE_MAX_AGE_MS = 3 * 60 * 60_000;
 export interface InFlightCandidateInfo {
   /** The sha being judged, full length. THE field this module exists to publish. */
   candidate: string;
-  /** Whether this run observes the live tip or is an explicitly pinned diagnostic. */
-  candidateSource: 'pinned' | 'tip';
+  /** Provenance of the candidate this run is judging. */
+  candidateSource: CheckpointCandidateSource;
   /** The green pin this candidate would advance from (`lastReady`), or null on a first run. */
   base: string | null;
   /** WI-7069's stamp: the instant the candidate became FINAL. Everything after it (setupTree,
@@ -261,13 +265,19 @@ export function parseInFlightCandidate(raw: unknown, nowMs: number = Date.now())
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const candidate = typeof r.candidate === 'string' && r.candidate ? r.candidate : null;
+  const candidateSource =
+    r.candidateSource === undefined
+      ? ('tip' as const)
+      : isCheckpointCandidateSource(r.candidateSource)
+        ? r.candidateSource
+        : null;
   const selectedAtMs = typeof r.selectedAtMs === 'number' ? r.selectedAtMs : null;
   const observedAtMs = typeof r.observedAtMs === 'number' ? r.observedAtMs : null;
-  if (!candidate || selectedAtMs == null || observedAtMs == null) return null;
+  if (!candidate || !candidateSource || selectedAtMs == null || observedAtMs == null) return null;
   if (nowMs - observedAtMs > IN_FLIGHT_CANDIDATE_MAX_AGE_MS) return null; // abandoned — see doc above.
   return {
     candidate,
-    candidateSource: r.candidateSource === 'pinned' ? 'pinned' : 'tip',
+    candidateSource,
     base: typeof r.base === 'string' ? r.base : null,
     selectedAtMs,
     quietCutApplied: r.quietCutApplied === true,
@@ -292,7 +302,7 @@ export function describeInFlightCandidate(marker: StoredInFlightCandidate, nowMs
     marker.quietCutApplied && marker.tipAtSelection
       ? ` — quiet cut stepped back from tip ${marker.tipAtSelection.slice(0, 8)}, so commits newer than this candidate are deliberately NOT judged`
       : '';
-  const source = marker.candidateSource === 'pinned' ? 'pinned diagnostic' : 'tip';
+  const source = marker.candidateSource === 'pinned' ? 'pinned diagnostic' : marker.candidateSource;
   // EI-20427717764878875: say the DECISION state out loud. Without this the sentence describes a
   // decided run and an undecided one identically, and the reader's next move differs completely.
   const decided =

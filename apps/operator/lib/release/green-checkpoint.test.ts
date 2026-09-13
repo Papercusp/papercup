@@ -1052,7 +1052,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       true,
     );
     expect(transitions).toContain("written");
-    expect(transitions).not.toContain("unchanged");
+    // The admission→resume-start lifecycle stamp is legitimately a no-op for
+    // this legacy queue fixture (it predates lastAdmittedAtMs). The verdict
+    // transition itself must still be the final persisted transition.
+    expect(transitions.at(-1)).toBe("written");
     const superseded = logs.find((l) =>
       l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED"),
     );
@@ -1081,7 +1084,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(cell.queue?.phase).toBe("awaiting-fixer");
     expect(cell.queue?.convergenceRounds?.map((r) => r.head)).toEqual([frozen]);
     expect(transitions).toContain("written");
-    expect(transitions).not.toContain("unchanged");
+    expect(transitions.at(-1)).toBe("written");
     expect(
       logs.some((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED")),
     ).toBe(false);

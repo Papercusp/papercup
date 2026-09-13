@@ -1510,6 +1510,22 @@ describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
     expect(detectSelfOutputRedirect('a > /tmp/first.log; b >> /tmp/second.log')?.target).toBe('/tmp/second.log');
   });
 
+  it('ignores a command-local curl redirect when the main command has no redirect', () => {
+    expect(detectSelfOutputRedirect('main-command; curl -fsS https://example.test >/dev/null 2>&1')).toBeNull();
+  });
+
+  it('keeps the main redirect when a later curl and cleanup helper redirect to /dev/null', () => {
+    expect(
+      detectSelfOutputRedirect(
+        'main-command > /tmp/main.log; curl -fsS https://example.test >/dev/null 2>&1; cleanup >/dev/null 2>&1',
+      ),
+    ).toEqual({ target: '/tmp/main.log', op: '>', literalPath: true });
+  });
+
+  it('ignores redirects inside a cleanup function body', () => {
+    expect(detectSelfOutputRedirect('cleanup() { rm -f /tmp/job.tmp >/dev/null 2>&1; }; main-command')).toBeNull();
+  });
+
   it('a 2>&1 dup AFTER a stdout redirect does not clobber the finding', () => {
     expect(detectSelfOutputRedirect('cmd > /tmp/x.log 2>&1')?.target).toBe('/tmp/x.log');
   });
