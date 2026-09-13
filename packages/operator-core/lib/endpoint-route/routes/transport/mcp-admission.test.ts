@@ -22,6 +22,7 @@ import {
   isBoundedCoordRosterArgs,
   isBoundedEventsStatusArgs,
   isBoundedLoopArmArgs,
+  isBoundedLocksQueueArgs,
 } from './mcp-admission';
 
 afterEach(() => resetMcpAdmissionForTests());
@@ -76,6 +77,32 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     const body = toolsCall(11, name, { query: 'grading integrity scorecard tools' });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
     expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'locks:queue',
+    'locks_queue',
+    'mcp__papercusp-su__locks_queue',
+    'mcp__papercusp_su__locks_queue',
+  ])('does NOT shed a bounded locks:queue ownership read under critical pressure: %s', (name) => {
+    const args = { paths: ['packages/operator-core/lib/release/frozen-repair-edit-ledger.ts'] };
+    const body = toolsCall(12, name, args);
+    expect(isBoundedLocksQueueArgs(args)).toBe(true);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad locks:queue reads sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { paths: [] },
+      { external_paths: [] },
+      { paths: ['packages/operator-core/lib/release/frozen-repair-edit-ledger.ts'], include_completed: true },
+      { paths: [''] },
+    ]) {
+      expect(isBoundedLocksQueueArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(13, 'locks:queue', args))).toEqual({ sheddable: true, id: 13 });
+    }
   });
 
   it.each([
@@ -1208,6 +1235,26 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     // The body must survive the peek unconsumed, exactly as the pg_query case asserts.
     expect(JSON.parse(await req.text()).params.name).toBe('dev:dogfood_substrate_status');
+  });
+  it('admits a bounded locks:queue ownership read under critical pressure so recovery can inspect held files', async () => {
+    const req = post(
+      toolsCall(14, 'locks:queue', {
+        paths: [
+          'packages/operator-core/lib/release/frozen-repair-edit-ledger.ts',
+          'packages/operator-core/lib/release/frozen-repair-edit-ledger.test.ts',
+        ],
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('locks:queue');
+  });
+  it('still sheds an unfiltered locks:queue read under critical pressure', async () => {
+    const shed = await evaluateAdmission(post(toolsCall(15, 'locks:queue')), 'critical', true);
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('admits a bounded single-item work_items:get under critical pressure so a drain can inspect its claim', async () => {
     const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));

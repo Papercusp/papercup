@@ -178,6 +178,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'dev:service_health',
     'dev:pg_query',
     'dev:dogfood_substrate_status',
+    'locks:queue',
     'tools:find',
     'work_items:get',
     'loop:status',
@@ -205,6 +206,7 @@ const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
+const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
@@ -233,6 +235,11 @@ const COORD_PRESENCE_NAME = normalizeMcpName('coord:presence');
 const COORD_ROSTER_NAME = normalizeMcpName('coord:roster');
 const CRITICAL_TARGET_OWNER_MAX_STRING_CHARS = 120;
 const CRITICAL_TARGET_OWNER_MAX_COUNT = 50;
+const CRITICAL_LOCKS_QUEUE_MAX_PATHS = 50;
+const CRITICAL_LOCKS_QUEUE_MAX_PATH_CHARS = 1_024;
+const CRITICAL_LOCKS_QUEUE_MAX_EXTERNAL_PATH_CHARS = 4_096;
+const CRITICAL_LOCKS_QUEUE_MAX_DOMAIN_CHARS = 4_096;
+const CRITICAL_LOCKS_QUEUE_MAX_OWNER_CHARS = 120;
 const CRITICAL_COORD_SEND_MAX_SUMMARY_CHARS = 600;
 const CRITICAL_COORD_SEND_MAX_BODY_CHARS = 600;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS = 200;
@@ -449,6 +456,66 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (!singleId && !singleIds) return false;
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
+  return true;
+}
+
+/**
+ * `locks:queue` is the file-lock ownership read needed to make safe progress,
+ * but its unfiltered form can scan every checkout and its completed-waiter
+ * option adds a 24-hour history read. Keep the critical-pressure exemption to
+ * an explicit, bounded path filter so recovery can inspect the files it is
+ * about to touch without opening a workspace-wide diagnostic lane.
+ */
+export function isBoundedLocksQueueArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['coordination_domain', 'paths', 'external_paths', 'owner', 'include_completed']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  const validPaths =
+    args.paths === undefined ||
+    (Array.isArray(args.paths) &&
+      args.paths.length <= CRITICAL_LOCKS_QUEUE_MAX_PATHS &&
+      args.paths.every(
+        (path) =>
+          typeof path === 'string' &&
+          path.trim().length > 0 &&
+          path.length <= CRITICAL_LOCKS_QUEUE_MAX_PATH_CHARS,
+      ));
+  const validExternalPaths =
+    args.external_paths === undefined ||
+    (Array.isArray(args.external_paths) &&
+      args.external_paths.length <= CRITICAL_LOCKS_QUEUE_MAX_PATHS &&
+      args.external_paths.every(
+        (path) =>
+          typeof path === 'string' &&
+          path.trim().length > 0 &&
+          path.length <= CRITICAL_LOCKS_QUEUE_MAX_EXTERNAL_PATH_CHARS,
+      ));
+  if (!validPaths || !validExternalPaths) return false;
+
+  const hasPaths = Array.isArray(args.paths) && args.paths.length > 0;
+  const hasExternalPaths = Array.isArray(args.external_paths) && args.external_paths.length > 0;
+  if (!hasPaths && !hasExternalPaths) return false;
+
+  if (
+    args.coordination_domain !== undefined &&
+    (typeof args.coordination_domain !== 'string' ||
+      args.coordination_domain.trim().length === 0 ||
+      args.coordination_domain.length > CRITICAL_LOCKS_QUEUE_MAX_DOMAIN_CHARS)
+  ) {
+    return false;
+  }
+  if (
+    args.owner !== undefined &&
+    (typeof args.owner !== 'string' ||
+      args.owner.trim().length === 0 ||
+      args.owner.length > CRITICAL_LOCKS_QUEUE_MAX_OWNER_CHARS)
+  ) {
+    return false;
+  }
+  // The active-lock read is the recovery surface; completed waiters are a
+  // separate history query and stay on the ordinary retryable path.
+  if (args.include_completed !== undefined && args.include_completed !== false) return false;
   return true;
 }
 
@@ -1184,6 +1251,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   const normalized = normalizeMcpName(toolName);
   if (normalized === COORD_SEND_NAME) return isBoundedCoordSendArgs(args);
   if (normalized === WORK_ITEMS_COMMENT_NAME) return isBoundedWorkItemsCommentArgs(args);
+  if (normalized === LOCKS_QUEUE_NAME) return isBoundedLocksQueueArgs(args);
   if (normalized === COORD_PRESENCE_NAME) return isBoundedCoordPresenceArgs(args);
   if (normalized === COORD_ROSTER_NAME) return isBoundedCoordRosterArgs(args);
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
