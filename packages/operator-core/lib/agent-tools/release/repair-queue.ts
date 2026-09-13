@@ -3,7 +3,7 @@
  *
  * `admit` (P-002 of frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-004/D-010) is
  * THE door through which a fix reaches a frozen candidate's judged lineage: exactly the named
- * paths, taken from the integration branch, replayed onto the queue's `repairHead` by
+ * paths, taken from the integration branch (or an explicitly pinned ancestor commit), replayed onto the queue's `repairHead` by
  * `admitPathsOntoRepairHead`. Nothing here fast-forwards, merges, or reads the tip as a whole —
  * the pre-D-004 `converge` (fast-forward repairHead to the staging tip) is gone, and `converge`
  * is now only an alias for `admit` so a stale runbook still lands on the right door.
@@ -60,6 +60,7 @@ import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
+const FULL_COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 const queueIdentityFields = {
   /** The frozen queue snapshot the caller read before building this admission. */
   expectedCandidate: z
@@ -127,6 +128,8 @@ const argsSchema = z.preprocess(
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
         /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
         wholeBlob: z.boolean().optional(),
+        /** Pin whole-blob reads to one immutable integration-branch ancestor so a reviewed preview cannot drift with staging. */
+        sourceCommit: z.string().regex(FULL_COMMIT_SHA).optional(),
         /** Explicit reviewed single-commit delta from staging history when hook capture is missing. Requires reason; incompatible with other source options. */
         patchCommit: z
           .string()
@@ -147,6 +150,7 @@ const argsSchema = z.preprocess(
         ...queueIdentityFields,
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
         wholeBlob: z.boolean().optional(),
+        sourceCommit: z.string().regex(FULL_COMMIT_SHA).optional(),
         patchCommit: z
           .string()
           .regex(/^[0-9a-f]{40,64}$/)
@@ -201,6 +205,7 @@ const argsSchema = z.preprocess(
       if (
         value.patchCommit !== undefined &&
         (value.wholeBlob === true ||
+          value.sourceCommit !== undefined ||
           value.includeHunksFrom !== undefined ||
           !value.reason ||
           value.reason.trim().length < 8)
@@ -209,6 +214,13 @@ const argsSchema = z.preprocess(
           code: z.ZodIssueCode.custom,
           path: ['patchCommit'],
           message: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom',
+        });
+      }
+      if (value.sourceCommit !== undefined && value.wholeBlob !== true) {
+        refinementCtx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['sourceCommit'],
+          message: 'sourceCommit is only valid with wholeBlob:true',
         });
       }
       const fields: Array<keyof QueueIdentityArgs> = ['expectedCandidate', 'expectedRepairHead', 'expectedUpdatedAtMs'];
@@ -531,7 +543,7 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, admit named paths onto, claim a manifest leg, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
+    'Inspect, admit named paths onto, claim a manifest leg, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
   capability: 'operator:write',
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
@@ -551,7 +563,7 @@ export default defineTool({
     notWhen:
       'Workspace-global: never pass harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
-      '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
+      '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
     returns:
       '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. Read `nextAction`; mutations report verdict plus proof/containment and retire uses CAS.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
@@ -861,7 +873,11 @@ export default defineTool({
       const mode = args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
       if (
         args.patchCommit !== undefined &&
-        (wholeBlob || args.includeHunksFrom !== undefined || !args.reason || args.reason.trim().length < 8)
+        (wholeBlob ||
+          args.sourceCommit !== undefined ||
+          args.includeHunksFrom !== undefined ||
+          !args.reason ||
+          args.reason.trim().length < 8)
       ) {
         return json({
           ...base,
@@ -873,6 +889,19 @@ export default defineTool({
           mode,
           reason: 'invalid-patch-source',
           detail: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom',
+        });
+      }
+      if (args.sourceCommit !== undefined && !wholeBlob) {
+        return json({
+          ...base,
+          ok: false,
+          admitted: false,
+          refused: true,
+          dryRun,
+          verdict: 'refused',
+          mode,
+          reason: 'invalid-source-commit',
+          detail: 'sourceCommit is only valid with wholeBlob:true',
         });
       }
       let ledgerRows: FrozenRepairEditLedgerRow[] = [];
@@ -932,6 +961,43 @@ export default defineTool({
             mode,
             ...base,
           });
+        }
+        if (args.sourceCommit !== undefined) {
+          const resolved = realAdmissionGit(['rev-parse', '--verify', `${args.sourceCommit}^{commit}`], { cwd: root });
+          const resolvedSha = resolved.stdout.trim();
+          if (resolved.status !== 0 || !FULL_COMMIT_SHA.test(resolvedSha)) {
+            return json({
+              ok: false,
+              admitted: false,
+              refused: true,
+              dryRun,
+              verdict: 'refused',
+              reason: 'source-commit-unresolvable',
+              detail: `sourceCommit ${args.sourceCommit} does not resolve to a commit in the integration repository`,
+              judgedSha: queue.repairHead,
+              mode,
+              ...base,
+            });
+          }
+          const ancestor = realAdmissionGit(['merge-base', '--is-ancestor', resolvedSha, branch], { cwd: root });
+          if (ancestor.status !== 0) {
+            return json({
+              ok: false,
+              admitted: false,
+              refused: true,
+              dryRun,
+              verdict: 'refused',
+              reason: ancestor.status === 1 ? 'source-commit-not-integrated' : 'source-commit-ancestry-unavailable',
+              detail:
+                ancestor.status === 1
+                  ? `sourceCommit ${resolvedSha} is not an ancestor of the integration branch ${branch}`
+                  : `could not prove sourceCommit ancestry: ${(ancestor.stderr || ancestor.stdout).trim().slice(0, 400)}`,
+              judgedSha: queue.repairHead,
+              mode,
+              ...base,
+            });
+          }
+          sourceRef = resolvedSha;
         }
         foreign = summarizeForeignHunks(ledgerRows, paths, identity.ownerId, includeHunksFrom);
       } else {
@@ -1026,9 +1092,12 @@ export default defineTool({
           dryRun: dry,
           // P-004: the proved commit must resolve every relative import of every admitted TS/JS
           // file, or the door refuses `admission-incomplete` naming the sibling to admit. The
-          // branch is only CONSULTED to say whether that sibling exists there; nothing from it
-          // is ever admitted on the caller's behalf.
-          preflight: importCompletenessPreflight({ root, probeRef: branch }),
+          // The pinned whole-blob source is consulted when supplied; other modes preserve the
+          // integration branch as the suggestion source. Nothing is admitted on the caller's behalf.
+          preflight: importCompletenessPreflight({
+            root,
+            probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
+          }),
         });
       let outcome = buildAdmission(dryRun || precheckApplies);
       let precheck: FixPrecheckVerdict | null = null;
@@ -1205,6 +1274,7 @@ export default defineTool({
             }
           : {
               mode,
+              source: { ref: sourceRef, root },
               foreignHunksAccepted: foreign.count,
               foreignAgents: foreign.agents,
               foreignHunksByPath: foreign.byPath,

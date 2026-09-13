@@ -66,6 +66,7 @@ const mocks = vi.hoisted(() => ({
   committedPatch: vi.fn(),
   foreign: vi.fn(),
   ledger: vi.fn(),
+  importPreflight: vi.fn(),
   // P-006 (R6): the admit door's two-phase pre-check seam — the runner FACTORY the door
   // creates for the canonical root, and the root canonicalization it consults first.
   precheckFactory: vi.fn(),
@@ -112,13 +113,25 @@ vi.mock('../../release/frozen-repair-edit-ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-ledger')>()),
   readFrozenRepairEditLedger: mocks.ledger,
 }));
+vi.mock('../../release/admission-import-completeness', () => ({
+  importCompletenessPreflight: mocks.importPreflight,
+}));
 /** P-020: what the hunk-exact builder returns for a clean single-path replay. */
 const HX_SOURCE = 'h'.repeat(40);
 const hunkExactOf = (paths = ['lib/red.test.ts']) => ({
   ok: true as const,
   sourceCommit: HX_SOURCE,
   tree: 'x'.repeat(40),
-  perPath: paths.map((path) => ({ path, applied: 1, agents: ['su-test'], foreignHunks: 0, foreignAgents: [] as string[], baseBlob: null, blob: 'f'.repeat(40), unchanged: false })),
+  perPath: paths.map((path) => ({
+    path,
+    applied: 1,
+    agents: ['su-test'],
+    foreignHunks: 0,
+    foreignAgents: [] as string[],
+    baseBlob: null,
+    blob: 'f'.repeat(40),
+    unchanged: false,
+  })),
   allUnchanged: false,
 });
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
@@ -204,6 +217,7 @@ beforeEach(() => {
   mocks.admissionGit.mockReturnValue({ status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' });
   mocks.ledger.mockResolvedValue([]);
   mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
+  mocks.importPreflight.mockReturnValue(() => null);
   mocks.hunkExact.mockReturnValue(hunkExactOf());
   mocks.canonicalRoot.mockImplementation((root: string) => root);
   mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
@@ -480,12 +494,20 @@ describe('release:repair-queue', () => {
       repairQueue: { repairHead: NEW_HEAD, phase: 'ready-to-verify' },
     });
     // Containment is reported against the NEW judged sha, where the path is now carried.
-    expect(result.containment).toEqual([expect.objectContaining({ path: 'lib/red.test.ts', containedInJudgedSha: true })]);
+    expect(result.containment).toEqual([
+      expect.objectContaining({ path: 'lib/red.test.ts', containedInJudgedSha: true }),
+    ]);
     expect(result.nextAction).toMatch(/Do NOT fire release:checkpoint-run/);
     expect(mocks.retract).not.toHaveBeenCalled();
     // The audit row names the admission, never a tip.
     const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
-    expect(auditDetails).toMatchObject({ op: 'admit', from: queue.repairHead, to: NEW_HEAD, paths: ['lib/red.test.ts'], persisted: true });
+    expect(auditDetails).toMatchObject({
+      op: 'admit',
+      from: queue.repairHead,
+      to: NEW_HEAD,
+      paths: ['lib/red.test.ts'],
+      persisted: true,
+    });
   });
 
   it('forwards expectedUpdatedAtMs to the queue writer on a confirmed CAS-guarded admission', async () => {
@@ -592,18 +614,30 @@ describe('release:repair-queue', () => {
   });
 
   it('nothing-to-admit reads as already-admitted: idempotent, ok:true, no write', async () => {
-    mocks.admit.mockReturnValue({ ok: false, code: 'nothing-to-admit', detail: 'every named path already has its staging content' });
+    mocks.admit.mockReturnValue({
+      ok: false,
+      code: 'nothing-to-admit',
+      detail: 'every named path already has its staging content',
+    });
     const result = body(
       await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
     );
-    expect(result).toMatchObject({ ok: true, admitted: false, verdict: 'already-admitted', judgedSha: queue.repairHead });
+    expect(result).toMatchObject({
+      ok: true,
+      admitted: false,
+      verdict: 'already-admitted',
+      judgedSha: queue.repairHead,
+    });
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
   it("converge is an ALIAS of admit — same door, same semantics, result op:'admit'", async () => {
     mocks.admit.mockReturnValue(admissionOf(true));
     const result = body(
-      await tool.handler({ op: 'converge', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      await tool.handler(
+        { op: 'converge', paths: ['lib/red.test.ts'], confirm: true } as never,
+        { role: 'su' } as never,
+      ),
     );
     expect(result).toMatchObject({ ok: true, op: 'admit', verdict: 'admitted', admitted: true });
     expect(mocks.admit.mock.calls.at(-1)![0]).toMatchObject({ paths: ['lib/red.test.ts'], dryRun: false });
@@ -635,7 +669,10 @@ describe('release:repair-queue', () => {
       };
       mocks.readState.mockResolvedValue({ status: 'value', queue: pending });
       const result = body(
-        await tool.handler({ op: 'admit', paths: ['lib/other.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/other.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(result).toMatchObject({
         ok: true,
@@ -667,7 +704,10 @@ describe('release:repair-queue', () => {
       });
 
       const result = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
 
       expect(result).toMatchObject({
@@ -704,7 +744,10 @@ describe('release:repair-queue', () => {
       mocks.precheckFactory.mockReturnValue(runner);
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       const started = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(started).toMatchObject({
         ok: true,
@@ -722,7 +765,10 @@ describe('release:repair-queue', () => {
       );
       expect(mocks.canonicalRoot).toHaveBeenCalledWith('/repo');
       expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
-      expect(mocks.precheckFactory).toHaveBeenCalledWith({ integrationRoot: '/canonical', checkpointRoot: checkpointRootMirror('/canonical') });
+      expect(mocks.precheckFactory).toHaveBeenCalledWith({
+        integrationRoot: '/canonical',
+        checkpointRoot: checkpointRootMirror('/canonical'),
+      });
       expect(runner).toHaveBeenCalledWith({ commit: NEW_HEAD, files: ['lib/red.test.ts'] });
       const settled = await settledPrecheckQueue();
       expect(settled.admissionPrecheck).toMatchObject({ status: 'passed', builtCommit: NEW_HEAD });
@@ -730,7 +776,10 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true]); // the detached leg never publishes
       mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const published = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(published).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
       expect(dryRuns()).toEqual([true, true, false]);
@@ -747,7 +796,10 @@ describe('release:repair-queue', () => {
       });
 
       const result = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
 
       expect(result).toMatchObject({
@@ -765,20 +817,28 @@ describe('release:repair-queue', () => {
 
     it('a stored red measurement refuses on the follow-up and the detached leg never publishes', async () => {
       mocks.admit.mockReturnValue(admissionOf(false));
-      mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
-        ran: true as const,
-        commit,
-        results: files.map((path) => ({ path, status: 'fail' as const })),
-      }));
+      mocks.precheckFactory.mockReturnValue(
+        async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
+          ran: true as const,
+          commit,
+          results: files.map((path) => ({ path, status: 'fail' as const })),
+        }),
+      );
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       const started = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(started).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
       const settled = await settledPrecheckQueue();
       mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const result = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(result).toMatchObject({ ok: false, refused: true, admitted: false, builtCommit: NEW_HEAD });
       expect(result.reason).toMatch(/^admission-(does-not-fix|imports-red)$/);
@@ -787,16 +847,26 @@ describe('release:repair-queue', () => {
 
     it('a stored runner failure refuses publication; retryPrecheck is the explicit restart route', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));
-      mocks.precheckFactory.mockReturnValue(async () => ({ ran: false as const, reason: 'runner-failed' as const, detail: 'setup-release-checkout exited 1' }));
+      mocks.precheckFactory.mockReturnValue(async () => ({
+        ran: false as const,
+        reason: 'runner-failed' as const,
+        detail: 'setup-release-checkout exited 1',
+      }));
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       const started = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(started).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
       const settled = await settledPrecheckQueue();
       mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const result = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(result).toMatchObject({
         ok: false,
@@ -863,13 +933,19 @@ describe('release:repair-queue', () => {
       }));
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       const started = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(started).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
       const settled = await settledPrecheckQueue();
       mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const result = body(
-        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+          { role: 'su' } as never,
+        ),
       );
       expect(result).toMatchObject({ ok: true, admitted: true });
       expect(dryRuns()).toEqual([true, true, false]);
@@ -965,13 +1041,8 @@ describe('release:repair-queue', () => {
     });
     expect(mocks.retire).not.toHaveBeenCalled();
 
-    const result = body(
-      await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never),
-    );
-    expect(mocks.retire).toHaveBeenCalledWith(
-      { workspaceId: 'ws-1', installSlug: 'papercusp' },
-      queue,
-    );
+    const result = body(await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never));
+    expect(mocks.retire).toHaveBeenCalledWith({ workspaceId: 'ws-1', installSlug: 'papercusp' }, queue);
     expect(result).toMatchObject({ ok: true, retired: true, auditRecorded: true });
   });
 
@@ -994,9 +1065,10 @@ describe('release:repair-queue', () => {
       reason: 'terminal incident cleanup',
     } as const;
 
-    const retired = body(
-      await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never),
-    ) as { retired?: boolean; nextStep?: string };
+    const retired = body(await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never)) as {
+      retired?: boolean;
+      nextStep?: string;
+    };
     expect(retired.retired).toBe(true);
     expect(
       retired.nextStep,
@@ -1017,10 +1089,7 @@ describe('release:repair-queue', () => {
       nextStep?: string;
     };
     expect(dryRun.retired).toBe(false);
-    expect(
-      dryRun.nextStep,
-      'control: nothing was retired, so there is no post-retire step to state',
-    ).toBeUndefined();
+    expect(dryRun.nextStep, 'control: nothing was retired, so there is no post-retire step to state').toBeUndefined();
   });
 
   it('refuses a stale caller identity before the storage CAS', async () => {
@@ -1116,8 +1185,18 @@ describe('release:repair-queue', () => {
     it('get renders the manifest rows + summary when the queue carries one', async () => {
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithManifest });
       const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
-      expect(result.repairQueue.manifest).toMatchObject({ candidate: queue.candidate, rows: [{ legId: manifestRow.legId }] });
-      expect(result.repairQueue.manifestSummary).toEqual({ legs: 1, red: 1, admitted: 0, green: 0, claimed: 0, pathless: 0 });
+      expect(result.repairQueue.manifest).toMatchObject({
+        candidate: queue.candidate,
+        rows: [{ legId: manifestRow.legId }],
+      });
+      expect(result.repairQueue.manifestSummary).toEqual({
+        legs: 1,
+        red: 1,
+        admitted: 0,
+        green: 0,
+        claimed: 0,
+        pathless: 0,
+      });
     });
 
     it('claims the leg: persists the claim on the queue row, sets presence current_files to its paths, audits, returns the admit command', async () => {
@@ -1153,16 +1232,26 @@ describe('release:repair-queue', () => {
       expect(result.nextAction).toContain(manifestRow.admitCommand);
       expect(result.nextAction).toMatch(/Do NOT fire release:checkpoint-run/);
       const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
-      expect(auditDetails).toMatchObject({ op: 'claim-leg', leg: manifestRow.legId, paths: ['lib/red.test.ts'], persisted: true });
+      expect(auditDetails).toMatchObject({
+        op: 'claim-leg',
+        leg: manifestRow.legId,
+        paths: ['lib/red.test.ts'],
+        persisted: true,
+      });
     });
 
     it('release:true hands the leg back (holder only) and does not touch presence', async () => {
       const held = { ...manifest, rows: [{ ...manifestRow, claim: { actor: 'su-test', atMs: 7 } }] };
       mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, manifest: held } });
       const result = body(
-        await tool.handler({ op: 'claim-leg', leg: manifestRow.legId, release: true } as never, { role: 'su' } as never),
+        await tool.handler(
+          { op: 'claim-leg', leg: manifestRow.legId, release: true } as never,
+          { role: 'su' } as never,
+        ),
       );
-      expect(mocks.write.mock.calls[0]![1]).toMatchObject({ manifest: { rows: [{ legId: manifestRow.legId, claim: null }] } });
+      expect(mocks.write.mock.calls[0]![1]).toMatchObject({
+        manifest: { rows: [{ legId: manifestRow.legId, claim: null }] },
+      });
       expect(mocks.presence).not.toHaveBeenCalled();
       expect(result).toMatchObject({ ok: true, claimed: false, released: true, verdict: 'released', persisted: true });
     });
@@ -1197,7 +1286,9 @@ describe('release:repair-queue', () => {
       );
       expect(noManifest).toMatchObject({ ok: false, refused: true, reason: 'no-manifest' });
       mocks.readState.mockResolvedValue({ status: 'absent' });
-      const none = body(await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never));
+      const none = body(
+        await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never),
+      );
       expect(none).toMatchObject({ ok: true, claimed: false, verdict: 'no-frozen-queue' });
       expect(mocks.write).not.toHaveBeenCalled();
     });
@@ -1209,7 +1300,13 @@ describe('release:repair-queue', () => {
         await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never),
       );
       expect(mocks.presence).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ ok: false, claimed: false, persisted: false, refused: true, reason: 'persist_failed' });
+      expect(result).toMatchObject({
+        ok: false,
+        claimed: false,
+        persisted: false,
+        refused: true,
+        reason: 'persist_failed',
+      });
     });
   });
 
@@ -1222,7 +1319,15 @@ describe('release:repair-queue', () => {
       mocks.audit.mockResolvedValueOnce([{ id: 42 }]);
       const result = body(
         await tool.handler(
-          { op: 'record-edit', path: './lib/red.test.ts', hunk, toolUseId: 'toolu_1', editIndex: 0, atMs: 777, candidate: 'f'.repeat(40) } as never,
+          {
+            op: 'record-edit',
+            path: './lib/red.test.ts',
+            hunk,
+            toolUseId: 'toolu_1',
+            editIndex: 0,
+            atMs: 777,
+            candidate: 'f'.repeat(40),
+          } as never,
           ctx,
         ),
       );
@@ -1245,21 +1350,33 @@ describe('release:repair-queue', () => {
       expect(result.admitCommand).toContain('lib/red.test.ts');
       const [sqlText, params] = mocks.audit.mock.calls[0]! as [string, unknown[]];
       expect(sqlText).toContain('INSERT INTO harness_shared.frozen_repair_edit_ledger');
-      expect(params).toEqual(expect.arrayContaining(['ws-1', 'papercusp', queue.candidate, 'su-test', 'lib/red.test.ts', 'toolu_1', 777]));
+      expect(params).toEqual(
+        expect.arrayContaining(['ws-1', 'papercusp', queue.candidate, 'su-test', 'lib/red.test.ts', 'toolu_1', 777]),
+      );
       expect(mocks.write).not.toHaveBeenCalled();
       expect(mocks.admit).not.toHaveBeenCalled();
     });
 
     it('a path OUTSIDE the repair radius is still recorded — the source fix is as attributable as the failing test — and flagged inRepairRadius:false', async () => {
       mocks.audit.mockResolvedValueOnce([{ id: 1 }]);
-      const result = body(await tool.handler({ op: 'record-edit', path: 'lib/src.ts', hunk: { kind: 'write', body: 'x' } } as never, ctx));
-      expect(result).toMatchObject({ ok: true, recorded: true, inserted: true, inRepairRadius: false, path: 'lib/src.ts' });
+      const result = body(
+        await tool.handler({ op: 'record-edit', path: 'lib/src.ts', hunk: { kind: 'write', body: 'x' } } as never, ctx),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        recorded: true,
+        inserted: true,
+        inRepairRadius: false,
+        path: 'lib/src.ts',
+      });
       expect(result.candidateMismatch).toBeUndefined();
     });
 
     it('an idempotent retry (same agent/path/toolUseId/editIndex) inserts nothing: recorded:true, inserted:false', async () => {
       mocks.audit.mockResolvedValueOnce([]);
-      const result = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk, toolUseId: 'toolu_1' } as never, ctx));
+      const result = body(
+        await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk, toolUseId: 'toolu_1' } as never, ctx),
+      );
       expect(result).toMatchObject({ ok: true, recorded: true, inserted: false });
     });
 
@@ -1271,7 +1388,12 @@ describe('release:repair-queue', () => {
     });
 
     it('a malformed hunk or a path that escapes the repo is refused without SQL', async () => {
-      const bad = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk: { kind: 'patch', text: '...' } } as never, ctx));
+      const bad = body(
+        await tool.handler(
+          { op: 'record-edit', path: 'lib/red.test.ts', hunk: { kind: 'patch', text: '...' } } as never,
+          ctx,
+        ),
+      );
       expect(bad).toMatchObject({ ok: false, recorded: false, refused: true, reason: 'invalid-hunk' });
       const escape = body(await tool.handler({ op: 'record-edit', path: '../../etc/passwd', hunk } as never, ctx));
       expect(escape).toMatchObject({ ok: false, recorded: false, refused: true, reason: 'invalid-path' });
@@ -1287,7 +1409,13 @@ describe('release:repair-queue', () => {
     it('an unreadable queue row refuses with op:record-edit / recorded:false (P-025: unreadable is not absent)', async () => {
       mocks.readState.mockResolvedValue({ status: 'unreadable', reason: 'schema-newer', schemaVersion: 99 });
       const result = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk } as never, ctx));
-      expect(result).toMatchObject({ ok: false, op: 'record-edit', recorded: false, refused: true, reason: 'repair-queue-unreadable' });
+      expect(result).toMatchObject({
+        ok: false,
+        op: 'record-edit',
+        recorded: false,
+        refused: true,
+        reason: 'repair-queue-unreadable',
+      });
       expect(mocks.audit).not.toHaveBeenCalled();
     });
   });
@@ -1297,56 +1425,95 @@ describe('release:repair-queue', () => {
     type Written = { admissions: Array<Record<string, unknown>> };
     const patch = { commit: 'e'.repeat(40), parent: 'f'.repeat(40), sha256: '1'.repeat(64) };
     const patchArgs = {
-      op: 'admit', paths: ['lib/red.test.ts'], patchCommit: patch.commit, reason: 'reviewed missing hook capture',
-      expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs,
+      op: 'admit',
+      paths: ['lib/red.test.ts'],
+      patchCommit: patch.commit,
+      reason: 'reviewed missing hook capture',
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
     };
 
     it('committed patch requires reason and excludes the other source modes, in schema AND direct handler', async () => {
       expect(tool.args.safeParse(patchArgs).success).toBe(true);
       expect(tool.args.safeParse({ ...patchArgs, op: 'converge' }).success).toBe(true);
-      for (const extra of [{ reason: undefined }, { wholeBlob: true }, { includeHunksFrom: [] }]) {
+      for (const extra of [
+        { reason: undefined },
+        { wholeBlob: true },
+        { sourceCommit: '1'.repeat(40) },
+        { includeHunksFrom: [] },
+      ]) {
         const args = { ...patchArgs, ...extra };
         expect(tool.args.safeParse(args).success).toBe(false);
-        expect(body(await tool.handler(args as never, ctx))).toMatchObject({ ok: false, reason: 'invalid-patch-source' });
+        expect(body(await tool.handler(args as never, ctx))).toMatchObject({
+          ok: false,
+          reason: 'invalid-patch-source',
+        });
       }
       expect(mocks.committedPatch).not.toHaveBeenCalled();
       expect(mocks.admit).not.toHaveBeenCalled();
       expect(mocks.write).not.toHaveBeenCalled();
     });
 
-    it.each([false, true])('committed patch confirm=%s retains path preflight, preview/CAS and durable provenance without hook attribution', async (confirm) => {
-      mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch });
-      mocks.admit.mockReturnValue(admissionOf(confirm));
-      // A missing/unavailable ledger cannot be invented or mislabeled as proof.
-      mocks.ledger.mockRejectedValueOnce(new Error('ledger unavailable'));
-      const result = body(await tool.handler({ ...patchArgs, confirm } as never, ctx));
-      expect(result).toMatchObject({ ok: true, admitted: confirm, mode: 'committed-patch', patch });
-      expect(result.source).toEqual({ ref: HX_SOURCE, root: '/repo' });
-      expect(mocks.hunkExact).not.toHaveBeenCalled();
-      expect(mocks.committedPatch).toHaveBeenCalledWith(expect.objectContaining({
-        root: '/repo', repairHead: queue.repairHead, integrationRef: 'staging', patchCommit: patch.commit, paths: patchArgs.paths,
-      }));
-      expect(mocks.admit).toHaveBeenCalledWith(expect.objectContaining({
-        source: { ref: HX_SOURCE }, dryRun: !confirm, paths: patchArgs.paths, preflight: expect.any(Function),
-      }));
-      if (confirm) {
-        expect(mocks.write).toHaveBeenCalledWith(expect.anything(), expect.anything(), { expectedUpdatedAtMs: queue.updatedAtMs });
-        const entry = (mocks.write.mock.calls[0]![1] as Written).admissions[0];
-        expect(entry).toMatchObject({ mode: 'committed-patch', patch });
-        expect(entry).not.toHaveProperty('hunks');
-        expect(entry).not.toHaveProperty('foreignHunksAccepted');
-        expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ mode: 'committed-patch', patch });
-      } else {
-        expect(mocks.write).not.toHaveBeenCalled();
-        expect(mocks.audit).not.toHaveBeenCalled();
-      }
-    });
+    it.each([false, true])(
+      'committed patch confirm=%s retains path preflight, preview/CAS and durable provenance without hook attribution',
+      async (confirm) => {
+        mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch });
+        mocks.admit.mockReturnValue(admissionOf(confirm));
+        // A missing/unavailable ledger cannot be invented or mislabeled as proof.
+        mocks.ledger.mockRejectedValueOnce(new Error('ledger unavailable'));
+        const result = body(await tool.handler({ ...patchArgs, confirm } as never, ctx));
+        expect(result).toMatchObject({ ok: true, admitted: confirm, mode: 'committed-patch', patch });
+        expect(result.source).toEqual({ ref: HX_SOURCE, root: '/repo' });
+        expect(mocks.hunkExact).not.toHaveBeenCalled();
+        expect(mocks.committedPatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            root: '/repo',
+            repairHead: queue.repairHead,
+            integrationRef: 'staging',
+            patchCommit: patch.commit,
+            paths: patchArgs.paths,
+          }),
+        );
+        expect(mocks.admit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: { ref: HX_SOURCE },
+            dryRun: !confirm,
+            paths: patchArgs.paths,
+            preflight: expect.any(Function),
+          }),
+        );
+        if (confirm) {
+          expect(mocks.write).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+            expectedUpdatedAtMs: queue.updatedAtMs,
+          });
+          const entry = (mocks.write.mock.calls[0]![1] as Written).admissions[0];
+          expect(entry).toMatchObject({ mode: 'committed-patch', patch });
+          expect(entry).not.toHaveProperty('hunks');
+          expect(entry).not.toHaveProperty('foreignHunksAccepted');
+          expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ mode: 'committed-patch', patch });
+        } else {
+          expect(mocks.write).not.toHaveBeenCalled();
+          expect(mocks.audit).not.toHaveBeenCalled();
+        }
+      },
+    );
 
     it('committed patch refusal and stale queue never publish or write', async () => {
-      mocks.committedPatch.mockReturnValue({ ok: false, code: 'patch-conflict', detail: 'exact patch conflicts', exits: [] });
-      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({ ok: false, reason: 'patch-conflict' });
+      mocks.committedPatch.mockReturnValue({
+        ok: false,
+        code: 'patch-conflict',
+        detail: 'exact patch conflicts',
+        exits: [],
+      });
+      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({
+        ok: false,
+        reason: 'patch-conflict',
+      });
       mocks.committedPatch.mockClear();
-      expect(body(await tool.handler({ ...patchArgs, expectedRepairHead: '0'.repeat(40), confirm: true } as never, ctx))).toMatchObject({ ok: false, reason: 'exact_queue_identity_mismatch' });
+      expect(
+        body(await tool.handler({ ...patchArgs, expectedRepairHead: '0'.repeat(40), confirm: true } as never, ctx)),
+      ).toMatchObject({ ok: false, reason: 'exact_queue_identity_mismatch' });
       expect(mocks.committedPatch).not.toHaveBeenCalled();
       expect(mocks.admit).not.toHaveBeenCalled();
       expect(mocks.write).not.toHaveBeenCalled();
@@ -1355,12 +1522,21 @@ describe('release:repair-queue', () => {
     it('committed patch keeps import preflight refusals and retracts publication on failed queue CAS', async () => {
       mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch });
       mocks.admit.mockReturnValueOnce({ ok: false, code: 'admission-incomplete', detail: 'missing sibling' });
-      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({ ok: false, reason: 'admission-incomplete' });
+      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({
+        ok: false,
+        reason: 'admission-incomplete',
+      });
       expect(mocks.write).not.toHaveBeenCalled();
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.write.mockRejectedValueOnce(new Error('queue CAS moved'));
-      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({ ok: false, admitted: false, reason: 'persist_failed' });
-      expect(mocks.retract).toHaveBeenCalledWith(expect.objectContaining({ published: NEW_HEAD, previousRepairHead: queue.repairHead }));
+      expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({
+        ok: false,
+        admitted: false,
+        reason: 'persist_failed',
+      });
+      expect(mocks.retract).toHaveBeenCalledWith(
+        expect.objectContaining({ published: NEW_HEAD, previousRepairHead: queue.repairHead }),
+      );
     });
 
     it('DEFAULT: reads the ledger for the named paths, builds the hunk-exact source for the CALLER, admits FROM that commit, and the ledger entry + audit carry mode + hunks', async () => {
@@ -1368,7 +1544,12 @@ describe('release:repair-queue', () => {
       const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, ctx));
       expect(mocks.ledger).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ workspaceId: 'ws-1', installSlug: 'papercusp', candidate: queue.candidate, paths: ['lib/red.test.ts'] }),
+        expect.objectContaining({
+          workspaceId: 'ws-1',
+          installSlug: 'papercusp',
+          candidate: queue.candidate,
+          paths: ['lib/red.test.ts'],
+        }),
       );
       expect(mocks.hunkExact.mock.calls[0]![0]).toMatchObject({
         root: '/repo',
@@ -1379,6 +1560,7 @@ describe('release:repair-queue', () => {
         includeHunksFrom: [],
       });
       expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ source: { ref: HX_SOURCE } });
+      expect(mocks.importPreflight).toHaveBeenCalledWith({ root: '/repo', probeRef: 'staging' });
       expect(result).toMatchObject({
         ok: true,
         admitted: true,
@@ -1386,7 +1568,10 @@ describe('release:repair-queue', () => {
         hunkExact: [{ path: 'lib/red.test.ts', applied: 1, agents: ['su-test'], foreignHunksExcluded: 0 }],
       });
       const written = mocks.write.mock.calls[0]![1] as Written;
-      expect(written.admissions[0]).toMatchObject({ mode: 'hunk-exact', hunks: { 'lib/red.test.ts': { applied: 1, agents: ['su-test'] } } });
+      expect(written.admissions[0]).toMatchObject({
+        mode: 'hunk-exact',
+        hunks: { 'lib/red.test.ts': { applied: 1, agents: ['su-test'] } },
+      });
       const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
       expect(auditDetails).toMatchObject({ mode: 'hunk-exact', hunks: { 'lib/red.test.ts': { applied: 1 } } });
     });
@@ -1431,7 +1616,9 @@ describe('release:repair-queue', () => {
     });
 
     it('wholeBlob:true REQUIRES a reason; with one it admits from the integration branch and RECORDS the foreign hunks it carries (D-008 3b)', async () => {
-      const noReason = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true } as never, ctx));
+      const noReason = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true } as never, ctx),
+      );
       expect(noReason).toMatchObject({ ok: false, refused: true, reason: 'reason_required', mode: 'whole-blob' });
       expect(mocks.admit).not.toHaveBeenCalled();
 
@@ -1439,17 +1626,115 @@ describe('release:repair-queue', () => {
       mocks.admit.mockReturnValue(admissionOf(true));
       const result = body(
         await tool.handler(
-          { op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true, reason: 'shared refactor: the peer hunks are part of this fix', confirm: true } as never,
+          {
+            op: 'admit',
+            paths: ['lib/red.test.ts'],
+            wholeBlob: true,
+            reason: 'shared refactor: the peer hunks are part of this fix',
+            confirm: true,
+          } as never,
           ctx,
         ),
       );
       expect(mocks.hunkExact).not.toHaveBeenCalled();
       expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ source: { ref: 'staging' } });
-      expect(result).toMatchObject({ ok: true, admitted: true, mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'], foreignHunksByPath: { 'lib/red.test.ts': 2 } });
+      expect(result).toMatchObject({
+        ok: true,
+        admitted: true,
+        mode: 'whole-blob',
+        foreignHunksAccepted: 2,
+        foreignAgents: ['peer'],
+        foreignHunksByPath: { 'lib/red.test.ts': 2 },
+      });
       const written = mocks.write.mock.calls[0]![1] as Written;
-      expect(written.admissions[0]).toMatchObject({ mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'] });
+      expect(written.admissions[0]).toMatchObject({
+        mode: 'whole-blob',
+        foreignHunksAccepted: 2,
+        foreignAgents: ['peer'],
+      });
       const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
       expect(auditDetails).toMatchObject({ mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'] });
+    });
+
+    it('wholeBlob sourceCommit pins the reviewed integration ancestor instead of rereading a moving staging tip', async () => {
+      const sourceCommit = '1'.repeat(40);
+      expect(
+        tool.args.safeParse({
+          op: 'admit',
+          paths: ['lib/red.test.ts'],
+          wholeBlob: true,
+          sourceCommit,
+          reason: 'pin the reviewed preview',
+        }).success,
+      ).toBe(true);
+      expect(
+        tool.args.safeParse({
+          op: 'admit',
+          paths: ['lib/red.test.ts'],
+          sourceCommit,
+          reason: 'missing whole blob opt in',
+        }).success,
+      ).toBe(false);
+
+      mocks.admissionGit
+        .mockReturnValueOnce({ status: 0, stdout: `${sourceCommit}\n`, stderr: '' })
+        .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' });
+      mocks.admit.mockReturnValue(admissionOf(false));
+      const result = body(
+        await tool.handler(
+          {
+            op: 'admit',
+            paths: ['lib/red.test.ts'],
+            wholeBlob: true,
+            sourceCommit,
+            reason: 'pin the reviewed preview',
+          } as never,
+          ctx,
+        ),
+      );
+
+      expect(mocks.admissionGit.mock.calls).toEqual([
+        [['rev-parse', '--verify', `${sourceCommit}^{commit}`], { cwd: '/repo' }],
+        [['merge-base', '--is-ancestor', sourceCommit, 'staging'], { cwd: '/repo' }],
+      ]);
+      expect(mocks.admit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: { ref: sourceCommit },
+          preflight: expect.any(Function),
+        }),
+      );
+      expect(mocks.importPreflight).toHaveBeenCalledWith({ root: '/repo', probeRef: sourceCommit });
+      expect(result).toMatchObject({
+        ok: true,
+        mode: 'whole-blob',
+        source: { ref: sourceCommit, root: '/repo' },
+      });
+    });
+
+    it('wholeBlob sourceCommit fails closed when the commit is absent or not integrated', async () => {
+      const sourceCommit = '1'.repeat(40);
+      const args = {
+        op: 'admit',
+        paths: ['lib/red.test.ts'],
+        wholeBlob: true,
+        sourceCommit,
+        reason: 'pin the reviewed preview',
+      };
+      mocks.admissionGit.mockReturnValueOnce({ status: 128, stdout: '', stderr: 'bad revision' });
+      expect(body(await tool.handler(args as never, ctx))).toMatchObject({
+        ok: false,
+        reason: 'source-commit-unresolvable',
+      });
+      expect(mocks.admit).not.toHaveBeenCalled();
+
+      mocks.admissionGit
+        .mockReturnValueOnce({ status: 0, stdout: `${sourceCommit}\n`, stderr: '' })
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: '' });
+      expect(body(await tool.handler(args as never, ctx))).toMatchObject({
+        ok: false,
+        reason: 'source-commit-not-integrated',
+      });
+      expect(mocks.admit).not.toHaveBeenCalled();
     });
   });
 });
