@@ -132,6 +132,18 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
   });
 
+  it('documents JavaScript escaping for literal shell backslashes', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('Literal shell backslashes need the same JS escaping');
+    expect(scriptDescription).toContain('use String.raw for the script or double each backslash in a JS string');
+    expect(scriptDescription).toContain("find /tmp \\\\( -name '*.unlikely-no-match' \\\\)");
+    expect(scriptDescription).toContain('a single `\\(` becomes `(` before bash runs');
+    expect(scriptDescription).toContain('breaking grouped predicates');
+  });
+
   it('documents runtime concatenation for JSON data in nested shell commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

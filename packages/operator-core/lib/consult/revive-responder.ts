@@ -36,6 +36,7 @@ import {
   verifyResumeStarted,
   type ResumeTarget,
 } from '../agent-launch-core';
+import { resolveCodexModelSelection } from '../model-context-budget.mjs';
 import { fetchContextPressure } from '../agent-tools/coordination/context-pressure';
 import { buildConsoleEnvelope } from '../console-launcher';
 import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
@@ -280,13 +281,21 @@ export async function reviveConsultResponder(
       }
     }
 
+    // A legacy Codex session may have no model in its recorded argv. The
+    // scripted resume path is non-interactive, so letting that absence reach
+    // `psu --resume` leaves a dead shell with "Codex model is required".
+    // Reuse the canonical launch-policy resolver for the explicit configured
+    // default; when a model was recorded, preserve its source unchanged.
+    const codexSelection = target.agent === 'codex' && !target.model?.trim()
+      ? resolveCodexModelSelection(undefined, { source: 'configured-default' })
+      : null;
     let cmd = d.buildAgentLaunchCommand({
       mode: 'resume',
       sessionId: target.sessionId,
       resumeId: target.resumeId ?? target.sessionId,
       agent: target.agent,
-      model: target.model,
-      modelSource: target.modelSource,
+      model: codexSelection?.model ?? target.model,
+      modelSource: codexSelection?.source ?? target.modelSource,
       headless: true,
     });
     cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;

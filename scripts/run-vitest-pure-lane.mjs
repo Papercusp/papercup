@@ -14,10 +14,11 @@ import {
 } from "./lib/governed-test-process.mjs";
 
 /**
- * A non-isolated Vitest fork retains the transformed module graph for every file it runs.
- * The current suite died after about 1,295 completed files per two-worker fork. Keep the bound
- * materially below that measured ceiling and derive shard count from the live lane census, so
- * adding more tests creates more fresh forks instead of silently arming the same OOM again.
+ * A non-isolated Vitest invocation retains coordinator and reporter state for every file it
+ * runs, even when those files are distributed across several worker forks. The suite died with
+ * one coordinator spanning 4,490 files, so bound the complete invocation population and derive
+ * shard count from the live lane census. Adding workers may increase concurrency inside one
+ * shard, but must never collapse several fresh coordinators back into one OOM-prone process.
  */
 export const PURE_LANE_MAX_FILES_PER_FRESH_FORK = 750;
 
@@ -33,28 +34,21 @@ function positiveInteger(value) {
 }
 
 /**
- * Convert the existing global worker cap into sequential shards. The product of workers and
- * shards is at least PURE_LANE_TARGET_FRESH_FORKS, but concurrency never exceeds the caller's
- * cap: shards run one after another, each through the same admitted pc-heavy scope.
+ * Split the lane into sequential, fresh Vitest coordinators. The worker cap deliberately does
+ * not reduce this count: workers bound concurrency, while shards bound the coordinator's total
+ * retained file graph. Shards run one after another through the same admitted pc-heavy scope.
  */
 export function resolvePureLaneShardCount(
-  env = process.env,
+  _env = process.env,
   pureFileCount = 0,
 ) {
   if (!Number.isInteger(pureFileCount) || pureFileCount < 0) {
     throw new Error(`invalid pure-lane file count ${pureFileCount}`);
   }
-  const caps = WORKER_ENV_KEYS.flatMap((key) => {
-    const value = positiveInteger(env[key]);
-    return value === null ? [] : [value];
-  });
-  // The shared Vitest config defaults to at least eight forks when no explicit cap exists.
-  const workerCap = caps.length > 0 ? Math.min(...caps) : 8;
-  const freshForksNeeded = Math.max(
+  return Math.max(
     1,
     Math.ceil(pureFileCount / PURE_LANE_MAX_FILES_PER_FRESH_FORK),
   );
-  return Math.max(1, Math.ceil(freshForksNeeded / workerCap));
 }
 
 export function buildPureLaneShardArgs(shard, shardCount, forwardedArgs = []) {

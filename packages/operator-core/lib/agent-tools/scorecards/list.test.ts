@@ -209,8 +209,17 @@ describe('scorecards:list correctness payload', () => {
     expect(projected).toBeDefined();
     expect(projected?.description).toContain('subjectRef');
     expect(projected?.description).toContain('scorecards:emit');
+    expect(projected?.description).toContain('composite `spec-set:<classRef>:<specSetHash>:<planKey>`');
+    expect(projected?.description).toContain('not a plan or pot slug');
     expect(projected?.guidance?.when).toContain('subjectRef');
     expect(projected?.guidance?.when).toContain('subject:{kind,ref}');
+    expect(projected?.guidance?.when).toContain('exact composite `spec-set:<classRef>:<specSetHash>:<planKey>` subject ref');
     expect(projected?.guidance?.chaining).toContain('subjectRef: "EI-123"');
+
+    const subjectRefDescription = (
+      listTool as unknown as { args: { shape: { subjectRef: { description?: string } } } }
+    ).args.shape.subjectRef.description;
+    expect(subjectRefDescription).toContain('composite `spec-set:<classRef>:<specSetHash>:<planKey>`');
+    expect(subjectRefDescription).toContain('not the plan or pot slug');
   });
 });

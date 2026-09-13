@@ -23,9 +23,9 @@ export default defineTool({
   name: 'scorecards:list',
   profile: 'engineer',
   description:
-    'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + subjectRef + since; newest-first. `subjectRef` is the scalar observation.subject.ref filter (for example a WI-/EI- id), unlike scorecards:emit\'s structured subject:{kind,ref}. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused).',
+    'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + subjectRef + since; newest-first. `subjectRef` is the scalar observation.subject.ref filter (for example a WI-/EI- id), unlike scorecards:emit\'s structured subject:{kind,ref}. For spec-quality and other plan-spec rubrics, the stored subject ref is a composite `spec-set:<classRef>:<specSetHash>:<planKey>` identity, not a plan or pot slug; obtain the exact ref from an existing scorecard or evaluator output. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused).',
   guidance: {
-    when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did Overwatch emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring. To filter by the graded subject, pass the scalar `subjectRef` (the stored observation.subject.ref), not emit\'s structured `subject:{kind,ref}` object.',
+    when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did Overwatch emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring. To filter by the graded subject, pass the scalar `subjectRef` (the stored observation.subject.ref), not emit\'s structured `subject:{kind,ref}` object. For spec-quality and other plan-spec rubrics, use the exact composite `spec-set:<classRef>:<specSetHash>:<planKey>` subject ref, not the plan slug.',
     notWhen:
       'You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — scorecards:emit.',
     chaining:
@@ -68,7 +68,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'restrict to scorecards GRADING one subject (observation.subject.ref) — the per-RUN axis: an agent ownerId, session id, WI-/EI- id, plan or pot slug. Use for a per-run rubric (e.g. goal-mode-e2e) where sourceHive only says which pot. Absent on pre-2026-08-10 scorecards, which recorded no subject.',
+        'restrict to scorecards GRADING one subject (observation.subject.ref) — the per-RUN axis: an agent ownerId, session id, WI-/EI- id, or rubric-defined subject identity. Use for a per-run rubric (e.g. goal-mode-e2e) where sourceHive only says which pot. For spec-quality and other plan-spec rubrics, this is the exact composite `spec-set:<classRef>:<specSetHash>:<planKey>` ref, not the plan or pot slug; obtain it from an existing scorecard or evaluator output. Absent on pre-2026-08-10 scorecards, which recorded no subject.',
       ),
     since: z
       .string()
