@@ -45,7 +45,7 @@ import {
 } from '../../release/hunk-exact-admission';
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
 import { importCompletenessPreflight } from '../../release/admission-import-completeness';
-import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
+import { admitPathsOntoRepairHead, realAdmissionGit, retractAdmission } from '../../release/repair-head-admission';
 import {
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
@@ -441,16 +441,34 @@ const ADMISSION_PRECHECK_SETTLEMENT_BUDGET_MS = 60_000;
 
 function sameAdmissionPrecheck(
   state: FrozenRepairAdmissionPrecheck | undefined,
-  input: { candidate: string; repairHead: string; builtCommit: string; files: readonly string[]; actor: string },
+  input: {
+    root: string;
+    candidate: string;
+    repairHead: string;
+    builtCommit: string;
+    builtTree: string;
+    files: readonly string[];
+    actor: string;
+  },
 ): state is FrozenRepairAdmissionPrecheck {
-  return Boolean(
-    state &&
+  if (!state) return false;
+  const measuredTree = (() => {
+    if (state.builtTree !== undefined) return state.builtTree;
+    if (state.builtCommit === input.builtCommit) return input.builtTree;
+    const result = realAdmissionGit(['rev-parse', '--verify', `${state.builtCommit}^{tree}`], { cwd: input.root });
+    const tree = result.stdout.trim();
+    return result.status === 0 && /^[0-9a-f]{40,64}$/.test(tree) ? tree : null;
+  })();
+  return (
     state.candidate === input.candidate &&
     state.repairHead === input.repairHead &&
-    state.builtCommit === input.builtCommit &&
+    // EI-23137352034265370: source-tip/reason provenance lives in the synthetic commit
+    // message, so two builds can have different commit ids while carrying the exact same
+    // admission tree on the same repairHead. Legacy markers resolve their commit tree here.
+    measuredTree === input.builtTree &&
     state.actor === input.actor &&
     state.files.length === input.files.length &&
-    state.files.every((file, index) => file === input.files[index]),
+    state.files.every((file, index) => file === input.files[index])
   );
 }
 
@@ -1019,9 +1037,11 @@ export default defineTool({
         // the checkpoint tree, its run-lock and setup-release-checkout all key off the MAIN one.
         const precheckRoot = resolveCanonicalIntegrationRoot(root);
         const matchingPrecheck = sameAdmissionPrecheck(queue.admissionPrecheck, {
+          root,
           candidate: queue.candidate,
           repairHead: queue.repairHead,
           builtCommit,
+          builtTree: outcome.tree,
           files: population.files,
           actor: identity.ownerId,
         })
@@ -1065,6 +1085,7 @@ export default defineTool({
             candidate: queue.candidate,
             repairHead: queue.repairHead,
             builtCommit,
+            builtTree: outcome.tree,
             files: [...population.files],
             actor: identity.ownerId,
             startedAtMs,
