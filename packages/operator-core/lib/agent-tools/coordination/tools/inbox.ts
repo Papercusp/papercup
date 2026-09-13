@@ -42,7 +42,7 @@ import {
   inboxPriorityBucket,
   prioritizedInboxWindow,
 } from "../inbox-visibility";
-import { COORD_ROLES } from "../roles";
+import { COORD_READ_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
 import { fetchPresenceFleet } from "../presence-fleet";
 import type { RecipientCueScope } from "../cue-authority";
@@ -868,7 +868,7 @@ export default defineTool({
   },
   capability: "coord:read",
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   // EI-20191127558336928: coord:inbox owns its coordination/admin reads and
   // does not use ctx.tx. Do not keep the dispatcher's ambient org-app
   // transaction open while mailbox, presence, watermark, and enrichment
