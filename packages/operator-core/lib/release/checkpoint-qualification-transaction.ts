@@ -1003,6 +1003,10 @@ export function assessTerminalRepairQueueReconciliation(
     queue.fixerSpawnId === null &&
     queue.dispatchReservation == null &&
     frozenRepairHeadAwaitsVerification(queue);
+  // A legacy/null-origin queue can still be handed forward safely when the caller independently
+  // pins the exact never-judged repairHead. The required-ancestor equality supplies the missing
+  // provenance link without weakening takeover safety: absent/mismatched pins remain blocked.
+  const unknownOriginPinnedToRepairHead = originUnknown && successor.requiredAncestorSha?.trim() === queue.repairHead;
   if (!originUnknown && !originMatchesTerminal && !(originMatchesImmediatePredecessor && safeUntestedRepairHead)) {
     return {
       status: 'blocked',
@@ -1021,7 +1025,10 @@ export function assessTerminalRepairQueueReconciliation(
   // reservation may still own the row, and the head must be absent from the convergence rounds.
   // Unknown, unrelated, or deeper ancestry stays fail-closed, as does a repairHead that has
   // already consumed a verification run.
-  if (!originUnknown && (originMatchesTerminal || originMatchesImmediatePredecessor) && safeUntestedRepairHead) {
+  if (
+    (originMatchesTerminal || originMatchesImmediatePredecessor || unknownOriginPinnedToRepairHead) &&
+    safeUntestedRepairHead
+  ) {
     return {
       status: 'preserved',
       reason: 'matching-untested-repair-head',

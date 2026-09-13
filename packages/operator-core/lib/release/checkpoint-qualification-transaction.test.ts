@@ -21,14 +21,15 @@ import {
   buildCheckpointEligibilitySnapshot,
 } from './checkpoint-eligibility-snapshot';
 
-const begin = () => beginQualificationTransaction(null, {
-  attemptId: 'attempt-1',
-  requiredAncestorSha: 'abc123',
-  declaredPaths: ['b.ts', 'a.ts', 'a.ts'],
-  candidate: 'candidate-1',
-  evidenceRefs: ['tool:release:checkpoint-run'],
-  nowMs: 100,
-}).transaction;
+const begin = () =>
+  beginQualificationTransaction(null, {
+    attemptId: 'attempt-1',
+    requiredAncestorSha: 'abc123',
+    declaredPaths: ['b.ts', 'a.ts', 'a.ts'],
+    candidate: 'candidate-1',
+    evidenceRefs: ['tool:release:checkpoint-run'],
+    nowMs: 100,
+  }).transaction;
 
 describe('logical checkpoint qualification transaction', () => {
   it('creates one normalized durable identity and reuses the same attempt idempotently', () => {
@@ -42,25 +43,31 @@ describe('logical checkpoint qualification transaction', () => {
     });
     expect(beginQualificationTransaction(current, { attemptId: 'attempt-1', nowMs: 200 }).status).toBe('idempotent');
     expect(beginQualificationTransaction(current, { attemptId: 'attempt-2', nowMs: 200 }).status).toBe('conflict');
-    expect(qualificationIntentMatches(current, {
-      requiredAncestorSha: 'abc123',
-      declaredPaths: ['a.ts', 'b.ts'],
-    })).toBe(true);
-    expect(qualificationIntentMatches(current, {
-      requiredAncestorSha: 'different',
-      declaredPaths: ['a.ts', 'b.ts'],
-    })).toBe(false);
+    expect(
+      qualificationIntentMatches(current, {
+        requiredAncestorSha: 'abc123',
+        declaredPaths: ['a.ts', 'b.ts'],
+      }),
+    ).toBe(true);
+    expect(
+      qualificationIntentMatches(current, {
+        requiredAncestorSha: 'different',
+        declaredPaths: ['a.ts', 'b.ts'],
+      }),
+    ).toBe(false);
   });
 
   it('releases the singleton when an eligibility waiter never started, while preserving real waits', () => {
     const unavailable = waitQualificationTransaction(begin(), {
       attemptId: 'attempt-1',
       reason: 'wait-for-eligibility-unavailable',
-      blockers: [{
-        code: 'dbos-eligibility-waiter',
-        detail: 'DBOS is not installed',
-        clearEvents: [],
-      }],
+      blockers: [
+        {
+          code: 'dbos-eligibility-waiter',
+          detail: 'DBOS is not installed',
+          clearEvents: [],
+        },
+      ],
       nowMs: 200,
     }).transaction;
 
@@ -103,10 +110,12 @@ describe('logical checkpoint qualification transaction', () => {
       reason: 'eligibility-wait',
       nowMs: 200,
     }).transaction;
-    expect(beginQualificationTransaction(ownedWait, {
-      attemptId: 'attempt-2',
-      nowMs: 300,
-    }).status).toBe('conflict');
+    expect(
+      beginQualificationTransaction(ownedWait, {
+        attemptId: 'attempt-2',
+        nowMs: 300,
+      }).status,
+    ).toBe('conflict');
   });
 
   it('persists retryable no-verdict waits and allows at most one physical runner', () => {
@@ -117,12 +126,14 @@ describe('logical checkpoint qualification transaction', () => {
       nowMs: 200,
     }).transaction;
     expect(waiting).toMatchObject({ phase: 'waiting', waitGeneration: 1, currentPhysicalRunner: null });
-    expect(waitQualificationTransaction(waiting, {
-      attemptId: 'attempt-1',
-      reason: 'eligibility-wait',
-      blockers: [{ code: 'quiet-cut', clearEvents: ['checkpoint:eligible:attempt-1'] }],
-      nowMs: 250,
-    }).status).toBe('idempotent');
+    expect(
+      waitQualificationTransaction(waiting, {
+        attemptId: 'attempt-1',
+        reason: 'eligibility-wait',
+        blockers: [{ code: 'quiet-cut', clearEvents: ['checkpoint:eligible:attempt-1'] }],
+        nowMs: 250,
+      }).status,
+    ).toBe('idempotent');
 
     const running = reserveQualificationRunner(waiting, {
       attemptId: 'attempt-1',
@@ -131,17 +142,30 @@ describe('logical checkpoint qualification transaction', () => {
       nowMs: 300,
     }).transaction;
     expect(running).toMatchObject({ phase: 'running', currentPhysicalRunner: { id: 'physical-1' } });
-    expect(reserveQualificationRunner(running, {
-      attemptId: 'attempt-1', runnerId: 'physical-1', leaseDurationMs: 1_000, nowMs: 350,
-    }).status).toBe('idempotent');
-    expect(reserveQualificationRunner(running, {
-      attemptId: 'attempt-1', runnerId: 'physical-2', leaseDurationMs: 1_000, nowMs: 350,
-    }).status).toBe('conflict');
+    expect(
+      reserveQualificationRunner(running, {
+        attemptId: 'attempt-1',
+        runnerId: 'physical-1',
+        leaseDurationMs: 1_000,
+        nowMs: 350,
+      }).status,
+    ).toBe('idempotent');
+    expect(
+      reserveQualificationRunner(running, {
+        attemptId: 'attempt-1',
+        runnerId: 'physical-2',
+        leaseDurationMs: 1_000,
+        nowMs: 350,
+      }).status,
+    ).toBe('conflict');
   });
 
   it('expires a mortal physical runner while preserving the logical attempt and run history', () => {
     const running = reserveQualificationRunner(begin(), {
-      attemptId: 'attempt-1', runnerId: 'physical-1', leaseDurationMs: 100, nowMs: 200,
+      attemptId: 'attempt-1',
+      runnerId: 'physical-1',
+      leaseDurationMs: 100,
+      nowMs: 200,
     }).transaction;
     expect(projectCheckpointQualificationState(running, 250)).toMatchObject({
       owner: { kind: 'routine', id: 'system:green-checkpoint' },
@@ -154,14 +178,19 @@ describe('logical checkpoint qualification transaction', () => {
     });
 
     const replacement = reserveQualificationRunner(running, {
-      attemptId: 'attempt-1', runnerId: 'physical-2', leaseDurationMs: 200, nowMs: 301,
+      attemptId: 'attempt-1',
+      runnerId: 'physical-2',
+      leaseDurationMs: 200,
+      nowMs: 301,
     });
     expect(replacement).toMatchObject({
       status: 'updated',
       transaction: {
         attemptId: 'attempt-1',
         currentPhysicalRunner: { id: 'physical-2', leaseExpiresAtMs: 501 },
-        consumedPhysicalRuns: [{ id: 'physical-1', outcome: { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' } }],
+        consumedPhysicalRuns: [
+          { id: 'physical-1', outcome: { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' } },
+        ],
       },
     });
   });
@@ -181,8 +210,8 @@ describe('logical checkpoint qualification transaction', () => {
       predicates: CHECKPOINT_ELIGIBILITY_PREDICATES.map((code) => ({
         code,
         status: ['candidate-migrations', 'dependency-generation', 'target-relation-reservation'].includes(code)
-          ? 'deferred' as const
-          : 'clear' as const,
+          ? ('deferred' as const)
+          : ('clear' as const),
         detail: `${code} observed at request time`,
         clearEvents: [],
         evidenceRefs: [`test:${code}`],
@@ -221,29 +250,38 @@ describe('logical checkpoint qualification transaction', () => {
         phase: 'terminal',
         outcome: { kind: 'code-inconclusive', reason: 'cancelled' },
         currentPhysicalRunner: null,
-        consumedPhysicalRuns: [{
-          id: 'physical-1',
-          endedAtMs: 300,
-          outcome: { kind: 'code-inconclusive', reason: 'cancelled' },
-        }],
+        consumedPhysicalRuns: [
+          {
+            id: 'physical-1',
+            endedAtMs: 300,
+            outcome: { kind: 'code-inconclusive', reason: 'cancelled' },
+          },
+        ],
       },
     });
 
-    expect(cancelQualificationTransaction(running, {
-      attemptId: 'attempt-1',
-      unit: 'another-checkpoint.service',
-      nowMs: 300,
-    })).toMatchObject({ status: 'conflict', transaction: running });
-    expect(cancelQualificationTransaction(running, {
-      attemptId: 'attempt-2',
-      unit: 'papercup-green-checkpoint-manual-ge93sk.service',
-      nowMs: 300,
-    })).toMatchObject({ status: 'conflict', transaction: running });
+    expect(
+      cancelQualificationTransaction(running, {
+        attemptId: 'attempt-1',
+        unit: 'another-checkpoint.service',
+        nowMs: 300,
+      }),
+    ).toMatchObject({ status: 'conflict', transaction: running });
+    expect(
+      cancelQualificationTransaction(running, {
+        attemptId: 'attempt-2',
+        unit: 'papercup-green-checkpoint-manual-ge93sk.service',
+        nowMs: 300,
+      }),
+    ).toMatchObject({ status: 'conflict', transaction: running });
   });
 
   it('projects blocker events, elapsed phase durations, terminal action, and consumed runs', () => {
     const running = reserveQualificationRunner(begin(), {
-      attemptId: 'attempt-1', runnerId: 'physical-1', leaseDurationMs: 1_000, nowMs: 200,
+      attemptId: 'attempt-1',
+      runnerId: 'physical-1',
+      leaseDurationMs: 1_000,
+      nowMs: 200,
     }).transaction;
     const waiting = waitQualificationTransaction(running, {
       attemptId: 'attempt-1',
@@ -262,7 +300,10 @@ describe('logical checkpoint qualification transaction', () => {
     });
 
     const red = settleQualificationTransaction(waiting, {
-      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 600,
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 600,
     }).transaction;
     expect(projectCheckpointQualificationState(red, 700)).toMatchObject({
       phase: 'terminal',
@@ -273,51 +314,74 @@ describe('logical checkpoint qualification transaction', () => {
 
   it('retries only the explicit pre-suite no-verdict allowlist and makes red/code outcomes terminal', () => {
     expect(classifyQualificationVerdict({ reason: 'migrations-pending', green: null })).toEqual({
-      kind: 'pre-suite-no-verdict', reason: 'migrations-pending',
+      kind: 'pre-suite-no-verdict',
+      reason: 'migrations-pending',
     });
-    expect(classifyQualificationVerdict({ reason: 'not-green', green: false })).toEqual({ kind: 'red', reason: 'not-green' });
+    expect(classifyQualificationVerdict({ reason: 'not-green', green: false })).toEqual({
+      kind: 'red',
+      reason: 'not-green',
+    });
     expect(classifyQualificationVerdict({ reason: 'not-fast-forward', green: null })).toEqual({
-      kind: 'code-inconclusive', reason: 'not-fast-forward',
+      kind: 'code-inconclusive',
+      reason: 'not-fast-forward',
     });
 
     const red = settleQualificationTransaction(begin(), {
-      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 400,
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
     }).transaction;
     expect(red).toMatchObject({ phase: 'terminal', outcome: { kind: 'red' }, currentPhysicalRunner: null });
-    expect(waitQualificationTransaction(red, {
-      attemptId: 'attempt-1', reason: 'eligibility-wait', nowMs: 500,
-    }).status).toBe('terminal');
+    expect(
+      waitQualificationTransaction(red, {
+        attemptId: 'attempt-1',
+        reason: 'eligibility-wait',
+        nowMs: 500,
+      }).status,
+    ).toBe('terminal');
   });
 
   it('fails closed on malformed nested metadata instead of trusting a shallow record cast', () => {
     const current = begin();
     expect(parseCheckpointQualificationTransaction(current)).toEqual(current);
-    expect(parseCheckpointQualificationTransaction({
-      ...current,
-      currentPhysicalRunner: {
-        id: 'physical-1',
-        candidate: null,
-        reservedAtMs: 'not-a-number',
-        evidenceRefs: [],
-      },
-    })).toBeNull();
-    expect(parseCheckpointQualificationTransaction({
-      ...current,
-      outcome: { kind: 'pre-suite-no-verdict', reason: 'invented-retry' },
-    })).toBeNull();
-    expect(parseCheckpointQualificationTransaction({
-      ...current,
-      phaseDurationsMs: { running: -1 },
-    })).toBeNull();
-    expect(parseCheckpointQualificationTransaction({
-      ...current,
-      consumedPhysicalRuns: [{ id: 'run-1', outcome: { kind: 'invented' } }],
-    })).toBeNull();
+    expect(
+      parseCheckpointQualificationTransaction({
+        ...current,
+        currentPhysicalRunner: {
+          id: 'physical-1',
+          candidate: null,
+          reservedAtMs: 'not-a-number',
+          evidenceRefs: [],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseCheckpointQualificationTransaction({
+        ...current,
+        outcome: { kind: 'pre-suite-no-verdict', reason: 'invented-retry' },
+      }),
+    ).toBeNull();
+    expect(
+      parseCheckpointQualificationTransaction({
+        ...current,
+        phaseDurationsMs: { running: -1 },
+      }),
+    ).toBeNull();
+    expect(
+      parseCheckpointQualificationTransaction({
+        ...current,
+        consumedPhysicalRuns: [{ id: 'run-1', outcome: { kind: 'invented' } }],
+      }),
+    ).toBeNull();
   });
 
   it('retires only the predecessor-linked safe unstarted queue for a distinct successor', () => {
     const terminal = settleQualificationTransaction(begin(), {
-      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 400,
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
     }).transaction;
     const safeQueue = createFrozenCandidateQueue({
       candidate: 'candidate-1',
@@ -333,9 +397,7 @@ describe('logical checkpoint qualification transaction', () => {
       nowMs: 500,
     };
 
-    expect(
-      assessTerminalRepairQueueReconciliation(terminal, successor, safeQueue),
-    ).toMatchObject({
+    expect(assessTerminalRepairQueueReconciliation(terminal, successor, safeQueue)).toMatchObject({
       status: 'retired',
       reason: 'exact-safe-unstarted',
       predecessorAttemptId: 'attempt-1',
@@ -362,17 +424,23 @@ describe('logical checkpoint qualification transaction', () => {
 
   it('preserves a predecessor-linked repair head that is ready for its first verification', () => {
     const terminal = settleQualificationTransaction(begin(), {
-      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 400,
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
     }).transaction;
-    const redCandidate = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
-      candidate: 'candidate-1',
-      qualificationAttemptId: 'attempt-1',
-      base: null,
-      nowMs: 200,
-    }), {
-      failingTests: ['broken.test.ts'],
-      nowMs: 300,
-    });
+    const redCandidate = markFrozenCandidateVerificationRed(
+      createFrozenCandidateQueue({
+        candidate: 'candidate-1',
+        qualificationAttemptId: 'attempt-1',
+        base: null,
+        nowMs: 200,
+      }),
+      {
+        failingTests: ['broken.test.ts'],
+        nowMs: 300,
+      },
+    );
     const readyToVerify = markFrozenRepairAdmitted(redCandidate, {
       atMs: 350,
       actor: 'agent-1',
@@ -391,9 +459,7 @@ describe('logical checkpoint qualification transaction', () => {
       nowMs: 500,
     };
 
-    expect(
-      assessTerminalRepairQueueReconciliation(terminal, successor, readyToVerify),
-    ).toMatchObject({
+    expect(assessTerminalRepairQueueReconciliation(terminal, successor, readyToVerify)).toMatchObject({
       status: 'preserved',
       reason: 'matching-untested-repair-head',
       predecessorAttemptId: 'attempt-1',
@@ -405,6 +471,13 @@ describe('logical checkpoint qualification transaction', () => {
         ...readyToVerify,
         qualificationAttemptId: null,
       }),
+    ).toMatchObject({ status: 'preserved', reason: 'matching-untested-repair-head' });
+    expect(
+      assessTerminalRepairQueueReconciliation(
+        terminal,
+        { ...successor, requiredAncestorSha: 'different-repair' },
+        { ...readyToVerify, qualificationAttemptId: null },
+      ),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
     expect(
       assessTerminalRepairQueueReconciliation(terminal, successor, {
@@ -502,7 +575,10 @@ describe('logical checkpoint qualification transaction', () => {
   // phase/attempts/fixer safety checks as a known-matching origin.
   it('judges a null-origin queue (unknown provenance) on its actual state instead of permanently fail-closing it', () => {
     const terminal = settleQualificationTransaction(begin(), {
-      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 400,
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
     }).transaction;
     const safeQueue = createFrozenCandidateQueue({
       candidate: 'candidate-1',
