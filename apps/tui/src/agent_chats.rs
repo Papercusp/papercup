@@ -113,6 +113,9 @@ pub struct AgentChatSummary {
     pub total_output_tokens: Option<u64>,
     #[serde(default)]
     pub total_cost_usd_cents: Option<f64>,
+    /// False means at least one assistant frame omitted usage measurements.
+    #[serde(default)]
+    pub usage_complete: bool,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -154,6 +157,9 @@ pub struct AgentChat {
     pub total_output_tokens: Option<u64>,
     #[serde(default)]
     pub total_cost_usd_cents: Option<f64>,
+    /// False means at least one assistant frame omitted usage measurements.
+    #[serde(default)]
+    pub usage_complete: bool,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -176,6 +182,9 @@ pub struct AgentChatUsage {
 
 impl From<&AgentChatSummary> for AgentChatUsage {
     fn from(chat: &AgentChatSummary) -> Self {
+        if !chat.usage_complete {
+            return Self::default();
+        }
         Self {
             input_tokens: chat.total_input_tokens,
             output_tokens: chat.total_output_tokens,
@@ -186,6 +195,9 @@ impl From<&AgentChatSummary> for AgentChatUsage {
 
 impl From<&AgentChat> for AgentChatUsage {
     fn from(chat: &AgentChat) -> Self {
+        if !chat.usage_complete {
+            return Self::default();
+        }
         Self {
             input_tokens: chat.total_input_tokens,
             output_tokens: chat.total_output_tokens,
@@ -346,6 +358,7 @@ mod tests {
                 "total_input_tokens": 11,
                 "total_output_tokens": 7,
                 "total_cost_usd_cents": 1.25,
+                "usage_complete": true,
                 "created_at": "2026-08-24T00:00:00.000Z",
                 "updated_at": "2026-08-24T00:01:00.000Z",
                 "archived_at": null
@@ -357,6 +370,7 @@ mod tests {
         assert_eq!(list.chats[0].total_input_tokens, Some(11));
         assert_eq!(list.chats[0].total_output_tokens, Some(7));
         assert_eq!(list.chats[0].total_cost_usd_cents, Some(1.25));
+        assert!(list.chats[0].usage_complete);
 
         let chat: AgentChat = serde_json::from_value(json!({
             "id": "chat-1",
@@ -383,6 +397,7 @@ mod tests {
             "total_input_tokens": 11,
             "total_output_tokens": 7,
             "total_cost_usd_cents": 1.25,
+            "usage_complete": false,
             "created_at": "2026-08-24T00:00:00.000Z",
             "updated_at": "2026-08-24T00:01:00.000Z",
             "archived_at": null,
@@ -399,6 +414,7 @@ mod tests {
         assert_eq!(chat.total_input_tokens, Some(11));
         assert_eq!(chat.total_output_tokens, Some(7));
         assert_eq!(chat.total_cost_usd_cents, Some(1.25));
+        assert!(!chat.usage_complete);
         assert_eq!(
             chat.transcript[0].tools[0].answered.as_ref().unwrap().picks[0].option_id,
             "yes"
@@ -418,6 +434,21 @@ mod tests {
         assert_eq!(usage.input_tokens, None);
         assert_eq!(usage.output_tokens, None);
         assert_eq!(usage.cost_usd_cents, None);
+    }
+
+    #[test]
+    fn incomplete_usage_aggregate_stays_unknown_even_when_stored_totals_are_zero() {
+        let chat: AgentChat = serde_json::from_value(json!({
+            "id": "incomplete-chat",
+            "role": "operator",
+            "transcript": [],
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_cost_usd_cents": 0,
+            "usage_complete": false
+        }))
+        .expect("decode incomplete usage");
+        assert_eq!(AgentChatUsage::from(&chat), AgentChatUsage::default());
     }
 
     #[test]

@@ -2,8 +2,8 @@
  * Coverage for agent-chats-data pure helpers: isValidChatRole (rejects
  * 'feedback', otherwise gated on the known-roles registry) and rowToChat (the
  * PG-row → ChatRow mapping with transcript JSON-parse vs passthrough, bigint→
- * Number token/cost coercion, bigint epoch-ms → ISO timestamp coercion
- * (migration 116), null defaults).
+ * Number token/cost coercion, incomplete-provider-usage preservation, bigint
+ * epoch-ms → ISO timestamp coercion (migration 116), null defaults).
  *
  * Plus listChats LIMIT/OFFSET bounding + column projection (F-C1): the query
  * is always bounded — default 100, clamped to 1..100, offset for paging — AND
@@ -107,6 +107,7 @@ describe('rowToChat', () => {
     expect(c.total_input_tokens).toBe(100);
     expect(c.total_output_tokens).toBe(50);
     expect(c.total_cost_usd_cents).toBe(7);
+    expect(c.usage_complete).toBe(true);
     expect(c.archived_at).toBeNull();
   });
 
@@ -128,6 +129,7 @@ describe('rowToChat', () => {
     expect(c.title).toBeNull();
     expect(c.total_input_tokens).toBe(0);
     expect(c.total_cost_usd_cents).toBe(0);
+    expect(c.usage_complete).toBe(true);
   });
 
   it('defaults an absent transcript to []', () => {
@@ -154,6 +156,7 @@ describe('rowToChatSummary', () => {
     expect(s.turn_count).toBe(12);
     expect(s.total_input_tokens).toBe(100);
     expect(s.total_output_tokens).toBe(50);
+    expect(s.usage_complete).toBe(false);
     expect(s).not.toHaveProperty('transcript');
     expect(s.created_at).toBe(new Date(1_700_000_000_000).toISOString());
     expect(s.archived_at).toBeNull();
@@ -164,6 +167,24 @@ describe('rowToChatSummary', () => {
     expect(s.turn_count).toBe(0);
     expect(s.feature_id).toBeNull();
     expect(s.title).toBeNull();
+  });
+
+  it('marks a detail row incomplete when an assistant turn reports missing usage', () => {
+    const c = rowToChat({
+      id: 'incomplete',
+      role: 'worker',
+      transcript: [{
+        role: 'assistant',
+        content: 'reply',
+        ts: '2026-09-13T00:00:00Z',
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_cents: 0,
+        unreportedFrames: 1,
+      }],
+    });
+    expect(c.total_input_tokens).toBe(0);
+    expect(c.usage_complete).toBe(false);
   });
 });
 
@@ -184,9 +205,10 @@ describe('listChats — bounded query (F-C1)', () => {
     // the heavy jsonb body is replaced by its length
     expect(sql).toContain('jsonb_array_length');
     expect(sql).toContain('AS turn_count');
+    expect(sql).toContain('AS usage_complete');
     // `transcript` is referenced exactly ONCE — inside the length expression,
     // never selected as a bare body column.
-    expect((String(sql).match(/transcript/g) ?? []).length).toBe(1);
+    expect((String(sql).match(/transcript/g) ?? []).length).toBe(2);
     expect(sql).toContain('COALESCE(transcript');
   });
 
@@ -201,6 +223,7 @@ describe('listChats — bounded query (F-C1)', () => {
         total_input_tokens: 10n,
         total_output_tokens: 5n,
         total_cost_usd_cents: 2n,
+        usage_complete: true,
         created_at: 1_700_000_000_000,
         updated_at: 1_700_000_000_000,
         archived_at: null,
@@ -213,6 +236,7 @@ describe('listChats — bounded query (F-C1)', () => {
     expect(chat.turn_count).toBe(4);
     expect(chat).not.toHaveProperty('transcript');
     expect(chat.total_input_tokens).toBe(10);
+    expect(chat.usage_complete).toBe(true);
   });
 
   it('clamps limit above 100 down to 100', async () => {

@@ -111,6 +111,8 @@ export interface ChatRow {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cost_usd_cents: number;
+  /** True only when every assistant turn supplied token and cost readings. */
+  usage_complete: boolean;
   created_at: string;
   updated_at: string;
   archived_at: string | null;
@@ -140,6 +142,8 @@ export interface ChatSummary {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cost_usd_cents: number;
+  /** True only when every assistant turn supplied token and cost readings. */
+  usage_complete: boolean;
   created_at: string;
   updated_at: string;
   archived_at: string | null;
@@ -181,6 +185,20 @@ function msToIsoNullable(v: unknown): string | null {
 }
 
 export function rowToChat(r: Record<string, unknown>): ChatRow {
+  const transcript: TranscriptTurn[] =
+    typeof r.transcript === 'string'
+      ? JSON.parse(r.transcript)
+      : ((r.transcript as TranscriptTurn[] | undefined) ?? []);
+  const usageComplete =
+    typeof r.usage_complete === 'boolean'
+      ? r.usage_complete
+      : transcript.every((turn) =>
+          turn.role !== 'assistant' ||
+          (typeof turn.tokens_in === 'number' && Number.isFinite(turn.tokens_in) &&
+            typeof turn.tokens_out === 'number' && Number.isFinite(turn.tokens_out) &&
+            typeof turn.cost_cents === 'number' && Number.isFinite(turn.cost_cents) &&
+            !(typeof turn.unreportedFrames === 'number' && turn.unreportedFrames > 0)),
+        );
   return {
     id: r.id as string,
     role: r.role as string,
@@ -190,10 +208,7 @@ export function rowToChat(r: Record<string, unknown>): ChatRow {
     continued_from_chat_id: (r.continued_from_chat_id as string | null) ?? null,
     continued_from_turn_count:
       r.continued_from_turn_count == null ? null : Number(r.continued_from_turn_count),
-    transcript:
-      typeof r.transcript === 'string'
-        ? JSON.parse(r.transcript)
-        : ((r.transcript as TranscriptTurn[] | undefined) ?? []),
+    transcript,
     total_input_tokens:
       typeof r.total_input_tokens === 'bigint'
         ? Number(r.total_input_tokens)
@@ -206,6 +221,7 @@ export function rowToChat(r: Record<string, unknown>): ChatRow {
       typeof r.total_cost_usd_cents === 'bigint'
         ? Number(r.total_cost_usd_cents)
         : ((r.total_cost_usd_cents as number | undefined) ?? 0),
+    usage_complete: usageComplete,
     created_at: msToIso(r.created_at),
     updated_at: msToIso(r.updated_at),
     archived_at: msToIsoNullable(r.archived_at),
@@ -230,6 +246,7 @@ export function rowToChatSummary(r: Record<string, unknown>): ChatSummary {
     total_input_tokens: toNum(r.total_input_tokens),
     total_output_tokens: toNum(r.total_output_tokens),
     total_cost_usd_cents: toNum(r.total_cost_usd_cents),
+    usage_complete: r.usage_complete === true,
     created_at: msToIso(r.created_at),
     updated_at: msToIso(r.updated_at),
     archived_at: msToIsoNullable(r.archived_at),
@@ -271,6 +288,9 @@ export const LIST_CHATS_MAX_LIMIT = 100;
 const LIST_CHATS_COLUMNS =
   'id, role, feature_id, title, su_runtime_class, continued_from_chat_id, continued_from_turn_count, ' +
   'total_input_tokens, total_output_tokens, total_cost_usd_cents, ' +
+  `NOT jsonb_path_exists(COALESCE(transcript, '[]'::jsonb), ` +
+  `'\$[*] ? (@.role == "assistant" && (!exists(@.tokens_in) || !exists(@.tokens_out) || ` +
+  `!exists(@.cost_cents) || @.unreportedFrames > 0))') AS usage_complete, ` +
   'created_at, updated_at, archived_at, ' +
   "jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turn_count";
 
