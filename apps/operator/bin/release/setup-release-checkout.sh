@@ -1309,6 +1309,7 @@ fi
 # that exposes a gitignored `main`/`require`/`default` target must be registered
 # here or that detector fails before the same class can reach deploy again.
 RUNTIME_BUILD_WORKSPACES=(
+  "@papercusp/omp"
   "@papercusp/sse"
 )
 

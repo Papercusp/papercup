@@ -678,8 +678,23 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
 
   it('exports the transaction-scoped backup rendezvous using the canonical key', () => {
     expect(migrationBackupAdvisoryLockSql()).toBe(
-      `SELECT pg_advisory_xact_lock(hashtext('${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}'));\n`,
+      `SET LOCAL lock_timeout = 0;\n` +
+        `SET LOCAL statement_timeout = 0;\n` +
+        `SELECT pg_advisory_xact_lock(hashtext('${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}'));\n` +
+        `SET LOCAL lock_timeout = '10s';\n`,
     );
+  });
+
+  it('disables both timeouts only for the rendezvous wait, then restores the requested DDL timeout', () => {
+    const sql = migrationBackupAdvisoryLockSql(180);
+    const disableLock = sql.indexOf('SET LOCAL lock_timeout = 0;');
+    const disableStatement = sql.indexOf('SET LOCAL statement_timeout = 0;');
+    const acquire = sql.indexOf('pg_advisory_xact_lock');
+    const restore = sql.indexOf("SET LOCAL lock_timeout = '180s';");
+    expect(disableLock).toBeGreaterThanOrEqual(0);
+    expect(disableStatement).toBeGreaterThan(disableLock);
+    expect(acquire).toBeGreaterThan(disableStatement);
+    expect(restore).toBeGreaterThan(acquire);
   });
 
   it('exports a backup-lock guard that raises the retryable lock-timeout shape before DDL', () => {

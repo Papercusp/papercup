@@ -8,6 +8,14 @@ const auditArgs = {
   subject: { kind: 'scorecard', ref: 'EI-CARD' },
 };
 
+const evaluateArgs = {
+  rubricRef: 'grading-integrity',
+  sourceHive: 'papercusp',
+  ratings: {
+    criterion: { rating: 'pass', evidence: 'bounded grading evidence' },
+  },
+};
+
 function toolsCall(id: number, name: string, args: Record<string, unknown>): string {
   return JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
 }
@@ -21,6 +29,50 @@ function request(body: string, role = 'judge'): Request {
 }
 
 describe('judge grading-integrity admission reserve', () => {
+  it.each([
+    ['canonical', 'scorecards:evaluate'],
+    ['underscore', 'scorecards_evaluate'],
+    ['mcp-advertised', 'mcp__papercusp_su__scorecards_evaluate'],
+  ])('admits one bounded complete evaluation for a judge under critical pressure: %s', async (_label, name) => {
+    const body = toolsCall(0, name, evaluateArgs);
+    const req = request(body);
+
+    expect(classifyMcpBody(body, req.url)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body, req.url)).toBe('diagnostic');
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+  });
+
+  it('admits the bounded complete evaluation through deferred tools:invoke', async () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp_su__scorecards_evaluate', args: evaluateArgs },
+      },
+    });
+    const req = request(body);
+
+    expect(classifyMcpBody(body, req.url)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body, req.url)).toBe('diagnostic');
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+  });
+
+  it('keeps complete evaluations sheddable outside the judge role or when oversized', async () => {
+    const nonJudge = request(toolsCall(0, 'scorecards:evaluate', evaluateArgs), 'worker');
+    expect(classifyMcpBody(await nonJudge.clone().text(), nonJudge.url)).toEqual({ sheddable: true, id: 0 });
+    expect(await evaluateAdmission(nonJudge, 'critical', true)).not.toBeNull();
+
+    const oversized = request(
+      toolsCall(0, 'scorecards:evaluate', {
+        ...evaluateArgs,
+        ratings: { criterion: { rating: 'pass', evidence: 'x'.repeat(4_001) } },
+      }),
+    );
+    expect(await evaluateAdmission(oversized, 'critical', true)).not.toBeNull();
+  });
+
   it('admits one terminal scorecard audit for a judge under critical pressure', async () => {
     const body = toolsCall(1, 'scorecards:emit', auditArgs);
     const req = request(body);

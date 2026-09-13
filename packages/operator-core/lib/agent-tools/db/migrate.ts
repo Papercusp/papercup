@@ -133,9 +133,19 @@ export {
  * this lock therefore waits before `\\i` can issue any migration DDL and is
  * released automatically by COMMIT/ROLLBACK.
  */
-export function migrationBackupAdvisoryLockSql(): string {
-  const key = BACKUP_MIGRATION_ADVISORY_LOCK_KEY.replace(/'/g, "''");
-  return `SELECT pg_advisory_xact_lock(hashtext('${key}'));\n`;
+export function migrationBackupAdvisoryLockSql(lockTimeoutSec = DEFAULT_LOCK_TIMEOUT_SEC): string {
+  // The rendezvous is deliberately unbounded in both timeout dimensions. A
+  // healthy pg_dump can hold its snapshot for minutes, and applying the
+  // migration's ordinary short lock_timeout to this wait merely recreates the
+  // retry exhaustion this lock is meant to prevent. Restore the normal
+  // per-attempt lock timeout only after the backup has released the key so the
+  // migration body still fails fast on ordinary hot-table contention.
+  return (
+    `SET LOCAL lock_timeout = 0;\n` +
+    `SET LOCAL statement_timeout = 0;\n` +
+    `SELECT pg_advisory_xact_lock(hashtext('${BACKUP_MIGRATION_ADVISORY_LOCK_KEY.replace(/'/g, "''")}'));\n` +
+    `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n`
+  );
 }
 
 const BACKUP_APPLICATION_NAMES_SQL = BACKUP_APPLICATION_NAMES.map((name) => `'${name}'`).join(', ');
@@ -596,8 +606,8 @@ export default defineTool({
     //   EI-217072: the advisory rendezvous proves only that a snapshot and a
     //     migration are not concurrent — require the newest pre_destructive
     //     receipt to be a completed database-backed restore point before DDL.
-    const migrationGuardPreamble =
-      migrationBackupAdvisoryLockSql() +
+    const migrationGuardPreamble = (lockTimeoutSec: number) =>
+      migrationBackupAdvisoryLockSql(lockTimeoutSec) +
       migrationBackupLockGuardSql() +
       snapshotAdmissionGuard +
       migrationReservationGuardSql(path.basename(resolvedFile));
@@ -661,7 +671,7 @@ export default defineTool({
             // opt-in, so a stripped-down copy is a silent, fleet-wide bypass
             // of a fail-closed safety rail rather than a local shortcut.
             const url = getHarnessAdminUrl();
-            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n${migrationGuardPreamble}\\i ${resolvedFile}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(resolvedFile)}', '<sha256 of the file bytes, e.g. sha256sum ${resolvedFile}>');\nCOMMIT;\nSQL`;
+            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n${migrationGuardPreamble(DEFAULT_LOCK_TIMEOUT_SEC)}\\i ${resolvedFile}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(resolvedFile)}', '<sha256 of the file bytes, e.g. sha256sum ${resolvedFile}>');\nCOMMIT;\nSQL`;
             // EI-13299: escalate:true is the sanctioned fast path when the caller
             // (typically a cup with no shell/PG access at all) has no other way to
             // get an urgent, already-committed migration applied while the deploy
@@ -784,7 +794,7 @@ export default defineTool({
             // embedded in the withheld-branch fallback command, so a migration
             // applied by hand carries exactly the rails one applied by this
             // tool does.
-            migrationGuardPreamble +
+            migrationGuardPreamble(lockTimeoutSec) +
             `\\i ${resolvedFile}\n` +
             `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
             `COMMIT;\n`;

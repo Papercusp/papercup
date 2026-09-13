@@ -92,6 +92,18 @@ sudo -n install -d -o postgres -g "$BACKUP_GROUP" -m 0775 "$PGOUT" 2>/dev/null |
 readonly HOST_BACKUP_APPLICATION_NAME=pcbackup
 export PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
 
+# The host cron producer is a separate backup path from the per-workspace
+# hook, but it dumps the same Postgres cluster. Hold the canonical
+# backup↔migration rendezvous on a dedicated psql session for the complete
+# dump lifecycle; otherwise a long pg_dump can acquire AccessShareLock while a
+# migration is already retrying its DDL and exhaust all five short attempts.
+readonly BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'
+readonly BACKUP_MIGRATION_LOCK_READY='papercusp_backup_migration_lock_acquired'
+BACKUP_MIGRATION_LOCK_PID=''
+BACKUP_MIGRATION_LOCK_IN_FD=''
+BACKUP_MIGRATION_LOCK_OUT_FD=''
+BACKUP_MIGRATION_LOCK_HELD=false
+
 # Generous but finite. A 29 GB parallel dump measures in minutes; this is the
 # ceiling past which we declare the dump wedged rather than let it hold locks
 # forever. Overridable for a one-off large restore-test.
@@ -272,6 +284,88 @@ reap_own_stragglers() {
           WHERE application_name = '$HOST_BACKUP_APPLICATION_NAME' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
 }
 
+# Release the dedicated advisory-lock backend. The EXIT trap is the safety net
+# for every failure path, including a timeout/oom before the final cleanup.
+# Closing the psql session releases the session-level advisory lock even when
+# the explicit \q cannot be delivered because the backend was already reaped.
+release_migration_rendezvous() {
+  if [ -n "${BACKUP_MIGRATION_LOCK_IN_FD:-}" ]; then
+    if [ "${BACKUP_MIGRATION_LOCK_HELD:-false}" = true ]; then
+      printf '\\q\n' >&"$BACKUP_MIGRATION_LOCK_IN_FD" 2>/dev/null || true
+    else
+      # If acquisition was interrupted while waiting behind another holder,
+      # psql is blocked inside pg_advisory_lock and cannot consume \q. Kill
+      # that dedicated client instead of allowing EXIT cleanup to hang.
+      kill "${BACKUP_MIGRATION_LOCK_PID:-}" 2>/dev/null || true
+    fi
+    exec {BACKUP_MIGRATION_LOCK_IN_FD}>&- 2>/dev/null || true
+  fi
+  if [ -n "${BACKUP_MIGRATION_LOCK_PID:-}" ]; then
+    wait "$BACKUP_MIGRATION_LOCK_PID" 2>/dev/null || true
+  fi
+  if [ -n "${BACKUP_MIGRATION_LOCK_OUT_FD:-}" ]; then
+    exec {BACKUP_MIGRATION_LOCK_OUT_FD}<&- 2>/dev/null || true
+  fi
+  BACKUP_MIGRATION_LOCK_PID=''
+  BACKUP_MIGRATION_LOCK_IN_FD=''
+  BACKUP_MIGRATION_LOCK_OUT_FD=''
+  BACKUP_MIGRATION_LOCK_HELD=false
+}
+
+trap release_migration_rendezvous EXIT
+
+# Acquire the shared rendezvous on a session that remains open while all of
+# this script's pg_dump children run. A one-shot `psql -c pg_advisory_lock`
+# would release the lock as soon as psql exits, so use a coprocess and keep its
+# stdin open until the dump lifecycle is complete. The marker is emitted only
+# after the advisory lock has been granted, making the hand-off observable and
+# preventing the first pg_dump from racing the lock wait.
+acquire_migration_rendezvous() {
+  local line acquired=false
+  coproc BACKUP_MIGRATION_LOCK_PSQL {
+    exec sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
+      psql -X -q -v ON_ERROR_STOP=1 -At \
+      -h /var/run/postgresql -d postgres
+  }
+  # `sudo` can fail before Bash publishes the named-coproc descriptors (for
+  # example when the database service is down). Read these with nounset-safe
+  # defaults so that failure becomes a clean backup refusal, not an opaque
+  # shell error before the EXIT cleanup can run.
+  BACKUP_MIGRATION_LOCK_PID="${BACKUP_MIGRATION_LOCK_PSQL_PID:-}"
+  BACKUP_MIGRATION_LOCK_IN_FD="${BACKUP_MIGRATION_LOCK_PSQL[1]:-}"
+  BACKUP_MIGRATION_LOCK_OUT_FD="${BACKUP_MIGRATION_LOCK_PSQL[0]:-}"
+  if [ -z "$BACKUP_MIGRATION_LOCK_PID" ] || \
+     [ -z "$BACKUP_MIGRATION_LOCK_IN_FD" ] || \
+     [ -z "$BACKUP_MIGRATION_LOCK_OUT_FD" ]; then
+    log "backup FAIL — migration rendezvous session could not start"
+    release_migration_rendezvous
+    return 1
+  fi
+  printf '%s\n' \
+    'SET lock_timeout = 0;' \
+    'SET statement_timeout = 0;' \
+    "SELECT pg_advisory_lock(hashtext('$BACKUP_MIGRATION_ADVISORY_LOCK_KEY'));" \
+    "\\echo $BACKUP_MIGRATION_LOCK_READY" \
+    >&"$BACKUP_MIGRATION_LOCK_IN_FD" || {
+      log "backup FAIL — could not send migration rendezvous request"
+      release_migration_rendezvous
+      return 1
+    }
+  while IFS= read -r -u "$BACKUP_MIGRATION_LOCK_OUT_FD" line; do
+    if [ "$line" = "$BACKUP_MIGRATION_LOCK_READY" ]; then
+      acquired=true
+      break
+    fi
+  done
+  if [ "$acquired" != true ]; then
+    log "backup FAIL — migration rendezvous session exited before acquiring the advisory lock"
+    release_migration_rendezvous
+    return 1
+  fi
+  BACKUP_MIGRATION_LOCK_HELD=true
+  log "migration rendezvous acquired for host dump"
+}
+
 # Bounded run. NOTE the grandchild trap of EI-10730 does not exist here BY
 # CONSTRUCTION: it is specific to a full `pg_dumpall`, which shells out to a
 # per-database `pg_dump` (sh -c -- pg_dump ...) that does not die with it. We
@@ -291,6 +385,7 @@ run_bounded() {
 START=$(date +%s)
 reap_own_stragglers
 reap_foreign_dumps
+acquire_migration_rendezvous || exit 1
 
 FAILED=()
 DUMPED=()
@@ -616,6 +711,9 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
   done
 fi
 
+# Let migrations proceed before the final backend sweep/status bookkeeping. The
+# EXIT trap also makes this release happen when any later step aborts.
+release_migration_rendezvous
 reap_own_stragglers   # nothing of ours may outlive this script holding locks
 
 # ── oddsmith embedded Postgres (TCP 5544) — WI-39502 ────────────────────────

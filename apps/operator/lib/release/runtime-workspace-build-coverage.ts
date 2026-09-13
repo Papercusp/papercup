@@ -6,7 +6,7 @@ export interface IgnoredRuntimeEntryWorkspace {
   name: string;
   /** repo-relative package.json path */
   manifest: string;
-  /** package-relative ignored main/require/default target */
+  /** package-relative ignored bin/main/require/default target */
   target: string;
 }
 
@@ -51,7 +51,12 @@ export function listIgnoredRuntimeEntryWorkspaces(
   const hits: IgnoredRuntimeEntryWorkspace[] = [];
   for (const manifest of manifests) {
     const packageDir = dirname(resolve(repoRoot, manifest));
-    let parsed: { name?: string; main?: unknown; exports?: unknown };
+    let parsed: {
+      name?: string;
+      bin?: unknown;
+      main?: unknown;
+      exports?: unknown;
+    };
     try {
       parsed = JSON.parse(readFileSync(resolve(repoRoot, manifest), 'utf8')) as typeof parsed;
     } catch {
@@ -60,6 +65,12 @@ export function listIgnoredRuntimeEntryWorkspaces(
     if (!parsed.name?.startsWith('@papercusp/') && !parsed.name?.startsWith('@papercup/')) continue;
 
     const targets = new Set<string>();
+    if (typeof parsed.bin === 'string') targets.add(parsed.bin);
+    else if (parsed.bin && typeof parsed.bin === 'object') {
+      for (const target of Object.values(parsed.bin as Record<string, unknown>)) {
+        if (typeof target === 'string') targets.add(target);
+      }
+    }
     if (typeof parsed.main === 'string') targets.add(parsed.main);
     for (const target of exportRuntimeTargets(parsed.exports)) targets.add(target);
 
