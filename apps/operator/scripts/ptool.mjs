@@ -1729,6 +1729,59 @@ function errorDetail(error) {
 }
 
 /**
+ * The MCP proxy includes a forwarding result in its JSON error body when it
+ * refuses an upstream request before forwarding it. Keep this check tolerant
+ * of the MCP SDK's Error wrapper (which normally preserves the body only in
+ * `message`) and of callers that pass the decoded result directly.
+ */
+function isNotForwardedFailure(error) {
+  const seen = new Set();
+  let current = error;
+  while (current != null) {
+    if (typeof current === 'string') {
+      return /"?forwardingResult"?\s*[:=]\s*"?not_forwarded\b/i.test(current);
+    }
+    if (typeof current !== 'object' && typeof current !== 'function') return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if (current.forwardingResult === 'not_forwarded') return true;
+    if (/"?forwardingResult"?\s*[:=]\s*"?not_forwarded\b/i.test(errorDetail(current))) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
+ * A refused TCP connection is a pre-connect failure: no HTTP request reached
+ * the operator, so a tools/call cannot have executed. Walk the cause chain
+ * because fetch implementations commonly expose ECONNREFUSED only there.
+ */
+function isPreConnectConnectionRefused(error) {
+  const seen = new Set();
+  let current = error;
+  let sawHttpStatus = false;
+  while (current != null) {
+    if (typeof current === 'string') return /\bECONNREFUSED\b/i.test(current);
+    if (typeof current !== 'object' && typeof current !== 'function') return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    const status = Number(current.code);
+    if (Number.isInteger(status) && status >= 400 && status <= 599) {
+      sawHttpStatus = true;
+    }
+    if (
+      !sawHttpStatus &&
+      (String(current.code ?? '').toUpperCase() === 'ECONNREFUSED' ||
+        /\bECONNREFUSED\b/i.test(String(current.message ?? '')))
+    ) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
  * Read the proxy's typed retry hint from a pre-dispatch refusal. The MCP SDK
  * surfaces the JSON body in the error text rather than preserving response
  * headers, so parse the emitted `retryAfterSec` field and fall back to the
@@ -1779,14 +1832,19 @@ export function retryWaitMsWithJitter(
  * Format a tools/call failure without implying that the call did not run.
  * Stream transport failures can arrive after the operator has dispatched the
  * tool, so callers must verify mutation state before replaying the payload.
- * The one known pre-dispatch refusal (loop-pressure shedding) is called out
- * separately because that signal is safe to retry and cannot have executed.
+ * Known pre-dispatch refusals (proxy `not_forwarded`, loop-pressure shedding,
+ * and direct ECONNREFUSED) are called out separately because those signals are
+ * safe to retry and cannot have executed.
  * Pure — exported for focused diagnostics tests.
  */
 export function formatToolCallFailure(toolName, error, { idempotencyKey } = {}) {
   const name = typeof toolName === 'string' && toolName ? toolName : '(unknown tool)';
   const detail = errorDetail(error);
-  if (isLoopPressureShed(error)) {
+  if (
+    isLoopPressureShed(error) ||
+    isNotForwardedFailure(error) ||
+    isPreConnectConnectionRefused(error)
+  ) {
     return `ptool: tools/call ${name} was rejected before dispatch: ${detail}; no tool execution occurred.`;
   }
   const receipt = typeof idempotencyKey === 'string' && idempotencyKey
