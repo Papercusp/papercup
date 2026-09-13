@@ -1134,6 +1134,7 @@ describe('ptool coerceArg', () => {
 
 describe('ptool mergeConvenienceArgs', () => {
   const schema = { properties: { workspace: { type: 'string' }, harness: { type: 'string' }, x: { type: 'string' } } };
+  const rehomeSchema = { properties: { op: { type: 'string' }, id: { type: 'string' }, harness: { type: 'string' } } };
 
   it('injects workspace/harness only when the schema declares them', () => {
     expect(mergeConvenienceArgs({}, { workspace: 'ws', harness: 'h' }, schema)).toEqual({
@@ -1173,6 +1174,34 @@ describe('ptool mergeConvenienceArgs', () => {
     expect(mergeConvenienceArgs({}, { workspace: 'ambient-ws', harness: 'ambient-harness' }, schema, {
       toolName: 'work_items:list',
     })).toEqual({ workspace: 'ambient-ws', harness: 'ambient-harness' });
+  });
+
+  it('does not inject ambient harness into the classify variant of work_items:rehome', () => {
+    expect(mergeConvenienceArgs(
+      { op: 'classify', id: 'EI-1' },
+      { workspace: 'ambient-ws', harness: 'ambient-harness' },
+      rehomeSchema,
+      { toolName: 'work_items:rehome' },
+    )).toEqual({ op: 'classify', id: 'EI-1' });
+  });
+
+  it('continues injecting ambient harness into the move variant of work_items:rehome', () => {
+    expect(mergeConvenienceArgs(
+      { op: 'move', id: 'EI-1' },
+      { workspace: 'ambient-ws', harness: 'ambient-harness' },
+      rehomeSchema,
+      { toolName: 'work_items:rehome' },
+    )).toEqual({ op: 'move', id: 'EI-1', harness: 'ambient-harness' });
+  });
+
+  it('preserves an explicit harness even for the classify variant', () => {
+    const args = { op: 'classify', id: 'EI-1', harness: 'explicit-harness' };
+    expect(mergeConvenienceArgs(
+      args,
+      { workspace: 'ambient-ws', harness: 'ambient-harness' },
+      rehomeSchema,
+      { toolName: 'work_items:rehome' },
+    )).toEqual(args);
   });
 });
 
