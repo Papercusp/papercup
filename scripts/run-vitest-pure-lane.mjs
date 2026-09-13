@@ -82,6 +82,7 @@ export function runVitestProcess(
     spawnProcess = spawn,
     runGovernedTestProcess = runGovernedTestProcessDefault,
     createSampler = createGovernedProcessDemandSampler,
+    stderr = process.stderr,
   } = {},
 ) {
   const command = process.platform === "win32" ? "vitest.cmd" : "vitest";
@@ -138,12 +139,20 @@ export function runVitestProcess(
           finish({ code: null, signal: null, spawnError: error }),
         );
         child.once("close", (code, signal) => {
+          stderr.write(
+            `VITEST_PURE_LANE_CHILD state=closed exitStatus=${code ?? "null"} ` +
+              `signal=${signal ?? "none"}\n`,
+          );
           finish({ code, signal });
         });
       }),
   ).then((outcome) => {
+    stderr.write(
+      `VITEST_PURE_LANE_GOVERNOR state=settled ` +
+        `exitStatus=${outcome.code ?? "null"} signal=${outcome.signal ?? "none"}\n`,
+    );
     if (outcome.signal || outcome.spawnError) {
-      process.stderr.write(
+      stderr.write(
         `VITEST_PURE_LANE_SHARD state=${outcome.signal ? "signaled" : "spawn-error"} ` +
           `signal=${outcome.signal ?? "none"}\n`,
       );

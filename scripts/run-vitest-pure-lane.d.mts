@@ -20,6 +20,7 @@ export function runVitestProcess(
     spawnProcess?: (...args: unknown[]) => unknown;
     runGovernedTestProcess?: (...args: unknown[]) => Promise<unknown>;
     createSampler?: (...args: unknown[]) => unknown;
+    stderr?: Pick<Writable, "write">;
   },
 ): Promise<number>;
 

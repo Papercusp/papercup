@@ -144,6 +144,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('breaking grouped predicates');
   });
 
+  it('documents JavaScript escaping for shell parameter expansion', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('Shell parameter expansion needs the same template-layer escape');
+    expect(scriptDescription).toContain('`\\${f##*/}`');
+    expect(scriptDescription).toContain('code:run returns `compile_error` before bash is dispatched');
+  });
+
   it('documents runtime concatenation for JSON data in nested shell commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

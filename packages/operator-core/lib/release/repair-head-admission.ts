@@ -243,7 +243,16 @@ export interface AdmitPathsInput {
   /** Repo-relative paths to admit. Refused when empty or malformed. */
   paths: readonly string[];
   /** The commit (any ref/sha in `root`) whose entries for `paths` are admitted. */
-  source: { ref: string };
+  source: {
+    ref: string;
+    /**
+     * Stable provenance label used in the admission message/ledger while `ref` supplies the
+     * immutable object read. This keeps a reviewed staging preview byte-identical after the
+     * branch advances: `ref:<reviewed SHA>, recordAsRef:'staging'` reads the SHA but records the
+     * same source identity as the original staging preview.
+     */
+    recordAsRef?: string;
+  };
   /** Who admits — recorded in the ledger entry and the commit message. */
   actor: string;
   reason?: string;
@@ -265,7 +274,11 @@ export interface AdmitPathsInput {
    * tree and the proved name set. It is the admit door's, not the primitive's, choice of check
    * (`checkAdmissionImportCompleteness` in admission-import-completeness.ts is the one wired).
    */
-  preflight?: (built: { commit: string; tree: string; admitted: readonly string[] }) => AdmissionPreflightRefusal | null;
+  preflight?: (built: {
+    commit: string;
+    tree: string;
+    admitted: readonly string[];
+  }) => AdmissionPreflightRefusal | null;
 }
 
 /**
@@ -327,6 +340,7 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       detail: `source ${JSON.stringify(input.source.ref)} does not resolve to a commit in ${input.root}`,
     };
   }
+  const recordedSourceRef = input.source.recordAsRef ?? input.source.ref;
 
   const lsTree = (
     commit: string,
@@ -340,7 +354,10 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     if (!m) {
       return {
         ok: false,
-        refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${path}`, { ...r, stderr: `unparseable entry ${JSON.stringify(line)}` }),
+        refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${path}`, {
+          ...r,
+          stderr: `unparseable entry ${JSON.stringify(line)}`,
+        }),
       };
     }
     if (m[2] === 'tree') {
@@ -402,7 +419,7 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const message = buildAdmissionMessage({
       candidate: input.candidate,
       repairHead: repairHeadSha,
-      sourceRef: input.source.ref,
+      sourceRef: recordedSourceRef,
       sourceSha,
       actor: input.actor,
       reason: input.reason,
@@ -442,7 +459,11 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     }
     const parent = revParse(`${commit}^`);
     if (parent !== repairHeadSha) {
-      return gitFailed('parent proof', { status: 1, stdout: '', stderr: `parent ${parent} != repairHead ${repairHeadSha}` });
+      return gitFailed('parent proof', {
+        status: 1,
+        stdout: '',
+        stderr: `parent ${parent} != repairHead ${repairHeadSha}`,
+      });
     }
 
     // P-004 COMPLETENESS PREFLIGHT — on the proved commit, before anything is published. An
@@ -478,7 +499,7 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const entry: FrozenRepairAdmission = {
       atMs: input.nowMs,
       actor: input.actor.trim(),
-      source: { ref: input.source.ref, sha: sourceSha },
+      source: { ref: recordedSourceRef, sha: sourceSha },
       fromRepairHead: repairHeadSha,
       toRepairHead: commit,
       paths: proof.admitted,
@@ -487,7 +508,16 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       ...(input.reason ? { reason: input.reason } : {}),
     };
     if (input.dryRun === true) {
-      return { ok: true, commit, tree, diff: proof.admitted, unchanged: proof.unchanged, lineageRef, published: false, entry };
+      return {
+        ok: true,
+        commit,
+        tree,
+        diff: proof.admitted,
+        unchanged: proof.unchanged,
+        lineageRef,
+        published: false,
+        entry,
+      };
     }
     const ur = run([
       'update-ref',
@@ -505,7 +535,16 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       };
     }
 
-    return { ok: true, commit, tree, diff: proof.admitted, unchanged: proof.unchanged, lineageRef, published: true, entry };
+    return {
+      ok: true,
+      commit,
+      tree,
+      diff: proof.admitted,
+      unchanged: proof.unchanged,
+      lineageRef,
+      published: true,
+      entry,
+    };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

@@ -96,7 +96,13 @@ function repo(): { root: string; candidate: string } {
 }
 
 const T0 = 1_800_000_000_000;
-const admit = (root: string, candidate: string, repairHead: string, paths: string[], extra: Partial<Parameters<typeof admitPathsOntoRepairHead>[0]> = {}) =>
+const admit = (
+  root: string,
+  candidate: string,
+  repairHead: string,
+  paths: string[],
+  extra: Partial<Parameters<typeof admitPathsOntoRepairHead>[0]> = {},
+) =>
   admitPathsOntoRepairHead({
     root,
     candidate,
@@ -123,7 +129,11 @@ describe('proveAdmissionDiff — the pure proof (D-002)', () => {
     });
   });
   it('an empty diff is not a stray, it is "nothing admitted"', () => {
-    expect(proveAdmissionDiff({ diff: [], allowlist: ['lib/a.ts'] })).toEqual({ ok: true, admitted: [], unchanged: ['lib/a.ts'] });
+    expect(proveAdmissionDiff({ diff: [], allowlist: ['lib/a.ts'] })).toEqual({
+      ok: true,
+      admitted: [],
+      unchanged: ['lib/a.ts'],
+    });
   });
 });
 
@@ -136,22 +146,30 @@ describe('path validation — an admission is by explicit, well-formed, repo-rel
   ])('normalizes %j to %j', (raw, expected) => {
     expect(normalizeAdmissionPath(raw)).toBe(expected);
   });
-  it.each(['', '/lib/a.ts', '../lib/a.ts', 'lib/../a.ts', 'lib/./a.ts', 'lib/', 'lib\\a.ts'])(
-    'rejects %j',
-    (raw) => {
-      expect(normalizeAdmissionPath(raw)).toBeNull();
-    },
-  );
+  it.each(['', '/lib/a.ts', '../lib/a.ts', 'lib/../a.ts', 'lib/./a.ts', 'lib/', 'lib\\a.ts'])('rejects %j', (raw) => {
+    expect(normalizeAdmissionPath(raw)).toBeNull();
+  });
   it('refuses an empty allowlist and dedupes/sorts a valid one', () => {
     expect(validateAdmissionPaths([])).toEqual({ ok: false, invalid: [] });
-    expect(validateAdmissionPaths(['lib/b.ts', './lib/a.ts', 'lib/b.ts'])).toEqual({ ok: true, paths: ['lib/a.ts', 'lib/b.ts'] });
+    expect(validateAdmissionPaths(['lib/b.ts', './lib/a.ts', 'lib/b.ts'])).toEqual({
+      ok: true,
+      paths: ['lib/a.ts', 'lib/b.ts'],
+    });
   });
 });
 
 describe('admitPathsOntoRepairHead — real git (P-001)', () => {
   it('admits EXACTLY the named path: the stray edit in the same sweep stays out, parent is repairHead, the lineage ref is published', () => {
     const { root, candidate } = repo();
-    const staging = sweep(root, { 'lib/a.ts': 'export const a = 2; // fix\n', 'lib/b.ts': 'export const b = 2; // unrelated\n', 'lib/new.ts': 'export const n = 1;\n' }, 'sweep');
+    const staging = sweep(
+      root,
+      {
+        'lib/a.ts': 'export const a = 2; // fix\n',
+        'lib/b.ts': 'export const b = 2; // unrelated\n',
+        'lib/new.ts': 'export const n = 1;\n',
+      },
+      'sweep',
+    );
 
     const out = admit(root, candidate, candidate, ['lib/a.ts']);
     expect(out.ok).toBe(true);
@@ -163,7 +181,9 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     expect(blobAt(root, out.commit, 'lib/new.ts')).toBeNull();
     expect(git(root, ['rev-parse', `${out.commit}^`])).toBe(candidate);
     expect(refAt(root, frozenLineageRef(candidate))).toBe(out.commit);
-    expect(git(root, ['log', '-1', '--format=%an <%ae>', out.commit])).toBe(`${ADMISSION_GIT_IDENTITY.name} <${ADMISSION_GIT_IDENTITY.email}>`);
+    expect(git(root, ['log', '-1', '--format=%an <%ae>', out.commit])).toBe(
+      `${ADMISSION_GIT_IDENTITY.name} <${ADMISSION_GIT_IDENTITY.email}>`,
+    );
     expect(git(root, ['log', '-1', '--format=%B', out.commit])).toContain('actor: su-test');
 
     expect(out.entry).toEqual({
@@ -252,20 +272,60 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     expect(out.entry.source).toEqual({ ref: fixSha, sha: fixSha });
   });
 
+  it('can read an immutable source SHA while preserving a reviewed branch-labelled admission identity', () => {
+    const { root, candidate } = repo();
+    const fixSha = sweep(root, { 'lib/a.ts': 'a-fix\n' }, 'fix');
+    const preview = admit(root, candidate, candidate, ['lib/a.ts'], {
+      source: { ref: 'staging' },
+      reason: 'reviewed exact staging blob',
+      dryRun: true,
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+
+    sweep(root, { 'lib/a.ts': 'a-later\n' }, 'later');
+    const pinned = admit(root, candidate, candidate, ['lib/a.ts'], {
+      source: { ref: fixSha, recordAsRef: 'staging' },
+      reason: 'reviewed exact staging blob',
+      dryRun: true,
+    });
+    expect(pinned.ok).toBe(true);
+    if (!pinned.ok) return;
+
+    expect(pinned.commit).toBe(preview.commit);
+    expect(pinned.tree).toBe(preview.tree);
+    expect(pinned.entry.source).toEqual({ ref: 'staging', sha: fixSha });
+    expect(blobAt(root, pinned.commit, 'lib/a.ts')).toBe(blobAt(root, fixSha, 'lib/a.ts'));
+  });
+
   it('refuses an unresolvable source and an unresolvable repairHead without touching the ref', () => {
     const { root, candidate } = repo();
     sweep(root, { 'lib/a.ts': 'a2\n' }, 'sweep');
-    expect(admit(root, candidate, candidate, ['lib/a.ts'], { source: { ref: 'no-such-ref' } })).toMatchObject({ ok: false, code: 'source-unresolvable' });
-    expect(admit(root, candidate, 'f'.repeat(40), ['lib/a.ts'])).toMatchObject({ ok: false, code: 'repair-head-unresolvable' });
+    expect(admit(root, candidate, candidate, ['lib/a.ts'], { source: { ref: 'no-such-ref' } })).toMatchObject({
+      ok: false,
+      code: 'source-unresolvable',
+    });
+    expect(admit(root, candidate, 'f'.repeat(40), ['lib/a.ts'])).toMatchObject({
+      ok: false,
+      code: 'repair-head-unresolvable',
+    });
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
   });
 
   it('refuses malformed paths, an empty allowlist, and a directory path — naming each', () => {
     const { root, candidate } = repo();
     sweep(root, { 'lib/a.ts': 'a2\n' }, 'sweep');
-    expect(admit(root, candidate, candidate, ['../lib/a.ts', 'lib/a.ts'])).toMatchObject({ ok: false, code: 'invalid-paths', paths: ['../lib/a.ts'] });
+    expect(admit(root, candidate, candidate, ['../lib/a.ts', 'lib/a.ts'])).toMatchObject({
+      ok: false,
+      code: 'invalid-paths',
+      paths: ['../lib/a.ts'],
+    });
     expect(admit(root, candidate, candidate, [])).toMatchObject({ ok: false, code: 'invalid-paths' });
-    expect(admit(root, candidate, candidate, ['lib'])).toMatchObject({ ok: false, code: 'invalid-paths', paths: ['lib'] });
+    expect(admit(root, candidate, candidate, ['lib'])).toMatchObject({
+      ok: false,
+      code: 'invalid-paths',
+      paths: ['lib'],
+    });
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
   });
 
@@ -291,7 +351,11 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     const bSha = blobAt(root, staging, 'lib/b.ts')!;
     const smuggling: AdmissionGitRunner = (argv, opts) => {
       const r = realAdmissionGit(argv, opts);
-      if (argv[0] === 'update-index' && argv.includes('--cacheinfo') && String(argv[argv.length - 1]).endsWith(',lib/a.ts')) {
+      if (
+        argv[0] === 'update-index' &&
+        argv.includes('--cacheinfo') &&
+        String(argv[argv.length - 1]).endsWith(',lib/a.ts')
+      ) {
         realAdmissionGit(['update-index', '--add', '--replace', '--cacheinfo', `${bMode},${bSha},lib/b.ts`], opts);
       }
       return r;
@@ -397,7 +461,9 @@ describe('preflight — P-004: runs on the PROVED commit, before publish, on dry
       return {
         code: 'admission-incomplete',
         detail: 'lib/a.ts imports ./b',
-        missing: [{ from: 'lib/a.ts', specifier: './b', wanted: 'lib/b.ts', tried: ['lib/b.ts'], atProbeRef: 'present' }],
+        missing: [
+          { from: 'lib/a.ts', specifier: './b', wanted: 'lib/b.ts', tried: ['lib/b.ts'], atProbeRef: 'present' },
+        ],
       };
     };
     const confirmed = admit(root, candidate, candidate, ['lib/a.ts'], { preflight });
@@ -430,10 +496,15 @@ describe('preflight — P-004: runs on the PROVED commit, before publish, on dry
 
     sweep(root, { 'lib/b.ts': 'b2\n' }, 'fix b');
     const broken = admit(root, candidate, accepted.commit, ['lib/b.ts'], {
-      preflight: () => ({ code: 'git-failed', step: 'completeness preflight: cat-file --batch-check', detail: 'exited 128' }),
+      preflight: () => ({
+        code: 'git-failed',
+        step: 'completeness preflight: cat-file --batch-check',
+        detail: 'exited 128',
+      }),
     });
     expect(broken.ok).toBe(false);
-    if (!broken.ok) expect(broken).toMatchObject({ code: 'git-failed', step: expect.stringContaining('completeness preflight') });
+    if (!broken.ok)
+      expect(broken).toMatchObject({ code: 'git-failed', step: expect.stringContaining('completeness preflight') });
     expect(refAt(root, frozenLineageRef(candidate))).toBe(accepted.commit);
   });
 });

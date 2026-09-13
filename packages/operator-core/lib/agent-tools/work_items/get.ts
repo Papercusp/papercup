@@ -171,6 +171,9 @@ async function withWorkItemsGetBudget<T>(
  */
 export const THREAD_WINDOW_MAX = 10;
 
+const RESUME_ARGUMENT_CONSTRAINT =
+  'resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs; use a separate read for those enrichments';
+
 /**
  * P-002 (WI-2145856): every undeclared key a real caller reached for when they
  * meant "return the fuller record", measured from the filed `invalid_args`
@@ -669,8 +672,9 @@ export default defineTool({
       message: 'pass `id` (one) or `ids` (many)',
     })
     .refine((a) => !a.resume || (mergeIds(a.id, a.ids).length === 1 && !a.checksOnly && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined), {
-      message: 'resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs',
-    }),
+      message: RESUME_ARGUMENT_CONSTRAINT,
+    })
+    .meta({ 'x-papercusp-call-constraint': RESUME_ARGUMENT_CONSTRAINT }),
   // EI-19447969329510166: without a declared shaper this tool fell through to the
   // framework's GENERIC bounded projection, which clips every string at a flat 800
   // chars for a trimmed session — and the string it clipped was the CHECKPOINT.
