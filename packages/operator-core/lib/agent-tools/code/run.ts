@@ -1157,7 +1157,7 @@ function projectCodeRunReleaseTraceRow(
   stats: CodeRunSummaryProjectionStats,
 ): Record<string, unknown> {
   const projected: Record<string, unknown> = {};
-  const keep = new Set(CODE_RUN_RELEASE_TRACE_ROW_KEYS);
+  const keep: ReadonlySet<string> = new Set(CODE_RUN_RELEASE_TRACE_ROW_KEYS);
   for (const key of CODE_RUN_RELEASE_TRACE_ROW_KEYS) {
     if (!(key in value)) continue;
     const entry = value[key];
