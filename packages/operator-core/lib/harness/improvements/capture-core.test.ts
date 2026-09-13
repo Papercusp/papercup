@@ -3364,7 +3364,7 @@ describe('captureImprovement — exact-key recurrence REOPENS a watchdog-auto-re
   });
 });
 
-describe('captureImprovement — keyless SYSTEM-filer bug folds onto its open exact-titleKey twin (P-004 / EI-22068807981214694)', () => {
+describe('captureImprovement — keyless non-observation bug folds onto its open exact-titleKey twin (P-004 / EI-22068807981214694)', () => {
   const CANARY_TITLE = 'coord probe-pair canary breached its cycle SLO';
 
   it('a keyless system filing coalesces onto the open identical-title twin — ONE open row, occurrence appended', async () => {
@@ -3391,53 +3391,55 @@ describe('captureImprovement — keyless SYSTEM-filer bug folds onto its open ex
     expect(d.occurrences[0].reportKind).toBe('coalesced');
   });
 
-  it('CONTROL: the same filing WITHOUT the system marker mints (silent accept + dedupVerdict) — the fold is system-filer-scoped', async () => {
+  it('an ordinary keyless filing coalesces even when semantic dedup is unavailable', async () => {
     const twin = existing({ id: 'EI-901', title: CANARY_TITLE });
-    const d = recurrenceDeps([twin]);
+    const d = { ...recurrenceDeps([twin]), findSemanticDupes: async () => null };
     const res = await captureImprovement({ title: CANARY_TITLE, kind: 'bug' }, d);
-    expect(res.created).toBe(true);
-    expect((d.created[0].payload as Record<string, unknown>).dedupVerdict).toBe('likely-duplicate');
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('coalesced');
+    expect(res.coalescedOnto).toMatchObject({ id: 'EI-901', identity: 'title-key', repeatCount: 2 });
+    expect(res.coalescedOnto?.note).toContain('no conditionKey supplied');
+    expect(res.coalescedOnto?.note).not.toContain('system filer');
+    expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(d.created).toHaveLength(0);
   });
 
-  it('a DIFFERENT titleKey mints — the fold is exact normalized-title identity, not similarity', async () => {
+  it('CONTROL: a DIFFERENT titleKey mints — the fold is exact normalized-title identity, not similarity', async () => {
     const twin = existing({ id: 'EI-902', title: CANARY_TITLE });
-    const d = recurrenceDeps([twin]);
+    const d = { ...recurrenceDeps([twin]), findSemanticDupes: async () => null };
     const res = await captureImprovement(
       {
         title: "coord probe-pair canary failed at 'sendMessage'",
         kind: 'bug',
         dedupScope: 'open',
-        foundDuring: 'system:coord-probe-canary',
       },
       d,
     );
     expect(res.created).toBe(true);
   });
 
-  it('force:true skips the fold — the caller asserted distinctness', async () => {
+  it('CONTROL: force:true skips the fold — the caller asserted distinctness', async () => {
     const twin = existing({ id: 'EI-903', title: CANARY_TITLE });
-    const d = recurrenceDeps([twin]);
+    const d = { ...recurrenceDeps([twin]), findSemanticDupes: async () => null };
     const res = await captureImprovement(
       {
         title: CANARY_TITLE,
         kind: 'bug',
         force: true,
-        foundDuring: 'system:coord-probe-canary',
       },
       d,
     );
     expect(res.created).toBe(true);
   });
 
-  it('a RESOLVED twin does not absorb the filing — the fold is open-rows-only', async () => {
+  it('CONTROL: a RESOLVED twin does not absorb the filing — the fold is open-rows-only', async () => {
     const twin = existing({ id: 'EI-904', title: CANARY_TITLE, state: 'resolved' });
-    const d = recurrenceDeps([twin]);
+    const d = { ...recurrenceDeps([twin]), findSemanticDupes: async () => null };
     const res = await captureImprovement(
       {
         title: CANARY_TITLE,
         kind: 'bug',
         dedupScope: 'open',
-        foundDuring: 'system:coord-probe-canary',
       },
       d,
     );

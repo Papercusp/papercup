@@ -410,8 +410,8 @@ export interface CoalesceEffect {
    *  an exact indexed lookup, not a guess (P-001/P-002, machine emitters).
    *  `derived` — no key was supplied; identity was DERIVED from content
    *  similarity plus the D-036 subject discriminator (P-013, agent filings).
-   *  `title-key` — P-004 (silent-intake): a keyless `system:*` filer matched an
-   *  open twin by exact normalized titleKey. Deterministic like a key match
+   *  `title-key` — P-004 (silent-intake): a keyless non-observation filer matched
+   *  an open twin by exact normalized titleKey. Deterministic like a key match
    *  (same normalization both sides), narrower than a derived guess.
    *  A derived fold is a judgement and can be wrong; the other two cannot. */
   identity: 'condition-key' | 'class-key' | 'derived' | 'title-key';
@@ -1219,7 +1219,7 @@ function buildCoalesceEffect(args: {
    *  derived fold — a false claim that a key existed. */
   fold?: FoldClassification;
   /** P-004: overrides the fold-derived identity — the `title-key` route (a
-   *  keyless system filer matched by exact normalized titleKey) has no fold
+   *  keyless non-observation filer matched by exact normalized titleKey) has no fold
    *  classification AND no conditionKey, so neither default clause is true. */
   identityRoute?: CoalesceEffect['identity'];
   /** P-004: the survivor had been watchdog-auto-resolved; THIS recurrence
@@ -1239,13 +1239,21 @@ function buildCoalesceEffect(args: {
   // `undefined`" — a claim that a key existed when none did.
   const identityClause =
     identity === 'title-key'
-      ? `exact titleKey match — system filer \`${input.foundDuring ?? 'system:?'}\`, no conditionKey supplied`
+      ? 'exact titleKey match — keyless non-observation filer, no conditionKey supplied'
       : identity === 'class-key'
         ? `stable tool-failure class identity carried by \`${input.watchdogKey}\``
         : fold
           ? `derived identity — ${fold.rule}` +
             (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
           : `conditionKey \`${input.watchdogKey}\``;
+  const identityBasis =
+    identity === 'title-key'
+      ? 'the shared normalized titleKey'
+      : identity === 'class-key'
+        ? 'the shared tool-failure class identity'
+        : identity === 'derived'
+          ? 'the derived identity'
+          : 'the shared conditionKey';
   return {
     id: finalIssue.id,
     repeatCount,
@@ -1279,7 +1287,7 @@ function buildCoalesceEffect(args: {
             `${finalIssue.id} before asserting anywhere that it reflects what you just wrote`) +
       (crossAuthor
         ? `. That row was authored by ${priorAuthor}, not you — you have written onto a PEER's ` +
-          `row. This is intended (the shared conditionKey is what stops a flood of near-identical ` +
+          `row. This is intended (${identityBasis} is what stops a flood of near-identical ` +
           `rows), and every occurrence is retained, but the row's visible text is now the latest ` +
           `writer's, so do not read it as that author's own account.`
         : `.`),
@@ -2140,19 +2148,17 @@ export async function captureImprovement(
     return typeof k === 'string' ? k : null;
   };
 
-  // ─── P-004: keyless SYSTEM-filer titleKey fold ────────────────────────────────
-  // A recurring system detector that supplies no watchdogKey has NO recurrence
-  // identity: the keyed tiers above cannot see it, and the derived fold (D-042)
-  // is observation-lane-only — so every re-detection minted an open sibling
-  // (EI-22068807981214694: 10 open rows sharing one canary title, filed over
-  // days). An exact normalized-titleKey match from a `system:*` filer is not a
-  // guess (the WI-39594 reasoning: exact identity needs no carve-outs), so fold
-  // the re-detection onto the open canonical row — occurrence appended,
-  // repeatCount bumped, text refreshed to the newest reading. Scoped narrowly:
-  // non-observation, `foundDuring` starting `system:`, no key supplied, not
-  // forced — agent filings keep the P-002 mint-with-verdict path untouched.
-  const isSystemFiler = typeof input.foundDuring === 'string' && input.foundDuring.startsWith('system:');
-  if (!isObservation && isSystemFiler && !input.watchdogKey && !input.force) {
+  // ─── P-004: keyless non-observation titleKey fold ─────────────────────────────
+  // A recurring non-observation capture that supplies no watchdogKey has NO
+  // recurrence identity: the keyed tiers above cannot see it, and the derived
+  // fold (D-042) is observation-lane-only — so every re-detection minted an open
+  // sibling. An exact normalized-titleKey match is not a guess (the WI-39594
+  // reasoning: exact identity needs no carve-outs), so fold the re-detection onto
+  // the open canonical row — occurrence appended, repeatCount bumped, text
+  // refreshed to the newest reading. Scoped narrowly: non-observation, no key
+  // supplied, not forced — observations keep their own recurrence paths and
+  // force:true preserves the caller's assertion of distinctness.
+  if (!isObservation && !input.watchdogKey && !input.force) {
     const titleTwins = candidates.filter(
       (i) =>
         i.state === 'open' &&
