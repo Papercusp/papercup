@@ -2609,6 +2609,23 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).toContain('workspace_forbidden'); // the clamp's data-isolation is unchanged
   });
 
+  it('flag ON: a scoped superuser is DENIED blueprint:publish because its arbitrary repoDir/global write cannot self-confine', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'blueprint:publish',
+      {
+        blueprintId: 'test-blueprint',
+        title: 'Test blueprint',
+        description: 'Transport clamp contract',
+        repoDir: '/tmp/test-blueprint-repo',
+        workspace: 'ws-test',
+      },
+      scoped('ws-test'),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('workspace_forbidden');
+  });
+
   it('flag ON: a scoped superuser’s foreign `workspace` ARG is overwritten with its own workspace', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('gatingtest:scoped', { workspace: 'other-ws' }, scoped('ws-test'));
