@@ -1699,7 +1699,7 @@ describe('release:repair-queue', () => {
       ]);
       expect(mocks.admit).toHaveBeenCalledWith(
         expect.objectContaining({
-          source: { ref: sourceCommit },
+          source: { ref: sourceCommit, recordAsRef: 'staging' },
           preflight: expect.any(Function),
         }),
       );
