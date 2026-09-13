@@ -200,6 +200,38 @@ describe('WI-4014 Part 2: targetKind routing (wake:false only)', () => {
     expect(out.watch).toMatchObject({ pattern: 'lock:grant:t1', targetKind: 'event', wake: false, once: false, mode: 'digest' });
   });
 
+  it('targetKind:"event" + once:true registers a one-shot notify await, not a standing subscription', async () => {
+    const out = await call({
+      pattern: 'conversation:answered:conv-1',
+      targetKind: 'event',
+      once: true,
+      mode: 'digest',
+      timeout_sec: 42,
+      note: 'answer gate',
+    });
+    expect(subscribeEventKey).not.toHaveBeenCalled();
+    expect(subscribeTopic).not.toHaveBeenCalled();
+    expect(registerAwait).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subscriberId: 'su-watcher',
+        eventKey: 'conversation:answered:conv-1',
+        policy: 'notify',
+        note: 'answer gate',
+        timeoutBehavior: 'expire',
+        timeoutSec: 42,
+        once: true,
+      }),
+    );
+    expect(out.watch).toMatchObject({
+      id: 1,
+      pattern: 'conversation:answered:conv-1',
+      targetKind: 'event',
+      wake: false,
+      once: true,
+      mode: 'digest',
+    });
+  });
+
   // EI-22459575798410641 — this test previously PINNED the opposite behaviour ("targetKind
   // is ignored on a wake:true watch"), asserting that registerAwait was still called. That
   // pin was inverted deliberately, not incidentally: measured over 30 days, 11 of 39

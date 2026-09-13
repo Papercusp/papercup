@@ -30,6 +30,34 @@ export interface SessionSelector {
 }
 
 /**
+ * Resolve a session time-window bound at the tool boundary. Relative windows
+ * are convenient for agents (for example, "45m" or "7d"), but PostgreSQL's
+ * timestamptz parser only accepts absolute timestamps. Keep this shared so all
+ * sessions:* readers apply the same contract before binding SQL values.
+ */
+const RELATIVE_WINDOW_RE = /^\s*(\d+)\s*([smhd])\s*$/i;
+const RELATIVE_UNIT_MS = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+
+export function normalizeWindowBound(
+  value: string | undefined,
+  field: 'since' | 'until',
+): { iso?: string; error?: string } {
+  if (value === undefined) return {};
+  const rel = RELATIVE_WINDOW_RE.exec(value);
+  if (rel) {
+    const ms = Number(rel[1]) * RELATIVE_UNIT_MS[rel[2].toLowerCase() as keyof typeof RELATIVE_UNIT_MS];
+    return { iso: new Date(Date.now() - ms).toISOString() };
+  }
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return {
+      error: `${field} must be an ISO-8601 timestamp or a relative window like "45m", "12h", "7d" (got ${JSON.stringify(value)})`,
+    };
+  }
+  return { iso: d.toISOString() };
+}
+
+/**
  * Normalize the two session selector shapes exposed by sessions:list:
  * `session_id` on its own, or the convenient `<source_kind>:<session_id>`
  * form callers commonly build from a list row. A native session id may itself

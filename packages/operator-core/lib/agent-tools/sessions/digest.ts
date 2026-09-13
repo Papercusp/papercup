@@ -28,7 +28,13 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { parseSessionSelector, sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS } from './_shared';
+import {
+  parseSessionSelector,
+  sessionSearchEnabled,
+  disabledResult,
+  SESSION_SOURCE_KINDS,
+  normalizeWindowBound,
+} from './_shared';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -118,7 +124,11 @@ export default defineTool({
     owner: z.string().max(120).optional().describe("Filter to one agent ownerId ('self' = the caller)."),
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional(),
     cwd_contains: z.string().max(200).optional().describe('Substring match on the session cwd.'),
-    since: z.string().max(40).optional().describe('Only sessions active after this ISO timestamp (parsed as UTC).'),
+    since: z
+      .string()
+      .max(40)
+      .optional()
+      .describe('Only sessions active after this timestamp. Accepts ISO-8601 OR a relative window measured back from now, like "45m", "12h", "7d".'),
     wedgedOnly: z.boolean().optional().describe('Only sessions that are STUCK (auth_wall / model_error / context_limit).'),
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
   }),
@@ -136,6 +146,14 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
+    // EI-22763677566038732: relative windows are documented for sessions:*;
+    // resolve them before PostgreSQL sees the ::timestamptz bind. Invalid input
+    // gets a useful contract error instead of a raw handler_error from PG.
+    const sinceNorm = normalizeWindowBound(args.since, 'since');
+    if (sinceNorm.error) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: sinceNorm.error }) }] };
+    }
+    args.since = sinceNorm.iso;
     // Non-null: `tx` is optional on PapercuspUnifiedToolContext (must match the
     // framework's own optional `ctx.tx` for defineTool's overload resolution to
     // accept this handler — see _tool-context.ts) but is always bound for an

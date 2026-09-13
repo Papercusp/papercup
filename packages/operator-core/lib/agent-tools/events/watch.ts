@@ -395,6 +395,43 @@ export default defineTool({
       }
       // ── Inject preset (D-002 cheap default) → a standing topic OR event-key subscription. ──
       const targetKind = args.targetKind ?? 'topic';
+      if (targetKind === 'event' && args.once === true) {
+        // A one-shot event inject uses the await table's notify policy rather than
+        // the standing subscription table. emitAwaitedEvent already claims these
+        // rows atomically and folds them into the normal coord-inbox send, so this
+        // preserves exactly-once delivery without adding a second fan-out path.
+        startAwaitSweeper();
+        const row = await registerAwait({
+          subscriberId: identity.ownerId,
+          eventKey: args.pattern,
+          policy: 'notify',
+          note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
+          timeoutBehavior: 'expire',
+          timeoutSec: args.timeout_sec,
+          once: true,
+        });
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                watch: {
+                  id: row.id,
+                  pattern: row.eventKey,
+                  targetKind,
+                  wake: false,
+                  once: row.once,
+                  mode: args.mode ?? 'full',
+                  expires_ts: row.expiresTs,
+                },
+                advice:
+                  'Watching this EVENT KEY (inject, one-shot). The first matching events:emit lands in your coord inbox next turn, no token cost; the watch then clears. events:cancel to stop it early.',
+              }),
+            },
+          ],
+        };
+      }
       const sub =
         targetKind === 'event'
           ? await subscribeEventKey(identity, args.pattern, { mode: args.mode, ttl_sec: args.timeout_sec })

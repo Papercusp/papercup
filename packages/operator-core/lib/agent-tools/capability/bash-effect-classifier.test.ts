@@ -6,10 +6,14 @@
  * write so dry-run safety is never weakened by an incomplete shell parser.
  */
 import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { runToolOrchestration } from '@papercusp/tooldef';
 import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
 import bashTool, { classifyCapabilityBashEffect } from './bash';
+import { normalizeExpectedSigpipeResult, runForeground } from './bash-jobs';
 
 const json = (value: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(value) }],
@@ -50,6 +54,50 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     ['git mutation', 'git branch -D old-branch'],
   ])('keeps %s classified as write', (_label, command) => {
     expect(classifyCapabilityBashEffect({ command })).toBe('write');
+  });
+
+  it('treats a bounded find/sort/head listing as read-only and normalizes producer SIGPIPE', () => {
+    const command = 'find /tmp/artifacts -type f -printf "%s %p\\n" | sort -nr | head -80';
+
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+    expect(normalizeExpectedSigpipeResult(command, 'failed', 141)).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+  });
+
+  it('completes a real bounded find/sort/head listing', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'cap-bash-find-'));
+    const nested = join(fixture, 'nested');
+    mkdirSync(nested);
+    for (let i = 0; i < 2_000; i += 1) {
+      writeFileSync(join(nested, `artifact-${String(i).padStart(4, '0')}-${'x'.repeat(48)}`), 'x');
+    }
+    const command = `find ${JSON.stringify(fixture)} -type f -printf "%s %p\\n" | sort -nr | head -80`;
+
+    const result = await runForeground(
+      { command, cwd: fixture, stateDir: fixture },
+      new AbortController().signal,
+      10_000,
+    );
+
+    expect(result.status).toBe('completed');
+    expect(result.exitCode).toBe(0);
+    expect(result.output.split('\n').filter(Boolean)).toHaveLength(80);
+  });
+
+  it.each([
+    ['command execution', 'find /tmp -type f -exec sh -c "echo {}" \\; | head -1'],
+    ['directory command execution', 'find /tmp -type f -execdir printf "%s\\n" {} \\; | head -1'],
+    ['delete action', 'find /tmp -type f -delete | head -1'],
+    ['file print action', 'find /tmp -type f -fprint /tmp/paths.txt | head -1'],
+    ['interactive command', 'find /tmp -type f -ok rm {} \\; | head -1'],
+  ])('keeps find %s classified as write', (_label, command) => {
+    expect(classifyCapabilityBashEffect({ command })).toBe('write');
+    expect(normalizeExpectedSigpipeResult(command, 'failed', 141)).toEqual({
+      status: 'failed',
+      exitCode: 141,
+    });
   });
 
   it('preserves a failed read probe without recording a planned mutation', async () => {

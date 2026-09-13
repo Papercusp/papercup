@@ -8,7 +8,13 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS, refreshLiveSessionsBeforeRead } from './_shared';
+import {
+  sessionSearchEnabled,
+  disabledResult,
+  SESSION_SOURCE_KINDS,
+  refreshLiveSessionsBeforeRead,
+  normalizeWindowBound,
+} from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import type { Sql } from 'postgres';
@@ -100,36 +106,6 @@ interface OutHistoricalSession {
  * query path from the indexed transcript list below: a historical census must
  * begin with append-only events, not with a mutable live-session roster.
  */
-/**
- * EI-21386375248907708: agents reach for RELATIVE windows ("3h", "30m", "7d")
- * naturally. The permissive string schema let those values reach PostgreSQL
- * raw, where ::timestamptz rejected them as a bare syntax error
- * (handler_error, no guidance). Normalize accepted relative forms to an ISO
- * instant anchored at "now" at the handler boundary, and reject anything else
- * with the accepted forms NAMED.
- */
-const RELATIVE_WINDOW_RE = /^\s*(\d+)\s*([smhd])\s*$/i;
-const RELATIVE_UNIT_MS = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
-
-function normalizeWindowBound(
-  value: string | undefined,
-  field: 'since' | 'until',
-): { iso?: string; error?: string } {
-  if (value === undefined) return {};
-  const rel = RELATIVE_WINDOW_RE.exec(value);
-  if (rel) {
-    const ms = Number(rel[1]) * RELATIVE_UNIT_MS[rel[2].toLowerCase() as keyof typeof RELATIVE_UNIT_MS];
-    return { iso: new Date(Date.now() - ms).toISOString() };
-  }
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return {
-      error: `${field} must be an ISO-8601 timestamp or a relative window like "45m", "12h", "7d" (got ${JSON.stringify(value)})`,
-    };
-  }
-  return { iso: d.toISOString() };
-}
-
 async function readHistoricalCensus(
   tx: Sql,
   options: {
