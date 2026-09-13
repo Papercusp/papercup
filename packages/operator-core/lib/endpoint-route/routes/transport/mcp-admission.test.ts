@@ -367,6 +367,145 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    ['canonical', 'coord:send'],
+    ['underscore', 'coord_send'],
+    ['mcp-advertised', 'mcp__papercusp_su__coord_send'],
+  ])('admits one bounded direct coord:send under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(40, name, {
+      to: ['su-peer'],
+      summary: 'critical-pressure correction recorded',
+      expects: 'none',
+      body: [{ text: 'The durable correction is recorded; retry the detailed write after recovery.' }],
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits one bounded coord:send through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 41,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__coord_send',
+          args: {
+            to: ['su-peer'],
+            summary: 'critical-pressure correction recorded',
+            expects: 'none',
+            body: [{ text: 'The durable correction is recorded.' }],
+          },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad or enriched coord:send writes sheddable under critical pressure', () => {
+    for (const args of [
+      {
+        to: ['*'],
+        summary: 'broadcast',
+        expects: 'none',
+      },
+      {
+        to: ['@fleet:nonp2p-bug-drain-luna-max-50'],
+        summary: 'audience',
+        expects: 'none',
+      },
+      {
+        to: ['su-peer', 'su-other'],
+        summary: 'multiple recipients',
+        expects: 'none',
+      },
+      {
+        to: ['su-peer'],
+        summary: 'wake',
+        expects: 'none',
+        wake: 'required',
+      },
+      {
+        to: ['su-peer'],
+        summary: 'missing action body',
+        expects: 'action',
+      },
+      {
+        to: ['su-peer'],
+        summary: 'enriched',
+        expects: 'none',
+        body: [{ text: 'status', premises: ['EI-1'] }],
+      },
+      {
+        to: ['su-peer'],
+        summary: 'x'.repeat(601),
+        expects: 'none',
+      },
+    ]) {
+      expect(classifyMcpBody(toolsCall(42, 'coord:send', args))).toEqual({ sheddable: true, id: 42 });
+    }
+  });
+
+  it('keeps enriched coord:send and aliased work_items:comment sheddable through tools:invoke', () => {
+    for (const [name, args] of [
+      [
+        'mcp__papercusp_su__coord_send',
+        { to: ['su-peer'], summary: 'wake', expects: 'none', wake: 'required' },
+      ],
+      ['mcp__papercusp_su__work_items_comment', { id: 'EI-1', comment: 'alias' }],
+    ] as const) {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 46,
+        method: 'tools/call',
+        params: { name: 'tools:invoke', arguments: { name, args } },
+      });
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 46 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it.each([
+    ['canonical', 'work_items:comment'],
+    ['underscore', 'work_items_comment'],
+    ['mcp-advertised', 'mcp__papercusp_su__work_items_comment'],
+  ])('admits one bounded direct work_items:comment under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(43, name, { id: 'EI-23122407516371253', body: 'Correction recorded.' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits one bounded work_items:comment batch through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 44,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__work_items_comment',
+          args: { items: [{ id: 'EI-23122407516371253', body: 'Correction recorded.' }] },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps bulk, aliases, and enriched work_items:comment writes sheddable under critical pressure', () => {
+    for (const args of [
+      { id: 'EI-1', comment: 'alias' },
+      { id: 'EI-1', body: 'inline', harness: 'papercusp' },
+      { items: [{ id: 'EI-1', body: 'one' }, { id: 'EI-2', body: 'two' }] },
+      { items: [{ id: 'EI-1', comment: 'alias' }] },
+      { id: 'EI-1', body: 'x'.repeat(601) },
+    ]) {
+      expect(classifyMcpBody(toolsCall(45, 'work_items:comment', args))).toEqual({ sheddable: true, id: 45 });
+    }
+  });
+
+  it.each([
     ['canonical', 'scorecards:list'],
     ['underscore', 'scorecards_list'],
     ['mcp-advertised', 'mcp__papercusp_su__scorecards_list'],
