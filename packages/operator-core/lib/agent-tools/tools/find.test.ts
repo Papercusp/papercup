@@ -30,6 +30,7 @@ import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
 import capabilityRead from '../capability/read';
 import agentReview from '../improvements/agent-review';
+import rubricsPropose from '../rubrics/propose';
 import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import scorecardEvaluate from '../scorecards/evaluate';
@@ -1121,6 +1122,24 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).not.toContain('description');
   });
 
+  it('merges every nested structured-check branch in rubrics:propose discovery (EI-22803598097461225)', async () => {
+    expect(rubricsPropose.name).toBe('rubrics:propose');
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('rubrics:propose')) ?? '';
+    const checkShape =
+      'check?:object{kind:enum(tests|cargo|instrument|probe|coverage|requirements),' +
+      'files?:array(1-20)<string>,manifestPath?:string(1-500),sourceFiles?:array(1-50)<string>,' +
+      'test?:string(1-500),instrumentKey?:string(≥1),probe?,scope?:object,floor?:enum(l1|l2|l3|l4)}';
+
+    // `check` is a nested discriminated union. The compact response must retain
+    // all callable arms, not just the first `tests` branch.
+    expect(compact).toContain(checkShape);
+    expect(compact).not.toContain('check?:object{kind:enum(tests),');
+
+    const result = await callHandler({ query: 'rubrics:propose', limit: 1 });
+    expect(result.hits.find((hit) => hit.tool === 'rubrics:propose')?.argSchema).toContain(checkShape);
+  });
+
   it('EI-21579794371308546: live coord:send discovery identifies premises as string refs', () => {
     expect(coordSend.name).toBe('coord:send');
     const { schemaByTool } = buildCorpus();
@@ -1298,8 +1317,10 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     // bounded nested projection must not hide the only field that tells a
     // caller how to recover after repeated cadence misses.
     expect(compact).toContain('progress_lease?:object{');
-    expect(compact).toContain('remedy:object{kind:enum(spec-widen)');
-    expect(compact).toContain('instructions:string');
+    expect(compact).toContain(
+      'remedy:object{kind:enum(spec-widen|outside-lane-placement|leader-claim|create-unblock-item)',
+    );
+    expect(compact).toContain('instructions?:string(1-2000)');
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 

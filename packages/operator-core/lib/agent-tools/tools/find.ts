@@ -177,13 +177,72 @@ function objectProperties(node: JsonSchemaNode): { properties: Record<string, un
   return null;
 }
 
+/**
+ * Merge the object branches of a nested union for compact discovery. The
+ * ordinary objectProperties helper intentionally retains its historical
+ * first-object behavior for callers that need a single representative shape;
+ * nested discovery needs the complete callable field vocabulary instead.
+ */
+function mergedNestedObjectProperties(
+  node: JsonSchemaNode,
+): { properties: Record<string, unknown>; required: Set<string> } | null {
+  const direct =
+    node.properties && typeof node.properties === 'object' && !Array.isArray(node.properties)
+      ? {
+          properties: node.properties as Record<string, unknown>,
+          required: new Set<string>(
+            Array.isArray(node.required) ? node.required.filter((v): v is string => typeof v === 'string') : [],
+          ),
+        }
+      : null;
+  if (direct && Object.keys(direct.properties).length > 0) return direct;
+
+  // Ignore scalar/null union branches: a nullable object still has required
+  // fields whenever the object arm is selected.
+  const objectBranches = schemaNodes(node).filter(
+    (branch) => branch.properties && typeof branch.properties === 'object' && !Array.isArray(branch.properties),
+  );
+  if (objectBranches.length === 0) return direct;
+
+  // A nested object union (for example rubricCriterionCheckSchema) used to be
+  // reduced to the first branch here. That made `check` advertise only the
+  // tests arm while hiding the cargo/instrument/probe/coverage/requirements
+  // fields that callers can actually submit. Merge the object branches using
+  // the same conservative requiredness rule as the root projection: a field is
+  // required only when every object branch both exposes and requires it.
+  const merged = new Map<string, { raw: unknown; presentIn: number; requiredInAll: boolean }>();
+  for (const branch of objectBranches) {
+    const required = new Set<string>(
+      Array.isArray(branch.required) ? branch.required.filter((v): v is string => typeof v === 'string') : [],
+    );
+    for (const [name, raw] of Object.entries(branch.properties as Record<string, unknown>)) {
+      const prior = merged.get(name);
+      if (prior) {
+        prior.presentIn += 1;
+        prior.requiredInAll = prior.requiredInAll && required.has(name);
+        prior.raw = mergeRepeatedPropertySchema(prior.raw, raw);
+      } else {
+        merged.set(name, { raw, presentIn: 1, requiredInAll: required.has(name) });
+      }
+    }
+  }
+
+  const required = new Set<string>();
+  for (const [name, entry] of merged) {
+    if (entry.presentIn === objectBranches.length && entry.requiredInAll) {
+      required.add(name);
+    }
+  }
+  return { properties: Object.fromEntries([...merged].map(([name, entry]) => [name, entry.raw])), required };
+}
+
 /** Keep the compact result useful without letting recursive schemas consume it. */
 const MAX_NESTED_SCHEMA_DEPTH = 4;
 
 function nestedObjectProperties(
   node: JsonSchemaNode,
 ): { properties: Record<string, unknown>; required: Set<string> } | null {
-  const direct = objectProperties(node);
+  const direct = mergedNestedObjectProperties(node);
   const candidates = [node, ...schemaNodes(node)];
 
   // A mixed object may legally carry named properties alongside an
