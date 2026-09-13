@@ -397,7 +397,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       },
     });
     expect(out.completedGroups?.[0]?.result.byFile).toMatchObject({
-      [`${roots[0]}/operator-core.test.ts`]: { passed: 1, failed: 1 },
+      'operator-core.test.ts': { passed: 1, failed: 1 },
     });
     expect(out.completedGroups?.[0]?.result.failures.length).toBeLessThanOrEqual(5);
     expect(out.completedGroups?.[0]?.result.failuresTruncated).toBe(false);
