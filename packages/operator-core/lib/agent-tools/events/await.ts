@@ -642,34 +642,6 @@ export default defineTool({
       if (probe.value) unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
     }
 
-    // ── EI-18676056143796303: the orphan guard knows catalog MEMBERSHIP, but it
-    // spoke about EMITTERS ("nothing in this system will ever fire it and this
-    // await can only TIME OUT"). For a family that emits but was never registered
-    // in the catalog, that verdict is flatly FALSE and maximally actionable in the
-    // wrong direction — the correct response to it is to abandon the park, and the
-    // live case was `coord:inbox-wake:<ownerId>`: the most-fired key in the system
-    // AND the mechanism that rescues a stranded agent. Believing the warning there
-    // strands you, which is exactly what the inbox-wake exists to prevent.
-    //
-    // The fire latch is DIRECT evidence to the contrary: this key (or a sibling in
-    // its family) demonstrably fired. When there is such evidence, the membership
-    // gap is a CATALOG bug, not a dead await — report it as that and drop the
-    // scary claim entirely. A genuine orphan has neither exact nor sibling history,
-    // so EI-10870's real case still warns. Bounded + fail-soft: an unavailable
-    // latch leaves the (softened) warning exactly as it was.
-    let emitterEvidence: KeyFireEvidence | null = null;
-    if (unknownEventKey) {
-      const evidence = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
-        fallback: null,
-        timeoutMs: 1_000,
-        label: 'events-await:keyFireEvidence',
-      });
-      if (evidence.value && evidence.value.fires > 0) {
-        emitterEvidence = evidence.value;
-        unknownEventKey = false;
-      }
-    }
-
     // ── WI-1632193: a key minted by buildAnnouncedKey (`fleet:`/`plan:`/`harness:`
     // + ref + gate) belongs to NO static family, by design — the catalog cannot know
     // a key that is minted at RUNTIME from the announcer's scope. EI-21666331086562886
@@ -701,6 +673,36 @@ export default defineTool({
           generations: declared.value.length,
           everFired: declared.value.some((a) => a.firedAt && a.firedReason === 'event'),
         };
+        unknownEventKey = false;
+      }
+    }
+
+    // ── EI-18676056143796303: the orphan guard knows catalog MEMBERSHIP, but it
+    // spoke about EMITTERS ("nothing in this system will ever fire it and this
+    // await can only TIME OUT"). For a family that emits but was never registered
+    // in the catalog, that verdict is flatly FALSE and maximally actionable in the
+    // wrong direction — the correct response to it is to abandon the park, and the
+    // live case was `coord:inbox-wake:<ownerId>`: the most-fired key in the system
+    // AND the mechanism that rescues a stranded agent. Believing the warning there
+    // strands you, which is exactly what the inbox-wake exists to prevent.
+    //
+    // The fire latch is DIRECT evidence to the contrary: this key (or a sibling in
+    // its family) demonstrably fired. When there is such evidence, the membership
+    // gap is a CATALOG bug, not a dead await — report it as that and drop the
+    // scary claim entirely. A genuine orphan has neither exact nor sibling history,
+    // so EI-10870's real case still warns. Bounded + fail-soft: an unavailable
+    // latch leaves the (softened) warning exactly as it was. Announcement history
+    // is checked first because a runtime-minted key with both histories is a
+    // declared gate, not an unregistered catalog family.
+    let emitterEvidence: KeyFireEvidence | null = null;
+    if (unknownEventKey) {
+      const evidence = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
+        fallback: null,
+        timeoutMs: 1_000,
+        label: 'events-await:keyFireEvidence',
+      });
+      if (evidence.value && evidence.value.fires > 0) {
+        emitterEvidence = evidence.value;
         unknownEventKey = false;
       }
     }

@@ -268,6 +268,27 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('limits the completion metadata disposition to the reviewed bounded Git probe', () => {
+    const path = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
+    expect(scanInventory([[path, source + "\nconst childStart = spawn; childStart('worker', []);"]])).toContain(finding);
+    for (const [before, after] of [
+      ["'ls-files'", "'checkout'"],
+      ['timeout: 5_000', 'timeout: 0'],
+      ["killSignal: 'SIGKILL'", "killSignal: 'SIGTERM'"],
+      ["stdio: ['ignore', 'ignore', 'ignore']", "stdio: ['ignore', 'pipe', 'pipe']"],
+    ]) {
+      expect(source).toContain(before);
+      const mutant = source.replace(before, after);
+      expect(mutant).not.toBe(source);
+      expect(scanInventory([[path, mutant]])).toContain(finding);
+    }
+  });
+
   it('executes the real blocking CLI over the tracked tree', () => {
     const output = execFileSync(process.execPath, ['scripts/check-resource-governor-enforcement.mjs'], {
       cwd: ROOT,

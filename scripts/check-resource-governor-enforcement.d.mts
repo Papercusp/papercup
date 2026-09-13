@@ -27,7 +27,11 @@ export const P016_DISPOSITION_REGISTRY: ReadonlyMap<
 >;
 export const BYPASS_REGISTRY: ReadonlyMap<
   string,
-  { disposition: ResourceGovernorInventoryRow["disposition"]; reason: string }
+  {
+    disposition: ResourceGovernorInventoryRow["disposition"];
+    reason: string;
+    matchesSource?: (source: string) => boolean;
+  }
 >;
 export function inspectGovernorSource(source: string): string[];
 export function validateInventory(

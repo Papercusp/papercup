@@ -841,6 +841,28 @@ describe('WI-1632193 — a DECLARED announced gate is legitimate even when no ca
     expect(out.ok).toBe(true);
   });
 
+  it('prior fire evidence does not outrank a fired fleet announcement (EI-22729480686353796)', async () => {
+    const eventKey = 'fleet:nonp2p-bug-drain-luna-max-50:owner-resume';
+    withDeclarationHistory([
+      supersededRow({
+        eventKey,
+        scopeKind: 'fleet',
+        scopeRef: 'nonp2p-bug-drain-luna-max-50',
+        firedAt: '2026-09-08T22:03:34.810Z',
+        firedReason: 'event',
+        supersededAt: '2026-09-09T00:00:00.000Z',
+      }),
+    ]);
+    const out = await call({ event: eventKey });
+
+    expect(out).toMatchObject({ ok: true, declared_announced_gate: true });
+    expect(out.declared_announced_gate_advice).toMatch(/previous generation has already fired/);
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.uncatalogued_event_key).toBeUndefined();
+    expect(out.emitter_evidence).toBeUndefined();
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+
   it('THE POINT — a TYPO of a sibling family is still warned about, because it was never declared', async () => {
     // `plan:draft-redy:x` is a typo of `plan-draft-ready` (`plan:draft-ready:<slug>`).
     // It is structurally identical to the real gate above — same namespace, same

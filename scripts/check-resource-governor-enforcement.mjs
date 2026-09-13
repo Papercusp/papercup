@@ -9,6 +9,7 @@
  * must carry writer evidence in source.
  */
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { describeUnscanned, listTrackedFiles } from "./lib/tracked-files.mjs";
 import { stripCommentsAndStrings } from "./lib/strip-comments-and-strings.mjs";
@@ -1577,6 +1578,15 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
   [
+    "packages/operator-core/lib/agent-tools/work_items/complete.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "EI-23172979870567206: defaultCompletionTrackedness performs one synchronous read-only git ls-files --error-unmatch probe for one candidate path. It ignores output, has a 5s timeout and SIGKILL bound, retains no worker or queue, and must remain available for completion/recovery under pressure. The source predicate pins this exact call and refuses any additional resource start; unknown Git outcomes retain the durability warning.",
+      matchesSource: matchesReviewedCompletionTrackedness,
+    },
+  ],
+  [
     "apps/operator/bin/bundle-host-freshness.mjs::resource-start-outside-admission",
     {
       disposition: "bypass",
@@ -2180,6 +2190,45 @@ export function inspectGovernorSource(source) {
 }
 
 /**
+ * A metadata disposition must not cover a later resident start in the same file.
+ * Compare parsed call syntax (not comments/formatting), then rescan with ONLY that
+ * reviewed call removed. A changed command, weakened bound, or another detected
+ * start therefore restores the original finding instead of inheriting the bypass.
+ */
+function matchesReviewedCompletionTrackedness(source) {
+  const parse = (text) =>
+    ts.createSourceFile("complete.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const file = parse(source);
+  if (file.parseDiagnostics.length) return false;
+  const calls = [];
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "execFileSync"
+    ) calls.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  if (calls.length !== 1) return false;
+  const call = calls[0];
+  let enclosing = call.parent;
+  while (enclosing && !ts.isFunctionDeclaration(enclosing)) enclosing = enclosing.parent;
+  if (enclosing?.name?.text !== "defaultCompletionTrackedness") return false;
+  const expected = parse(`execFileSync('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', repoRelativePath], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'ignore', 'ignore'],
+    timeout: 5_000,
+    killSignal: 'SIGKILL',
+  });`);
+  const printer = ts.createPrinter({ removeComments: true });
+  const print = (node, root) => printer.printNode(ts.EmitHint.Expression, node, root);
+  if (print(call, file) !== print(expected.statements[0].expression, expected)) return false;
+  const remaining = source.slice(0, call.getStart(file)) + "undefined" + source.slice(call.end);
+  return !inspectGovernorSource(remaining).includes("resource-start-outside-admission");
+}
+
+/**
  * P-001 acceptance is that each admission SITE names its own resource dimensions,
  * fan-out, durable source, telemetry, context/release path and the cap to delete.
  *
@@ -2311,7 +2360,9 @@ export function scanInventory(
     for (const code of inspectGovernorSource(source)) {
       const key = registryKey(path, code);
       observedRegistryKeys.add(key);
-      if (!BYPASS_REGISTRY.has(key)) findings.push(`${path}:${code}`);
+      const disposition = BYPASS_REGISTRY.get(key);
+      if (!disposition || (disposition.matchesSource && !disposition.matchesSource(source)))
+        findings.push(`${path}:${code}`);
     }
   }
   if (validateRegistry) {
