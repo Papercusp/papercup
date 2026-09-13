@@ -267,6 +267,41 @@ describe("P-006 repairSignatureFromVerdict — a verdict names WHICH kinds it me
 });
 
 describe("P-006 verifyRepairHead — the typed signature drives the runners, at the repair head only", () => {
+  it.each([
+    { selected: 2, workspaces: 1, files: 2, rows: ["lib/a.test.ts"] },
+    { selected: 1, workspaces: 2, files: 1, rows: ["lib/a.test.ts"] },
+    { selected: 1, workspaces: 1, files: 2, rows: ["lib/a.test.ts"] },
+    { selected: 2, workspaces: 1, files: 2, rows: ["lib/a.test.ts", "lib/a.test.ts"] },
+  ])("rejects truncated/inconsistent selector counts: $selected/$workspaces/$files", (fixture) => {
+    const output = [
+      `RELATED_SELECTION ws=${WEB} selected=${fixture.selected} total=5 mode=related reason=ok`,
+      `AFFECTED_WS_CMD\t${WEB}\tnpm run --workspace packages/web test`,
+      `RELATED_AFFECTED_FILES status=selected workspaces=${fixture.workspaces} files=${fixture.files}`,
+      ...fixture.rows.map((file) => `RELATED_AFFECTED_FILE\t${WEB}\t${file}`),
+    ].join("\n");
+    expect(parseRepairHeadRadius(output)).toBeNull();
+  });
+
+  it("cannot mint a complete receipt from a cumulative radius whose initial admission history is missing", async () => {
+    const queue = queueWith([entry({ kind: "lint-leg", id: "lint:remaining" })], {
+      admissions: [{
+        atMs: 2, actor: "test", source: { ref: "staging", sha: HEAD },
+        fromRepairHead: "d".repeat(40), toRepairHead: HEAD,
+        paths: ["lib/only-retained.ts"], unchanged: [], blobs: { "lib/only-retained.ts": "e".repeat(40) },
+      }],
+    });
+    const deps: RepairHeadVerificationDeps = {
+      affectedTestsAtRef: async () => ({ files: [], gateIds: [], summary: "retained radius" }),
+      runGateAtRef: async (head, ids) => ({
+        pass: false, summary: "remaining failure", measuredHead: head, coverageComplete: true,
+        perGate: ids.map((id) => ({ id, status: "fail" as const })),
+      }),
+    };
+    const result = await verifyRepairHead(deps, queue);
+    expect(result.kind).toBe("red");
+    expect(result).not.toHaveProperty("selectiveCoverage");
+  });
+
   it("carries complete coverage across ordinary repair rounds and selects only the new admission radius", async () => {
     const nextHead = "d".repeat(40);
     const firstAdmission: FrozenRepairAdmission = {
@@ -282,7 +317,7 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
         selected.push(paths);
         return {
           files: paths.map((p) => ({ workspace: CORE, file: p.replace(".ts", ".test.ts") })),
-          gateIds: [], summary: "exact radius",
+          gateIds: [], summary: "exact radius", coverageComplete: true,
         };
       },
       runTestsAtRef: async (head, files) => {
@@ -337,8 +372,25 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
     const result = await verifyRepairHead(deps, queue);
     expect(result).toMatchObject({
       kind: "red", failingTests: ["lib/a.test.ts", CORE],
-      selectiveCoverage: { head: HEAD, candidate: CANDIDATE },
     });
+    // Legacy head with no admission chain cannot establish whole prior-radius coverage.
+    expect(result).not.toHaveProperty("selectiveCoverage");
+  });
+
+  it("retains every legacy coexecution member when diagnostics mix individual passes and failures", async () => {
+    const files = [{ workspace: WEB, file: "lib/a.test.ts" }, { workspace: WEB, file: "lib/b.test.ts" }];
+    const queue = queueWith([
+      ...files.map((f) => entry({ kind: "test-file", id: f.file, workspace: WEB })),
+      entry({ kind: "workspace-task", id: WEB, workspace: WEB }),
+    ]);
+    const result = await verifyRepairHead({
+      runTestsAtRef: async () => ({
+        pass: false, summary: "group failed; b passes alone",
+        perFile: [{ ...files[0]!, pass: false }, { ...files[1]!, pass: true }],
+      }),
+    }, queue);
+    expect(result).toMatchObject({ kind: "red", failingTests: ["lib/a.test.ts", WEB, "lib/b.test.ts"] });
+    expect(result).not.toHaveProperty("selectiveCoverage");
   });
 
   it("does not mint coverage from a legacy aggregate or an errored group", async () => {
@@ -548,6 +600,7 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       ].join("\n"));
       expect(radius).toEqual({
         files: [],
+        coverageComplete: false,
         gateIds: [
           "@papercusp/operator-core :: test:lane-pure",
           "@papercusp/operator-core :: test:lane-stateful",
@@ -586,8 +639,24 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       ].join("\n"))).toEqual({
         files: [{ workspace: "@papercusp/operator-core", file: "lib/x.test.ts" }],
         gateIds: [],
+        coverageComplete: false,
         summary: "1 exact related file(s), 0 widened affected test task(s), 0 guard/task leg(s)",
       });
+    });
+    it("requires a complete producer census before permitting receipt reuse", () => {
+      const output = [
+        "AFFECTED_DERIVATION source=explicit changedPaths=1 workspaces=1 guards=0 tasks=1",
+        `AFFECTED_WS\t${CORE}`,
+        `RELATED_SELECTION ws=${CORE} selected=1 total=5 mode=related reason=ok`,
+        `AFFECTED_WS_CMD\t${CORE}\tnpm run --workspace packages/operator-core test`,
+        "RELATED_AFFECTED_FILES status=selected workspaces=1 files=1",
+        `RELATED_AFFECTED_FILE\t${CORE}\tlib/a.test.ts`,
+      ].join("\n");
+      expect(parseRepairHeadRadius(output)?.coverageComplete).toBe(true);
+      expect(parseRepairHeadRadius(output.replace("tasks=1", "tasks=2"))?.coverageComplete).toBe(false);
+      expect(parseRepairHeadRadius(output.replace("guards=0", "guards=1"))?.coverageComplete).toBe(false);
+      expect(parseRepairHeadRadius(output.replace("workspaces=1 guards", "workspaces=2 guards"))?.coverageComplete).toBe(false);
+      expect(parseRepairHeadRadius("")?.coverageComplete).toBe(false);
     });
   });
 });

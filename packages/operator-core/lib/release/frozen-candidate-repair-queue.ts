@@ -523,6 +523,9 @@ export interface FrozenCandidateRepairQueue {
   /** Complete selective measurement, not a green/promotion certificate. Old readers may
    * drop it safely: the next verifier falls back to the cumulative admission radius. */
   selectiveCoverage?: FrozenRepairSelectiveCoverage;
+  /** Once this cycle loses failure identities to a bound, a later smaller signature
+   * does not recover them. Disable selective reuse for the rest of this cycle. */
+  selectiveCoverageBlocked?: true;
   /**
    * P-002 — the NON-TEST gate legs (lint / perf / desktop / delta) as first-class members of
    * this cycle, with the same lifecycle a test file has: named, admitted by their own
@@ -678,42 +681,92 @@ export function parseFrozenRepairSelectiveCoverage(
   return { schemaVersion: 1, candidate: v.candidate, head: v.head };
 }
 
-/** The receipt covers all prior radius obligations; only an unbroken, proved admission
- * suffix may narrow the next selector. Age and convergence COUNTS are never proof. */
-export function selectFrozenRepairAdmissionPaths(queue: FrozenCandidateRepairQueue): {
-  paths: string[];
-  mode: 'delta' | 'cumulative';
-  reason: string;
-} {
+function losslessFailureFrontier(input: {
+  failingTests?: readonly string[];
+  signature?: readonly { id: string; recipe?: string }[];
+}): boolean {
+  // Equality may be the result of an older writer's cap; never infer "exactly 50"
+  // from a list whose writer keeps at most 50.
+  return (input.failingTests?.length ?? 0) < MAX_PERSISTED_FAILURES &&
+    (input.signature?.length ?? 0) < MAX_PERSISTED_FAILURES &&
+    (input.failingTests ?? []).every((id) => id.length < MAX_PERSISTED_FAILURE_CHARS) &&
+    (input.signature ?? []).every((entry) =>
+      entry.id.length < MAX_PERSISTED_FAILURE_CHARS &&
+      (entry.recipe?.length ?? 0) < MAX_PERSISTED_FAILURE_CHARS);
+}
+
+/** The compatibility parser may repair legacy data, but a proof cannot inherit that
+ * lossy repair as evidence. Validate the RAW population before filtering/defaulting. */
+function completeRawRepairSignature(value: unknown, failingTests: readonly string[]): value is RepairSignatureEntry[] {
+  if (!Array.isArray(value) || value.length !== failingTests.length) return false;
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+        !nonBlank(entry.id) || entry.id !== entry.id.trim() ||
+        !nonBlank(entry.recipe) ||
+        !(REPAIR_SIGNATURE_KINDS as readonly string[]).includes(entry.kind) ||
+        !Number.isInteger(entry.admittedRound) || entry.admittedRound < 1 ||
+        !nonBlank(entry.measuredHead) || seen.has(entry.id) ||
+        (entry.workspace !== undefined && !nonBlank(entry.workspace))) return false;
+    seen.add(entry.id);
+  }
+  return new Set(failingTests).size === failingTests.length && failingTests.every((id) => seen.has(id));
+}
+
+function admissionSuffixPaths(queue: FrozenCandidateRepairQueue, from: string):
+  { ok: true; paths: string[] } | { ok: false; reason: string } {
   const admissions = queue.admissions ?? [];
-  const fallback = (reason: string) => ({
-    paths: [...new Set(admissions.flatMap((entry) => entry.paths))].sort(),
-    mode: 'cumulative' as const,
-    reason,
-  });
-  const coverage = parseFrozenRepairSelectiveCoverage(queue.selectiveCoverage, queue.candidate);
-  if (!coverage) return fallback('no-complete-coverage');
-  if (coverage.head === queue.repairHead) return { paths: [], mode: 'delta', reason: 'head-already-covered' };
-  const start = admissions.findIndex((entry) => entry.fromRepairHead === coverage.head);
-  if (start < 0) return fallback('coverage-head-not-in-ledger');
-  let head = coverage.head;
+  const refused = (reason: string) => ({ ok: false as const, reason });
+  if (from === queue.repairHead) return { ok: true, paths: [] };
+  const start = admissions.findIndex((entry) => entry.fromRepairHead === from);
+  if (start < 0) return refused('coverage-head-not-in-ledger');
+  let head = from;
   const seen = new Set([head]);
   const paths = new Set<string>();
   for (const entry of admissions.slice(start)) {
     if (entry.fromRepairHead !== head || !/^[0-9a-f]{40,64}$/.test(entry.toRepairHead) ||
-        seen.has(entry.toRepairHead)) return fallback('admission-chain-discontinuous');
+        seen.has(entry.toRepairHead)) return refused('admission-chain-discontinuous');
     if (entry.paths.length === 0 || entry.paths.some((p) =>
       !p || normalizeRepoPath(p) !== p || p.startsWith('/') ||
       p.split('/').some((part) => !part || part === '.' || part === '..') ||
       !Object.prototype.hasOwnProperty.call(entry.blobs, p) ||
       (entry.blobs[p] !== null && !/^[0-9a-f]{40,64}$/.test(entry.blobs[p] ?? '')),
-    )) return fallback('admission-path-proof-incomplete');
+    )) return refused('admission-path-proof-incomplete');
     for (const p of entry.paths) paths.add(p);
     head = entry.toRepairHead;
     seen.add(head);
   }
-  if (head !== queue.repairHead) return fallback('admission-chain-wrong-head');
-  return { paths: [...paths].sort(), mode: 'delta', reason: 'complete-admission-suffix' };
+  if (head !== queue.repairHead) return refused('admission-chain-wrong-head');
+  return { ok: true, paths: [...paths].sort() };
+}
+
+/** A fallback over retained admissions is not necessarily COMPLETE coverage: the ledger
+ * may have lost its prefix. Only a full candidate chain or an earlier complete receipt
+ * joined to an exact suffix permits recording another receipt. */
+export function selectFrozenRepairAdmissionPaths(queue: FrozenCandidateRepairQueue): {
+  paths: string[];
+  mode: 'delta' | 'cumulative';
+  reason: string;
+  coverageComplete: boolean;
+} {
+  const lossless = !queue.selectiveCoverageBlocked && losslessFailureFrontier(queue);
+  const fallback = (reason: string) => ({
+    paths: [...new Set((queue.admissions ?? []).flatMap((entry) => entry.paths))].sort(),
+    mode: 'cumulative' as const,
+    reason,
+    coverageComplete: lossless && admissionSuffixPaths(queue, queue.candidate).ok,
+  });
+  if (!lossless) return fallback('failure-frontier-possibly-truncated');
+  const coverage = parseFrozenRepairSelectiveCoverage(queue.selectiveCoverage, queue.candidate);
+  if (!coverage) return fallback('no-complete-coverage');
+  const suffix = admissionSuffixPaths(queue, coverage.head);
+  if (!suffix.ok) return fallback(suffix.reason);
+  return {
+    paths: suffix.paths,
+    mode: 'delta',
+    reason: coverage.head === queue.repairHead ? 'head-already-covered' : 'complete-admission-suffix',
+    coverageComplete: true,
+  };
 }
 
 export type FrozenRepairRetestDecision =
@@ -1570,7 +1623,17 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
    * the strictly smaller failure, and it is visible (rounds read as absent).
    */
   const convergenceRounds = parseConvergenceRounds(row.convergenceRounds);
-  const selectiveCoverage = parseFrozenRepairSelectiveCoverage(row.selectiveCoverage, row.candidate);
+  const rawSignature = row.signature;
+  const rawSignatureComplete = completeRawRepairSignature(rawSignature, row.failingTests as string[]);
+  const selectiveCoverageBlocked = row.selectiveCoverageBlocked === true ||
+    (row.signature !== undefined && !rawSignatureComplete) ||
+    (row.selectiveCoverage !== undefined && !rawSignatureComplete) ||
+    !losslessFailureFrontier({
+      failingTests: row.failingTests as string[],
+      signature: rawSignatureComplete ? rawSignature : undefined,
+    });
+  const selectiveCoverage = selectiveCoverageBlocked
+    ? undefined : parseFrozenRepairSelectiveCoverage(row.selectiveCoverage, row.candidate);
   // P-002 legs are observability on the same terms as rounds above: malformed entries are
   // dropped individually, never failing the parse of a live queue.
   const legs = parseRepairLegStates(row.legs);
@@ -1630,6 +1693,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(admissionPrecheck ? { admissionPrecheck } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
+    ...(selectiveCoverageBlocked ? { selectiveCoverageBlocked: true as const } : {}),
     ...(legs.length > 0 ? { legs } : {}),
     ...(admissions.length > 0 ? { admissions } : {}),
     ...(retestRequested ? { retestRequested } : {}),
@@ -2456,6 +2520,11 @@ export function markFrozenRepairVerificationRed(
   if (input.selectiveCoverage && (!coverage || coverage.head !== input.repairHead)) {
     throw new Error('selective coverage must describe the exact measured repair head');
   }
+  const selectiveCoverageBlocked = queue.selectiveCoverageBlocked === true ||
+    !losslessFailureFrontier(queue) || !losslessFailureFrontier(input) ||
+    !losslessFailureFrontier({ failingTests, signature });
+  const usableCoverage = !selectiveCoverageBlocked && selectFrozenRepairAdmissionPaths(queue).coverageComplete
+    ? coverage : undefined;
   return {
     ...queue,
     phase: 'awaiting-fixer',
@@ -2470,7 +2539,8 @@ export function markFrozenRepairVerificationRed(
     }),
     failingTests: boundedFailures(failingTests),
     signature,
-    ...(coverage ? { selectiveCoverage: coverage } : {}),
+    selectiveCoverage: selectiveCoverageBlocked ? undefined : usableCoverage ?? queue.selectiveCoverage,
+    ...(selectiveCoverageBlocked ? { selectiveCoverageBlocked: true as const } : {}),
   };
 }
 
@@ -2515,6 +2585,9 @@ export function recordFrozenRepairSupersededRed(
     head: input.measuredHead,
     round,
   });
+  const selectiveCoverageBlocked = queue.selectiveCoverageBlocked === true ||
+    !losslessFailureFrontier(queue) || !losslessFailureFrontier(input) ||
+    !losslessFailureFrontier({ failingTests, signature });
   return {
     ...queue,
     updatedAtMs: input.nowMs,
@@ -2525,6 +2598,8 @@ export function recordFrozenRepairSupersededRed(
     }),
     failingTests: boundedFailures(failingTests),
     signature,
+    ...(selectiveCoverageBlocked
+      ? { selectiveCoverage: undefined, selectiveCoverageBlocked: true as const } : {}),
   };
 }
 

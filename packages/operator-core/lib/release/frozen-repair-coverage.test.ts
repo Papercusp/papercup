@@ -30,6 +30,7 @@ describe('head-bound selective coverage', () => {
   it('selects only newly admitted paths after complete coverage', () => {
     expect(selectFrozenRepairAdmissionPaths(queue())).toEqual({
       paths: ['lib/new.ts', 'lib/third.ts'], mode: 'delta', reason: 'complete-admission-suffix',
+      coverageComplete: true,
     });
   });
   it('keeps a repeated changed path and shared semantic input in the new radius', () => {
@@ -83,4 +84,78 @@ describe('head-bound selective coverage', () => {
     expect(out.selectiveCoverage).toEqual(q.selectiveCoverage);
     expect(selectFrozenRepairAdmissionPaths(out).paths).toEqual(['lib/new.ts', 'lib/third.ts']);
   });
+  it('does not reuse coverage when the recorded failure frontier may have been capped', () => {
+    const q = queue();
+    q.failingTests = Array.from({ length: 50 }, (_, i) => `lint:failure-${i}`);
+    expect(selectFrozenRepairAdmissionPaths(q).mode).toBe('cumulative');
+  });
+  it('does not store a new receipt when the red transition truncates failure obligations', () => {
+    const q = queue();
+    const out = markFrozenRepairVerificationRed(q, {
+      repairHead: H3, nowMs: 3,
+      failingTests: Array.from({ length: 51 }, (_, i) => `lint:failure-${i}`),
+      selectiveCoverage: { schemaVersion: 1, candidate: C, head: H3 },
+    });
+    expect(out.failingTests).toHaveLength(50);
+    expect(out.selectiveCoverage).toBeUndefined();
+    const smaller = markFrozenRepairVerificationRed({ ...out, phase: 'ready-to-verify' }, {
+      repairHead: H3, nowMs: 4, failingTests: ['lint:remaining'],
+      selectiveCoverage: { schemaVersion: 1, candidate: C, head: H3 },
+    });
+    expect(smaller.selectiveCoverage).toBeUndefined();
+    expect(smaller.selectiveCoverageBlocked).toBe(true);
+  });
+  it('does not narrow around an overlong failure id whose identity would be truncated', () => {
+    const q = queue();
+    const out = markFrozenRepairVerificationRed(q, {
+      repairHead: H3, nowMs: 3, failingTests: ['lint:' + 'x'.repeat(501)],
+      selectiveCoverage: { schemaVersion: 1, candidate: C, head: H3 },
+    });
+    expect(out.selectiveCoverage).toBeUndefined();
+  });
+  it('does not turn a cumulative fallback with a missing prefix into a complete proof', () => {
+    const q = queue();
+    delete q.selectiveCoverage;
+    q.admissions = [q.admissions![2]!];
+    expect(selectFrozenRepairAdmissionPaths(q)).toMatchObject({ mode: 'cumulative', coverageComplete: false });
+    const out = markFrozenRepairVerificationRed(q, {
+      repairHead: H3, nowMs: 3, failingTests: ['lint:x'],
+      selectiveCoverage: { schemaVersion: 1, candidate: C, head: H3 },
+    });
+    expect(out.selectiveCoverage).toBeUndefined();
+  });
+  it('retains the loss marker even when consecutive superseded results later become smaller', () => {
+    const q = queue();
+    const overflow = recordFrozenRepairSupersededRed(q, {
+      measuredHead: H1, nowMs: 3,
+      failingTests: Array.from({ length: 51 }, (_, i) => `lint:failure-${i}`),
+    });
+    const smaller = recordFrozenRepairSupersededRed(overflow, {
+      measuredHead: H2, nowMs: 4, failingTests: ['lint:last'],
+    });
+    expect(smaller.repairHead).toBe(H3);
+    expect(smaller.failingTests).toHaveLength(1);
+    expect(smaller.selectiveCoverageBlocked).toBe(true);
+    expect(smaller.selectiveCoverage).toBeUndefined();
+    expect(selectFrozenRepairAdmissionPaths(smaller).mode).toBe('cumulative');
+  });
+  it.each(['object', 'dropped-entry', 'missing-recipe', 'duplicate', 'missing-with-receipt'] as const)(
+    'tolerates %s signature data without trusting its coverage',
+    (kind) => {
+      const q = queue();
+      const entry = q.signature[0]!;
+      const raw: Record<string, unknown> = { ...q };
+      if (kind === 'object') raw.signature = { corrupt: true };
+      if (kind === 'dropped-entry') raw.signature = [entry, { corrupt: true }];
+      if (kind === 'missing-recipe') raw.signature = [{ ...entry, recipe: null }];
+      if (kind === 'duplicate') raw.signature = [entry, entry];
+      if (kind === 'missing-with-receipt') delete raw.signature;
+      const parsed = parseFrozenCandidateRepairQueue(raw);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.repairHead).toBe(H3);
+      expect(parsed!.selectiveCoverage).toBeUndefined();
+      expect(parsed!.selectiveCoverageBlocked).toBe(true);
+      expect(selectFrozenRepairAdmissionPaths(parsed!).mode).toBe('cumulative');
+    },
+  );
 });

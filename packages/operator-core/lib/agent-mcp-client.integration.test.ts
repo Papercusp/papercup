@@ -1,14 +1,17 @@
 // Real sockets, packaged adapters and an installed runtime: this proof belongs
 // to the integration layer required by SPEC-UDS-005-01, not the pure unit lane.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { spawn, execFile } from 'node:child_process';
+import { createServer as createHttpServer } from 'node:http';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { once } from 'node:events';
 import { join, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const h = vi.hoisted(() => ({ home: '' }));
@@ -19,10 +22,6 @@ import { agentMcpMode, connectAgentMcp, localAgentMcpPort, prepareNativeOmpConfi
 import { writeEndpointIpcDiscovery } from './endpoint-ipc-discovery';
 import { startAgentMcpServer, type AgentMcpListener } from './endpoint-route/routes/transport/_mcp-uds';
 import type { BuiltSpawnContext } from './endpoint-route/routes/transport/_mcp-host';
-import {
-  nativeOmpExtensionArgs, ompTrackedResumeEnv, resumeArgsFor, writeOmpSessionConfigDir,
-} from '../../../apps/operator/scripts/psu-launcher.mjs';
-
 let listener: AgentMcpListener | undefined;
 beforeEach(async () => {
   h.home = await mkdtemp(join(tmpdir(), 'native-client-'));
@@ -52,45 +51,46 @@ async function server() {
       ? { kind: 'ok' as const, ctx: { ...expectedCtx } }
       : { kind: 'failed' as const, reason: 'invalid' };
   });
+  const register = (host: McpServer) => {
+    host.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      witness('list');
+      return { tools: [{ name: 'echo', description: 'Read fixture row',
+        annotations: { readOnlyHint: true }, inputSchema: {
+        type: 'object', properties: { row: { type: 'string' } },
+      } }, { name: 'fixture_set', description: 'Reversibly update this isolated fixture',
+        annotations: { readOnlyHint: false }, inputSchema: {
+          type: 'object', properties: { value: { type: 'string' } }, required: ['value'],
+        } }] };
+    });
+    host.server.setRequestHandler(CallToolRequestSchema, async request => {
+      if (request.params.name === 'fixture_set') {
+        const value = request.params.arguments?.value;
+        if (typeof value !== 'string') throw new Error('fixture_value_required');
+        fixture.value = value;
+        fixture.writes.push(value);
+        witness('set', value);
+        return { content: [{ type: 'text' as const, text: `fixture=${value}` }] };
+      }
+      if (request.params.name !== 'echo') throw new Error('unknown_fixture_tool');
+      witness('call', request.params.arguments);
+      return { content: [{ type: 'text' as const, text: 'compact-result' }],
+        _meta: { retained: true, fixtureValue: fixture.value } };
+    });
+  };
   listener = await startAgentMcpServer({
     port: 33170,
     host: {
       verify, options: { capabilities: { tools: {} } },
-      register(host) {
-        host.server.setRequestHandler(ListToolsRequestSchema, async () => {
-          witness('list');
-          return { tools: [{ name: 'echo', description: 'Read fixture row',
-            annotations: { readOnlyHint: true }, inputSchema: {
-            type: 'object', properties: { row: { type: 'string' } },
-          } }, { name: 'fixture_set', description: 'Reversibly update this isolated fixture',
-            annotations: { readOnlyHint: false }, inputSchema: {
-              type: 'object', properties: { value: { type: 'string' } }, required: ['value'],
-            } }] };
-        });
-        host.server.setRequestHandler(CallToolRequestSchema, async request => {
-          if (request.params.name === 'fixture_set') {
-            const value = request.params.arguments?.value;
-            if (typeof value !== 'string') throw new Error('fixture_value_required');
-            fixture.value = value;
-            fixture.writes.push(value);
-            witness('set', value);
-            return { content: [{ type: 'text' as const, text: `fixture=${value}` }] };
-          }
-          if (request.params.name !== 'echo') throw new Error('unknown_fixture_tool');
-          witness('call', request.params.arguments);
-          return { content: [{ type: 'text' as const, text: 'compact-result' }],
-            _meta: { retained: true, fixtureValue: fixture.value } };
-        });
-      },
+      register,
     },
   });
   await writeEndpointIpcDiscovery('/tmp/ui-unused.sock', { port: 33170, agentMcp: listener.endpoint });
-  return { witness, verify, fixture };
+  return { witness, verify, fixture, register };
 }
 
 describe('owned native MCP client', () => {
-  it('reports a dispatched mutation as unknown after disconnect, without reconnect or retry', async () => {
-    const { witness, fixture } = await server();
+  it('reconciles a dispatched unknown UDS mutation before explicit HTTP rollback, without replay', async () => {
+    const { witness, fixture, register } = await server();
     const connection = await connectAgentMcp({
       url, mode: 'auto', headers: { Authorization: 'Bearer fixture-token' }, home: h.home,
     });
@@ -113,6 +113,56 @@ describe('owned native MCP client', () => {
       })).rejects.toThrow();
       expect(fixture.writes).toHaveLength(1);
     } finally { await connection.client.close(); }
+
+    // Authoritative state reconciliation precedes rollback. Only after the
+    // committed value is known do we create a fresh HTTP connection/profile;
+    // the unresolved UDS mutation is never sent again.
+    expect(fixture.value).toBe('committed-before-disconnect');
+    const httpHosts: Array<{ host: McpServer; transport: StreamableHTTPServerTransport }> = [];
+    const httpErrors: unknown[] = [];
+    const http = createHttpServer(async (request, response) => {
+      const host = new McpServer({ name: 'rollback-fixture', version: '1' }, { capabilities: { tools: {} } });
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, enableJsonResponse: true,
+      });
+      httpHosts.push({ host, transport });
+      try {
+        expect(request.headers.authorization).toBe('Bearer fixture-token');
+        register(host);
+        await host.connect(transport);
+        await transport.handleRequest(request, response);
+      } catch (error) {
+        httpErrors.push(error);
+        if (!response.headersSent) response.writeHead(500);
+        response.end();
+      }
+    });
+    http.listen(0, '127.0.0.1');
+    await once(http, 'listening');
+    const address = http.address();
+    if (!address || typeof address === 'string') throw new Error('missing_http_rollback_port');
+    const rollbackUrl = `http://127.0.0.1:${address.port}/api/mcp`;
+    try {
+      const rolledBack = await connectAgentMcp({
+        url: rollbackUrl, mode: 'http', headers: { Authorization: 'Bearer fixture-token' }, home: h.home,
+      });
+      try {
+        expect(rolledBack.transportKind).toBe('http');
+        expect(await rolledBack.client.callTool({ name: 'echo', arguments: { row: 'after-reconcile' } }))
+          .toMatchObject({ _meta: { fixtureValue: 'committed-before-disconnect' } });
+      } finally { await rolledBack.client.close(); }
+      expect(fixture.writes).toEqual(['committed-before-disconnect']);
+      expect(witness.mock.calls.filter(call => call[0] === 'set')).toEqual([
+        ['set', 'committed-before-disconnect'],
+      ]);
+      expect(httpErrors).toEqual([]);
+    } finally {
+      await Promise.allSettled(httpHosts.map(async ({ host, transport }) => {
+        await host.close(); await transport.close();
+      }));
+      http.closeAllConnections();
+      await new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve()));
+    }
   });
 
   it('discovers, initializes, lists and calls the actual listener without HTTP', async () => {
@@ -220,8 +270,27 @@ describe('installed clients using the built production adapter', () => {
     expect(witness.mock.calls).toContainEqual(['call', { row: 'cli-row' }]);
   }, 25_000);
 
-  it.skipIf(!omp)('runs installed OMP through the launcher profile and resumes the same native session over UDS', async () => {
-    const { witness, verify, fixture } = await server();
+  it.skipIf(!omp)('runs installed OMP through the packaged launcher, survives listener restart, and resumes the same native session over UDS', async () => {
+    const initial = await server();
+    const packagedScripts = join(h.home, 'packaged-sidecar', 'scripts');
+    const packagedPsu = join(packagedScripts, 'psu.mjs');
+    await mkdir(packagedScripts, { recursive: true });
+    await execute('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$P009_REPO/apps/operator/bin/bundle-host-common.sh"',
+      'npx --yes esbuild@0.25.0 "$P009_REPO/apps/operator/scripts/psu-launcher.mjs" --bundle --platform=node --format=esm --target=node22 --minify-whitespace --minify-syntax --outfile="$P009_OUT" --banner:js="$HOST_BANNER" "--external:@lydell/*"',
+    ].join('\n')], {
+      timeout: 20_000,
+      env: { ...process.env, P009_REPO: repo, P009_OUT: packagedPsu },
+    });
+    await Promise.all(['native-client.cjs', 'native-extension.mjs'].map(name =>
+      copyFile(join(repo, 'packages/omp-plugin/dist', name), join(packagedScripts, name))));
+    const packagedLauncher = await import(`${pathToFileURL(packagedPsu).href}?p009=${Date.now()}`);
+    expect(Object.fromEntries(Object.entries(packagedLauncher.resolveNativeMcpAssets())
+      .map(([name, value]) => [name, fileURLToPath(value as URL)]))).toEqual({
+      bundle: join(packagedScripts, 'native-client.cjs'),
+      extension: join(packagedScripts, 'native-extension.mjs'),
+    });
     const sourceAgentDir = join(h.home, '.omp', 'agent');
     await mkdir(sourceAgentDir, { recursive: true });
     await writeFile(join(sourceAgentDir, 'config.yml'), 'tools:\n  discoveryMode: false\n');
@@ -234,7 +303,7 @@ describe('installed clients using the built production adapter', () => {
       } } },
     }), { mode: 0o600 });
     vi.stubEnv('PAPERCUSP_MCP_TRANSPORT', 'uds');
-    const rel = writeOmpSessionConfigDir('p005-runtime', {
+    const rel = packagedLauncher.writeOmpSessionConfigDir('p005-runtime', {
       nativeMcp: true, clientId: 'fixture-agent', operatorUrl: 'http://127.0.0.1:33170',
       mcpEnv: { PAPERCUSP_WORKSPACE: 'fixture', PAPERCUSP_PROFILE: 'fixture-profile' },
     }, h.home);
@@ -248,7 +317,7 @@ describe('installed clients using the built production adapter', () => {
     });
     const version = installed.stdout.trim();
     expect(version).toMatch(/18\.0\.3/);
-    const freshArgs = nativeOmpExtensionArgs('omp');
+    const freshArgs = packagedLauncher.nativeOmpExtensionArgs('omp');
     const provider = join(h.home, 'offline-provider.mjs');
     // An offline deterministic provider drives OMP's actual agent loop. It
     // cannot implement the tool or its transport; those come from the package.
@@ -354,26 +423,31 @@ export default function(pi) {
     const addons = (await readdir(natives)).filter(name => name.endsWith('.node'));
     expect(addons.length).toBeGreaterThan(0);
     for (const addon of addons) expect((await stat(join(natives, addon))).size).toBeGreaterThan(0);
-    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([]);
+    expect(initial.witness.mock.calls.filter(x => x[0] === 'call')).toEqual([]);
     const sessionId = await run(freshArgs, freshEnv);
-    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([
+    expect(initial.witness.mock.calls.filter(x => x[0] === 'call')).toEqual([
       ['call', { row: 'omp-row' }], ['call', { row: 'omp-row' }],
     ]);
-    expect(fixture).toEqual({ value: 'initial', writes: ['changed', 'initial'] });
+    expect(initial.fixture).toEqual({ value: 'initial', writes: ['changed', 'initial'] });
+    const initialGeneration = listener!.endpoint.generation;
+    await listener!.close();
+    listener = undefined;
+    const restarted = await server();
+    expect(listener!.endpoint.generation).not.toBe(initialGeneration);
     // Fresh process and no ambient opt-in: restore from the launcher-written
-    // config, pass the REAL saved native id, and prove the resumed tool runs.
+    // config, discover the restarted listener generation, pass the REAL saved
+    // native id, and prove the resumed tool runs.
     vi.stubEnv('PAPERCUSP_MCP_TRANSPORT', '');
     const session = { agent: 'omp', role: 'su', id: 'p005-runtime', ompThreadId: sessionId };
-    const restoredEnv = { ...freshEnv, ...ompTrackedResumeEnv(session, { home: h.home }) };
-    const resume = resumeArgsFor(session, { env: restoredEnv });
+    const restoredEnv = { ...freshEnv, ...packagedLauncher.ompTrackedResumeEnv(session, { home: h.home }) };
+    const resume = packagedLauncher.resumeArgsFor(session, { env: restoredEnv });
     expect(resume.bin).toBe('omp');
     expect(await run(resume.args, restoredEnv)).toBe(sessionId);
-    expect(witness.mock.calls.filter(x => x[0] === 'call')).toEqual([
-      ['call', { row: 'omp-row' }], ['call', { row: 'omp-row' }],
+    expect(restarted.witness.mock.calls.filter(x => x[0] === 'call')).toEqual([
       ['call', { row: 'omp-row' }], ['call', { row: 'omp-row' }],
     ]);
-    expect(fixture).toEqual({ value: 'initial', writes: ['changed', 'initial', 'changed', 'initial'] });
-    for (const [extra] of verify.mock.calls) {
+    expect(restarted.fixture).toEqual({ value: 'initial', writes: ['changed', 'initial'] });
+    for (const [extra] of [...initial.verify.mock.calls, ...restarted.verify.mock.calls]) {
       expect(extra).toMatchObject({ requestInfo: { headers: {
         'x-papercusp-client': 'fixture-agent', 'x-papercusp-workspace': 'fixture',
         'x-papercusp-profile': 'fixture-profile',

@@ -5603,6 +5603,7 @@ export async function verifyRepairHead(
   const selection = selectFrozenRepairAdmissionPaths(queue);
   const admitted = selection.paths;
   const selectionNote = `REPAIR_RADIUS mode=${selection.mode} reason=${selection.reason} paths=${admitted.length}`;
+  let radiusCoverageComplete = admitted.length === 0;
   let radiusNote = `${selectionNote}; no admitted paths`;
   if (admitted.length > 0) {
     if (!deps.affectedTestsAtRef) {
@@ -5620,6 +5621,7 @@ export async function verifyRepairHead(
         summary: `the related radius of ${admitted.length} admitted path(s) could not be resolved at repair head ${at}; the queue holds without spending the full gate`,
       };
     }
+    radiusCoverageComplete = radius.coverageComplete === true;
     if (
       (radius.files.length > 0 && !deps.runTestsAtRef) ||
       (radius.gateIds.length > 0 && !deps.runGateAtRef)
@@ -5680,7 +5682,8 @@ export async function verifyRepairHead(
     fileOutcomes.every((entry) => entry.status !== "errored"));
   const completeGates = !gateRun || (gateOutcomes !== null && gateRun.coverageComplete === true &&
     gateOutcomes.every((entry) => entry.status === "pass" || entry.status === "fail"));
-  const selectiveCoverage: FrozenRepairSelectiveCoverage | undefined = completeFiles && completeGates
+  const selectiveCoverage: FrozenRepairSelectiveCoverage | undefined = selection.coverageComplete &&
+    radiusCoverageComplete && completeFiles && completeGates
     ? { schemaVersion: 1, candidate: queue.candidate, head }
     : undefined;
 
@@ -5693,19 +5696,12 @@ export async function verifyRepairHead(
     if (!fresh.has(entry.id)) fresh.set(entry.id, entry);
   };
   if (fileRun && !fileRun.pass) {
-    // The diagnostic per-file split names exactly which files failed alone; without it the
-    // whole file set is the honest signature (a subset would be evidence nobody collected).
-    const diagnosticKeys = new Set(fileRun.perFile?.map(failingFileKey));
-    const split =
-      fileRun.perFile && fileRun.perFile.length === fileList.length &&
-      diagnosticKeys.size === fileList.length && fileList.every((f) => diagnosticKeys.has(failingFileKey(f))) &&
-      fileRun.perFile.every((f) => typeof f.pass === "boolean")
-        ? fileRun.perFile.filter((r) => !r.pass)
-        : [];
+    // Diagnostic per-file retries do not prove coexecution. Without exact group
+    // outcomes, even mixed individual pass/fail results retain the whole failed batch.
     const unresolvedFiles = fileOutcomes
       ? fileOutcomes.filter((entry) => entry.status !== "pass")
         .flatMap((entry) => entry.files.map((file) => ({ workspace: entry.workspace, file })))
-      : split.length > 0 ? split : fileList;
+      : fileList;
     for (const f of unresolvedFiles) {
       emit({
         kind: "test-file",
@@ -5773,6 +5769,9 @@ export interface RepairHeadRadius {
    *  workspace's whole test lane(s), still bounded below the repo-wide full gate. */
   gateIds: string[];
   summary: string;
+  /** All producer-declared task/guard/workspace rows were received. Legacy responses
+   * still support conservative verification but cannot mint a reusable receipt. */
+  coverageComplete?: boolean;
 }
 
 /** Turn the selector's `--changed-paths … --related --print-affected` output into the bounded
@@ -5794,6 +5793,8 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
       );
     if (!m) continue;
     if (related.has(m[1]!)) return null;
+    if (!Number.isSafeInteger(Number(m[2])) || !Number.isSafeInteger(Number(m[3])) ||
+        Number(m[2]) > Number(m[3])) return null;
     related.set(m[1]!, {
       selected: Number(m[2]),
       mode: m[4]!,
@@ -5859,7 +5860,13 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
     );
     if (summaries.length !== 1) return null;
     const summary = summaries[0]!;
-    if (/^RELATED_AFFECTED_FILES status=selected workspaces=\d+ files=\d+$/.test(summary)) {
+    const exactSummary = /^RELATED_AFFECTED_FILES status=selected workspaces=(\d+) files=(\d+)$/.exec(summary);
+    if (exactSummary) {
+      const emittedWorkspaces = new Set(files.map((f) => f.workspace));
+      const taskWorkspaces = new Set([...testTaskIds].map((id) => parseFailingTaskId(id)?.workspace));
+      if (Number(exactSummary[1]) !== emittedWorkspaces.size ||
+          Number(exactSummary[2]) !== files.length ||
+          emittedWorkspaces.size !== taskWorkspaces.size) return null;
       for (const taskId of testTaskIds) {
         const task = parseFailingTaskId(taskId);
         const selection = task ? related.get(task.workspace) : undefined;
@@ -5869,7 +5876,7 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
           selection.mode !== "related" ||
           selection.reason !== "ok" ||
           selection.selected < 1 ||
-          !files.some((f) => f.workspace === task.workspace)
+          files.filter((f) => f.workspace === task.workspace).length !== selection.selected
         ) {
           return null;
         }
@@ -5888,9 +5895,28 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
       return null;
     }
   }
+  // Exact file counts alone cannot prove that a whole workspace/task/guard was not
+  // omitted. Bind completeness to the selector's independently emitted census too.
+  const derivations = lines.filter((line) => line.startsWith("AFFECTED_DERIVATION "));
+  const census = derivations.length === 1 ? derivations[0]! : "";
+  const countMatches = (name: string, prefix: string): boolean => {
+    const matches = [...census.matchAll(new RegExp(`(?:^| )${name}=(\\d+)(?= |$)`, "g"))];
+    const rows = lines.filter((line) => line.startsWith(prefix));
+    return matches.length === 1 && Number.isSafeInteger(Number(matches[0]![1])) &&
+      Number(matches[0]![1]) === rows.length && new Set(rows).size === rows.length;
+  };
+  const radiusSummaries = lines.filter((line) => line.startsWith("RELATED_AFFECTED_FILES status="));
+  const fileSummary = /^RELATED_AFFECTED_FILES status=selected workspaces=(\d+) files=(\d+)$/.exec(radiusSummaries[0] ?? "");
+  const coverageComplete = countMatches("workspaces", "AFFECTED_WS\t") &&
+    countMatches("tasks", "AFFECTED_WS_CMD\t") && countMatches("guards", "AFFECTED_GUARD\t") &&
+    radiusSummaries.length === 1 &&
+    (!fileSummary || (Number(fileSummary[1]) === new Set(files.map((f) => f.workspace)).size &&
+      Number(fileSummary[2]) === files.length)) &&
+    /^RELATED_AFFECTED_FILES status=(?:full reason=\S+|selected workspaces=\d+ files=\d+)$/.test(radiusSummaries[0]!);
   return {
     files,
     gateIds: [...gateIds],
+    coverageComplete,
     summary:
       `${files.length} exact related file(s), ${widenedTasks} widened affected test task(s), ` +
       `${gateIds.size - widenedTasks} guard/task leg(s)`,
