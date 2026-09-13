@@ -11,9 +11,23 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./bash-jobs', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./bash-jobs')>()),
-  runForeground: vi.fn(async () => ({
+const jobs = vi.hoisted(() => ({
+  startBackground: vi.fn((opts: { command: string; cwd: string }) => ({
+    id: 'bash-cwd-test',
+    taskId: 'task-cwd-test',
+    command: opts.command,
+    cwd: opts.cwd,
+    status: 'completed' as const,
+    exitCode: 0,
+    startedAt: 1,
+    endedAt: 2,
+    totalBytes: 0,
+    logPath: '/tmp/capability-bash-cwd-test.log',
+    timeoutMs: 10_000,
+    deadlineAt: 10_001,
+  })),
+  waitForJobResponse: vi.fn(async () => 'terminal' as const),
+  snapshotJobResult: vi.fn(() => ({
     status: 'completed' as const,
     exitCode: 0,
     durationMs: 1,
@@ -22,11 +36,13 @@ vi.mock('./bash-jobs', async (importOriginal) => ({
     totalBytes: 0,
     logPath: '/tmp/capability-bash-cwd-test.log',
   })),
-  // The missing-cwd preflight must reject BEFORE either spawn path; mock the
-  // background launcher too so a regression cannot start a real job from a test.
-  startBackground: vi.fn(() => {
-    throw new Error('startBackground must not be reached in bash-cwd tests');
-  }),
+}));
+
+vi.mock('./bash-jobs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./bash-jobs')>()),
+  startBackground: jobs.startBackground,
+  waitForJobResponse: jobs.waitForJobResponse,
+  snapshotJobResult: jobs.snapshotJobResult,
 }));
 
 vi.mock('./exec-sandbox', async (importOriginal) => ({
@@ -35,7 +51,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
 }));
 
 import bashTool, { missingBashCwdError, resolveBashDefaultCwd, suggestExistingCwd } from './bash';
-import { runForeground } from './bash-jobs';
+import { startBackground } from './bash-jobs';
 
 type Tool = {
   handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }> }>;
@@ -60,7 +76,7 @@ describe('capability:bash — stale implicit cwd recovery', () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'capability-bash-cwd-'));
     originalIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
-    vi.mocked(runForeground).mockClear();
+    vi.mocked(startBackground).mockClear();
   });
 
   afterEach(() => {
@@ -77,7 +93,7 @@ describe('capability:bash — stale implicit cwd recovery', () => {
 
     await bash.handler({ command: 'true' }, makeCtx(staleProjectDir));
 
-    expect(vi.mocked(runForeground).mock.calls[0]?.[0]).toMatchObject({
+    expect(vi.mocked(startBackground).mock.calls[0]?.[0]).toMatchObject({
       cwd: realpathSync(integrationRoot),
     });
   });
@@ -91,7 +107,7 @@ describe('capability:bash — stale implicit cwd recovery', () => {
 
     await bash.handler({ command: 'true' }, makeCtx(projectDir));
 
-    expect(vi.mocked(runForeground).mock.calls[0]?.[0]).toMatchObject({ cwd: realpathSync(projectDir) });
+    expect(vi.mocked(startBackground).mock.calls[0]?.[0]).toMatchObject({ cwd: realpathSync(projectDir) });
   });
 
   it('leaves explicit absolute and relative cwd arguments untouched', async () => {
@@ -102,14 +118,14 @@ describe('capability:bash — stale implicit cwd recovery', () => {
     mkdirSync(process.env.PAPERCUSP_INTEGRATION_ROOT);
 
     await bash.handler({ command: 'true', cwd: explicitDir }, makeCtx(staleProjectDir));
-    expect(vi.mocked(runForeground).mock.calls[0]?.[0]).toMatchObject({ cwd: explicitDir });
+    expect(vi.mocked(startBackground).mock.calls[0]?.[0]).toMatchObject({ cwd: explicitDir });
 
-    vi.mocked(runForeground).mockClear();
+    vi.mocked(startBackground).mockClear();
     // The relative form resolves against the base dir with no recovery rerouting;
     // the resolved target must exist to clear the missing-cwd preflight.
     mkdirSync(resolve(staleProjectDir, 'relative-child'), { recursive: true });
     await bash.handler({ command: 'true', cwd: 'relative-child' }, makeCtx(staleProjectDir));
-    expect(vi.mocked(runForeground).mock.calls[0]?.[0]).toMatchObject({
+    expect(vi.mocked(startBackground).mock.calls[0]?.[0]).toMatchObject({
       cwd: resolve(staleProjectDir, 'relative-child'),
     });
   });
@@ -135,7 +151,7 @@ describe('capability:bash — missing-cwd preflight', () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'capability-bash-cwd-preflight-'));
     originalIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
-    vi.mocked(runForeground).mockClear();
+    vi.mocked(startBackground).mockClear();
   });
 
   afterEach(() => {
@@ -154,7 +170,7 @@ describe('capability:bash — missing-cwd preflight', () => {
     await expect(bash.handler({ command: 'printf ok' }, makeCtx(phantomProjectDir))).rejects.toThrow(
       /spawn \/usr\/bin\/bash ENOENT/,
     );
-    expect(vi.mocked(runForeground)).not.toHaveBeenCalled();
+    expect(vi.mocked(startBackground)).not.toHaveBeenCalled();
   });
 
   it('rejects an explicit missing cwd with the real cause, in background mode too', async () => {
@@ -162,16 +178,13 @@ describe('capability:bash — missing-cwd preflight', () => {
     mkdirSync(goodProjectDir);
     const missingExplicit = join(root, 'no-such-dir');
 
+    await expect(bash.handler({ command: 'printf ok', cwd: missingExplicit }, makeCtx(goodProjectDir))).rejects.toThrow(
+      /cwd '.*no-such-dir' does not exist/,
+    );
     await expect(
-      bash.handler({ command: 'printf ok', cwd: missingExplicit }, makeCtx(goodProjectDir)),
-    ).rejects.toThrow(/cwd '.*no-such-dir' does not exist/);
-    await expect(
-      bash.handler(
-        { command: 'printf ok', cwd: missingExplicit, run_in_background: true },
-        makeCtx(goodProjectDir),
-      ),
+      bash.handler({ command: 'printf ok', cwd: missingExplicit, run_in_background: true }, makeCtx(goodProjectDir)),
     ).rejects.toThrow(/does not exist/);
-    expect(vi.mocked(runForeground)).not.toHaveBeenCalled();
+    expect(vi.mocked(startBackground)).not.toHaveBeenCalled();
   });
 
   it('rejects a cwd that exists but is not a directory', async () => {

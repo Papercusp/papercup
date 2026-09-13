@@ -11,7 +11,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const markerIo = vi.hoisted(() => ({ read: vi.fn() }));
 const gitIo = vi.hoisted(() => ({ head: vi.fn() }));
-const jobs = vi.hoisted(() => ({ runForeground: vi.fn() }));
+const jobs = vi.hoisted(() => ({
+  startBackground: vi.fn(() => ({
+    id: 'bash-frozen-lineage',
+    taskId: 'task-frozen-lineage',
+    status: 'completed' as const,
+    exitCode: 0,
+    startedAt: 1,
+    endedAt: 2,
+    logPath: '/tmp/bash-frozen-lineage.log',
+    timeoutMs: 10_000,
+    deadlineAt: 10_001,
+  })),
+  waitForJobResponse: vi.fn(async () => 'terminal' as const),
+  snapshotJobResult: vi.fn(),
+}));
 
 vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
@@ -20,7 +34,9 @@ vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
 vi.mock('../../harness/docs/git-runner', () => ({ repoHeadSha: gitIo.head }));
 vi.mock('./bash-jobs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./bash-jobs')>()),
-  runForeground: jobs.runForeground,
+  startBackground: jobs.startBackground,
+  waitForJobResponse: jobs.waitForJobResponse,
+  snapshotJobResult: jobs.snapshotJobResult,
 }));
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
@@ -69,7 +85,7 @@ beforeEach(() => {
   process.env.PAPERCUSP_INTEGRATION_ROOT = ROOT;
   markerIo.read.mockReturnValue(MARKER);
   gitIo.head.mockResolvedValue(CANDIDATE);
-  jobs.runForeground.mockResolvedValue({
+  jobs.snapshotJobResult.mockReturnValue({
     status: 'completed',
     exitCode: 0,
     output: 'ok',
@@ -92,14 +108,14 @@ describe('capability:bash frozen-lineage guard', () => {
       liveIdentity: { candidate: CANDIDATE, repairHead: REPAIR_HEAD },
     });
     expect(gitIo.head).toHaveBeenCalledWith(ROOT);
-    expect(jobs.runForeground).not.toHaveBeenCalled();
+    expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
   it('allows the exact live repairHead root test', async () => {
     gitIo.head.mockResolvedValue(REPAIR_HEAD);
     const result = await bash.handler({ command: 'npm run test:affected', cwd: ROOT }, ctx());
     expect(result.isError).not.toBe(true);
-    expect(jobs.runForeground).toHaveBeenCalledOnce();
+    expect(jobs.startBackground).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -110,7 +126,7 @@ describe('capability:bash frozen-lineage guard', () => {
     expect(result.isError).not.toBe(true);
     expect(markerIo.read).not.toHaveBeenCalled();
     expect(gitIo.head).not.toHaveBeenCalled();
-    expect(jobs.runForeground).toHaveBeenCalledOnce();
+    expect(jobs.startBackground).toHaveBeenCalledOnce();
   });
 
   it('refuses a staging worktree candidate cut before spawn and without a HEAD probe', async () => {
@@ -126,6 +142,6 @@ describe('capability:bash frozen-lineage guard', () => {
       selectedRef: 'staging',
     });
     expect(gitIo.head).not.toHaveBeenCalled();
-    expect(jobs.runForeground).not.toHaveBeenCalled();
+    expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 });

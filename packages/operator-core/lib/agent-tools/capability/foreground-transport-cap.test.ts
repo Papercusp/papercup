@@ -17,9 +17,9 @@ import {
 // cap is abandoned by the CLIENT with a generic failure, which is the SAME token a real non-zero
 // exit produces. The agent then cannot tell "my command failed" from "the transport gave up", and
 // because no abort reaches the child the command may still have run to completion invisibly.
-// The fix is a clamp BELOW the cap so the tool always self-times-out first, with a distinct
-// `status: 'timed_out'`. These tests pin the clamp, the hint, and — the part that stops the bug
-// recurring — the invariant that EVERY foreground-capable tool actually applies it.
+// Foreground-only tools clamp BELOW the cap so the tool self-times-out first. capability:bash
+// now uses the stronger start-once design: the same ceiling bounds only its response wait, and
+// the original durable job continues. These tests pin both permitted transport-safe shapes.
 
 // The subject root is overridable so falsifiability can be proven against a MUTATED COPY outside
 // the tree (scripts/mutation-probe.sh tier 2) instead of by editing the shared checkout, which a
@@ -169,9 +169,9 @@ describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-215700
  * The class guard below proves every foreground tool APPLIES the clamp; it never asked whether
  * the clamp is visible to the caller, which is why code:run passed it for as long as it did while
  * silently lowering a published 1..120 budget to 50s. This is scoped to code:run deliberately:
- * capability:bash and capability:inspect already disclose through `foregroundTimeoutHint`, and
- * that helper's "process tree was KILLED" wording is TRUE for them and false for code:run, so a
- * single shared assertion across all five would be wrong rather than merely broad.
+ * capability:inspect discloses through `foregroundTimeoutHint`, while capability:bash no longer
+ * kills at the response boundary. That helper's "process tree was KILLED" wording is therefore
+ * not a universal foreground claim, so a single shared assertion would be false.
  */
 describe('code:run discloses the clamp on the failure envelope (EI-21570021207351896)', () => {
   const runSrc = readFileSync(join(TOOLS_DIR, 'code/run.ts'), 'utf8');
@@ -186,10 +186,9 @@ describe('code:run discloses the clamp on the failure envelope (EI-2157002120735
   it('keeps the requested and effective budgets as SEPARATE values', () => {
     expect(runSrc).toMatch(/requestedTimeoutMs/);
     expect(runSrc).toMatch(/effectiveTimeoutMs/);
-    expect(
-      runSrc,
-      'the inline clamp collapses the pair — the disclosure then has nothing to compare',
-    ).not.toMatch(/timeoutMs:\s*args\.timeoutSec\s*\?\s*clampForegroundTimeoutMs\(/);
+    expect(runSrc, 'the inline clamp collapses the pair — the disclosure then has nothing to compare').not.toMatch(
+      /timeoutMs:\s*args\.timeoutSec\s*\?\s*clampForegroundTimeoutMs\(/,
+    );
   });
 
   it('the arg description leads with the EFFECTIVE ceiling, not the accepted max', () => {
@@ -213,13 +212,30 @@ describe('code:run discloses the clamp on the failure envelope (EI-2157002120735
  * enumerated), and the list is complete. The lesson is the list, not the assertions — when you
  * add a foreground-capable tool, ADD THE ROW; that is the entire point.
  */
-const FOREGROUND_CAPABLE_TOOLS = [
-  'capability/bash.ts',
-  'capability/inspect.ts',
-  'testing/run.ts',
-  'build/typecheck.ts',
-  'code/run.ts',
-];
+const FOREGROUND_CAPABLE_TOOLS = ['capability/inspect.ts', 'testing/run.ts', 'build/typecheck.ts', 'code/run.ts'];
+
+describe('capability:bash uses start-once response yield instead of an execution clamp (P-002)', () => {
+  const bashSrc = readFileSync(join(TOOLS_DIR, 'capability/bash.ts'), 'utf8');
+
+  it('starts through the existing durable job seam exactly once in the handler source', () => {
+    expect(bashSrc.match(/\bstartBackground\(/g)).toHaveLength(1);
+    expect(bashSrc).toMatch(/await waitForJobResponse\(/);
+    expect(bashSrc).not.toMatch(/\brunForeground\(/);
+  });
+
+  it('uses the transport-safe ceiling as a response window, not the execution timeout', () => {
+    expect(bashSrc).toContain('yield_after_ms');
+    expect(bashSrc).toMatch(/responseWindowMs\s*=\s*args\.yield_after_ms\s*\?\?\s*FOREGROUND_TIMEOUT_CEILING_MS/);
+    expect(bashSrc).toMatch(/startBackground\([\s\S]*?executionTimeoutMs/);
+    expect(bashSrc).not.toMatch(/executionTimeoutMs\s*=\s*clampForegroundTimeoutMs/);
+  });
+
+  it('returns the same durable handles when the response window elapses', () => {
+    expect(bashSrc).toMatch(/bash_id:\s*job\.id/);
+    expect(bashSrc).toMatch(/task_id:\s*job\.taskId/);
+    expect(bashSrc).toMatch(/response yield did NOT restart or kill the command/);
+  });
+});
 
 describe('every foreground-capable tool applies the clamp (EI-20645849301780712)', () => {
   it('clamping a budget far above the cap still lands below it', () => {
@@ -240,9 +256,7 @@ describe('every foreground-capable tool applies the clamp (EI-20645849301780712)
     // ...and actually APPLIED, not merely imported for its description string. build:typecheck
     // and testing:run interpolate FOREGROUND_TIMEOUT_CEILING_MS into their arg docs, so an
     // import-only assertion would pass for a tool that never clamps a single run.
-    expect(src, `${rel} must CALL clampForegroundTimeoutMs, not just import it`).toMatch(
-      /clampForegroundTimeoutMs\(/,
-    );
+    expect(src, `${rel} must CALL clampForegroundTimeoutMs, not just import it`).toMatch(/clampForegroundTimeoutMs\(/);
     // Nobody may re-declare the constants locally and drift from the shared pair.
     expect(src, `${rel} must not redeclare the transport constants`).not.toMatch(
       /(const|let)\s+(MCP_TRANSPORT_CAP_MS|FOREGROUND_TIMEOUT_CEILING_MS)\s*=/,
@@ -251,8 +265,9 @@ describe('every foreground-capable tool applies the clamp (EI-20645849301780712)
     // restore — the raw requested budget assigned straight to the value handed to the spawn.
     // Covers both arg spellings in play (`args.timeout` in capability:bash, `args.timeoutMs`
     // in build:typecheck / testing:run).
-    expect(src, `${rel} passes its raw default straight to the spawn — the transport will kill it`)
-      .not.toMatch(/const\s+timeoutMs\s*=\s*args\.timeout(Ms)?\s*\?\?/);
+    expect(src, `${rel} passes its raw default straight to the spawn — the transport will kill it`).not.toMatch(
+      /const\s+timeoutMs\s*=\s*args\.timeout(Ms)?\s*\?\?/,
+    );
     // A timeout that names no escape route is how an agent ends up hand-rolling `npx tsc -p .`
     // — which checks ZERO files here and reads as clean.
     expect(src, `${rel} timeout branch must point at the detached run`).toMatch(/run_in_background/);
@@ -262,7 +277,8 @@ describe('every foreground-capable tool applies the clamp (EI-20645849301780712)
   // that has only ever seen passing input is not evidence. These deliberately-wrong sources stay
   // in the test file so the check is proven falsifiable on every run, with no tree mutation.
   it('the same assertions REJECT a tool that imports the clamp but never calls it', () => {
-    const importOnly = `import { FOREGROUND_TIMEOUT_CEILING_MS } from './foreground-transport-cap';\n` +
+    const importOnly =
+      `import { FOREGROUND_TIMEOUT_CEILING_MS } from './foreground-transport-cap';\n` +
       `const timeoutMs = args.timeout ?? 120_000;\n`;
     expect(importOnly).toMatch(/from '(\.|\.\.)\/(capability\/)?foreground-transport-cap'/);
     expect(importOnly).not.toMatch(/clampForegroundTimeoutMs\(/); // ← the real guard would fail here

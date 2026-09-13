@@ -5,24 +5,29 @@
  * command that outruns it is killed by the TRANSPORT with an opaque `request_timeout`
  * BEFORE the handler can respond — so the agent never learns the durable fix is a
  * detached run, and the very capability that exists to remove "shell out + poll"
- * friction pushes them back to it. Every foreground-capable tool therefore clamps its
+ * friction pushes them back to it. A foreground-only tool therefore clamps its
  * command timeout safely below the cap, so the TOOL always self-times-out first
  * (`status: 'timed_out'`, a machine-separable token) and returns an actionable hint.
+ * capability:bash now takes the stronger route: it uses this ceiling only as a
+ * RESPONSE window, while one durable job keeps its independent execution deadline.
+ * Reaching the response window returns that job's handle instead of killing it.
  *
  * EI-20645849301780712 is why these live here rather than in `capability:inspect`,
  * where they were first written. Three tools outside that file already imported them
- * (`testing:run`, `build:typecheck`, and now `capability:bash`), which made a tool
+ * (`testing:run`, `build:typecheck`, and historically `capability:bash`), which made a tool
  * reach into a SIBLING TOOL to learn a fact about the shared transport. `capability:bash`
  * — the most-used foreground surface of all — was the one that never got the clamp, and
  * the miss is exactly the kind an import-from-a-peer-tool shape hides: there was no
  * single place where "who honours the cap" was answerable. Now there is, and
- * `foreground-transport-cap.test.ts` enumerates the honourers as an invariant.
+ * `foreground-transport-cap.test.ts` separately enumerates foreground killers and
+ * start-once response-yield tools as invariants.
  *
  * ⚠ Do NOT "fix" a too-short foreground run by RAISING these — that widens the dead
  * window between the ceiling and the transport cap, which is the defect, not the cure.
- * A command that legitimately needs longer belongs in a BACKGROUND job, which returns a
- * handle immediately and is not bound by the transport cap at all (it carries its own,
- * much longer, wall-clock deadline instead — see `DEFAULT_BACKGROUND_TIMEOUT_MS`).
+ * A command that legitimately needs longer needs a durable job. capability:bash creates
+ * one for every call and returns it automatically at the response window; other tools
+ * still require their explicit background mode. The job's own execution deadline is
+ * not bound by this transport ceiling (see `DEFAULT_BACKGROUND_TIMEOUT_MS`).
  */
 
 /** The hard per-call ceiling the MCP transport enforces. Not ours to change. */
