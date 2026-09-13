@@ -643,6 +643,50 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('resolves a cited blob through the superproject gitlink at audited SHA (EI-22580796784944702)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-submodule-'));
+    const childRoot = path.join(root, 'chat-protocol');
+    const superprojectRoot = path.join(root, 'superproject');
+    const citedPath = path.join(childRoot, 'src', 'index.ts');
+    const citedBody = 'export const protocol = "pinned";\n';
+    try {
+      fs.mkdirSync(path.dirname(citedPath), { recursive: true });
+      fs.mkdirSync(superprojectRoot, { recursive: true });
+      fs.writeFileSync(citedPath, citedBody);
+
+      git(childRoot, 'init', '-q');
+      git(childRoot, 'config', 'user.email', 'plan-audits-test@example.com');
+      git(childRoot, 'config', 'user.name', 'Plan Audits Test');
+      git(childRoot, 'add', '--', 'src/index.ts');
+      git(childRoot, 'commit', '-qm', 'pinned child source');
+
+      git(superprojectRoot, 'init', '-q');
+      git(superprojectRoot, 'config', 'user.email', 'plan-audits-test@example.com');
+      git(superprojectRoot, 'config', 'user.name', 'Plan Audits Test');
+      git(
+        superprojectRoot,
+        '-c',
+        'protocol.file.allow=always',
+        'submodule',
+        'add',
+        '-q',
+        childRoot,
+        'libs/generic/chat-protocol',
+      );
+      git(superprojectRoot, 'add', '--', '.gitmodules', 'libs/generic/chat-protocol');
+      git(superprojectRoot, 'commit', '-qm', 'pin chat protocol submodule');
+      const auditedSha = git(superprojectRoot, 'rev-parse', 'HEAD').trim();
+
+      const deps = repoCitationDeps(superprojectRoot);
+      const citation = code('libs/generic/chat-protocol/src/index.ts');
+      expect(resolveCitation(citation, deps)).toEqual({ ok: true });
+      expect(citationBlobSha(citation, deps)).toBe(gitBlobSha(citedBody));
+      expect(citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 /**

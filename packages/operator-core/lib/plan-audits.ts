@@ -749,6 +749,106 @@ function gitRootForFile(abs: string): { root: string; gitDir: string; rel: strin
   }
 }
 
+/**
+ * Resolve an object at a commit/ref without trusting the moving worktree. The ref is
+ * validated by callers before it reaches Git; the path is after `--` so a citation
+ * cannot become an option.
+ */
+function gitObjectShaAt(root: string, ref: string, rel: string): string | null {
+  try {
+    const object = execFileSync(
+      'git',
+      ['rev-parse', '--verify', '--end-of-options', `${ref}:${rel}`],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5_000,
+        killSignal: 'SIGKILL',
+      },
+    ).trim();
+    return /^[0-9a-f]{40}$/i.test(object) ? object : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A submodule's working tree has its own Git root, while the audited SHA belongs to
+ * the containing superproject. Resolve the gitlink at that superproject commit and
+ * use its pinned child commit for the cited path. Without this bridge, a valid
+ * `libs/foo/src/index.ts` citation is looked up as `superprojectSha:src/index.ts`
+ * inside the child repository and is reported as `citation_audited_sha_unresolvable`.
+ */
+function gitlinkCommitAt(
+  superprojectRoot: string,
+  auditedSha: string,
+  gitlinkRel: string,
+): string | null {
+  try {
+    const output = execFileSync(
+      'git',
+      ['ls-tree', '--full-tree', auditedSha, '--', gitlinkRel],
+      {
+        cwd: superprojectRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5_000,
+        killSignal: 'SIGKILL',
+      },
+    ).trim();
+    const line = output.split('\n').find(Boolean);
+    const match = /^160000 commit ([0-9a-f]{40})\t/.exec(line ?? '');
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function gitlinkParentForRepo(
+  repoRoot: string,
+): { superprojectRoot: string; gitlinkRel: string } | null {
+  // Starting at the child root's parent deliberately skips the child's own `.git`
+  // marker and finds the containing repository, if this checkout is a submodule.
+  const parent = gitRootForFile(repoRoot);
+  if (!parent || parent.root === repoRoot) return null;
+  const gitlinkRel = path.relative(parent.root, repoRoot).split(path.sep).join('/');
+  if (!gitlinkRel || gitlinkRel.startsWith('../') || path.isAbsolute(gitlinkRel)) return null;
+  try {
+    const indexEntry = execFileSync(
+      'git',
+      ['ls-files', '--stage', '--', gitlinkRel],
+      {
+        cwd: parent.root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5_000,
+        killSignal: 'SIGKILL',
+      },
+    ).trim();
+    if (!indexEntry.split('\n').some((line) => line.startsWith('160000 '))) return null;
+  } catch {
+    return null;
+  }
+  return { superprojectRoot: parent.root, gitlinkRel };
+}
+
+function gitCitationBlobShaAt(
+  fileRepo: { root: string; rel: string },
+  auditedSha: string,
+): string | null {
+  if (!/^[0-9a-f]{7,64}$/i.test(auditedSha)) return null;
+  const gitlinkParent = gitlinkParentForRepo(fileRepo.root);
+  if (!gitlinkParent) return gitObjectShaAt(fileRepo.root, auditedSha, fileRepo.rel);
+
+  const childSha = gitlinkCommitAt(
+    gitlinkParent.superprojectRoot,
+    auditedSha,
+    gitlinkParent.gitlinkRel,
+  );
+  return childSha ? gitObjectShaAt(fileRepo.root, childSha, fileRepo.rel) : null;
+}
+
 function gitIndexIdentity(gitDir: string): string | null {
   try {
     const stat = fs.statSync(path.join(gitDir, 'index'), { bigint: true });
@@ -910,23 +1010,7 @@ export function repoCitationDeps(
       const abs = within(rel);
       if (!abs) return null;
       const repo = gitRootForFile(abs);
-      if (!repo || !/^[0-9a-f]{7,64}$/i.test(auditedSha)) return null;
-      try {
-        const blob = execFileSync(
-          'git',
-          ['rev-parse', '--verify', '--end-of-options', `${auditedSha}:${repo.rel}`],
-          {
-            cwd: repo.root,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: 5_000,
-            killSignal: 'SIGKILL',
-          },
-        ).trim();
-        return /^[0-9a-f]{40}$/i.test(blob) ? blob : null;
-      } catch {
-        return null;
-      }
+      return repo ? gitCitationBlobShaAt(repo, auditedSha) : null;
     },
     isTracked: (rel) => {
       const abs = within(rel);
