@@ -679,12 +679,18 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
         const nextSourceStart = sourceMatches[sourceMatchIndex + 1]?.index ?? clause.length;
         const throughSource = clause.slice(0, sourceEnd);
         const sourceThroughNext = clause.slice(sourceStart, nextSourceStart);
+        // A bare "verification/verdict on staging" is not a candidate
+        // selection: it also describes ordinary current-build probes (for
+        // example, a carried :3170 availability check). Keep the explicit
+        // candidate/worktree/canonical forms here; execution actions below
+        // still catch instructions that actually run or judge against a
+        // moving source.
         const directRelationBefore = new RegExp(
-          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|verification|verdict|worktree)\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}\s*$`,
+          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|worktree)\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
         const directRelationAfter = new RegExp(
-          String.raw`^${pattern}.{0,100}\b(?:as|for)\b.{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|verification|verdict|worktree)\b`,
+          String.raw`^${pattern}.{0,100}\b(?:as|for)\b.{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|worktree)\b`,
           'i',
         ).exec(sourceThroughNext);
         const strongAction = new RegExp(

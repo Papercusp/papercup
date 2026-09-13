@@ -431,6 +431,7 @@ describe('frozen lineage carry policy', () => {
     ['staging', 'Then pin whatever `staging` resolves to at that instant, still never a quoted sha.'],
     ['current-head', 'Create the canonical verification worktree pinned to current HEAD and run the root test.'],
     ['integration-branch', 'Use integrationBranch as the judged candidate for the canonical verdict.'],
+    ['staging', 'Create the canonical verification worktree on staging and run the root test.'],
   ] as const)('detects a positive %s candidate instruction', (unsafeSource, text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toMatchObject({ unsafeSource });
   });
@@ -444,6 +445,9 @@ describe('frozen lineage carry policy', () => {
     'Never derive the judged candidate from staging; use the live repairHead.',
     'A checkpoint that instructs a successor to use current HEAD as the judged candidate is rejected.',
     'The policy refuses candidate selection from integrationBranch.',
+    'current-build verification on staging is available — re-check: curl http://127.0.0.1:3170/api/desktop/version',
+    'staging availability for current-build verification — re-check: curl :3170',
+    'staging is available for current-build verification — re-check: curl :3170',
   ])('allows ordinary, negated, or corrective prose: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
