@@ -690,6 +690,9 @@ export interface CheckpointDeps {
    *  existing fake dep predates it, and a dep that omits it must degrade to "always re-judge"
    *  (the historical behaviour) rather than throw. Callers use `deps.lastJudgedRed?.(...)`. */
   lastJudgedRed?(repo: string): Promise<string | null>;
+  /** EI-22728869583688089 — commit timestamp lookup for candidate-age evidence. Optional so
+   *  existing callers keep the real git primitive, while tests can exercise unavailable values. */
+  commitUnixTime?(repo: string, ref: string): Promise<number>;
   /** WI-42350 — stamp `sha` as the last RED-judged candidate. Fail-open: a throw costs one
    *  redundant run and must never influence a verdict. */
   recordJudgedRed?(repo: string, sha: string): Promise<void>;
@@ -11482,14 +11485,14 @@ async function runGreenCheckpointInner(
     );
     let committedNote = "";
     try {
-      const committedAtSec = await commitUnixTime(
+      const committedAtSec = await (deps.commitUnixTime ?? commitUnixTime)(
         cfg.integrationRoot,
         candidate,
       );
       // commitUnixTime is `Number(await git(...))`, which yields NaN — it does NOT throw — if
-      // git prints anything non-numeric. Without this guard the catch below never runs and the
-      // line reads "candidate committed NaNm ago", which is worse than omitting it.
-      if (Number.isFinite(committedAtSec)) {
+      // git prints anything non-numeric. Zero/negative values are also not usable commit times:
+      // they create an apparently decades-old candidate and can falsely trigger fossil holds.
+      if (Number.isFinite(committedAtSec) && committedAtSec > 0) {
         candidateCommittedAtSecForVerdict = committedAtSec;
         const ageMin = Math.round((Date.now() / 1000 - committedAtSec) / 60);
         committedNote = `; candidate committed ${ageMin}m ago`;
