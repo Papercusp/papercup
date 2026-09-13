@@ -235,6 +235,17 @@ describe('ptool MCP identity binding', () => {
 });
 
 describe('ptool operator routing', () => {
+  it('uses the resolved host base when no listener port is exported', () => {
+    expect(resolvePtoolOperatorBase({
+      // Source-root markers prove which checkout launched ptool, but do not
+      // identify a port. serve.ts writes this base after the actual bind.
+      PAPERCUSP_REPO_ROOT: '/workspace/papercusp',
+      PAPERCUSP_INTEGRATION_ROOT: '/workspace/papercusp',
+      PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3170/api/mcp',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+    })).toBe('http://127.0.0.1:3170');
+  });
+
   it('routes a staging invocation to the current host instead of inherited green', () => {
     expect(resolvePtoolOperatorBase({
       PAPERCUSP_HONO_PORT: '3170',
