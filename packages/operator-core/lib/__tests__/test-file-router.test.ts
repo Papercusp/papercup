@@ -36,6 +36,8 @@ import {
   withoutOutputFileArg,
   DEFAULT_TEST_FILE_RUN_TIMEOUT_MS,
   MAX_TEST_FILE_RUN_TIMEOUT_MS,
+  TEST_FILE_WATCHDOG_EXTENSION_MS,
+  TEST_FILE_WATCHDOG_STALL_WINDOW_MS,
   TEST_FILE_RUN_TIMEOUT_PER_FILE_MS,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
@@ -527,6 +529,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           files: ['a.test.ts', 'b.test.ts'],
           timeoutMs: 100,
           progressIntervalMs: 10,
+          watchdogStallWindowMs: 50,
+          watchdogExtensionMs: 50,
           killGraceMs: 20,
           maxBuffer: 1024,
           // A user bus is reachable from this env, so systemd-run is the launcher.
@@ -572,6 +576,74 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(progress()).toContain('state=finished');
       expect(progress()).toContain('state=finished cwd="packages/operator-core"');
       expect(progress()).toContain('exitStatus=none signal=SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('extends a slow child with fresh output, then reaps it after the output goes silent', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new EventEmitter() as EventEmitter & {
+        pid: number;
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.pid = 4241;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      const spawnImpl = vi.fn((..._args: unknown[]) => child);
+      const killProcessImpl = vi.fn(() => 'group');
+      const onProgress = vi.fn();
+
+      const resultPromise = runCapturedTestProcess(
+        'npx',
+        ['vitest', 'run', 'a.test.ts'],
+        {
+          cwd: '/repo',
+          files: ['a.test.ts'],
+          timeoutMs: 100,
+          progressIntervalMs: 10,
+          watchdogStallWindowMs: 50,
+          watchdogExtensionMs: 50,
+          killGraceMs: 10,
+          maxBuffer: 1024,
+          systemdRunPath: null,
+          setsidPath: '/usr/bin/setsid',
+          spawnImpl,
+          killProcessImpl,
+          onProgress,
+          governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+            run(undefined, undefined, { inherited: true }),
+        },
+      );
+
+      child.stdout.write('vitest is still working\n');
+      await vi.advanceTimersByTimeAsync(80);
+      child.stdout.write('vitest is still working\n');
+      await vi.advanceTimersByTimeAsync(20);
+
+      expect(killProcessImpl).not.toHaveBeenCalled();
+      expect(onProgress.mock.calls.map(([line]) => String(line)).join('\n')).toContain(
+        'state=watchdog-extended',
+      );
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGTERM', true);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGKILL', true);
+      child.emit('close', null, 'SIGKILL');
+
+      await expect(resultPromise).resolves.toMatchObject({
+        status: null,
+        signal: 'SIGKILL',
+        timedOut: true,
+      });
+      expect(TEST_FILE_WATCHDOG_STALL_WINDOW_MS).toBe(5 * 60_000);
+      expect(TEST_FILE_WATCHDOG_EXTENSION_MS).toBe(5 * 60_000);
+      expect(MAX_TEST_FILE_RUN_TIMEOUT_MS).toBe(120 * 60_000);
     } finally {
       vi.useRealTimers();
     }

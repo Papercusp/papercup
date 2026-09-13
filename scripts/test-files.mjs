@@ -27,7 +27,11 @@ import {
   testsExecutedFrom,
   testsSkippedFrom,
 } from './lib/vitest-summary.mjs';
-import { killSpawnedProcessTree, parseBatchProgress } from './lib/batch-watchdog.mjs';
+import {
+  createProgressAwareWatchdog,
+  killSpawnedProcessTree,
+  parseBatchProgress,
+} from './lib/batch-watchdog.mjs';
 import { formatTaskOutcomeFields } from './lib/task-progress-line.mjs';
 import {
   buildGovernedProcessDemand,
@@ -1895,6 +1899,8 @@ export function testFileRunTimeoutMs(env = process.env, fileCount = 1) {
 
 export const TEST_FILE_RUN_TIMEOUT_MS = testFileRunTimeoutMs();
 export const TEST_FILE_PROGRESS_INTERVAL_MS = 10_000;
+export const TEST_FILE_WATCHDOG_STALL_WINDOW_MS = 5 * 60_000;
+export const TEST_FILE_WATCHDOG_EXTENSION_MS = 5 * 60_000;
 const TEST_FILE_KILL_GRACE_MS = 2_000;
 const TEST_FILE_MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
 const SYSTEMD_RUN_PATH = process.platform === 'linux'
@@ -2024,6 +2030,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
     cwdLabel = cwd ?? '.',
     timeoutMs = TEST_FILE_RUN_TIMEOUT_MS,
     progressIntervalMs = TEST_FILE_PROGRESS_INTERVAL_MS,
+    watchdogStallWindowMs = TEST_FILE_WATCHDOG_STALL_WINDOW_MS,
+    watchdogExtensionMs = TEST_FILE_WATCHDOG_EXTENSION_MS,
     killGraceMs = TEST_FILE_KILL_GRACE_MS,
     maxBuffer = TEST_FILE_MAX_CAPTURE_BYTES,
     systemdRunPath = SYSTEMD_RUN_PATH,
@@ -2092,6 +2100,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     let settled = false;
     let terminationStarted = false;
     let forceTimer = null;
+    let progressWatchdog = null;
     let allFilesCompleteObserved = false;
     const signalForwarders = new Map();
 
@@ -2187,6 +2196,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     };
     const capture = (channel, chunks) => (value) => {
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+      progressWatchdog?.noteProgress();
       capturedBytes += chunk.length;
       if (capturedBytes <= maxBuffer) {
         chunks.push(chunk);
@@ -2203,6 +2213,14 @@ export function runCapturedTestProcess(command, args, options = {}) {
       }
     };
 
+    progressWatchdog = createProgressAwareWatchdog({
+      timeoutMs,
+      maxMs: MAX_TEST_FILE_RUN_TIMEOUT_MS,
+      stallWindowMs: watchdogStallWindowMs,
+      extensionMs: watchdogExtensionMs,
+      onExtend: () => emitProgress('watchdog-extended'),
+      onKill: () => terminate('timeout'),
+    });
     child.stdout?.on('data', capture('stdout', stdout));
     child.stderr?.on('data', capture('stderr', stderr));
     child.once('error', (error) => { spawnError = error; });
@@ -2217,15 +2235,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
       progressTimer.unref?.();
     };
     scheduleProgress();
-    const timeoutTimer = setTimeout(() => terminate('timeout'), timeoutMs);
-    timeoutTimer.unref?.();
     emitProgress('started');
 
     child.once('close', (status, signal) => {
       settled = true;
       removeSignalForwarders();
       if (progressTimer) clearTimeout(progressTimer);
-      clearTimeout(timeoutTimer);
+      progressWatchdog?.stop();
       if (forceTimer) clearTimeout(forceTimer);
       // The finalization marker is deliberately NOT released here — nor anywhere
       // else in this function; see the marker-ownership note above `runChild`.
