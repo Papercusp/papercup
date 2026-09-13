@@ -515,6 +515,50 @@ describe('exact spec evidence bindings', () => {
     expect(rows.map((row) => row.specId).sort()).toEqual(['SPEC-003-01', 'SPEC-004-01']);
   });
 
+  it('preserves executable details when a same-binding replay omits details', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const binding = {
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.integration.ts#adequacy-replay',
+      sourceFingerprint: 'git:adequacy-v1',
+      testFingerprint: 'sha256:test-adequacy-v1',
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      actorId: 'su-test',
+    };
+    const executableDetails = {
+      testExecution: {
+        schemaVersion: 1,
+        phase: 'settled',
+        runId: 'run-adequacy-1',
+        binding: { testPath: 'test/reconnect.integration.ts', testLayer: 'integration' },
+      },
+      adequacy: {
+        outcome: 'pass',
+        executed: true,
+        pathReachable: true,
+        oracleIndependent: true,
+        testLayer: 'integration',
+      },
+    };
+    const first = await evidenceStore.bindSpecEvidence({ ...binding, details: executableDetails });
+    expect(first).toMatchObject({ status: 'created', specRevision: 1 });
+
+    const replay = await evidenceStore.bindSpecEvidence(binding);
+    expect(replay).toMatchObject({ status: 'unchanged', id: ('id' in first ? first.id : undefined) });
+
+    const rows = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [binding.evidenceRef],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.details).toEqual(executableDetails);
+  });
+
   it('resolves legacy coversVALs, writes many-to-many exact edges, and deduplicates canonical proof', async () => {
     await specs.setSpecClause(clause());
     await specs.setSpecClause(

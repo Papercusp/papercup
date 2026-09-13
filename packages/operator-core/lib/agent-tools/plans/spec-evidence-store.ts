@@ -134,6 +134,10 @@ function measurementFromDetails(details: Record<string, unknown>): RepoFilesEvid
 }
 /** Shared wire contract for an explicit comparison with currently measured proof. */
 export const evidenceCurrentInputSchema = z.object({
+  planSlug: z.string().trim().min(1).max(2000).optional(),
+  specId: z.string().trim().min(1).max(2000).optional(),
+  specRevision: z.number().int().positive().optional(),
+  specFingerprint: evidenceFingerprintSchema.optional(),
   evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
   evidenceRef: z.string().trim().min(1).max(2000),
   sourceFingerprint: evidenceFingerprintSchema,
@@ -141,6 +145,15 @@ export const evidenceCurrentInputSchema = z.object({
   fixtureFingerprint: evidenceFingerprintSchema.nullable().optional(),
   rubricFingerprint: evidenceFingerprintSchema.nullable().optional(),
   environmentFingerprint: evidenceFingerprintSchema.nullable().optional(),
+}).superRefine((input, ctx) => {
+  const identity = [input.planSlug, input.specId, input.specRevision, input.specFingerprint];
+  if (identity.some((value) => value !== undefined) && !identity.every((value) => value !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['planSlug'],
+      message: 'planSlug, specId, specRevision, and specFingerprint must be supplied together',
+    });
+  }
 });
 
 export interface EvidenceFingerprints {
@@ -314,6 +327,43 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       if (!rows[0]) return { status: 'test_run_not_found', testRunId: input.testRunId };
     }
 
+    const evidenceRef = input.evidenceRef.trim();
+    const sourceFingerprint = input.sourceFingerprint.trim();
+    const testFingerprint = nullableTrimmed(input.testFingerprint);
+    const fixtureFingerprint = nullableTrimmed(input.fixtureFingerprint);
+    const rubricFingerprint = nullableTrimmed(input.rubricFingerprint);
+    const environmentFingerprint = nullableTrimmed(input.environmentFingerprint);
+    // A replay that omits details is a partial update of an existing logical
+    // binding, not a request to replace executable proof metadata with `{}`.
+    // Explicit details (including `{}`) remain authoritative and retain the
+    // append-only changed-proof behavior of binding_fingerprint.
+    const priorDetails =
+      input.details === undefined
+        ? (
+            await tx<{ details: Record<string, unknown> }[]>`
+          SELECT details
+            FROM harness_shared.spec_evidence_bindings
+           WHERE workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND work_item_id = ${input.workItemId}
+             AND plan_slug = ${planSlug}
+             AND spec_id = ${identity.spec_id}
+             AND spec_revision = ${specRevision}
+             AND spec_fingerprint = ${revision.content_hash}
+             AND evidence_kind = ${input.evidenceKind}
+             AND evidence_ref = ${evidenceRef}
+             AND source_fingerprint = ${sourceFingerprint}
+             AND test_fingerprint IS NOT DISTINCT FROM ${testFingerprint}
+             AND fixture_fingerprint IS NOT DISTINCT FROM ${fixtureFingerprint}
+             AND rubric_fingerprint IS NOT DISTINCT FROM ${rubricFingerprint}
+             AND environment_fingerprint IS NOT DISTINCT FROM ${environmentFingerprint}
+             AND coverage_evidence_ref IS NOT DISTINCT FROM ${input.coverageEvidenceRef ?? null}
+             AND test_run_id IS NOT DISTINCT FROM ${input.testRunId ?? null}
+           ORDER BY observed_at DESC, id DESC
+           LIMIT 1`
+          )[0]?.details
+        : undefined;
+
     const canonical: CanonicalBinding = {
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
@@ -323,15 +373,15 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       specRevision,
       specFingerprint: revision.content_hash,
       evidenceKind: input.evidenceKind,
-      evidenceRef: input.evidenceRef.trim(),
-      sourceFingerprint: input.sourceFingerprint.trim(),
-      testFingerprint: nullableTrimmed(input.testFingerprint),
-      fixtureFingerprint: nullableTrimmed(input.fixtureFingerprint),
-      rubricFingerprint: nullableTrimmed(input.rubricFingerprint),
-      environmentFingerprint: nullableTrimmed(input.environmentFingerprint),
+      evidenceRef,
+      sourceFingerprint,
+      testFingerprint,
+      fixtureFingerprint,
+      rubricFingerprint,
+      environmentFingerprint,
       coverageEvidenceRef: input.coverageEvidenceRef ?? null,
       testRunId: input.testRunId ?? null,
-      details: (canonicalJson(input.details ?? {}) ?? {}) as Record<string, unknown>,
+      details: (canonicalJson(input.details ?? priorDetails ?? {}) ?? {}) as Record<string, unknown>,
     };
     const bindingFingerprint = specEvidenceBindingFingerprint(canonical);
 
@@ -396,9 +446,49 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
 }
 
 export type FingerprintState = 'current' | 'stale' | 'unknown' | 'not-applicable';
+export interface EvidenceCurrentInputIdentity {
+  planSlug?: string;
+  specId?: string;
+  specRevision?: number;
+  specFingerprint?: string;
+}
+
 export interface EvidenceCurrentInput extends EvidenceFingerprints {
+  planSlug?: string;
+  specId?: string;
+  specRevision?: number;
+  specFingerprint?: string;
   evidenceKind: SpecEvidenceKind;
   evidenceRef: string;
+}
+
+/**
+ * Key a currentness tuple by exact clause identity when available. Historical
+ * callers only supplied evidenceKind/evidenceRef, so those tuples retain a
+ * separate legacy key and are consulted only as a fallback.
+ */
+export function evidenceCurrentInputKey(input: EvidenceCurrentInputIdentity & {
+  evidenceKind: string;
+  evidenceRef: string;
+}): string {
+  const scoped =
+    input.planSlug !== undefined &&
+    input.specId !== undefined &&
+    input.specRevision !== undefined &&
+    input.specFingerprint !== undefined;
+  return JSON.stringify(
+    scoped
+      ? [
+          'scoped',
+          input.planSlug,
+          input.specId,
+          input.specRevision,
+          input.specFingerprint,
+          input.evidenceKind,
+          input.evidenceRef,
+        ]
+      : ['legacy', input.evidenceKind, input.evidenceRef],
+  );
 }
 
 /**
@@ -905,7 +995,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     },
   );
 
-  const currentByRef = new Map((options.current ?? []).map((c) => [`${c.evidenceKind}\0${c.evidenceRef}`, c]));
+  const currentByKey = new Map((options.current ?? []).map((c) => [evidenceCurrentInputKey(c), c]));
   const measurementRoots = new Map<string, Promise<string>>();
   const serverMeasurements = await Promise.all(
     rows.map(async (row) => {
@@ -922,6 +1012,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         return {
           status: 'measured' as const,
           current: {
+            planSlug: row.plan_slug,
+            specId: row.spec_id,
+            specRevision: Number(row.spec_revision),
+            specFingerprint: row.spec_fingerprint,
             evidenceKind: row.evidence_kind,
             evidenceRef: row.evidence_ref,
             ...measured,
@@ -937,7 +1031,19 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];
-    const callerCurrent = currentByRef.get(`${row.evidence_kind}\0${row.evidence_ref}`);
+    const scopedCurrentKey = evidenceCurrentInputKey({
+      planSlug: row.plan_slug,
+      specId: row.spec_id,
+      specRevision: Number(row.spec_revision),
+      specFingerprint: row.spec_fingerprint,
+      evidenceKind: row.evidence_kind,
+      evidenceRef: row.evidence_ref,
+    });
+    const legacyCurrentKey = evidenceCurrentInputKey({
+      evidenceKind: row.evidence_kind,
+      evidenceRef: row.evidence_ref,
+    });
+    const callerCurrent = currentByKey.get(scopedCurrentKey) ?? currentByKey.get(legacyCurrentKey);
     const attestedDimensions: OpaqueFingerprintDimension[] =
       measured?.status === 'measured'
         ? [
