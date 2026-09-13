@@ -156,6 +156,7 @@ const PASS_RUN: CriterionCheckRun = {
   passed: 3,
   failed: 0,
   runId: 'run-1',
+  testRunIds: [101, 102],
   measuredAt: '2026-08-17T12:00:00.000Z',
 };
 
@@ -208,6 +209,8 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(evaluateChecks).toHaveBeenCalledTimes(1);
     const call = evaluateChecks.mock.calls[0][0];
     expect(call.root).toBe('/tmp/fake-root');
+    expect(call.workspaceId).toBe('ws-test');
+    expect(call.harnessSlug).toBe('papercusp');
     expect(call.criteria).toBe(CHECKED_RUBRIC.criteria);
     expect(call.timeoutMs).toBe(SCORECARD_TEST_CHECK_TIMEOUT_MS);
     const payload = captureImprovement.mock.calls[0][0] as {
@@ -217,6 +220,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       kind: 'tests',
       verdict: 'pass',
       runId: 'run-1',
+      testRunIds: [101, 102],
     });
     expect((res as { checkRuns?: Record<string, unknown> }).checkRuns?.['det-outcome']).toBeDefined();
   });

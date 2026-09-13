@@ -352,6 +352,33 @@ describe('parsePickPath / applyPick', () => {
     expect(picked).toEqual({ a: 1 });
     expect(unmatched).toEqual(['b[].c']);
   });
+
+  it('omits unmatched wildcard elements instead of serializing them as null placeholders', () => {
+    const body = {
+      active: [{ ownerId: 'su-1', sessionState: 'parked' }],
+      summary: { byState: { live: 0 } },
+    };
+    const { picked, unmatched } = applyPick(body, ['active[].state', 'summary.byState.live']);
+
+    expect(unmatched).toEqual(['active[].state']);
+    // An entirely unmatched path is omitted by the existing fail-open
+    // contract; importantly, it must not manufacture `active: [null]`.
+    expect(picked).toEqual({ summary: { byState: { live: 0 } } });
+    expect(JSON.stringify(picked)).not.toContain('null');
+  });
+
+  it('keeps sibling wildcard paths correlated when one field is absent on a row', () => {
+    const body = {
+      rows: [
+        { id: 'row-1' },
+        { id: 'row-2', state: 'open' },
+      ],
+    };
+    const { picked, unmatched } = applyPick(body, ['rows[].id', 'rows[].state']);
+
+    expect(unmatched).toEqual([]);
+    expect(picked).toEqual({ rows: [{ id: 'row-1' }, { id: 'row-2', state: 'open' }] });
+  });
 });
 
 describe('applyResultProjection — safety contracts', () => {

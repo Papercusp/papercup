@@ -500,6 +500,35 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(malformed?.checkRuns).toBeUndefined();
   });
 
+  it('round-trips scoped test-run ids on tests check runs while keeping the field optional', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'checked-rubric',
+      checkRuns: {
+        tests: {
+          kind: 'tests',
+          files: ['packages/example.test.ts'],
+          verdict: 'pass',
+          passed: 4,
+          failed: 0,
+          runId: 'run-group-1',
+          testRunIds: [77, 78, 0, 'bad'],
+          measuredAt: '2026-09-13T22:00:00.000Z',
+        },
+        legacy: {
+          kind: 'tests',
+          files: ['packages/legacy.test.ts'],
+          verdict: 'pass',
+          passed: 1,
+          failed: 0,
+          runId: 'legacy-run',
+          measuredAt: '2026-09-13T22:00:00.000Z',
+        },
+      },
+    });
+    expect(out?.checkRuns?.tests).toMatchObject({ testRunIds: [77, 78] });
+    expect(out?.checkRuns?.legacy).not.toHaveProperty('testRunIds');
+  });
+
   it('preserves an explicit empty ratings object for a zero-criterion rubric', () => {
     const out = asStructuredObservation({
       rubricRef: 'zero-criterion-investigation',

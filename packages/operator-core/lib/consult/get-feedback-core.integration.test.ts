@@ -2025,6 +2025,39 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'zombie-a', revived: true });
   });
 
+  it('wake-failed live-collision: preserves the live responder and labels the refused revival without retrying', async () => {
+    const liveTop = cand('live-collision-zombie');
+    const { deps, reached, revived } = makeReviveDeps(
+      routeOf([liveTop]),
+      {
+        spawned: false,
+        verified: null,
+        reason: 'live-collision',
+        detail: 'pty host is live; in-place resume refused',
+      },
+      { wokeOnReach: 0 },
+    );
+
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+
+    expect(reached.map((wake) => wake.responder)).toEqual([liveTop.ownerId]);
+    expect(revived).toHaveLength(1);
+    expect(res.responder?.ownerId).toBe(liveTop.ownerId);
+    expect(res.revival).toMatchObject({
+      ownerId: liveTop.ownerId,
+      trigger: 'wake-failed',
+      spawned: false,
+      reason: 'live-collision',
+    });
+    expect(res.hint).toContain('already LIVE');
+    expect(res.hint).not.toContain('FAILED to spawn');
+    const row = await stateRow(res.conversation_id);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.responder_id).toBe(liveTop.ownerId);
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
+    expect(sel?.selected?.[0]?.revived).toBeUndefined();
+  });
+
   it('wake-failed: advances to the next selected responder before attempting revival', async () => {
     const first = cand('zombie-first');
     const second = cand('live-second', { score: 0.65 });

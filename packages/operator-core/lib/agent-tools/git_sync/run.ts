@@ -293,12 +293,20 @@ export default defineTool({
                   },
                   await_tool: 'events:await',
                 }),
+            // `agent_resource_locks` is an implementation table in the separate
+            // papercusp_su substrate, so it is not a describable `dev:pg_query`
+            // relation. Point the continuation at the registered workspace-global
+            // diagnostic instead, including an executable selector for the blocked
+            // resource. The direct tool reference prevents the caller from having
+            // to reverse-engineer the backing table or database before retrying.
             progress_ref: {
-              surface: 'agent_resource_locks',
+              surface: 'locks:list',
+              tool: 'locks:list',
+              args: outcome.blockedOn ? { resource: outcome.blockedOn } : {},
               workspace_id: workspaceId,
               install_slug: slug,
               resource: outcome.blockedOn ?? null,
-              fields: ['resource', 'reason', 'holders'],
+              fields: ['resources[].holders', 'resources[].held', 'holders', 'draining'],
             },
           }
         : undefined;

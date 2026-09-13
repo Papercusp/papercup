@@ -428,6 +428,8 @@ export interface ScorecardTestsCheckRun {
   failed: number;
   /** Run correlation id (PAPERCUSP_TEST_RUN_GROUP) — ledger rows findable by it. */
   runId: string | null;
+  /** Exact scoped harness_shared.test_runs row ids, when the run had tenant scope. */
+  testRunIds?: number[];
   /** ISO instant the run finished (emit time). */
   measuredAt: string;
   /** Bounded failing-test names ("file: test"), only on a 'fail' verdict. */
@@ -1550,6 +1552,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         typeof r.measuredAt === 'string' &&
         r.measuredAt.trim() !== ''
       ) {
+        const testRunIds = Array.isArray(r.testRunIds)
+          ? r.testRunIds.filter((x): x is number => Number.isSafeInteger(x) && x > 0)
+          : undefined;
         runs[key] = {
           kind: 'tests',
           files,
@@ -1557,6 +1562,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           passed: r.passed,
           failed: r.failed,
           runId: typeof r.runId === 'string' && r.runId.trim() ? r.runId : null,
+          ...(testRunIds !== undefined ? { testRunIds } : {}),
           measuredAt: r.measuredAt,
           ...(Array.isArray(r.failures)
             ? { failures: r.failures.filter((x): x is string => typeof x === 'string') }

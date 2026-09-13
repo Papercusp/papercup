@@ -448,11 +448,13 @@ describe('git-sync:run', () => {
         },
         await_tool: 'events:await',
         progress_ref: {
-          surface: 'agent_resource_locks',
+          surface: 'locks:list',
+          tool: 'locks:list',
+          args: { resource: 'git-sync:papercusp' },
           workspace_id: 'default',
           install_slug: 'papercusp',
           resource: 'git-sync:papercusp',
-          fields: ['resource', 'reason', 'holders'],
+          fields: ['resources[].holders', 'resources[].held', 'holders', 'draining'],
         },
       },
     });
@@ -522,11 +524,13 @@ describe('git-sync:run', () => {
         },
         await_tool: 'events:await',
         progress_ref: {
-          surface: 'agent_resource_locks',
+          surface: 'locks:list',
+          tool: 'locks:list',
+          args: { resource: 'libs-papercusp-submodule' },
           workspace_id: 'default',
           install_slug: 'papercusp',
           resource: 'libs-papercusp-submodule',
-          fields: ['resource', 'reason', 'holders'],
+          fields: ['resources[].holders', 'resources[].held', 'holders', 'draining'],
         },
       },
     });

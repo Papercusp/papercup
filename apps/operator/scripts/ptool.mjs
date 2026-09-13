@@ -591,8 +591,13 @@ export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema, 
   // explicitly supplied value untouched so this helper preserves its existing
   // caller-owned-args semantics.
   const rehomeClassify = toolName === 'work_items:rehome' && out.op === 'classify';
+  // `workspace:work_scope` is another flattened discriminated union: only the
+  // check variant accepts `harness`; get/set/clear intentionally reject it.
+  // The ambient harness still scopes the MCP session URL, so do not copy it
+  // into those variant payloads.
+  const workScopeNonCheck = toolName === 'workspace:work_scope' && out.op !== 'check';
   if (injectScopeFilters && workspace != null && 'workspace' in props && !('workspace' in out)) out.workspace = workspace;
-  if (injectScopeFilters && !rehomeClassify && harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
+  if (injectScopeFilters && !rehomeClassify && !workScopeNonCheck && harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
   return out;
 }
 

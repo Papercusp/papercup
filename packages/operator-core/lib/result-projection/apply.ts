@@ -398,6 +398,13 @@ function runStage(lines: string[], stage: ProjectionStage): string[] {
 
 type Seg = { kind: 'key'; name: string } | { kind: 'array' } | { kind: 'index'; i: number };
 
+// Keep wildcard-array misses addressable while sibling paths are merged. A
+// normal array hole (or `undefined`) is serialized as `null`, which made a
+// wholly unmatched `active[].state` look like a real row. This sentinel is
+// removed only after every requested path has merged, so a later sibling path
+// can still use the source index and stay correlated with its peers.
+const PROJECTION_NO_MATCH = Symbol('projection-no-match');
+
 /** `results[].payload.id` → [key results, array, key payload, key id] */
 export function parsePickPath(path: string): Seg[] {
   const segs: Seg[] = [];
@@ -431,19 +438,59 @@ function projectPath(src: unknown, segs: Seg[], into: unknown, hit: { matched: b
   if (seg.kind === 'key') {
     if (!isPlainObject(src) || !(seg.name in src)) return into;
     const base = isPlainObject(into) ? into : {};
-    base[seg.name] = projectPath(src[seg.name], rest, base[seg.name], hit);
+    const childHit = { matched: false };
+    const projected = projectPath(src[seg.name], rest, base[seg.name], childHit);
+    if (!childHit.matched) return into;
+    hit.matched = true;
+    base[seg.name] = projected;
     return base;
   }
   if (!Array.isArray(src)) return into;
   if (seg.kind === 'index') {
     if (seg.i >= src.length) return into;
     const base = Array.isArray(into) ? into : [];
-    base[seg.i] = projectPath(src[seg.i], rest, base[seg.i], hit);
+    const childHit = { matched: false };
+    const projected = projectPath(src[seg.i], rest, base[seg.i], childHit);
+    if (!childHit.matched) return into;
+    hit.matched = true;
+    base[seg.i] = projected;
     return base;
   }
   const base = Array.isArray(into) ? into : [];
-  for (let i = 0; i < src.length; i++) base[i] = projectPath(src[i], rest, base[i], hit);
+  for (let i = 0; i < src.length; i++) {
+    const childHit = { matched: false };
+    const projected = projectPath(src[i], rest, base[i], childHit);
+    if (childHit.matched) {
+      base[i] = projected;
+      hit.matched = true;
+    } else if (!(i in base) || base[i] === undefined) {
+      // Preserve the source index until sibling paths have had a chance to
+      // merge into it; compactProjectionNoMatches removes this marker at the
+      // projection boundary instead of letting JSON.stringify emit `null`.
+      base[i] = PROJECTION_NO_MATCH;
+    }
+  }
   return base;
+}
+
+/** Remove internal wildcard misses after all paths have been correlated. */
+function compactProjectionNoMatches(value: unknown): unknown {
+  if (value === PROJECTION_NO_MATCH) return PROJECTION_NO_MATCH;
+  if (Array.isArray(value)) {
+    const compacted: unknown[] = [];
+    for (let i = 0; i < value.length; i += 1) {
+      if (!(i in value) || value[i] === PROJECTION_NO_MATCH) continue;
+      compacted.push(compactProjectionNoMatches(value[i]));
+    }
+    return compacted;
+  }
+  if (!isPlainObject(value)) return value;
+  const compacted: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (child === PROJECTION_NO_MATCH) continue;
+    compacted[key] = compactProjectionNoMatches(child);
+  }
+  return compacted;
 }
 
 /** Apply every `pick` path to a parsed body; reports paths that matched nothing. */
@@ -455,7 +502,7 @@ export function applyPick(body: unknown, paths: string[]): { picked: unknown; un
     acc = projectPath(body, parsePickPath(p), acc, hit);
     if (!hit.matched) unmatched.push(p);
   }
-  return { picked: acc === undefined ? {} : acc, unmatched };
+  return { picked: compactProjectionNoMatches(acc === undefined ? {} : acc), unmatched };
 }
 
 /**

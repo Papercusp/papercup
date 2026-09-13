@@ -799,6 +799,27 @@ const CRITERIA = [
 ];
 
 describe('evaluateCriterionTestChecks (grading time)', () => {
+  it('passes concrete ledger scope to the runner and preserves its bindable testRunIds', async () => {
+    const calls: Array<{ files: string[]; workspaceId?: string; harnessSlug?: string }> = [];
+    const runner: CriterionCheckRunner = async ({ files, workspaceId, harnessSlug }) => {
+      calls.push({ files, workspaceId, harnessSlug });
+      return { ...passRun(files), testRunIds: [901, 902] } as never;
+    };
+    const res = await evaluateCriterionTestChecks({
+      criteria: CRITERIA,
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      workspaceId: 'workspace-test',
+      harnessSlug: 'papercusp',
+      runner,
+    });
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual([
+      { files: ['packages/x/real.test.ts'], workspaceId: 'workspace-test', harnessSlug: 'papercusp' },
+    ]);
+    if (res.ok) expect(res.checkRuns.det).toMatchObject({ testRunIds: [901, 902] });
+  });
+
   it('runs the check for a rated tests-check criterion and stamps a pass verdict', async () => {
     const calls: string[][] = [];
     const runner: CriterionCheckRunner = async ({ files }) => {

@@ -45,6 +45,7 @@ import {
   runTestFilesCore,
   type TestFilesCoreResult,
 } from './agent-tools/testing/run';
+import { findHarnessTestRunIds } from './testing-run-store';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import type { ActivationAuditMapping, EffectiveItemAudit, PlanItemStatus } from './plan-audits';
@@ -510,12 +511,19 @@ export type CriterionCheckEvaluation =
   | CriterionCoverageRefusal
   | CriterionRequirementsRefusal;
 
+/** The scorecard runner may add the exact scoped ledger rows produced by the run. */
+export type CriterionCheckRunnerResult = TestFilesCoreResult & {
+  testRunIds?: number[];
+};
+
 /** Injectable runner seam (tests stub this; production shells the real router). */
 export type CriterionCheckRunner = (opts: {
   files: string[];
   root: string;
   timeoutMs?: number;
-}) => Promise<TestFilesCoreResult>;
+  workspaceId?: string;
+  harnessSlug?: string;
+}) => Promise<CriterionCheckRunnerResult>;
 
 /** Injectable direct-dispatch seam for rubric ContinuityProbe checks. */
 export type CriterionProbeDispatcher = (
@@ -1177,6 +1185,10 @@ export async function evaluateCriterionTestChecks(input: {
    *  emit's completeness validation separately guarantees every criterion is rated). */
   ratings: Record<string, { rating: string } | undefined>;
   root?: string;
+  /** Concrete workspace scope for the test-run ledger. */
+  workspaceId?: string;
+  /** Concrete harness scope for the test-run ledger. */
+  harnessSlug?: string;
   /** Total run budget across ALL checks (ms); each run gets what remains. */
   timeoutMs?: number;
   runner?: CriterionCheckRunner;
@@ -1190,7 +1202,35 @@ export async function evaluateCriterionTestChecks(input: {
     (c) => c.check?.kind === 'tests' && input.ratings[c.key] !== undefined,
   );
   const root = selectCriterionCheckRoot(ratedTestsChecks, input.root ?? resolveAgentWorkspaceRoot({})).root;
-  const runner = input.runner ?? runTestFilesCore;
+  // The ordinary testing:run handler passes this scope into runTestFilesCore and
+  // reads back its numeric ledger IDs. Scorecard checks bypass that handler, so
+  // preserve the same contract here rather than creating unattributed rows that
+  // cannot later bind spec evidence. Injected runners stay untouched except for
+  // receiving the same scope fields.
+  const runner: CriterionCheckRunner =
+    input.runner ??
+    (async (opts) => {
+      const result = await runTestFilesCore(opts);
+      if (
+        result.error !== undefined ||
+        typeof opts.workspaceId !== 'string' ||
+        opts.workspaceId.trim() === '' ||
+        opts.workspaceId === '*' ||
+        typeof opts.harnessSlug !== 'string' ||
+        opts.harnessSlug.trim() === '' ||
+        opts.harnessSlug === '*'
+      ) {
+        return result;
+      }
+      return {
+        ...result,
+        testRunIds: await findHarnessTestRunIds({
+          workspaceId: opts.workspaceId,
+          harnessSlug: opts.harnessSlug,
+          runGroupId: result.runId,
+        }),
+      };
+    });
   const nowIso = input.nowIso ?? (() => new Date().toISOString());
   const deadline = input.timeoutMs !== undefined ? Date.now() + input.timeoutMs : null;
   const checkRuns: Record<string, CriterionCheckRun> = {};
@@ -1233,7 +1273,13 @@ export async function evaluateCriterionTestChecks(input: {
   // `byFile` — per-file counts that are complete even when the failure LIST is capped.
   const uniqueFiles = [...new Set(planned.flatMap((p) => p.files))];
   const budget = deadline === null ? undefined : Math.max(1000, deadline - Date.now());
-  const run = await runner({ files: uniqueFiles, root, ...(budget !== undefined ? { timeoutMs: budget } : {}) });
+  const run = await runner({
+    files: uniqueFiles,
+    root,
+    ...(budget !== undefined ? { timeoutMs: budget } : {}),
+    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+    ...(input.harnessSlug ? { harnessSlug: input.harnessSlug } : {}),
+  });
   if (run.error !== undefined) {
     const runnerFailure: CriterionCheckRunnerFailure = {
       runId: run.runId,
@@ -1338,6 +1384,7 @@ export async function evaluateCriterionTestChecks(input: {
       passed,
       failed,
       runId: run.runId ?? null,
+      ...(run.testRunIds !== undefined ? { testRunIds: [...run.testRunIds] } : {}),
       measuredAt: nowIso(),
       ...(failed > 0 && Array.isArray(run.failures)
         ? {

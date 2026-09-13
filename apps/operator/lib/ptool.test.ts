@@ -1203,6 +1203,42 @@ describe('ptool mergeConvenienceArgs', () => {
       { toolName: 'work_items:rehome' },
     )).toEqual(args);
   });
+
+  it('injects ambient harness only into the check variant of workspace:work_scope', () => {
+    const workScopeSchema = {
+      properties: {
+        op: { type: 'string' },
+        harness: { type: 'string' },
+        mode: { type: 'string' },
+      },
+    };
+
+    expect(mergeConvenienceArgs(
+      { op: 'check' },
+      { workspace: 'ambient-ws', harness: 'ambient-harness' },
+      workScopeSchema,
+      { toolName: 'workspace:work_scope' },
+    )).toEqual({ op: 'check', harness: 'ambient-harness' });
+
+    for (const op of ['get', 'set', 'clear']) {
+      expect(mergeConvenienceArgs(
+        { op },
+        { workspace: 'ambient-ws', harness: 'ambient-harness' },
+        workScopeSchema,
+        { toolName: 'workspace:work_scope' },
+      )).toEqual({ op });
+    }
+  });
+
+  it('preserves an explicit harness on workspace:work_scope non-check variants', () => {
+    const args = { op: 'get', harness: 'explicit-harness' };
+    expect(mergeConvenienceArgs(
+      args,
+      { workspace: 'ambient-ws', harness: 'ambient-harness' },
+      { properties: { op: { type: 'string' }, harness: { type: 'string' } } },
+      { toolName: 'workspace:work_scope' },
+    )).toEqual(args);
+  });
 });
 
 describe('ptool mergeDispatchProjection', () => {

@@ -1450,6 +1450,7 @@ export async function getFeedbackCore(
         spawned: rr.spawned,
         verified: rr.verified,
         detail: rr.detail,
+        ...(rr.reason ? { reason: rr.reason } : {}),
       };
       if (rr.spawned) {
         // Stamp BOTH copies of the selection: the persisted row (the durable
