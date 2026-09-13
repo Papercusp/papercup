@@ -52,6 +52,7 @@ import runTool, {
   readManagedTestProcessResourceSnapshot,
   readTestProcessResourceSnapshot,
   runTestFilesCore,
+  settleConfinedTestOnHostShutdown,
   runWithTestProcessDeadline,
   resolveAdminTestRunsReporterPath,
   selectTestFileRoot,
@@ -612,11 +613,28 @@ describe('testing:run (integration)', () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
-  it('preserves only a confined runner when the host shutdown flag is set', () => {
+  it('releases the host request while preserving only a confined runner during shutdown', () => {
     expect(preserveConfinedTestOnHostShutdown(true, { confined: true })).toBe(true);
     expect(preserveConfinedTestOnHostShutdown(false, { confined: true })).toBe(false);
     expect(preserveConfinedTestOnHostShutdown(true, { confined: false })).toBe(false);
     expect(preserveConfinedTestOnHostShutdown(true, null)).toBe(false);
+
+    const settle = vi.fn();
+    expect(settleConfinedTestOnHostShutdown(true, { confined: true }, settle)).toBe(true);
+    expect(settle).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith({
+      code: null,
+      signal: null,
+      timedOut: false,
+      aborted: true,
+      hostShutdownDetached: true,
+      output: expect.stringContaining('continues in its sibling scope'),
+    });
+
+    settle.mockClear();
+    expect(settleConfinedTestOnHostShutdown(false, { confined: true }, settle)).toBe(false);
+    expect(settleConfinedTestOnHostShutdown(true, { confined: false }, settle)).toBe(false);
+    expect(settle).not.toHaveBeenCalled();
   });
 
   it('accounts confined foreground demand from the whole task cgroup rather than the launcher pid', async () => {

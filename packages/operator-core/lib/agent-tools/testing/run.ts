@@ -1037,6 +1037,9 @@ export interface TestProcessOutcome {
   readonly signal?: NodeJS.Signals | null;
   readonly timedOut: boolean;
   readonly aborted: boolean;
+  /** The operator released its request during host shutdown while the
+   * cgroup-confined child continued under systemd ownership. */
+  readonly hostShutdownDetached?: boolean;
   readonly spawnError?: string;
   readonly output: string;
   readonly actualDemand?: ResourceDemand;
@@ -1606,6 +1609,40 @@ export function preserveConfinedTestOnHostShutdown(
   return shuttingDown && running?.confined === true;
 }
 
+export interface ConfinedTestHostShutdownOutcome extends TestProcessOutcome {
+  readonly code: null;
+  readonly signal: null;
+  readonly timedOut: false;
+  readonly aborted: true;
+  readonly hostShutdownDetached: true;
+}
+
+/**
+ * Release the dying operator's request without terminating a confined test.
+ *
+ * Merely ignoring the request abort keeps the old server awaiting the child.
+ * A coordinated restart then waits for the server's stop timeout, while the
+ * child's shorter RuntimeMaxSec fires first; the child can never finish after
+ * the old host exits. Settling the request here transfers lifetime ownership
+ * to the sibling systemd scope and lets the old host terminate immediately.
+ */
+export function settleConfinedTestOnHostShutdown(
+  shuttingDown: boolean,
+  running: Pick<ManagedTestProcess, 'confined'> | null,
+  settle: (outcome: ConfinedTestHostShutdownOutcome) => void,
+): boolean {
+  if (!preserveConfinedTestOnHostShutdown(shuttingDown, running)) return false;
+  settle({
+    code: null,
+    signal: null,
+    timedOut: false,
+    aborted: true,
+    hostShutdownDetached: true,
+    output: 'operator host shutdown released its request; the confined test continues in its sibling scope',
+  });
+  return true;
+}
+
 /** Aggregate actual residency from the task's whole cgroup, not merely from
  * the systemd-run client pid. Falls back to the legacy process-tree reader on
  * hosts where managed confinement is unavailable. */
@@ -1840,7 +1877,12 @@ function runTestProcess(
             const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
               if (settled) return;
               settled = true;
-              loadOutput();
+              // A host-shutdown handoff returns before the child finishes. Keep
+              // both file-backed sinks available to the surviving child. A rare
+              // handoff may leave one bounded directory in the namespaced
+              // system temp root; that is safer than deleting a live reporter's
+              // output path and converting a completed run into no evidence.
+              if (!outcome.hostShutdownDetached) loadOutput();
               if (timer !== null) {
                 clearTimeout(timer);
                 timer = null;
@@ -1866,7 +1908,10 @@ function runTestProcess(
             };
             onAbort = () => {
               if (settled) return;
-              if (preserveConfinedTestOnHostShutdown(isShuttingDown(), running)) return;
+              if (settleConfinedTestOnHostShutdown(isShuttingDown(), running, finish)) {
+                aborted = true;
+                return;
+              }
               aborted = true;
               if (running) running.terminate();
               else settleBeforeLaunchHandoff();
@@ -2400,6 +2445,7 @@ export async function runTestFilesCore(opts: {
   const dir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-'));
   const reportPath = join(dir, 'report.json');
   const failureDetailsPath = join(dir, TEST_FAILURE_DETAILS_FILENAME);
+  let preserveRunArtifacts = false;
   try {
     const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
@@ -2498,13 +2544,17 @@ export async function runTestFilesCore(opts: {
       };
     }
 
+    preserveRunArtifacts = outcome.hostShutdownDetached === true;
+
     if (outcome.aborted) {
       return {
         ok: false,
         runId,
         root,
         error: 'aborted',
-        hint: 'the caller canceled this foreground test run; its router/Vitest process group was terminated',
+        hint: outcome.hostShutdownDetached
+          ? `the operator host is shutting down; request ${runId} was released while its confined router continues under systemd ownership. Read its eventual exact test ledger row with testing:runs { runGroup: '${runId}', source: 'local', latestPerFile: false }`
+          : 'the caller canceled this foreground test run; its router/Vitest process group was terminated',
         routerOutput: outcome.output.slice(-2000),
       };
     }
@@ -2704,9 +2754,11 @@ export async function runTestFilesCore(opts: {
     // explicitly, so `failures.length` is never readable as "how many failed".
     return boundTestRunPayload({ ok: run.failed === 0 && outcome.code === 0, runId, root }, run) as TestFilesCoreResult;
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {
-      /* best-effort */
-    });
+    if (!preserveRunArtifacts) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {
+        /* best-effort */
+      });
+    }
   }
 }
 
