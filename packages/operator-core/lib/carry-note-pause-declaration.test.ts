@@ -72,13 +72,35 @@ describe('detectPauseDeclaration — real owner-attributed pause declarations', 
     expect(quote.endsWith('…')).toBe(true);
   });
 
-  it('returns the FIRST declaration when a note declares one twice', () => {
+  it('returns the latest active declaration when a note declares one twice', () => {
     const note = [REAL_DECLARATIONS[1], 'more prose', REAL_DECLARATIONS[3]].join('\n');
-    expect(detectPauseDeclaration(note)!.line).toBe(1);
+    expect(detectPauseDeclaration(note)!.line).toBe(3);
   });
 
   it('matches via the [owner:...] provenance tag even without request/directive wording', () => {
     expect(detectPauseDeclaration('PAUSED here [owner:redacted 2026-08-02]')).not.toBeNull();
+  });
+
+  it('retires a historical declaration when a later resume explicitly clears its pause hold', () => {
+    const note = [
+      REAL_DECLARATIONS[0],
+      'RESUMED — superseding the earlier temporary pause. Pause hold cleared.',
+    ].join('\n');
+    expect(detectPauseDeclaration(note)).toBeNull();
+  });
+
+  it('keeps a later declaration after an earlier pause was cleared', () => {
+    const note = [
+      REAL_DECLARATIONS[0],
+      'RESUMED — superseding the earlier temporary pause. Pause hold cleared.',
+      REAL_DECLARATIONS[3],
+    ].join('\n');
+    expect(detectPauseDeclaration(note)!.line).toBe(3);
+  });
+
+  it('does not treat a negated clearance as retiring the pause', () => {
+    const note = [REAL_DECLARATIONS[0], 'The pause hold was not cleared.'].join('\n');
+    expect(detectPauseDeclaration(note)!.line).toBe(1);
   });
 });
 

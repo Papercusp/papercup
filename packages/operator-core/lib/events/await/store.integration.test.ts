@@ -45,6 +45,7 @@ const {
   findAnnouncementsForKey,
   AwaitGenerationMismatchError,
   listActiveAnnouncements,
+  listFiredAnnouncements,
   insertDeliveries,
   retireLifecycleBoundWatches,
   retireLifecycleBoundWatchesForOwners,
@@ -518,6 +519,42 @@ describe('await-event store (PG)', () => {
     expect((await findAnnouncementsForKey(eventKey, { includeCancelled: true })).map((row) => row.id)).toEqual([
       announcement.id,
     ]);
+  });
+
+  it('discovers fired announcement history after cancellation and ignores unannounced fire latches', async () => {
+    const eventKey = 'fleet:fleet-a:owner-resume';
+    const first = await registerAnnouncement({
+      subscriberId: 'declarer',
+      eventKey,
+      scopeKind: 'fleet',
+      scopeRef: 'fleet-a',
+    });
+    await recordKeyFire({ eventKey, firedBy: 'fleet-resume' });
+    await stampAnnouncementsFired(eventKey, { firedBy: 'fleet-resume' });
+    const current = await registerAnnouncement({
+      subscriberId: 'declarer',
+      eventKey,
+      scopeKind: 'fleet',
+      scopeRef: 'fleet-a',
+    });
+    expect(current.causalGeneration).toBeGreaterThan(first.causalGeneration!);
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET cancelled_at = now()
+       WHERE id = ${current.id}
+    `;
+    await recordKeyFire({ eventKey: 'not-announced:arbitrary' });
+
+    expect(await listActiveAnnouncements({ unfiredOnly: false })).toEqual([]);
+    const discovered = await listFiredAnnouncements({ limit: 10 });
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0].announcement).toMatchObject({
+      id: first.id,
+      eventKey,
+      scopeKind: 'fleet',
+      scopeRef: 'fleet-a',
+    });
+    expect(discovered[0].fireLatch).toMatchObject({ eventKey, fireCount: 1 });
   });
 
   it('retirement clears the matching event blocker and restores an auto-blocked issue', async () => {

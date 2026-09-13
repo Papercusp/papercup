@@ -2768,6 +2768,60 @@ export async function listActiveAnnouncements(
   return rows.map(mapAwait);
 }
 
+/**
+ * Fired announced gates that remain useful for catalog discovery after their
+ * declaration rows leave the active set.
+ *
+ * Announcements are lifecycle-managed: a later generation supersedes the
+ * previous row, and owner cleanup can cancel the current row. The
+ * event_key_fires latch is the durable evidence that the concrete key really
+ * fired, but it contains every emitted key in the system. Joining it to a
+ * historical announce row keeps this read bounded to keys explicitly declared
+ * as gates; arbitrary fire-latch rows must not become catalog entries.
+ */
+export async function listFiredAnnouncements(
+  input: { limit?: number } = {},
+): Promise<Array<{ announcement: AwaitRow; fireLatch: KeyFireRow }>> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 200);
+  const rows = await sql`
+    SELECT fired_announcements.*
+      FROM (
+        SELECT DISTINCT ON (a.event_key)
+               a.*,
+               f.first_fired_at AS fire_first_fired_at,
+               f.last_fired_at AS fire_last_fired_at,
+               f.last_fired_by AS fire_last_fired_by,
+               f.last_payload AS fire_last_payload,
+               f.fire_count AS fire_count
+          FROM harness_shared.event_awaits AS a
+          JOIN harness_shared.event_key_fires AS f
+            ON f.workspace_id = a.workspace_id
+           AND f.event_key = a.event_key
+         WHERE a.workspace_id = ${ws}
+           AND a.policy = 'announce'
+           AND a.fired_at IS NOT NULL
+           AND a.fired_reason = 'event'
+         ORDER BY a.event_key, a.causal_generation DESC NULLS LAST, a.created_at DESC
+      ) AS fired_announcements
+     ORDER BY fire_last_fired_at DESC, created_at DESC
+     LIMIT ${limit}
+  `;
+  return rows.map((row: any) => ({
+    announcement: mapAwait(row),
+    fireLatch: mapKeyFire({
+      workspace_id: row.workspace_id,
+      event_key: row.event_key,
+      first_fired_at: row.fire_first_fired_at,
+      last_fired_at: row.fire_last_fired_at,
+      last_fired_by: row.fire_last_fired_by,
+      last_payload: row.fire_last_payload,
+      fire_count: row.fire_count,
+    }),
+  }));
+}
+
 function mapKeyFire(row: any): KeyFireRow {
   return {
     workspaceId: row.workspace_id,

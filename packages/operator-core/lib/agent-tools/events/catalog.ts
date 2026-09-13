@@ -28,6 +28,7 @@ import {
   countActiveAwaitsByKeyShapes,
   countActiveAwaitsByPrefixes,
   listActiveAnnouncements,
+  listFiredAnnouncements,
 } from '../../events/await/store';
 import { announcementVisibleTo } from '../../events/await/announce-key';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -35,6 +36,7 @@ import { getPresence } from '../coordination/presence';
 import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
 
 const MAX_CATALOG_LIMIT = 200;
+const MAX_ANNOUNCEMENT_DISCOVERY = 100;
 const CATALOG_SCOPE_NOTE =
   'Scope comes from request context; installed families use the call\'s harness, and announced gates use the reader\'s fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`query`/`family`.';
 
@@ -230,6 +232,7 @@ export default defineTool({
           fired: boolean;
           fired_at: string | null;
           expires_ts: string | null;
+          historical?: boolean;
           live_awaiters?: number;
           live_successor_ids?: string[];
           stale_owner?: boolean;
@@ -255,6 +258,8 @@ export default defineTool({
     let announcedVisibility:
       | {
           total_active: number;
+          total_fired_history: number;
+          total_discoverable: number;
           returned: number;
           hidden_by_scope: number;
           hidden_by_query: number;
@@ -267,7 +272,29 @@ export default defineTool({
     let announcedSectionFailed = false;
     if (args.announced !== false) {
       try {
-        const anns = await listActiveAnnouncements({ unfiredOnly: false, limit: 100 });
+        const activeAnnouncements = await listActiveAnnouncements({
+          unfiredOnly: false,
+          limit: MAX_ANNOUNCEMENT_DISCOVERY,
+        });
+        let firedAnnouncements: Awaited<ReturnType<typeof listFiredAnnouncements>> = [];
+        let firedHistoryUnavailable = false;
+        try {
+          firedAnnouncements = await listFiredAnnouncements({ limit: MAX_ANNOUNCEMENT_DISCOVERY });
+        } catch {
+          // The historical latch is additive; an unavailable read must not hide
+          // active declarations that the primary catalog query can still render.
+          firedHistoryUnavailable = true;
+        }
+        const firedLatches = new Map(firedAnnouncements.map((entry) => [entry.announcement.eventKey, entry.fireLatch]));
+        const historicalKeys = new Set<string>();
+        const byEventKey = new Map<string, (typeof activeAnnouncements)[number]>();
+        for (const announcement of activeAnnouncements) byEventKey.set(announcement.eventKey, announcement);
+        for (const { announcement } of firedAnnouncements) {
+          if (byEventKey.has(announcement.eventKey)) continue;
+          byEventKey.set(announcement.eventKey, announcement);
+          historicalKeys.add(announcement.eventKey);
+        }
+        const anns = [...byEventKey.values()];
         if (anns.length > 0) {
           let reader: { fleetSlug?: string | null; planSlug?: string | null; harnessSlug?: string | null } = {};
           let readerResolved = false;
@@ -312,8 +339,15 @@ export default defineTool({
               `${hiddenByCap} further visible gate(s) were cut by the fixed 25-row announced cap (the \`limit\` argument bounds FAMILY rows only, not this list). Narrow with \`q\` to see them.`,
             );
           }
+          if (firedHistoryUnavailable) {
+            notes.push(
+              'Fired announced-gate history could not be read on this call; active declarations are shown, but historical fired keys are UNMEASURED, not absent.',
+            );
+          }
           announcedVisibility = {
-            total_active: anns.length,
+            total_active: activeAnnouncements.length,
+            total_fired_history: historicalKeys.size,
+            total_discoverable: anns.length,
             returned: visible.length,
             hidden_by_scope: hiddenByScope,
             hidden_by_query: scopeVisible.length - queryVisible.length,
@@ -345,15 +379,19 @@ export default defineTool({
           } catch { /* best-effort — omit stale_owner/live_successor_ids rather than fail catalog */ }
           announced = visible.map((a) => {
             const owned = ownership?.get(a.id);
+            const fireLatch = firedLatches.get(a.eventKey);
+            const historical = historicalKeys.has(a.eventKey);
+            const firedAt = historical ? fireLatch?.lastFiredAt ?? null : a.firedReason === 'event' ? a.firedAt : null;
             return {
               event: a.eventKey,
               logical_gate: a.logicalGateKey ?? null,
               note: a.note,
               scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
               announced_by: a.subscriberId,
-              fired: !!a.firedAt && a.firedReason === 'event',
-              fired_at: a.firedReason === 'event' ? a.firedAt : null,
+              fired: !!firedAt,
+              fired_at: firedAt,
               expires_ts: a.expiresTs,
+              ...(historical ? { historical: true } : {}),
               ...(counts ? { live_awaiters: counts.get(a.eventKey) ?? 0 } : {}),
               ...(owned?.liveSuccessorIds.length ? { live_successor_ids: owned.liveSuccessorIds } : {}),
               ...(owned?.staleOwner ? { stale_owner: true } : {}),
@@ -362,13 +400,17 @@ export default defineTool({
         } else {
           announcedVisibility = {
             total_active: 0,
+            total_fired_history: 0,
+            total_discoverable: 0,
             returned: 0,
             hidden_by_scope: 0,
             hidden_by_query: 0,
             hidden_by_cap: 0,
             reader_scope: { fleet: null, plan: null, harness: null },
             reader_resolved: true,
-            note: 'No announced gates are active in this workspace at all.',
+            note: firedHistoryUnavailable
+              ? 'No active announced gates are visible. Fired announced-gate history could not be read on this call, so historical fired keys are UNMEASURED, not absent.'
+              : 'No announced gates are active in this workspace at all.',
           };
         }
       } catch {

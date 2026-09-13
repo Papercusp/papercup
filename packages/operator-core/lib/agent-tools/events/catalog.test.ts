@@ -14,11 +14,13 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 
 const countMock = vi.fn();
 const listAnnouncementsMock = vi.fn();
+const listFiredAnnouncementsMock = vi.fn();
 const prefixCountMock = vi.fn();
 vi.mock('../../events/await/store', () => ({
   countActiveAwaitsByKeyShapes: (...args: unknown[]) => countMock(...args),
   countActiveAwaitsByPrefixes: (...args: unknown[]) => prefixCountMock(...args),
   listActiveAnnouncements: (...args: unknown[]) => listAnnouncementsMock(...args),
+  listFiredAnnouncements: (...args: unknown[]) => listFiredAnnouncementsMock(...args),
 }));
 
 // EI-21907772459508454: announcementVisibleTo is deliberately NOT mocked — these tests
@@ -82,6 +84,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   countMock.mockResolvedValue(new Map());
   listAnnouncementsMock.mockResolvedValue([]);
+  listFiredAnnouncementsMock.mockResolvedValue([]);
   presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: null });
 });
 
@@ -159,6 +162,92 @@ describe('events:catalog — announced gates: withheld must not read as absent',
     expect(out.announced).toBeUndefined();
     expect(out.announced_visibility).toBeUndefined();
     expect(out.announced_unavailable).toMatch(/NOT evidence that no gate was declared/i);
+  });
+
+  it('discovers a fired runtime gate from its historical declaration and fire latch', async () => {
+    const event = 'fleet:fleet-a:owner-resume';
+    listFiredAnnouncementsMock.mockResolvedValue([
+      {
+        announcement: ann({
+          eventKey: event,
+          scopeKind: 'fleet',
+          scopeRef: 'fleet-a',
+          firedAt: null,
+          firedReason: null,
+        }),
+        fireLatch: {
+          eventKey: event,
+          lastFiredAt: '2026-09-08T22:03:34.810Z',
+          firstFiredAt: '2026-09-08T22:03:34.810Z',
+          fireCount: 1,
+        },
+      },
+    ]);
+    presenceMock.mockResolvedValue({ fleetSlug: 'fleet-a', currentPlanSlug: null });
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.announced).toEqual([
+      expect.objectContaining({
+        event,
+        fired: true,
+        fired_at: '2026-09-08T22:03:34.810Z',
+        historical: true,
+      }),
+    ]);
+    expect(out.announced_visibility).toMatchObject({
+      total_active: 0,
+      total_fired_history: 1,
+      total_discoverable: 1,
+      returned: 1,
+      hidden_by_scope: 0,
+    });
+    expect(listFiredAnnouncementsMock).toHaveBeenCalledWith({ limit: 100 });
+  });
+
+  it('keeps fired history scope-filtered and does not expose arbitrary fire-latch keys', async () => {
+    const event = 'fleet:fleet-a:owner-resume';
+    listFiredAnnouncementsMock.mockResolvedValue([
+      {
+        announcement: ann({ eventKey: event, scopeKind: 'fleet', scopeRef: 'fleet-a' }),
+        fireLatch: {
+          eventKey: event,
+          lastFiredAt: '2026-09-08T22:03:34.810Z',
+          firstFiredAt: '2026-09-08T22:03:34.810Z',
+          fireCount: 1,
+        },
+      },
+    ]);
+    presenceMock.mockResolvedValue({ fleetSlug: 'fleet-b', currentPlanSlug: null });
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.announced).toBeUndefined();
+    expect(out.announced_visibility).toMatchObject({ total_fired_history: 1, hidden_by_scope: 1 });
+  });
+
+  it('does not let an earlier fire latch mark a newer active declaration as fired', async () => {
+    const event = 'fleet:fleet-a:owner-resume';
+    listAnnouncementsMock.mockResolvedValue([ann({ eventKey: event, scopeKind: 'fleet', scopeRef: 'fleet-a' })]);
+    listFiredAnnouncementsMock.mockResolvedValue([
+      {
+        announcement: ann({ eventKey: event, scopeKind: 'fleet', scopeRef: 'fleet-a' }),
+        fireLatch: {
+          eventKey: event,
+          lastFiredAt: '2026-09-08T22:03:34.810Z',
+          firstFiredAt: '2026-09-08T22:03:34.810Z',
+          fireCount: 1,
+        },
+      },
+    ]);
+    presenceMock.mockResolvedValue({ fleetSlug: 'fleet-a', currentPlanSlug: null });
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.announced).toEqual([
+      expect.objectContaining({ event, fired: false, fired_at: null }),
+    ]);
+    expect(out.announced[0]).not.toHaveProperty('historical');
   });
 });
 

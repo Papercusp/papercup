@@ -81,6 +81,10 @@ const PAUSED_TOKEN = /\bPAUSED\b/;
 const OWNER_TAG = /\[owner:/i;
 const OWNER_ATTRIBUTION = /\bowner\b/i;
 const DIRECTIVE_NOUN = /\b(request|directive)\b/i;
+const PAUSE_OR_HOLD = /\b(?:pause|hold)\b/i;
+const CLEARANCE_MARKER = /\b(?:cleared|lifted|released|retired|supersed(?:ed|ing|es))\b/i;
+const NEGATED_CLEARANCE =
+  /\b(?:not|never|isn't|isnt|wasn't|wasnt|hasn't|hasnt)\s+(?:be\s+)?(?:cleared|lifted|released|retired|supersed(?:ed|ing|es))\b/i;
 
 function declaresOwnerPause(line: string): boolean {
   if (!PAUSED_TOKEN.test(line)) return false;
@@ -89,26 +93,45 @@ function declaresOwnerPause(line: string): boolean {
 }
 
 /**
- * The FIRST owner-attributed pause declaration in `text`, or null.
+ * Whether this line explicitly retires a pause/hold mentioned in the same line.
  *
- * First rather than all: this feeds a one-line nudge, and a note that declares a pause twice
- * needs the same single action as one that declares it once.
+ * Checkpoint bodies are append-history, so a later `RESUMED ... pause hold cleared`
+ * paragraph must cancel an earlier declaration. Keep this line-local and require a
+ * positive clearance marker: `the pause was not cleared` is evidence that the pause
+ * remains active, not a cancellation.
+ */
+function clearsPause(line: string): boolean {
+  return PAUSE_OR_HOLD.test(line) && CLEARANCE_MARKER.test(line) && !NEGATED_CLEARANCE.test(line);
+}
+
+/**
+ * The latest still-active owner-attributed pause declaration in `text`, or null.
+ *
+ * Checkpoints preserve append-history. A later explicit clearance/resumption retires an
+ * earlier declaration, while a later declaration becomes the active one. This feeds a one-line
+ * nudge, so only the final still-active declaration is returned.
  */
 export function detectPauseDeclaration(
   text: string | null | undefined,
 ): CarryNotePauseDeclaration | null {
   if (!text) return null;
   const lines = text.split('\n');
+  let active: CarryNotePauseDeclaration | null = null;
   for (let i = 0; i < lines.length; i += 1) {
     const raw = lines[i];
-    if (!declaresOwnerPause(raw)) continue;
-    const trimmed = raw.trim();
-    return {
-      quote: trimmed.length > MAX_QUOTE_CHARS ? `${trimmed.slice(0, MAX_QUOTE_CHARS)}…` : trimmed,
-      line: i + 1,
-    };
+    if (clearsPause(raw)) {
+      active = null;
+      continue;
+    }
+    if (declaresOwnerPause(raw)) {
+      const trimmed = raw.trim();
+      active = {
+        quote: trimmed.length > MAX_QUOTE_CHARS ? `${trimmed.slice(0, MAX_QUOTE_CHARS)}…` : trimmed,
+        line: i + 1,
+      };
+    }
   }
-  return null;
+  return active;
 }
 
 /**
