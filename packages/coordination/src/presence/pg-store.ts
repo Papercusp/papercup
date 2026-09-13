@@ -112,7 +112,7 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
 export class PgPresenceStore implements PresenceStore {
   constructor(private readonly opts: PgPresenceStoreOptions) {}
 
-  async write(identity: PresenceIdentity, input: PresenceInput = {}): Promise<void> {
+  async write(identity: PresenceIdentity, input: PresenceInput = {}): Promise<string | null> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // A declared write IS genuine activity, so bump last_active_at + heartbeat.
@@ -131,7 +131,20 @@ export class PgPresenceStore implements PresenceStore {
     // were reading a permanently-dead signal. NULL is the "untouched" sentinel on the
     // wire because the column is NOT NULL, so it can never be a legitimate value.
     const filesJson = input.currentFiles === undefined ? null : JSON.stringify(input.currentFiles);
-    await sql`
+    // EI-23110847647700079: return the PREVIOUS intent from this same SQL
+    // statement. coord:declare-intent used to issue a separate get() before
+    // this upsert solely for advisory pivot detection. Under shared-pool delay
+    // that extra read exceeded its 1500ms wrapper, emitted a process-wide
+    // warning, and red-pinned otherwise-correct installed-PUI acceptance. A
+    // materialized pre-image CTE preserves the old value under the statement's
+    // single snapshot; the data-modifying CTE still performs exactly one
+    // essential upsert. Existing callers may ignore the returned value.
+    const rows = await sql<{ previous_intent: string | null }[]>`
+      WITH previous AS MATERIALIZED (
+        SELECT intent
+          FROM harness_shared.coord_presence
+         WHERE owner_id = ${identity.ownerId}
+      ), upsert AS (
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent,
          current_plan_slug, current_files, host, pid, tty,
@@ -210,7 +223,13 @@ export class PgPresenceStore implements PresenceStore {
             THEN now()
           ELSE COALESCE(harness_shared.coord_presence.intent_declared_at, now())
         END
+      RETURNING 1
+      )
+      SELECT previous.intent AS previous_intent
+        FROM upsert
+        LEFT JOIN previous ON TRUE
     `;
+    return rows[0]?.previous_intent ?? null;
   }
 
   async touchHeartbeat(

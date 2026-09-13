@@ -265,16 +265,11 @@ export default defineTool({
         isError: true,
       };
     }
-    // P-015 pivot detection reads the PREVIOUS intent before the upsert
-    // overwrites it. Bounded + fail-soft — a slow read just skips the nudge.
-    const prevIntent = (
-      await withBoundedTimeout(
-        getPresence(identity.ownerId).then((p) => p?.intent ?? null),
-        { fallback: null, timeoutMs: 1_500, label: 'declare-intent:prev-intent' },
-      )
-    ).value;
-
-    await writePresence(
+    // P-015 pivot detection needs the PREVIOUS intent. The presence upsert
+    // returns that pre-image from the same SQL statement (EI-23110847647700079),
+    // removing the former standalone getPresence + 1500ms warning-producing
+    // deadline from the request path.
+    const prevIntent = await writePresence(
       identity,
       {
         intent: args.intent,

@@ -128,8 +128,10 @@ export interface PresenceListOptions {
 
 export interface PresenceStore {
   /** Upsert the caller's presence row to exactly this state; bumps heartbeat
-   *  AND last_active_at (a write is genuine activity). */
-  write(identity: PresenceIdentity, input?: PresenceInput): Promise<void>;
+   *  AND last_active_at (a write is genuine activity). Returns the intent that
+   *  existed immediately before this write, or null when no row existed. This
+   *  lets callers compare intent pivots without a separate pre-write read. */
+  write(identity: PresenceIdentity, input?: PresenceInput): Promise<string | null>;
   /** Bump heartbeat ONLY (no-op if the row does not exist) — the keepalive
    *  path. last_active_at is deliberately NOT touched (D-003): the 60s
    *  supervisor beat means "process alive", not "active".

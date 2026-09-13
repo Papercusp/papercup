@@ -89,7 +89,7 @@ export async function writePresence(
   identity: AgentIdentity,
   input: PresenceInput = {},
   harnessSlug?: string | null,
-): Promise<void> {
+): Promise<string | null> {
   const agentRole = input.agentRole ?? deriveAgentRole(identity);
   let potSlug = input.potSlug ?? null;
   if (harnessSlug && harnessSlug !== '*') {
@@ -124,7 +124,7 @@ export async function writePresence(
   // OS process. Memoized per-process (see machine-capability-tags.ts) so only
   // the first write on a given operator instance pays the docker probe.
   const capabilityTags = input.capabilityTags ?? (await getCachedMachineCapabilityTags());
-  await store.write(identity, { ...input, agentRole, potSlug, capabilityTags });
+  const previousIntent = await store.write(identity, { ...input, agentRole, potSlug, capabilityTags });
 
   // Fleet membership (named-su-agent-fleets-2026-06-29 P-005): the SOFT presence label,
   // sourced from env at registration (PAPERCUSP_FLEET_SLUG / PAPERCUSP_FLEET_ROLE), the
@@ -184,6 +184,7 @@ export async function writePresence(
     harnessSlug: harnessSlug ?? null,
     potSlug,
   });
+  return previousIntent;
 }
 
 /**

@@ -106,6 +106,8 @@ describe('readCell — the happy path', () => {
         ownership: {
           claimState: 'held',
           takenBy: 'su-gate-holder',
+          takenAt: '2026-08-27T04:00:00.000Z',
+          lastProgressAt: '2026-08-27T04:30:00.000Z',
           holderSessionState: 'live',
           duplicates: [],
           expiresAt: '2026-08-27T05:00:00.000Z',
@@ -122,6 +124,8 @@ describe('readCell — the happy path', () => {
     expect(r.assessment?.status).toBe('resolved');
     if (r.assessment?.status !== 'resolved') return;
     expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.takenBy', value: 'su-gate-holder' });
+    expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.takenAt', value: '2026-08-27T04:00:00.000Z' });
+    expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.lastProgressAt', value: '2026-08-27T04:30:00.000Z' });
   });
 
   it('projects a declared stage order without a second resolver call', async () => {

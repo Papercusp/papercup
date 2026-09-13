@@ -103,6 +103,15 @@ export function describePresenceConformance(
       expect(await store.get(`${runPrefix}-missing`)).toBeNull();
     });
 
+    it('write returns the prior intent atomically: null on insert, then the replaced value', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const id = ident(store, 'prior-intent');
+      expect(await store.write(id, { intent: 'first' })).toBeNull();
+      expect(await store.write(id, { intent: 'second' })).toBe('first');
+      expect((await store.get(id.ownerId))?.intent).toBe('second');
+    });
+
     it('re-write preserves startedAt and advances heartbeatAt', async () => {
       if (skip) return;
       const store = makeStore();

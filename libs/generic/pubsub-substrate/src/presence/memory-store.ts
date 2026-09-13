@@ -40,9 +40,10 @@ export class InMemoryPresenceStore implements PresenceStore {
     this.now = opts.now ?? (() => Date.now());
   }
 
-  async write(identity: PresenceIdentity, input: PresenceInput = {}): Promise<void> {
+  async write(identity: PresenceIdentity, input: PresenceInput = {}): Promise<string | null> {
     const t = this.now();
     const existing = this.rows.get(identity.ownerId);
+    const previousIntent = existing?.input.intent ?? null;
     // populate-once-then-keep for role/hive — mirror the PG COALESCE.
     const merged: PresenceInput = {
       ...input,
@@ -68,6 +69,7 @@ export class InMemoryPresenceStore implements PresenceStore {
       lastActiveAt: t, // a write IS activity
       intentDeclaredAt,
     });
+    return previousIntent;
   }
 
   async touchHeartbeat(

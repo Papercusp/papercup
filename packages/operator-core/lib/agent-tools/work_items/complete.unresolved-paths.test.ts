@@ -313,7 +313,7 @@ describe('completionCheckoutRootForPath — unsupported absolute paths stay off 
   it('keeps the complete handler wired to supported checkout detection, not absolute-path presence alone', () => {
     const source = readFileSync(nodePath.join(__dirname, 'complete.ts'), 'utf8');
     expect(source).toMatch(
-      /const hasAbsoluteCheckoutPath = declaredCompletionPaths\.some\(\s*\(path\) => Boolean\(completionCheckoutRootForPath\(path\) \?\? checkoutRootForPath\(path\)\),/,
+      /const hasAbsoluteCheckoutPath = declaredCompletionPaths\.some\(\s*\(path\) =>\s*Boolean\(completionCheckoutRootForPath\(path\) \?\? checkoutRootForPath\(path\)\),/,
     );
   });
 });

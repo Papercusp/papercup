@@ -66,7 +66,10 @@ vi.mock('../../plan-item-coverage', () => ({
   coverageCollisions: vi.fn(() => []),
 }));
 vi.mock('../../events/await/store', () => ({ listParkedAwaitsForSubscribers: vi.fn(async () => []) }));
-vi.mock('../coordination/context-pressure', () => ({ fetchContextPressure: vi.fn(async () => new Map()) }));
+vi.mock('../coordination/context-pressure', () => ({
+  fetchContextPressure: vi.fn(async () => new Map()),
+  fetchContextPressureReadings: vi.fn(async () => new Map()),
+}));
 vi.mock('../coordination/unanswered-directed', () => ({ fetchUnansweredDirected: vi.fn(async () => new Map()) }));
 vi.mock('../coordination/inbox-read-freshness', () => ({
   classifyCoordDeafness: vi.fn(() => null),
