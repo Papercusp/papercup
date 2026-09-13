@@ -20,7 +20,7 @@ import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchd
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
 
-export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v2';
+export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v3';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 
@@ -250,9 +250,55 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     });
   }
 
+  if (portfolio.goal.id !== input.goalId) {
+    return defineAgentObligation({
+      ...common,
+      ...unknownPlacement(input, {
+        title: 'Goal portfolio scope does not match',
+        code: 'goal-portfolio-scope-mismatch',
+        detail: `portfolio goal ${portfolio.goal.id} differs from requested goal ${input.goalId}`,
+        retry: 're-read the portfolio for the requested goal before planning placement',
+        applicableDemand: 0,
+      }),
+    });
+  }
+  const goalStatus = portfolio.goal.status;
+  if (goalStatus === 'paused' || goalStatus === 'achieved' || goalStatus === 'killed') {
+    return defineAgentObligation({
+      ...common,
+      // Historical relationships remain readable; they cannot arm a wake
+      // that asks a stopped goal's holder to resume placement.
+      changeSignal: undefined,
+      title: `Goal ${input.goalId} is ${goalStatus}`,
+      episode: `inactive:${goalStatus}:${input.sourceGeneration}`,
+      status: 'not-applicable',
+      reason: 'the canonical goal lifecycle does not authorize plan placement',
+      causalRank: 0,
+      applicableDemand: 0,
+      evidence: placementEvidence(input),
+    });
+  }
+  if (goalStatus !== 'active') {
+    return defineAgentObligation({
+      ...common,
+      ...unknownPlacement(input, {
+        title: 'Goal lifecycle is unresolved',
+        code: 'goal-lifecycle-unresolved',
+        detail: `canonical goal status is ${goalStatus ?? 'unknown'}`,
+        retry: 'resolve the canonical goal lifecycle before planning placement',
+        applicableDemand: 0,
+      }),
+    });
+  }
+
   const applicablePlans = portfolio.worklist.filter((plan) => plan.placement.state !== 'terminal');
   const actionablePlans = applicablePlans.filter((plan) => !plan.placement.reconciliation.consistent);
-  const selected = actionablePlans[0];
+  // Preserve canonical worklist ordering among feasible next actions. A
+  // blocked earlier plan is not a prerequisite for an independent later one.
+  // Retain the blocker as the fallback when no placement can advance.
+  const selected =
+    actionablePlans.find((plan) => plan.placement.state === 'unplaced' || plan.placement.state === 'admitting') ??
+    actionablePlans[0];
   const portfolioReadFailure = portfolio.degradedReasons.find((reason) => /portfolio read failed/i.test(reason));
   if (portfolioReadFailure) {
     return defineAgentObligation({
@@ -366,6 +412,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     const refusal = launch.refusal;
     return defineAgentObligation({
       ...common,
+      scope: { ...scope, planSlug: selected.slug },
       title:
         refusal.reason === 'goal_budget_exceeded'
           ? `Goal budget blocks placement of ${selected.slug}`
@@ -398,6 +445,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   const isAdmitting = placement.state === 'admitting';
   return defineAgentObligation({
     ...common,
+    scope: { ...scope, planSlug: selected.slug },
     title: isUnplaced
       ? `Place goal plan ${selected.slug}`
       : isAdmitting
