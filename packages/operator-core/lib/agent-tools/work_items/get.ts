@@ -629,7 +629,7 @@ export default defineTool({
           'return only the stored checkpoint check-row ledger (`checkpointChecks.rows` with caller-facing id/claim identities) plus recency/failure metadata; omit the checkpoint narrative and other enrichments. Use this before building `retireIds` instead of fetching the full checkpoint body.',
         ),
       resume: z.boolean().optional().describe(
-        'One-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit.',
+        'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Do not combine with detail, checksOnly, threadLimit, or priorAttemptRefs; use a separate read for those enrichments.',
       ),
       priorAttemptRefs: z
         .array(z.string().min(1))

@@ -1215,10 +1215,32 @@ export default defineTool({
         : null;
     let claimedWorkItem: string | null =
       admittedMonitorConfig?.authority.kind === 'work-item' ? admittedMonitorConfig.authority.workItem : priorWorkItem;
+    // EI-23156379126419084: the writer preserves an omitted workItem from its stored
+    // payload, so a terminal prior anchor must be sent as an explicit null after this
+    // lifecycle read. Otherwise a cadence retune can report the stale item as its
+    // driver and cold recovery will resume work that already finished.
+    let workItemBindingNeedsClear = workItemWasExplicitlyCleared;
     let workItemClaim:
       | { id: string; claimed: true }
       | { id: string; claimed: false; reason: string; holder?: string; hint?: string }
       | null = null;
+    if (priorWorkItem) {
+      try {
+        const priorItem = await getWorkItem(priorWorkItem, harness);
+        if (priorItem && ANY_FAMILY_TERMINAL_STATES.includes(String(priorItem.state))) {
+          claimedWorkItem = null;
+          workItemBindingNeedsClear = true;
+          workItemClaim = { id: priorWorkItem, claimed: false, reason: 'terminal' };
+        }
+      } catch (e) {
+        // This is a defensive lifecycle check. Preserve a non-terminal-looking anchor
+        // when the read is unavailable rather than detaching a live loop on a transient
+        // lookup failure; the next retune can retry the check.
+        console.warn(
+          `[loop:arm] prior work-item lifecycle read failed (keeping existing anchor): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
     if (drivenCandidate) {
       try {
         // EI-20123870155538062: the direct loop auto-claim is still a claim door. Route it
@@ -1454,7 +1476,7 @@ export default defineTool({
       // Preserve the omission-vs-clear distinction through the writer: materializeLoop
       // intentionally preserves its stored anchor only for `undefined`, while `null`
       // clears it.
-      ...(workItemWasExplicitlyCleared
+      ...(workItemBindingNeedsClear
         ? { workItem: null }
         : claimedWorkItem
           ? { workItem: claimedWorkItem }

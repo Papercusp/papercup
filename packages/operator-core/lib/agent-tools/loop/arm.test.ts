@@ -1688,6 +1688,28 @@ describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler
     );
   });
 
+  it('EI-23156379126419084: clears a terminal active anchor when a retune omits workItem', async () => {
+    priorLoopM.mockResolvedValue(
+      priorLoop({
+        goal: 'continue WI-DONE',
+        kickoff: 'kickoff-prompt',
+        workItem: 'WI-DONE',
+      }) as never,
+    );
+    getWiM.mockResolvedValue({ id: 'WI-DONE', state: 'done', assignee: null } as never);
+
+    const b = body(await call({ intervalSec: 600, goal: 'continue the next active lane', maxDurationSec: 900 }));
+
+    expect(getWiM).toHaveBeenCalledWith('WI-DONE', 'papercusp');
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: { id: 'WI-DONE', claimed: false, reason: 'terminal' },
+    });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+  });
+
   it('EI-22656186904542038: explicit workItem:null clears an active prior anchor', async () => {
     priorLoopM.mockResolvedValue(
       priorLoop({

@@ -180,9 +180,20 @@ it('resume reaches the saved checkpoint and evidence without loading history or 
   expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
 });
 
-it('resume refuses ambiguous multi-item and combined detail requests', () => {
+it('resume documents and enforces its standalone contract', () => {
+  expect(get.args.description ?? '').toBeDefined();
+  const resumeDescription = String(
+    ((get.args as { shape?: Record<string, { description?: string }> }).shape?.resume?.description ?? ''),
+  );
+  expect(resumeDescription).toContain('Standalone one-item continuation view');
+  for (const excluded of ['detail', 'checksOnly', 'threadLimit', 'priorAttemptRefs']) {
+    expect(resumeDescription).toContain(excluded);
+  }
   expect(() => parse({ ids: ['WI-a', 'WI-b'], resume: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, detail: true })).toThrow(/resume requires one item/);
+  expect(() => parse({ id: 'WI-a', resume: true, checksOnly: true })).toThrow(/resume requires one item/);
+  expect(() => parse({ id: 'WI-a', resume: true, threadLimit: 0 })).toThrow(/resume requires one item/);
+  expect(() => parse({ id: 'WI-a', resume: true, priorAttemptRefs: ['WI-b#checkpoint'] })).toThrow(/resume requires one item/);
 });
 
 it('declares the actual checkpoint/comment window output with writer-owned numeric post identity', async () => {
