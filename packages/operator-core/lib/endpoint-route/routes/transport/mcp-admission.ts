@@ -214,6 +214,10 @@ const CRITICAL_JUDGE_AUDIT_MAX_MIN_DECISIONS = 100_000;
 const CRITICAL_JUDGE_AUDIT_MAX_SINCE_HOURS = 24;
 const CAPABILITY_READ_NAME = normalizeMcpName('capability:read');
 const CRITICAL_CAPABILITY_READ_MAX_BYTES = 4_096;
+const COORD_PRESENCE_NAME = normalizeMcpName('coord:presence');
+const COORD_ROSTER_NAME = normalizeMcpName('coord:roster');
+const CRITICAL_TARGET_OWNER_MAX_STRING_CHARS = 120;
+const CRITICAL_TARGET_OWNER_MAX_COUNT = 50;
 
 const PLAN_CLASS_RUBRIC_REFS = new Set([
   'plan-class-feature-ship',
@@ -525,6 +529,158 @@ function isBoundedSchedulerGetNextArgs(args: unknown): boolean {
 }
 
 /**
+ * Targeted presence reads are bounded by the explicit owner selector. The
+ * underlying snapshot assembler switches to a point/finite-set query for these
+ * selectors; a project-only or otherwise broad presence read must remain on the
+ * ordinary pressure-shed path. Keep the compatibility aliases equivalent while
+ * rejecting mixed singular/plural forms and oversized selector values.
+ */
+export function isBoundedCoordPresenceArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'scope',
+    'pot',
+    'workspace',
+    'owner',
+    'ownerId',
+    'owners',
+    'ownerIds',
+    'include_detail',
+    'include_cursor',
+    'include_coupling',
+    'since',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  const singular = ['owner', 'ownerId'].filter((field) => args[field] !== undefined);
+  const plural = ['owners', 'ownerIds'].filter((field) => args[field] !== undefined);
+  if (singular.length + plural.length !== 1) return false;
+
+  const selected = singular[0] ?? plural[0];
+  if (selected === 'owner' || selected === 'ownerId') {
+    const value = args[selected];
+    if (
+      typeof value !== 'string' ||
+      value.trim().length === 0 ||
+      value.length > CRITICAL_TARGET_OWNER_MAX_STRING_CHARS
+    ) {
+      return false;
+    }
+  } else {
+    const value = args[selected];
+    if (
+      !Array.isArray(value) ||
+      value.length < 1 ||
+      value.length > CRITICAL_TARGET_OWNER_MAX_COUNT ||
+      !value.every(
+        (owner) =>
+          typeof owner === 'string' &&
+          owner.trim().length > 0 &&
+          owner.length <= CRITICAL_TARGET_OWNER_MAX_STRING_CHARS,
+      )
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    args.scope !== undefined &&
+    (typeof args.scope !== 'string' || !['hive', 'workspace', 'all'].includes(args.scope))
+  ) {
+    return false;
+  }
+  for (const field of ['pot', 'workspace']) {
+    if (
+      args[field] !== undefined &&
+      (typeof args[field] !== 'string' ||
+        args[field].trim().length === 0 ||
+        args[field].length > CRITICAL_TARGET_OWNER_MAX_STRING_CHARS)
+    ) {
+      return false;
+    }
+  }
+  for (const field of ['include_detail', 'include_cursor', 'include_coupling']) {
+    if (args[field] !== undefined && typeof args[field] !== 'boolean') return false;
+  }
+  if (
+    args.since !== undefined &&
+    (typeof args.since !== 'string' || args.since.length > 64)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * `coord:roster` shares the presence snapshot for its live/members lenses, but
+ * claims/history and project-only reads have different cost and semantics. Only
+ * an owner-targeted live or members read is safe to carry through the critical
+ * pressure reserve. Optional liveness/detail filters remain bounded and are
+ * validated here rather than turning the reserve into a broad roster escape.
+ */
+export function isBoundedCoordRosterArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'view',
+    'scope',
+    'pot',
+    'workspace',
+    'owner',
+    'include_detail',
+    'include_stale',
+    'project',
+    'states',
+    'since',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.owner !== 'string' ||
+    args.owner.trim().length === 0 ||
+    args.owner.length > CRITICAL_TARGET_OWNER_MAX_STRING_CHARS
+  ) {
+    return false;
+  }
+  if (args.view !== undefined && !['live', 'members'].includes(args.view as string)) return false;
+  if (
+    args.scope !== undefined &&
+    (typeof args.scope !== 'string' || !['hive', 'workspace', 'all'].includes(args.scope))
+  ) {
+    return false;
+  }
+  for (const field of ['pot', 'workspace']) {
+    if (
+      args[field] !== undefined &&
+      (typeof args[field] !== 'string' ||
+        args[field].trim().length === 0 ||
+        args[field].length > CRITICAL_TARGET_OWNER_MAX_STRING_CHARS)
+    ) {
+      return false;
+    }
+  }
+  if (args.project !== undefined && !['ids', 'liveness', 'full'].includes(args.project as string)) return false;
+  for (const field of ['include_detail', 'include_stale']) {
+    if (args[field] !== undefined && typeof args[field] !== 'boolean') return false;
+  }
+  if (args.states !== undefined) {
+    const states = ['live', 'parked', 'draining', 'suspect', 'ended', 'recorded'];
+    if (
+      !Array.isArray(args.states) ||
+      args.states.length > states.length ||
+      !args.states.every((state) => typeof state === 'string' && states.includes(state))
+    ) {
+      return false;
+    }
+  }
+  if (
+    args.since !== undefined &&
+    (typeof args.since !== 'string' || args.since.length > 64)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * `loop:status` is a read-only recovery probe needed to reconcile a resumed
  * fleet member, but its admission exception must still reject opaque payloads
  * before schema parsing. The handler accepts only these three owner-scoped
@@ -782,6 +938,8 @@ function isBoundedJudgeGradingAuditEmitArgs(args: unknown, requestUrl?: string):
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, requestUrl?: string): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
+  if (normalized === COORD_PRESENCE_NAME) return isBoundedCoordPresenceArgs(args);
+  if (normalized === COORD_ROSTER_NAME) return isBoundedCoordRosterArgs(args);
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
