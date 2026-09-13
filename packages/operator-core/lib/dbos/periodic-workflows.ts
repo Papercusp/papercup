@@ -39,7 +39,7 @@ import { gcOldOperatorTurns } from '../operator-turns-gc';
 import { runFleetLogsGc } from '../fleet-logs-gc';
 import { gcLedgerDir } from '../turn-provenance/turn-provenance';
 import { readRegistry } from '../workspace-registry';
-import { sweepOrphanSnapshots, sweepRecoveryDebrisTick } from '@papercusp/backup';
+import { sweepOrphanSnapshots, sweepRecoveryDebrisTick, sweepRestoredClonesTick } from '@papercusp/backup';
 import { gcScheduledPlanRuns } from '../harness/routines/gc-plan-runs';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
 import { getOrgPg } from '@papercusp/db-org';
@@ -930,14 +930,17 @@ DBOS.registerScheduled(orphanCleanupWorkflow, { name: 'backupOrphanCleanup', cro
 // Once daily (04:00): reap on-disk recovery-debris directories (EI-1032) — the
 // timestamped `<name>.broken-*` / `.zz-recover-*` / `.half-restored-*` /
 // `.audit-wipe-*` / `.rolled-back-*` copies a restore/rollback/corruption-audit
-// leaves behind under each workspace root. policy.ts's SELF_EXCLUSION_RULES stops
-// kopia from re-snapshotting this debris; this is the complementary sweep that
-// actually reclaims the disk space (a conservative 14-day age floor — see
-// DEFAULT_DEBRIS_MAX_AGE_MS — so a recent recovery stays inspectable).
+// leaves behind under each workspace root. It also runs the restore-clone
+// retention sweep for aged `.restored/<snapshot>/<slug>` directories. The two
+// sweeps share this daily DBOS cadence, but the clone sweep has its own explicit
+// age policy and fail-closed liveness/reference proof. policy.ts's
+// SELF_EXCLUSION_RULES stops kopia from re-snapshotting either kind of scratch;
+// this is the complementary sweep that reclaims disk space.
 async function recoveryDebrisCleanupTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
       await sweepRecoveryDebrisTick();
+      await sweepRestoredClonesTick();
     },
     { name: 'backup-recovery-debris-cleanup' },
   );

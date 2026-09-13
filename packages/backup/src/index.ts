@@ -91,5 +91,13 @@ export {
   DEFAULT_DEBRIS_MAX_AGE_MS,
   type DebrisSweepResult,
 } from './recovery-debris-cleanup';
+export {
+  sweepRestoredClones,
+  sweepRestoredClonesTick,
+  DEFAULT_RESTORED_CLONE_MAX_AGE_MS,
+  type RestoredCloneKeepReason,
+  type RestoredCloneProtection,
+  type RestoredCloneSweepResult,
+} from './restored-clone-cleanup';
 export type { DestinationType, DestinationConfig } from './destinations';
 export { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './policy';
