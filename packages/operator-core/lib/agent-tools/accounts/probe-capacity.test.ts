@@ -126,6 +126,42 @@ describe('accounts:probe-capacity — failure persistence', () => {
     expect(out.gatewayReadmitted).toEqual(['a']);
   });
 
+  it('preserves a valid 200/header reading but does not serve or readmit while another premium window remains full', async () => {
+    const shortReset = Date.now() + 60_000;
+    const weeklyReset = Date.now() + 7 * 86_400_000;
+    pool = recordAccountWindow(
+      pool,
+      'a',
+      { utilization: 0.99, utilization7d: 0.99, windowResetAt: shortReset, windowResetAt7d: weeklyReset },
+      T0 + 1,
+    );
+    probeM.mockResolvedValue([
+      {
+        accountId: 'a',
+        ok: true,
+        status: 200,
+        // The 5h window dropped, but the upstream result still confirms the weekly premium wall.
+        windows: { utilization: 0.04, utilization7d: 0.99, windowResetAt7d: weeklyReset },
+        before: { utilization: 0.99, utilization7d: 0.99 },
+        unwalls: false,
+      },
+    ]);
+
+    const out = body((await tool.handler({} as never, {} as never)) as Out);
+
+    expect(out.rows[0]).toMatchObject({
+      accountId: 'a',
+      ok: true,
+      status: 200,
+      before: { utilization: 0.99, utilization7d: 0.99 },
+      upstream: { utilization: 0.04, utilization7d: 0.99 },
+    });
+    expect(out.applied).toEqual(['a']);
+    expect(out.serving).toEqual([]);
+    expect(out.gatewayReadmitted).toEqual([]);
+    expect(gatewayFetchM).not.toHaveBeenCalled();
+  });
+
   it('provider:codex scopes the probe and readmits through the Codex gateway path', async () => {
     pool = registerAccount(
       pool,
