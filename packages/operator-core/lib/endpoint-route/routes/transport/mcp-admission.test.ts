@@ -25,6 +25,7 @@ import {
   isBoundedBashOutputArgs,
   isBoundedLoopArmArgs,
   isBoundedLocksQueueArgs,
+  isBoundedLocksReleaseArgs,
 } from './mcp-admission';
 
 afterEach(() => resetMcpAdmissionForTests());
@@ -234,6 +235,55 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     ]) {
       expect(isBoundedLocksQueueArgs(args)).toBe(false);
       expect(classifyMcpBody(toolsCall(13, 'locks:queue', args))).toEqual({ sheddable: true, id: 13 });
+    }
+  });
+
+  it.each([
+    'locks:release',
+    'locks_release',
+    'mcp__papercusp-su__locks_release',
+    'mcp__papercusp_su__locks_release',
+  ])('does NOT shed a bounded single-lock locks:release under critical pressure: %s', (name) => {
+    const args = { lock_id: '551d8e36-bd4f-4eea-9ad8-42ba8a9c98d8' };
+    const body = toolsCall(14, name, args);
+    expect(isBoundedLocksReleaseArgs(args)).toBe(true);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('recognizes a bounded locks:release through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__locks_release',
+          args: { lock_id: '551d8e36-bd4f-4eea-9ad8-42ba8a9c98d8' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps bulk, broad-selector, enriched, and invalid locks:release forms sheddable', () => {
+    const lockId = '551d8e36-bd4f-4eea-9ad8-42ba8a9c98d8';
+    for (const args of [
+      { lock_ids: [lockId] },
+      { all_mine: true },
+      { paths: ['packages/operator-core/lib/example.ts'] },
+      { lock_id: lockId, coordination_domain: '/canonical/staging' },
+      { lock_id: lockId, published_sha: 'a'.repeat(40) },
+      { lock_id: lockId, native_edit_proof: { success: true, source: 'codex', paths: ['example.ts'] } },
+      { lock_id: 'not-a-uuid' },
+      {},
+    ]) {
+      expect(isBoundedLocksReleaseArgs(args)).toBe(false);
+      const body = toolsCall(16, 'locks:release', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 16 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
     }
   });
 
@@ -1448,6 +1498,27 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     );
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('locks:queue');
+  });
+  it('admits a bounded single-lock locks:release under critical pressure and preserves the body', async () => {
+    const req = post(toolsCall(16, 'locks:release', { lock_id: '551d8e36-bd4f-4eea-9ad8-42ba8a9c98d8' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('locks:release');
+  });
+  it('still sheds bulk, selector, and enriched locks:release forms under critical pressure', async () => {
+    const lockId = '551d8e36-bd4f-4eea-9ad8-42ba8a9c98d8';
+    for (const args of [
+      { lock_ids: [lockId] },
+      { all_mine: true },
+      { paths: ['packages/operator-core/lib/example.ts'] },
+      { lock_id: lockId, coordination_domain: '/canonical/staging' },
+    ]) {
+      const shed = await evaluateAdmission(post(toolsCall(17, 'locks:release', args)), 'critical', true);
+      expect(shed).not.toBeNull();
+      expect((await shed!.json()).error.data).toMatchObject({
+        retryable: true,
+        reason: 'loop_pressure_critical',
+      });
+    }
   });
   it('still sheds an unfiltered locks:queue read under critical pressure', async () => {
     const shed = await evaluateAdmission(post(toolsCall(15, 'locks:queue')), 'critical', true);

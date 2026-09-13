@@ -213,6 +213,7 @@ const COORD_DECLARE_INTENT_NAME = normalizeMcpName('coord:declare-intent');
 const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName('capability:bash_output');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
+const LOCKS_RELEASE_NAME = normalizeMcpName('locks:release');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const PLANS_GET_NAME = normalizeMcpName('plans:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
@@ -247,6 +248,7 @@ const CRITICAL_LOCKS_QUEUE_MAX_PATH_CHARS = 1_024;
 const CRITICAL_LOCKS_QUEUE_MAX_EXTERNAL_PATH_CHARS = 4_096;
 const CRITICAL_LOCKS_QUEUE_MAX_DOMAIN_CHARS = 4_096;
 const CRITICAL_LOCKS_QUEUE_MAX_OWNER_CHARS = 120;
+const CRITICAL_LOCKS_RELEASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CRITICAL_COORD_SEND_MAX_SUMMARY_CHARS = 600;
 const CRITICAL_COORD_SEND_MAX_BODY_CHARS = 600;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS = 200;
@@ -631,6 +633,18 @@ export function isBoundedLocksQueueArgs(args: unknown): boolean {
   // separate history query and stay on the ordinary retryable path.
   if (args.include_completed !== undefined && args.include_completed !== false) return false;
   return true;
+}
+
+/**
+ * `locks:release` is needed to clear one held lock during critical-pressure
+ * recovery, but its bulk, path-only, cross-domain, publish, and native-proof
+ * forms can fan out into multiple transactions or side effects. Reserve only
+ * the owner-checked single UUID form. The normal handler remains authoritative
+ * for ownership and lock-plane validation after admission.
+ */
+export function isBoundedLocksReleaseArgs(args: unknown): boolean {
+  if (!isRecord(args) || Object.keys(args).length !== 1 || !Object.hasOwn(args, 'lock_id')) return false;
+  return typeof args.lock_id === 'string' && CRITICAL_LOCKS_RELEASE_UUID.test(args.lock_id);
 }
 
 /**
@@ -1379,6 +1393,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === CAPABILITY_BASH_OUTPUT_NAME) return isBoundedBashOutputArgs(args);
   if (normalized === WORK_ITEMS_COMMENT_NAME) return isBoundedWorkItemsCommentArgs(args);
   if (normalized === LOCKS_QUEUE_NAME) return isBoundedLocksQueueArgs(args);
+  if (normalized === LOCKS_RELEASE_NAME) return isBoundedLocksReleaseArgs(args);
   if (normalized === COORD_PRESENCE_NAME) return isBoundedCoordPresenceArgs(args);
   if (normalized === COORD_ROSTER_NAME) return isBoundedCoordRosterArgs(args);
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
