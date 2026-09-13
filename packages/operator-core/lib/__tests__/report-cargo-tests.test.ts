@@ -803,12 +803,13 @@ describe('bounded inactive artifact reclaim (EI-21150371868241728)', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'papercusp-configured-slot-reclaim-'));
     const configuredTarget = resolve(root, 'cargo-target');
     const slots = resolve(configuredTarget, '.papercusp-target-slots');
+    const inactiveSlot = resolve(slots, 'dev2');
     const liveSlot = resolve(slots, 'dev3');
 
     try {
       const staleDebug = resolve(configuredTarget, 'debug');
       const liveRelease = resolve(configuredTarget, 'release');
-      for (const path of [staleDebug, liveRelease, liveSlot]) {
+      for (const path of [staleDebug, liveRelease, inactiveSlot, liveSlot]) {
         mkdirSync(path, { recursive: true });
         writeFileSync(resolve(path, 'artifact'), 'x');
         age(path);
@@ -830,17 +831,22 @@ describe('bounded inactive artifact reclaim (EI-21150371868241728)', () => {
           }
           return path === liveRelease;
         },
-        slotLockIsHeld: () => false,
+        slotLockIsHeld: (path: string) => path === liveSlot,
       });
 
       expect(rootCalls).toEqual([[slots]]);
       expect(existsSync(staleDebug)).toBe(false);
+      expect(existsSync(inactiveSlot)).toBe(false);
       expect(readFileSync(resolve(liveRelease, 'artifact'), 'utf8')).toBe('x');
       expect(readFileSync(resolve(liveSlot, 'artifact'), 'utf8')).toBe('x');
-      expect(result.reclaimed).toBe(1);
+      expect(result.reclaimed).toBe(2);
       expect(result.skipped).toContainEqual({
         path: liveRelease,
         reason: 'live descriptor or executable',
+      });
+      expect(result.skipped).toContainEqual({
+        path: liveSlot,
+        reason: 'target slot is held',
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -425,11 +425,17 @@ function freshHeartbeat(path, now, ttlMs) {
 
 function cargoSlotLockIsHeld(targetDir, homeDir) {
   const name = targetDir.split('/').pop() ?? '';
+  const fallbackSlot =
+    targetDir.split('/').at(-2) === '.papercusp-target-slots'
+      ? /^dev(\d+)$/.exec(name)?.[1]
+      : null;
   const slot = name === '.cargo-target'
     ? 0
     : /^\.cargo-target-dev(\d+)$/.exec(name)?.[1]
       ? Number(/^\.cargo-target-dev(\d+)$/.exec(name)[1]) - 1
-      : null;
+      : fallbackSlot
+        ? Number(fallbackSlot) - 1
+        : null;
   if (slot === null) return false;
   const lock = join(homeDir, '.papercusp', 'desktop-dev-slots', `slot${slot}.lock`);
   if (!existsSync(lock)) return false;
@@ -487,6 +493,27 @@ function cargoArtifactCandidates(root) {
   pushProfileDirs(root);
   const releaseBundle = join(root, 'release', 'bundle');
   if (safeStat(releaseBundle)?.isDirectory()) candidates.push(releaseBundle);
+  // A non-writable relocation parent places derived/overflow targets under
+  // this exact allocator-owned subtree. They are independent Cargo caches,
+  // not part of the configured root's profiles, so offer each one as a whole
+  // candidate. The caller applies the same age, marker, descriptor and byte
+  // guards as every other candidate, plus its mapped slot lock below.
+  const fallbackSlotsRoot = join(root, '.papercusp-target-slots');
+  let fallbackSlots;
+  try {
+    fallbackSlots = readdirSync(fallbackSlotsRoot, { withFileTypes: true });
+  } catch {
+    fallbackSlots = [];
+  }
+  for (const entry of fallbackSlots) {
+    if (
+      entry.isDirectory() &&
+      !entry.isSymbolicLink() &&
+      /^(?:dev\d+|pid\d+)$/.test(entry.name)
+    ) {
+      candidates.push(join(fallbackSlotsRoot, entry.name));
+    }
+  }
   let entries;
   try { entries = readdirSync(root, { withFileTypes: true }); } catch { return [...new Set(candidates)]; }
   for (const entry of entries) {
@@ -745,6 +772,10 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
       continue;
     }
     for (const path of cargoArtifactCandidates(root)) {
+      if (slotLockIsHeld(path, homeDir)) {
+        result.skipped.push({ path, reason: 'target slot is held' });
+        continue;
+      }
       const decision = canReclaim(path, policy.cargoTtlMs, policy.heartbeatTtlMs);
       if (!decision.ok) {
         result.skipped.push({ path, reason: decision.reason });
