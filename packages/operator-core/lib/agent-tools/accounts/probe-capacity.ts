@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { DRAIN_FULL_UTIL, type AccountProvider } from '../../deployment/account-pool';
+import { DRAIN_FULL_UTIL, effectiveDrainUtil, type AccountProvider, type ClaudeAccount } from '../../deployment/account-pool';
 import { probeCapacityForAccounts, type CapacityProbeResult } from '../../inference-gateway/capacity-probe';
 import { trackDetached } from '../../detached-imports';
 
@@ -166,6 +166,29 @@ export interface CapacityProbeArgs {
 }
 
 /**
+ * A successful upstream response can refresh only one premium window. Evaluate serving against the
+ * resulting projection, carrying forward any other stored window, so a 5h reset cannot accidentally
+ * readmit an account whose weekly premium budget is still full. Use the account-pool's canonical
+ * effective-fullness rules so reset expiry and freshness retain the same semantics as routing.
+ */
+function hasPremiumHeadroom(account: ClaudeAccount, result: CapacityProbeResult, observedAt: number): boolean {
+  const windows = result.windows;
+  const hasFreshWindow = windows.utilization !== undefined || windows.utilization7d !== undefined;
+  const candidate: ClaudeAccount = {
+    ...account,
+    rate: {
+      ...account.rate,
+      ...(windows.utilization !== undefined ? { utilization: windows.utilization } : {}),
+      ...(windows.windowResetAt !== undefined ? { windowResetAt: windows.windowResetAt } : {}),
+      ...(windows.utilization7d !== undefined ? { utilization7d: windows.utilization7d } : {}),
+      ...(windows.windowResetAt7d !== undefined ? { windowResetAt7d: windows.windowResetAt7d } : {}),
+      ...(hasFreshWindow ? { utilizationAt: observedAt } : {}),
+    },
+  };
+  return effectiveDrainUtil(candidate, observedAt) < DRAIN_FULL_UTIL;
+}
+
+/**
  * The core of `accounts:probe-capacity` — extracted (EI-21921833535413808) so a SCHEDULED
  * re-probe (`system:account-capacity-reprobe`) can call the exact same probe→apply→readmit
  * path an on-demand agent invocation does, rather than re-implementing it and risking drift.
@@ -194,6 +217,7 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
   // recording it is never a "force". A failed probe writes nothing (we must not invent a window).
   const applied: string[] = [];
   const burnTransitions: import('../../deployment/account-pool').BurnTransition[] = [];
+  const observedAt = Date.now();
   // EI-22103680502746318: a `model:'gpt-reserve'` probe reads the Luna RESERVE meter. The pool
   // projection (`rate.utilization[7d]`) describes the PREMIUM meter — writing 0.04-of-reserve over a
   // 1.00 premium reading un-walled 'aviynw5_codex' (2026-09-02 04:32Z + 05:49Z), the gateway readmitted
@@ -204,7 +228,7 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
     .filter((r) => r.ok && r.windows.bucket === 'base_model_inference')
     .map((r) => r.accountId);
   if (apply) {
-    const t = Date.now();
+    const t = observedAt;
     for (const r of results) {
       if (!r.ok) {
         // The probe itself failed (network/auth/timeout) — no window was observed. Persist that
@@ -244,14 +268,21 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
   // Converge the gateway's in-memory exclusions with the projection we just wrote (see
   // readmitIntoGateway). Only accounts that actually PROVED they serve are readmitted — a 429 reply
   // confirms a real wall, and readmitting that account would just send the fleet back to hammer it.
-  const selectedAccountIds = new Set(accounts.map((account) => account.id));
   // A reserve-meter (`gpt-reserve`) 200 proves the LUNA bucket serves — not that the premium meter
   // the failover pool routes by has budget; readmitting on it sends premium traffic into the wall
   // (EI-22103680502746318: the 05:49:49Z readmit → terminal 429s on 'aviynw5_codex').
+  const selectedAccounts = new Map(accounts.map((account) => [account.id, account]));
   const serving = results
-    .filter(
-      (r) => selectedAccountIds.has(r.accountId) && r.ok && r.status !== 429 && r.windows.bucket !== 'base_model_inference',
-    )
+    .filter((r) => {
+      const account = selectedAccounts.get(r.accountId);
+      return (
+        account !== undefined &&
+        r.ok &&
+        r.status !== 429 &&
+        r.windows.bucket !== 'base_model_inference' &&
+        hasPremiumHeadroom(account, r, observedAt)
+      );
+    })
     .map((r) => r.accountId);
   const gateway = apply
     ? await readmitIntoGateway(serving, provider)
