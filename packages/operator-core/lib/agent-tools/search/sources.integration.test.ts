@@ -83,6 +83,8 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       workspace_id TEXT NOT NULL DEFAULT '',
       body_tsv tsvector,
       body_embedding vector(384),
+      body_embedding_mode TEXT DEFAULT 'gemma',
+      body_embedding_profile TEXT DEFAULT 'gemma-embeddinggemma-300m-768@v1',
       PRIMARY KEY (harness_slug, phase, workspace_id)
     );
     CREATE OR REPLACE FUNCTION harness_shared.he_tsv() RETURNS trigger AS $$
@@ -105,6 +107,8 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       workspace_id TEXT NOT NULL DEFAULT '',
       content_tsv tsvector,
       content_embedding vector(384),
+      content_embedding_mode TEXT DEFAULT 'gemma',
+      content_embedding_profile TEXT DEFAULT 'gemma-embeddinggemma-300m-768@v1',
       PRIMARY KEY (harness_slug, phase, workspace_id)
     );
     CREATE OR REPLACE FUNCTION harness_shared.hb_tsv() RETURNS trigger AS $$
@@ -125,6 +129,8 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       workspace_id TEXT NOT NULL DEFAULT '',
       body_tsv tsvector,
       body_embedding vector(384),
+      body_embedding_mode TEXT DEFAULT 'gemma',
+      body_embedding_profile TEXT DEFAULT 'gemma-embeddinggemma-300m-768@v1',
       PRIMARY KEY (harness_slug, line_hash, workspace_id)
     );
     CREATE OR REPLACE FUNCTION harness_shared.hd_tsv() RETURNS trigger AS $$
@@ -150,7 +156,9 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       text TEXT NOT NULL,
       created_at BIGINT NOT NULL DEFAULT 0,
       text_tsv tsvector,
-      text_embedding vector(384)
+      text_embedding vector(384),
+      text_embedding_mode TEXT DEFAULT 'gemma',
+      text_embedding_profile TEXT DEFAULT 'gemma-embeddinggemma-300m-768@v1'
     );
     CREATE OR REPLACE FUNCTION harness_shared.ot_tsv() RETURNS trigger AS $$
     BEGIN NEW.text_tsv := to_tsvector('english', coalesce(NEW.text,'')); RETURN NEW; END;
@@ -199,6 +207,7 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       lane TEXT,
       embedding public.vector(384),
       embedding_mode TEXT,
+      embedding_profile TEXT DEFAULT 'gemma-embeddinggemma-300m-768@v1',
       _search tsvector GENERATED ALWAYS AS (
         (setweight(to_tsvector('english', coalesce(title, '')), 'A')
          || setweight(to_tsvector('english', coalesce(body, '')), 'B'))
@@ -228,6 +237,7 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
       text_embedding public.vector(384),
       text_embedding_mode TEXT,
+      text_embedding_profile TEXT DEFAULT 'gemma-embeddinggemma-300m-768@v1',
       -- Migration 794 (plan owner-visibility-provenance P-004): provenance
       -- stamped at ingest. Present here because this fixture tracks the real
       -- schema — session-ingest's INSERT names these columns, so a fixture
@@ -256,6 +266,7 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
       embedding      public.vector(384),
       embedding_mode TEXT,
+      embedding_profile TEXT DEFAULT 'gemma-embeddinggemma-300m-768@v1',
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx, chunk_idx),
       FOREIGN KEY (workspace_id, source_kind, session_id, turn_idx)
         REFERENCES harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx)
@@ -450,6 +461,10 @@ const params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams => (
   workspaceId: WS_A,
   scopeFilter: null,
   limit: 20,
+  embeddingProfile: {
+    profileId: 'gemma-embeddinggemma-300m-768@v1',
+    legacyMode: 'gemma',
+  },
   ...over,
 });
 

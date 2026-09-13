@@ -3887,7 +3887,10 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(h.workspaceForCoordOwner).toHaveBeenCalledWith('su-xyz');
     expect(call.ctx.workspaceId).toBe('ws-adv');
     expect(call.ctx.tx).toBe(h.fakeTx);
-    expect(h.withWorkspaceCalls).toEqual(['ws-adv']);
+    // Harness inheritance now performs four bounded pre-dispatch reads (claim,
+    // plan, fleet, brief) before the tool's own workspace transaction. Every
+    // acquisition must stay pinned to the SID-resolved workspace.
+    expect(h.withWorkspaceCalls).toEqual(Array(5).fill('ws-adv'));
     expect(call.alsWorkspace).toBe('ws-adv');
   });
 
@@ -3917,7 +3920,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
       kind: 'failed',
       reason: expect.stringContaining('harness_scope_stale'),
     }));
-    expect(h.getPresence).toHaveBeenCalledWith('stale-plan-sid');
+    expect(h.getPresence).toHaveBeenCalledWith('stale-plan-sid', h.fakeTx);
   });
 
   it('x-papercusp-profile header gates like ?profile=power (psu --profile per-launch carrier)', async () => {
@@ -4120,7 +4123,7 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
       superuserExtra('&workspace=ws-test&client=su-brief-sid'),
     );
     expect(res.isError).not.toBe(true);
-    expect(h.getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-brief-sid' });
+    expect(h.getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-brief-sid' }, h.fakeTx);
     const inner = seen.at(-1);
     expect(inner?.tool).toBe('gatingtest:txless_scope');
     expect(inner?.ctx.harnessSlug).toBe('papercup');

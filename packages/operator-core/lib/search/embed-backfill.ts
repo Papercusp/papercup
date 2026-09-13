@@ -42,7 +42,7 @@ import {
   localAvailable,
   isOpenAiEmbedInCooldown,
 } from '../memory/configure';
-import type { EmbedFn, ResolvedEmbedder } from '@papercusp/memory';
+import type { EmbedFn, EmbedderProfileSpec, ResolvedEmbedder } from '@papercusp/memory';
 import { sidecarEmbedBatch, sidecarBatchTimeoutMs } from '@papercusp/memory';
 import { buildSidecarAwareEmbedder, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { EMBED_SIDECAR_CAP_EMBED } from '../memory/embed-sidecar-server';
@@ -54,6 +54,8 @@ import {
   computeProseColumnWidthSkew,
   fitsProseColumns,
   modeTargetDims,
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
 } from './prose-vector-dims';
 
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
@@ -400,6 +402,13 @@ export function modeColOf(target: BackfillTarget): string {
   return `${target.embedCol}_mode`;
 }
 
+/** The exact embedding-space identity column added by migration 1154. Kept a
+ * sibling of the legacy mode and text-recipe columns: profile identity answers
+ * which vector space the numbers inhabit; neither of the older fields does. */
+export function profileColOf(target: BackfillTarget): string {
+  return `${target.embedCol}_profile`;
+}
+
 /**
  * The column (migration 777) recording which TEXT RECIPE produced a row's vector.
  *
@@ -499,10 +508,22 @@ export function stalePredicateSql(
   spaceAware: boolean,
   modeExpr: string,
   recipeExpr: string | null = null,
+  profile?: { profileExpr: string; legacyModeCompatible: boolean },
 ): string {
-  const spaceTerm = spaceAware
-    ? `(${target.embedCol} IS NULL OR ${modeColOf(target)} IS DISTINCT FROM ${modeExpr})`
-    : `${target.embedCol} IS NULL`;
+  // Once the exact identity column exists it is authoritative. A NULL profile
+  // is accepted only as a rolling-upgrade legacy row whose mode names the
+  // requested mode AND whose requested profile is that mode's declared current
+  // profile (computed before this SQL is built). An alternate profile with the
+  // same mode therefore cannot inherit the legacy rows.
+  const spaceTerm = profile
+    ? profile.legacyModeCompatible && spaceAware
+      ? `(${target.embedCol} IS NULL OR NOT (` +
+        `${profileColOf(target)} IS NOT DISTINCT FROM ${profile.profileExpr} OR ` +
+        `(${profileColOf(target)} IS NULL AND ${modeColOf(target)} IS NOT DISTINCT FROM ${modeExpr})))`
+      : `(${target.embedCol} IS NULL OR ${profileColOf(target)} IS DISTINCT FROM ${profile.profileExpr})`
+    : spaceAware
+      ? `(${target.embedCol} IS NULL OR ${modeColOf(target)} IS DISTINCT FROM ${modeExpr})`
+      : `${target.embedCol} IS NULL`;
   if (recipeExpr === null) return spaceTerm;
   return (
     `(${spaceTerm} OR coalesce(${recipeColOf(target)}, ${BASELINE_RECIPE_VERSION})` +
@@ -954,7 +975,11 @@ export async function backfillTable(
   mode: ResolvedMode = 'openai',
   spaceAware = true,
   embedMany?: EmbedManyFn,
-  opts: { recipeColPresent?: boolean } = {},
+  opts: {
+    recipeColPresent?: boolean;
+    profileColPresent?: boolean;
+    profile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>;
+  } = {},
 ): Promise<BackfillStats> {
   const started = Date.now();
   const stats: BackfillStats = {
@@ -968,6 +993,21 @@ export async function backfillTable(
   // Select each PK column as k0, k1, … so the UPDATE can target the exact row by PK (not ctid).
   const keySelect = keyCols.map((c, i) => `${c} AS k${i}`).join(', ');
   const modeCol = modeColOf(target);
+  let profileSelection: ProseProfileSelection | null = null;
+  if (opts.profileColPresent) {
+    if (!opts.profile) {
+      throw new Error(
+        `profile-aware prose target ${target.table}.${target.embedCol} requires an exact embedding profile`,
+      );
+    }
+    profileSelection = resolveProseProfileSelection(mode, opts.profile);
+    if (!profileSelection) {
+      throw new Error(
+        `profile ${opts.profile.profileId} is incompatible with shared prose storage; refusing ${target.table}.${target.embedCol}`,
+      );
+    }
+  }
+  const profileAware = profileSelection !== null;
   // P-026: the recipe version to enforce, or null when this target/database has no
   // recipe discriminator. Resolved ONCE — the SELECT, the UPDATE's SET and the UPDATE's
   // re-asserted guard must all agree on it or the sweep cannot converge.
@@ -983,19 +1023,22 @@ export async function backfillTable(
   // with two of them the fixed-offset form has four cases, and the two that appear only
   // on an un-probed database are exactly the ones no test would cover.
   //
-  // SELECT layout: $1 batch size · [mode] · [recipe] · failure offset.
+  // SELECT layout: $1 batch size · [mode] · [profile] · [recipe] · failure offset.
   let sn = 1;
   const selModeExpr = spaceAware ? `$${++sn}` : 'NULL';
+  const selProfileExpr = profileAware ? `$${++sn}` : null;
   const selRecipeExpr = recipeAware ? `$${++sn}` : null;
   const selOffsetExpr = `$${++sn}`;
-  // UPDATE layout: $1 vector · [mode] · [recipe] · PK columns.
+  // UPDATE layout: $1 vector · [mode] · [profile] · [recipe] · PK columns.
   let un = 1;
   const updModeExpr = spaceAware ? `$${++un}` : 'NULL';
+  const updProfileExpr = profileAware ? `$${++un}` : null;
   const updRecipeExpr = recipeAware ? `$${++un}` : null;
   const updateKeyOffset = un + 1;
   const whereKeys = keyCols.map((c, i) => `${c} = $${i + updateKeyOffset}`).join(' AND ');
   const setClauses = [`${target.embedCol} = $1::vector`];
   if (spaceAware) setClauses.push(`${modeCol} = ${updModeExpr}`);
+  if (profileAware) setClauses.push(`${profileColOf(target)} = ${updProfileExpr}`);
   if (recipeAware) setClauses.push(`${recipeColOf(target)} = ${updRecipeExpr}`);
   // The write guard is BUILT FROM the staleness predicate, never a hand-restated copy of
   // it. A guard narrower than the selector silently un-converges the sweep: the row is
@@ -1006,9 +1049,21 @@ export async function backfillTable(
     `UPDATE ${target.table}` +
     `\n   SET ${setClauses.join(', ')}` +
     `\n WHERE ${whereKeys}` +
-    `\n   AND ${stalePredicateSql(target, spaceAware, updModeExpr, updRecipeExpr)}`;
+    `\n   AND ${stalePredicateSql(
+      target,
+      spaceAware,
+      updModeExpr,
+      updRecipeExpr,
+      profileAware
+        ? {
+            profileExpr: updProfileExpr!,
+            legacyModeCompatible: profileSelection!.legacyMode === mode,
+          }
+        : undefined,
+    )}`;
   const discriminatorParams = [
     ...(spaceAware ? [mode] : []),
+    ...(profileAware ? [profileSelection!.profileId] : []),
     ...(recipeAware ? [recipeVersion] : []),
   ];
 
@@ -1027,7 +1082,18 @@ export async function backfillTable(
    * active space, then go quiet. `IS DISTINCT FROM` — not `<> ` — because `NULL <> 'local'`
    * is NULL, which would silently match nothing and reintroduce the original bug.
    */
-  const stale = stalePredicateSql(target, spaceAware, selModeExpr, selRecipeExpr);
+  const stale = stalePredicateSql(
+    target,
+    spaceAware,
+    selModeExpr,
+    selRecipeExpr,
+    profileAware
+      ? {
+          profileExpr: selProfileExpr!,
+          legacyModeCompatible: profileSelection!.legacyMode === mode,
+        }
+      : undefined,
+  );
 
   // Loop until nothing is stale — OR until a full batch makes ZERO progress (every row failed to
   // embed). Without the zero-progress break, a row whose embed PERSISTENTLY fails (e.g. every
@@ -1306,6 +1372,49 @@ export interface BackfillSweepOptions {
   budgetMs?: number;
 }
 
+export interface BackfillTargetInspection {
+  readonly exists: boolean;
+  readonly spaceAware: boolean;
+  readonly profileColPresent: boolean;
+  readonly recipeColPresent: boolean;
+  readonly widthSkew: ReturnType<typeof computeProseColumnWidthSkew>;
+}
+
+/** Read every schema fact the sweep needs in ONE catalog query. Extracted so
+ * the live-width refusal is integration-testable against real PostgreSQL and
+ * so the probe cannot drift into a second, subtly different query. */
+export async function inspectBackfillTarget(
+  sql: Pick<Sql, 'unsafe'>,
+  target: BackfillTarget,
+): Promise<BackfillTargetInspection> {
+  const c = await sql.unsafe<Array<{ column_name: string; dims: number | null }>>(
+    `SELECT col.column_name, a.atttypmod AS dims
+       FROM information_schema.columns col
+       LEFT JOIN pg_namespace n ON n.nspname = col.table_schema
+       LEFT JOIN pg_class pc ON pc.relnamespace = n.oid AND pc.relname = col.table_name
+       LEFT JOIN pg_attribute a
+         ON a.attrelid = pc.oid AND a.attname = col.column_name AND NOT a.attisdropped
+      WHERE col.table_schema = split_part($1, '.', 1)
+        AND col.table_name   = split_part($1, '.', 2)
+        AND col.column_name  IN ($2, $3, $4, $5)`,
+    [target.table, target.embedCol, modeColOf(target), profileColOf(target), recipeColOf(target)],
+  );
+  const cols = new Set(c.map((r) => r.column_name));
+  const liveDims = c.find((r) => r.column_name === target.embedCol)?.dims;
+  return {
+    exists: cols.has(target.embedCol),
+    spaceAware: cols.has(modeColOf(target)),
+    profileColPresent: cols.has(profileColOf(target)),
+    recipeColPresent: cols.has(recipeColOf(target)),
+    widthSkew:
+      liveDims === null || liveDims === undefined
+        ? []
+        : computeProseColumnWidthSkew([
+            { table: target.table, column: target.embedCol, dims: Number(liveDims) },
+          ]),
+  };
+}
+
 /**
  * Default wall-clock budget for one routine sweep.
  *
@@ -1460,6 +1569,7 @@ export async function runBackfillSweep(
     const live: Array<{
       target: BackfillTarget;
       spaceAware: boolean;
+      profileColPresent: boolean;
       recipeColPresent: boolean;
     }> = [];
     for (const target of rotated) {
@@ -1483,20 +1593,8 @@ export async function runBackfillSweep(
         // rather than a separate probe deliberately: an extra `sql.unsafe` call
         // ahead of an existing one silently shifts every positional mock in the
         // sibling test file, a trap this repo has paid for before.
-        const c = await sql.unsafe<Array<{ column_name: string; dims: number | null }>>(
-          `SELECT col.column_name, a.atttypmod AS dims
-             FROM information_schema.columns col
-             LEFT JOIN pg_namespace n ON n.nspname = col.table_schema
-             LEFT JOIN pg_class pc ON pc.relnamespace = n.oid AND pc.relname = col.table_name
-             LEFT JOIN pg_attribute a
-               ON a.attrelid = pc.oid AND a.attname = col.column_name AND NOT a.attisdropped
-            WHERE col.table_schema = split_part($1, '.', 1)
-              AND col.table_name   = split_part($1, '.', 2)
-              AND col.column_name  IN ($2, $3, $4)`,
-          [target.table, target.embedCol, modeColOf(target), recipeColOf(target)],
-        );
-        const cols = new Set(c.map((r) => r.column_name));
-        if (!cols.has(target.embedCol)) {
+        const inspection = await inspectBackfillTarget(sql, target);
+        if (!inspection.exists) {
           byTable.set(target.table, { table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0 });
           continue;
         }
@@ -1511,15 +1609,8 @@ export async function runBackfillSweep(
         // An UNMEASURED width (null — no matching pg_attribute row) is
         // unjudgeable, never skew: absence of evidence must not become a false
         // total-failure alarm.
-        const liveDims = c.find((r) => r.column_name === target.embedCol)?.dims;
-        const widthSkew =
-          liveDims === null || liveDims === undefined
-            ? []
-            : computeProseColumnWidthSkew([
-                { table: target.table, column: target.embedCol, dims: Number(liveDims) },
-              ]);
-        if (widthSkew.length > 0) {
-          const s = widthSkew[0]!;
+        if (inspection.widthSkew.length > 0) {
+          const s = inspection.widthSkew[0]!;
           console.error(
             `[embed-backfill] SCHEMA WIDTH SKEW — refusing ${s.table}.${s.column}: it is ` +
               `vector(${s.liveDims}) but this code emits ${s.declaredDims}. Every write would be ` +
@@ -1534,8 +1625,9 @@ export async function runBackfillSweep(
         }
         live.push({
           target,
-          spaceAware: cols.has(modeColOf(target)),
-          recipeColPresent: cols.has(recipeColOf(target)),
+          spaceAware: inspection.spaceAware,
+          profileColPresent: inspection.profileColPresent,
+          recipeColPresent: inspection.recipeColPresent,
         });
         byTable.set(target.table, {
           table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0,
@@ -1579,7 +1671,7 @@ export async function runBackfillSweep(
     let rounds = 0;
     while (live.length > drained.size && Date.now() < deadline) {
       rounds += 1;
-      for (const { target, spaceAware, recipeColPresent } of live) {
+      for (const { target, spaceAware, profileColPresent, recipeColPresent } of live) {
         if (drained.has(target.table)) continue;
         if (Date.now() >= deadline) break;
         const used = consumed.get(target.table) ?? 0;
@@ -1596,7 +1688,7 @@ export async function runBackfillSweep(
             mode,
             spaceAware,
             embedMany ?? undefined,
-            { recipeColPresent },
+            { recipeColPresent, profileColPresent, profile: resolved.profile },
           );
           consumed.set(target.table, used + s.scanned);
           const acc = byTable.get(target.table)!;

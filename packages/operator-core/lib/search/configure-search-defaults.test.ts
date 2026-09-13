@@ -28,12 +28,16 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Embedder, SearchDefaultsContext } from '@papercusp/search';
 
 const modeOf = vi.fn<(e: Embedder | null | undefined) => string | undefined>();
+const provenanceOf = vi.fn<
+  (e: Embedder | null | undefined) => { mode: 'gemma'; profileId?: `${string}@v${number}` } | undefined
+>();
 
 vi.mock('./embedder-mode-registry', async (importOriginal) => ({
   // importOriginal keeps the module's real surface — stubbing it wholesale is
   // how a suite ends up green while exercising none of the real logic.
   ...(await importOriginal<typeof import('./embedder-mode-registry')>()),
   embedderModeOf: (e: Embedder | null | undefined) => modeOf(e),
+  embedderProvenanceOf: (e: Embedder | null | undefined) => provenanceOf(e),
 }));
 
 const { searchDefaultsHost, resetSearchDefaults } = await import('@papercusp/search');
@@ -57,6 +61,8 @@ describe('papercusp search defaults policy', () => {
   beforeEach(() => {
     modeOf.mockReset();
     modeOf.mockReturnValue(undefined);
+    provenanceOf.mockReset();
+    provenanceOf.mockReturnValue(undefined);
     resetSearchDefaults();
     _resetInstalledForTests();
     installSearchDefaults();
@@ -64,6 +70,22 @@ describe('papercusp search defaults policy', () => {
 
   it('installs a minScore policy', () => {
     expect(searchDefaultsHost()?.minScore).toBeTypeOf('function');
+  });
+
+  it('carries exact profile provenance with its legacy current-mode alias', () => {
+    provenanceOf.mockReturnValue({
+      mode: 'gemma',
+      profileId: 'gemma-embeddinggemma-300m-768@v1',
+    });
+    const policy = searchDefaultsHost();
+    expect(policy?.embeddingProfile?.(ctx({ embedder: someEmbedder }))).toEqual({
+      profileId: 'gemma-embeddinggemma-300m-768@v1',
+      legacyMode: 'gemma',
+    });
+  });
+
+  it('fails closed to no vector identity for an unstamped embedder', () => {
+    expect(searchDefaultsHost()?.embeddingProfile?.(ctx({ embedder: someEmbedder }))).toBeUndefined();
   });
 
   it('APPLIES the measured gemma floor when the search runs in the gemma space', () => {

@@ -87,3 +87,11 @@ export function embedderProfileIdOf(
 ): EmbedderProfileId | undefined {
   return embedder ? embedderProvenance.get(embedder)?.profileId : undefined;
 }
+
+/** Read both provenance fields atomically so a host can pass the exact profile
+ * and its legacy mode alias through one policy resolution. */
+export function embedderProvenanceOf(
+  embedder: Embedder | null | undefined,
+): { mode: EmbedderMode; profileId?: EmbedderProfileId } | undefined {
+  return embedder ? embedderProvenance.get(embedder) : undefined;
+}

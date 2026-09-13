@@ -35,7 +35,15 @@
  * sweep refills them (~395k vectors, see D-005). It is not a cheap change.
  */
 
-import { EMBEDDER_DIM_SPECS, type EmbedderMode } from '@papercusp/memory';
+import {
+  EMBEDDER_DIM_SPECS,
+  pgvectorMetricSpec,
+  type EmbedderMode,
+  type EmbedderProfileSpec,
+  type EmbeddingDistanceMetric,
+  type EmbeddingProfileId,
+  type PgvectorIndexOperatorClass,
+} from '@papercusp/memory';
 
 /**
  * Width of every shared prose embedding column, per migration 727.
@@ -67,6 +75,127 @@ export const PROSE_VECTOR_DIMS = 768;
 export const PROSE_ELIGIBLE_MODES = ['gemma', 'openai'] as const satisfies readonly EmbedderMode[];
 
 export type ProseEligibleMode = (typeof PROSE_ELIGIBLE_MODES)[number];
+
+/**
+ * The physical contract shared by every column in {@link PROSE_VECTOR_COLUMNS}.
+ *
+ * These are STORAGE facts, deliberately literal and independent from
+ * `EMBEDDER_DIM_SPECS`: changing an emitting profile must not silently change
+ * what an unapplied database migration is assumed to accept. The compatibility
+ * tests join the two declarations and fail on skew (D-001).
+ */
+export interface ProseVectorStorageProfile {
+  readonly acceptedProfileIds: readonly EmbeddingProfileId[];
+  readonly dimensions: number;
+  readonly distanceMetric: EmbeddingDistanceMetric;
+  readonly indexOperatorClass: PgvectorIndexOperatorClass;
+}
+
+export const PROSE_VECTOR_STORAGE_PROFILE: ProseVectorStorageProfile = Object.freeze({
+  acceptedProfileIds: [
+    'gemma-embeddinggemma-300m-768@v1',
+    'openai-text-embedding-3-small-768@v1',
+  ] as const,
+  dimensions: PROSE_VECTOR_DIMS,
+  distanceMetric: 'cosine',
+  indexOperatorClass: 'vector_cosine_ops',
+});
+
+/** The exact row identity a prose query is allowed to select. `legacyMode` is
+ * present only when a mode-only row can be interpreted without guessing: the
+ * requested id must be that mode's declared CURRENT profile. */
+export interface ProseProfileSelection {
+  readonly profileId: EmbeddingProfileId;
+  readonly legacyMode: ProseEligibleMode | null;
+}
+
+/** Validate desired embedder output against the independently declared shared
+ * prose storage. Returning every problem keeps migration skew actionable. */
+export function validateProseStorageCompatibility(
+  profile: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>,
+): string[] {
+  const problems: string[] = [];
+  if (!PROSE_VECTOR_STORAGE_PROFILE.acceptedProfileIds.includes(profile.profileId)) {
+    problems.push(
+      `shared prose storage does not accept profile ${profile.profileId}; ` +
+        `accepted=${PROSE_VECTOR_STORAGE_PROFILE.acceptedProfileIds.join(',') || '(none)'}`,
+    );
+  }
+  if (profile.targetDims !== PROSE_VECTOR_STORAGE_PROFILE.dimensions) {
+    problems.push(
+      `shared prose storage has ${PROSE_VECTOR_STORAGE_PROFILE.dimensions} dimensions; ` +
+        `profile ${profile.profileId} emits ${profile.targetDims}`,
+    );
+  }
+  if (profile.distanceMetric !== PROSE_VECTOR_STORAGE_PROFILE.distanceMetric) {
+    problems.push(
+      `shared prose storage uses ${PROSE_VECTOR_STORAGE_PROFILE.distanceMetric}; ` +
+        `profile ${profile.profileId} requires ${profile.distanceMetric}`,
+    );
+  }
+  const metric = pgvectorMetricSpec(PROSE_VECTOR_STORAGE_PROFILE.distanceMetric);
+  if (!metric) {
+    problems.push(
+      `shared prose storage has unsupported metric ${PROSE_VECTOR_STORAGE_PROFILE.distanceMetric}`,
+    );
+  } else if (metric.indexOperatorClass !== PROSE_VECTOR_STORAGE_PROFILE.indexOperatorClass) {
+    problems.push(
+      `shared prose storage index uses ${PROSE_VECTOR_STORAGE_PROFILE.indexOperatorClass}; ` +
+        `${PROSE_VECTOR_STORAGE_PROFILE.distanceMetric} requires ${metric.indexOperatorClass}`,
+    );
+  }
+  return problems;
+}
+
+/** Resolve an enabled embedder to an exact prose-row selection, or fail closed
+ * when its complete profile is not accepted by the physical store. */
+export function resolveProseProfileSelection(
+  mode: string,
+  profile: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>,
+): ProseProfileSelection | null {
+  if (validateProseStorageCompatibility(profile).length > 0) return null;
+  const legacyMode = (PROSE_ELIGIBLE_MODES as readonly string[]).includes(mode)
+    && EMBEDDER_DIM_SPECS[mode as ProseEligibleMode].profileId === profile.profileId
+      ? (mode as ProseEligibleMode)
+      : null;
+  return { profileId: profile.profileId, legacyMode };
+}
+
+/** Resolve provenance carried by a query embedder when the full profile object
+ * is no longer in scope. The accepted-id registry remains the authority; the
+ * legacy mode branch is granted only to that mode's declared current id. */
+export function resolveProseProfileIdSelection(
+  profileId: string,
+  legacyMode: string | null | undefined,
+): ProseProfileSelection | null {
+  if (!(PROSE_VECTOR_STORAGE_PROFILE.acceptedProfileIds as readonly string[]).includes(profileId)) {
+    return null;
+  }
+  const mode = (PROSE_ELIGIBLE_MODES as readonly string[]).includes(legacyMode ?? '')
+    ? (legacyMode as ProseEligibleMode)
+    : null;
+  return {
+    profileId: profileId as EmbeddingProfileId,
+    legacyMode:
+      mode !== null && EMBEDDER_DIM_SPECS[mode].profileId === profileId
+        ? mode
+        : null,
+  };
+}
+
+/** Pure row-level identity judgement used by tests and non-SQL consumers.
+ * A present exact id always wins. A missing id may use the legacy mode tag only
+ * for the mode registry's declared current profile — equal width or equal mode
+ * never makes an alternate profile compatible. */
+export function storedProseIdentityMatches(
+  stored: { profileId?: string | null; mode?: string | null },
+  selection: ProseProfileSelection,
+): boolean {
+  if (stored.profileId !== null && stored.profileId !== undefined) {
+    return stored.profileId === selection.profileId;
+  }
+  return selection.legacyMode !== null && stored.mode === selection.legacyMode;
+}
 
 /**
  * Every BASE TABLE column the width contract applies to — the list a width

@@ -25,7 +25,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { Embedder, Listing, SearchSourceParams } from '@papercusp/search';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
-import { fitsProseColumns } from '../../search/prose-vector-dims';
+import { fitsProseColumns, resolveProseProfileIdSelection } from '../../search/prose-vector-dims';
 import { sectionAnchorBase } from '../../search/doc-section-anchor';
 
 /** Over-fetch factor: several sections of one page can crowd the top-k; fetch
@@ -48,10 +48,26 @@ export interface DocSemanticHit {
 /** Injectable seams (tests + any future non-552 store). */
 export interface DocSemanticDeps {
   resolveEmbedder: () => Promise<{ mode: string; dims: number; embed: (t: string) => Promise<number[]> } | null>;
-  querySections: (vec: number[], mode: string, sourceKey: string, limit: number) => Promise<DocSemanticHit[]>;
+  querySections: (
+    vec: number[],
+    mode: string,
+    sourceKey: string,
+    limit: number,
+    identity?: SearchSourceParams['embeddingProfile'],
+  ) => Promise<DocSemanticHit[]>;
 }
 
-async function querySectionsReal(vec: number[], mode: string, sourceKey: string, limit: number): Promise<DocSemanticHit[]> {
+async function querySectionsReal(
+  vec: number[],
+  mode: string,
+  sourceKey: string,
+  limit: number,
+  identity?: SearchSourceParams['embeddingProfile'],
+): Promise<DocSemanticHit[]> {
+  const selection = identity
+    ? resolveProseProfileIdSelection(identity.profileId, identity.legacyMode)
+    : null;
+  if (!selection) return [];
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
   const rows = await sql<
@@ -62,7 +78,10 @@ async function querySectionsReal(vec: number[], mode: string, sourceKey: string,
       FROM harness_shared.doc_sections
      WHERE source_key = ${sourceKey}
        AND embedding IS NOT NULL
-       AND embedding_mode = ${mode}
+       AND (embedding_profile = ${selection.profileId}
+            OR (${selection.legacyMode !== null}
+                AND embedding_profile IS NULL
+                AND embedding_mode = ${selection.legacyMode ?? mode}))
      ORDER BY embedding <=> ${vecLit}::vector
      LIMIT ${limit}`;
   return rows.map((r) => ({
@@ -177,12 +196,12 @@ export function docSectionsRanker(
   deps?: DocSemanticDeps,
 ): (p: SearchSourceParams & { qVec: string }) => Promise<Listing> {
   const querySections = (deps ?? realDocSemanticDeps).querySections;
-  return async ({ query: _query, limit, qVec }): Promise<Listing> => {
+  return async ({ query: _query, limit, qVec, embeddingProfile }): Promise<Listing> => {
     // The engine hands over the qVec it already embedded; parse it back to the
     // number[] this store's query helper takes. (One embed per search, shared
     // across every source — which is exactly why the engine owns it.)
     const vec = qVec.slice(1, -1).split(',').map(Number);
-    const rows = await querySections(vec, embeddingMode, sourceKey, limit * OVERFETCH);
+    const rows = await querySections(vec, embeddingMode, sourceKey, limit * OVERFETCH, embeddingProfile);
     // Rows arrive distance-ordered; keep each page's best section.
     const bySlug = new Map<string, DocSemanticHit>();
     for (const r of rows) if (!bySlug.has(r.slug)) bySlug.set(r.slug, r);

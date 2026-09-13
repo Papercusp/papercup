@@ -237,7 +237,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   private readonly now: () => Date;
   private executeCommand?: SuSessionCommandExecutor<B>;
   private runtimeReady: () => boolean;
-  private readonly persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
+  private readonly persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | boolean | Promise<void | boolean>;
   private readonly commands = new Map<string, StoredCommand<B>>();
   private readonly durableCommands = new Map<string, {
     fingerprint: string;

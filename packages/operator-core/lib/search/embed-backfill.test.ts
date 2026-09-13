@@ -55,6 +55,7 @@ import {
   resetMemoryVecIdleLogState,
   MEMORY_VEC_IDLE_LOG_INTERVAL_MS,
   stalePredicateSql,
+  profileColOf,
   recipeColOf,
   activeRecipeVersion,
   BASELINE_RECIPE_VERSION,
@@ -65,6 +66,7 @@ import {
 // Import the width — the sweep writes into the prose columns, so a width change
 // must move this fixture automatically rather than stranding it (384→768).
 import { PROSE_VECTOR_DIMS } from './prose-vector-dims';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 // The default per-target cap is derived from the resource profile's batch size,
 // so the WI-7111 test asserts against the real value rather than a literal that
 // would silently stop testing anything if the profile changed.
@@ -465,6 +467,89 @@ describe('embedding-space discriminator (WI-3616)', () => {
     const update = unsafeCalls.find((c) => c.q.includes('UPDATE harness_shared.harness_escalations'))!;
     expect(update.q).toContain('body_embedding_mode = $2');
     expect(update.params![1]).toBe('openai'); // the mocked active mode
+  });
+});
+
+describe('exact embedding-profile discriminator (P-003)', () => {
+  const TARGET: BackfillTarget = {
+    table: 'harness_shared.operator_turns',
+    embedCol: 'text_embedding',
+    bodySql: 'text',
+    keyCols: ['id'],
+  };
+
+  function fakeSql(results: unknown[][]) {
+    const calls: Array<{ q: string; params?: unknown[] }> = [];
+    const sql = {
+      unsafe: async (q: string, params?: unknown[]) => {
+        calls.push({ q, params });
+        return results.shift() ?? [];
+      },
+    };
+    return { sql: sql as never, calls };
+  }
+
+  it('keeps exact profile identity separate from legacy mode and text recipe', () => {
+    expect(profileColOf(TARGET)).toBe('text_embedding_profile');
+    expect(profileColOf(TARGET)).not.toBe('text_embedding_mode');
+    expect(profileColOf(TARGET)).not.toBe('text_embedding_recipe');
+  });
+
+  it('accepts a mode-only legacy row only for that mode\'s current profile', () => {
+    const predicate = stalePredicateSql(TARGET, true, '$2', null, {
+      profileExpr: '$3',
+      legacyModeCompatible: true,
+    });
+    expect(predicate).toContain('text_embedding_profile IS NOT DISTINCT FROM $3');
+    expect(predicate).toContain('text_embedding_profile IS NULL');
+    expect(predicate).toContain('text_embedding_mode IS NOT DISTINCT FROM $2');
+
+    // Mutation/control: the same-mode alternate profile cannot use the legacy
+    // branch. It has to match an exact stored id or the row is stale.
+    const alternate = stalePredicateSql(TARGET, true, '$2', null, {
+      profileExpr: '$3',
+      legacyModeCompatible: false,
+    });
+    expect(alternate).toBe(
+      '(text_embedding IS NULL OR text_embedding_profile IS DISTINCT FROM $3)',
+    );
+    expect(alternate).not.toContain('text_embedding_mode');
+  });
+
+  it('writes vector, legacy mode and exact profile atomically without re-deriving identity', async () => {
+    const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'x' }], [], []]);
+    const stats = await backfillTable(sql, TARGET, async () => VEC, 10, 'gemma', true, undefined, {
+      profileColPresent: true,
+      profile: EMBEDDER_DIM_SPECS.gemma,
+    });
+    expect(stats.embedded).toBe(1);
+
+    const select = calls.find((c) => c.q.includes('SELECT'))!;
+    expect(select.params).toEqual([
+      10,
+      'gemma',
+      EMBEDDER_DIM_SPECS.gemma.profileId,
+      0,
+    ]);
+    const update = calls.find((c) => c.q.includes('UPDATE'))!;
+    expect(update.q).toContain('text_embedding_mode = $2');
+    expect(update.q).toContain('text_embedding_profile = $3');
+    expect(update.params).toEqual([
+      `[${VEC.join(',')}]`,
+      'gemma',
+      EMBEDDER_DIM_SPECS.gemma.profileId,
+      'row-1',
+    ]);
+  });
+
+  it('fails closed when a profile-aware target is called without exact profile identity', async () => {
+    const { sql, calls } = fakeSql([]);
+    await expect(
+      backfillTable(sql, TARGET, async () => VEC, 10, 'gemma', true, undefined, {
+        profileColPresent: true,
+      }),
+    ).rejects.toThrow(/requires an exact embedding profile/);
+    expect(calls).toEqual([]);
   });
 });
 

@@ -30,7 +30,7 @@ import { configureSearchDefaults, type SearchDefaultsContext } from '@papercusp/
 // alone pinned the store identity to the dev cluster within ~3s, which then
 // made every plans PG-fixture integration test observe a WRONG STORE. Guard:
 // `configure-search-defaults-import-purity.test.ts`.
-import { embedderModeOf } from './embedder-mode-registry';
+import { embedderModeOf, embedderProvenanceOf } from './embedder-mode-registry';
 import { proseMinScoreFloors } from './prose-min-score';
 
 /**
@@ -58,6 +58,13 @@ function minScore(ctx: SearchDefaultsContext) {
   return proseMinScoreFloors(embedderModeOf(ctx.embedder));
 }
 
+function embeddingProfile(ctx: SearchDefaultsContext) {
+  if (ctx.mode === 'fulltext') return undefined;
+  const provenance = embedderProvenanceOf(ctx.embedder);
+  if (!provenance?.profileId) return undefined;
+  return { profileId: provenance.profileId, legacyMode: provenance.mode };
+}
+
 let installed = false;
 
 /**
@@ -76,7 +83,7 @@ let installed = false;
 export function installSearchDefaults(): void {
   if (installed) return;
   installed = true;
-  configureSearchDefaults({ minScore });
+  configureSearchDefaults({ minScore, embeddingProfile });
 }
 
 /** Test seam: forget that the policy was installed. */

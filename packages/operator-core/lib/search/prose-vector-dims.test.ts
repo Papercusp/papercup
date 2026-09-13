@@ -29,9 +29,13 @@ import {
   PROSE_VECTOR_COLUMNS,
   PROSE_MEMORY_VEC_COLUMNS,
   WIDTH_MIGRATION_WIPE_SET,
+  PROSE_VECTOR_STORAGE_PROFILE,
   fitsProseColumns,
   computeProseColumnWidthSkew,
   modeTargetDims,
+  resolveProseProfileSelection,
+  storedProseIdentityMatches,
+  validateProseStorageCompatibility,
 } from './prose-vector-dims';
 // The sweep that has to REFILL whatever a width migration wipes — asserted
 // against the widened set below, so the two lists cannot drift apart again.
@@ -43,6 +47,53 @@ import { PERSONAL_EMBED_TARGET } from '../personal-vault/embedding';
 const REFILL_TARGETS = [...TARGETS, PERSONAL_EMBED_TARGET];
 
 describe('the prose column width contract', () => {
+  it('declares accepted profile identity independently from emitting profiles', () => {
+    expect(PROSE_VECTOR_STORAGE_PROFILE.dimensions).toBe(PROSE_VECTOR_DIMS);
+    for (const mode of PROSE_ELIGIBLE_MODES) {
+      const profile = EMBEDDER_DIM_SPECS[mode];
+      expect(validateProseStorageCompatibility(profile), `${mode}: ${profile.profileId}`).toEqual([]);
+      expect(PROSE_VECTOR_STORAGE_PROFILE.acceptedProfileIds).toContain(profile.profileId);
+    }
+  });
+
+  it('rejects an equal-width, equal-metric profile whose exact identity is not accepted', () => {
+    const current = EMBEDDER_DIM_SPECS.gemma;
+    expect(
+      validateProseStorageCompatibility({
+        profileId: 'gemma-embeddinggemma-300m-768@v2',
+        targetDims: current.targetDims,
+        distanceMetric: current.distanceMetric,
+      }),
+    ).toEqual([
+      expect.stringContaining('does not accept profile gemma-embeddinggemma-300m-768@v2'),
+    ]);
+  });
+
+  it('maps a legacy mode tag only to that mode\'s declared current profile', () => {
+    const current = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma);
+    expect(current).toEqual({
+      profileId: EMBEDDER_DIM_SPECS.gemma.profileId,
+      legacyMode: 'gemma',
+    });
+    expect(storedProseIdentityMatches({ profileId: null, mode: 'gemma' }, current!)).toBe(true);
+    expect(storedProseIdentityMatches({ profileId: null, mode: 'openai' }, current!)).toBe(false);
+
+    // Mutation/control: the alternate has the same mode, width and metric. It
+    // cannot borrow legacy rows merely because those weaker properties match.
+    const alternate = {
+      ...current!,
+      profileId: 'gemma-embeddinggemma-300m-768@v2' as const,
+      legacyMode: null,
+    };
+    expect(storedProseIdentityMatches({ profileId: null, mode: 'gemma' }, alternate)).toBe(false);
+    expect(
+      storedProseIdentityMatches(
+        { profileId: 'gemma-embeddinggemma-300m-768@v2', mode: 'gemma' },
+        alternate,
+      ),
+    ).toBe(true);
+  });
+
   it('every prose-eligible mode emits EXACTLY the column width', () => {
     for (const mode of PROSE_ELIGIBLE_MODES) {
       expect(

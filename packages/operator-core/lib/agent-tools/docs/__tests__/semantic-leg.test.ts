@@ -132,7 +132,18 @@ describe('realDocSemanticDeps — bounded query-embedder acquisition', () => {
 describe('docSectionsRanker', () => {
   const qVec = `[${VEC.join(',')}]`;
   const params = (limit: number) =>
-    ({ query: 'q', limit, qVec, sql: null, workspaceId: '', scopeFilter: null }) as never;
+    ({
+      query: 'q',
+      limit,
+      qVec,
+      sql: null,
+      workspaceId: '',
+      scopeFilter: null,
+      embeddingProfile: {
+        profileId: 'gemma-embeddinggemma-300m-768@v1',
+        legacyMode: 'gemma',
+      },
+    }) as never;
 
   it('dedupes to the best section per page and caps at limit', async () => {
     const listing = await docSectionsRanker('src', 'gemma', () => {}, deps())(params(2));
@@ -153,12 +164,18 @@ describe('docSectionsRanker', () => {
   it('passes the mode + source key + over-fetched limit through to the query', async () => {
     let got: unknown[] = [];
     await docSectionsRanker('harness:demo', 'gemma', () => {}, deps({
-      querySections: async (vec, mode, sourceKey, limit) => {
-        got = [vec.length, mode, sourceKey, limit];
+      querySections: async (vec, mode, sourceKey, limit, identity) => {
+        got = [vec.length, mode, sourceKey, limit, identity];
         return [];
       },
     }))(params(5));
-    expect(got).toEqual([PROSE_VECTOR_DIMS, 'gemma', 'harness:demo', 15]); // limit × OVERFETCH
+    expect(got).toEqual([
+      PROSE_VECTOR_DIMS,
+      'gemma',
+      'harness:demo',
+      15,
+      { profileId: 'gemma-embeddinggemma-300m-768@v1', legacyMode: 'gemma' },
+    ]); // limit × OVERFETCH
   });
 
   it('sinks each page hit so the caller can hydrate anchor/url/title after fusion', async () => {

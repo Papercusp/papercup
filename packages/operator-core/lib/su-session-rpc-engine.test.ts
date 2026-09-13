@@ -203,7 +203,8 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     let nativePersistenceStarted!: () => void;
     const nativePersistence = new Promise<void>((resolve) => { nativePersistenceStarted = resolve; });
     mocks.persist.mockImplementation(async (...args: unknown[]) => {
-      const descriptor = args[0] as { identity?: { nativeSessionId?: string | null } } | undefined;
+      const descriptor = args.find((arg): arg is { identity?: { nativeSessionId?: string | null } } =>
+        Boolean(arg && typeof arg === 'object' && 'identity' in arg)) as { identity?: { nativeSessionId?: string | null } } | undefined;
       if (descriptor?.identity?.nativeSessionId) {
         nativePersistenceStarted();
         await persistenceGate;
@@ -219,9 +220,11 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     release();
     await f.engine.ready;
     expect(ready).toBe(true);
-    expect(mocks.persist).toHaveBeenCalledWith(expect.objectContaining({
-      identity: expect.objectContaining({ nativeSessionId: `native-${backend}` }),
-    }));
+    expect(mocks.persist.mock.calls).toEqual(expect.arrayContaining([
+      [71, expect.objectContaining({
+        identity: expect.objectContaining({ nativeSessionId: `native-${backend}` }),
+      })],
+    ]));
   });
 
   it('refuses a greeting when the SU tool connection is absent', async () => {

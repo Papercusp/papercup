@@ -31,6 +31,30 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 // 600-row request on the live 302k-row corpus.
 import { withIterativeScan } from './hnsw-iterative-scan';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
+import { resolveProseProfileIdSelection } from '../../search/prose-vector-dims';
+
+/** Exact stored-space predicate for every vector source below. No extra read:
+ * provenance comes from the query embedder through the engine policy. Unknown
+ * or unaccepted identity becomes SQL FALSE, so the vector leg fails closed and
+ * the engine can still return lexical results. */
+function proseProfileSql(
+  p: Pick<SearchSourceParams, 'sql' | 'embeddingProfile'>,
+  profileColumn: string,
+  modeColumn: string,
+) {
+  const selection = p.embeddingProfile
+    ? resolveProseProfileIdSelection(
+        p.embeddingProfile.profileId,
+        p.embeddingProfile.legacyMode,
+      )
+    : null;
+  if (!selection) return p.sql`FALSE`;
+  const profile = p.sql.unsafe(profileColumn);
+  const mode = p.sql.unsafe(modeColumn);
+  return selection.legacyMode
+    ? p.sql`(${profile} = ${selection.profileId} OR (${profile} IS NULL AND ${mode} = ${selection.legacyMode}))`
+    : p.sql`${profile} = ${selection.profileId}`;
+}
 
 /**
  * Standard ts_headline options for all four surfaces.
@@ -274,7 +298,8 @@ const escalations: SearchSource = {
       };
     });
   },
-  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
+  async embedding(p): Promise<Listing> {
+    const { sql, query, workspaceId, scopeFilter, limit, qVec } = p;
     const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT harness_slug, phase, escalation, supervisor_notes,
              1 - (body_embedding <=> ${qVec}::vector) AS sim,
@@ -286,6 +311,7 @@ const escalations: SearchSource = {
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND body_embedding IS NOT NULL
+         AND ${proseProfileSql(p, 'body_embedding_profile', 'body_embedding_mode')}
     ORDER BY body_embedding <=> ${qVec}::vector
        LIMIT ${limit}
     `)) as unknown as Array<{ harness_slug: string; phase: string; escalation: string | null; supervisor_notes: string | null; sim: number; highlight: string }>;
@@ -337,7 +363,8 @@ const brainstorm: SearchSource = {
       },
     }));
   },
-  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
+  async embedding(p): Promise<Listing> {
+    const { sql, query, workspaceId, scopeFilter, limit, qVec } = p;
     const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT harness_slug, phase, content,
              1 - (content_embedding <=> ${qVec}::vector) AS sim,
@@ -348,6 +375,7 @@ const brainstorm: SearchSource = {
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND content_embedding IS NOT NULL
+         AND ${proseProfileSql(p, 'content_embedding_profile', 'content_embedding_mode')}
     ORDER BY content_embedding <=> ${qVec}::vector
        LIMIT ${limit}
     `)) as unknown as Array<{ harness_slug: string; phase: string; content: string; sim: number; highlight: string }>;
@@ -397,7 +425,8 @@ const turns: SearchSource = {
       },
     }));
   },
-  async embedding({ sql, query, workspaceId, limit, qVec }): Promise<Listing> {
+  async embedding(p): Promise<Listing> {
+    const { sql, query, workspaceId, limit, qVec } = p;
     const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT t.id, t.role, t.text,
              1 - (t.text_embedding <=> ${qVec}::vector) AS sim,
@@ -408,6 +437,7 @@ const turns: SearchSource = {
         JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id
        WHERE c.workspace_id = ${workspaceId}
          AND t.text_embedding IS NOT NULL
+         AND ${proseProfileSql(p, 't.text_embedding_profile', 't.text_embedding_mode')}
     ORDER BY t.text_embedding <=> ${qVec}::vector
        LIMIT ${limit}
     `)) as unknown as Array<{ id: string; role: string; text: string; sim: number; highlight: string }>;
@@ -459,7 +489,8 @@ const decisions: SearchSource = {
       };
     });
   },
-  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
+  async embedding(p): Promise<Listing> {
+    const { sql, query, workspaceId, scopeFilter, limit, qVec } = p;
     const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT harness_slug, line_hash, verb, args, iso,
              1 - (body_embedding <=> ${qVec}::vector) AS sim,
@@ -471,6 +502,7 @@ const decisions: SearchSource = {
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND body_embedding IS NOT NULL
+         AND ${proseProfileSql(p, 'body_embedding_profile', 'body_embedding_mode')}
     ORDER BY body_embedding <=> ${qVec}::vector
        LIMIT ${limit}
     `)) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; sim: number; highlight: string }>;
@@ -654,7 +686,8 @@ const workItem: SearchSource = {
    * second mode is ever written into this table, every source in this file needs the
    * predicate, not just this one — it is a registry-wide decision, not a local one.
    */
-  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
+  async embedding(p): Promise<Listing> {
+    const { sql, query, workspaceId, scopeFilter, limit, qVec } = p;
     const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT issue_id, scope, title, body, kind, state, severity, lane,
              coalesce(updated_at, created_at) AS updated_at,
@@ -668,6 +701,7 @@ const workItem: SearchSource = {
          -- 'operator' | 'harness:<slug>', so a bare slug maps to the latter.
          AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
          AND embedding IS NOT NULL
+         AND ${proseProfileSql(p, 'embedding_profile', 'embedding_mode')}
     ORDER BY embedding <=> ${qVec}::vector
        LIMIT ${limit}
     `)) as unknown as Array<{
@@ -865,6 +899,7 @@ const sessionTurn: SearchSource = {
            AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
            AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
            AND text_embedding IS NOT NULL
+           AND ${proseProfileSql(p, 'text_embedding_profile', 'text_embedding_mode')}
       ORDER BY text_embedding <=> ${p.qVec}::vector
          LIMIT ${p.limit})
         ${withChunks
@@ -890,6 +925,7 @@ const sessionTurn: SearchSource = {
            AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
            AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)
            AND c.embedding IS NOT NULL
+           AND ${proseProfileSql(p, 'c.embedding_profile', 'c.embedding_mode')}
       ORDER BY c.embedding <=> ${p.qVec}::vector
          LIMIT ${p.limit})`
           : p.sql``}

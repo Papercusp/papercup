@@ -37,7 +37,7 @@ import type { Embedder, Listing, SearchSourceParams } from '@papercusp/search';
 
 import { resolvePlanScope, type PlanSourceOpts } from './source';
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
-import { fitsProseColumns } from '../../search/prose-vector-dims';
+import { fitsProseColumns, resolveProseProfileIdSelection } from '../../search/prose-vector-dims';
 
 export interface PlanSemanticHit {
   slug: string;
@@ -56,6 +56,7 @@ export interface PlanSearchDeps {
     vec: number[],
     mode: string,
     opts: PlanSourceOpts & { includeArchived?: boolean; limit: number },
+    identity?: SearchSourceParams['embeddingProfile'],
   ) => Promise<PlanSemanticHit[]>;
 }
 
@@ -63,7 +64,12 @@ export async function queryTopPlansReal(
   vec: number[],
   mode: string,
   opts: PlanSourceOpts & { includeArchived?: boolean; limit: number },
+  identity?: SearchSourceParams['embeddingProfile'],
 ): Promise<PlanSemanticHit[]> {
+  const selection = identity
+    ? resolveProseProfileIdSelection(identity.profileId, identity.legacyMode)
+    : null;
+  if (!selection) return [];
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const vecLit = `[${vec.join(',')}]`;
   const rows = await withWorkspace(workspaceId, async (tx) => {
@@ -74,7 +80,10 @@ export async function queryTopPlansReal(
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND embedding IS NOT NULL
-         AND embedding_mode = ${mode}
+         AND (embedding_profile = ${selection.profileId}
+              OR (${selection.legacyMode !== null}
+                  AND embedding_profile IS NULL
+                  AND embedding_mode = ${selection.legacyMode ?? mode}))
          AND template_slug IS NULL
          ${archivedFilter}
        ORDER BY embedding <=> ${vecLit}::vector
@@ -193,12 +202,12 @@ export function planEmbeddingRanker(
   deps?: PlanSearchDeps,
 ): (p: SearchSourceParams & { qVec: string }) => Promise<Listing> {
   const queryTopPlans = (deps ?? realPlanSearchDeps).queryTopPlans;
-  return async ({ limit, qVec }): Promise<Listing> => {
+  return async ({ limit, qVec, embeddingProfile }): Promise<Listing> => {
     // The engine hands over the qVec it already embedded; parse it back to the
     // number[] this store's query helper takes. (One embed per search, shared
     // across every source — which is exactly why the engine owns it.)
     const vec = qVec.slice(1, -1).split(',').map(Number);
-    const rows = await queryTopPlans(vec, embeddingMode, { ...opts, limit });
+    const rows = await queryTopPlans(vec, embeddingMode, { ...opts, limit }, embeddingProfile);
     return rows.map((h) => {
       sink(h);
       return {
