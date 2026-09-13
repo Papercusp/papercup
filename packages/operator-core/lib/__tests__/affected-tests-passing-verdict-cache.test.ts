@@ -1468,6 +1468,33 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       const before = ordinary();
       const guardBefore = repoWide();
       if (!before.ok || !guardBefore.ok) throw new Error('expected hashable fixture provenance');
+      expect(before.semantic.files).toEqual([
+        'pkg/dependency/src/index.ts',
+        'pkg/target/src/index.ts',
+      ]);
+      expect(before.execution?.files).toEqual(sharedBefore.files);
+
+      const semanticIdentity = (dependencyHash: string) =>
+        buildPassingTaskVerdictIdentity({
+          taskKey: '@target :: test',
+          command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/repo/pkg/target' },
+          gateConfig: passingTaskVerdictCrossRunGateConfig({ retryFailed: false }),
+          dependencyHash,
+          environment: passingTaskVerdictCrossRunIdentityEnvironment({
+            CODEX_SESSION_ID: 'run-a',
+            PATH: '/run-a/bin',
+          }).environment,
+        });
+      const storedSemanticProof = passingTaskVerdictEntry(
+        semanticIdentity(before.semantic.hash),
+      );
+      const decideSemantic = (dependencyHash: string) =>
+        decidePassingTaskVerdict({
+          enabled: true,
+          cacheRead: { reason: 'cache-ready' },
+          entry: storedSemanticProof,
+          identity: semanticIdentity(dependencyHash),
+        });
 
       writeFileSync(join(root, 'README.md'), 'unrelated root doc:changed\n');
       writeFileSync(join(root, 'scripts/unrelated-maintenance.mjs'), 'export const unrelated = 2;\n');
@@ -1475,13 +1502,20 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       const afterUnrelated = ordinary();
       const guardAfterUnrelated = repoWide();
       if (!afterUnrelated.ok || !guardAfterUnrelated.ok) throw new Error('expected hashable fixture provenance');
-      expect(afterUnrelated.hash).toBe(before.hash);
-      expect(guardAfterUnrelated.hash).not.toBe(guardBefore.hash);
+      expect(afterUnrelated.semantic.hash).toBe(before.semantic.hash);
+      expect(afterUnrelated.execution?.hash).toBe(before.execution?.hash);
+      expect(guardAfterUnrelated.semantic.hash).not.toBe(guardBefore.semantic.hash);
 
       writeFileSync(join(root, 'libs/test-config/src/setup.ts'), 'export const setup = false;\n');
       const afterConfig = ordinary();
       if (!afterConfig.ok) throw new Error(afterConfig.reason);
+      expect(afterConfig.semantic.hash).toBe(before.semantic.hash);
+      expect(afterConfig.execution?.hash).not.toBe(before.execution?.hash);
       expect(afterConfig.hash).not.toBe(before.hash);
+      expect(decideSemantic(afterConfig.semantic.hash)).toEqual({
+        hit: true,
+        reason: 'identity-match',
+      });
 
       writeFileSync(
         join(root, 'libs/test-config/src/setup.ts'),
@@ -1490,7 +1524,12 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       writeFileSync(join(root, 'pkg/target/src/index.ts'), 'target:v2\n');
       const afterWorkspace = ordinary();
       if (!afterWorkspace.ok) throw new Error(afterWorkspace.reason);
-      expect(afterWorkspace.hash).not.toBe(before.hash);
+      expect(afterWorkspace.semantic.hash).not.toBe(before.semantic.hash);
+      expect(afterWorkspace.execution?.hash).toBe(before.execution?.hash);
+      expect(decideSemantic(afterWorkspace.semantic.hash)).toEqual({
+        hit: false,
+        reason: 'dependency-closure-changed',
+      });
 
       writeFileSync(
         join(root, 'pkg/target/src/index.ts'),
@@ -1499,7 +1538,12 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       writeFileSync(join(root, 'pkg/dependency/src/index.ts'), 'dependency:v2\n');
       const afterDependency = ordinary();
       if (!afterDependency.ok) throw new Error(afterDependency.reason);
-      expect(afterDependency.hash).not.toBe(before.hash);
+      expect(afterDependency.semantic.hash).not.toBe(before.semantic.hash);
+      expect(afterDependency.execution?.hash).toBe(before.execution?.hash);
+      expect(decideSemantic(afterDependency.semantic.hash)).toEqual({
+        hit: false,
+        reason: 'dependency-closure-changed',
+      });
 
       writeFileSync(
         join(root, 'pkg/dependency/src/index.ts'),
@@ -1508,7 +1552,13 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       writeFileSync(join(root, 'scripts/lib/runtime.mjs'), 'export const runtime = 2;\n');
       const afterRunner = ordinary();
       if (!afterRunner.ok) throw new Error(afterRunner.reason);
+      expect(afterRunner.semantic.hash).toBe(before.semantic.hash);
+      expect(afterRunner.execution?.hash).not.toBe(before.execution?.hash);
       expect(afterRunner.hash).not.toBe(before.hash);
+      expect(decideSemantic(afterRunner.semantic.hash)).toEqual({
+        hit: true,
+        reason: 'identity-match',
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

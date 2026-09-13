@@ -5399,7 +5399,7 @@ const TASK_VERDICT_CLOSURE_MANIFEST_PATH = closureDigestManifestPath(
 const taskVerdictClosureManifestRead = TASK_VERDICT_CACHE_ENABLED
   ? readClosureDigestManifest(TASK_VERDICT_CLOSURE_MANIFEST_PATH)
   : null;
-/** taskKey -> { fileCount, listHash } for every closure this run resolved. */
+/** taskKey -> { fileCount, listHash } for every semantic closure this run resolved. */
 const taskVerdictClosureShapes = {};
 // cacheGroup -> { envKey: digest } as this run computed it. Last writer wins: the identity
 // environment is a property of the RUN, and the per-task variation that does exist
@@ -5427,9 +5427,10 @@ function dependencyProvenanceForTask(t) {
     digestCache: taskVerdictDigestCache,
   });
   if (provenance?.ok) {
+    const semantic = provenance.semantic;
     taskVerdictClosureShapes[key] = {
-      fileCount: provenance.fileCount,
-      listHash: provenance.listHash,
+      fileCount: semantic.fileCount,
+      listHash: semantic.listHash,
     };
   }
   return provenance;
@@ -5470,7 +5471,7 @@ function reportClosureDeltaForMiss(context, decision) {
       return;
     }
     if (!reason.endsWith("dependency-closure-changed")) return;
-    const provenance = context.cacheProvenance;
+    const provenance = context.cacheProvenance?.semantic;
     if (!provenance?.ok || !provenance.files) return;
     errSync(
       formatClosureDeltaLine({
@@ -5850,7 +5851,7 @@ function runCapturedTask(
               source: taskTimeoutSource,
             },
           },
-          dependencyHash: context.cacheProvenance.hash,
+          dependencyHash: context.cacheProvenance.semantic.hash,
         };
         cacheIdentity = buildPassingTaskVerdictIdentity({
           ...cacheIdentitySpec,
