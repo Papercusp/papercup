@@ -962,7 +962,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Completion evidence is mandatory',
-    body: '`work_items:complete` terminal closes require `{id,state,assumptions: "none",completion:{summary,testsRun,testResult,verifiedHow,filesChanged}}`; use fact keys when applicable. Successful bug/capability-gap closes also require `completion.rootCauseVerification:{hypothesis,alternativeHypothesis,distinguishingTest:"if H1 then A; if H2 then B",testResult,testProcedure,predictedObservations:{hypothesis,alternativeHypothesis},actualObservation,evidenceRefs}`; missing contrastive evidence is rejected.',
+    body: '`work_items:complete` terminal closes require `{id,state,assumptions: "none",completion:{summary,testsRun,testResult,verifiedHow,filesChanged}}`; use fact keys when applicable. Successful bug/capability-gap closes also require `completion.rootCauseVerification:{hypothesis,alternativeHypothesis,distinguishingTest:"<procedure>",testResult,testProcedure,predictedObservations:{hypothesis:"<expected under H1>",alternativeHypothesis:"<expected under H2>"},actualObservation,evidenceRefs}`. The typed predictions must differ; `distinguishingTest` requires no prose template. Missing contrastive evidence is rejected.',
   },
   {
     head: '"Not available" means DEFERRED, not missing',
