@@ -584,6 +584,7 @@ function gradingAuditBrief(card: ScorecardRow): string {
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...} }. Include concrete evidence for every criterion in the grading-integrity rubric.`,
+    `Before emitting, re-read the target scorecard's payload.observation.gradingAudit.state (and its superseded/retracted status): this dispatch brief may be stale after the reservation lease expires. Emit only when the exact target is still current and its gradingAudit.state is exactly 'pending'. If the state is 'passed' or 'failed', or the target is superseded or retracted, do not emit any audit; report the current state and any auditIssueId, then stop.`,
     'A successful audit emission settles the target scorecard; do not emit any second audit or other scorecard.',
   ].join('\n\n');
 }

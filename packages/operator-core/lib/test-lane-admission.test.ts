@@ -63,6 +63,7 @@ describe('operator-core test-lane admission', () => {
     const code = await runPureLaneShards({
       env: { VITEST_MAX_WORKERS: '3' },
       forwardedArgs: ['--no-passWithNoTests'],
+      pureFileCount: 3606,
       stderr: { write: () => true },
       run: async (args) => {
         active += 1;

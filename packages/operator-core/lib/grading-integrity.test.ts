@@ -461,6 +461,19 @@ describe('dispatchPendingGradingAudits', () => {
     expect(secondBrief).not.toContain('/tmp/grading-integrity-EI-audit-a.XXXXXX');
   });
 
+  it('instructs auditors to re-check live grading state before emitting', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-state-recheck')]);
+
+    await dispatchPendingGradingAudits({ targetIds: ['EI-state-recheck'], ctx }, d);
+
+    const brief = (d.launch.mock.calls[0]?.[0] as { brief: string }).brief;
+    expect(brief).toContain("Before emitting, re-read the target scorecard's payload.observation.gradingAudit.state");
+    expect(brief).toContain("gradingAudit.state is exactly 'pending'");
+    expect(brief).toContain("state is 'passed' or 'failed'");
+    expect(brief).toContain('superseded or retracted');
+  });
+
   it('selects a settled card whose audit identity is stale and forwards currentness for atomic reopening', async () => {
     const d = deps();
     const currentness = {

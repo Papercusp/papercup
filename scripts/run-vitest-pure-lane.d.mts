@@ -28,4 +28,5 @@ export function runPureLaneShards(options?: {
   forwardedArgs?: string[];
   run?: (args: string[]) => Promise<number>;
   stderr?: Pick<Writable, "write">;
+  pureFileCount?: number;
 }): Promise<number>;

@@ -179,6 +179,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'dev:pg_query',
     'dev:dogfood_substrate_status',
     'coord:whoami',
+    'coord:declare-intent',
     'locks:queue',
     'tools:find',
     'plans:get',
@@ -208,6 +209,7 @@ const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
 const COORD_WHOAMI_NAME = normalizeMcpName('coord:whoami');
+const COORD_DECLARE_INTENT_NAME = normalizeMcpName('coord:declare-intent');
 const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName('capability:bash_output');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
@@ -250,6 +252,10 @@ const CRITICAL_COORD_SEND_MAX_BODY_CHARS = 600;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS = 200;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS = 600;
 const CRITICAL_BASH_OUTPUT_ID_MAX_CHARS = 256;
+const CRITICAL_DECLARE_INTENT_MAX_INTENT_CHARS = 600;
+const CRITICAL_DECLARE_INTENT_MAX_PLAN_CHARS = 200;
+const CRITICAL_DECLARE_INTENT_MAX_HARNESS_CHARS = 120;
+const CRITICAL_DECLARE_INTENT_MAX_ITEMS = 40;
 
 const PLAN_CLASS_RUBRIC_REFS = new Set([
   'plan-class-feature-ship',
@@ -463,6 +469,52 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
   return true;
+}
+
+/**
+ * `coord:declare-intent` is the required post-compaction presence/lane
+ * re-declaration, so it must remain usable while the operator is shedding
+ * ordinary calls. Keep the recovery exception to the bounded core declaration
+ * shape: intent, an optional plan/harness, and at most the schema's 40 P-NNN
+ * lane ids. Enriched file/goal/exclusion payloads stay on the ordinary path.
+ */
+export function isBoundedCoordDeclareIntentArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['intent', 'current_plan_slug', 'items', 'harness']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.intent !== 'string' ||
+    args.intent.trim().length === 0 ||
+    args.intent.length > CRITICAL_DECLARE_INTENT_MAX_INTENT_CHARS
+  ) {
+    return false;
+  }
+  if (
+    args.current_plan_slug !== undefined &&
+    args.current_plan_slug !== null &&
+    (typeof args.current_plan_slug !== 'string' ||
+      args.current_plan_slug.trim().length === 0 ||
+      args.current_plan_slug.length > CRITICAL_DECLARE_INTENT_MAX_PLAN_CHARS)
+  ) {
+    return false;
+  }
+  if (
+    args.harness !== undefined &&
+    (typeof args.harness !== 'string' ||
+      args.harness.trim().length === 0 ||
+      args.harness.length > CRITICAL_DECLARE_INTENT_MAX_HARNESS_CHARS)
+  ) {
+    return false;
+  }
+  if (args.items === undefined) return true;
+  if (
+    !Array.isArray(args.items) ||
+    args.items.length > CRITICAL_DECLARE_INTENT_MAX_ITEMS ||
+    !args.items.every((item) => typeof item === 'string' && /^P-\d{3,}$/.test(item))
+  ) {
+    return false;
+  }
+  return args.items.length === 0 || typeof args.current_plan_slug === 'string';
 }
 
 /**
@@ -1322,6 +1374,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
   if (normalized === COORD_WHOAMI_NAME) return isBoundedCoordWhoamiArgs(args);
+  if (normalized === COORD_DECLARE_INTENT_NAME) return isBoundedCoordDeclareIntentArgs(args);
   if (normalized === COORD_SEND_NAME) return isBoundedCoordSendArgs(args);
   if (normalized === CAPABILITY_BASH_OUTPUT_NAME) return isBoundedBashOutputArgs(args);
   if (normalized === WORK_ITEMS_COMMENT_NAME) return isBoundedWorkItemsCommentArgs(args);

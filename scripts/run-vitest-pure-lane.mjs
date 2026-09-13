@@ -159,9 +159,9 @@ export async function runPureLaneShards({
   forwardedArgs = process.argv.slice(2),
   run = (args) => runVitestProcess(args, { env }),
   stderr = process.stderr,
+  pureFileCount =
+    resolveLaneInclude(process.cwd(), "pure").include?.length ?? 0,
 } = {}) {
-  const pureFileCount =
-    resolveLaneInclude(process.cwd(), "pure").include?.length ?? 0;
   if (pureFileCount === 0) {
     throw new Error(
       `PC_TEST_LANE=pure found ZERO files under ${process.cwd()}`,
