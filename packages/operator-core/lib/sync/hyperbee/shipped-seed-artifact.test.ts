@@ -50,6 +50,13 @@ const REPO_ROOT = join(HERE, '../../../../..');
  *  every few minutes, so an in-tree mutation can be committed mid-probe). */
 const SEED_DIR = process.env.PAPERCUSP_TEST_SEED_DIR ?? join(REPO_ROOT, 'papercusp-desktop/src-tauri/seed');
 
+// This assertion streams every byte of the real shipped artifact (3.94 GB on
+// 2026-09-13). It completed in 16.247s alone but exceeded the shared 60s unit
+// deadline under a 32-worker pure-lane shard. Keep the wider budget local to the
+// data-scaled integrity check; the synthetic and metadata checks stay on the
+// ordinary unit deadline.
+const SHIPPED_SEED_HASH_TIMEOUT_MS = 120_000;
+
 const seedPresent = existsSync(join(SEED_DIR, SEED_MANIFEST_FILE));
 
 /**
@@ -173,19 +180,23 @@ describe.skipIf(!seedPresent)('shipped seed artifact (integrity of the real bund
    * apps/operator/lib/release/seed-payload-integrity-guard.ts, which now refuses that at cut
    * time so this artifact-side red stops being the first place anyone finds out).
    */
-  it('every declared payload HASHES to its manifest entry — the exact gate boot applies', async () => {
-    const registry = defaultSeedRegistry();
-    for (const store of manifest!.stores) {
-      if (store.source.type !== 'resource') continue;
-      const provider = registry.get(store.kind);
-      expect(provider, `${store.kind}: no provider registered — boot could not restore it`).toBeDefined();
-      const verdict = await provider!.verify(store, { path: join(SEED_DIR, store.source.path) });
-      expect(
-        verdict.ok,
-        `${store.kind}: ${verdict.reason ?? 'unknown'} — boot SKIPS this store and restores without it`,
-      ).toBe(true);
-    }
-  });
+  it(
+    'every declared payload HASHES to its manifest entry — the exact gate boot applies',
+    async () => {
+      const registry = defaultSeedRegistry();
+      for (const store of manifest!.stores) {
+        if (store.source.type !== 'resource') continue;
+        const provider = registry.get(store.kind);
+        expect(provider, `${store.kind}: no provider registered — boot could not restore it`).toBeDefined();
+        const verdict = await provider!.verify(store, { path: join(SEED_DIR, store.source.path) });
+        expect(
+          verdict.ok,
+          `${store.kind}: ${verdict.reason ?? 'unknown'} — boot SKIPS this store and restores without it`,
+        ).toBe(true);
+      }
+    },
+    SHIPPED_SEED_HASH_TIMEOUT_MS,
+  );
 
   it('ships the bundled epoch keys — the offline path for the DEFERRED git restore', () => {
     // bootstrap-papercusp-hive.ts:453-458 calls this "the crux of the offline pot":

@@ -34,7 +34,7 @@ import {
   type DeliveryMode,
   type ThreadPostRow,
 } from '@papercusp/coordination/capabilities';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { DEFAULT_COORD_WORKSPACE, withPgContentionRetry } from '@papercusp/coordination/event-log';
 import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
@@ -2888,7 +2888,7 @@ export async function claimIssue(
        AND feature_id = ${id}
        AND item_kind IN ('bug', 'change', 'task')`;
   const priorAssignee = priorRows[0]?.taken_by ?? null;
-  const rows = await sql<IssueRowDb[]>`
+  const rows = await withPgContentionRetry(() => sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues AS target SET
       payload = CASE
         WHEN target.assignee = ${assignee}
@@ -2993,7 +2993,7 @@ export async function claimIssue(
        -- returned a bare ok:true on a state='done' row, so an agent could not tell fresh
        -- work from finished work. That is fixed where it belongs, in the claim TOOL's
        -- success path (a loud terminalWarning), not by removing this escape hatch.
-    RETURNING ${sql.unsafe(ISSUE_COLS)}`;
+    RETURNING ${sql.unsafe(ISSUE_COLS)}`);
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   // The claimer follows the issue.
