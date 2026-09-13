@@ -432,6 +432,24 @@ function isFactualTimeoutClassification(line: string): boolean {
   return FACTUAL_GATE_STATUS_RE.test(line) && FACTUAL_TIMEOUT_CLASSIFICATION_RE.test(line);
 }
 
+/**
+ * EI-22739052265201730: a pause-transition carry note may tell the successor to
+ * keep the loop parked until a RESUMPTION is owner-verified. This is a reader-
+ * safety condition, not an assertion that the current writer received an owner
+ * directive: the condition explicitly requires a later verification event.
+ *
+ * Keep the exemption narrow to the loop's two pause-boundary actions (`re-arm`
+ * and `pull`) plus the explicit owner-verified resume condition. A generic
+ * `do not X until Y` gate, including a deployment gate or an owner-approval
+ * claim, must continue through the provenance nudge.
+ */
+const OWNER_VERIFIED_PAUSE_TRANSITION_GATE_RE =
+  /\bdo\s+not\b[^.;\n]{0,100}\b(?:re-?arm|pull)\b[^.;\n]{0,100}\buntil\s+(?:an?\s+)?owner[-\s]verified\s+(?:resume|resumption)\s+(?:directive|cue|signal)\b/i;
+
+function isOwnerVerifiedPauseTransitionGate(line: string): boolean {
+  return OWNER_VERIFIED_PAUSE_TRANSITION_GATE_RE.test(line);
+}
+
 // EI-20246140574201628: a backtick-quoted gate is a cited phrase, not a new directive.
 function isBareGateInsideInlineCode(line: string, match: RegExpExecArray): boolean {
   for (const segmentMatch of line.matchAll(INLINE_CODE_SEGMENT_RE)) {
@@ -772,7 +790,8 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       !hasTaggedProvenanceBlock &&
       bareGateMatch &&
       !isBareGateInsideInlineCode(line, bareGateMatch) &&
-      !isFactualTimeoutClassification(line)
+      !isFactualTimeoutClassification(line) &&
+      !isOwnerVerifiedPauseTransitionGate(line)
     ) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'bare-gate-imperative' });
     }

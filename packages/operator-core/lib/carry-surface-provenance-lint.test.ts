@@ -45,6 +45,24 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0].kind).toBe('bare-gate-imperative');
   });
 
+  it('EI-22739052265201730: does not flag an owner-verified loop pause-transition gate', () => {
+    expect(
+      lintCarrySurfaceProvenance('do not re-arm awaits or pull until an owner-verified resume directive.'),
+    ).toEqual({ flagged: false, matches: [] });
+    expect(
+      lintCarrySurfaceProvenance('Do NOT rearm the warm loop or pull new work until an owner verified resume cue lands.'),
+    ).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('EI-22739052265201730: keeps non-pause gates and unverified approval conditions loud', () => {
+    expect(lintCarrySurfaceProvenance('do not deploy until an owner-verified approval.').matches[0]?.kind).toBe(
+      'bare-gate-imperative',
+    );
+    expect(lintCarrySurfaceProvenance('do not re-arm awaits or pull until the UI pass is done').matches[0]?.kind).toBe(
+      'bare-gate-imperative',
+    );
+  });
+
   // EI-16031: a "do not X until Y" match must be an IMPERATIVE (no expressed
   // subject) to flag — a DECLARATIVE sentence describing some other subject's
   // behavior is a measurement, not a directive, and must not false-positive.
