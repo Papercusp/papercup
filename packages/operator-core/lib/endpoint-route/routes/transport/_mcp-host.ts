@@ -2118,12 +2118,14 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   }
 
   // These are the standard result-bearing fields emitted by the tool
-  // envelopes. An explicitly empty field means the response is still a
-  // candidate for the proxy's empty/not-found warning. Unknown `ok:true`
-  // shapes remain diagnostic-safe rather than being treated as populated.
+  // envelopes. `presence` is the populated success payload returned by
+  // coord:declare-intent. An explicitly empty field means the response is
+  // still a candidate for the proxy's empty/not-found warning. Unknown
+  // `ok:true` shapes remain diagnostic-safe rather than being treated as
+  // populated.
   let sawResultField = false;
   let hasPopulatedField = false;
-  for (const key of ['results', 'items', 'data', 'result', 'value']) {
+  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence']) {
     if (!(key in body)) continue;
     sawResultField = true;
     const value = body[key];

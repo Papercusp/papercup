@@ -83,6 +83,23 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not add the proxy degradation warning to a populated coord:declare-intent result', () => {
+    const body = {
+      ok: true,
+      presence: { ownerId: 'su-1', intent: 'verify warning classification' },
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-06T17:27:06.548Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it('does not add the proxy degradation warning to a populated coord:inbox result without ok', () => {
     const body = {
       owner_id: 'su-1',
