@@ -130,6 +130,14 @@ export function buildIapReverseTunnelArgs({
   ];
 }
 
+/** Fail with the tunnel's own diagnostic once a late SSH exit is observable. */
+export function assertIapReverseTunnelRunning(status) {
+  if (status?.exitCode === undefined) return;
+  fail(`IAP reverse tunnel exited while it was required (exit ${status.exitCode})`, {
+    stderr: typeof status.stderr === 'string' ? status.stderr : '',
+  });
+}
+
 /**
  * Resolve an image FAMILY to the concrete image it currently points at.
  *

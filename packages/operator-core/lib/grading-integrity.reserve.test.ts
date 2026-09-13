@@ -163,6 +163,28 @@ describe('reservePendingGradingAudit', () => {
       expect(result).toEqual({ status: 'quota-backoff', backoff: liveBackoff });
     });
 
+    it('reports a live non-quota failure window as dispatch-backoff', async () => {
+      const dispatchBackoff = {
+        ...liveBackoff,
+        source: 'retry-window' as const,
+        code: 'dispatch_exception',
+        reason: 'lineage unavailable',
+      };
+      transactionHarness({
+        claim: false,
+        currentState: 'pending',
+        hasReservation: false,
+        backoff: dispatchBackoff,
+      });
+
+      const result = await reservePendingGradingAudit('EI-route-failed', 'grading-audit:route-failed', {
+        workspaceId: 'ws-test',
+        now,
+      });
+
+      expect(result).toEqual({ status: 'dispatch-backoff', backoff: dispatchBackoff });
+    });
+
     it('does not refuse on a SPENT backoff — an elapsed stamp falls through to the ordinary verdict', async () => {
       transactionHarness({
         claim: false,

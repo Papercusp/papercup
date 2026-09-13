@@ -47,6 +47,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // rubric scorecards back (completeness via nKeys/missingKeys, emission gaps via
   // the since window) — monitoring-the-monitor.
   'mcp__agentmcp__scorecards:list',
+  // Evidence-first single-card drill-down for grading-integrity audits; the
+  // default operator needs this when staging is unavailable.
+  'mcp__agentmcp__scorecards:get',
   // The emission-freshness check (P-014b) — is the Overwatch emitting COMPLETE scorecards, or
   // silently skipping (stale) / truncating to partials (partial-only)? monitor-the-monitor.
   'mcp__agentmcp__scorecards:freshness',

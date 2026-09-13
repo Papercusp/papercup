@@ -79,6 +79,10 @@ describe('ALL_AGENT_MCP_TOOLS', () => {
   it('includes harness:list for the proactive scanner', () => {
     expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__harness:list');
   });
+
+  it('includes scorecards:get for evidence-first audit fallback', () => {
+    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__scorecards:get');
+  });
 });
 
 // WI-4949: Claude Code sanitizes the colon out of an MCP tool name before the
