@@ -799,6 +799,54 @@ describe('bounded inactive artifact reclaim (EI-21150371868241728)', () => {
     }
   });
 
+  it('preserves a live target slot without letting it veto unrelated configured-target profiles', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-configured-slot-reclaim-'));
+    const configuredTarget = resolve(root, 'cargo-target');
+    const slots = resolve(configuredTarget, '.papercusp-target-slots');
+    const liveSlot = resolve(slots, 'dev3');
+
+    try {
+      const staleDebug = resolve(configuredTarget, 'debug');
+      const liveRelease = resolve(configuredTarget, 'release');
+      for (const path of [staleDebug, liveRelease, liveSlot]) {
+        mkdirSync(path, { recursive: true });
+        writeFileSync(resolve(path, 'artifact'), 'x');
+        age(path);
+      }
+      ensureCargoCacheTag(configuredTarget);
+      age(configuredTarget);
+
+      const rootCalls: string[][] = [];
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [configuredTarget],
+        configuredTargetDir: configuredTarget,
+        now: Date.now(),
+        policy: { ...stalePolicy, maxEntries: 4 },
+        pathIsLive: (path: string, ignoredSubtrees: string[] = []) => {
+          if (path === configuredTarget) {
+            rootCalls.push(ignoredSubtrees);
+            return !ignoredSubtrees.includes(slots);
+          }
+          return path === liveRelease;
+        },
+        slotLockIsHeld: () => false,
+      });
+
+      expect(rootCalls).toEqual([[slots]]);
+      expect(existsSync(staleDebug)).toBe(false);
+      expect(readFileSync(resolve(liveRelease, 'artifact'), 'utf8')).toBe('x');
+      expect(readFileSync(resolve(liveSlot, 'artifact'), 'utf8')).toBe('x');
+      expect(result.reclaimed).toBe(1);
+      expect(result.skipped).toContainEqual({
+        path: liveRelease,
+        reason: 'live descriptor or executable',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('stamps producer ownership and keeps explicit rig retention visible to the reaper', () => {
     expect(VERIFY_SOURCE).toContain('write_run_marker "$$"');
     expect(VERIFY_SOURCE).toContain('write_run_marker "$PORT_LOCK_KEEPER_PID"');

@@ -364,7 +364,11 @@ function pathIsInside(root, candidate) {
  * pid file or a directory mtime.  This runs only on a low-disk admission path,
  * and returns on the first match; it never emits the raw /proc scan.
  */
-function defaultPathIsLive(root) {
+function defaultPathIsLive(root, ignoredSubtrees = []) {
+  const ignored = ignoredSubtrees.map((path) => resolve(path));
+  const isBlockingUse = (path) =>
+    pathIsInside(root, path) &&
+    !ignored.some((ignoredRoot) => pathIsInside(ignoredRoot, path));
   let processes;
   try { processes = readdirSync('/proc'); } catch { return true; }
   for (const name of processes) {
@@ -374,14 +378,14 @@ function defaultPathIsLive(root) {
     const proc = `/proc/${name}`;
     for (const special of ['cwd', 'exe']) {
       try {
-        if (pathIsInside(root, readlinkSync(`${proc}/${special}`))) return true;
+        if (isBlockingUse(readlinkSync(`${proc}/${special}`))) return true;
       } catch { /* process exited or access was denied */ }
     }
     let fds;
     try { fds = readdirSync(`${proc}/fd`); } catch { continue; }
     for (const fd of fds) {
       try {
-        if (pathIsInside(root, readlinkSync(`${proc}/fd/${fd}`))) return true;
+        if (isBlockingUse(readlinkSync(`${proc}/fd/${fd}`))) return true;
       } catch { /* descriptor closed during the scan */ }
     }
   }
@@ -604,7 +608,7 @@ export function pruneStaleBuildScriptOutputs(targetDir, options = {}) {
  *
  * @param {{ tmpDir?: string, cargoRoots?: string[], configuredTargetDir?: string,
  *   now?: number, policy?: object, dryRun?: boolean,
- *   pathIsLive?: (path: string) => boolean,
+ *   pathIsLive?: (path: string, ignoredSubtrees?: string[]) => boolean,
  *   slotLockIsHeld?: (path: string, homeDir: string) => boolean }} options
  * @returns {{ scanned: number, reclaimed: number, bytesReclaimed: number,
  *   skipped: Array<{ path: string, reason: string }>, dryRun: boolean }}
@@ -726,7 +730,16 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
       continue;
     }
     const slotHeld = slotLockIsHeld(root, homeDir);
-    const live = pathIsLive(root);
+    // A configured shared target owns slot-isolated live desktops below this
+    // subtree, but cargoArtifactCandidates never offers the subtree itself for
+    // deletion. Treating one live slot as a live use of the WHOLE target made
+    // every unrelated root-level profile unreachable during disk recovery.
+    // Ignore only this non-candidate subtree for the root veto; each candidate
+    // still gets its own unignored PID/heartbeat/fd/keep checks below.
+    const ignoredRootLiveSubtrees = configuredTaggedRoot
+      ? [join(root, '.papercusp-target-slots')]
+      : [];
+    const live = pathIsLive(root, ignoredRootLiveSubtrees);
     if (slotHeld || live) {
       result.skipped.push({ path: root, reason: slotHeld ? 'target slot is held' : 'live target descriptor' });
       continue;
