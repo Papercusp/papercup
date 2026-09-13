@@ -49,6 +49,7 @@ import {
   finishSyncEnrolment,
   syncEnrolmentScopePath,
 } from '../../task-manager/enroll-sync';
+import { isReadOnlyHeadPipeline } from './bash-effect';
 import { onTaskKillRequested } from '../../task-manager/kill-notify';
 import { warmScopeProbe } from '../../task-manager/managed-spawn';
 import type { CgroupCpuSample } from './cgroup-cpu';
@@ -1774,6 +1775,24 @@ function instrumentMissingCommandFailures(command: string, token: string): strin
   );
 }
 
+/**
+ * `head` is an intentional early-exit consumer for bounded read-only
+ * inspection. When a producer still has data, the kernel delivers SIGPIPE and
+ * bash + pipefail reports 141. Normalize only that exact narrow shape; a
+ * failing producer, a mutating/unknown command, or another consumer remains a
+ * genuine non-zero result.
+ */
+export function normalizeExpectedSigpipeResult(
+  command: string,
+  status: BashStatus,
+  exitCode: number | null,
+): { status: BashStatus; exitCode: number | null } {
+  if (status === 'failed' && exitCode === 141 && isReadOnlyHeadPipeline(command)) {
+    return { status: 'completed', exitCode: 0 };
+  }
+  return { status, exitCode };
+}
+
 function createMissingCommandMarkerDetector(token: string): { push: (chunk: string) => void; seen: () => boolean } {
   const marker = `${MISSING_COMMAND_SENTINEL_PREFIX} token=${token} `;
   let tail = '';
@@ -2118,7 +2137,8 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     });
     child.on('close', (code) => {
       const status: BashStatus = timedOut ? 'timed_out' : aborted ? 'killed' : code === 0 ? 'completed' : 'failed';
-      finish(status, code);
+      const normalized = normalizeExpectedSigpipeResult(opts.command, status, code);
+      finish(normalized.status, normalized.exitCode);
     });
   });
 }
@@ -2445,8 +2465,13 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     );
   });
   child.on('close', (code) => {
-    if (job.status === 'running') job.status = code === 0 ? 'completed' : 'failed';
-    job.exitCode = code;
+    if (job.status === 'running') {
+      const normalized = normalizeExpectedSigpipeResult(opts.command, code === 0 ? 'completed' : 'failed', code);
+      job.status = normalized.status;
+      job.exitCode = normalized.exitCode;
+    } else {
+      job.exitCode = code;
+    }
     job.endedAt = Date.now();
     clearTimeout(timer);
     const normalized = normalizeMissingCommandResult(job.status, job.exitCode, missingCommandDetector.seen());

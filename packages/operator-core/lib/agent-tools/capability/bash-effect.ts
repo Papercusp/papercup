@@ -325,3 +325,19 @@ export function classifyCapabilityBashEffect(args: unknown): BashEffect {
   const segments = splitClassifiableShell(command);
   return segments && segments.every((segment) => classifiesSimpleRead(segment)) ? 'read' : 'write';
 }
+
+/**
+ * A bounded read-only pipeline ending in `head` may intentionally close its
+ * input before a producer finishes. With the wrapper's mandatory pipefail,
+ * that producer reports SIGPIPE (141) even though the requested bounded read
+ * completed. Keep this predicate deliberately narrow: shell operators,
+ * redirects, unknown commands, and non-`head` consumers must retain the real
+ * failure status.
+ */
+export function isReadOnlyHeadPipeline(command: string): boolean {
+  if (/[;&<>\n\r]/.test(command)) return false;
+  const segments = splitClassifiableShell(command);
+  if (!segments || segments.length < 2) return false;
+  if (commandBase(segments.at(-1)?.[0] ?? '') !== 'head') return false;
+  return classifyCapabilityBashEffect({ command }) === 'read';
+}
