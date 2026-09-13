@@ -52,6 +52,8 @@ import {
   listChats,
   getChat,
   createChat,
+  renameChat,
+  continueChat,
   archiveChat,
   appendExternalChatTurn,
   LIST_CHATS_DEFAULT_LIMIT,
@@ -478,6 +480,79 @@ describe('PUI session runtime class (P-011)', () => {
     await listChats({ slug: 'foo' });
     const select = calls().find((c) => /FROM agent_chats/.test(c.sql));
     expect(select?.sql).toMatch(/su_runtime_class/);
+  });
+});
+
+describe('agent-chat rename and linked continuation (public-release P-008)', () => {
+  it('renames a workspace-scoped chat with normalized bounded text', async () => {
+    unsafe.mockResolvedValueOnce([{ title: 'A clearer title' }]);
+    const result = await renameChat({
+      slug: 'foo',
+      chatId: 'source-chat',
+      title: '  A\nclearer\ttitle  ',
+    });
+    expect(result).toEqual({ ok: true, data: { title: 'A clearer title' } });
+    expect(calls()[0].sql).toMatch(/workspace_id = \$3 AND id = \$4/);
+    expect(calls()[0].args).toEqual([
+      'A clearer title',
+      expect.any(Number),
+      TEST_WS,
+      'source-chat',
+    ]);
+  });
+
+  it('snapshots source text into a new writable identity with durable lineage', async () => {
+    const transcript = [
+      { role: 'user', content: 'historic question', ts: '2026-09-01T00:00:00Z' },
+      { role: 'assistant', content: 'historic answer', ts: '2026-09-01T00:00:01Z' },
+    ];
+    unsafe
+      .mockResolvedValueOnce([
+        { role: 'worker', feature_id: null, title: 'Legacy', transcript },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        ROW({
+          id: 'successor',
+          title: 'Legacy · continued',
+          transcript,
+          su_runtime_class: 'su-session',
+          continued_from_chat_id: 'source-chat',
+          continued_from_turn_count: 2,
+        }),
+      ]);
+
+    const result = await continueChat({ slug: 'foo', sourceChatId: 'source-chat' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.id).toBe('successor');
+    expect(result.data.transcript).toEqual(transcript);
+    expect(result.data.su_runtime_class).toBe('su-session');
+    expect(result.data.continued_from_chat_id).toBe('source-chat');
+    expect(result.data.continued_from_turn_count).toBe(2);
+
+    const insert = calls().find((call) => /INSERT INTO agent_chats/.test(call.sql));
+    expect(insert?.sql).toMatch(/continued_from_chat_id, continued_from_turn_count/);
+    expect(insert?.args.slice(1)).toEqual([
+      TEST_WS,
+      'worker',
+      null,
+      'Legacy · continued',
+      JSON.stringify(transcript),
+      'source-chat',
+      2,
+    ]);
+    expect(calls().some((call) => /UPDATE agent_chats/.test(call.sql))).toBe(false);
+  });
+
+  it('does not create a continuation when the source identity is absent', async () => {
+    unsafe.mockResolvedValueOnce([]);
+    await expect(continueChat({ slug: 'foo', sourceChatId: 'missing' })).resolves.toEqual({
+      ok: false,
+      status: 404,
+      error: 'source chat not found',
+    });
+    expect(calls()).toHaveLength(1);
   });
 });
 

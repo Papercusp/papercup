@@ -102,6 +102,10 @@ pub struct AgentChatSummary {
     #[serde(default)]
     pub su_runtime_class: Option<String>,
     #[serde(default)]
+    pub continued_from_chat_id: Option<String>,
+    #[serde(default)]
+    pub continued_from_turn_count: Option<u32>,
+    #[serde(default)]
     pub turn_count: u32,
     #[serde(default)]
     pub total_input_tokens: u64,
@@ -138,6 +142,10 @@ pub struct AgentChat {
     /// See `crate::su_session::PuiRuntimeClass`.
     #[serde(default)]
     pub su_runtime_class: Option<String>,
+    #[serde(default)]
+    pub continued_from_chat_id: Option<String>,
+    #[serde(default)]
+    pub continued_from_turn_count: Option<u32>,
     #[serde(default)]
     pub transcript: Vec<AgentChatTranscriptTurn>,
     #[serde(default)]

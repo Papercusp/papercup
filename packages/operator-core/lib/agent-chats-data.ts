@@ -103,6 +103,10 @@ export interface ChatRow {
   title: string | null;
   /** @see PuiSessionRuntimeClass — null means unclassified, never "assume legacy". */
   su_runtime_class: PuiSessionRuntimeClass | null;
+  /** Source chat for an explicit Continue-in-new-session operation. */
+  continued_from_chat_id: string | null;
+  /** Prefix length copied from that source; null on ordinary sessions. */
+  continued_from_turn_count: number | null;
   transcript: TranscriptTurn[];
   total_input_tokens: number;
   total_output_tokens: number;
@@ -130,6 +134,8 @@ export interface ChatSummary {
   title: string | null;
   /** @see PuiSessionRuntimeClass — null means unclassified, never "assume legacy". */
   su_runtime_class: PuiSessionRuntimeClass | null;
+  continued_from_chat_id: string | null;
+  continued_from_turn_count: number | null;
   turn_count: number;
   total_input_tokens: number;
   total_output_tokens: number;
@@ -181,6 +187,9 @@ export function rowToChat(r: Record<string, unknown>): ChatRow {
     feature_id: (r.feature_id as string | null) ?? null,
     title: (r.title as string | null) ?? null,
     su_runtime_class: toPuiSessionRuntimeClass(r.su_runtime_class),
+    continued_from_chat_id: (r.continued_from_chat_id as string | null) ?? null,
+    continued_from_turn_count:
+      r.continued_from_turn_count == null ? null : Number(r.continued_from_turn_count),
     transcript:
       typeof r.transcript === 'string'
         ? JSON.parse(r.transcript)
@@ -214,6 +223,9 @@ export function rowToChatSummary(r: Record<string, unknown>): ChatSummary {
     feature_id: (r.feature_id as string | null) ?? null,
     title: (r.title as string | null) ?? null,
     su_runtime_class: toPuiSessionRuntimeClass(r.su_runtime_class),
+    continued_from_chat_id: (r.continued_from_chat_id as string | null) ?? null,
+    continued_from_turn_count:
+      r.continued_from_turn_count == null ? null : toNum(r.continued_from_turn_count),
     turn_count: toNum(r.turn_count),
     total_input_tokens: toNum(r.total_input_tokens),
     total_output_tokens: toNum(r.total_output_tokens),
@@ -257,7 +269,7 @@ export const LIST_CHATS_MAX_LIMIT = 100;
 /** Columns listChats projects — everything EXCEPT the heavy `transcript` jsonb
  *  body, which is replaced by its length (`turn_count`). See ChatSummary. */
 const LIST_CHATS_COLUMNS =
-  'id, role, feature_id, title, su_runtime_class, ' +
+  'id, role, feature_id, title, su_runtime_class, continued_from_chat_id, continued_from_turn_count, ' +
   'total_input_tokens, total_output_tokens, total_cost_usd_cents, ' +
   'created_at, updated_at, archived_at, ' +
   "jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turn_count";
@@ -390,6 +402,103 @@ export async function createChat(
 export interface ArchiveChatInput {
   slug: string;
   chatId: string;
+}
+
+export interface RenameChatInput {
+  slug: string;
+  chatId: string;
+  title: string;
+}
+
+/** Rename the displayed chat identity; blank/control-only titles are refused. */
+export async function renameChat(input: RenameChatInput): Promise<Result<{ title: string }>> {
+  const title = [...String(input.title ?? '')]
+    .filter((ch) => (ch.codePointAt(0) ?? 0) >= 32 && ch.codePointAt(0) !== 127)
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+    .trimEnd();
+  if (!title) return { ok: false, status: 400, error: 'title must contain printable text' };
+  try {
+    const nowMs = Date.now();
+    const rows = (await harnessQuery(input.slug, (sql) => sql.unsafe(
+      `UPDATE agent_chats SET title = $1, updated_at = $2
+        WHERE workspace_id = $3 AND id = $4 RETURNING title`,
+      [title, nowMs, activeWorkspaceId(), input.chatId],
+    ))) as Array<{ title: string }>;
+    if (!rows[0]) return { ok: false, status: 404, error: 'chat not found' };
+    return { ok: true, data: { title: rows[0].title } };
+  } catch (e) {
+    return { ok: false, status: 500, error: `failed to rename chat: ${(e as Error).message}` };
+  }
+}
+
+export interface ContinueChatInput {
+  slug: string;
+  sourceChatId: string;
+  title?: string;
+}
+
+/**
+ * Snapshot read-only history into a fresh writable SU-session chat.
+ *
+ * The source row is only SELECTed.  The successor gets a new id and permanent
+ * `su-session` class; inherited text remains visible, while usage counters
+ * start at zero so prior provider spend is not attributed twice.
+ */
+export async function continueChat(
+  input: ContinueChatInput,
+): Promise<Result<ChatRow & { feature_lock: FeatureLockState | null }>> {
+  const id = randomUUID();
+  const workspaceId = activeWorkspaceId();
+  try {
+    const row = (await harnessQuery(input.slug, async (sql) => {
+      const sources = (await sql.unsafe(
+        `SELECT role, feature_id, title, transcript
+           FROM agent_chats WHERE workspace_id = $1 AND id = $2 LIMIT 1`,
+        [workspaceId, input.sourceChatId],
+      )) as Array<Record<string, unknown>>;
+      const source = sources[0];
+      if (!source) return null;
+      const role = String(source.role ?? '');
+      if (!isValidChatRole(role)) throw new Error(`source role is no longer launchable: ${role}`);
+      const transcript = typeof source.transcript === 'string'
+        ? JSON.parse(source.transcript)
+        : (Array.isArray(source.transcript) ? source.transcript : []);
+      const sourceTitle = String(source.title ?? role).trim() || role;
+      const title = (input.title?.trim() || `${sourceTitle} · continued`).slice(0, 120).trimEnd();
+      await sql.unsafe(
+        `INSERT INTO agent_chats
+           (id, workspace_id, role, feature_id, title, transcript, su_runtime_class,
+            continued_from_chat_id, continued_from_turn_count)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'su-session', $7, $8)`,
+        [
+          id,
+          workspaceId,
+          role,
+          source.feature_id ?? null,
+          title,
+          JSON.stringify(transcript),
+          input.sourceChatId,
+          transcript.length,
+        ],
+      );
+      const created = (await sql.unsafe(
+        'SELECT * FROM agent_chats WHERE workspace_id = $1 AND id = $2',
+        [workspaceId, id],
+      )) as Array<Record<string, unknown>>;
+      return created[0] ?? null;
+    })) as Record<string, unknown> | null;
+    if (!row) return { ok: false, status: 404, error: 'source chat not found' };
+    const chat = rowToChat(row);
+    const featureLock = chat.feature_id
+      ? await readFeatureLockState(input.slug, chat.feature_id)
+      : null;
+    return { ok: true, data: { ...chat, feature_lock: featureLock } };
+  } catch (e) {
+    return { ok: false, status: 500, error: `failed to continue chat: ${(e as Error).message}` };
+  }
 }
 
 export async function archiveChat(input: ArchiveChatInput): Promise<Result<{ ok: true }>> {

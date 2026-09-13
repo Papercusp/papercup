@@ -7,7 +7,9 @@
  *   GET    /api/harness/:slug/agent-chats
  *   POST   /api/harness/:slug/agent-chats
  *   GET    /api/harness/:slug/agent-chats/:chatId
+ *   PUT    /api/harness/:slug/agent-chats/:chatId            → rename
  *   DELETE /api/harness/:slug/agent-chats/:chatId
+ *   POST   /api/harness/:slug/agent-chats/:chatId/continue   → fresh linked chat
  *   POST   /api/harness/:slug/agent-chats/:chatId/messages   → SSE stream
  *
  * `auth: 'public'` — the legacy `harness` sub-app gated none of these.
@@ -254,6 +256,51 @@ const archiveChatRoute = defineTool({
     const result = await archiveChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
     if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
     return Response.json(result.data);
+  },
+});
+
+const renameChatRoute = defineTool({
+  method: 'PUT',
+  path: '/harness/:slug/agent-chats/:chatId',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    let body: { title?: string };
+    try {
+      body = await req.json();
+    } catch {
+      return Response.json({ error: 'invalid JSON body' }, { status: 400 });
+    }
+    const { renameChat } = await import('../../../agent-chats-data');
+    const result = await renameChat({
+      slug: ctx.params.slug,
+      chatId: ctx.params.chatId,
+      title: body.title ?? '',
+    });
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json(result.data);
+  },
+});
+
+const continueChatRoute = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/agent-chats/:chatId/continue',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    let body: { title?: string } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text) as { title?: string };
+    } catch {
+      return Response.json({ error: 'invalid JSON body' }, { status: 400 });
+    }
+    const { continueChat } = await import('../../../agent-chats-data');
+    const result = await continueChat({
+      slug: ctx.params.slug,
+      sourceChatId: ctx.params.chatId,
+      title: body.title,
+    });
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json(result.data, { status: 201 });
   },
 });
 
@@ -1114,7 +1161,9 @@ export default [
   listChatsRoute,
   createChatRoute,
   getChatRoute,
+  renameChatRoute,
   archiveChatRoute,
+  continueChatRoute,
   taskOpsRoute,
   messagesRoute,
   listApprovalsRoute,

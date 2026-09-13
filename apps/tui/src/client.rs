@@ -982,6 +982,44 @@ impl OperatorClient {
         Ok(())
     }
 
+    /// Rename one stable agent-chat identity.
+    pub async fn rename_agent_chat(
+        &self,
+        harness: &str,
+        chat_id: &str,
+        title: &str,
+    ) -> Result<String> {
+        let value = self
+            .put_json(
+                &agent_chats::agent_chat_path(harness, chat_id),
+                serde_json::json!({ "title": title }),
+            )
+            .await?;
+        value
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .context("rename agent chat response omitted title")
+    }
+
+    /// Continue immutable history into a fresh linked, writable agent-chat.
+    pub async fn continue_agent_chat(
+        &self,
+        harness: &str,
+        source_chat_id: &str,
+    ) -> Result<AgentChat> {
+        let value = self
+            .post_json(
+                &format!(
+                    "{}/continue",
+                    agent_chats::agent_chat_path(harness, source_chat_id)
+                ),
+                serde_json::json!({}),
+            )
+            .await?;
+        serde_json::from_value(value).context("decode continued agent chat")
+    }
+
     /// Apply one user-side task action to the selected SU-session chat. The
     /// response includes the canonical shared projection; the PG write also
     /// invalidates conversations.contextProjection for sibling renderers.
