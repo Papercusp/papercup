@@ -21,6 +21,7 @@ import {
   isBoundedCoordPresenceArgs,
   isBoundedCoordRosterArgs,
   isBoundedEventsStatusArgs,
+  isBoundedBashOutputArgs,
   isBoundedLoopArmArgs,
   isBoundedLocksQueueArgs,
 } from './mcp-admission';
@@ -66,6 +67,50 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     'mcp__papercusp-su__dev_dogfood_substrate_status',
   ])('does NOT shed bounded critical-pressure diagnostic %s', (name) => {
     expect(classifyMcpBody(toolsCall(11, name))).toEqual({ sheddable: false, id: null });
+  });
+
+  it.each([
+    ['canonical task id', 'capability:bash_output', { task_id: '0mu01ke7h44mxhxn2ps' }],
+    ['canonical bash id', 'capability:bash_output', { bash_id: 'bash-1' }],
+    ['underscore alias', 'capability_bash_output', { task_id: 'task-1' }],
+    ['mcp-advertised alias', 'mcp__papercusp_su__capability_bash_output', { task_id: 'task-1' }],
+  ])('does NOT shed a bounded single-job capability:bash_output status read under critical pressure: %s', (_label, name, args) => {
+    expect(isBoundedBashOutputArgs(args)).toBe(true);
+    const body = toolsCall(12, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad or output-expanding capability:bash_output reads sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { task_id: 'task-1', bash_id: 'bash-1' },
+      { task_id: 'task-1', filter: 'ERROR' },
+      { task_id: 'task-1', peek: true },
+      { task_id: 'task-1', tail: 10 },
+      { task_id: 'x'.repeat(257) },
+    ]) {
+      expect(isBoundedBashOutputArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(13, 'capability:bash_output', args))).toEqual({ sheddable: true, id: 13 });
+      expect(classifyMcpRequest(toolsCall(13, 'capability:bash_output', args))).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded capability:bash_output status read through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 14,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__capability_bash_output',
+          args: { task_id: 'task-1' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
   it.each([
@@ -1333,6 +1378,11 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     // The body must survive the peek unconsumed, exactly as the pg_query case asserts.
     expect(JSON.parse(await req.text()).params.name).toBe('dev:dogfood_substrate_status');
+  });
+  it('admits a bounded capability:bash_output status read under critical pressure', async () => {
+    const req = post(toolsCall(8, 'capability:bash_output', { task_id: '0mu01ke7h44mxhxn2ps' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('capability:bash_output');
   });
   it('admits a bounded locks:queue ownership read under critical pressure so recovery can inspect held files', async () => {
     const req = post(

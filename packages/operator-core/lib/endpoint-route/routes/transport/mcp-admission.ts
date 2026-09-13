@@ -208,6 +208,7 @@ const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
 const COORD_WHOAMI_NAME = normalizeMcpName('coord:whoami');
+const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName('capability:bash_output');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
@@ -248,6 +249,7 @@ const CRITICAL_COORD_SEND_MAX_SUMMARY_CHARS = 600;
 const CRITICAL_COORD_SEND_MAX_BODY_CHARS = 600;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS = 200;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS = 600;
+const CRITICAL_BASH_OUTPUT_ID_MAX_CHARS = 256;
 
 const PLAN_CLASS_RUBRIC_REFS = new Set([
   'plan-class-feature-ship',
@@ -461,6 +463,25 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
   return true;
+}
+
+/**
+ * `capability:bash_output` is the recovery/status door for a background task,
+ * but its optional filter/peek/tail controls can turn a pressure diagnostic into
+ * an arbitrarily expensive output read. Keep the critical-pressure exception to
+ * exactly one bounded job handle and no output modifiers. The normal handler
+ * still accepts the full schema once pressure recovers.
+ */
+export function isBoundedBashOutputArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['bash_id', 'task_id']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  const validId = (value: unknown): value is string =>
+    typeof value === 'string' && value.trim().length > 0 && value.length <= CRITICAL_BASH_OUTPUT_ID_MAX_CHARS;
+  if (args.bash_id !== undefined && !validId(args.bash_id)) return false;
+  if (args.task_id !== undefined && !validId(args.task_id)) return false;
+  return (args.bash_id !== undefined) !== (args.task_id !== undefined);
 }
 
 /**
@@ -1302,6 +1323,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   const normalized = normalizeMcpName(toolName);
   if (normalized === COORD_WHOAMI_NAME) return isBoundedCoordWhoamiArgs(args);
   if (normalized === COORD_SEND_NAME) return isBoundedCoordSendArgs(args);
+  if (normalized === CAPABILITY_BASH_OUTPUT_NAME) return isBoundedBashOutputArgs(args);
   if (normalized === WORK_ITEMS_COMMENT_NAME) return isBoundedWorkItemsCommentArgs(args);
   if (normalized === LOCKS_QUEUE_NAME) return isBoundedLocksQueueArgs(args);
   if (normalized === COORD_PRESENCE_NAME) return isBoundedCoordPresenceArgs(args);
