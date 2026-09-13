@@ -892,7 +892,7 @@ export async function cleanupAcceptanceGraderTasks(
  * paths belong to targetHive, not the grader's checkout. Same-Hive and legacy
  * callers retain the handler's caller-root behavior.
  */
-async function resolveDeterministicCheckRoot(
+async function resolveDeterministicCheckScope(
   args: Pick<z.infer<typeof scorecardEmitArgs>, 'targetHive'>,
   input: {
     ctxHarness?: string;
@@ -901,7 +901,7 @@ async function resolveDeterministicCheckRoot(
     rubricWorkspaceId?: string | null;
     rubricSubjectPlan?: string | null;
   },
-): Promise<string | undefined> {
+): Promise<{ root: string; workspaceId?: string; harnessSlug?: string }> {
   const callerRoot = input.checkRoot ?? resolveAgentWorkspaceRoot({});
   // EI-21384279769470409: a workspace-scoped superuser dispatch may omit
   // ctx.workspaceId even though the rubric itself is workspace-bound.
@@ -916,10 +916,18 @@ async function resolveDeterministicCheckRoot(
     (input.rubricSubjectPlan && workspaceId
       ? await resolvePlanHarnessSlug(workspaceId, input.rubricSubjectPlan)
       : undefined);
-  if (!targetHive || targetHive === input.ctxHarness || !workspaceId) return callerRoot;
+  const harnessSlug = targetHive ?? input.ctxHarness;
+  // Scope is useful only as a complete pair: the ledger query requires both
+  // tenant dimensions, and passing one half would recreate the same ambiguous
+  // rows this path is meant to prevent.
+  const scope =
+    workspaceId && workspaceId !== '*' && harnessSlug && harnessSlug !== '*'
+      ? { workspaceId, harnessSlug }
+      : {};
+  if (!targetHive || targetHive === input.ctxHarness || !workspaceId) return { root: callerRoot, ...scope };
 
   const targetPaths = await resolveHarnessPaths(targetHive, workspaceId);
-  return resolveAgentWorkspaceRoot({ projectDir: targetPaths.projectDir });
+  return { root: resolveAgentWorkspaceRoot({ projectDir: targetPaths.projectDir }), ...scope };
 }
 
 /**
@@ -2140,7 +2148,7 @@ export async function emitScorecard(
     const testCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'tests');
     if (testCheckedCriteria.length > 0) {
       const evaluateChecks = deps.evaluateChecks ?? evaluateCriterionTestChecks;
-      const checkRoot = await resolveDeterministicCheckRoot(args, {
+      const checkScope = await resolveDeterministicCheckScope(args, {
         ...input,
         rubricWorkspaceId: rubric.workspaceId,
         rubricSubjectPlan: rubric.subjectPlan,
@@ -2148,7 +2156,9 @@ export async function emitScorecard(
       const checkEvaluation = await evaluateChecks({
         criteria: rubric.criteria,
         ratings,
-        ...(checkRoot ? { root: checkRoot } : {}),
+        root: checkScope.root,
+        ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
+        ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
         // One shared budget for the batched run. scorecards:emit declares a longer
         // tool timeout below, so the transport gives this mutation enough time to
         // return a typed verdict (and still leaves a full minute for process-group
@@ -2196,7 +2206,7 @@ export async function emitScorecard(
     const cargoCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'cargo');
     if (cargoCheckedCriteria.length > 0) {
       const evaluateCargo = deps.evaluateCargoChecks ?? evaluateCriterionCargoChecks;
-      const checkRoot = await resolveDeterministicCheckRoot(args, {
+      const checkScope = await resolveDeterministicCheckScope(args, {
         ...input,
         rubricWorkspaceId: rubric.workspaceId,
         rubricSubjectPlan: rubric.subjectPlan,
@@ -2204,7 +2214,9 @@ export async function emitScorecard(
       const checkEvaluation = await evaluateCargo({
         criteria: rubric.criteria,
         ratings,
-        ...(checkRoot ? { root: checkRoot } : {}),
+        root: checkScope.root,
+        ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
+        ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
         timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
       });
       if (!checkEvaluation.ok) {
