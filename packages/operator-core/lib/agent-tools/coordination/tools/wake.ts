@@ -179,32 +179,35 @@ export default defineTool({
       }
     }
 
+    // EI-23106309488513586: this tool advertises an object-rooted `result` schema,
+    // which strict MCP clients receive as `outputSchema`. Returning only a JSON
+    // content block lets the wake execute but leaves `structuredContent` absent;
+    // those clients then reject the response with -32602 even though the mutation
+    // already queued. Keep the human-readable JSON text and the wire-equal object
+    // together on the successful path, as the sibling coordination tools do.
+    const payload = {
+      ok: true,
+      to,
+      queued,
+      woken,
+      pickupConfirmed: false,
+      ...(fan.staged > 0 ? { staged: fan.staged } : {}),
+      ...(recipient_dead ? { recipient_dead } : {}),
+      ...(recipient_dormant_scheduled ? { recipient_dormant_scheduled } : {}),
+      ...(recipient_alive_not_wakeable ? { recipient_alive_not_wakeable } : {}),
+      ...(warning
+        ? { warning }
+        : queued > 0
+          ? {
+              warning:
+                `coord:wake queued ${queued} durable wake delivery for ${to}, but pickup is NOT confirmed — ` +
+                'verify a fresh work-item checkpoint or activity timestamp before treating the target as running.',
+            }
+          : {}),
+    };
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            to,
-            queued,
-            woken,
-            pickupConfirmed: false,
-            ...(fan.staged > 0 ? { staged: fan.staged } : {}),
-            ...(recipient_dead ? { recipient_dead } : {}),
-            ...(recipient_dormant_scheduled ? { recipient_dormant_scheduled } : {}),
-            ...(recipient_alive_not_wakeable ? { recipient_alive_not_wakeable } : {}),
-            ...(warning
-              ? { warning }
-              : queued > 0
-                ? {
-                    warning:
-                      `coord:wake queued ${queued} durable wake delivery for ${to}, but pickup is NOT confirmed — ` +
-                      'verify a fresh work-item checkpoint or activity timestamp before treating the target as running.',
-                  }
-                : {}),
-          }),
-        },
-      ],
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+      structuredContent: payload,
     };
   },
 });

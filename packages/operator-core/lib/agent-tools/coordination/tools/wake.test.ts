@@ -26,6 +26,12 @@ import wake from './wake';
 
 const ctx = { uiClientId: 'su-me', isSuperuser: true, workspaceId: 'ws' } as never;
 const out = (res: unknown) => JSON.parse((res as { content: Array<{ text: string }> }).content[0].text);
+const structured = (res: unknown) => (res as { structuredContent?: unknown }).structuredContent;
+
+function expectWireEqual(res: unknown) {
+  expect(structured(res)).toBeDefined();
+  expect(JSON.parse(JSON.stringify(structured(res)))).toEqual(out(res));
+}
 
 describe('coord:wake', () => {
   beforeEach(() => {
@@ -37,7 +43,8 @@ describe('coord:wake', () => {
   });
 
   it('resolves the handle and reports a queued wake without claiming pickup', async () => {
-    const res = out(await wake.handler({ to: 'su-bee' } as never, ctx));
+    const raw = await wake.handler({ to: 'su-bee' } as never, ctx);
+    const res = out(raw);
     expect(resolveRecipients).toHaveBeenCalled();
     // wakeRecipients fired on the RESOLVED full ownerId
     expect(wakeRecipients.mock.calls[0][0]).toEqual(['su-bee-FULL']);
@@ -49,6 +56,7 @@ describe('coord:wake', () => {
       pickupConfirmed: false,
     });
     expect(res.warning).toMatch(/pickup is NOT confirmed/i);
+    expectWireEqual(raw);
   });
 
   it('keeps queued count separate from the execution-confirmed pickup field', async () => {

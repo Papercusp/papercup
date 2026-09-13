@@ -12,6 +12,7 @@
     "./auth": "./src/auth.ts",
     "./plugin-events": "./src/plugin-events.ts",
     "./validation-context": "./src/validation-context.ts",
+    "./gate-bypass": "./src/gate-bypass.ts",
     "./role-config": "./src/role-config.ts",
     "./_bulk": "./src/_bulk.ts",
     "./goals": "./src/tools/goals/_core.ts",

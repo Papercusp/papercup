@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "papercusp-evidence-v1",
+  "title": "P-006 / AUTO-BAR-R-03-P-006 — current-cohort targeted L4 carry-preservation mutation proof",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItems": [
+    "WI-10000428"
+  ],
+  "recordedAt": "2026-09-13T01:17:29Z",
+  "spec": {
+    "specId": "AUTO-BAR-R-03-P-006",
+    "specRevision": 6,
+    "behaviorClass": "lifecycle",
+    "behavior": "Each supported engine preserves the configured SU runtime capabilities through a resumed PUI session.",
+    "falsifier": "Resume loses the assigned scope, modes, tools, task state or carry context on any supported engine.",
+    "whyL4": "The spec-test-adequacy lifecycle risk floor requires a targeted mutation or counterexample in addition to a passing end-to-end journey."
+  },
+  "currentCohort": {
+    "measurement": {
+      "schemaVersion": 1,
+      "kind": "repo-files",
+      "sourcePaths": [
+        "packages/operator-core/lib/su-session-claude-adapter.ts",
+        "packages/operator-core/lib/su-session-claude-engine.ts",
+        "packages/operator-core/lib/su-session-codex-adapter.ts",
+        "packages/operator-core/lib/su-session-host.ts",
+        "packages/operator-core/lib/su-session-omp-adapter.ts",
+        "packages/operator-core/lib/su-session-resume.ts",
+        "packages/operator-core/lib/su-session-rpc-engine.ts"
+      ],
+      "testPaths": [
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+        "packages/operator-core/lib/pui-e2e/operator-process.mts"
+      ]
+    },
+    "note": "The binding server measures these exact file sets. No caller-computed fingerprint is used."
+  },
+  "mutation": {
+    "file": "packages/operator-core/lib/su-session-resume.ts",
+    "before": "carry: saved.carry, modes: saved.modes, runtimeGeneration: saved.runtimeGeneration + 1",
+    "after": "carry: 'cold', modes: saved.modes, runtimeGeneration: saved.runtimeGeneration + 1",
+    "occurrencesBeforeLaunch": 1,
+    "reason": "R-03's falsifier explicitly names lost carry context. The ordinary installed-PUI journey launches with warm carry, resumes the same real OMP thread after a hard operator-process exit, and directly compares the resumed descriptor with the saved descriptor. Changing only the replacement runtime option keeps the native engine functional and makes the decisive assertion observe warm versus cold."
+  },
+  "probe": {
+    "tool": "scripts/mutation-probe.sh",
+    "mode": "in-tree with a sweep-exclusion file lock",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PUI_REAL_ENGINE=1 PUI_BIN=$HOME/.cargo/bin/pui PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$REPO/.papercusp/scratch/p006/account-catalog.json\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'restores the same native conversation after the operator OS process exits'",
+    "modelPin": "Intentionally omitted for OMP account=auto under plan Decision D-013; pinning PUI_REAL_MODEL on this backend is refused rather than substituted.",
+    "lock": {
+      "lockId": "b4f5fcc0-b639-4447-a945-0c846e3e3e34",
+      "path": "packages/operator-core/lib/su-session-resume.ts",
+      "releasedAfterRestore": true
+    }
+  },
+  "result": {
+    "verdict": "caught",
+    "expected": "caught",
+    "baseline": {
+      "exit": 0,
+      "testFileResult": "requested=1 executed=1 matched=1 status=passed head=ec7e56d83d skippedTests=25",
+      "startedAt": "2026-09-13T01:03:46.976Z",
+      "duration": "244.84s"
+    },
+    "mutant": {
+      "exit": 1,
+      "testFileResult": "requested=1 executed=1 matched=1 status=failed head=ec7e56d83d skippedTests=25",
+      "startedAt": "2026-09-13T01:08:05.206Z",
+      "duration": "239.71s",
+      "decisiveFailure": "The resumed descriptor comparison expected carry=warm and received carry=cold.",
+      "notCleanupMasked": true
+    },
+    "probeLine": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1 mutant_parse=unchecked",
+    "meaning": "The current installed-PUI R-03 journey is falsifiable for its carry-preservation clause: correct source passes and a single targeted loss of saved carry fails at the direct resumed-descriptor oracle."
+  },
+  "restoreProof": {
+    "expectedSha256": "585082c9c49ba102750fa35af490ee87d26837fa136a09b9efb67e229e26aa37",
+    "actualSha256": "585082c9c49ba102750fa35af490ee87d26837fa136a09b9efb67e229e26aa37",
+    "originalOccurrenceCount": 1,
+    "mutantOccurrenceCount": 0,
+    "match": true
+  },
+  "postProbeCleanRun": {
+    "testFileResult": "requested=1 executed=1 matched=1 status=passed head=cb11eaeb29 skippedTests=25",
+    "startedAt": "2026-09-13T01:12:50.163Z",
+    "finishedAt": "2026-09-13T01:15:51.019Z",
+    "durationMs": 168444,
+    "source": "local",
+    "note": "This unmutated run is separately ledgered; the mutation binding below does not invent or require its numeric row id."
+  },
+  "rejectedAttempts": [
+    {
+      "target": "const nativeId = saved.identity.nativeSessionId -> randomUUID()",
+      "wrapperVerdict": "caught",
+      "evidenceVerdict": "invalid",
+      "reason": "The reported failure was operator cleanup after backend_adapter_unavailable, not the intended same-native-identity assertion. It is not bound as L4 evidence.",
+      "trackedAs": "EI-23104457247504939"
+    },
+    {
+      "target": "modes: saved.modes -> [] with PUI_REAL_MODE=auto",
+      "wrapperVerdict": "harness-error before mutation",
+      "evidenceVerdict": "not measured",
+      "reason": "One baseline exposed an optional-model launch assertion defect; the next hit an OMP agent.db SQLITE_BUSY startup failure. Neither attempt applied or scored a mutant.",
+      "trackedAs": "EI-23106053660612173"
+    }
+  ],
+  "engineScope": {
+    "measured": "OMP account=auto",
+    "caveat": "This L4 row proves the shared installed-PUI journey catches lost carry on OMP. Binding 4238 separately records current Claude R-03 success. Codex remains explicitly unevidenced and P-006 must not be reported complete from adequacy alone."
+  },
+  "rawLogs": {
+    "mutation": ".papercusp/scratch/p006/l4-mutation.log",
+    "mutationSha256": "43b7cd53734320b15aefe39cb92721039cedaeeb64dd2cdf5acf64deb9224f7a",
+    "postProbe": ".papercusp/scratch/p006/l4-bindable.log",
+    "postProbeSha256": "0a673ad0218fb86f7db026ad22a119f5fd79a2ffa3a3f17b1d871c89ac7a1268",
+    "durability": "The raw logs are gitignored and transient. Every load-bearing result line, assertion delta, file set, and restore hash is copied into this tracked artifact."
+  },
+  "binding": {
+    "status": "pending server-measured append"
+  }
+}

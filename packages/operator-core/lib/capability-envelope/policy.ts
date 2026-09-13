@@ -23,7 +23,10 @@
  * B-18 per-role tuning seam.
  */
 
-import { testingFullAccess } from '@papercusp/agent-mcp';
+// Keep runtime policy access on the leaf subpath. The package barrel imports
+// bootstrap and would make lightweight consumers (including the aggregate
+// scenario catalog) load the entire tool registry at startup.
+import { testingFullAccess } from '@papercusp/agent-mcp/gate-bypass';
 // Keep the role registry on its leaf subpath. The barrel is commonly mocked by
 // lightweight tests; importing AGENT_ROLES from it makes an unrelated import
 // fail when that mock intentionally omits the registry (EI-21607945572265622).
