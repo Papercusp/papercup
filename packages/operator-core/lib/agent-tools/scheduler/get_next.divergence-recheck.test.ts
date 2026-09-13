@@ -182,6 +182,11 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
 
   it('passes plan terminality and leader liveness to the zero-match miss verdict', async () => {
     const zeroMatches = { matchedByFilter: 0, claimable: 0, excluded: {} as never };
+    const activePlan = {
+      planSlugs: ['finished-plan'],
+      terminalPlanSlugs: [],
+      allTerminal: false,
+    };
     const planTerminality = {
       planSlugs: ['finished-plan'],
       terminalPlanSlugs: ['finished-plan'],
@@ -189,16 +194,17 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     };
     getNextForBeeM.mockResolvedValue(null);
     issueFloorMissM.mockResolvedValue(zeroMatches);
-    planTerminalityM.mockResolvedValue(planTerminality);
-    // The preflight saw a live leader, so the pull was admitted. The fresh
-    // zero-match diagnostic then observes that the leader disappeared and
-    // carries that transition into the miss verdict.
+    // The preflight must see NONTERMINAL plan work or the newer plan-complete
+    // guard correctly returns before the claim path. The fresh zero-match
+    // diagnostic then observes terminality and leader loss and carries both
+    // transitions into the miss verdict.
+    planTerminalityM.mockResolvedValueOnce(activePlan).mockResolvedValueOnce(planTerminality);
     leaderLivenessM.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
     const res = await call();
 
     expect(res.ok).toBe(false);
-    expect(planTerminalityM).toHaveBeenCalledTimes(1);
+    expect(planTerminalityM).toHaveBeenCalledTimes(2);
     expect(leaderLivenessM).toHaveBeenCalledTimes(2);
     expect(missOpts()).toMatchObject({ planTerminality, leaderLiveness: false });
   });

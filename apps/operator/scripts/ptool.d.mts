@@ -533,6 +533,8 @@ export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, m
 }): Promise<any>;
 /** Build ptool's superuser MCP URL. Pure and exported so the identity and
  * payload-tier contracts are regression-tested without opening a transport.
+ * Accept either an operator base URL or an already-qualified `/api/mcp`
+ * endpoint; explicit endpoint URLs must not receive a second MCP path.
  * @param {string} operatorUrl
  * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string}} [options]
  */

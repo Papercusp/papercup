@@ -325,7 +325,13 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
         synthesized: false,
         score10: 10,
         linkedItems: [],
-        vetting: { consultId: 'conv-vet-1', rubricRevision: 1, critiquePosts: 1, critics: ['su-critic'] },
+        vetting: {
+          consultId: 'conv-vet-1',
+          rubricRevision: 1,
+          criteriaHash: 'rubric-hash-v1',
+          critiquePosts: 1,
+          critics: ['su-critic'],
+        },
       },
     ]);
     const res = await emitScorecard(

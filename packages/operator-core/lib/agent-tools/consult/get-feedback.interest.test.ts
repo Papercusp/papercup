@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   getFeedbackCore: vi.fn(),
   reconcileInterestEventAwaits: vi.fn(),
   buildQueryEmbedder: vi.fn(async () => null),
+  interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
   routeConsult: vi.fn(),
   resolveSessionStates: vi.fn(),
   notifyAgents: vi.fn(),
@@ -18,11 +19,14 @@ vi.mock('../../interest-auto-arm', () => ({
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, getOrgPg: () => ({ sql: {} }) };
+  return { ...actual, getOrgPg: () => ({ sql: vi.fn(async () => []) }) };
 });
 vi.mock('../../consult/get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore }));
 vi.mock('../../consult/relevance-router', () => ({ routeConsult: h.routeConsult }));
-vi.mock('../search/embedder', () => ({ buildQueryEmbedder: h.buildQueryEmbedder }));
+vi.mock('../search/embedder', () => ({
+  buildQueryEmbedder: h.buildQueryEmbedder,
+  interactiveEmbedAcquireBudgetMs: h.interactiveEmbedAcquireBudgetMs,
+}));
 vi.mock('../coordination/liveness-oracle', () => ({ resolveSessionStates: h.resolveSessionStates }));
 vi.mock('../coordination/conversations', () => ({
   withConversationsIdentityScope: (_identity: unknown, _harness: unknown, fn: () => unknown) => fn(),
@@ -69,6 +73,7 @@ beforeEach(() => {
   h.resolveSessionStates.mockReset();
   h.reconcileInterestEventAwaits.mockReset().mockResolvedValue(handle);
   h.buildQueryEmbedder.mockClear();
+  h.interactiveEmbedAcquireBudgetMs.mockClear();
   h.makeConsultReviver.mockClear();
 });
 
@@ -76,6 +81,8 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
   it('arms and returns a cancel handle only for a routed hard-blocked park key', async () => {
     h.getFeedbackCore.mockResolvedValue(routed('hard-blocked'));
     const out = await call('hard-blocked');
+    expect(h.interactiveEmbedAcquireBudgetMs).toHaveBeenCalledTimes(1);
+    expect(h.buildQueryEmbedder).toHaveBeenCalledWith({ acquireBudgetMs: 4000 });
     expect(h.reconcileInterestEventAwaits).toHaveBeenCalledWith({
       ownerId: 'requester-1',
       eventKeys: ['consult:reply:consult-1'],

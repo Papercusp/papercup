@@ -181,7 +181,10 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
         installSlug: 'papercusp-workspace',
         workspaceId: 'papercusp-workspace',
         payloadTemplate: {
-          blueprintId: 'coding',
+          // `coding`/`mug` is retired and launch-blueprint correctly refuses it.
+          // This case owns workspace-sentinel ROUTING, not retirement, so use a
+          // live standalone blueprint while preserving the exact slug assertion.
+          blueprintId: 'scan',
           launchInstallSlug: 'papercusp',
           kickoff: 'workspace-scoped Queen wake',
         },
@@ -190,11 +193,11 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
 
     expect(result?.durableSpawns).toHaveLength(1);
     const spawn = result!.durableSpawns![0];
-    expect(spawn.label).toBe('papercusp/mug');
+    expect(spawn.label).toBe('papercusp/scanner');
     expect(spawn.spawnRecord).toMatchObject({
       workspaceId: 'papercusp-workspace',
       harnessSlug: 'papercusp',
-      childRole: 'mug',
+      childRole: 'scanner',
     });
     expect(spawn.url).toContain('/api/harness/papercusp/invoke');
     expect(spawn.url).not.toContain('/api/harness/papercusp-workspace/invoke');
