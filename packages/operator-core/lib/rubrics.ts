@@ -793,6 +793,40 @@ async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Ru
   }
 }
 
+type RubricPlanRowRead =
+  | { kind: 'found'; row: RubricPlanRow }
+  | { kind: 'missing' }
+  | { kind: 'error' };
+
+/**
+ * Read one rubric-template plan by its explicit slug. Explicit rubric reads are
+ * normally issued by scorecard/audit paths, where scanning the capped shared
+ * library first adds avoidable latency (and can time out while the target row is
+ * already directly addressable). Keep the error state distinct from a miss so a
+ * failed direct read never falls through to the same broad query it was added to
+ * avoid.
+ */
+async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRead> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<RubricPlanRow[]>`
+      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
+             version, owner, archived, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND plan_slug = ${rubricId}
+       LIMIT 1`;
+    // Client-side slug guard: mocked-sql fixtures may return a wider row set than
+    // the predicates describe, so the explicit id remains authoritative here.
+    const row = rows.find((candidate) => candidate.plan_slug === rubricId);
+    return row ? { kind: 'found', row } : { kind: 'missing' };
+  } catch {
+    return { kind: 'error' };
+  }
+}
+
 // ─── first-party seed (local-first-party-rubric-bundling-2026-07-07 P-003) ───────────
 // Templates-v1 design applied to rubrics, with the one structural difference: a rubric
 // IS a plan row with ratify/trend/scorecard machinery keyed off the DB, so the bundled
@@ -1146,29 +1180,24 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
  *  standards use (plan D-010). Returns null when no rubric carries that id. */
 export async function getRubric(rubricId: string, revision?: number): Promise<Rubric | null> {
   if (revision !== undefined) return getRubricAtRevision(rubricId, revision);
-  const std = (await loadAllRubrics()).find((r) => r.rubricId === rubricId);
-  if (std) return std;
-  // Not in the standard library — a direct id-addressed lookup of any kind (acceptance
-  // rubrics are hidden from the library scan, never from an explicit id).
-  try {
-    const { sql } = getOrgPg();
-    const rows = await sql<RubricPlanRow[]>`
-      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
-             version, owner, archived, template_data
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${rubricsScopeWorkspace()}
-         AND template = ${RUBRIC_TEMPLATE_NAME}
-         AND template_slug IS NULL
-         AND plan_slug = ${rubricId}
-       LIMIT 1`;
-    // Client-side slug guard: keeps behavior identical under mocked-sql test fixtures
-    // that return the full row set for any query.
-    const row = rows.find((r) => r.plan_slug === rubricId);
-    if (!row) return null;
-    return (await mapRubricPlanRows([row]))[0] ?? null;
-  } catch {
-    return null;
+  // Explicit id-addressed reads are the hot path for scorecard/audit callers.
+  // Resolve the target directly before touching the capped shared library scan;
+  // acceptance rubrics are hidden from that scan, but never from this lookup.
+  const direct = await readRubricPlanRowById(rubricId);
+  if (direct.kind === 'error') return null;
+  if (direct.kind === 'found') {
+    const rubric = (await mapRubricPlanRows([direct.row]))[0] ?? null;
+    if (rubric) return rubric;
+    // Preserve the lazy first-party seed/reclaim behavior for a malformed row.
+    // Under normal data this branch is unreachable; it is intentionally the only
+    // direct-hit path that may revisit the broad library read.
   }
+
+  // A missing explicit id still goes through the existing library choke point so a
+  // cold real process can seed a first-party rubric before returning a miss. This
+  // fallback is not paid by existing rubric rows, which is the latency-critical
+  // scorecards:get case.
+  return (await loadAllRubrics()).find((r) => r.rubricId === rubricId) ?? null;
 }
 
 /**

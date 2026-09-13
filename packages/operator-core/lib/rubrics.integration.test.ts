@@ -149,6 +149,26 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     expect(r!.methodRef).toBe('pot-coordination-health-runbook');
   });
 
+  it('resolves an explicit id before the capped shared-library scan', async () => {
+    await insertRubricPlan('direct-id-fast-path');
+    const originalSql = h.sql;
+    const statements: string[] = [];
+    h.sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      statements.push(strings.join(' '));
+      return originalSql(strings, ...values);
+    }) as unknown as postgres.Sql;
+    try {
+      const rubric = await rubrics.getRubric('direct-id-fast-path');
+      expect(rubric?.rubricId).toBe('direct-id-fast-path');
+      expect(statements).toHaveLength(1);
+      expect(statements[0]).toContain('plan_slug =');
+      expect(statements[0]).toContain('LIMIT 1');
+      expect(statements[0]).not.toContain('LIMIT 500');
+    } finally {
+      h.sql = originalSql;
+    }
+  });
+
   it('projects harness_plans.version as revision across every rubric read path', async () => {
     await insertRubricPlan('versioned-standard', { version: 7 });
     await insertRubricPlan('versioned-plan-acceptance', {
