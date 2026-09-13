@@ -27,6 +27,7 @@ const dbosWorkItemsContractSrc = readFileSync(
   'utf8',
 );
 const honoHostSrc = readFileSync(join(__dirname, 'hono-host.ts'), 'utf8');
+const honoHostPortPreflightSrc = readFileSync(join(__dirname, 'hono-host-port-preflight.ts'), 'utf8');
 const agentToolsCatchallSrc = readFileSync(
   join(__dirname, '../../../packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts'),
   'utf8',
@@ -342,6 +343,23 @@ describe('hono-host exposes a no-native-teardown desktop-dev recycle contract', 
     expect(exitCode).toBeGreaterThan(handler);
     expect(hardExit).toBeGreaterThan(handler);
     expect(handler).toBeLessThan(listen);
+  });
+});
+
+describe('hono-host rejects persistent main-port conflicts before bootstrap', () => {
+  it('runs the availability preflight before startCluster/runBootstrap and skips sidecars', () => {
+    const preflightImport = honoHostSrc.indexOf("import './hono-host-port-preflight';");
+    const bootstrapImport = honoHostSrc.indexOf("import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';");
+    const clusterStart = honoHostSrc.indexOf('startCluster({');
+    const bootstrapCall = honoHostSrc.indexOf('return runBootstrap();');
+
+    expect(preflightImport).toBeGreaterThan(honoHostSrc.indexOf("import './boot-flag-store';"));
+    expect(preflightImport).toBeLessThan(bootstrapImport);
+    expect(clusterStart).toBeGreaterThan(preflightImport);
+    expect(bootstrapCall).toBeGreaterThan(preflightImport);
+    expect(honoHostPortPreflightSrc).toContain('portAvailableSync(port, hostname)');
+    expect(honoHostPortPreflightSrc).toContain('fatal EADDRINUSE during pre-bootstrap port check');
+    expect(honoHostPortPreflightSrc).toContain('if (!sidecarMode');
   });
 });
 
