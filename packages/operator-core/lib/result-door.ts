@@ -417,7 +417,10 @@ function compactSpecTestAdequacyRatings(value: unknown): JsonObject | null {
   const compact: JsonObject = {};
   for (const [criterion, entry] of Object.entries(value)) {
     if (!isJsonObject(entry) || typeof entry.rating !== 'string') return null;
-    compact[criterion] = { rating: entry.rating, _partial: true };
+    // `_partial` describes the lossy projection of the surrounding row, not a
+    // criterion. Keeping it out of this homogeneous map lets generic consumers
+    // enumerate every value as an AdequacyRatingEntry without a boolean guard.
+    compact[criterion] = { rating: entry.rating };
   }
   return Object.keys(compact).length > 0 ? compact : null;
 }
@@ -432,7 +435,9 @@ function compactSpecTestAdequacyRow(value: unknown): JsonObject | null {
   if (!isJsonObject(value)) return null;
   const ratings = compactSpecTestAdequacyRatings(value.ratings);
   if (!ratings) return null;
-  const compact: JsonObject = { ratings };
+  // Evidence/suggestions are intentionally omitted from every criterion, so
+  // mark the row envelope rather than contaminating the ratings map.
+  const compact: JsonObject = { ratings, _partial: true };
   copyJsonKeys(value, compact, [
     'planSlug', 'specId', 'specRevision', 'specFingerprint', 'planItemId',
     'classRef', 'behaviorClass', 'requiredProofFloor', 'verdict', 'wouldBlock',

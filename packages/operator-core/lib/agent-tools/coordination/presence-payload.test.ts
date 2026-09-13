@@ -76,6 +76,8 @@ const MAXIMAL_ROW: RosterRow = {
   sessionState: 'live',
   wakeable: true,
   confirmLiveness: false,
+  loopArmed: false,
+  selfWake: 'loop',
   // EI-22805550006169069: the forward-looking schedule pair — a turn is in flight
   // here (parked), which is why nextFireAt is null alongside a true flag.
   dormantScheduled: true,
@@ -136,7 +138,7 @@ describe('partitionPresenceRow', () => {
       claimCount: 2,
       wakeMode: 'auto',
     });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, dormantScheduled: true, nextFireAt: null, onDesktop: true, viewerAttached: true, contextPressure: 'ok', contextPressureAgeSec: 10 });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, loopArmed: false, selfWake: 'loop', dormantScheduled: true, nextFireAt: null, onDesktop: true, viewerAttached: true, contextPressure: 'ok', contextPressureAgeSec: 10 });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');
@@ -219,6 +221,8 @@ describe('byte-stability (D-006)', () => {
     expect(emitted).toHaveProperty('sessionState');
     expect(emitted).toHaveProperty('wakeable');
     expect(emitted).toHaveProperty('confirmLiveness');
+    expect(emitted).toHaveProperty('loopArmed');
+    expect(emitted).toHaveProperty('selfWake');
     // on-desktop is always emitted (null when un-derived, e.g. a federated row).
     expect(emitted).toHaveProperty('onDesktop');
     // viewer-attached (PTY panel) is likewise always emitted.

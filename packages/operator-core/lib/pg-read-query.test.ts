@@ -1117,6 +1117,21 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     expect(calls).toHaveLength(0);
   });
 
+  it('allows explicit test_runs tenant and identity predicates inside LEFT JOIN ON', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'WITH target AS (SELECT feature_id, test_file, evidence_run_group FROM harness_shared.work_items) ' +
+        'SELECT t.feature_id, tr.status FROM target t ' +
+        'LEFT JOIN harness_shared.test_runs tr ' +
+        "ON tr.workspace_id = 'papercusp-workspace' AND tr.harness_slug = 'papercusp' " +
+        'AND tr.run_group_id = t.evidence_run_group AND tr.file_path = t.test_file ' +
+        "WHERE t.feature_id = 'EI-22666749939664001' LIMIT 20",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
   // EI-22633261796522656: local reporter rows are sometimes recovered by their
   // contiguous database ids rather than run_group_id. Both the primary query and
   // its positive control carry the tenant fence, so the CI-null warning must not

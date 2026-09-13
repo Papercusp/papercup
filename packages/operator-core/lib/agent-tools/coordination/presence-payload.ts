@@ -38,6 +38,7 @@ import type { UnifiedPresenceRecord } from './federated-presence';
 import { formatIdleAge, type LastActiveSource, type PresenceTier1Joins } from './presence-tier1';
 import type { SessionState } from './presence-wakeability';
 import type { ContextPressureBucket } from './context-pressure';
+import type { SelfWakeSource } from './presence-selfwake';
 
 /**
  * The self-referential placeholder a presence declare writes when an agent is
@@ -110,6 +111,12 @@ export type RosterRow = UnifiedPresenceRecord &
       /** WI-4400: stale-ish takeover read — verify with coord:send wake:'required'
        * before assuming the owner is dead or alive. null = liveness unknown. */
       confirmLiveness: boolean | null;
+      /** EI-19407725333778711: an active engine loop will re-wake this owner.
+       * null = the self-wake enrichment was not measured. */
+      loopArmed: boolean | null;
+      /** EI-19407725333778711: the strongest unprompted wake source, or `none`
+       * when the measured owner has no loop or standing wake await. */
+      selfWake: SelfWakeSource | null;
       /**
        * EI-22805550006169069: a scheduled self-wake is armed for this owner — an
        * ACTIVE, non-stalled engine loop with a known future fire, or a turn in
@@ -266,6 +273,8 @@ export const PRESENCE_LIVENESS_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  'loopArmed',
+  'selfWake',
   // EI-22805550006169069: the forward-looking half of the same liveness question
   // sessionState/wakeable answer backward-looking, derived every read from the
   // loop's own schedule — continuous (nextFireAt advances on every fire), so it
@@ -344,6 +353,8 @@ export const PRESENCE_FULL_ROW_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  'loopArmed',
+  'selfWake',
   'dormantScheduled',
   'nextFireAt',
   'contextPressure',
@@ -464,6 +475,10 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // transition. Readers must confirm a draining/suspect candidate by sending
     // coord:send { wake:'required' } and inspecting its wake result.
     confirmLiveness: (liveness.confirmLiveness as boolean | null | undefined) ?? null,
+    // EI-19407725333778711: a missing enrichment is UNKNOWN, not evidence that
+    // the owner has no self-wake source.
+    loopArmed: (liveness.loopArmed as boolean | null | undefined) ?? null,
+    selfWake: (liveness.selfWake as SelfWakeSource | null | undefined) ?? null,
     // P-007: always present for a reader (null = unknown), like sessionState/wakeable.
     contextPressure: (liveness.contextPressure as ContextPressureBucket | null | undefined) ?? null,
     contextPressureAgeSec: (liveness.contextPressureAgeSec as number | null | undefined) ?? null,

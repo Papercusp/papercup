@@ -33,6 +33,7 @@ const {
   sweepMock,
   tier1Mock,
   wakeabilityMock,
+  selfWakeMock,
   fleetMock,
   findLiveHostMock,
   endedSessionsMock,
@@ -45,6 +46,7 @@ const {
   sweepMock: vi.fn(async (..._a: unknown[]) => 0),
   tier1Mock: vi.fn(async (..._a: unknown[]) => new Map()),
   wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
+  selfWakeMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
   // EI-21488009366204518: the targeted-miss session-log death leg.
@@ -93,6 +95,10 @@ vi.mock('./presence-wakeability', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   fetchWakeability: wakeabilityMock,
 }));
+vi.mock('./presence-selfwake', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  fetchSelfWake: selfWakeMock,
+}));
 vi.mock('./presence-fleet', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   fetchPresenceFleet: fleetMock,
@@ -136,6 +142,7 @@ beforeEach(() => {
   federatedMock.mockResolvedValue([]);
   recordedLiveSessionsMock.mockResolvedValue([]);
   nurseryAliasMock.mockResolvedValue([]);
+  selfWakeMock.mockResolvedValue(new Map());
 });
 
 describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
@@ -168,6 +175,7 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     // not the 2-3 roster ids (under real load: 1 id, not ~67).
     expect(tier1Mock).toHaveBeenCalledWith(['su-bbb']);
     expect(wakeabilityMock).toHaveBeenCalledWith(['su-bbb']);
+    expect(selfWakeMock).toHaveBeenCalledWith(['su-bbb']);
     expect(fleetMock).toHaveBeenCalledWith(['su-bbb']);
     // Selection semantics preserved: the matched row comes back, alone.
     expect(snap.active.map((r) => (r as { ownerId?: string }).ownerId)).toEqual(['su-bbb']);
@@ -212,6 +220,39 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
 
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
     expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('recorded');
+  });
+
+  it('emits parked + selfWake:none so a healthy-looking member is visibly stranded', async () => {
+    const owner = 'su-stranded';
+    listPresenceMock.mockResolvedValue([row(owner, false)]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    selfWakeMock.mockResolvedValue(
+      new Map([[owner, { loopArmed: false, standingEventAwait: false, selfWake: 'none' }]]),
+    );
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    expect(snap.active[0]).toMatchObject({
+      ownerId: owner,
+      sessionState: 'parked',
+      wakeable: true,
+      loopArmed: false,
+      selfWake: 'none',
+    });
+  });
+
+  it('emits null self-wake fields when enrichment is absent, never fabricating none', async () => {
+    const owner = 'su-selfwake-unknown';
+    listPresenceMock.mockResolvedValue([row(owner, false)]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    selfWakeMock.mockResolvedValue(new Map());
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    expect(snap.active[0]).toMatchObject({
+      ownerId: owner,
+      sessionState: 'parked',
+      loopArmed: null,
+      selfWake: null,
+    });
   });
 });
 

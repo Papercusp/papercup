@@ -49,6 +49,7 @@ import {
   mergeRepeatedPropertySchema,
   renderSchemaBounds,
   schemaAliasAnnotation,
+  schemaCallConstraintAnnotation,
   schemaToText,
   type ToolDiscoveryEntry,
   unionConditionalHint,
@@ -57,6 +58,7 @@ import {
 import { findTools, type Embedder } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 /**
  * The result-door is a per-tool-result budget, not a per-field budget. A
@@ -66,6 +68,8 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
  * compact structural schema and a conservative byte budget.
  */
 export const DISCOVERY_RESULT_MAX_BYTES = 5_000;
+/** Keep plugin readiness below the MCP transport deadline while preserving the base catalog. */
+export const PLUGIN_HOST_READINESS_TIMEOUT_MS = 5_000;
 const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
 const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
@@ -308,6 +312,26 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   const nested = nestedObjectProperties(node);
   const properties = Object.entries(nested?.properties ?? {});
   if (!nested) return '';
+  // `work_items:complete.specAdequacy.current` is a bounded array of evidence
+  // tuples. The first seven identity fields are the structural join key; the
+  // four optional dimension fingerprints are still available from the full
+  // schema but consume the compact tuple budget before the enclosing completion
+  // contract can be rendered. Keep the identity prefix intact and let the
+  // explicit tail marker account for those optional dimensions in compact
+  // discovery. This is intentionally shape-based so it does not affect
+  // unrelated arrays that happen to contain a `current` property.
+  const tupleProperties =
+    node.type === 'array' && node.items && typeof node.items === 'object' && !Array.isArray(node.items)
+      ? objectProperties(node.items as JsonSchemaNode)?.properties
+      : null;
+  const isSpecEvidenceCurrentItem =
+    tupleProperties != null &&
+    ['planSlug', 'specId', 'specRevision', 'specFingerprint', 'evidenceKind', 'evidenceRef', 'sourceFingerprint'].every(
+      (name) => Object.prototype.hasOwnProperty.call(tupleProperties, name),
+    ) &&
+    ['testFingerprint', 'fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'].some((name) =>
+      Object.prototype.hasOwnProperty.call(tupleProperties, name),
+    );
   // Keep conditional lifecycle contracts ahead of descriptive/legacy fields in
   // a bounded nested object. `work_items:complete` places
   // `rootCauseVerification` after the wide `verification` record and several
@@ -374,6 +398,15 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     const omitted = new Set<string>();
     const degradedArrayItems = new Set<string>();
     for (const [index, entry] of entries.entries()) {
+      const [name, raw] = propertiesToRender[index];
+      if (
+        isSpecEvidenceCurrentItem &&
+        ['fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'].includes(name)
+      ) {
+        dropped += 1;
+        omitted.add(name);
+        continue;
+      }
       const candidate = body ? `${body},${entry}` : entry;
       if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
         // Keep the child name/type discoverable even when its recursive shape is
@@ -382,7 +415,6 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
         // leaving callers to infer the legacy alias was canonical. The shallow
         // fallback preserves the callable field without changing aggregate
         // width or the explicit tail-elision marker.
-        const [name, raw] = propertiesToRender[index];
         // Keep a shallow nested-object path on the fallback. Without this, a
         // wide field such as completion.verification degraded to just
         // `verification?:object`, while the legacy sibling completion.coverage
@@ -589,7 +621,25 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
   for (const [name, entry] of merged) {
     if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);
   }
-  return { entries: [...merged].map(([name, entry]) => [name, entry.raw]), required, unionHint, conditionalHint };
+  const entries = [...merged].map(([name, entry]) => [name, entry.raw] as [string, unknown]);
+  // `work_items:complete` has a wide nested `completion` record followed by
+  // shallow controls (`validateOnly` and `assumptions`) in both union branches,
+  // plus the structured `specAdequacy.current` evidence selector in the
+  // shorthand branch. Keep all of these contract-bearing fields ahead of the
+  // wide record in the bounded projection so adding validator-owned annotations
+  // cannot evict callable top-level fields or the current-evidence tuple shape.
+  // Limit this ordering rule to the recognizable completion envelope; generic
+  // root unions retain their source order.
+  const completionIndex = entries.findIndex(([name]) => name === 'completion');
+  const completionControls = new Set(['specAdequacy', 'validateOnly', 'assumptions']);
+  if (completionIndex >= 0 && entries.some(([name]) => completionControls.has(name))) {
+    const controls = entries.filter(([name]) => completionControls.has(name));
+    const withoutControls = entries.filter(([name]) => !completionControls.has(name));
+    const adjustedCompletionIndex = withoutControls.findIndex(([name]) => name === 'completion');
+    withoutControls.splice(adjustedCompletionIndex, 0, ...controls);
+    return { entries: withoutControls, required, unionHint, conditionalHint };
+  }
+  return { entries, required, unionHint, conditionalHint };
 }
 
 /**
@@ -617,7 +667,7 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
   });
   if (parts.length === 0) return null;
   const aliasHint = schemaAliasAnnotation(root);
-  const callConstraints = schemaCallConstraintAnnotation(root);
+  const callConstraints = schemaCallConstraintAnnotation(root, { compact: true });
   const prefix = `${callConstraints ? `${callConstraints}; ` : ''}${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}`;
   const withDescriptions = new Set(parts.filter((part) => part.description).map((part) => part.index));
   const render = (includedDescriptions: ReadonlySet<number>): string =>
@@ -639,38 +689,6 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     }
   }
   return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
-}
-
-/**
- * Retain validator-owned constraints that JSON Schema cannot express (such as
- * a conditional cap on joined section text). Unlike optional description prose,
- * these annotations precede the bounded field list. Walk arrays/unions too so
- * shorthand and bulk callers see the same rule at its actual argument path.
- */
-function schemaCallConstraintAnnotation(inputSchema: unknown): string {
-  const annotations = new Set<string>();
-  const ancestors = new Set<object>();
-  const walk = (value: unknown, path: string): void => {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || ancestors.has(value)) return;
-    ancestors.add(value);
-    const node = value as JsonSchemaNode;
-    const constraint = node['x-papercusp-call-constraint'];
-    if (typeof constraint === 'string' && constraint.trim()) {
-      annotations.add(`constraint:${path || '$'} (${constraint.trim()})`);
-    }
-    for (const branches of [node.anyOf, node.oneOf]) {
-      if (Array.isArray(branches)) for (const branch of branches) walk(branch, path);
-    }
-    if (node.items) walk(node.items, `${path}[]`);
-    if (node.properties && typeof node.properties === 'object' && !Array.isArray(node.properties)) {
-      for (const [name, child] of Object.entries(node.properties)) {
-        walk(child, path ? `${path}.${name}` : name);
-      }
-    }
-    ancestors.delete(value);
-  };
-  walk(inputSchema, '');
-  return [...annotations].join('; ');
 }
 
 /** Project a registered RESULT schema, including array/scalar-rooted shapes. */
@@ -997,7 +1015,7 @@ export default defineTool({
     normalizeToolsFindArgs,
     z.object({
       /** What you want to do, in natural language or keywords. */
-      query: z.string().min(1).max(400),
+      query: z.string().min(1).max(400).optional(),
       q: z
         .string()
         .min(1)
@@ -1031,6 +1049,18 @@ export default defineTool({
         .describe(
           'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
         ),
+    }).superRefine((args, ctx) => {
+      // normalizeToolsFindArgs has already mapped a q-only call to query here.
+      // Keep query optional in the published structural schema so the q alias
+      // is truthfully callable, while preserving the runtime requirement that
+      // one non-empty spelling must be supplied.
+      if (args.query === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['query'],
+          message: 'query (or compatibility alias q) is required',
+        });
+      }
     }),
   ),
   result: z
@@ -1045,19 +1075,23 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    // The args refinement above guarantees this for every dispatched call.
+    // Keep the guard because focused tests may invoke the handler directly and
+    // because it narrows the inferred optional schema field for this function.
+    if (!args.query) throw new Error('tools:find query is required after argument normalization');
     // host-bootstrap starts plugin discovery fire-and-forget. Join the same
     // single-flight readiness promise before snapshotting the projected
     // registry, otherwise a first post-restart request can build a corpus
     // while plugin tools are still being wired. Keep this import dynamic so
     // the plugin host does not become part of the agent-tools registry cycle.
-    try {
-      const { getPluginHost } = await import('../../plugin-host-runtime');
-      await getPluginHost();
-    } catch {
-      // Discovery/wiring failures are recorded by the plugin host where
-      // possible. The base projected registry remains searchable if startup
-      // failed before a host state could be produced.
-    }
+    await withBoundedTimeout(
+      () => import('../../plugin-host-runtime').then(({ getPluginHost }) => getPluginHost()),
+      {
+        fallback: null,
+        timeoutMs: PLUGIN_HOST_READINESS_TIMEOUT_MS,
+        label: 'tools:find plugin-host readiness',
+      },
+    );
     const { corpus: fullCorpus, embedText, returnsByTool, returnSourcesByTool, schemaByTool, revision } = buildCorpus();
     const registry = {
       source: PROJECTED_TOOL_REGISTRY_SOURCE,

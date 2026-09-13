@@ -533,6 +533,41 @@ const CORPUS_NAMESPACED_TABLES = new Set([
  */
 const TEST_RUNS_TABLE = 'test_runs';
 
+interface TestRunsReference {
+  qualifier: string;
+}
+
+function extractTestRunsReferences(strippedSql: string): TestRunsReference[] {
+  const sqlKeywords = new Set([
+    'as',
+    'on',
+    'where',
+    'join',
+    'left',
+    'right',
+    'inner',
+    'outer',
+    'full',
+    'cross',
+    'using',
+    'group',
+    'order',
+    'limit',
+    'offset',
+    'fetch',
+    'union',
+    'having',
+  ]);
+  const references: TestRunsReference[] = [];
+  const referenceRe =
+    /\b(?:from|join)\s+(?:only\s+)?(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?test_runs\b(?:\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_$]*))?/gi;
+  for (let match = referenceRe.exec(strippedSql); match; match = referenceRe.exec(strippedSql)) {
+    const alias = match[1]?.toLowerCase();
+    references.push({ qualifier: alias && !sqlKeywords.has(alias) ? alias : TEST_RUNS_TABLE });
+  }
+  return references;
+}
+
 /**
  * Independent advisory for {@link TEST_RUNS_TABLE} — see its doc comment for why this can't be
  * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
@@ -550,6 +585,7 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
   const explicitTenantFence =
     hasTenantPredicate(stripped, 'workspace_id') &&
     hasTenantPredicate(stripped, 'harness_slug');
+  const testRunsReferences = extractTestRunsReferences(stripped);
   // A bounded reporter id range is the local equivalent of an exact run_group_id
   // fence (EI-22633261796522656). Keep the exception narrow: `id > ...` and other
   // broad predicates must continue to surface the CI-row NULL trap.
@@ -565,7 +601,28 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
     /\b(?:limit\s+(?!all\b)(?:\d+|\$\d+)|fetch\s+(?:first|next)\s+(?:\d+|\$\d+)\s+rows?\s+only)\b/i.test(
       stripped,
     );
-  if (explicitTenantFence && (boundedLocalGroup || boundedLocalFileRead)) return null;
+  const joinedTestRunsReference =
+    tables.length > 1 && testRunsReferences.length === 1 ? testRunsReferences[0] : null;
+  const joinedExplicitTenantFence =
+    joinedTestRunsReference !== null &&
+    hasPredicateForTestRunsReference(stripped, joinedTestRunsReference, 'workspace_id', false) &&
+    hasPredicateForTestRunsReference(stripped, joinedTestRunsReference, 'harness_slug', false);
+  const joinedBoundedLocalGroup =
+    joinedExplicitTenantFence &&
+    (hasPredicateForTestRunsReference(stripped, joinedTestRunsReference!, 'run_group_id', true) ||
+      hasPredicateForTestRunsReference(stripped, joinedTestRunsReference!, 'id', true));
+  const joinedBoundedLocalFileRead =
+    joinedExplicitTenantFence &&
+    hasPredicateForTestRunsReference(stripped, joinedTestRunsReference!, 'file_path', true) &&
+    /\b(?:limit\s+(?!all\b)(?:\d+|\$\d+)|fetch\s+(?:first|next)\s+(?:\d+|\$\d+)\s+rows?\s+only)\b/i.test(
+      stripped,
+    );
+  if (
+    (explicitTenantFence && (boundedLocalGroup || boundedLocalFileRead)) ||
+    joinedBoundedLocalGroup ||
+    joinedBoundedLocalFileRead
+  )
+    return null;
   return (
     '⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI/dogfood-reporter ' +
     'rows (env-derived — libs/test-config/src/admin-test-runs-reporter.ts — and stamped ONLY by the ' +
@@ -2901,6 +2958,18 @@ function hasBoundedPredicate(strippedSql: string, column: string): boolean {
     `\\b${escaped}\\b${cast}\\s*(?:=|\\bIN\\s*\\(|\\bBETWEEN\\b)`,
     'i',
   ).test(strippedSql);
+}
+
+function hasPredicateForTestRunsReference(
+  strippedSql: string,
+  reference: TestRunsReference,
+  column: string,
+  bounded: boolean,
+): boolean {
+  const qualifiedColumn = `${reference.qualifier}.${column}`;
+  return bounded
+    ? hasBoundedPredicate(strippedSql, qualifiedColumn)
+    : hasTenantPredicate(strippedSql, qualifiedColumn);
 }
 
 export async function buildTenantScopeAdvisory(

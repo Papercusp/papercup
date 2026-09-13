@@ -501,10 +501,18 @@ describe('applyResultDoor', () => {
     const kept = JSON.parse((doored.content[0] as { text: string }).text) as any;
     expect(kept._projection.truncated).toBe(true);
     expect(Object.keys(kept.rows[0].ratings)).toEqual(criteria);
+    expect(Object.values(kept.rows[0].ratings).every((entry: any) =>
+      entry && typeof entry === 'object' && entry._partial === undefined,
+    )).toBe(true);
     expect(Object.fromEntries(Object.entries(kept.rows[0].ratings).map(([key, value]: any) => [key, value.rating]))).toEqual(
       Object.fromEntries(criteria.map((criterion, index) => [criterion, index % 2 === 0 ? 'fail' : 'unknown'])),
     );
-    expect(kept.rows[0]).toMatchObject({ requiredProofFloor: 'l4', verdict: 'fail', wouldBlock: criteria.slice(0, 3) });
+    expect(kept.rows[0]).toMatchObject({
+      _partial: true,
+      requiredProofFloor: 'l4',
+      verdict: 'fail',
+      wouldBlock: criteria.slice(0, 3),
+    });
     expect(kept.verdicts).toEqual({ pass: 0, fail: 1, unknown: 0 });
     expect(kept.wouldBlock).toEqual(payload.wouldBlock);
     expect(kept._compactProjection).toMatchObject({ kind: 'evaluator-specific' });

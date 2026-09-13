@@ -42,7 +42,7 @@ import { deriveVerdict } from './liveness-oracle';
 // re-derived: re-implementing the rule here is how the two surfaces would drift
 // back apart, and its `stalled` guard is what stops a loop parked-and-wedged for
 // hours from being reported as a promise that it will fire again.
-import { deriveDormantSchedule } from './presence-selfwake';
+import { deriveDormantSchedule, fetchSelfWake, type SelfWakeSignals } from './presence-selfwake';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { deriveContextPressure, deriveContextPressureAgeSec } from './context-pressure';
@@ -566,6 +566,11 @@ export async function assemblePresenceSnapshot(
   // the second into `dormantScheduled:false` would assert the exact false-negative
   // ("nothing will wake this agent") that this field exists to prevent.
   let loopsRead = false;
+  // EI-19407725333778711: this is a separate forward-looking axis from the
+  // scheduled-fire projection. A failed/empty enrichment remains unknown; the
+  // oracle omits the fields and the wire projection emits null rather than
+  // fabricating `selfWake:'none'`.
+  let selfWakeSignals = new Map<string, SelfWakeSignals>();
   await Promise.all([
     // each best-effort + independent — presence must list even if any join fails.
     fetchPresenceTier1(localActiveIds)
@@ -627,6 +632,11 @@ export async function assemblePresenceSnapshot(
         loopsRead = true;
       })
       .catch(() => {}),
+    fetchSelfWake(localAllIds)
+      .then((m) => {
+        selfWakeSignals = m;
+      })
+      .catch(() => {}),
   ]);
 
   // EI-22072194984361823: the fleet's CONTROL state (active|winding-down),
@@ -679,6 +689,7 @@ export async function assemblePresenceSnapshot(
       nowMs,
       undefined,
       { enabled: true, negative: false, positive: true, findHostFn: findLiveHost },
+      selfWakeSignals.get(r.ownerId),
     );
     return {
       ...r,
@@ -688,6 +699,10 @@ export async function assemblePresenceSnapshot(
       // read. Expose the confirmation nudge on the shared snapshot so
       // coord:presence and coord:inbox re-bootstrap agree.
       confirmLiveness: v.confirmLiveness,
+      // EI-19407725333778711: carry the independently derived forward-looking
+      // axis onto the row. Preserve absence when the enrichment degraded so
+      // toStableRosterRow emits UNKNOWN (null), never a fabricated `none`.
+      ...(v.selfWake !== undefined ? { loopArmed: v.loopArmed, selfWake: v.selfWake } : {}),
       // EI-9262: sessionState (wakeability + activity end-marker) converges to
       // parked/ended far faster than the 30-minute intentStale activity clock —
       // the instant it does, the declared intent must read as unreliable too, so

@@ -27881,7 +27881,7 @@
           "POST"
         ]
       },
-      "description": "Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + subjectRef + since; newest-first. `subjectRef` is the scalar observation.subject.ref filter (for example a WI-/EI- id), unlike scorecards:emit's structured subject:{kind,ref}. For spec-quality and other plan-spec rubrics, the stored subject ref is a composite `spec-set:<classRef>:<specSetHash>:<planKey>` identity, not a plan or pot slug; obtain the exact ref from an existing scorecard or evaluator output. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the \"is the data layer alive at all?\" read (e.g. while overwatch is paused).",
+      "description": "Read rubric scorecards (rubricRef + per-criterion ratings/evidence), newest-first. Filter by rubricRef, sourceHive, scalar subjectRef, and since. Unlike scorecards:emit's structured subject:{kind,ref}, subjectRef is observation.subject.ref (for example a WI-/EI- id). Spec-quality refs are composite `spec-set:<classRef>:<specSetHash>:<planKey>`, not a plan or pot slug; get the exact ref from a scorecard or evaluator. Synthesized floor cards are excluded; pass includeSynthesized:true to include them.",
       "capabilities": [
         "coord:read"
       ],
@@ -27907,9 +27907,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did Overwatch emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring. To filter by the graded subject, pass the scalar `subjectRef` (the stored observation.subject.ref), not emit's structured `subject:{kind,ref}` object. For spec-quality and other plan-spec rubrics, use the exact composite `spec-set:<classRef>:<specSetHash>:<planKey>` subject ref, not the plan slug.",
-        "notWhen": "You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — scorecards:emit.",
-        "chaining": "scorecards:list { rubricRef: \"pot-coordination-health\", subjectRef: \"EI-123\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions."
+        "when": "Read emitted scorecards for trend/freshness and completeness. Filter by scalar `subjectRef` (stored observation.subject.ref), not emit's `subject:{kind,ref}`; spec-quality uses exact composite `spec-set:<classRef>:<specSetHash>:<planKey>` subject ref, not a plan slug.",
+        "notWhen": "Need a rubric definition — rubrics:get/list; cross-corpus ideation rollup — curation:state-of-pot; or filing a scorecard — scorecards:emit.",
+        "chaining": "scorecards:list { rubricRef, subjectRef: \"EI-123\", since } → inspect missingKeys/ratings → drill row with work_items:get { id: issueId } or rubric criteria with rubrics:get { rubricRef }."
       }
     },
     {
