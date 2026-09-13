@@ -3351,12 +3351,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           ),
         { timeout: 120_000, interval: 100 },
       );
-      // The running-state bar read " Running — input locked " until P-007 draft
-      // queuing made Enter QUEUE the next message instead of being swallowed
-      // (ui.rs:3126, pinned there by `assert!(!text.contains("input locked"))`).
-      // This waits for the running state; the assertion that input is not
-      // send-ready is the `not.toContain('Message — Enter send')` below.
-      await pane.waitFor('Running — Enter queues your next message');
+      // Wait on the transcript title's stable streaming state. The composer
+      // footer can legitimately be replaced by a higher-priority pending-ack,
+      // card or approval branch while the same native turn is already running.
+      // P-007's focused case above separately pins the queue-affordance text;
+      // the `not.toContain('Message — Enter send')` assertion below keeps this
+      // journey's input-lock contract independent of which footer branch owns.
+      await pane.waitFor('Agent Chat · Running · Ctrl+X cancel');
       await vi.waitFor(
         () => {
           const partialText = scriptedEngine.events
