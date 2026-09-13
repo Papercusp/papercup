@@ -180,7 +180,7 @@ export interface ActivationAuditMapping {
   sourceRefs: string[];
   /** Concise requirement/constraint/decision distilled from those turns. */
   requirement: string;
-  /** P-NNN, D-NNN, or section:<heading> destinations in the plan. */
+  /** R-N, P-NNN, D-NNN, or section:<heading> destinations in the plan. */
   planTargets: string[];
   disposition: 'covered' | 'repaired' | 'rejected' | 'open';
 }
@@ -1742,7 +1742,7 @@ export interface RecordCurrentActivationAuditInput {
 export interface ActivationAuditPlanTargetProblem {
   mappingId: string;
   target: string;
-  code: 'unknown_item' | 'unknown_decision' | 'unknown_section' | 'invalid_plan_target';
+  code: 'unknown_acceptance_bar' | 'unknown_item' | 'unknown_decision' | 'unknown_section' | 'invalid_plan_target';
   detail: string;
 }
 
@@ -1754,12 +1754,31 @@ export function validateActivationAuditPlanTargets(
   const parsed = parsePlan(planContent);
   const items = new Set(parsed.items.map((item) => item.id));
   const decisions = new Set(parsed.decisions.map((decision) => decision.id));
+  // Post-epoch plans seed the exact R-N records in ## Requirements as canonical
+  // acceptance BARs. Let an activation mapping point at that same record so the
+  // conversation requirement remains traceable to the BAR it caused, rather than
+  // forcing every such mapping to widen to section:Requirements.
+  const requirements = parseRequirementBars(planContent);
+  const acceptanceBars = requirements.ok
+    ? new Set(requirements.bars.map((bar) => bar.barKey))
+    : new Set<string>();
   const sections = new Set(
     splitPlanSections(planContent).map((section) => section.heading.trim().toLowerCase()),
   );
   const problems: ActivationAuditPlanTargetProblem[] = [];
   for (const mapping of activation.mappings) {
     for (const target of mapping.planTargets) {
+      if (/^R-\d+$/.test(target)) {
+        if (!acceptanceBars.has(target)) {
+          problems.push({
+            mappingId: mapping.id,
+            target,
+            code: 'unknown_acceptance_bar',
+            detail: `${mapping.id} targets acceptance bar '${target}', which has no exact record in the current Requirements section`,
+          });
+        }
+        continue;
+      }
       if (/^P-\d{3,}$/.test(target)) {
         if (!items.has(target)) {
           problems.push({
@@ -1798,7 +1817,7 @@ export function validateActivationAuditPlanTargets(
         mappingId: mapping.id,
         target,
         code: 'invalid_plan_target',
-        detail: `${mapping.id} target '${target}' must be P-NNN, D-NNN, or section:<heading>`,
+        detail: `${mapping.id} target '${target}' must be R-N, P-NNN, D-NNN, or section:<heading>`,
       });
     }
   }

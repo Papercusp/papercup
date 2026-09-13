@@ -1413,6 +1413,94 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
   );
 });
 
+describe('RECYCLE respawn report ordering', () => {
+  it(
+    'waits for the async onRespawn report before publishing successor metadata and output wiring',
+    async () => {
+      const ownerId = `su-recycle-order-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "const marker=process.argv[process.argv.length-1];" +
+        "process.stdout.write('BOOT:'+marker+'\\n');" +
+        "if(marker==='RECYCLED')setInterval(()=>process.stdout.write('LIVE:'+marker+'\\n'),25);" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(line==='QUIT')process.exit(0);}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      const freshNativeId = 'eeeeabcd-1234-5678-9abc-def012345678';
+      // Keep the report promise separate from the start signal: the host must
+      // reach the callback before this test releases it, otherwise an ordering
+      // regression could pass by accident.
+      let signalReportStarted!: () => void;
+      const reportStartedSignal = new Promise<void>((resolve) => { signalReportStarted = resolve; });
+      let releaseReport!: () => void;
+      const reportGate = new Promise<void>((resolve) => { releaseReport = resolve; });
+      const respawns: string[] = [];
+      const mintCalls: string[][] = [];
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'ORIGINAL'],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_FLEET_BG: '',
+          PAPERCUSP_FLEET_FG: '',
+          PAPERCUSP_FLEET_CURSOR: '',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        mintRecycleArgs: (args: string[]) => {
+          mintCalls.push(args);
+          return { args: args.slice(0, -1).concat('RECYCLED'), nativeId: freshNativeId };
+        },
+        onRespawn: (nativeId: string) => {
+          respawns.push(nativeId);
+          signalReportStarted();
+          return reportGate;
+        },
+        onExit: () => {},
+      });
+
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:ORIGINAL'), { timeout: 2_000 });
+        const predecessorPid = JSON.parse(readFileSync(meta, 'utf8')).ptyPid;
+
+        await controlInject(sock, 'recycle', '');
+        await reportStartedSignal;
+        await sleep(100);
+
+        // The fresh child has already been spawned, but no successor metadata or
+        // output listener may be published until the async report resolves.
+        expect(JSON.parse(readFileSync(meta, 'utf8')).ptyPid).toBe(predecessorPid);
+        expect(captured()).not.toContain('LIVE:RECYCLED');
+        expect(respawns).toEqual([freshNativeId]);
+        expect(mintCalls).toHaveLength(1);
+
+        releaseReport();
+        await vi.waitFor(() => expect(captured()).toContain('LIVE:RECYCLED'), { timeout: 2_000 });
+        expect(JSON.parse(readFileSync(meta, 'utf8')).ptyPid).not.toBe(predecessorPid);
+
+        await rawInject(sock, 'QUIT\n');
+        expect(await done).toBe(0);
+      } finally {
+        // If an assertion fails before the report is released, unblock the
+        // host's bounded callback wait so cleanup cannot consume the whole test
+        // timeout while a child is still alive.
+        releaseReport();
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done;
+      }
+    },
+    25_000,
+  );
+});
+
 describe('ADOPTION — a stale host hands the session to a fresh launcher instead of respawning inside itself (WI-38292)', () => {
   // The bug: psu-launcher imports psu-pty-host ONCE and `recycleChild` only ever
   // replaces the CLI child, so a host fix committed after this process booted is

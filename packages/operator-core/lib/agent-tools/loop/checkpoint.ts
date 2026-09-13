@@ -420,7 +420,11 @@ export default defineTool({
       "At a COLD loop turn's end, save compressed facts, not a transcript. Pair with work_items:checkpoint; use " +
       'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives/completed coordination; never invent a ref. Mark other sources ' +
       '[self-imposed], [peer:<sid>], or [inferred]. Default merge mode preserves them; use rowsMode:\'replace\' only ' +
-      "when retiring rows. Probe kind:'tool' or kind:'state-cell' with args and schemaRevision.",
+      "when retiring rows. Probe kind:'tool' or kind:'state-cell' with args and schemaRevision. If `next` names an " +
+      'immediately runnable action, execute that action (or another bounded progress read) before calling ' +
+      '`session:request-compaction`; writing this checkpoint alone is not post-note progress and the ' +
+      '`cold-successor-no-progress` flush tripwire will refuse the compaction. An explicit next scheduled loop ' +
+      'fire or compaction action is the narrow boundary exception; do not use it to skip runnable work.',
     notWhen: "WARM loops (carry:'warm', default) carry the live transcript; use work_items:checkpoint for work-item state.",
     chaining:
       'Write last before a cold turn ends; refresh work_items:checkpoint and facts:assert. To retune an active loop, ' +

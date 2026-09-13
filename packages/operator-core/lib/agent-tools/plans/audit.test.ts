@@ -428,6 +428,7 @@ describe('plans:audit phase:activation', () => {
     };
     const description = schema.properties?.mappings?.items?.properties?.planTargets?.description;
 
+    expect(description).toContain('R-N');
     expect(description).toContain('P-NNN');
     expect(description).toContain('D-NNN');
     expect(description).toContain('section:<heading>');

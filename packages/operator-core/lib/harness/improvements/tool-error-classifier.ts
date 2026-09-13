@@ -386,11 +386,12 @@ export const KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES: readonly KnownExternalToolFail
     // CREATE_PROCESS_NO_SUCH_FILE) vary per Codex build, so they are NOT
     // required — requiring them would under-match reports that omit the code.
     match: 'unified[ _-]?(exec|shell|process)',
-    // The SEPARATE, already-fixed mistyped-workdir class reports the same
-    // "No such file or directory" with the same error codes, but its fix is
-    // "use the correct path", not "retry sequentially" — the doc is explicit
-    // that the two must not be conflated. Any mention of a workdir/path problem
-    // therefore drops the match back to normal handling.
+    // The SEPARATE mistyped-workdir class is not "already-fixed": the linked
+    // insight says nonexistent-workdir behavior still reproduces and remains
+    // outside Papercusp's fix surface. Its disposition is "use the correct
+    // path", not "retry sequentially" — the doc is explicit that the two must
+    // not be conflated. Any mention of a workdir/path problem therefore drops
+    // the match back to normal handling.
     exclude: 'workdir|working directory|misspell|mistyped|typo|nonexistent (path|directory)',
     note:
       'Codex CLI client-side process-spawn race under concurrent launch. No papercusp code implements this spawner; ' +

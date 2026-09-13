@@ -11449,6 +11449,19 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(runBody).toContain("onSpawnFailure: cleanupResumeClaim");
   });
 
+  it("returns the async respawn report so the PTY host can enforce ordering", () => {
+    const onRespawn = src.indexOf("onRespawn: (freshId) => {");
+    const report = src.indexOf("return reportSessionRespawned(", onRespawn);
+    const callbackEnd = src.indexOf("        },", report);
+
+    expect(onRespawn).toBeGreaterThan(-1);
+    expect(report).toBeGreaterThan(onRespawn);
+    expect(callbackEnd).toBeGreaterThan(report);
+    expect(src.slice(onRespawn, callbackEnd)).not.toContain(
+      "void reportSessionRespawned(",
+    );
+  });
+
   it("records the acquisition protocol before any post-claim setup", () => {
     const claimed = body.indexOf("resumeClaimed = true;");
     const protocol = body.indexOf(

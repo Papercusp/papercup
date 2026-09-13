@@ -264,6 +264,12 @@ describe('release:repair-queue', () => {
     }
   });
 
+  it('accepts workItem on both admission variants', () => {
+    const workItem = 'WI-10000288';
+    expect(tool.args.safeParse({ op: 'admit', paths: ['lib/red.test.ts'], workItem }).success).toBe(true);
+    expect(tool.args.safeParse({ op: 'converge', paths: ['lib/red.test.ts'], workItem }).success).toBe(true);
+  });
+
   it('get exposes one normalized queue and never advertises retire for a recoverable one', async () => {
     const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(result).toMatchObject({
@@ -467,7 +473,13 @@ describe('release:repair-queue', () => {
     mocks.admit.mockReturnValue(admissionOf(true));
     const result = body(
       await tool.handler(
-        { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, reason: 'gate red on this file' } as never,
+        {
+          op: 'admit',
+          paths: ['lib/red.test.ts'],
+          confirm: true,
+          reason: 'gate red on this file',
+          workItem: 'WI-10000288',
+        } as never,
         { role: 'su' } as never,
       ),
     );
@@ -506,6 +518,7 @@ describe('release:repair-queue', () => {
       from: queue.repairHead,
       to: NEW_HEAD,
       paths: ['lib/red.test.ts'],
+      workItem: 'WI-10000288',
       persisted: true,
     });
   });

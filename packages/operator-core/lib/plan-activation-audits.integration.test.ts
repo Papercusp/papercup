@@ -372,11 +372,36 @@ describe('migration 938 activation-audit ledger', () => {
     await expect(db.sql`SELECT 1 FROM harness_shared.plan_audits`).resolves.toEqual([]);
   });
 
+  it('accepts only exact acceptance-bar records for R-N mapping targets', async () => {
+    await seedPostEpochPlan();
+
+    const result = await recordCurrentActivationAudit({
+      workspaceId: 'activation-audit-test',
+      harnessSlug: 'papercusp',
+      planSlug: 'post-epoch-seed-target',
+      createdBy: 'su-test',
+      classRef: evaluatedClassRef,
+      activation: {
+        ...payload,
+        mappings: [{ ...payload.mappings[0], planTargets: ['R-3'] }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'plan_targets_invalid',
+      problems: [expect.objectContaining({
+        mappingId: 'M-001', target: 'R-3', code: 'unknown_acceptance_bar',
+      })],
+    });
+    await expect(db.sql`SELECT 1 FROM harness_shared.plan_audits`).resolves.toEqual([]);
+  });
+
   it('seeds rubric, BAR map projections, plan pin, and audit in one post-epoch transaction', async () => {
     const revision = await seedPostEpochPlan();
     const activation = {
       ...payload,
-      mappings: [{ ...payload.mappings[0], planTargets: ['P-001', 'P-002', 'section:Requirements'] }],
+      mappings: [{ ...payload.mappings[0], planTargets: ['R-1', 'R-2', 'P-001', 'P-002', 'section:Requirements'] }],
     };
 
     const first = await recordCurrentActivationAudit({

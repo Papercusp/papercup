@@ -1188,7 +1188,9 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.ok).toBe(true);
     expect(r.workItem).toMatchObject({ id: 'EI-timeout', state: 'resolved' });
     expect(r.stateError).toBeUndefined();
-    expect(contentionMocks.acquireWithContentionRetry).toHaveBeenCalledTimes(1);
+    // The close has two retryable finish legs: the terminal state write and the
+    // checkpoint cleanup. Both must use the shared contention policy.
+    expect(contentionMocks.acquireWithContentionRetry).toHaveBeenCalledTimes(2);
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
   });
 

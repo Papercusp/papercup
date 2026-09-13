@@ -114,7 +114,7 @@ const activationMappingSchema = z.object({
   sourceRefs: z.array(z.string().min(1).max(500)).min(1).max(100),
   requirement: z.string().min(1).max(4000),
   planTargets: z.array(z.string().min(1).max(500)).min(1).max(100).describe(
-    'Plan destinations: use P-NNN for plan items, D-NNN for decisions, or section:<heading> for exact plan sections; the section: prefix is required.',
+    'Plan destinations: use R-N for exact acceptance-bar records in Requirements, P-NNN for plan items, D-NNN for decisions, or section:<heading> for exact plan sections; the section: prefix is required.',
   ),
   disposition: z.enum(['covered', 'repaired', 'rejected', 'open']),
 }).superRefine((mapping, ctx) => {
@@ -142,7 +142,7 @@ const argsSchema = z.object({
     'Activation phase: bounded source conversations covered by this pass. Required and nonempty for the first audit; omitted or empty on a re-audit carries prior ranges forward.',
   ),
   mappings: z.array(activationMappingSchema).max(300).optional().describe(
-    'Activation phase: every requirement/constraint/decision mapped from canonical session_turn refs to current P-NNN, D-NNN, or section:<heading> targets. Required and nonempty for the first audit; omitted or empty on a re-audit carries prior mappings forward.',
+    'Activation phase: every requirement/constraint/decision mapped from canonical session_turn refs to current R-N acceptance bars, P-NNN items, D-NNN decisions, or section:<heading> targets. Required and nonempty for the first audit; omitted or empty on a re-audit carries prior mappings forward.',
   ),
   repairedOmissions: z.array(z.string().min(1).max(2000)).max(100).optional(),
   rejectedOrSuperseded: z.array(z.string().min(1).max(2000)).max(100).optional(),

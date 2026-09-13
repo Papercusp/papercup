@@ -2448,13 +2448,19 @@ export async function synchronizeFinishWork(
 
   let checkpointCleared = false;
   try {
-    await clearCheckpoint(
-      {
-        harness: (opts.workItem.harness as string | null | undefined) ?? null,
-        workItemId: opts.id,
-        workspaceId: opts.ctx.workspaceId,
-      },
-      null,
+    // Checkpoint cleanup is an idempotent finish leg, just like the terminal state
+    // write above. Retry transient PG lock/statement timeouts here as well: a
+    // committed close must not report incomplete convergence merely because the
+    // cleanup transaction hit a short contention window (EI-23078501622912469).
+    await acquireWithContentionRetry(() =>
+      clearCheckpoint(
+        {
+          harness: (opts.workItem.harness as string | null | undefined) ?? null,
+          workItemId: opts.id,
+          workspaceId: opts.ctx.workspaceId,
+        },
+        null,
+      ),
     );
     checkpointCleared = true;
   } catch (error) {

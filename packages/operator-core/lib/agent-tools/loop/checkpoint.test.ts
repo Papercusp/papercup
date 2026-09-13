@@ -534,6 +534,16 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(guidance?.when).toContain('[self-imposed]');
   });
 
+  it('guides authors through the cold-successor no-progress tripwire before compaction', () => {
+    const guidance = (tool as unknown as { guidance?: { when?: string } }).guidance?.when ?? '';
+    expect(guidance).toContain('immediately runnable action');
+    expect(guidance).toContain('session:request-compaction');
+    expect(guidance).toContain('bounded progress read');
+    expect(guidance).toContain('writing this checkpoint alone is not post-note progress');
+    expect(guidance).toContain('cold-successor-no-progress');
+    expect(guidance).toMatch(/narrow boundary exception/i);
+  });
+
   it('keeps the executable probe target shape visible in guidance and the projected schema', () => {
     type JsonNode = { [key: string]: unknown };
     const rawSchema = z.toJSONSchema(tool.args) as JsonNode;

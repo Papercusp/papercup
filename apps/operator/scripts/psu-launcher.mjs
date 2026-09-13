@@ -47,8 +47,22 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { join, dirname, delimiter, basename, relative } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
-const nativeMcpBundle = new URL("../../../packages/omp-plugin/dist/native-client.cjs", import.meta.url);
-const nativeMcpExtension = new URL("../../../packages/omp-plugin/dist/native-extension.mjs", import.meta.url);
+
+/** Keep the packaged adapter relocatable while preserving source-checkout development. */
+export function resolveNativeMcpAssets(moduleUrl = import.meta.url, available = existsSync) {
+  const packaged = {
+    bundle: new URL("./native-client.cjs", moduleUrl),
+    extension: new URL("./native-extension.mjs", moduleUrl),
+  };
+  // Select the layout as one generation: never mix a partially assembled
+  // packaged pair with the source-tree fallback.
+  if (available(packaged.bundle) && available(packaged.extension)) return packaged;
+  return {
+    bundle: new URL("../../../packages/omp-plugin/dist/native-client.cjs", moduleUrl),
+    extension: new URL("../../../packages/omp-plugin/dist/native-extension.mjs", moduleUrl),
+  };
+}
+const { bundle: nativeMcpBundle, extension: nativeMcpExtension } = resolveNativeMcpAssets();
 const nativeMcpRequire = createRequire(import.meta.url);
 
 /** Explicit owned-OMP path only; stock Claude/Codex never receive this adapter. */
@@ -10385,7 +10399,7 @@ export function runWrapper(options) {
           // adv_sessions.session_id, which otherwise keeps naming the dead
           // predecessor — the P-018 successor-kill loop. coordOwnerId rides along
           // so an interactive/resumed launch (no adv id in env) re-anchors too.
-          void reportSessionRespawned(
+          return reportSessionRespawned(
             env.PAPERCUSP_ADV_SESSION_ID || null,
             freshId,
             {

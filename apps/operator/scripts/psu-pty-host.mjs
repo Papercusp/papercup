@@ -863,6 +863,17 @@ const RECYCLE_KILL_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_KIL
  * reap the leader cleanly when it can. */
 const RECYCLE_FORCE_KILL_WAIT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_FORCE_KILL_WAIT_MS) || 1_000;
 
+/**
+ * Bound the launcher-side respawn re-anchor acknowledgement. The callback is
+ * awaited before the successor's metadata, output wiring, and carry delivery
+ * are published, so those observations cannot get ahead of the authoritative
+ * adv-session mapping. A broken operator request must not hold a live successor
+ * forever, though; after this deadline the host records the miss and continues
+ * the ordinary respawn path.
+ */
+const RESPAWN_REPORT_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_RESPAWN_REPORT_TIMEOUT_MS) || 2_500;
+
 /** WI-1941: total wall-clock budget the recycle carry-note inject retries across
  *  before it is dropped LOUDLY. A fresh COLD child can stay busy past one
  *  agent-busy cap (large compacted-context replay, MCP load, an auto-continued
@@ -4906,6 +4917,10 @@ export function hostThroughPty(o) {
       })()
     : null;
   const nativeCaptureAfterMs = Date.now();
+  const respawnReportTimeoutMs = positiveNumber(
+    env.PAPERCUSP_PSU_PTY_RESPAWN_REPORT_TIMEOUT_MS,
+    RESPAWN_REPORT_TIMEOUT_MS,
+  );
   let managedKickoffDisposition = null;
   const acknowledgeManagedKickoff = (proof) => {
     if (!managedKickoff) return Promise.resolve();
@@ -7873,12 +7888,39 @@ export function hostThroughPty(o) {
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
-        // recurs). Fail-soft: onRespawn (recordSessionOwner) never throws.
+        // recurs). The launcher callback also repairs the authoritative
+        // adv_sessions mapping. Await that report before publishing successor
+        // metadata/wiring/carry, but cap the wait so a wedged operator cannot
+        // strand the live child forever.
         if (nativeId) {
+          let reportTimer;
+          let reportTimedOut = false;
           try {
-            onRespawn(nativeId);
-          } catch {
-            /* anchoring is best-effort — never let it break the respawn */
+            const report = Promise.resolve().then(() => onRespawn(nativeId));
+            await Promise.race([
+              report,
+              new Promise((resolve) => {
+                reportTimer = setTimeout(() => {
+                  reportTimedOut = true;
+                  resolve();
+                }, respawnReportTimeoutMs);
+              }),
+            ]);
+          } catch (error) {
+            appendHostEvent(ownerId, 'respawn-report-failed', {
+              mode: respawnMode,
+              nativeId,
+              detail: String(error?.message ?? error).slice(0, 200),
+            });
+          } finally {
+            if (reportTimer) clearTimeout(reportTimer);
+          }
+          if (reportTimedOut) {
+            appendHostEvent(ownerId, 'respawn-report-timeout', {
+              mode: respawnMode,
+              nativeId,
+              timeoutMs: respawnReportTimeoutMs,
+            });
           }
         }
         baseMeta.ptyPid = child.pid;

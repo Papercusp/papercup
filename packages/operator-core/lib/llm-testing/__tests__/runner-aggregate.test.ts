@@ -123,6 +123,16 @@ describe('scenario registry', () => {
       'su-S31c-asymmetry-field',
       'su-S31d-asymmetry-provenance',
       'su-S32-audit-mode-whole-picture',
+      'su-S33-agenda-delegate',
+      'su-S33-agenda-verify',
+      'su-S33-agenda-report',
+      'su-S33-agenda-continue',
+      'su-S33-agenda-wait',
+      'su-S33-agenda-unknown',
+      'su-S33-agenda-no-demand',
+      'su-S33-agenda-paused',
+      'su-S33-agenda-achieved',
+      'su-S33-agenda-killed',
       // pui-loop — the owned loop's su-derived prompt profile (D-034)
       'pui-loop-P01-owned-door-read',
       // onboarding-tutor scenario suite (onboarding-tutor target)

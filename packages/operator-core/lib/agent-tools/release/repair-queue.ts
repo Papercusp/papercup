@@ -123,6 +123,8 @@ const argsSchema = z.preprocess(
         paths: z.array(z.string().min(1)).min(1).max(50),
         reason: z.string().min(8).max(2000).optional(),
         confirm: z.boolean().optional(),
+        /** Optional work-item reference linking this admission to its tracked fix. */
+        workItem: z.string().max(120).optional(),
         ...queueIdentityFields,
         /** P-020 (D-008 3a): ALSO replay these agents' ledgered hunks — a genuinely shared fix. Never implied. */
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
@@ -147,6 +149,8 @@ const argsSchema = z.preprocess(
         paths: z.array(z.string().min(1)).min(1).max(50),
         reason: z.string().min(8).max(2000).optional(),
         confirm: z.boolean().optional(),
+        /** Optional work-item reference linking this aliased admission to its tracked fix. */
+        workItem: z.string().max(120).optional(),
         ...queueIdentityFields,
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
         wholeBlob: z.boolean().optional(),
@@ -1408,6 +1412,7 @@ export default defineTool({
       const auditRecorded = await recordAudit(identity.ownerId, {
         op: 'admit',
         reason: args.reason ?? null,
+        workItem: args.workItem ?? null,
         candidate: queue.candidate,
         from: queue.repairHead,
         to: outcome.commit,

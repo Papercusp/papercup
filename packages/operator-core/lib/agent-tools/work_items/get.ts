@@ -639,7 +639,7 @@ export default defineTool({
         .max(20)
         .optional()
         .describe(
-          "raw drill-down: resolve these prior-attempt refs back to their FULL untruncated source records. Take them from a brief's `omission.omittedRefs` (records the budget could only COUNT) or from a clipped record's own `rawRef` — the brief names them precisely so a bounded read is never a dead end. Refs that no longer resolve come back in `unresolved[]`, which is an answer about the history, not an error.",
+          "raw drill-down for the requested work-item(s): pass `id` (one) or `ids` (many) together with these refs. Resolve refs back to their FULL untruncated source records. Take them from a brief's `omission.omittedRefs` (records the budget could only COUNT) or from a clipped record's own `rawRef` — the brief names them precisely so a bounded read is never a dead end. Refs that no longer resolve come back in `unresolved[]`, which is an answer about the history, not an error.",
         ),
       threadLimit: z
         .number()

@@ -166,6 +166,12 @@ describe('work_items:get — priorAttempts (the read that used to require a clai
 });
 
 describe('work_items:get — priorAttemptRefs (raw drill-down)', () => {
+  it('requires a target id or ids because refs resolve against requested work-item records', () => {
+    expect(() => parse({ priorAttemptRefs: ['WI-3#checkpoint'] })).toThrow(/pass `id` \(one\) or `ids` \(many\)/);
+    expect(() => parse({ id: 'WI-1', priorAttemptRefs: ['WI-3#checkpoint'] })).not.toThrow();
+    expect(() => parse({ ids: ['WI-1'], priorAttemptRefs: ['WI-3#checkpoint'] })).not.toThrow();
+  });
+
   it('resolves named refs back to full records, INCLUDING ones the brief only counted', async () => {
     resolvePriorAttemptRefs.mockResolvedValue({
       schemaVersion: 'prior-attempt-refs-v1',
