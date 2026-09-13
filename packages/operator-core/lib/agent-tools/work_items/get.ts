@@ -712,7 +712,7 @@ export default defineTool({
     const needsCheckpoint = sourceSelectionWants(
       sourceSelection,
       'checkpoint', 'checkpointChecks', 'checkpointBody', 'checkpointAgeMs', 'checkpointUpdatedAtMs',
-      'checkpointContentHash', 'checkpointRetractions', 'checkpointReadFailed', 'checkpointBgJobWarning',
+      'checkpointContentHash', 'checkpointSubjectFingerprint', 'checkpointRetractions', 'checkpointReadFailed', 'checkpointBgJobWarning',
     ) || needsPriorWork || needsCitedFacts || needsCheckpointFreshness || needsCheckpointStale;
     const needsPlanItemBlocked = sourceSelectionWants(sourceSelection, 'planItemBlocked');
     const needsClaimCollision = sourceSelectionWants(sourceSelection, 'planItemClaimCollision');
@@ -822,7 +822,12 @@ export default defineTool({
             harness: workItem.harness,
             workItemId: workItem.id,
           })
-            .then((r) => ({ checkpoint: r.checkpoint, updatedAtMs: r.updatedAtMs, readFailed: r.readFailed === true }))
+            .then((r) => ({
+              checkpoint: r.checkpoint,
+              updatedAtMs: r.updatedAtMs,
+              subjectFingerprint: r.subjectFingerprint,
+              readFailed: r.readFailed === true,
+            }))
             .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
           if (checkpointRead.readFailed) {
             return {
@@ -838,6 +843,7 @@ export default defineTool({
               checkpointAgeMs: null,
               checkpointUpdatedAtMs: null,
               checkpointContentHash: null,
+              checkpointSubjectFingerprint: checkpointSubjectFingerprintForRead(workItem, true, undefined),
               checkpointReadFailed: true as const,
             };
           }
@@ -860,6 +866,11 @@ export default defineTool({
             checkpointAgeMs: checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null,
             checkpointUpdatedAtMs,
             checkpointContentHash: checkpointRead.checkpoint === null ? null : shortCarryHash(checkpointRead.checkpoint),
+            checkpointSubjectFingerprint: checkpointSubjectFingerprintForRead(
+              workItem,
+              false,
+              checkpointRead.subjectFingerprint,
+            ),
           };
         }
         // Bounded diagnostic thread read. Do not route this through
@@ -945,6 +956,7 @@ export default defineTool({
                 // sibling loop carry-note has exposed exactly this on its READ side
                 // since loop/status.ts:78; this closes the asymmetry.
                 checkpointContentHash: r.checkpoint === null ? null : shortCarryHash(r.checkpoint),
+                subjectFingerprint: r.subjectFingerprint,
                 readFailed: false as const,
               };
             })
@@ -960,8 +972,9 @@ export default defineTool({
               // exactly what `checkpointReadFailed` disambiguates for every other
               // field on this leg.
               checkpointContentHash: null,
+              subjectFingerprint: undefined,
               readFailed: true as const,
-            })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointBody: null, checkpointContentHash: null, readFailed: false as const }),
+            })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointBody: null, checkpointContentHash: null, subjectFingerprint: undefined, readFailed: false as const }),
           needsPlanItemBlocked ? planItemLaneBlockReason(workItem).catch(() => null) : Promise.resolve(null),
           needsClaimCollision ? planItemClaimCollision(workItem).catch(() => null) : Promise.resolve(null),
           // WI-40825: has the linked plan item been REWRITTEN since this
@@ -986,8 +999,14 @@ export default defineTool({
           checkpointChecks,
           checkpointBody,
           checkpointContentHash,
+          subjectFingerprint: storedSubjectFingerprint,
           readFailed: checkpointReadFailed,
         } = checkpointRead;
+        const checkpointSubjectFingerprint = checkpointSubjectFingerprintForRead(
+          workItem,
+          checkpointReadFailed,
+          storedSubjectFingerprint,
+        );
         const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
         // EI-15184: RELATIVE checkpoint staleness. `checkpointAgeMs` above is
         // ABSOLUTE age ("how old is this snapshot"); it does NOT tell a reader —
@@ -1192,6 +1211,7 @@ export default defineTool({
           checkpointAgeMs,
           checkpointUpdatedAtMs,
           checkpointContentHash,
+          checkpointSubjectFingerprint,
           // EI-19454477695046958: a retraction living in the checkpoint is invisible to
           // the reader who most needs it. The summary is the ORIGINAL claim and the
           // checkpoint is the CURRENT one, but both arrive as plain prose of equal

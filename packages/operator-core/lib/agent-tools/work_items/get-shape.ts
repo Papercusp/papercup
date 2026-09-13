@@ -584,6 +584,7 @@ function compactSingleRow(
     // to hold). Absence is unambiguous here: `checkpoint: null` already says nothing was
     // stored, and `checkpointReadFailed` already says the read broke.
     ...(r.checkpointContentHash ? { checkpointContentHash: r.checkpointContentHash } : {}),
+    ...(r.checkpointSubjectFingerprint ? { checkpointSubjectFingerprint: r.checkpointSubjectFingerprint } : {}),
     ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
     // EI-19454477695046958: like `checkpointContentHash` above, this stays true when the
     // checkpoint clips — and it is needed MOST exactly then. A trimmed reader receives the
@@ -918,6 +919,7 @@ function projectRow(
     // the same reason (it is the verification that SURVIVES the clip on the line above),
     // and conditional for the same reason (a null costs budget the checkpoint needs).
     ...(r.checkpointContentHash ? { checkpointContentHash: r.checkpointContentHash } : {}),
+    ...(r.checkpointSubjectFingerprint ? { checkpointSubjectFingerprint: r.checkpointSubjectFingerprint } : {}),
     ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     ...(r.deploymentPosition
@@ -993,6 +995,9 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
           ...(row.checkpointContentHash !== undefined
             ? { checkpointContentHash: row.checkpointContentHash }
             : {}),
+          ...(row.checkpointSubjectFingerprint !== undefined
+            ? { checkpointSubjectFingerprint: row.checkpointSubjectFingerprint }
+            : {}),
           ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
         };
       }
@@ -1014,6 +1019,9 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
         checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
         ...(row.checkpointContentHash !== undefined
           ? { checkpointContentHash: row.checkpointContentHash }
+          : {}),
+        ...(row.checkpointSubjectFingerprint !== undefined
+          ? { checkpointSubjectFingerprint: row.checkpointSubjectFingerprint }
           : {}),
         ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
       };
