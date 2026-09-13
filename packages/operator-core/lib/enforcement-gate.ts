@@ -177,6 +177,29 @@ export function carryNoteStartsWithSelfCompaction(next: string): boolean {
 }
 
 /**
+ * Does a carry-note's FIRST next action explicitly defer work until a future
+ * scheduled loop boundary?
+ *
+ * Every carry note's `next` field is intended for a successor wake, so the
+ * words "next action" alone cannot excuse the no-progress tripwire. This
+ * predicate is deliberately prefix-only and schedule-specific: it recognizes
+ * an explicit future scheduled loop fire/wake/tick (or an instruction to wait
+ * until one), while a later mention of a schedule in an otherwise immediately
+ * runnable action still trips the guard. An ordinary "next wake" is not enough;
+ * inbox and scheduled wakes are different lanes, and the incident this closes
+ * was a git-sync wake incorrectly treated as the scheduled loop fire.
+ */
+export function carryNoteStartsWithDeferredFutureAction(next: string): boolean {
+  const action = next.trim().replace(/^[-*]\s+/, '');
+  if (!action || /^(?:do not|don't|never|avoid)\b/i.test(action)) return false;
+  return /^(?:(?:on|at|after|when|once|upon)\s+)?(?:the\s+)?(?:next|upcoming|following)\s+scheduled\s+(?:loop\s+)?(?:fire|fires|firing|wake|wakes|tick|ticks)\b/i.test(
+    action,
+  ) || /^(?:wait|defer|hold)\s+until\s+(?:the\s+)?(?:next|upcoming|following)\s+scheduled\s+(?:loop\s+)?(?:fire|fires|firing|wake|wakes|tick|ticks)\b/i.test(
+    action,
+  );
+}
+
+/**
  * A carry writer that landed immediately before this boundary is positive
  * evidence that the owner did productive work even when the post-note tool
  * ledger is zero. The ledger deliberately excludes `loop:checkpoint` and
@@ -295,9 +318,16 @@ export function detectFlushTripwires(
     const next = parseCarryNote(brief.loop.carryNote ?? '').next?.trim();
     const currentCompactionIsNextAction =
       boundary === 'compaction' && next && carryNoteStartsWithSelfCompaction(next);
+    const currentCompactionIsDeferredFutureAction =
+      boundary === 'compaction' && next && carryNoteStartsWithDeferredFutureAction(next);
     const currentCompactionHasFreshCheckpoint =
       boundary === 'compaction' && hasFreshCheckpointWriterEvidence(brief, nowMs);
-    if (next && !currentCompactionIsNextAction && !currentCompactionHasFreshCheckpoint) {
+    if (
+      next &&
+      !currentCompactionIsNextAction &&
+      !currentCompactionIsDeferredFutureAction &&
+      !currentCompactionHasFreshCheckpoint
+    ) {
       out.push({
         kind: 'cold-successor-no-progress',
         subject: brief.loop.harness,

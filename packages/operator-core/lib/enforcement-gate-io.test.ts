@@ -304,6 +304,44 @@ describe('runFlushGate — cold-successor-no-progress wiring', () => {
     expect(countFn).toHaveBeenCalledWith('su-cold-compact-now', NOW - 10 * 60_000, NOW);
   });
 
+  it('does not refuse a scheduled future next action on a non-scheduled wake', async () => {
+    const countFn = vi.fn(async () => 0);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold-scheduled-future',
+      workspaceId: '*',
+      sessionId: 'su-cold-scheduled-future',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({
+        carryNote:
+          '## Next action\nOn the next scheduled loop fire, call scheduler:get_next for the lane. Do not pull from inbox wakes.',
+      }),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('clear');
+    expect(out.tripwires).toEqual([]);
+    expect(countFn).toHaveBeenCalledWith('su-cold-scheduled-future', NOW - 10 * 60_000, NOW);
+  });
+
+  it('still refuses a runnable action that merely mentions a later scheduled fire', async () => {
+    const countFn = vi.fn(async () => 0);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold-scheduled-immediate',
+      workspaceId: '*',
+      sessionId: 'su-cold-scheduled-immediate',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({
+        carryNote: '## Next action\nRun scheduler:get_next now; the next scheduled loop fire can follow up.',
+      }),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('refuse');
+    expect(out.tripwires).toEqual([expect.objectContaining({ kind: 'cold-successor-no-progress' })]);
+  });
+
   it('clears when the seam reports real progress (>0 tool calls)', async () => {
     const countFn = vi.fn(async () => 2);
     const out = await runFlushGate({

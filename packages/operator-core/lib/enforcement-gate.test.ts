@@ -8,6 +8,7 @@ import {
   renderFlushRefusal,
   armedLoopNeedsCarryNote,
   carryNoteStartsWithSelfCompaction,
+  carryNoteStartsWithDeferredFutureAction,
   SAME_TURN_CHECKPOINT_FRESHNESS_MS,
   hasFreshCheckpointWriterEvidence,
 } from './enforcement-gate';
@@ -271,6 +272,29 @@ describe('carryNoteStartsWithSelfCompaction', () => {
   });
 });
 
+describe('carryNoteStartsWithDeferredFutureAction', () => {
+  it.each([
+    'On the next scheduled loop fire, call scheduler:get_next for the lane.',
+    'at the upcoming scheduled loop wake, resume the queued item',
+    'Wait until the next scheduled loop tick, then pull the lane',
+  ])('recognizes %j as an explicitly deferred future action', (next) => {
+    expect(carryNoteStartsWithDeferredFutureAction(next)).toBe(true);
+  });
+
+  it('allows a leading bullet from a rendered carry note', () => {
+    expect(carryNoteStartsWithDeferredFutureAction('- On the next scheduled loop fire, pull the lane')).toBe(true);
+  });
+
+  it.each([
+    'Run scheduler:get_next now; the next scheduled loop fire can do the follow-up.',
+    'On the next wake, call scheduler:get_next for the lane.',
+    'Do not call scheduler:get_next on the next scheduled loop fire.',
+    'Wait for the next inbox wake, then call scheduler:get_next.',
+  ])('does not excuse %j as a deferred scheduled action', (next) => {
+    expect(carryNoteStartsWithDeferredFutureAction(next)).toBe(false);
+  });
+});
+
 describe('hasFreshCheckpointWriterEvidence', () => {
   const coldLoop = (over: Partial<NonNullable<CarryBrief['loop']>> = {}) => ({
     harness: 'papercusp',
@@ -349,6 +373,50 @@ describe('detectFlushTripwires — same-turn checkpoint writer exemption', () =>
     expect(detectFlushTripwires(coldLoopWithNextAction(null), NOW, 0, 'compaction')).toEqual([
       expect.objectContaining({ kind: 'cold-successor-no-progress' }),
     ]);
+  });
+
+  it('does not refuse compaction when the next action waits for the next scheduled loop fire', () => {
+    const next =
+      'On the next scheduled loop fire, call scheduler:get_next for the lane. Do not pull from inbox wakes.';
+    expect(
+      detectFlushTripwires(
+        brief({
+          loop: {
+            harness: 'papercusp',
+            active: true,
+            intervalSec: 60,
+            carry: 'cold',
+            goal: null,
+            carryNote: `## Next action\n${next}`,
+            carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+          },
+        }),
+        NOW,
+        0,
+        'compaction',
+      ),
+    ).toEqual([]);
+  });
+
+  it('still refuses an immediately runnable action that only mentions a later scheduled fire', () => {
+    expect(
+      detectFlushTripwires(
+        brief({
+          loop: {
+            harness: 'papercusp',
+            active: true,
+            intervalSec: 60,
+            carry: 'cold',
+            goal: null,
+            carryNote: '## Next action\nRun scheduler:get_next now; the next scheduled loop fire can follow up.',
+            carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+          },
+        }),
+        NOW,
+        0,
+        'compaction',
+      ),
+    ).toEqual([expect.objectContaining({ kind: 'cold-successor-no-progress' })]);
   });
 
   it('does not apply the compaction-only exemption to a handoff boundary', () => {
