@@ -27,6 +27,7 @@ import {
   writeFileSync,
   appendFileSync,
   readdirSync,
+  statfsSync,
   statSync,
   unlinkSync,
   readFileSync,
@@ -100,6 +101,10 @@ import {
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 import type { CheckpointVerdict } from "@papercusp/operator-core/lib/harness/routines/release-actions";
+import {
+  isCheckpointCandidateSource,
+  type CheckpointCandidateSource,
+} from "@papercusp/operator-core/lib/release/checkpoint-candidate-source";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
 // returned drafts) stays here, deliberately, for the same reason green-stall-watchdog's
@@ -389,9 +394,6 @@ export interface CheckpointExecutionContext {
   /** Original affected-task proof identity for a frozen repair chain. Distinct from runId. */
   affectedTestProofGroup?: string;
 }
-
-/** Canonical provenance for the candidate a run judges. */
-export type CheckpointCandidateSource = "pinned" | "tip";
 
 /** A source/test sibling whose newest committed half sits beyond the candidate cut. */
 export interface SplitSourceTestPair {
@@ -1700,7 +1702,7 @@ export async function emitInconclusiveCheckpointVerdict(
     sha: result.candidate,
     from: result.from,
     pipeline,
-    candidateSource: result.candidateSource ?? "tip",
+    ...(result.candidateSource ? { candidateSource: result.candidateSource } : {}),
     ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
     reason: result.reason,
     summary: result.summary ?? null,
@@ -7501,6 +7503,13 @@ export interface DiskInfraFaultPolicy {
   freeInodesPctMin: number;
 }
 
+interface CheckpointCargoReclaimResult {
+  scanned: number;
+  reclaimed: number;
+  bytesReclaimed: number;
+  skipped: Array<{ path: string; reason: string }>;
+}
+
 export interface InfraFaultClassification {
   /** the host fault class; NO class renders a code verdict. */
   kind:
@@ -9396,10 +9405,10 @@ export function checkpointCandidateSourceFromCli(
   sourceArg: string | undefined,
   hasGateVerdictTarget = false,
 ): CheckpointCandidateSource {
-  if (sourceArg === "pinned" || sourceArg === "tip") return sourceArg;
+  if (isCheckpointCandidateSource(sourceArg)) return sourceArg;
   if (sourceArg !== undefined) {
     throw new Error(
-      `invalid --candidate-source '${sourceArg}' (expected pinned|tip)`,
+      `invalid --candidate-source '${sourceArg}' (expected pinned|tip|frozen-repair-queue|current-quiet-cut)`,
     );
   }
   // EI-21402283154473718: a deployed launcher can legitimately predate the explicit
@@ -16316,6 +16325,13 @@ export function realCheckpointDeps(
   reclaimDiskHeadroomOverride?: () =>
     | FleetLogsGcResult
     | Promise<FleetLogsGcResult>,
+  /** EI-23107788083208936: focused-test seam for producer-aware Cargo cache
+   * reclaim. Kept separate from the fleet-log seam so one cleanup failure can
+   * never suppress the other. */
+  reclaimCargoDiskHeadroomOverride?: () =>
+    | CheckpointCargoReclaimResult
+    | null
+    | Promise<CheckpointCargoReclaimResult | null>,
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -16352,6 +16368,60 @@ export function realCheckpointDeps(
       const { runFleetLogsGc } =
         await import("@papercusp/operator-core/lib/fleet-logs-gc");
       return runFleetLogsGc();
+    });
+  const reclaimCheckpointCargo =
+    reclaimCargoDiskHeadroomOverride ??
+    (async (): Promise<CheckpointCargoReclaimResult | null> => {
+      const manifest = path.join(
+        cfg.integrationRoot,
+        "papercusp-desktop/src-tauri/Cargo.toml",
+      );
+      if (!existsSync(manifest)) return null;
+
+      // Reuse the Cargo runner's producer-aware reclaimer rather than adding a
+      // checkpoint-only deletion surface. It already verifies CACHEDIR.TAG,
+      // PID/start-tick markers, open descriptors, slot locks, keep markers,
+      // TTL, entry and byte caps. The checkpoint adds only the trigger: run it
+      // when the SAME backing filesystem has crossed the critical write floor.
+      // @ts-ignore -- plain .mjs gate helper has no declaration file.
+      const cargoResult = await import("../../../../scripts/lib/cargo-result.mjs");
+      const {
+        diskProbePathFor,
+        reclaimInactiveCargoArtifacts,
+        resolveCargoTargetDir,
+      } = cargoResult;
+      const { detectCriticalWriteHeadroom, diskPolicyFromEnv } =
+        await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
+      const targetDir = resolveCargoTargetDir(manifest);
+      const probePath = diskProbePathFor(targetDir);
+      const policy = diskPolicyFromEnv();
+      const sampleTarget = (): CheckpointDiskSnapshot => {
+        const fsst = statfsSync(probePath);
+        const blockSize = Number(fsst.bsize) || 0;
+        const totalBytes = Number(fsst.blocks) * blockSize;
+        const freeBytes = Number(fsst.bavail) * blockSize;
+        const totalInodes = Number(fsst.files) || 0;
+        const freeInodes = Number(fsst.ffree) || 0;
+        return {
+          path: probePath,
+          totalBytes,
+          freeBytes,
+          freePct: totalBytes > 0 ? freeBytes / totalBytes : 1,
+          totalInodes,
+          freeInodes,
+          freeInodesPct:
+            totalInodes > 0 ? freeInodes / totalInodes : 0,
+        };
+      };
+      if (detectCriticalWriteHeadroom([sampleTarget()], policy).length === 0) {
+        return null;
+      }
+      return reclaimInactiveCargoArtifacts({
+        configuredTargetDir: targetDir,
+        policy: { cargoTtlMs: 10 * 60_000 },
+        stopWhen: () =>
+          detectCriticalWriteHeadroom([sampleTarget()], policy).length === 0,
+      });
     });
   const checkpointDiskPolicy = async (): Promise<DiskInfraFaultPolicy> => {
     const { diskPolicyFromEnv } =
@@ -16933,7 +17003,7 @@ export function realCheckpointDeps(
       // hour rediscovering the same breach. Reuse the existing age+bytes-bounded fleet-log GC
       // exactly once, then measure again. No loop, no broad deletion surface, and no cleanup at
       // all when statfs itself is unknown.
-      let reclamationSummary: string;
+      const reclamationParts: string[] = [];
       try {
         const reclaimed = await reclaimCheckpointDisk();
         const scanned = reclaimed.dirs.reduce(
@@ -16952,12 +17022,30 @@ export function realCheckpointDeps(
           (sum, dir) => sum + dir.errors.length,
           0,
         );
-        reclamationSummary =
-          `bounded fleet-log GC scanned ${scanned} file(s), removed ${removed}, freed ` +
-          `${(bytesFreed / gib).toFixed(2)} GiB${errors ? `, with ${errors} error(s)` : ""}`;
+        reclamationParts.push(
+          `fleet logs scanned ${scanned} file(s), removed ${removed}, freed ` +
+            `${(bytesFreed / gib).toFixed(2)} GiB${errors ? `, with ${errors} error(s)` : ""}`,
+        );
       } catch (error) {
-        reclamationSummary = `bounded fleet-log GC failed safely (${error instanceof Error ? error.message : error})`;
+        reclamationParts.push(
+          `fleet-log cleanup failed safely (${error instanceof Error ? error.message : error})`,
+        );
       }
+      try {
+        const cargo = await reclaimCheckpointCargo();
+        if (cargo) {
+          reclamationParts.push(
+            `Cargo scanned ${cargo.scanned} artifact(s), reclaimed ${cargo.reclaimed}, freed ` +
+              `${(cargo.bytesReclaimed / gib).toFixed(2)} GiB, ` +
+              `${cargo.skipped.length} protected/skipped`,
+          );
+        }
+      } catch (error) {
+        reclamationParts.push(
+          `Cargo cleanup failed safely (${error instanceof Error ? error.message : error})`,
+        );
+      }
+      const reclamationSummary = `bounded disk GC: ${reclamationParts.join("; ")}`;
 
       let after: CheckpointDiskSnapshot[];
       try {
