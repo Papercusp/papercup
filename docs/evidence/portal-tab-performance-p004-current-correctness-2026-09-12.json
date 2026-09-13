@@ -4,7 +4,7 @@
   "name": "Portal P-004 current-head unit, typecheck, and Playwright correctness",
   "framework": "operational",
   "command": [
-    "cd /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "cd @portal-root@",
     "npm run test",
     "npm run typecheck",
     "npm run test:e2e:browser"

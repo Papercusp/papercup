@@ -84,10 +84,14 @@ function cancellableTransaction(
   const track = <T>(query: T): T => {
     const candidate = query as T & CancelableQuery;
     if (!candidate || typeof candidate.cancel !== 'function') return query;
+    // postgres.js uses the same thenable Query object for a top-level query and
+    // for a SQL fragment. Assimilating it here with Promise.resolve(query)
+    // executes a fragment as a standalone statement. That produced parser
+    // errors such as `syntax error at or near "last_released_by"` from the
+    // scheduler's release-floor fragment. Keep the object in the cancellation
+    // set without observing its then/finally methods; postgres.js will execute
+    // it only when the caller awaits the completed outer query.
     active.add(candidate);
-    void Promise.resolve(query)
-      .finally(() => active.delete(candidate))
-      .catch(() => undefined);
     if (cancelled) {
       try {
         candidate.cancel?.();

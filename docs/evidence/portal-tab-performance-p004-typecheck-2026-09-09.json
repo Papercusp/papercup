@@ -4,7 +4,7 @@
   "name": "Portal tab performance P-004 current-tree typecheck",
   "framework": "node",
   "command": [
-    "cd /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "cd @portal-root@",
     "npm run typecheck"
   ],
   "exitCode": 0,

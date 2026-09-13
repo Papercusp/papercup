@@ -289,14 +289,15 @@ reap_own_stragglers() {
 # Closing the psql session releases the session-level advisory lock even when
 # the explicit \q cannot be delivered because the backend was already reaped.
 release_migration_rendezvous() {
+  if [ "${BACKUP_MIGRATION_LOCK_HELD:-false}" != true ] && \
+     [ -n "${BACKUP_MIGRATION_LOCK_PID:-}" ]; then
+    # Acquisition may have failed before Bash published either coprocess FD.
+    # Kill the client first so the following wait cannot strand the EXIT path.
+    kill "$BACKUP_MIGRATION_LOCK_PID" 2>/dev/null || true
+  fi
   if [ -n "${BACKUP_MIGRATION_LOCK_IN_FD:-}" ]; then
     if [ "${BACKUP_MIGRATION_LOCK_HELD:-false}" = true ]; then
       printf '\\q\n' >&"$BACKUP_MIGRATION_LOCK_IN_FD" 2>/dev/null || true
-    else
-      # If acquisition was interrupted while waiting behind another holder,
-      # psql is blocked inside pg_advisory_lock and cannot consume \q. Kill
-      # that dedicated client instead of allowing EXIT cleanup to hang.
-      kill "${BACKUP_MIGRATION_LOCK_PID:-}" 2>/dev/null || true
     fi
     exec {BACKUP_MIGRATION_LOCK_IN_FD}>&- 2>/dev/null || true
   fi

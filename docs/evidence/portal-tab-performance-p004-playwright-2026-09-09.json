@@ -4,7 +4,7 @@
   "name": "Portal tab performance P-004 current-tree Playwright acceptance",
   "framework": "playwright",
   "command": [
-    "cd /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "cd @portal-root@",
     "npm run test:e2e:browser"
   ],
   "exitCode": 0,

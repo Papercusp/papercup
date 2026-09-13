@@ -380,7 +380,9 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({
       ok: false,
       rubricRef: 'r-1',
-      error: 'rubric revision 3 exists, but its immutable snapshot could not be projected.',
+      error:
+        'rubric revision 3 exists, but its immutable snapshot could not be projected. ' +
+        'If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true.',
     });
   });
 

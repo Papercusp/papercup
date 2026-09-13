@@ -4,7 +4,7 @@
   "name": "Portal P-004 deployed artifact invariants and negative controls",
   "framework": "node",
   "command": [
-    "node scripts/verify-portal-tab-performance-p004.mjs /home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal"
+    "node scripts/verify-portal-tab-performance-p004.mjs @portal-root@"
   ],
   "exitCode": 0,
   "startedAt": "2026-09-12T16:24:22.142Z",

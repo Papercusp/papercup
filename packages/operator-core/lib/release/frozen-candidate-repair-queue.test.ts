@@ -72,7 +72,7 @@ describe('frozen-candidate repair queue', () => {
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
     expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
-    expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 2 }).admissionPrecheck).toEqual(
+    expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 2 })?.admissionPrecheck).toEqual(
       pending.admissionPrecheck,
     );
     const admitted = markFrozenRepairAdmitted(parsed!, {
