@@ -113,6 +113,35 @@ describe('work_items:set_blocker', () => {
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  it('does not let item metadata launder a generic deployed-main blocker', async () => {
+    const item = {
+      id: 'EI-23090624251629318',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercusp',
+      title: 'work_items:set_blocker rejects generic deployed-parity blocker without deployed-only contract wording',
+      summary:
+        'A valid gate blocker write was refused by the non-final deployed-main guard because the payload did not explicitly name a deployed-only property, state what staging/current-build cannot exercise, and give a concrete reason. The remediation is to narrow the blocker text.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+
+    const out = await one({
+      id: item.id,
+      kind: 'gate',
+      capability: 'live-dependency',
+      ref: 'gate.greenCheckpoint.ownership',
+      summary: 'Wait for main to turn green before continuing implementation.',
+      evidence: 'The ordinary implementation still needs the release plane before continuing.',
+      nextVerb: 'release:checkpoint-run',
+    });
+
+    expect(out).toMatchObject({ ok: false, id: item.id, code: 'non_final_deployed_main_blocker' });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it('allows the actual green-checkpoint repair item to record its gate blocker', async () => {
     const item = {
       id: 'WI-212675',

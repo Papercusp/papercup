@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { PSU_REQUEST_TIMEOUT_MS } from "./mcp-proxy/budgets.mjs";
 import {
@@ -24,6 +25,7 @@ import {
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import {
   parseArgs,
+  resolveNativeMcpAssets,
   nativeOmpExtensionArgs,
   pickRole,
   PSU_HELP_TEXT,
@@ -1428,6 +1430,48 @@ describe("SU_CONTEXT_CHOICES (trimmed-only launch policy)", () => {
 
 describe("native OMP capability selection", () => {
   const env = { PAPERCUSP_MCP_TRANSPORT: "uds" };
+
+  it("prefers a complete packaged-adjacent asset pair and falls back atomically to source assets", () => {
+    const root = mkdtempSync(join(tmpdir(), "psu-native-mcp-assets-"));
+    try {
+      const launcher = join(root, "apps", "operator", "scripts", "psu.mjs");
+      const adjacentDir = join(root, "apps", "operator", "scripts");
+      const sourceDir = join(root, "packages", "omp-plugin", "dist");
+      mkdirSync(adjacentDir, { recursive: true });
+      mkdirSync(sourceDir, { recursive: true });
+      writeFileSync(join(sourceDir, "native-client.cjs"), "source client");
+      writeFileSync(join(sourceDir, "native-extension.mjs"), "source extension");
+
+      const resolvedPaths = () => {
+        const assets = resolveNativeMcpAssets(pathToFileURL(launcher));
+        return {
+          bundle: fileURLToPath(assets.bundle),
+          extension: fileURLToPath(assets.extension),
+        };
+      };
+
+      expect(resolvedPaths()).toEqual({
+        bundle: join(sourceDir, "native-client.cjs"),
+        extension: join(sourceDir, "native-extension.mjs"),
+      });
+
+      writeFileSync(join(adjacentDir, "native-client.cjs"), "packaged client");
+      // A partial packaged layout must not mix asset generations.
+      expect(resolvedPaths()).toEqual({
+        bundle: join(sourceDir, "native-client.cjs"),
+        extension: join(sourceDir, "native-extension.mjs"),
+      });
+
+      writeFileSync(join(adjacentDir, "native-extension.mjs"), "packaged extension");
+      expect(resolvedPaths()).toEqual({
+        bundle: join(adjacentDir, "native-client.cjs"),
+        extension: join(adjacentDir, "native-extension.mjs"),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("loads an owned extension only for compatible OMP, never changes engines or emits unix URLs", () => {
     const args = nativeOmpExtensionArgs("omp", env, "linux", () => true);
     expect(args[0]).toBe("-e");

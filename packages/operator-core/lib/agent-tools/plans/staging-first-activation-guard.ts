@@ -189,8 +189,10 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
   // ordinary implementation being serialized behind that plane.
   if (LIVE_GATE_OPERATION_RE.test(itemText)) return null;
   if (isFinalLifecycleText(itemText)) return null;
-  const exceptionText = `${itemText}\n${blockerText}`;
-  if (hasNarrowDeployedMainException(exceptionText)) return null;
+  // The narrow exception describes THIS blocker, so require all three predicates
+  // in the submitted blocker fields. Do not let an issue's title/summary (which
+  // may quote the contract or describe this very defect) launder a generic wait.
+  if (hasNarrowDeployedMainException(blockerText)) return null;
 
   return {
     itemId: input.itemId,
@@ -200,7 +202,7 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
       `Continue implementation and non-final verification on staging/current-build. ` +
       `Only use this blocker for a narrow deployed-only property: name that property, explain concretely ` +
       `why staging/current-build cannot exercise it, and retain the deployed wait only for that property. ` +
-      narrowExceptionDiagnosis(exceptionText),
+      narrowExceptionDiagnosis(blockerText),
   };
 }
 
