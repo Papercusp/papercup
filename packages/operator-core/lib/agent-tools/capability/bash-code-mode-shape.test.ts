@@ -47,7 +47,7 @@ type BashArgsSchema = {
 const bash = bashTool as unknown as Tool;
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-shape-'));
 
-function makeCtx(opts: { codeMode?: boolean } = {}) {
+function makeCtx(opts: { codeMode?: boolean; requestedStructured?: boolean } = {}) {
   return {
     projectDir: STATE,
     stateDir: STATE,
@@ -55,6 +55,7 @@ function makeCtx(opts: { codeMode?: boolean } = {}) {
     emit: () => {},
     role: 'cup',
     ...(opts.codeMode ? { codeMode: true } : {}),
+    ...(opts.requestedStructured ? { transport: 'mcp', requestedStructured: true } : {}),
   } as never;
 }
 
@@ -142,6 +143,22 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     // And the raw-string fallback is still what such a result unwraps to — this is
     // the behaviour being deliberately confined to non-code-mode, not removed.
     expect(typeof unwrapToolResult(r as never)).toBe('string');
+  });
+
+  it('provides the declared structured result to an MCP caller that requests it', async () => {
+    const r = await bash.handler(
+      { command: 'echo HELLO-SHAPE-PROBE' },
+      makeCtx({ requestedStructured: true }),
+    );
+
+    expect(r.structuredContent).toMatchObject({
+      ok: true,
+      status: 'completed',
+      exit_code: 0,
+      output: expect.stringContaining('HELLO-SHAPE-PROBE'),
+      cwd: STATE,
+    });
+    expect(typeof unwrapToolResult(r as never)).toBe('object');
   });
 
   it('reports a FAILING command as ok:false with the real exit code, not a bare empty', async () => {

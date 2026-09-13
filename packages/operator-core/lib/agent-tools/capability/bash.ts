@@ -951,7 +951,7 @@ export default defineTool({
       // stderr into one buffer, so `stdout` would be a name that reads right and is
       // false, which is the same defect class one level down. A script that guesses
       // `.stdout` now gets a loud fieldMiss naming the real keys instead of ''.
-      ...(ctx.codeMode
+      ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
         ? {
             structuredContent: {
               // `ok` answers the question a script actually asks — "did my command
