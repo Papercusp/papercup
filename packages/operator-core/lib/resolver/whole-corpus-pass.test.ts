@@ -217,6 +217,7 @@ describe('wholeCorpusCandidateFromCensusItem', () => {
       originClass: 'agent-filed',
       hasEmbedding: false,
       embeddingMode: null,
+      embeddingProfile: null,
       titleKey: null,
       conditionKey: null,
     };
@@ -227,8 +228,8 @@ describe('wholeCorpusCandidateFromCensusItem', () => {
 describe('planWholeCorpusShards', () => {
   it('reuses buildAdmissionShardPlan and covers every corpus member', () => {
     const items: AdmissionCensusItem[] = [
-      { id: 'WI-1', title: 'a', summary: '', estimatedTokens: 1000, originClass: 'agent-filed', hasEmbedding: false, embeddingMode: null, titleKey: null, conditionKey: null },
-      { id: 'WI-2', title: 'b', summary: '', estimatedTokens: 1000, originClass: 'agent-filed', hasEmbedding: false, embeddingMode: null, titleKey: null, conditionKey: null },
+      { id: 'WI-1', title: 'a', summary: '', estimatedTokens: 1000, originClass: 'agent-filed', hasEmbedding: false, embeddingMode: null, embeddingProfile: null, titleKey: null, conditionKey: null },
+      { id: 'WI-2', title: 'b', summary: '', estimatedTokens: 1000, originClass: 'agent-filed', hasEmbedding: false, embeddingMode: null, embeddingProfile: null, titleKey: null, conditionKey: null },
     ];
     const edges: AdmissionCensusEdge[] = [];
     const plan = planWholeCorpusShards(items, edges);
