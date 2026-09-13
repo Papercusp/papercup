@@ -289,6 +289,41 @@ describe('EI-22536788145490710: upgrade the installed issue claim guard', () => 
 });
 
 describe('work_items claim — atomic `in` (D-004, real PG)', () => {
+  it('retries issue- and feature-family claim writes after transient PostgreSQL contention', async () => {
+    await seedIssue('EI-contention-retry', { admission: 'auto' });
+    await seedFeature('F-contention-retry', { admission: 'auto' });
+
+    const originalSql = h.sql;
+    let injectedFailures = 0;
+    h.sql = new Proxy(originalSql, {
+      apply(target, thisArg, args) {
+        const strings = args[0];
+        const statement = Array.isArray(strings) ? strings.join('') : '';
+        if (
+          injectedFailures < 2 &&
+          /UPDATE harness_shared\.(engineer_issues|harness_features_consolidated)/.test(statement)
+        ) {
+          injectedFailures += 1;
+          throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    }) as typeof h.sql;
+
+    try {
+      expect((await wi.claimWorkItem('EI-contention-retry', 'issue-agent', { harness: H }))?.assignee).toBe(
+        'issue-agent',
+      );
+      expect((await wi.claimWorkItem('F-contention-retry', 'feature-agent', { harness: H }))?.assignee).toBe(
+        'feature-agent',
+      );
+    } finally {
+      h.sql = originalSql;
+    }
+
+    expect(injectedFailures).toBe(2);
+  });
+
   it('two competing claims on one item ⇒ exactly one wins', async () => {
     await seedFeature('F-1');
     const [a, b] = await Promise.all([
