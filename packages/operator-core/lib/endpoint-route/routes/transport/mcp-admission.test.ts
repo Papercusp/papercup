@@ -678,6 +678,49 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     }
   });
 
+  it('sheds the unbounded outer code:run wrapper while reserving a direct bounded scorecard probe', async () => {
+    // code:run has a bounded script/foreground timeout, but its script may loop, branch, and
+    // dispatch an unbounded number of nested tools during that window. The pressure gate must
+    // classify that outer orchestration as ordinary even when its script happens to contain a
+    // bounded-looking scorecards:get call; only the direct bounded probe gets the recovery lane.
+    const outerBody = toolsCall(29, 'code:run', {
+      script: [
+        "const first = await tools.scorecards.get({ issueId: 'EI-22581128473264750' });",
+        'for (const issueId of inputs.issueIds) await tools.scorecards.get({ issueId });',
+        'return { found: Boolean(first), scanned: inputs.issueIds.length };',
+      ].join('\n'),
+      timeoutSec: 30,
+    });
+    expect(classifyMcpBody(outerBody, judgeRequestUrl)).toEqual({ sheddable: true, id: 29 });
+    expect(classifyMcpRequest(outerBody, judgeRequestUrl)).toBe('ordinary');
+
+    const shed = await evaluateAdmission(
+      new Request(judgeRequestUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: outerBody,
+      }),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+
+    const direct = await evaluateAdmission(
+      new Request(judgeRequestUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: toolsCall(30, 'scorecards:get', { issueId: 'EI-22581128473264750' }),
+      }),
+      'critical',
+      true,
+    );
+    expect(direct).toBeNull();
+  });
+
   it('recognizes tools:find through tools:invoke', () => {
     const body = JSON.stringify({
       jsonrpc: '2.0',
