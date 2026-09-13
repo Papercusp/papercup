@@ -182,6 +182,13 @@ function nestedObjectProperties(
   const direct = objectProperties(node);
   const candidates = [node, ...schemaNodes(node)];
 
+  // A mixed object may legally carry named properties alongside an
+  // additionalProperties schema. It is not a record-only shape: replacing
+  // its named fields with the synthetic `*` entry would hide established
+  // output paths from the bounded projection. Only use the record branch when
+  // the object has no non-empty direct property set.
+  if (direct && Object.keys(direct.properties).length > 0) return direct;
+
   // z.record() publishes its value schema under `additionalProperties`, not
   // under named `properties`. Treat the map value as a synthetic `*` field so
   // compact discovery keeps the entry contract visible (for example,
@@ -311,6 +318,11 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   const contractPriority = (name: string): number => {
     if (name === 'rootCauseVerification') return 100;
     if (name === 'verification') return 90;
+    // A bounded read envelope's thread window is the only discoverable path
+    // to recent comments. Keep its nested total/posts contract ahead of a
+    // wide diagnostic sibling such as checkpointChecks, whose full shape can
+    // otherwise consume the segment before threadWindow is rendered.
+    if (name === 'threadWindow') return 80;
     return 0;
   };
   const orderedProperties = properties

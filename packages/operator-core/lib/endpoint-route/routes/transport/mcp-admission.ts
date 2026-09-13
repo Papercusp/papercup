@@ -122,7 +122,7 @@ export function resetMcpAdmissionForTests(): void {
  * The outer MCP proxy has the matching capacity-reserve list. This inner gate
  * still needs its own exemption because direct ptool/staging calls bypass that
  * proxy, and because a proxy-reserved request can otherwise be shed here after
- * it reaches the operator. `scheduler:get_next` is included below as a bounded
+ * it reaches the operator. `scheduler:get_next` and `loop:status` are included below as bounded
  * recovery/self-pull call: it claims at most one item and its handler has an
  * explicit whole-call deadline, but it is admitted only for its known, bounded
  * argument shape (unlike a generic ordinary tools/call).
@@ -174,13 +174,16 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'dev:dogfood_substrate_status',
     'tools:find',
     'work_items:get',
+    'loop:status',
   ].map(normalizeMcpName),
 );
 const SCHEDULER_GET_NEXT_NAME = normalizeMcpName('scheduler:get_next');
+const LOOP_STATUS_NAME = normalizeMcpName('loop:status');
 const CRITICAL_SCHEDULER_MAX_HARNESS_CHARS = 200;
 const CRITICAL_SCHEDULER_MAX_HELD_PATH_CHARS = 512;
 const CRITICAL_SCHEDULER_MAX_HELD_PATHS = 500;
 const CRITICAL_SCHEDULER_STATES = new Set(['open', 'failing']);
+const CRITICAL_LOOP_STATUS_MAX_STRING_CHARS = 120;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
@@ -463,6 +466,25 @@ function isBoundedSchedulerGetNextArgs(args: unknown): boolean {
 }
 
 /**
+ * `loop:status` is a read-only recovery probe needed to reconcile a resumed
+ * fleet member, but its admission exception must still reject opaque payloads
+ * before schema parsing. The handler accepts only these three owner-scoped
+ * strings (plus the compatibility harness string), each capped by its tool
+ * schema; an omitted arguments object is equivalent to `{}`.
+ */
+function isBoundedLoopStatusArgs(args: unknown): boolean {
+  if (args === undefined) return true;
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['harness', 'ownerId', 'owner']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  return ['harness', 'ownerId', 'owner'].every(
+    (field) =>
+      args[field] === undefined ||
+      (typeof args[field] === 'string' && args[field].length <= CRITICAL_LOOP_STATUS_MAX_STRING_CHARS),
+  );
+}
+
+/**
  * A single checkpoint is the smallest durable recovery write: it preserves the
  * successor state needed to resume after the pressure condition clears. Keep the
  * exemption to one identified item so a bulk checkpoint request cannot turn the
@@ -670,6 +692,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
+  if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
