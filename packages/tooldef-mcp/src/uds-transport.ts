@@ -39,6 +39,13 @@ function positive(value: number | undefined, fallback: number): number {
   return n;
 }
 
+// The projected production catalog is already larger than 1 MiB. Keep enough
+// bounded headroom for tools/list while the queue cap still limits concurrent
+// writes on one authenticated local connection.
+const DEFAULT_MAX_FRAME_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_QUEUED_BYTES = 8 * 1024 * 1024;
+const INITIAL_FRAME_BUFFER_BYTES = 8 * 1024;
+
 /** One connection, owned by the SDK. Reconnection and mutation replay are never automatic. */
 export class UdsMcpTransport implements Transport {
   onmessage?: Transport["onmessage"];
@@ -62,8 +69,8 @@ export class UdsMcpTransport implements Transport {
   private readonly sendTimeoutMs: number;
 
   constructor(private readonly options: UdsMcpTransportOptions) {
-    this.maxFrameBytes = positive(options.maxFrameBytes, 1_048_576);
-    this.maxQueuedBytes = positive(options.maxQueuedBytes, 4_194_304);
+    this.maxFrameBytes = positive(options.maxFrameBytes, DEFAULT_MAX_FRAME_BYTES);
+    this.maxQueuedBytes = positive(options.maxQueuedBytes, DEFAULT_MAX_QUEUED_BYTES);
     this.maxPendingRequests = positive(options.maxPendingRequests, 64);
     this.connectTimeoutMs = positive(options.connectTimeoutMs, 5_000);
     this.frameTimeoutMs = positive(options.frameTimeoutMs, 10_000);
@@ -153,7 +160,22 @@ export class UdsMcpTransport implements Transport {
             "MCP input frame exceeds maxFrameBytes",
           );
         }
-        this.buffer ??= Buffer.allocUnsafe(this.maxFrameBytes);
+        const required = this.used + size;
+        if (!this.buffer || this.buffer.length < required) {
+          const capacity = Math.min(
+            this.maxFrameBytes,
+            Math.max(
+              required,
+              Math.min(
+                this.maxFrameBytes,
+                Math.max(INITIAL_FRAME_BUFFER_BYTES, this.buffer?.length ?? 0) * 2,
+              ),
+            ),
+          );
+          const next = Buffer.allocUnsafe(capacity);
+          if (this.buffer && this.used) this.buffer.copy(next, 0, 0, this.used);
+          this.buffer = next;
+        }
         chunk.copy(this.buffer, this.used, offset, end);
         this.used += size;
         offset = end + 1;

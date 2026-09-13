@@ -48,7 +48,7 @@ async function fixture(authTimeoutMs?: number, runtimeDir?: string) {
       server.server.setRequestHandler(CallToolRequestSchema, async request => {
         dispatched('call');
         const text = request.params.arguments?.text === 'oversized'
-          ? 'x'.repeat(1_048_577) : String(request.params.arguments?.text);
+          ? 'x'.repeat(4 * 1024 * 1024 + 1) : String(request.params.arguments?.text);
         return { content: [{ type: 'text' as const, text }] };
       });
     },

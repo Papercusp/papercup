@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
+  ListToolsRequestSchema,
   ProgressNotificationSchema,
   type JSONRPCMessage,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -287,6 +288,37 @@ describe("UDS MCP output bounds", () => {
 });
 
 describe("installed SDK over actual UDS", () => {
+  it("carries a production-sized tools/list response above the former 1 MiB ceiling", async () => {
+    const { path, server } = await endpoint();
+    const accepted = once(server, "connection");
+    const clientTransport = new UdsMcpTransport({ path });
+    const client = new Client({ name: "uds-large-catalog-client", version: "1" });
+    const connecting = client.connect(clientTransport);
+    const [socket] = await accepted;
+    const host = new Server(
+      { name: "uds-large-catalog-host", version: "1" },
+      { capabilities: { tools: {} } },
+    );
+    const descriptionBytes = 2 * 1024 * 1024;
+    host.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [{
+        name: "large-catalog",
+        description: "x".repeat(descriptionBytes),
+        inputSchema: { type: "object" },
+      }],
+    }));
+    await host.connect(new UdsMcpTransport({ socket }));
+    cleanup.push(async () => {
+      await client.close();
+      await host.close();
+    });
+    await connecting;
+
+    const listed = await client.listTools();
+    expect(listed.tools).toHaveLength(1);
+    expect(Buffer.byteLength(listed.tools[0]!.description!)).toBe(descriptionBytes);
+  });
+
   it("multiplexes out-of-order responses, progress and cancellation without mixing request IDs", async () => {
     const { path, server } = await endpoint();
     const accepted = once(server, "connection");
