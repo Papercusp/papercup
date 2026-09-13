@@ -165,7 +165,11 @@ import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { readIssueClaimability } from '../../scheduler/get-next';
 import { mockResolvedTyped } from '../../testing/typed-mock';
-import { resolveProducerHealthCertificate, resolveProgressLeaseCertificate } from './producer-health';
+import {
+  progressLeaseInputSchema,
+  resolveProducerHealthCertificate,
+  resolveProgressLeaseCertificate,
+} from './producer-health';
 import { resolveAnnouncementOwnership } from './status';
 import { hasActiveMonitorForOwnerPredicate } from '../../harness/routines/monitor-policy';
 
@@ -216,6 +220,37 @@ describe('events:await wrapper defaults', () => {
     expect(awaitTool.args.shape.producer_health.description).toMatch(
       /requires `event` or `fromMsg` and is rejected with a composed `spec`/,
     );
+  });
+
+  it('documents progress lease wake/remedy sequencing and rejects wake-owner as a remedy kind', () => {
+    const progressLeaseDescription = awaitTool.args.shape.progress_lease.description;
+    expect(progressLeaseDescription).toMatch(/automatically wakes owner_id on the first cadence miss/);
+    expect(progressLeaseDescription).toMatch(
+      /spec-widen, outside-lane-placement, leader-claim, or create-unblock-item/,
+    );
+    expect(progressLeaseDescription).toMatch(/wake-owner is not a valid remedy kind/);
+    expect(progressLeaseInputSchema.shape.remedy.description).toMatch(
+      /first cadence miss automatically wakes owner_id/,
+    );
+    expect(progressLeaseInputSchema.shape.remedy.description).toMatch(/wake-owner is not a remedy kind/);
+
+    const valid = {
+      source_kind: 'checkpoint-revision',
+      tool: 'work_items:get',
+      args: { id: 'WI-1' },
+      path: 'results.0.checkpoint.revision',
+      units: 'revision',
+      expected_cadence_sec: 60,
+      owner_id: 'su-worker',
+      remedy: { kind: 'leader-claim', workItemId: 'WI-1' },
+    };
+    expect(progressLeaseInputSchema.safeParse(valid).success).toBe(true);
+    expect(
+      progressLeaseInputSchema.safeParse({
+        ...valid,
+        remedy: { kind: 'wake-owner', after_misses: 1 },
+      }).success,
+    ).toBe(false);
   });
 
   it('defaults: policy:wake, timeoutBehavior:wake, timeoutSec:AWAIT_DEFAULT_TIMEOUT_SEC (1800 = 30min), and the sweeper starts', async () => {

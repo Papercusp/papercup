@@ -262,7 +262,9 @@ export default defineTool({
       .describe('Verified producer health for a single event/fromMsg wait; requires `event` or `fromMsg` and is rejected with a composed `spec`.'),
     progress_lease: progressLeaseInputSchema
       .optional()
-      .describe('Evidence-backed liveness lease for a delegated upstream owner. Uses an authoritative read-only tool/path, wakes that owner on the first cadence miss, and applies a typed remedy after repeated misses.'),
+      .describe(
+        'Evidence-backed liveness lease for a delegated upstream owner. Uses an authoritative read-only tool/path and automatically wakes owner_id on the first cadence miss. After repeated misses, remedy must use one of spec-widen, outside-lane-placement, leader-claim, or create-unblock-item; wake-owner is not a valid remedy kind.',
+      ),
     fromMsg: hardText(LIMITS.IDENT)
       .optional()
       .describe(
