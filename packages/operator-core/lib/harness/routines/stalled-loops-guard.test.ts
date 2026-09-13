@@ -81,6 +81,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     costCapCents: null,
     maxFires: null,
     maxDurationSec: null,
+    fireStarved: false,
     stalled: false,
     stalledSinceMs: null,
     lastDeliveryOutcome: null,
@@ -747,6 +748,15 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     lastTurnAt: '2026-08-03T03:25:00.000Z',
   };
   const DEAD_SAME_SHAPE = FIRE_STARVED;
+  const NO_POST_ARM_FIRE = {
+    // The prior fire and turn are both before the current arm; this is deliberately
+    // not the answered-last-fire shape above, so only `fireStarved` admits it.
+    armedAt: '2026-08-03T03:30:00.000Z',
+    lastFiredAt: '2026-08-03T03:21:00.000Z',
+    lastTurnAt: '2026-08-03T03:00:00.000Z',
+    firesSinceArm: 0,
+    expectedFiresSinceArm: 3,
+  };
   const COMATOSE = {
     // A fire landed and no turn ever followed it (turn BEFORE fire) — the classic WI-6639 shape.
     lastFiredAt: '2026-08-03T03:25:00.000Z',
@@ -784,6 +794,80 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     expect(rearm.mock.calls[0][1]).toBe('rt_starved');
     expect(res.paused).toBe(0);
     expect(res.reArmedFireStarved).toEqual(['su-starved']);
+  });
+
+  it('admits a fireStarved-only no-post-arm-fire status and re-arms a reachable owner', async () => {
+    const sql = fakeSql([{ id: 'rt-no-post-arm-fire', target_owner_id: 'su-no-post-arm-fire' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-no-post-arm-fire',
+            status({
+              ownerId: 'su-no-post-arm-fire',
+              turnsStalled: false,
+              fireStarved: true,
+              ...NO_POST_ARM_FIRE,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast },
+    );
+
+    expect(probeReachability).toHaveBeenCalledWith('su-no-post-arm-fire');
+    expect(rearm).toHaveBeenCalledWith(
+      sql,
+      'rt-no-post-arm-fire',
+      expect.stringContaining('fire-starved'),
+    );
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(res.reArmedFireStarved).toEqual(['su-no-post-arm-fire']);
+    expect(res.paused).toBe(0);
+  });
+
+  it('CONTROL — the same fireStarved-only no-post-arm-fire shape is disarmed for an unreachable corpse', async () => {
+    const sql = fakeSql([{ id: 'rt-no-post-arm-corpse', target_owner_id: 'su-no-post-arm-corpse' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-no-post-arm-corpse',
+            status({
+              ownerId: 'su-no-post-arm-corpse',
+              turnsStalled: false,
+              fireStarved: true,
+              ...NO_POST_ARM_FIRE,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(false);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast },
+    );
+
+    expect(probeReachability).toHaveBeenCalledWith('su-no-post-arm-corpse');
+    expect(rearm).not.toHaveBeenCalled();
+    expect(autoPause).toHaveBeenCalledWith(
+      sql,
+      'rt-no-post-arm-corpse',
+      expect.stringContaining('WI-6639'),
+    );
+    expect(res.reArmedFireStarved).toEqual([]);
+    expect(res.paused).toBe(1);
   });
 
   it('THE DISCRIMINATION: identical turn/fire shape, UNREACHABLE owner → disarmed, not re-armed', async () => {

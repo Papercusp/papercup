@@ -1147,6 +1147,14 @@ export interface LoopStatus {
   longestObservedGapSec: number | null;
   /** True when the existing cadence-drift advisory has enough evidence of a late fire path. */
   cadenceDrift: boolean;
+  /**
+   * True when the current arm has crossed the fire-starvation floor without recording any
+   * post-arm fire. Unlike `turnsStalled`, this covers a scheduler wedge before the arm ever
+   * produced a fire (including an overdue unparked schedule). Exposed separately from the
+   * unified `stalled` verdict so the stalled-loop actor can choose its reachable-owner repair
+   * path instead of treating the owner as a turn-stalled corpse.
+   */
+  fireStarved: boolean;
   /** EI-18712914572668391: true when this loop keeps getting re-armed (fireCount climbing,
    *  `stalled` reading false because it isn't currently PARKED) while `lastTurnAt` has not
    *  kept pace — i.e. fires are being ATTEMPTED without turns actually being PRODUCED. This
@@ -1920,6 +1928,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     // to know which scheduler failure produced the verdict.
     stalled: stall.stalled || fireStarved,
     stalledSinceMs: stall.stalledSinceMs,
+    fireStarved,
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),
     lastWithheldAt: r.last_withheld_at ? new Date(r.last_withheld_at).toISOString() : null,

@@ -1047,7 +1047,10 @@ export async function sweepStalledLoops(
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
-    if (!status?.turnsStalled) continue;
+    // EI-22778953572067990 — `fireStarved` is a distinct actor candidate from
+    // `turnsStalled`: a current arm can cross its no-post-arm-fire floor while
+    // `turnsStalled` remains false because there is no post-fire gap to measure.
+    if (!status || (!status.turnsStalled && !status.fireStarved)) continue;
 
     // WI-37546 — do not judge a loop this same sweep just revived. Its `turnsStalled` verdict is
     // the stale one that got it disarmed; the fire that will refresh it is scheduled for `now()`
@@ -1164,9 +1167,16 @@ export async function sweepStalledLoops(
       status.lastTurnAt != null &&
       status.lastFiredAt != null &&
       Date.parse(status.lastTurnAt) >= Date.parse(status.lastFiredAt);
-    if (answeredItsLastFire) {
+    // EI-22778953572067990 — an explicit no-post-arm-fire verdict has no
+    // `lastTurnAt >= lastFiredAt` ordering to satisfy, but it needs the same
+    // reachable-vs-corpse split as the older answered-last-fire shape.
+    let probed: WakeReachabilityVerdict | null = null;
+    if (status.fireStarved || answeredItsLastFire) {
       const reachable = await probeReachability(ownerId)
-        .then((v) => v.reachable)
+        .then((v) => {
+          probed = v;
+          return v.reachable;
+        })
         // Fail-soft in the SAFE direction: an uncertain reachability read must not license an
         // irreversible disarm, so treat it as reachable and let the next sweep decide with
         // better information (mirrors checkUnreachableTerminalGuard's own catch).
@@ -1174,8 +1184,11 @@ export async function sweepStalledLoops(
       if (reachable) {
         reArmedFireStarved.push(ownerId);
         console.warn(
-          `[stalled-loops-guard] FIRE-STARVED ${ownerId}: answered its last fire ` +
-            `(turn ${status.lastTurnAt} >= fire ${status.lastFiredAt}) and is still REACHABLE, yet no fire ` +
+          `[stalled-loops-guard] FIRE-STARVED ${ownerId}: ` +
+            (status.fireStarved
+              ? `the current arm crossed its no-post-arm-fire floor`
+              : `answered its last fire (turn ${status.lastTurnAt} >= fire ${status.lastFiredAt})`) +
+            ` and is still REACHABLE, yet no fire ` +
             `has arrived since. Re-arming, NOT disarming — the fault is in the firing path, not the agent ` +
             `(EI-19406534159939583).`,
         );
@@ -1271,7 +1284,6 @@ export async function sweepStalledLoops(
       Number.isFinite(withheldMs) && Number.isFinite(lastFiredMs) && withheldMs >= lastFiredMs;
 
     // Held so the disarm path below can reuse this probe instead of paying a second one.
-    let probed: WakeReachabilityVerdict | null = null;
     if (wakeStarved) {
       probed = await probeReachability(ownerId).catch(() => null);
       if (probed?.awaitRepairable) {
