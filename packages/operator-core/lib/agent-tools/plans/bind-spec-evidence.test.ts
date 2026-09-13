@@ -112,6 +112,7 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
       ...measuredBinding,
       details: {
         adequacy: {
+          coverageRungs: { l3: true, l4: false },
           scenarioIds: ['stale-vs-decision', 'wrong-subject-exclusion'],
           causalPairIds: ['missing-goal-history'],
           executed: true,
@@ -119,6 +120,23 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
       },
     });
     expect(parsed.success).toBe(true);
+  });
+
+  it.each([
+    { value: ['l3'], message: 'expected object' },
+    { value: { l3: 'true' }, message: 'expected boolean' },
+    { value: { l5: true }, message: 'unrecognized key' },
+  ])('rejects malformed coverageRungs metadata ($message)', ({ value, message }) => {
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: { adequacy: { coverageRungs: value } },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.map((issue) => issue.path.join('.'))).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^details\.adequacy\.coverageRungs(?:\.|$)/)]),
+    );
+    expect(parsed.error.issues.map((issue) => issue.message).join(' ')).toMatch(new RegExp(message, 'i'));
   });
 
   it.each([

@@ -34,6 +34,7 @@ import { scorecardEmitArgs } from '../scorecards/emit';
 import scorecardEvaluate from '../scorecards/evaluate';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
 import {
+  COMPLETION_COVERAGE_CALL_CONSTRAINT,
   ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT,
   ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT,
   ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
@@ -582,6 +583,16 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain(
       'verification?:object{coverage?:object{population:array(≥1)<string>,checked?:array<string>,notChecked?:array<string>,notApplicable?:array<string>,residue?:array<string>}}',
     );
+    // WI-37960 / EI-22611436941619072: the structural coverage fields are
+    // optional in JSON Schema for ordinary completions, but the validator
+    // makes them required for verification-shaped universal terminal claims.
+    // Discovery must expose that conditional rule at every accepted alias.
+    expect(entry?.argSchema).toContain(
+      `constraint:completion.verification.coverage (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`,
+    );
+    expect(entry?.argSchema).toContain(
+      `constraint:completion.coverage (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`,
+    );
     expect(compact).toContain(
       'current?:array(≤500){planSlug?:string(1-2000),specId?:string(1-2000),specRevision?:integer(>0-9007199254740991),specFingerprint?:string(1-256),evidenceKind:enum(test|fixture|coverage-census|mutation|counterexample|check|manual|operational),evidenceRef:string(1-2000),sourceFingerprint:string(1-256)',
     );
@@ -667,6 +678,24 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
         alternativeHypothesis: 'the writer defines production serving and exposes staging separately',
       },
     }).success).toBe(true);
+  });
+
+  it('publishes the validator-owned universal-coverage predicate on shorthand and bulk paths', async () => {
+    const result = await callHandler({ query: 'work_items:complete', limit: 1 });
+    const compact = result.hits.find((hit) => hit.tool === 'work_items:complete')?.argSchema;
+
+    for (const path of [
+      'completion.verification.coverage',
+      'completion.coverage',
+      'items[].completion.verification.coverage',
+      'items[].completion.coverage',
+    ]) {
+      expect(compact).toContain(`constraint:${path} (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`);
+    }
+    expect(compact).toContain('terminal state=done|resolved|passed');
+    expect(compact).toContain('residue:[]');
+    expect(compact).toContain('residue:[\'none\']');
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
   it('bounds a verbose nested-fields segment so nesting stays readable (EI-21490971340666010)', () => {

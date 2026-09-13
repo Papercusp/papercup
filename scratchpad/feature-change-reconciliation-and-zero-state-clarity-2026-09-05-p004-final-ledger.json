@@ -59,7 +59,7 @@
       "modelCalled": false
     },
     "focusedApplyVerification": {
-      "command": "npm exec vitest run --hookTimeout=60000 packages/operator-core/lib/agent-tools/work_items/bulk_dedup.test.ts packages/operator-core/lib/work-items-admission-promoter.integration.test.ts",
+      "command": "npm exec -- vitest run --hookTimeout=60000 packages/operator-core/lib/agent-tools/work_items/bulk_dedup.test.ts packages/operator-core/lib/work-items-admission-promoter.integration.test.ts",
       "filesPassed": 2,
       "testsPassed": 41,
       "defaultTimeoutRun": "41 assertions passed but command exited 1 because afterAll database cleanup exceeded 10000ms",

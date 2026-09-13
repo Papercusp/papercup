@@ -21,8 +21,17 @@ const proofCoverageIds = z
   .min(1)
   .max(100)
   .refine((ids) => new Set(ids).size === ids.length, 'proof coverage ids must be unique');
+const coverageRungsSchema = z
+  .object({
+    l1: z.boolean().optional(),
+    l2: z.boolean().optional(),
+    l3: z.boolean().optional(),
+    l4: z.boolean().optional(),
+  })
+  .strict();
 const adequacyBindingDetailsSchema = z
   .object({
+    coverageRungs: coverageRungsSchema.optional(),
     scenarioIds: proofCoverageIds.optional(),
     causalPairIds: proofCoverageIds.optional(),
   })

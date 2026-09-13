@@ -75,6 +75,15 @@ export const CompletionVerifiedHowSchema = z
 export const COMPLETION_COVERAGE_CONTRACT =
   'Coverage contract: population, checked, notChecked, and notApplicable are the partition buckets; residue is a separate list, never a fifth bucket. Every population entry must appear verbatim in exactly one status bucket. All buckets are string arrays; an explicit empty residue array (residue:[]) declares zero residue, and residue:[\'none\'] remains accepted as a compatibility form. Universal-verification closes must include the residue array.';
 
+/**
+ * Keep the conditional requirement visible in tools:find as well as in the
+ * runtime refusal. JSON Schema can describe the coverage object's shape, but
+ * it cannot express that a verification-shaped item's universal terminal claim
+ * turns this otherwise-optional field into a required one.
+ */
+export const COMPLETION_COVERAGE_CALL_CONSTRAINT =
+  'universal terminal verification claim (state=done|resolved|passed) => coverage required; population exactly once in checked|notChecked|notApplicable; residue explicit';
+
 function isCoverageRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -153,9 +162,7 @@ export const CompletionCoverageSchema = z
     .describe("A separate residue list, never a partition bucket; for universal closes it must be present and may be empty. Use [] or ['none'] for zero residue."),
     }),
   )
-  .describe(
-    `${COMPLETION_COVERAGE_CONTRACT} Omitted status buckets mean empty buckets.`,
-  );
+  .describe(`${COMPLETION_COVERAGE_CONTRACT} Omitted status buckets mean empty buckets.`);
 export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 
 /** Caller-facing contract for the server-generated verification tree stamp. */
@@ -572,7 +579,9 @@ export const CompletionVerificationEvidenceSchema = z.object({
       'what was added (put that prose in `testsRun` / `testResult`).',
     ),
   /** Enumerated population + per-entry status for universal verification claims (WI-37960). */
-  coverage: CompletionCoverageSchema.optional(),
+  coverage: CompletionCoverageSchema.optional().meta({
+    'x-papercusp-call-constraint': COMPLETION_COVERAGE_CALL_CONSTRAINT,
+  }),
   /** P-021 / D-014: requirement-by-requirement disposition against the originating ask. */
   requirementDisposition: RequirementDispositionSchema.optional(),
   /**
@@ -952,7 +961,9 @@ export const CompletionRecordSchema = z.object({
       `distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
   }),
   /** Top-level alias for the structured verification coverage record (WI-37960). */
-  coverage: CompletionCoverageSchema.optional(),
+  coverage: CompletionCoverageSchema.optional().meta({
+    'x-papercusp-call-constraint': COMPLETION_COVERAGE_CALL_CONSTRAINT,
+  }),
   filesChanged: FilesChangedSchema,
   /** Top-level alias for `verification.filesDeleted`; intentional removals. */
   filesDeleted: FilesChangedSchema,

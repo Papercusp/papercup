@@ -285,6 +285,19 @@ describe('facts:assert TTL spelling contract', () => {
     expect(message).toMatch(/ttlDays/i);
     expect(publishedProps.ttlSec?.description ?? '').toMatch(/ttlSec/i);
   });
+
+  it('documents that ordinary facts need an explicit lifetime when confidence is omitted', () => {
+    const publishedProps = (z.toJSONSchema(assertTool.args as never) as {
+      properties?: Record<string, { description?: string }>;
+    }).properties ?? {};
+    const confidence = publishedProps.confidence?.description ?? '';
+
+    expect(confidence).toMatch(/ordinary write still needs an explicit ttlSec/i);
+    expect(confidence).toMatch(/provisional.*short TTL/i);
+    // The old description called an omitted confidence an "ordinary TTL", which
+    // contradicted validateFactLifetime's refusal of an undeclared lifetime.
+    expect(confidence).not.toMatch(/renders unbadged, ordinary TTL/i);
+  });
 });
 
 /**
