@@ -14,7 +14,15 @@ import {
 } from "nuqs/adapters/testing";
 import type { AuthorIdentity } from "@/app/admin/plans/plans-api";
 
-const { planRows, planListState, usePlanList, confirmPlanClose } = vi.hoisted(() => ({
+const {
+  planRows,
+  planListState,
+  usePlanList,
+  confirmPlanClose,
+  desktopShell,
+  enterDesktopWindowFullscreen,
+  exitDesktopWindowFullscreen,
+} = vi.hoisted(() => ({
   planRows: {
     value: [] as Array<{
       slug: string;
@@ -29,6 +37,17 @@ const { planRows, planListState, usePlanList, confirmPlanClose } = vi.hoisted(()
   },
   usePlanList: vi.fn(),
   confirmPlanClose: vi.fn().mockResolvedValue(true),
+  desktopShell: { value: false },
+  enterDesktopWindowFullscreen: vi
+    .fn()
+    .mockResolvedValue({ active: true, owned: true }),
+  exitDesktopWindowFullscreen: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/desktop-window-fullscreen", () => ({
+  isDesktopShell: () => desktopShell.value,
+  enterDesktopWindowFullscreen,
+  exitDesktopWindowFullscreen,
 }));
 
 vi.mock("@/app/admin/plans/plans-api", () => ({
@@ -112,6 +131,11 @@ afterEach(() => {
   usePlanList.mockClear();
   confirmPlanClose.mockReset();
   confirmPlanClose.mockResolvedValue(true);
+  desktopShell.value = false;
+  enterDesktopWindowFullscreen.mockReset();
+  enterDesktopWindowFullscreen.mockResolvedValue({ active: true, owned: true });
+  exitDesktopWindowFullscreen.mockReset();
+  exitDesktopWindowFullscreen.mockResolvedValue(undefined);
   delete (HTMLElement.prototype as unknown as Record<string, unknown>)
     .requestFullscreen;
   delete (document as unknown as Record<string, unknown>).fullscreenEnabled;
@@ -428,6 +452,53 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Full screen" })).toBeTruthy();
   });
+
+  it.each(["close", "unmount"] as const)(
+    "%s releases browser fullscreen instead of stranding the display",
+    async (exitRoute) => {
+      const fullscreen = installFullscreenApi();
+      const onClose = vi.fn();
+      const rendered = renderPopup(null, null, { onClose });
+
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      await screen.findByRole("button", { name: "Exit full screen" });
+
+      if (exitRoute === "close") {
+        fireEvent.click(screen.getByTestId("plan-popup-close"));
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      } else {
+        rendered.unmount();
+      }
+
+      await waitFor(() =>
+        expect(fullscreen.exitFullscreen).toHaveBeenCalledTimes(1),
+      );
+    },
+  );
+
+  it.each(["close", "unmount"] as const)(
+    "%s releases an owned desktop-window fullscreen session",
+    async (exitRoute) => {
+      desktopShell.value = true;
+      const onClose = vi.fn();
+      const rendered = renderPopup(null, null, { onClose });
+
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      await screen.findByRole("button", { name: "Exit full screen" });
+      expect(enterDesktopWindowFullscreen).toHaveBeenCalledTimes(1);
+
+      if (exitRoute === "close") {
+        fireEvent.click(screen.getByTestId("plan-popup-close"));
+        await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      } else {
+        rendered.unmount();
+      }
+
+      await waitFor(() =>
+        expect(exitDesktopWindowFullscreen).toHaveBeenCalledTimes(1),
+      );
+    },
+  );
 
   it("Escape restores the expanded window without closing the plan", () => {
     installFullscreenApi(false);
