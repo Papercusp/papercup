@@ -171,7 +171,9 @@ export function resetMcpAdmissionForTests(): void {
  * for a shed tool call; ordinary captures remain shed. `events:status` is admitted only for
  * one exact await id or event-key inspection; broad active-await lists and the fleet-wide meter
  * remain shed. `dev:telemetry` requires an explicit small result page so its aggregate query
- * cannot become an unbounded pressure escape hatch.
+ * cannot become an unbounded pressure escape hatch. `coord:inbox` is admitted only for an
+ * explicit small page with a directed or unanswered-directed filter; broad/default and
+ * enriched forms remain shed because they can expand the mailbox derive.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -180,6 +182,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'dev:dogfood_substrate_status',
     'coord:whoami',
     'coord:declare-intent',
+    'coord:inbox',
     'locks:queue',
     'tools:find',
     'plans:get',
@@ -210,11 +213,13 @@ const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
 const COORD_WHOAMI_NAME = normalizeMcpName('coord:whoami');
 const COORD_DECLARE_INTENT_NAME = normalizeMcpName('coord:declare-intent');
+const COORD_INBOX_NAME = normalizeMcpName('coord:inbox');
 const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName('capability:bash_output');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const LOCKS_RELEASE_NAME = normalizeMcpName('locks:release');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const WORK_ITEMS_SET_STATE_NAME = normalizeMcpName('work_items:set_state');
 const PLANS_GET_NAME = normalizeMcpName('plans:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
@@ -258,6 +263,13 @@ const CRITICAL_DECLARE_INTENT_MAX_INTENT_CHARS = 600;
 const CRITICAL_DECLARE_INTENT_MAX_PLAN_CHARS = 200;
 const CRITICAL_DECLARE_INTENT_MAX_HARNESS_CHARS = 120;
 const CRITICAL_DECLARE_INTENT_MAX_ITEMS = 40;
+const CRITICAL_COORD_INBOX_MAX_LIMIT = 10;
+const CRITICAL_WORK_ITEMS_SET_STATE_MAX_ID_CHARS = 200;
+const CRITICAL_WORK_ITEMS_SET_STATE_MAX_STATE_CHARS = 40;
+const CRITICAL_WORK_ITEMS_SET_STATE_MAX_HARNESS_CHARS = 80;
+const CRITICAL_WORK_ITEMS_SET_STATE_MAX_EVIDENCE_CHARS = 2_000;
+const CRITICAL_WORK_ITEMS_SET_STATE_MAX_ASSUMPTION_KEYS = 10;
+const CRITICAL_WORK_ITEMS_SET_STATE_MAX_ASSUMPTION_KEY_CHARS = 120;
 
 const PLAN_CLASS_RUBRIC_REFS = new Set([
   'plan-class-feature-ship',
@@ -471,6 +483,128 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
   return true;
+}
+
+/**
+ * `work_items:set_state` is the retryable lifecycle writer used to settle a
+ * claim during a drain, but its normal schema also accepts two bulk forms and
+ * terminal evidence/assumption payloads. Keep the critical-pressure reserve to
+ * exactly one target, while validating the bounded fields that can otherwise
+ * make the admitted request expensive before Zod rejects it. Mixed selectors,
+ * batches, and ignored top-level fields remain on the ordinary shed path.
+ */
+export function isBoundedWorkItemsSetStateArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+
+  const fieldNames = new Set([
+    'id',
+    'state',
+    'harness',
+    'decision',
+    'ids',
+    'items',
+    'completionRef',
+    'reason',
+    'note',
+    'assumptions',
+    'force',
+  ]);
+  if (Object.keys(args).some((key) => !fieldNames.has(key))) return false;
+
+  const boundedString = (value: unknown, max: number, required = false): value is string =>
+    typeof value === 'string' &&
+    value.length <= max &&
+    (!required || value.trim().length > 0);
+
+  const validateOptionalFields = (record: Record<string, unknown>): boolean => {
+    if (
+      record.harness !== undefined &&
+      !boundedString(record.harness, CRITICAL_WORK_ITEMS_SET_STATE_MAX_HARNESS_CHARS)
+    ) {
+      return false;
+    }
+    for (const field of ['completionRef', 'reason', 'note']) {
+      if (
+        record[field] !== undefined &&
+        !boundedString(record[field], CRITICAL_WORK_ITEMS_SET_STATE_MAX_EVIDENCE_CHARS, true)
+      ) {
+        return false;
+      }
+    }
+    if (record.assumptions !== undefined) {
+      if (record.assumptions === 'none') {
+        // Explicitly no assumptions is a valid terminal declaration.
+      } else if (
+        !Array.isArray(record.assumptions) ||
+        record.assumptions.length < 1 ||
+        record.assumptions.length > CRITICAL_WORK_ITEMS_SET_STATE_MAX_ASSUMPTION_KEYS ||
+        !record.assumptions.every((key) =>
+          boundedString(key, CRITICAL_WORK_ITEMS_SET_STATE_MAX_ASSUMPTION_KEY_CHARS, true),
+        )
+      ) {
+        return false;
+      }
+    }
+    if (record.force !== undefined && typeof record.force !== 'boolean') return false;
+    if (record.decision !== undefined) {
+      if (!isRecord(record.decision)) return false;
+      const decision = record.decision;
+      if (Object.keys(decision).some((key) => !['riskTier', 'authority'].includes(key))) return false;
+      if (
+        decision.riskTier !== undefined &&
+        !['trivial', 'low', 'moderate', 'high', 'critical'].includes(decision.riskTier as string)
+      ) {
+        return false;
+      }
+      if (decision.authority !== undefined && !['system', 'owner'].includes(decision.authority as string)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const validateTarget = (record: Record<string, unknown>): boolean =>
+    boundedString(record.id, CRITICAL_WORK_ITEMS_SET_STATE_MAX_ID_CHARS, true) &&
+    boundedString(record.state, CRITICAL_WORK_ITEMS_SET_STATE_MAX_STATE_CHARS, true) &&
+    validateOptionalFields(record);
+
+  const hasInlineTarget = args.id !== undefined;
+  const hasIdsTarget = args.ids !== undefined;
+  const hasItemsTarget = args.items !== undefined;
+  if (Number(hasInlineTarget) + Number(hasIdsTarget) + Number(hasItemsTarget) !== 1) return false;
+
+  if (hasItemsTarget) {
+    // The item's own fields carry the target. A top-level harness is the only
+    // shared/default field that remains unambiguous in this form.
+    if (Object.keys(args).some((key) => key !== 'items' && key !== 'harness')) return false;
+    if (
+      args.harness !== undefined &&
+      !boundedString(args.harness, CRITICAL_WORK_ITEMS_SET_STATE_MAX_HARNESS_CHARS)
+    ) {
+      return false;
+    }
+    return (
+      Array.isArray(args.items) &&
+      args.items.length === 1 &&
+      isRecord(args.items[0]) &&
+      Object.keys(args.items[0]).every((key) => fieldNames.has(key) && !['ids', 'items'].includes(key)) &&
+      validateTarget(args.items[0])
+    );
+  }
+
+  if (hasIdsTarget) {
+    if (args.id !== undefined || args.items !== undefined || !Array.isArray(args.ids) || args.ids.length !== 1) {
+      return false;
+    }
+    return (
+      boundedString(args.ids[0], CRITICAL_WORK_ITEMS_SET_STATE_MAX_ID_CHARS, true) &&
+      boundedString(args.state, CRITICAL_WORK_ITEMS_SET_STATE_MAX_STATE_CHARS, true) &&
+      validateOptionalFields(args)
+    );
+  }
+
+  if (args.ids !== undefined || args.items !== undefined) return false;
+  return validateTarget(args);
 }
 
 /**
@@ -891,6 +1025,32 @@ export function isBoundedCoordRosterArgs(args: unknown): boolean {
   ) {
     return false;
   }
+  return true;
+}
+
+/**
+ * `coord:inbox` is the recovery read for an overdue directed-mail wake, but
+ * its selective filters still perform a full mailbox derive. Require an
+ * explicit small page and at least one of the two directed-mail predicates;
+ * broad/default, ambient, sender, and body-expanding reads remain retryable
+ * under critical pressure.
+ */
+export function isBoundedCoordInboxArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['limit', 'directed', 'unanswered_only']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    !Number.isInteger(args.limit) ||
+    (args.limit as number) < 1 ||
+    (args.limit as number) > CRITICAL_COORD_INBOX_MAX_LIMIT
+  ) {
+    return false;
+  }
+  const directed = args.directed === true;
+  const unanswered = args.unanswered_only === true;
+  if (!directed && !unanswered) return false;
+  if (args.directed !== undefined && !directed) return false;
+  if (args.unanswered_only !== undefined && !unanswered) return false;
   return true;
 }
 
@@ -1396,6 +1556,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === LOCKS_RELEASE_NAME) return isBoundedLocksReleaseArgs(args);
   if (normalized === COORD_PRESENCE_NAME) return isBoundedCoordPresenceArgs(args);
   if (normalized === COORD_ROSTER_NAME) return isBoundedCoordRosterArgs(args);
+  if (normalized === COORD_INBOX_NAME) return isBoundedCoordInboxArgs(args);
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
@@ -1403,6 +1564,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === EVENTS_STATUS_NAME) return isBoundedEventsStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
+  if (normalized === WORK_ITEMS_SET_STATE_NAME) return isBoundedWorkItemsSetStateArgs(args);
   if (normalized === PLANS_GET_NAME) return isBoundedPlansGetArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (normalized === SCORECARDS_EVALUATE_NAME) {

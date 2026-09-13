@@ -20,12 +20,14 @@ import {
   isBoundedDevTelemetryArgs,
   isBoundedCoordPresenceArgs,
   isBoundedCoordRosterArgs,
+  isBoundedCoordInboxArgs,
   isBoundedCoordDeclareIntentArgs,
   isBoundedEventsStatusArgs,
   isBoundedBashOutputArgs,
   isBoundedLoopArmArgs,
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
+  isBoundedWorkItemsSetStateArgs,
 } from './mcp-admission';
 
 afterEach(() => resetMcpAdmissionForTests());
@@ -421,6 +423,52 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     }
   });
 
+  it.each([
+    ['canonical', 'coord:inbox'],
+    ['underscore', 'coord_inbox'],
+    ['mcp-advertised', 'mcp__papercusp_su__coord_inbox'],
+  ])('does NOT shed a bounded directed coord:inbox recovery read under critical pressure: %s', (_label, name) => {
+    const args = { directed: true, unanswered_only: true, limit: 10 };
+    expect(isBoundedCoordInboxArgs(args)).toBe(true);
+    const body = toolsCall(37, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad and unbounded coord:inbox recovery reads shed under critical pressure', () => {
+    for (const args of [
+      {},
+      { directed: true },
+      { unanswered_only: true },
+      { directed: true, unanswered_only: true },
+      { directed: false, unanswered_only: true, limit: 10 },
+      { directed: true, unanswered_only: false, limit: 10 },
+      { directed: true, unanswered_only: true, limit: 11 },
+      { directed: true, unanswered_only: true, limit: 10, from: 'su-peer' },
+    ]) {
+      expect(isBoundedCoordInboxArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(38, 'coord:inbox', args))).toEqual({ sheddable: true, id: 38 });
+      expect(classifyMcpRequest(toolsCall(38, 'coord:inbox', args))).toBe('ordinary');
+    }
+  });
+
+  it('recognizes the bounded coord:inbox recovery read through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 39,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__coord_inbox',
+          args: { directed: true, unanswered_only: true, limit: 10 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
   it('recognizes the bounded work_items:get through tools:invoke', () => {
     const body = JSON.stringify({
       jsonrpc: '2.0',
@@ -673,6 +721,59 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         arguments: {
           name: 'mcp__papercusp_su__work_items_checkpoint',
           args: { id: 'WI-10000745', checkpoint: 'resume from this boundary' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'work_items:set_state'],
+    ['underscore', 'work_items_set_state'],
+    ['mcp-advertised', 'mcp__papercusp_su__work_items_set_state'],
+  ])('does NOT shed a bounded single work_items:set_state target under critical pressure: %s', (_label, name) => {
+    const args = { id: 'WI-10000607', state: 'wip' };
+    expect(isBoundedWorkItemsSetStateArgs(args)).toBe(true);
+    const body = toolsCall(23, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits exactly one target in each set_state shape but keeps batches and mixed selectors shed', () => {
+    for (const args of [
+      { ids: ['WI-10000607'], state: 'wip' },
+      { items: [{ id: 'WI-10000607', state: 'wip' }] },
+      { id: 'WI-10000607', state: 'wip', items: [{ id: 'WI-2', state: 'wip' }] },
+    ]) {
+      expect(isBoundedWorkItemsSetStateArgs(args)).toBe(args.ids !== undefined || args.items?.length === 1 && args.id === undefined);
+    }
+    for (const args of [
+      { ids: ['WI-1', 'WI-2'], state: 'wip' },
+      { items: [{ id: 'WI-1', state: 'wip' }, { id: 'WI-2', state: 'wip' }] },
+      { id: 'WI-10000607', state: 'wip', ids: ['WI-2'] },
+      { id: 'WI-10000607' },
+      { state: 'wip' },
+      { items: [{ id: 'WI-10000607' }] },
+      { id: 'WI-10000607', state: 'wip', unexpected: true },
+      { id: 'WI-10000607', state: 'wip', completionRef: 'x'.repeat(2_001) },
+    ]) {
+      expect(isBoundedWorkItemsSetStateArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(24, 'work_items:set_state', args))).toEqual({ sheddable: true, id: 24 });
+      expect(classifyMcpRequest(toolsCall(24, 'work_items:set_state', args))).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded work_items:set_state through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 25,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__work_items_set_state',
+          args: { id: 'WI-10000607', state: 'wip' },
         },
       },
     });
@@ -1487,6 +1588,24 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('coord:declare-intent');
   });
+  it('admits a bounded coord:inbox directed-mail recovery read under critical pressure', async () => {
+    const req = post(toolsCall(10, 'coord:inbox', {
+      directed: true,
+      unanswered_only: true,
+      limit: 10,
+    }));
+    expect(isBoundedCoordInboxArgs({ directed: true, unanswered_only: true, limit: 10 })).toBe(true);
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('coord:inbox');
+  });
+  it('still sheds an unfiltered coord:inbox read under critical pressure', async () => {
+    const shed = await evaluateAdmission(post(toolsCall(11, 'coord:inbox')), 'critical', true);
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
   it('admits a bounded locks:queue ownership read under critical pressure so recovery can inspect held files', async () => {
     const req = post(
       toolsCall(14, 'locks:queue', {
@@ -1688,6 +1807,23 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('admits a bounded single work_items:set_state under critical pressure', async () => {
+    const req = post(toolsCall(22, 'work_items:set_state', { id: 'WI-10000607', state: 'wip' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('work_items:set_state');
+  });
+  it('still sheds bulk work_items:set_state under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(23, 'work_items:set_state', { ids: ['WI-1', 'WI-2'], state: 'wip' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('still sheds a bulk work_items:checkpoint under critical pressure', async () => {
     const shed = await evaluateAdmission(
