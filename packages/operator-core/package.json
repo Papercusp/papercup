@@ -14,7 +14,7 @@
   },
   "scripts": {
     "test": "vitest run --passWithNoTests",
-    "test:lane-pure": "PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
+    "test:lane-pure": "PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs",
     "test:lane-stateful": "PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "test:coverage-attribution-venue": "PAPERCUSP_TEST_ATTRIBUTION=1 PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp vitest run --config vitest.integration.config.ts lib/coverage-census/attribution/persistence-venue.integration.test.ts",
