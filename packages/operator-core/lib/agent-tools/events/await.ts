@@ -72,7 +72,12 @@ import {
   resolveProgressLeaseCertificate,
 } from './producer-health';
 import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
-import { buildServiceUpEdgeAdvice, isFlapDamped, parseServiceUpKey, probeServiceUpLatch } from './service-up-edge';
+import {
+  buildServiceUpEdgeAdvice,
+  isFlapDamped,
+  parseServiceUpKey,
+  probeServiceUpLatch,
+} from './service-up-edge';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   hasActiveMonitorForOwnerPredicate,
@@ -84,10 +89,7 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
 // Aliased to the local names so every usage/describe below is unchanged.
-import {
-  AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC,
-  AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC,
-} from '../../events/await/types';
+import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
 import type { AwaitRow } from '../../events/await/types';
 
 type GenerationPinDetails = {
@@ -98,14 +100,12 @@ type GenerationPinDetails = {
   firedAt?: string | null;
 };
 
-function announcementGenerationState(
-  row: {
-    firedAt?: string | null;
-    firedReason?: string | null;
-    cancelledAt?: string | null;
-    supersededAt?: string | null;
-  } | null,
-): AwaitGenerationState {
+function announcementGenerationState(row: {
+  firedAt?: string | null;
+  firedReason?: string | null;
+  cancelledAt?: string | null;
+  supersededAt?: string | null;
+} | null): AwaitGenerationState {
   if (!row) return 'undeclared';
   if (row.firedAt) return row.firedReason === 'expired' ? 'expired' : 'fired';
   if (row.cancelledAt) return 'cancelled';
@@ -148,47 +148,8 @@ function generationMismatchResponse(details: GenerationPinDetails) {
   };
 }
 
-function isAwaitGenerationMismatchError(
-  error: unknown,
-): error is GenerationPinDetails & { code: 'await_generation_mismatch' } {
-  return (
-    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'await_generation_mismatch'
-  );
-}
-
-type MonotonicExactLatchKind = 'git-sync-egress' | 'task-terminal';
-
-/**
- * Exact keys whose first fire permanently satisfies the subject-scoped wait.
- *
- * Keep recurring/bare streams and patterns out of this predicate: a caller may
- * legitimately want the NEXT git-sync egress or the NEXT task to terminate.
- * Conversely, one concrete SHA can reach origin/staging only once for this
- * purpose, and one durable task ledger row has exactly one authoritative first
- * terminal transition. Their unconditional event_key_fires row is therefore a
- * completion latch, not merely diagnostic history.
- */
-function monotonicExactLatchKind(eventKey: string): MonotonicExactLatchKind | null {
-  if (/^git-sync:egressed:[^:]+$/.test(eventKey)) return 'git-sync-egress';
-  if (/^task:terminal:[^:]+$/.test(eventKey)) return 'task-terminal';
-  return null;
-}
-
-function monotonicExactLatchAdvice(input: {
-  kind: MonotonicExactLatchKind;
-  eventKey: string;
-  firedAt: string | null;
-  duringRegistration: boolean;
-}): string {
-  const when = input.firedAt ?? 'an earlier time';
-  if (input.kind === 'git-sync-egress') {
-    return input.duringRegistration
-      ? `The git-sync egress key "${input.eventKey}" fired during registration at ${when} — the still-pending await was retired and the commit is already on origin/staging. Proceed with the work this egress unblocks now.`
-      : `The git-sync egress key "${input.eventKey}" ALREADY FIRED at ${when} — origin/staging has already contained this commit. Do not wait; proceed with the work this egress unblocks now.`;
-  }
-  return input.duringRegistration
-    ? `The managed-task terminal key "${input.eventKey}" fired during registration at ${when} — the still-pending await was retired because this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
-    : `The managed-task terminal key "${input.eventKey}" ALREADY FIRED at ${when} — this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`;
+function isAwaitGenerationMismatchError(error: unknown): error is GenerationPinDetails & { code: 'await_generation_mismatch' } {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'await_generation_mismatch';
 }
 
 export default defineTool({
@@ -199,8 +160,7 @@ export default defineTool({
     when: 'You are blocked on a known event key: lock grant, plan run, peer answer, deploy/gate, or another emitter (patterns/macros cover families; see `event`). For `work-item:status:<id>` / `work-item:done:<id>` / `claim:released:<id>`, the id must belong to a DIFFERENT assignee: awaiting your own item is an unsatisfiable self-deadlock and is refused before registration. Pair key? Its completion OWNER must declare it (`events:emit { announce:true }`); await the RETURNED key, never a hand-typed chat key. `work-item:unblocked:<id>` is emitted only when the last live `blocks` edge clears: registration returns `already_unblocked` when already clear and refuses lifecycle-blocked items with no blocker edge because that exact key cannot fire.',
     notWhen:
       'Ambient interest (use watch:create { targetKind:"topic", wake:false }), sub-minute waits inside one turn, or recurring schedules. Prefer sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
-    chaining:
-      'Recipe: `events:catalog` → `events:await { event }` (or sugar) → END YOUR TURN → wake carries payload → re-register for the NEXT occurrence (one-shot: a fired await is gone). Re-awaiting the same key retires your prior wait; `events:cancel` retracts, `events:status` inspects.',
+    chaining: 'Recipe: `events:catalog` → `events:await { event }` (or sugar) → END YOUR TURN → wake carries payload → re-register for the NEXT occurrence (one-shot: a fired await is gone). Re-awaiting the same key retires your prior wait; `events:cancel` retracts, `events:status` inspects.',
     // EI-21240881678776697: callers reach this tool holding a `policy` axis borrowed from
     // another verb (the filed repro passed `policy: 'qualification'`). events:await has no
     // policy axis at all — it is ALWAYS a one-shot wake — so the near-name guess a bare
@@ -252,80 +212,71 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
-  args: z
-    .object({
-      event: hardText(LIMITS.IDENT)
-        .optional()
-        .describe(
-          'Event key to wait on (mutually exclusive with `spec`). An EXACT key (`lock:grant:t1`) matches that one key. A PATTERN — a glob with `*` (`work-item:done:*`), or a macro `@plan:<slug>` (→ any plan item done) / `@fleet:<slug>` (→ any fleet event) — wakes on the FIRST key that matches. `*` matches any run of characters.',
-        ),
-      after_generation: z
-        .number()
-        .int()
-        .nonnegative()
-        .optional()
-        .describe(
-          'Pin this await to the exact announced declaration generation returned by events:status; stale pins return a structured resync response.',
-        ),
-      spec: z
-        .record(z.string(), z.unknown())
-        .optional()
-        .describe(
-          'Composed THRESHOLD TREE (mutually exclusive with `event`): wake ONCE when a combination of event occurrences is satisfied. A leaf is { event, when? } (`when` = a payload_filter DataCondition on that event). Combinators: { all: [...] } = every child; { any: [...] } = ≥1 child; { some: { require: k, of: [...] } } = k-of-n. Nest ≤3 deep, ≤20 leaves total; event-level negation is not supported (absence is observed by the deadline). e.g. { any: [ { event: "deploy:done" }, { all: [ { event: "ci:green" }, { event: "review:approved" } ] } ] }. IMPORTANT: the root is whole-tree one-shot; an `any` match consumes and voids every sibling. Do not mix frequent/non-terminal events with rare/terminal events unless the first match is intentionally terminal; split those waits or use an explicit threshold that matches the lifecycle. Deadline via timeout_sec/on_timeout as usual; a tree already satisfied at registration returns already_satisfied WITHOUT registering.',
-        ),
-      note: softText(LIMITS.ANNOTATION)
-        .optional()
-        .describe(
-          'Why you are waiting — echoed into the wake turn so resumed-you has the thread. Auto-truncated to 2000 chars if longer.',
-        ),
-      timeout_sec: z
-        .number()
-        .int()
-        .positive()
-        .max(MAX_TIMEOUT_SEC)
-        .optional()
-        .describe(`Deadline in seconds (default ${DEFAULT_TIMEOUT_SEC}). See on_timeout.`),
-      on_timeout: z
-        .enum(['wake', 'expire'])
-        .optional()
-        .describe(
-          "What happens at the deadline without the event: 'wake' (default) = you are woken with a TIMEOUT marker (the non-event is as actionable as the event); 'expire' = the await lapses silently (visible in events:status).",
-        ),
-      plan_run_id: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe(
-          'When awaiting FROM a plan run, pass its runId — the wake re-invokes the run via the plans:resume path instead of a session resume.',
-        ),
-      payload_filter: dataConditionSchema
-        .optional()
-        .describe(
-          "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires. Omitted on event:'work-item:claimable'? EI-13846: it is auto-narrowed to YOUR OWN claim spec when one exists (see auto_scoped_payload_filter in the response) — pass this explicitly to override.",
-        ),
-      producer_health: producerHealthInputSchema
-        .optional()
-        .describe(
-          'Verified producer health for a single event/fromMsg wait; requires `event` or `fromMsg` and is rejected with a composed `spec`.',
-        ),
-      progress_lease: progressLeaseInputSchema
-        .optional()
-        .describe(
-          'Evidence-backed liveness lease for a delegated upstream owner. Uses an authoritative read-only tool/path, wakes that owner on the first cadence miss, and applies a typed remedy after repeated misses.',
-        ),
-      fromMsg: hardText(LIMITS.IDENT)
-        .optional()
-        .describe(
-          'coord-authority-hardening P-006: a coord msg_id — await the gate THAT message declared (its `gateRefs` stamps, read server-side). `fromMsg` resolves gateRefs only; it does not consume a coord:send `expectEffect` directive. ExpectEffect compliance is reported on fleet:leader-brief → members[].directives. Kills hand-typed key drift: you never re-type the key, the platform resolves it off the message. Exactly one gate on the message is required — none/many is a loud error naming what it found. Mutually exclusive with `event`/`spec`.',
-        ),
-    })
-    .refine((a) => [a.event, a.spec, a.fromMsg].filter((x) => x != null).length === 1, {
-      message: 'pass exactly one of `event`, `spec`, or `fromMsg`',
-    })
-    .refine((a) => a.after_generation == null || (a.event != null && !isPattern(a.event)), {
-      message: 'after_generation requires an exact `event` key (not a pattern, spec, or fromMsg)',
-    }),
+  args: z.object({
+    event: hardText(LIMITS.IDENT)
+      .optional()
+      .describe(
+        'Event key to wait on (mutually exclusive with `spec`). An EXACT key (`lock:grant:t1`) matches that one key. A PATTERN — a glob with `*` (`work-item:done:*`), or a macro `@plan:<slug>` (→ any plan item done) / `@fleet:<slug>` (→ any fleet event) — wakes on the FIRST key that matches. `*` matches any run of characters.',
+      ),
+    after_generation: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('Pin this await to the exact announced declaration generation returned by events:status; stale pins return a structured resync response.'),
+    spec: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        'Composed THRESHOLD TREE (mutually exclusive with `event`): wake ONCE when a combination of event occurrences is satisfied. A leaf is { event, when? } (`when` = a payload_filter DataCondition on that event). Combinators: { all: [...] } = every child; { any: [...] } = ≥1 child; { some: { require: k, of: [...] } } = k-of-n. Nest ≤3 deep, ≤20 leaves total; event-level negation is not supported (absence is observed by the deadline). e.g. { any: [ { event: "deploy:done" }, { all: [ { event: "ci:green" }, { event: "review:approved" } ] } ] }. IMPORTANT: the root is whole-tree one-shot; an `any` match consumes and voids every sibling. Do not mix frequent/non-terminal events with rare/terminal events unless the first match is intentionally terminal; split those waits or use an explicit threshold that matches the lifecycle. Deadline via timeout_sec/on_timeout as usual; a tree already satisfied at registration returns already_satisfied WITHOUT registering.',
+      ),
+    note: softText(LIMITS.ANNOTATION)
+      .optional()
+      .describe('Why you are waiting — echoed into the wake turn so resumed-you has the thread. Auto-truncated to 2000 chars if longer.'),
+    timeout_sec: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_TIMEOUT_SEC)
+      .optional()
+      .describe(`Deadline in seconds (default ${DEFAULT_TIMEOUT_SEC}). See on_timeout.`),
+    on_timeout: z
+      .enum(['wake', 'expire'])
+      .optional()
+      .describe(
+        "What happens at the deadline without the event: 'wake' (default) = you are woken with a TIMEOUT marker (the non-event is as actionable as the event); 'expire' = the await lapses silently (visible in events:status).",
+      ),
+    plan_run_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('When awaiting FROM a plan run, pass its runId — the wake re-invokes the run via the plans:resume path instead of a session resume.'),
+    payload_filter: dataConditionSchema
+      .optional()
+      .describe(
+        "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires. Omitted on event:'work-item:claimable'? EI-13846: it is auto-narrowed to YOUR OWN claim spec when one exists (see auto_scoped_payload_filter in the response) — pass this explicitly to override.",
+      ),
+    producer_health: producerHealthInputSchema
+      .optional()
+      .describe('Verified producer health for a single event/fromMsg wait; requires `event` or `fromMsg` and is rejected with a composed `spec`.'),
+    progress_lease: progressLeaseInputSchema
+      .optional()
+      .describe('Evidence-backed liveness lease for a delegated upstream owner. Uses an authoritative read-only tool/path, wakes that owner on the first cadence miss, and applies a typed remedy after repeated misses.'),
+    fromMsg: hardText(LIMITS.IDENT)
+      .optional()
+      .describe(
+        'coord-authority-hardening P-006: a coord msg_id — await the gate THAT message declared (its `gateRefs` stamps, read server-side). `fromMsg` resolves gateRefs only; it does not consume a coord:send `expectEffect` directive. ExpectEffect compliance is reported on fleet:leader-brief → members[].directives. Kills hand-typed key drift: you never re-type the key, the platform resolves it off the message. Exactly one gate on the message is required — none/many is a loud error naming what it found. Mutually exclusive with `event`/`spec`.',
+      ),
+  })
+    .refine(
+      (a) => [a.event, a.spec, a.fromMsg].filter((x) => x != null).length === 1,
+      { message: 'pass exactly one of `event`, `spec`, or `fromMsg`' },
+    )
+    .refine(
+      (a) => a.after_generation == null || (a.event != null && !isPattern(a.event)),
+      { message: 'after_generation requires an exact `event` key (not a pattern, spec, or fromMsg)' },
+    ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     startAwaitSweeper();
@@ -339,14 +290,10 @@ export default defineTool({
       throw new Error('events:await — pass producer_health or progress_lease, not both');
     }
     if (args.producer_health && args.on_timeout === 'expire') {
-      throw new Error(
-        'events:await — producer_health requires on_timeout:"wake" so a stalled/absent diagnosis is actionable',
-      );
+      throw new Error('events:await — producer_health requires on_timeout:"wake" so a stalled/absent diagnosis is actionable');
     }
     if (args.progress_lease && args.on_timeout === 'expire') {
-      throw new Error(
-        'events:await — progress_lease requires on_timeout:"wake" so stale evidence and remedies remain actionable',
-      );
+      throw new Error('events:await — progress_lease requires on_timeout:"wake" so stale evidence and remedies remain actionable');
     }
 
     // EI-383: a REAL registered await ends the turn until the wake — no activity-
@@ -530,7 +477,10 @@ export default defineTool({
           const currentState = announcementGenerationState(current);
           const isExpectedFire =
             currentGeneration === args.after_generation && currentState === 'fired' && current?.firedReason === 'event';
-          if ((currentGeneration !== args.after_generation || currentState !== 'declared') && !isExpectedFire) {
+          if (
+            (currentGeneration !== args.after_generation || currentState !== 'declared') &&
+            !isExpectedFire
+          ) {
             return {
               content: [
                 {
@@ -577,11 +527,10 @@ export default defineTool({
             generation: declared.causalGeneration ?? null,
             expected: declared.expectedCondition ?? null,
           };
-          const ownership = await withBoundedTimeout(resolveAnnouncementOwnership(anns, identity.workspaceId), {
-            fallback: null,
-            timeoutMs: 1_000,
-            label: 'events-await:announcementOwnership',
-          });
+          const ownership = await withBoundedTimeout(
+            resolveAnnouncementOwnership(anns, identity.workspaceId),
+            { fallback: null, timeoutMs: 1_000, label: 'events-await:announcementOwnership' },
+          );
           announcedGateOwnership = ownership.value?.get(declared.id) ?? null;
         }
         // ── event-key-nearmiss-guard P-005: no announcement matches this key
@@ -589,28 +538,26 @@ export default defineTool({
         // agent's await, or a declared gate you almost-typed). Time-bounded +
         // fail-soft; the registration below always proceeds. ──
         if (anns.length === 0) {
-          const found = await withBoundedTimeout(findNearMissKeys(eventKey, { excludeOwner: identity.ownerId }), {
-            fallback: [],
-            timeoutMs: 1_000,
-            label: 'events-await:nearMiss',
-          });
+          const found = await withBoundedTimeout(
+            findNearMissKeys(eventKey, { excludeOwner: identity.ownerId }),
+            { fallback: [], timeoutMs: 1_000, label: 'events-await:nearMiss' },
+          );
           if (found.value.length > 0) {
             nearMiss = found.value.map((m) => ({ key: m.eventKey, kind: m.kind, holders: m.holders }));
           }
         }
-      } catch {
-        /* best-effort — never block a registration */
-      }
+      } catch { /* best-effort — never block a registration */ }
     }
 
     // ── Monotonic exact-key LATCHES. The fire ledger is normally diagnostic: a
-    // recurring key having fired before does not satisfy a request for its NEXT edge.
-    // These two concrete subject keys are different: one SHA's proven egress and one
-    // task's first terminal ledger transition cannot become untrue or recur. A late
-    // registrant must therefore consume the existing latch instead of sleeping until
-    // timeout. Patterns/bare streams remain ordinary edge waits.
-    const monotonicLatch = patternAwait ? null : monotonicExactLatchKind(eventKey);
-    if (monotonicLatch) {
+    // recurring key having fired before does not satisfy a wait for its NEXT edge.
+    // One concrete SHA's proven egress and one durable task's first terminal
+    // transition cannot become untrue or recur, so a late exact-key registrant must
+    // consume the latch. Patterns and bare streams remain ordinary edge waits.
+    const gitSyncEgressTarget = !patternAwait ? /^git-sync:egressed:([^:]+)$/.exec(eventKey) : null;
+    const taskTerminalTarget = !patternAwait ? /^task:terminal:([^:]+)$/.exec(eventKey) : null;
+    const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget;
+    if (monotonicLatchTarget) {
       const probe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
         fallback: null,
         timeoutMs: 1_000,
@@ -626,12 +573,9 @@ export default defineTool({
                 already_fired: true,
                 event: eventKey,
                 fired_at: probe.value.lastFiredAt,
-                advice: monotonicExactLatchAdvice({
-                  kind: monotonicLatch,
-                  eventKey,
-                  firedAt: probe.value.lastFiredAt,
-                  duringRegistration: false,
-                }),
+                advice: taskTerminalTarget
+                  ? `The managed-task terminal key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
+                  : `The git-sync egress key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — origin/staging has already contained this commit. Do not wait; proceed with the work this egress unblocks now.`,
               }),
             },
           ],
@@ -746,11 +690,10 @@ export default defineTool({
     // the real gate identically, and no catalog can tell those apart.
     let declaredAnnouncement: { generations: number; everFired: boolean } | null = null;
     if (unknownEventKey) {
-      const declared = await withBoundedTimeout(findAnnouncementsForKey(eventKey, { includeSuperseded: true }), {
-        fallback: null,
-        timeoutMs: 1_000,
-        label: 'events-await:declaredAnnouncementCheck',
-      });
+      const declared = await withBoundedTimeout(
+        findAnnouncementsForKey(eventKey, { includeSuperseded: true }),
+        { fallback: null, timeoutMs: 1_000, label: 'events-await:declaredAnnouncementCheck' },
+      );
       // Fail-soft, like every probe here: an unavailable read leaves the warning
       // exactly as it was rather than inventing a reassurance we cannot support.
       if (declared.value && declared.value.length > 0) {
@@ -810,10 +753,8 @@ export default defineTool({
         // No catalog family, no fire-latch evidence, and no fired declaration
         // history ⇒ genuinely no known emitter. An unavailable history read is
         // fail-soft: an unverifiable claim is safer than a contradictory warning.
-        const hasLiveEmitterDuty =
-          announcedGateOwnership != null &&
-          ((announcedGateOwnership.declaredByLiveness != null &&
-            announcedGateOwnership.declaredByLiveness !== 'ended') ||
+        const hasLiveEmitterDuty = announcedGateOwnership != null &&
+          ((announcedGateOwnership.declaredByLiveness != null && announcedGateOwnership.declaredByLiveness !== 'ended') ||
             announcedGateOwnership.liveSuccessorIds.length > 0);
         if (evidence.value?.fires === 0 && declarationHistory.value && !priorGenerationFired && !hasLiveEmitterDuty) {
           noKnownEmitterForAnnouncedGate = { catalogNearMiss: findCatalogNearMiss(eventKey, probe.value) };
@@ -1058,9 +999,7 @@ export default defineTool({
     // already-settled item (liveAssigneeProbe returns 'settled' — no
     // deadlock risk; the doneTarget latch above already short-circuits that
     // case for `work-item:done:<id>` before we even get here).
-    const selfAwaitTarget = patternAwait
-      ? undefined
-      : /^(?:work-item:(?:status|done)|claim:released):([^:]+)$/.exec(eventKey)?.[1];
+    const selfAwaitTarget = patternAwait ? undefined : /^(?:work-item:(?:status|done)|claim:released):([^:]+)$/.exec(eventKey)?.[1];
     if (selfAwaitTarget) {
       const probe = await withBoundedTimeout(liveAssigneeProbe(selfAwaitTarget), {
         fallback: { verdict: 'unknown' as const },
@@ -1077,7 +1016,8 @@ export default defineTool({
                 error: 'self_await_deadlock',
                 event: eventKey,
                 work_item_id: selfAwaitTarget,
-                advice: `You are the CURRENT ASSIGNEE of ${selfAwaitTarget} — awaiting "${eventKey}" would wait on YOUR OWN completion of it, which is unsatisfiable by construction (this key only fires when you yourself act on the item). Nothing was registered. Do the work and settle the item (work_items:complete / work_items:set_state) instead of awaiting it; if you meant to wait on a DIFFERENT item that actually blocks you, double-check the id.`,
+                advice:
+                  `You are the CURRENT ASSIGNEE of ${selfAwaitTarget} — awaiting "${eventKey}" would wait on YOUR OWN completion of it, which is unsatisfiable by construction (this key only fires when you yourself act on the item). Nothing was registered. Do the work and settle the item (work_items:complete / work_items:set_state) instead of awaiting it; if you meant to wait on a DIFFERENT item that actually blocks you, double-check the id.`,
               }),
             },
           ],
@@ -1128,7 +1068,8 @@ export default defineTool({
         // set, on top of whatever the filter tree itself narrows.
         const derived = claimSpecFilterToClaimablePayloadFilter(record.spec.view.filter) ?? null;
         const harnessLeaf = record.harnessSlug ? { harness: { equals: record.harnessSlug } } : null;
-        const combined = derived && harnessLeaf ? { all: [derived, harnessLeaf] } : (harnessLeaf ?? derived);
+        const combined =
+          derived && harnessLeaf ? { all: [derived, harnessLeaf] } : (harnessLeaf ?? derived);
         if (combined) {
           effectivePayloadFilter = combined;
           autoScopedFrom = { source: record.source, specId: record.spec.specId, revision: record.revision };
@@ -1236,12 +1177,7 @@ export default defineTool({
       if (monitorProbe?.value === true) {
         const refusal = monitorPredicateDedupRefusal(predicateKey, 'monitor')!;
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({ ok: false, error: refusal.code, message: refusal.message, ...refusal.details }),
-            },
-          ],
+          content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: refusal.code, message: refusal.message, ...refusal.details }) }],
           isError: true,
         };
       }
@@ -1365,9 +1301,8 @@ export default defineTool({
     // Close the registration-window race for every monotonic exact latch. The
     // emitter records the latch BEFORE claiming await rows, so a fire landing after
     // the preflight read is visible here. Cancel only through the row-level pending
-    // guard: if the emitter already claimed this row, its durable wake delivery wins;
-    // otherwise this turn consumes the latch and does not park on a dead edge.
-    if (monotonicLatch) {
+    // guard: if the emitter already claimed this row, its durable delivery wins.
+    if (monotonicLatchTarget) {
       const postRegisterProbe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
         fallback: null,
         timeoutMs: 1_000,
@@ -1391,12 +1326,9 @@ export default defineTool({
                   already_fired: true,
                   event: eventKey,
                   fired_at: postRegisterProbe.value.lastFiredAt,
-                  advice: monotonicExactLatchAdvice({
-                    kind: monotonicLatch,
-                    eventKey,
-                    firedAt: postRegisterProbe.value.lastFiredAt,
-                    duringRegistration: true,
-                  }),
+                  advice: taskTerminalTarget
+                    ? `The managed-task terminal key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired because this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
+                    : `The git-sync egress key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired and the commit is already on origin/staging. Proceed with the work this egress unblocks now.`,
                 }),
               },
             ],
