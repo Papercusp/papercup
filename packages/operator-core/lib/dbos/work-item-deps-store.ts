@@ -255,6 +255,10 @@ function edgeIsSatisfiedByRow(edge: StoredDependencyEdge, row: WorkItemNodeRow):
 }
 
 function workItemRowIsActivelyOwned(row: WorkItemNodeRow): boolean {
+  // A blocked item may retain its claim while it waits for an external
+  // dependency. That parked claim is not evidence that the item has started
+  // progressing, so it must not reject adding the blocker that explains it.
+  if (normalizedStatus(row) === 'blocked') return false;
   const holder = row.taken_by?.trim() ?? '';
   return (
     (holder !== '' && holder.toLowerCase() !== 'unassigned') || ACTIVE_DEPENDANT_STATUSES.has(normalizedStatus(row))

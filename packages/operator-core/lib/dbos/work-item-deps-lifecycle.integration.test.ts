@@ -198,6 +198,17 @@ describe('P-011 blocker addition — active dependant refusal across the typed g
     expect(await edgeCount()).toBe(1);
   });
 
+  it.each(['issue', 'feature'] as const)(
+    'allows an explicitly blocked %s dependant to retain its claim while its blocker is recorded',
+    async (blockedFamily) => {
+      await seedItem('DEP', { family: blockedFamily, status: 'blocked', takenBy: 'su-blocked' });
+      await seedItem('BLOCK');
+
+      await expect(addEdge(endpoint(blockedFamily, 'DEP'), endpoint('issue', 'BLOCK'))).resolves.toBeDefined();
+      expect(await edgeCount()).toBe(1);
+    },
+  );
+
   it('allows a satisfied terminal blocker behind an active dependant because reachability does not change', async () => {
     await seedItem('DEP', { takenBy: 'su-active' });
     await seedItem('BLOCK', { status: 'done' });

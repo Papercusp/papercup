@@ -268,6 +268,50 @@ const evidenceClassArgs = z.object({
  */
 const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs]);
 
+/**
+ * The handler has two intentional response paths: human-readable MCP text and a
+ * code-mode structured twin. The twin is heterogeneous because the same tool
+ * also pages bytes and selects content/evidence from scratch references. Keep
+ * every branch's stable root field optional and leave room for branch-specific
+ * diagnostics; a closed schema would reject a truthful mode-specific result.
+ * `body` is deliberately the code-mode text field (not `content`/`text`, which
+ * are reserved for the MCP envelope and caused the original facade mismatch).
+ */
+const capabilityReadResultSchema = z
+  .object({
+    ok: z.boolean(),
+    file_path: z.string().optional(),
+    body: z.string().optional(),
+    total_lines: z.number().int().nonnegative().optional(),
+    start_line: z.number().int().positive().nullable().optional(),
+    end_line: z.number().int().positive().nullable().optional(),
+    has_more: z.boolean().optional(),
+    encoding: z.string().optional(),
+    byte_offset: z.number().int().nonnegative().optional(),
+    byte_length: z.number().int().nonnegative().optional(),
+    total_bytes: z.number().int().nonnegative().optional(),
+    data: z.string().optional(),
+    eof: z.boolean().optional(),
+    next_cursor: z
+      .object({
+        tool: z.string(),
+        args: z.record(z.string(), z.unknown()),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    reference: z.record(z.string(), z.unknown()).optional(),
+    evidence_class: z.string().optional(),
+    evidence: z.array(z.unknown()).optional(),
+    selected_indexes: z.array(z.number().int().nonnegative()).optional(),
+    total_content_items: z.number().int().nonnegative().optional(),
+    content: z.array(z.unknown()).optional(),
+    isError: z.boolean().optional(),
+    reason: z.string().optional(),
+    message: z.string().optional(),
+  })
+  .passthrough();
+
 export default defineTool({
   name: 'capability:read',
   description:
@@ -276,6 +320,8 @@ export default defineTool({
     when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
     chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
+    returns:
+      'Across line/raw, byte-page, content/evidence-selection, and error branches: { ok, file_path?, body?, total_lines?, start_line?, end_line?, has_more?, encoding?, byte_offset?, byte_length?, total_bytes?, data?, eof?, next_cursor?, reference?, evidence_class?, evidence?, selected_indexes?, total_content_items?, content?, isError?, reason?, message? }. In code mode, line/raw reads put undecorated text in `body` (not MCP envelope `content`/`text`); byte pages put exact base64 in `data` and expose `next_cursor`.',
     seeAlso: capabilityReadSeeAlso,
   },
   capability: 'capability:fs-read',
@@ -284,6 +330,7 @@ export default defineTool({
   // fs-write/bash tool allowlist and capability grant.
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: readArgs,
+  result: capabilityReadResultSchema,
   async handler(args, ctx) {
     const filePath = args.file_path ?? args.uri;
     if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');

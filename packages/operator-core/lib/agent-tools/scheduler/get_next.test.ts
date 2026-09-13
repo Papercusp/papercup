@@ -952,6 +952,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
       content: Array<{ text: string }>;
     }>;
+    // Let the async handler reach its bounded preflight and arm the watchdog before advancing
+    // fake time; otherwise the timer starts only after the clock has already jumped past it.
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
     // Advance past the internal budget so the bounded-timeout deadline fires; without the bound
     // this promise would never settle (the hang the bug reported).
     await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
