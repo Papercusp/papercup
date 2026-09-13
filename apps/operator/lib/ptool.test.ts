@@ -839,6 +839,22 @@ describe('ptool timeoutForTool — dev:pg_query outlives proxy admission and SQL
   });
 });
 
+describe('ptool timeoutForTool — dev:pipeline_position outlives the flat client deadline (EI-22707343179859326)', () => {
+  it('keeps the direct pipeline-position read on the long-call budget', () => {
+    const timeout = timeoutForTool('dev:pipeline_position', { path: 'apps/operator/scripts/ptool.mjs' });
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the same budget through the deferred tools:invoke route', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'dev:pipeline_position',
+      args: { path: 'apps/operator/scripts/ptool.mjs' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — capability:launch-agent resumes outlive the default client deadline (EI-21314560074357302)', () => {
   it('gives exact launch-agent resumes a client deadline beyond the MCP transport cap', () => {
     const timeout = timeoutForTool('capability:launch-agent', {

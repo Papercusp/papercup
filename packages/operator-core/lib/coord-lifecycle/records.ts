@@ -440,46 +440,12 @@ function normalizedRootCauseClaim(value: string): string {
     .trim();
 }
 
-function contrastiveObservables(value: string): string[] {
-  const conditionalMarkers = [...value.matchAll(/\b(?:if|when|assuming|provided\s+that)\b/gi)];
-  return conditionalMarkers
-    .map((marker, index) => {
-      const armStart = (marker.index ?? 0) + marker[0].length;
-      const armEnd = conditionalMarkers[index + 1]?.index ?? value.length;
-      const arm = value.slice(armStart, armEnd);
-
-      // Keep the causal-record floor semantic rather than requiring one exact
-      // sentence template. `then`, arrows, punctuation, and common predictive
-      // verbs all make the boundary between the condition and its observable
-      // explicit; without one of those boundaries, free-form prose is still
-      // rejected instead of being mistaken for a discriminating observation.
-      const explicitSeparator = /\bthen\b|=>|→/i.exec(arm);
-      const punctuationSeparator = /[,;:]\s*|[—–]\s*/.exec(arm);
-      const predictiveSeparator =
-        /\b(?:would|will|should|must|can|could|may|might|yield(?:s)?|produce(?:s)?|return(?:s)?|emit(?:s)?|show(?:s)?|report(?:s)?|reveal(?:s)?|result(?:s)?\s+in|lead(?:s)?\s+to)\b/i.exec(
-          arm,
-        );
-      const separator =
-        explicitSeparator ??
-        [punctuationSeparator, predictiveSeparator]
-          .filter((candidate): candidate is RegExpExecArray => candidate !== null)
-          .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))[0];
-      if (!separator) return '';
-
-      return normalizedRootCauseClaim(
-        arm
-          .slice((separator.index ?? 0) + separator[0].length)
-          .replace(/^then\b\s*/i, ''),
-      );
-    })
-    .filter(Boolean);
-}
-
 /** Shared by the successful-close gate and its compact discovery contract. */
 export const ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES = ['done', 'resolved', 'passed'] as const;
-export const ROOT_CAUSE_DISTINGUISHING_TEST_EXAMPLE = 'if H1 then A; if H2 then B';
 export const ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT =
-  `at least two different conditional observables, e.g. "${ROOT_CAUSE_DISTINGUISHING_TEST_EXAMPLE}" (equivalent conditional prose accepted)`;
+  'non-empty procedure; no prose template required';
+export const ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT =
+  'predictedObservations arms must be meaningfully different';
 /**
  * Version of the causal-evidence contract enforced for NEW successful defect
  * closes. The additional fields remain optional in the storage schema so
@@ -540,7 +506,8 @@ export const RootCauseVerificationSchema = z
       `successful bug/capability-gap close (state=${ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.join('|')}) => required; ` +
       `contractVersion=${ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION}; required fields: hypothesis, alternativeHypothesis, ` +
       `distinguishingTest, testResult, ${ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS.join(', ')}; ` +
-      `hypothesis!=alternativeHypothesis; distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
+      `hypothesis!=alternativeHypothesis; ${ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT}; ` +
+      `distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
   })
   .superRefine((record, ctx) => {
     if (normalizedRootCauseClaim(record.hypothesis) === normalizedRootCauseClaim(record.alternativeHypothesis)) {
@@ -550,12 +517,16 @@ export const RootCauseVerificationSchema = z
         message: 'alternativeHypothesis must be meaningfully different from hypothesis.',
       });
     }
-    const observables = contrastiveObservables(record.distinguishingTest);
-    if (observables.length < 2 || new Set(observables).size < 2) {
+    const predicted = record.predictedObservations;
+    if (
+      predicted &&
+      normalizedRootCauseClaim(predicted.hypothesis) ===
+        normalizedRootCauseClaim(predicted.alternativeHypothesis)
+    ) {
       ctx.addIssue({
         code: 'custom',
-        path: ['distinguishingTest'],
-        message: `distinguishingTest must state ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}.`,
+        path: ['predictedObservations', 'alternativeHypothesis'],
+        message: `${ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT}.`,
       });
     }
   });
@@ -977,7 +948,8 @@ export const CompletionRecordSchema = z.object({
       `successful bug/capability-gap close (state=${ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.join('|')}) => required; ` +
       `contractVersion=${ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION}; required fields: hypothesis, alternativeHypothesis, ` +
       `distinguishingTest, testResult, ${ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS.join(', ')}; ` +
-      `hypothesis!=alternativeHypothesis; distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
+      `hypothesis!=alternativeHypothesis; ${ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT}; ` +
+      `distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
   }),
   /** Top-level alias for the structured verification coverage record (WI-37960). */
   coverage: CompletionCoverageSchema.optional(),

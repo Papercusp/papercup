@@ -12,6 +12,7 @@ const CENSUS: AdmissionCensusItem[] = [
     originClass: 'agent-filed',
     hasEmbedding: false,
     embeddingMode: null,
+    embeddingProfile: null,
     titleKey: null,
     conditionKey: null,
   },
@@ -23,6 +24,7 @@ const CENSUS: AdmissionCensusItem[] = [
     originClass: 'agent-filed',
     hasEmbedding: false,
     embeddingMode: null,
+    embeddingProfile: null,
     titleKey: null,
     conditionKey: null,
   },
@@ -34,6 +36,7 @@ const CENSUS: AdmissionCensusItem[] = [
     originClass: 'agent-filed',
     hasEmbedding: false,
     embeddingMode: null,
+    embeddingProfile: null,
     titleKey: null,
     conditionKey: null,
   },
@@ -53,7 +56,10 @@ import {
 } from './resolver-whole-corpus-action';
 
 /** Minimal tagged-template stub: records every statement, answers by shape. */
-function fakeSql(): { tag: (strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>; statements: string[] } {
+function fakeSql(): {
+  tag: (strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>;
+  statements: string[];
+} {
   const statements: string[] = [];
   const tag = (async (strings: TemplateStringsArray, ..._vals: unknown[]): Promise<unknown[]> => {
     const text = strings.join('?');
@@ -75,7 +81,10 @@ function fakeLlm(payload: { json?: unknown; text?: string } = { json: { merges: 
   return { llmCall, calls };
 }
 
-function fakeApplyDeps(): { deps: ApplyWholeCorpusDeps; calls: { linked: unknown[]; stated: unknown[]; commented: unknown[] } } {
+function fakeApplyDeps(): {
+  deps: ApplyWholeCorpusDeps;
+  calls: { linked: unknown[]; stated: unknown[]; commented: unknown[] };
+} {
   const calls = { linked: [] as unknown[], stated: [] as unknown[], commented: [] as unknown[] };
   const deps: ApplyWholeCorpusDeps = {
     getWorkItem: async (id) => ({ id, state: 'open' }),
@@ -120,7 +129,9 @@ describe('readDedupEdges', () => {
 describe('runResolverWholeCorpusPass', () => {
   it('runs one shard through the whole-corpus pass and applies a merge verdict', async () => {
     const { tag } = fakeSql();
-    const { llmCall, calls } = fakeLlm({ json: { merges: [{ canonicalId: 'WI-1', duplicateIds: ['WI-2'], reason: 'same defect' }], clusters: [] } });
+    const { llmCall, calls } = fakeLlm({
+      json: { merges: [{ canonicalId: 'WI-1', duplicateIds: ['WI-2'], reason: 'same defect' }], clusters: [] },
+    });
     const { deps, calls: applyCalls } = fakeApplyDeps();
 
     const result: RunResolverWholeCorpusPassResult = await runResolverWholeCorpusPass({
@@ -175,7 +186,8 @@ describe('runResolverWholeCorpusPass', () => {
       // Interpolated values (incl. the JSON detail blob) live in `vals`, not
       // in the literal template pieces — join both so a substring search
       // over `statements` can see the detail.status this test asserts on.
-      const text = strings.join('?') + ' ||| ' + vals.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' | ');
+      const text =
+        strings.join('?') + ' ||| ' + vals.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' | ');
       statements.push(text.trim());
       return [];
     }) as unknown as Parameters<typeof runResolverWholeCorpusPass>[0]['sql'];
@@ -200,7 +212,8 @@ describe('runResolverWholeCorpusPass', () => {
     readCorpus.mockRejectedValueOnce(new Error('boom'));
     const failStatements: string[] = [];
     const failTag = (async (strings: TemplateStringsArray, ...vals: unknown[]) => {
-      const text = strings.join('?') + ' ||| ' + vals.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' | ');
+      const text =
+        strings.join('?') + ' ||| ' + vals.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' | ');
       failStatements.push(text.trim());
       return [];
     }) as unknown as Parameters<typeof runResolverWholeCorpusPass>[0]['sql'];
