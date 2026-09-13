@@ -82,13 +82,16 @@
     "expected": "caught",
     "baseline": {
       "exit": 0,
-      "testFileResult": "requested=1 executed=1 matched=1 status=passed head=9270490e3c uncommittedPaths=1/1 provenance=stamped startedAt=2026-09-13T01:55:15.137Z skippedTests=25"
+      "testFileResult": "requested=1 executed=1 matched=1 status=passed head=d20115d104 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T05:05:00.767Z skippedTests=25",
+      "startedAt": "2026-09-13T05:05:00.767Z",
+      "durationMs": 135885
     },
     "mutant": {
       "exit": 1,
-      "testFileResult": "requested=1 executed=1 matched=1 status=failed head=9270490e3c uncommittedPaths=1/1 provenance=stamped startedAt=2026-09-13T01:57:49.789Z skippedTests=25",
-      "duration": "95.98s",
-      "decisiveFailure": "AssertionError: the real tool result must return in the same turn; expected the owner turn id and received mutant-turn.",
+      "testFileResult": "requested=1 executed=1 matched=1 status=failed head=d20115d104 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T05:07:21.836Z skippedTests=25",
+      "startedAt": "2026-09-13T05:07:21.836Z",
+      "durationMs": 97845,
+      "decisiveFailure": "AssertionError: the real tool result must return in the same turn; expected turnId pui-turn-pui-1789276125112320622 and received mutant-turn.",
       "notCleanupMasked": true
     },
     "probeLine": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1 mutant_parse=unchecked",
@@ -99,16 +102,16 @@
     "files": [
       {
         "path": "packages/operator-core/lib/su-session-rpc-engine.ts",
-        "expectedSha256": "d90584584ad02ee2784d91de646a653be847fc858cd4fbdb2eeec750ce60a3f8",
-        "actualSha256": "d90584584ad02ee2784d91de646a653be847fc858cd4fbdb2eeec750ce60a3f8",
+        "expectedSha256": "ef1f4a7bb8c59746acf8b4d9b0e2b08e0faf95f278b5df3389fc196782f2551f",
+        "actualSha256": "ef1f4a7bb8c59746acf8b4d9b0e2b08e0faf95f278b5df3389fc196782f2551f",
         "mutantOccurrenceCount": 0,
         "match": true
       },
       {
         "path": "packages/operator-core/lib/su-session-omp-adapter.ts",
-        "expectedSha256": "d8a496dccb9d0135d91aa52497ca2d3510b61a36415d865bf76d3e6041bbb756",
-        "actualSha256": "d8a496dccb9d0135d91aa52497ca2d3510b61a36415d865bf76d3e6041bbb756",
-        "mutantSha256": "642fbb05ac17a3ef899761f5a97a6d5beb7ba04f38b946c7a8e948361db2dd33",
+        "expectedSha256": "b7ba7eb8141571a08f9d71ccfd3652cb1e526ee658b67ef8aa525100db559da9",
+        "actualSha256": "b7ba7eb8141571a08f9d71ccfd3652cb1e526ee658b67ef8aa525100db559da9",
+        "mutantSha256": "f3826810d8d339e75c696ddb45b6ae39fc610d9d91b5bc62ffc00612c217c751",
         "mutantOccurrenceCount": 0,
         "match": true
       }
@@ -116,13 +119,14 @@
     "allProbeLocksReleased": true
   },
   "postProbeCleanRun": {
-    "testRunId": 17849139,
-    "testFileResult": "requested=1 executed=1 matched=1 status=passed head=6d3bb01633 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T02:37:38.660Z skippedTests=25",
-    "commitSha": "6d3bb01633cbb03a0160d85129b06548929bb023",
-    "finishedAt": "2026-09-13T02:41:30.482Z",
-    "durationMs": 222648,
+    "testRunId": 17858135,
+    "testFileResult": "requested=1 executed=1 matched=1 status=passed head=d20115d104 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T05:09:37.807Z skippedTests=25",
+    "commitSha": "d20115d10453369b9159397711a9a42e3d9d817d",
+    "startedAt": "2026-09-13T05:09:49.082Z",
+    "finishedAt": "2026-09-13T05:12:27.008Z",
+    "durationMs": 157926,
     "source": "local",
-    "rssMb": 677.2,
+    "rssMb": 649.7,
     "namedTestPathClean": true,
     "measurementCohortUnchangedThroughBinding": true,
     "removedFailureAbsent": "The exact `[bounded-timeout] declare-intent:prev-intent` warning from the rejected attempt does not occur in the clean run log.",
@@ -148,26 +152,26 @@
   "binding": {
     "status": "created and read back current",
     "mutation": {
-      "id": 4314,
+      "id": 4360,
       "evidenceRef": "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#tool-turn-correlation-mutant",
-      "testRunId": 17849139,
-      "bindingFingerprint": "5461ebaa769ee202282511d34491f76a51e12bf6a6bbd09bc903a88eb750386c",
+      "testRunId": 17858135,
+      "bindingFingerprint": "c4145cafd396f03de98c659a40e2d9cd3a3dfa6fd68e553a849f206aeccbafe1",
       "status": "current"
     },
     "cleanTest": {
-      "id": 4313,
-      "evidenceRef": "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17849139",
-      "testRunId": 17849139,
-      "bindingFingerprint": "430e0504b2626343ff434fe868707345e7be9831fcff33cdb50aae0baf9d7e1f",
+      "id": 4359,
+      "evidenceRef": "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17858135",
+      "testRunId": 17858135,
+      "bindingFingerprint": "ca2a7ab83291517cb87a1399603b4be6d40660723a0c72a2415da8924bd3efb0",
       "status": "current"
     },
     "serverMeasuredFingerprints": {
-      "source": "sha256-file-set-v1:32441a292b3eab7a99b46215670a30178a2e6c50629b84ace4339042cb978e1c",
-      "test": "sha256-file-set-v1:f9034fb7ed887bcab7af4eda3f7cca04ed86208674cde65125b7bdd4f455585c"
+      "source": "sha256-file-set-v1:040f0e554d03c3d9d481b0a4990bec240d08d86ab206e01286aad9561c3c93ef",
+      "test": "sha256-file-set-v1:dfb367103233d898c66b7764669222b90eff3e1d86915d3eaffb0c94525b28e1"
     },
     "adequacy": {
       "selection": [
-        "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17849139",
+        "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17858135",
         "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#tool-turn-correlation-mutant"
       ],
       "verdict": "pass",
