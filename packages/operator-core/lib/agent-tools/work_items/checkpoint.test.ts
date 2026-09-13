@@ -53,9 +53,11 @@ vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
 // production transform rather than a mock's echo. Defaults to null, which is what the
 // real resolver returns in a suite with no transcript, so every other test is unaffected.
 const resolveCurrentTurnStamp = vi.hoisted(() => vi.fn(async (): Promise<{ ref: string } | null> => null));
+const verifyTurnRefs = vi.hoisted(() => vi.fn(async () => []));
 vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../turn-provenance/turn-ref')>()),
   resolveCurrentTurnStamp,
+  verifyTurnRefs,
 }));
 vi.mock('../../effort-thread', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../effort-thread')>()),
@@ -153,9 +155,14 @@ beforeEach(() => {
   resolveCurrentTokens.mockReset();
   readFrozenRepairMarker.mockReset();
   postLearnedAtLevel.mockReset();
+  verifyTurnRefs.mockReset();
   readFrozenRepairMarker.mockReturnValue(null);
   readSuccessfulActionInvocations.mockResolvedValue([]);
   resolveCurrentTokens.mockResolvedValue(new Map());
+  // Provenance verification is an I/O dependency. Keep this unit suite on its
+  // declared seam so a missing transcript cannot consume the 3s bounded I/O
+  // budget and trip vitest-fail-on-console under a loaded stateful lane.
+  verifyTurnRefs.mockResolvedValue([]);
   postLearnedAtLevel.mockResolvedValue({
     posted: true,
     level: 'work_item',
