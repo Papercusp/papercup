@@ -20,6 +20,7 @@ import {
   isBoundedDevTelemetryArgs,
   isBoundedCoordPresenceArgs,
   isBoundedCoordRosterArgs,
+  isBoundedCoordDeclareIntentArgs,
   isBoundedEventsStatusArgs,
   isBoundedBashOutputArgs,
   isBoundedLoopArmArgs,
@@ -154,6 +155,49 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
     expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['bare declaration', { intent: 'resume the current lane' }],
+    ['plan lane', { intent: 'claim the plan lane', current_plan_slug: 'recovery-plan', items: ['P-001'] }],
+    ['replacement clear', { intent: 'clear stale lane', items: [] }],
+    ['harness-scoped lane', { intent: 'claim the plan lane', current_plan_slug: 'recovery-plan', items: ['P-001'], harness: 'papercusp' }],
+  ])('does NOT shed bounded coord:declare-intent recovery declarations under critical pressure: %s', (_label, args) => {
+    expect(isBoundedCoordDeclareIntentArgs(args)).toBe(true);
+    const body = toolsCall(18, 'coord:declare-intent', args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps enriched or invalid coord:declare-intent declarations sheddable under critical pressure', () => {
+    for (const args of [
+      { intent: 'x', current_files: ['packages/operator-core/lib/example.ts'] },
+      { intent: 'x', declared_goal_refs: ['EI-1'] },
+      { intent: 'x'.repeat(601) },
+      { intent: 'x', items: ['EI-1'] },
+      { intent: 'x', current_plan_slug: 'plan', items: ['P-01'] },
+      { intent: 'x', current_plan_slug: 'plan', items: Array.from({ length: 41 }, (_, i) => `P-${String(i + 1).padStart(3, '0')}`) },
+    ]) {
+      expect(isBoundedCoordDeclareIntentArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(19, 'coord:declare-intent', args))).toEqual({ sheddable: true, id: 19 });
+      expect(classifyMcpRequest(toolsCall(19, 'coord:declare-intent', args))).toBe('ordinary');
+    }
+  });
+
+  it('admits bounded coord:declare-intent through deferred tools:invoke and client aliases', () => {
+    for (const name of ['coord_declare_intent', 'mcp__papercusp_su__coord_declare_intent']) {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 20,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: { name, args: { intent: 'resume the current lane' } },
+        },
+      });
+      expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+      expect(classifyMcpRequest(body)).toBe('diagnostic');
+    }
   });
 
   it.each([
@@ -1383,6 +1427,15 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(8, 'capability:bash_output', { task_id: '0mu01ke7h44mxhxn2ps' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('capability:bash_output');
+  });
+  it('admits a bounded coord:declare-intent recovery declaration under critical pressure', async () => {
+    const req = post(toolsCall(9, 'coord:declare-intent', {
+      intent: 'resume the current fleet lane',
+      current_plan_slug: 'recovery-plan',
+      items: ['P-001'],
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('coord:declare-intent');
   });
   it('admits a bounded locks:queue ownership read under critical pressure so recovery can inspect held files', async () => {
     const req = post(
