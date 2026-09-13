@@ -72,6 +72,7 @@ import toolFind, {
   compactOutputSchemaForResult,
   compactSchemaForResult,
   DISCOVERY_RESULT_MAX_BYTES,
+  PLUGIN_HOST_READINESS_TIMEOUT_MS,
   ensureIndex,
   normalizeToolsFindArgs,
   filterCorpusForConfirmedHiveScope,
@@ -929,6 +930,27 @@ describe('handler — graceful degrade + result shape', () => {
     releaseHost();
     const out = await pending;
     expect(out.hits.some((hit) => hit.tool === toolName)).toBe(true);
+  });
+
+  it('returns the base catalog when plugin-host readiness never resolves', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      pluginHostMocks.getPluginHost.mockReturnValueOnce(new Promise(() => {}));
+      const pending = callHandler({ query: 'find tools by intent' });
+
+      await vi.waitFor(() => expect(pluginHostMocks.getPluginHost).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(PLUGIN_HOST_READINESS_TIMEOUT_MS);
+
+      const out = await pending;
+      expect(out.count).toBeGreaterThan(0);
+      expect(out.semantic).toBe('lexical-only');
+      expect(out.hits.some((hit) => hit.tool === 'tools:find')).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('tools:find plugin-host readiness exceeded'));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('runs lexical-only when no embedder is configured, marking semantic accordingly', async () => {

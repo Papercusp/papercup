@@ -447,6 +447,19 @@ case "${1:-}" in
     ;;
 esac
 
+# Containment is SPA-scoped by default because that is the established meaning
+# of VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS. Backend-only assertions can opt into
+# the immutable plain-node host bundle built for this run; validate the scope
+# before allocating a verifier so a typo cannot consume a full boot.
+SNAPSHOT_SCOPE="${VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE:-spa}"
+case "$SNAPSHOT_SCOPE" in
+  spa|host) ;;
+  *)
+    echo "FATAL: VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE must be 'spa' or 'host' (got '$SNAPSHOT_SCOPE')" >&2
+    exit 2
+    ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${PAPERCUSP_REPO_DIR:-${VERIFY_TAURI_ORIGINAL_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
@@ -3586,42 +3599,79 @@ fi
 #      missing (a peer's unrelated edit moves it too). Hard-failing here would
 #      block valid runs, so: warn loudly, and name the decisive check.
 #   2. CONTAINMENT — decisive. VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='<a string
-#      unique to your change>' greps the FROZEN bundle. Absent ⇒ this run
-#      provably cannot exercise your change, so fail FAST with a diagnosis
-#      (exit 3, distinct from an assertion failure) instead of letting the
-#      assertion emit a confident false negative. This mechanizes the manual
-#      grep every agent otherwise has to reinvent mid-debugging.
+#      unique to your change>' greps the FROZEN SPA bundle by default. A
+#      backend-only assertion can set VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host to
+#      grep the immutable plain-node host bundle built from the same source
+#      snapshot. Absent ⇒ this run provably cannot exercise the change, so fail
+#      FAST with a diagnosis (exit 3, distinct from an assertion failure)
+#      instead of letting the assertion emit a confident false negative. This
+#      mechanizes the manual grep every agent otherwise has to reinvent
+#      mid-debugging without weakening the established SPA check.
 SNAPSHOT_NEEDLE="${VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS:-}"
 if [ -n "$SNAPSHOT_NEEDLE" ]; then
-  if [ -z "$SPA_DIST" ] || [ ! -d "$SPA_DIST" ]; then
-    echo "FATAL: VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS was set, but this run froze NO SPA" >&2
-    echo "       snapshot (operator-vite was not built at boot), so the claim cannot be" >&2
-    echo "       checked. Build operator-vite first, or unset the variable." >&2
-    exit 3
-  fi
-  if grep -rqF -- "$SNAPSHOT_NEEDLE" "$SPA_DIST" 2>/dev/null; then
-    log "snapshot containment OK: found '$SNAPSHOT_NEEDLE' in the frozen bundle."
-  else
-    {
-      echo
-      echo "  ┌────────────────────────────────────────────────────────────────────────┐"
-      echo "  │  ⛔ STALE SNAPSHOT — YOUR CHANGE IS NOT IN THE CODE UNDER TEST          │"
-      echo "  │                                                                        │"
-      echo "  │  '$SNAPSHOT_NEEDLE'"
-      echo "  │  is ABSENT from this run's frozen bundle ($SPA_DIST)."
-      echo "  │                                                                        │"
-      echo "  │  This run CANNOT exercise your change. Any failure it reports would be"
-      echo "  │  a false negative about PRE-EDIT code — refusing to run the assertion"
-      echo "  │  rather than hand you a confident wrong answer (EI-19444780917356384)."
-      echo "  │                                                                        │"
-      echo "  │  Fix: wait for the shared build to emit your change, then re-run this"
-      echo "  │  script (the snapshot is frozen at boot — reloading never picks it up)."
-      echo "  │  Watch for the rebuild with: ls -t apps/operator-vite/dist/assets/*.js"
-      echo "  └────────────────────────────────────────────────────────────────────────┘"
-      echo
-    } >&2
-    exit 3
-  fi
+  case "$SNAPSHOT_SCOPE" in
+    spa)
+      if [ -z "$SPA_DIST" ] || [ ! -d "$SPA_DIST" ]; then
+        echo "FATAL: VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS was set, but this run froze NO SPA" >&2
+        echo "       snapshot (operator-vite was not built at boot), so the claim cannot be" >&2
+        echo "       checked. Build operator-vite first, or unset the variable." >&2
+        exit 3
+      fi
+      if grep -rqF -- "$SNAPSHOT_NEEDLE" "$SPA_DIST" 2>/dev/null; then
+        log "snapshot containment OK: found '$SNAPSHOT_NEEDLE' in the frozen SPA bundle."
+      else
+        {
+          echo
+          echo "  ┌────────────────────────────────────────────────────────────────────────┐"
+          echo "  │  ⛔ STALE SNAPSHOT — YOUR CHANGE IS NOT IN THE CODE UNDER TEST          │"
+          echo "  │                                                                        │"
+          echo "  │  '$SNAPSHOT_NEEDLE'"
+          echo "  │  is ABSENT from this run's frozen SPA bundle ($SPA_DIST)."
+          echo "  │                                                                        │"
+          echo "  │  This run CANNOT exercise your change. Any failure it reports would be"
+          echo "  │  a false negative about PRE-EDIT code — refusing to run the assertion"
+          echo "  │  rather than hand you a confident wrong answer (EI-19444780917356384)."
+          echo "  │                                                                        │"
+          echo "  │  Fix: wait for the shared build to emit your change, then re-run this"
+          echo "  │  script (the snapshot is frozen at boot — reloading never picks it up)."
+          echo "  │  Watch for the rebuild with: ls -t apps/operator-vite/dist/assets/*.js"
+          echo "  └────────────────────────────────────────────────────────────────────────┘"
+          echo
+        } >&2
+        exit 3
+      fi
+      ;;
+    host)
+      if [ -z "$OPERATOR_HOST_BUNDLE" ] || [ ! -s "$OPERATOR_HOST_BUNDLE" ]; then
+        echo "FATAL: VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host was set, but this run has no frozen operator host bundle" >&2
+        echo "       to check. The verifier must build the host from its source snapshot before the assertion runs." >&2
+        exit 3
+      fi
+      if grep -qF -- "$SNAPSHOT_NEEDLE" "$OPERATOR_HOST_BUNDLE" 2>/dev/null; then
+        log "snapshot containment OK: found '$SNAPSHOT_NEEDLE' in the frozen operator host bundle."
+      else
+        {
+          echo
+          echo "  ┌────────────────────────────────────────────────────────────────────────┐"
+          echo "  │  ⛔ STALE SNAPSHOT — YOUR CHANGE IS NOT IN THE CODE UNDER TEST          │"
+          echo "  │                                                                        │"
+          echo "  │  '$SNAPSHOT_NEEDLE'"
+          echo "  │  is ABSENT from this run's frozen operator host bundle                │"
+          echo "  │  ($OPERATOR_HOST_BUNDLE).                                              │"
+          echo "  │                                                                        │"
+          echo "  │  This run CANNOT exercise your backend change. Any failure it reports  │"
+          echo "  │  would be a false negative about PRE-EDIT code — refusing to run the   │"
+          echo "  │  assertion rather than hand you a confident wrong answer.              │"
+          echo "  │                                                                        │"
+          echo "  │  Fix: re-run this script so the host bundle is rebuilt from the current │"
+          echo "  │  source snapshot (the bundle is immutable for this run).               │"
+          echo "  └────────────────────────────────────────────────────────────────────────┘"
+          echo
+        } >&2
+        exit 3
+      fi
+      ;;
+  esac
 elif [ -f "$VERIFY_TAURI_FRESHNESS_CHECK" ] && ! bash "$VERIFY_TAURI_FRESHNESS_CHECK"; then
   # No needle given, so we have no decisive signal — fall back to the advisory
   # DRIFT warning. Deliberately an `elif`: when containment was asserted and

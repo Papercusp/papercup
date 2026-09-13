@@ -29,6 +29,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
 
 import bashTool from './bash';
 import { __resetBashJobs } from './bash-jobs';
+import { generateToolFacadeTypes, lookupByMcpName } from '@papercusp/agent-mcp';
 import { unwrapToolResult } from '@papercusp/tooldef';
 
 type ToolResultish = {
@@ -62,6 +63,17 @@ afterEach(() => {
 });
 
 describe('capability:bash — result shape for a code:run script (EI-20066912585022608)', () => {
+  it('advertises the code-mode result fields in the generated tools facade', () => {
+    const registered = lookupByMcpName('capability:bash');
+    expect(registered).toBeDefined();
+
+    const facade = generateToolFacadeTypes([registered!]);
+    expect(facade).not.toMatch(/bash\([^)]*\): Promise<unknown>;/);
+    expect(facade).toContain('ok: boolean');
+    expect(facade).toContain('output?: string');
+    expect(facade).toContain('exit_code?: number | null');
+  });
+
   it('rejects sub-second public timeouts with explicit millisecond guidance', () => {
     const args = (bashTool as unknown as { args: BashArgsSchema }).args;
     const tooShort = args.safeParse({ command: 'true', timeout: 20 });

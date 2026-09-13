@@ -312,6 +312,7 @@ describe('dispatchPendingGradingAudits', () => {
         brief: expect.stringContaining('scorecard EI-audit-1'),
         harness: 'papercusp',
         headless: true,
+        independent: true,
         account: 'auto',
         count: 1,
         members: [{ role: 'judge', account: 'auto' }],

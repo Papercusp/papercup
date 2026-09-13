@@ -976,6 +976,11 @@ export async function dispatchPendingGradingAudits(
             brief: gradingAuditBrief(card),
             ...(harness && harness !== '*' ? { harness } : {}),
             headless: true,
+            // Grading auditors are independent verification sessions. Without
+            // this explicit fence, capability:launch-agent inherits the
+            // dispatcher's caller fleet and exposes that fleet's unrelated
+            // persisted headcount profile in the launch receipt.
+            independent: true,
             account: useFallback ? GRADING_AUDIT_FALLBACK.account : GRADING_AUDIT_ACCOUNT,
             ...(useFallback ? { agent: GRADING_AUDIT_FALLBACK.agent } : {}),
             count: 1,

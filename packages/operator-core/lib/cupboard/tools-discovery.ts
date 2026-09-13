@@ -178,6 +178,61 @@ export function arrayItemConstraintText(input: unknown): string {
 }
 
 /**
+ * Render validator-owned call constraints from a JSON-Schema tree. These
+ * annotations describe conditional rules that the schema shape cannot express
+ * (for example, completion coverage becomes required only for universal
+ * terminal claims), so keep them in both the searchable corpus and compact
+ * discovery responses. Union branches retain their parent path; arrays append
+ * `[]` before descending into their item schema.
+ */
+export function schemaCallConstraintAnnotation(
+  inputSchema: unknown,
+  options: { compact?: boolean } = {},
+): string {
+  const annotations = new Map<string, string>();
+  const ancestors = new Set<object>();
+  const walk = (value: unknown, path: string): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || ancestors.has(value)) return;
+    ancestors.add(value);
+    const node = value as Record<string, unknown>;
+    const constraint = node['x-papercusp-call-constraint'];
+    if (typeof constraint === 'string' && constraint.trim()) {
+      annotations.set(path || '$', constraint.trim());
+    }
+    for (const key of ['anyOf', 'oneOf']) {
+      const branches = node[key];
+      if (Array.isArray(branches)) {
+        for (const branch of branches) walk(branch, path);
+      }
+    }
+    if (node.items) walk(node.items, `${path}[]`);
+    const properties = node.properties;
+    if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+      for (const [name, child] of Object.entries(properties as Record<string, unknown>)) {
+        walk(child, path ? `${path}.${name}` : name);
+      }
+    }
+    ancestors.delete(value);
+  };
+  walk(inputSchema, '');
+  const firstPathByConstraint = new Map<string, string>();
+  return [...annotations.entries()]
+    .map(([path, constraint]) => {
+      const firstPath = firstPathByConstraint.get(constraint);
+      firstPathByConstraint.set(constraint, firstPath ?? path);
+      // Compact discovery has a hard result budget. Repeating a long
+      // validator-owned rule at an equivalent alias wastes that budget while
+      // hiding callable fields later in the schema. Keep every path visible,
+      // but reference the first full rule for repeated verbose constraints.
+      if (options.compact && firstPath && constraint.length >= 200) {
+        return `constraint:${path} (same as constraint:${firstPath})`;
+      }
+      return `constraint:${path} (${constraint})`;
+    })
+    .join('; ');
+}
+
+/**
  * A caller-facing alias relationship in a JSON-Schema projection.
  *
  * `properties` is a lossy view of the validator: two accepted spellings for
@@ -713,6 +768,7 @@ export function schemaToText(inputSchema: unknown): string | null {
   const unionHint = branches.length > 1 ? unionRequiredKeyHint(branches) : '';
   const conditionalHint = branches.length > 1 ? unionConditionalHint(branches) : '';
   const aliasHint = schemaAliasAnnotation(inputSchema);
+  const callConstraintHint = schemaCallConstraintAnnotation(inputSchema);
   const parts: string[] = [];
   for (const [name, entry] of merged) {
     const raw = entry.raw;
@@ -799,7 +855,7 @@ export function schemaToText(inputSchema: unknown): string | null {
     parts.push(desc ? `${rendered} ${desc}` : rendered);
   }
   return parts.length > 0
-    ? `${unionHint ? `one-of:${unionHint}; ` : ''}${conditionalHint ? `${conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}${parts.join('; ')}`
+    ? `${callConstraintHint ? `${callConstraintHint}; ` : ''}${unionHint ? `one-of:${unionHint}; ` : ''}${conditionalHint ? `${conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}${parts.join('; ')}`
     : null;
 }
 

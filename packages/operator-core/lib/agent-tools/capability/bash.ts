@@ -437,6 +437,36 @@ const integrationEnvSchema = z
     `integration_env cannot replace reserved process variables: ${[...RESERVED_INTEGRATION_ENV_NAMES].join(', ')}`,
   );
 
+// Keep the machine-readable result contract aligned with every code-mode branch
+// below. Most fields are optional because launch/yield/terminal/refusal payloads
+// are intentionally branch-shaped; passthrough preserves diagnostics added by a
+// branch without turning this schema into a closed-list trap for code:run callers.
+const bashResultSchema = z
+  .object({
+    ok: z.boolean(),
+    bash_id: z.string().optional(),
+    task_id: z.string().optional(),
+    status: z.enum(['running', 'completed', 'failed', 'killed', 'timed_out']).optional(),
+    running: z.boolean().optional(),
+    yielded: z.boolean().optional(),
+    cleanup_pending: z.boolean().optional(),
+    exit_code: z.number().int().nullable().optional(),
+    duration_ms: z.number().nonnegative().optional(),
+    cwd: z.string().optional(),
+    output: z.string().optional(),
+    truncated: z.boolean().optional(),
+    total_bytes: z.number().int().nonnegative().optional(),
+    log_path: z.string().optional(),
+    response_window_ms: z.number().int().nonnegative().optional(),
+    timeout_ms: z.number().int().nonnegative().optional(),
+    deadline: z.string().optional(),
+    advice: z.string().optional(),
+    integration_env: z
+      .record(z.string(), z.object({ source: z.string(), masked: z.string() }).passthrough())
+      .optional(),
+  })
+  .passthrough();
+
 export default defineTool({
   name: 'capability:bash',
   description:
@@ -483,6 +513,7 @@ export default defineTool({
   // bare "write CONNECTION_CLOSED 127.0.0.1:6432" that correlates with call
   // duration, not the command. See ProjectedTool.skipWorkspaceTx.
   skipWorkspaceTx: true,
+  result: bashResultSchema,
   events: { output: z.string().describe('text/plain') },
   args: z.object({
     command: z

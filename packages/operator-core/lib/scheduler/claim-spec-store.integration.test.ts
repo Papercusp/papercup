@@ -151,7 +151,7 @@ describe('migration 389 restored after the migration 555 table rename', () => {
         { relation: 'cup_claim_specs', relkind: 'r', idOnly: true },
       ]);
     } finally {
-      await recovery.cleanup();
+      await recovery?.cleanup();
     }
   }, 120_000);
 });

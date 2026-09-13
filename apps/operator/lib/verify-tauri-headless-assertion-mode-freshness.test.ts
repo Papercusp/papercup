@@ -2,9 +2,12 @@
  * verify-tauri-headless-assertion-mode-freshness.test.ts — the RECURRENCE GUARD
  * for EI-19444780917356384.
  *
- * The bug: scripts/verify-tauri-headless.sh freezes an immutable SPA snapshot at
- * boot (EI-10364) and correctly warns that an edit made AFTER boot will never be
- * picked up, pointing the caller at `$VERIFY_TAURI_FRESHNESS_CHECK` (EI-17134).
+ * The bug: scripts/verify-tauri-headless.sh freezes immutable SPA and operator
+ * host artifacts at boot (EI-10364) and correctly warns that an edit made AFTER
+ * boot will never be picked up, pointing the caller at
+ * `$VERIFY_TAURI_FRESHNESS_CHECK` (EI-17134). Its containment sentinel originally
+ * searched only the SPA, so a backend-only change that was present in the frozen
+ * host bundle was rejected as stale.
  * That variable was exported ONLY on the `--boot-only` path. In assertion mode
  * (`verify-tauri-headless.sh -- <cmd>`) the assertion command ran with
  * VERIFY_TAURI_PID/PORT/DISPLAY/LOG/POLL exported but NOT the freshness check —
@@ -18,7 +21,7 @@
  * boot+drive cycle and came within one manual grep of sending an agent off to
  * "re-fix" already-correct code.
  *
- * The fix has two halves, and this suite pins BOTH:
+ * The original fix has two halves, and this suite pins BOTH:
  *   1. export the guard paths on the COMMON path so assertion mode can reach
  *      them (the positional assertions below are what make this real — an export
  *      that drifts back inside the --boot-only branch re-creates the bug while
@@ -26,6 +29,10 @@
  *   2. RUN the guard before exec'ing the assertion command, since a guard the
  *      caller must remember to invoke is the same class of gap the wrapper
  *      itself exists to close.
+ *
+ * Host-aware containment is pinned here too: SPA remains the default scope,
+ * while `VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host` checks the immutable plain-node
+ * host bundle without weakening the existing SPA requirement.
  *
  * A readFileSync text guard is the right shape here: the script boots a real
  * Tauri/Xvfb stack, so its env wiring can only be asserted at the wiring site
@@ -42,6 +49,9 @@ const src = readFileSync(SCRIPT, 'utf8');
 const bootOnlyBranchIdx = src.indexOf('if [ "${1:-}" = "--boot-only" ]; then');
 /** Index of the final exec of the caller's assertion command. */
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
+const containmentIdx = src.indexOf('SNAPSHOT_NEEDLE="${VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS:-}"');
+const containmentEndIdx = src.indexOf('verify_assertion_input_integrity || exit $?', containmentIdx);
+const containmentBlock = src.slice(containmentIdx, containmentEndIdx);
 
 describe('EI-19444780917356384 — the freshness guard is reachable in assertion (`--`) mode', () => {
   it('is the right script, with both anchor sites present (guards a vacuous suite)', () => {
@@ -70,6 +80,16 @@ describe('EI-19444780917356384 — the freshness guard is reachable in assertion
     expect(exportIdx).toBeLessThan(bootOnlyBranchIdx);
   });
 
+  it('validates the containment scope before allocating the expensive verifier', () => {
+    const scopeIdx = src.indexOf('SNAPSHOT_SCOPE="${VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE:-spa}"');
+    const workIdx = src.indexOf('WORK="$(mktemp -d');
+
+    expect(scopeIdx).toBeGreaterThan(-1);
+    expect(scopeIdx).toBeLessThan(workIdx);
+    expect(src).toContain("VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE must be 'spa' or 'host'");
+    expect(src).toContain('spa|host');
+  });
+
   it('RUNS the freshness check before the assertion command, not merely advertises it', () => {
     const runIdx = src.indexOf('! bash "$VERIFY_TAURI_FRESHNESS_CHECK"');
     expect(runIdx).toBeGreaterThan(-1);
@@ -91,6 +111,31 @@ describe('EI-19444780917356384 — the freshness guard is reachable in assertion
     // And it must abort BEFORE the assertion runs, otherwise the confident
     // wrong answer is still emitted.
     expect(needleIdx).toBeLessThan(assertionExecIdx);
+  });
+
+  it('keeps SPA containment as the default and does not weaken its frozen-bundle check', () => {
+    expect(containmentIdx).toBeGreaterThan(-1);
+    expect(containmentEndIdx).toBeGreaterThan(containmentIdx);
+    expect(containmentBlock).toContain('case "$SNAPSHOT_SCOPE" in');
+    const spaIdx = containmentBlock.indexOf('    spa)');
+    const hostIdx = containmentBlock.indexOf('    host)');
+    expect(spaIdx).toBeGreaterThan(-1);
+    expect(hostIdx).toBeGreaterThan(spaIdx);
+    const spaBlock = containmentBlock.slice(spaIdx, hostIdx);
+    expect(spaBlock).toMatch(/grep -rqF -- "\$SNAPSHOT_NEEDLE" "\$SPA_DIST"/);
+    expect(spaBlock).toContain('run froze NO SPA');
+  });
+
+  it('supports backend-only containment against the immutable operator host bundle', () => {
+    const hostIdx = containmentBlock.indexOf('    host)');
+    expect(hostIdx).toBeGreaterThan(-1);
+    const hostBlock = containmentBlock.slice(hostIdx);
+    expect(hostBlock).toContain('VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host');
+    expect(hostBlock).toContain('OPERATOR_HOST_BUNDLE');
+    expect(hostBlock).toMatch(/grep -qF -- "\$SNAPSHOT_NEEDLE" "\$OPERATOR_HOST_BUNDLE"/);
+    expect(hostBlock).toContain('no frozen operator host bundle');
+    expect(hostBlock).toContain('exit 3');
+    expect(hostBlock).not.toContain('run froze NO SPA');
   });
 
   it('keeps the drift warning ADVISORY (a peer"s rebuild must not fail a valid run)', () => {

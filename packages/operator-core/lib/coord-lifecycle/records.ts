@@ -82,7 +82,7 @@ export const COMPLETION_COVERAGE_CONTRACT =
  * turns this otherwise-optional field into a required one.
  */
 export const COMPLETION_COVERAGE_CALL_CONSTRAINT =
-  'universal terminal verification claim (state=done|resolved|passed) => coverage required; population exactly once in checked|notChecked|notApplicable; residue explicit';
+  "terminal state=done|resolved|passed => coverage required; population once; residue:[]|residue:['none']";
 
 function isCoverageRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
