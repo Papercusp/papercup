@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encode } from '@papercusp/result-encoding';
 import { withMcpDiagnosticWarnings, type BuiltSpawnContext, type McpCallResult } from '../_mcp-handler';
 
 function context(overrides: Partial<BuiltSpawnContext> = {}): BuiltSpawnContext {
@@ -44,6 +45,24 @@ describe('withMcpDiagnosticWarnings', () => {
     const body = JSON.parse((annotated.content[0] as { text: string }).text);
 
     expect(body).toEqual({ ok: true, results: [{ id: 'WI-10000979' }] });
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('does not add the proxy degradation warning to a populated TOON bulk result', () => {
+    const body = {
+      ok: true,
+      results: [{ ok: true, id: 'EI-22641900519389010', post: { id: 203955 } }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: `format: toon\n${encode(body, 'toon')}` }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+
+    expect(annotated).toEqual(result);
     expect(annotated._meta).toBeUndefined();
   });
 

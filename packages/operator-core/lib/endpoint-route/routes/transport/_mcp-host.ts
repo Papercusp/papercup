@@ -2080,7 +2080,10 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(first.text);
+    // MCP's compact default prefixes bulk envelopes with `format: toon`.
+    // Reuse the host parser so a populated compact result is not mistaken for
+    // an unparseable/empty response during the proxy warning window.
+    parsed = parseToolText(first.text);
   } catch {
     return false;
   }
