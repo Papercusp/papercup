@@ -774,7 +774,11 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(2),
         ])
         .split(area);
-    let search = if browser.search_open {
+    let search = if let Some(rename) = &browser.rename {
+        format!("  RENAME {}▏", rename.title)
+    } else if let Some(target) = &browser.archive_confirm {
+        format!("  ARCHIVE {}? y confirm · Esc cancel", target.label)
+    } else if browser.search_open {
         format!("  /{}▏", browser.query)
     } else if browser.query.is_empty() {
         String::new()
@@ -785,6 +789,22 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
         "  searching…"
     } else {
         ""
+    };
+    let controls = match app.selected_browser_session() {
+        Some(row) if row.agent_chat_id.is_some() && row.session_harness.is_some() => {
+            "e rename · d archive · K continue/fork"
+        }
+        Some(_) => "e/d/K unavailable: selected row is not agent-chat history",
+        None => "e/d/K unavailable: no selected session",
+    };
+    let action_line = if browser.rename.is_some() {
+        "Type a title · Enter save · Esc cancel".to_string()
+    } else if browser.archive_confirm.is_some() {
+        "Archive is reversible · y/Enter confirm · Esc cancel".to_string()
+    } else if browser.mutation_key.is_some() {
+        "Applying session action… draft and selection are safe".to_string()
+    } else {
+        format!("Enter attach/resume · n new (psu) · {controls} · ^t transcript · / search")
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -927,7 +947,7 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 format!(
-                    "{} sessions · {} shown · {} facet · h/l value · j/k move",
+                    "{} sessions · {} shown · {} facet · h/l value · j/k move · ^k save crew",
                     browser.rows.len(),
                     rows.len(),
                     app.cycle_key()
@@ -935,7 +955,7 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
                 Theme::dim(),
             )),
             Line::from(Span::styled(
-                "Enter attach/resume · n new SU session (psu) · ^t transcript · ^k save crew · / search · r refresh",
+                action_line,
                 Theme::dim(),
             )),
         ]),

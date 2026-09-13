@@ -107,6 +107,22 @@ pub enum Action {
         session_key: String,
         reference: String,
     },
+    RenameAgentChat {
+        session_key: String,
+        harness: String,
+        chat_id: String,
+        title: String,
+    },
+    ArchiveAgentChat {
+        session_key: String,
+        harness: String,
+        chat_id: String,
+    },
+    ContinueAgentChat {
+        session_key: String,
+        harness: String,
+        source_chat_id: String,
+    },
     /// Fetch the per-item assignment/claim/liveness for one plan
     /// (pui-plans-status-board-2026-06-14 P-008) so the plans board's right-side
     /// work-items detail updates the instant the selection moves — the active-
@@ -221,6 +237,16 @@ pub enum Action {
         carry: String,
         launch: crate::su_session::SuSessionLaunchOptions,
         initial_turn: Option<String>,
+    },
+    /// Open the fresh agent-chat identity already created by the Sessions
+    /// Continue/Fork route. Unlike `OpenSuSession`, this must never create a
+    /// second chat row when there is no initial owner turn.
+    OpenContinuedSuSession {
+        harness: String,
+        chat_id: String,
+        role: String,
+        backend: crate::su_session::SuSessionBackend,
+        launch: crate::su_session::SuSessionLaunchOptions,
     },
     /// Deliver one owner turn through the already-bound SU-session host.
     SendSuSessionTurn(String),
@@ -1499,6 +1525,23 @@ pub struct SessionBrowser {
     /// Armed by the Sessions `n` launch: a bounded refetch burst that picks up
     /// the PSU-registered session without an unbounded poll.
     pub launch_refresh: Option<LaunchRefresh>,
+    pub rename: Option<SessionRename>,
+    pub archive_confirm: Option<SessionMutationTarget>,
+    pub mutation_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionMutationTarget {
+    pub session_key: String,
+    pub harness: String,
+    pub chat_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRename {
+    pub target: SessionMutationTarget,
+    pub title: String,
 }
 
 /// The bounded post-launch refresh schedule for the Sessions destination
@@ -6737,6 +6780,9 @@ impl App {
     }
 
     fn session_key(entry: &RosterEntry) -> String {
+        if let Some(id) = entry.agent_chat_id.as_deref() {
+            return format!("agent_chat:{id}");
+        }
         if let Some(id) = entry.adv_session_id {
             return format!("adv:{id}");
         }
@@ -7002,6 +7048,8 @@ impl App {
         let len = self.visible_session_browser().len();
         self.session_browser.sel = step_clamped(self.session_browser.sel, delta, len);
         self.session_browser.transcript_key = None;
+        self.session_browser.rename = None;
+        self.session_browser.archive_confirm = None;
         self.fetch_selected_browser_transcript()
     }
 
@@ -7056,6 +7104,138 @@ impl App {
         }
     }
 
+    fn selected_session_mutation_target(&self) -> Result<SessionMutationTarget, &'static str> {
+        let row = self
+            .selected_browser_session()
+            .ok_or("no session is selected")?;
+        let chat_id = row
+            .agent_chat_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or("selected row is native history, not an agent-chat record")?;
+        let harness = row
+            .session_harness
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or("agent-chat project provenance is unavailable")?;
+        Ok(SessionMutationTarget {
+            session_key: Self::session_key(row),
+            harness: harness.to_string(),
+            chat_id: chat_id.to_string(),
+            label: row.label.clone(),
+        })
+    }
+
+    fn unavailable_session_control(&mut self, action: &str, reason: &str) -> Action {
+        self.push_notif(Notif {
+            level: "warn".into(),
+            message: format!("{action} unavailable — {reason}"),
+            harness: None,
+            ts: None,
+        });
+        Action::Render
+    }
+
+    fn begin_session_rename(&mut self) -> Action {
+        match self.selected_session_mutation_target() {
+            Ok(target) => {
+                self.session_browser.rename = Some(SessionRename {
+                    target,
+                    title: String::new(),
+                });
+                Action::Render
+            }
+            Err(reason) => self.unavailable_session_control("Rename", reason),
+        }
+    }
+
+    fn session_rename_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+            return Action::Quit;
+        }
+        match code {
+            KeyCode::Esc => {
+                self.session_browser.rename = None;
+                Action::Render
+            }
+            KeyCode::Enter => {
+                let Some(rename) = self.session_browser.rename.take() else {
+                    return Action::Render;
+                };
+                if rename.title.trim().is_empty() {
+                    self.session_browser.rename = Some(rename);
+                    return self.unavailable_session_control(
+                        "Rename",
+                        "enter a non-blank title or press Esc to cancel",
+                    );
+                }
+                self.session_browser.mutation_key = Some(rename.target.session_key.clone());
+                Action::RenameAgentChat {
+                    session_key: rename.target.session_key,
+                    harness: rename.target.harness,
+                    chat_id: rename.target.chat_id,
+                    title: rename.title,
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(rename) = self.session_browser.rename.as_mut() {
+                    rename.title.pop();
+                }
+                Action::Render
+            }
+            KeyCode::Char(ch) if !mods.contains(KeyModifiers::CONTROL) => {
+                if let Some(rename) = self.session_browser.rename.as_mut() {
+                    if rename.title.chars().count() < 120 {
+                        rename.title.push(ch);
+                    }
+                }
+                Action::Render
+            }
+            _ => Action::Render,
+        }
+    }
+
+    fn begin_session_archive(&mut self) -> Action {
+        match self.selected_session_mutation_target() {
+            Ok(target) => {
+                self.session_browser.archive_confirm = Some(target);
+                Action::Render
+            }
+            Err(reason) => self.unavailable_session_control("Archive", reason),
+        }
+    }
+
+    fn session_archive_key(&mut self, code: KeyCode) -> Action {
+        let Some(target) = self.session_browser.archive_confirm.take() else {
+            return Action::Render;
+        };
+        match code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                self.session_browser.mutation_key = Some(target.session_key.clone());
+                Action::ArchiveAgentChat {
+                    session_key: target.session_key,
+                    harness: target.harness,
+                    chat_id: target.chat_id,
+                }
+            }
+            _ => Action::Render,
+        }
+    }
+
+    fn continue_selected_session(&mut self) -> Action {
+        match self.selected_session_mutation_target() {
+            Ok(target) => {
+                self.session_browser.mutation_key = Some(target.session_key.clone());
+                Action::ContinueAgentChat {
+                    session_key: target.session_key,
+                    harness: target.harness,
+                    source_chat_id: target.chat_id,
+                }
+            }
+            Err(reason) => self.unavailable_session_control("Continue", reason),
+        }
+    }
+
     fn save_selected_session_as_crew(&self) -> Action {
         let Some(row) = self.selected_browser_session() else {
             return Action::Render;
@@ -7102,6 +7282,12 @@ impl App {
     /// Contextual keyboard map for the Sessions destination. Unrecognised keys
     /// return `None` so the global tab/navigation map can still handle them.
     fn session_browser_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Action> {
+        if self.session_browser.rename.is_some() {
+            return Some(self.session_rename_key(code, mods));
+        }
+        if self.session_browser.archive_confirm.is_some() {
+            return Some(self.session_archive_key(code));
+        }
         if self.session_browser.search_open {
             return Some(self.session_browser_search_key(code, mods));
         }
@@ -7129,6 +7315,9 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => Some(self.cycle_session_browser_facet(-1)),
             KeyCode::Char('l') | KeyCode::Right => Some(self.cycle_session_browser_facet(1)),
             KeyCode::Char('r') => Some(self.refetch_session_browser()),
+            KeyCode::Char('e') => Some(self.begin_session_rename()),
+            KeyCode::Char('d') => Some(self.begin_session_archive()),
+            KeyCode::Char('K') => Some(self.continue_selected_session()),
             // New-session launch belongs to Sessions (D-003) and runs the REAL
             // PSU interactive picker (D-001/D-002) — never a PUI-owned menu.
             KeyCode::Char('n') => Some(self.launch_new_su_session()),
@@ -8449,6 +8638,82 @@ impl App {
                     }
                 }
                 Action::Render
+            }
+            Event::SessionBrowserMutation {
+                session_key,
+                result,
+            } => {
+                if self.session_browser.mutation_key.as_deref() != Some(&session_key) {
+                    return Action::None;
+                }
+                self.session_browser.mutation_key = None;
+                match result {
+                    Ok(message) => {
+                        self.push_notif(Notif {
+                            level: "info".into(),
+                            message,
+                            harness: None,
+                            ts: None,
+                        });
+                        self.refetch_session_browser()
+                    }
+                    Err(error) => {
+                        self.last_error = Some(format!("sessions: {error}"));
+                        Action::Render
+                    }
+                }
+            }
+            Event::SessionBrowserContinued {
+                session_key,
+                source_chat_id,
+                harness,
+                result,
+            } => {
+                if self.session_browser.mutation_key.as_deref() != Some(&session_key) {
+                    return Action::None;
+                }
+                self.session_browser.mutation_key = None;
+                let chat = match result {
+                    Ok(chat)
+                        if chat.continued_from_chat_id.as_deref()
+                            == Some(source_chat_id.as_str()) => chat,
+                    Ok(_) => {
+                        self.last_error = Some(
+                            "sessions: continued chat omitted or mismatched source lineage".into(),
+                        );
+                        return Action::Render;
+                    }
+                    Err(error) => {
+                        self.last_error = Some(format!("sessions: {error}"));
+                        return Action::Render;
+                    }
+                };
+                let chat_id = chat.id.clone();
+                let role = chat.role.clone();
+                let messages = chat
+                    .transcript
+                    .into_iter()
+                    .filter_map(crate::native_turn_to_message)
+                    .collect();
+                self.reset_agent_chat_binding();
+                self.agent_chat_id = Some(chat_id.clone());
+                self.agent_chat_role = role.clone();
+                self.pui_runtime_class = Some(crate::su_session::PuiRuntimeClass::SuSession);
+                self.chat_messages = messages;
+                self.tab = Tab::Operator;
+                self.session_note = Some(format!(
+                    "continued from {source_chat_id} · draft preserved · opening writable session"
+                ));
+                let backend = self
+                    .su_backend
+                    .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+                Action::OpenContinuedSuSession {
+                    harness,
+                    chat_id,
+                    role,
+                    backend,
+                    launch: self.su_session_launch_options(),
+                }
             }
             Event::FleetRate(s) => {
                 self.fleet_rate = Some(s);
