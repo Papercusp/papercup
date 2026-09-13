@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-003 managed PTY resize response-only mutation probe",
+  "spec": {
+    "plan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
+    "planItem": "P-003",
+    "workItem": "WI-10001163",
+    "specId": "CAP-CONTRACT-P003-PTY-RESIZE",
+    "specRevision": 1,
+    "specContentHash": "a6a4bf6d47bb88e75303b428682a378ea67f29a7b287050851ad510e67ea4fbc"
+  },
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/agent-tools/capability/pty.ts",
+    "--mutate",
+    "s|    if \\(!resizePty\\(handle\\.id, args\\.cols, args\\.rows, caller\\.accessScope\\)\\) \\{|    if (false) {|",
+    "--test",
+    "target={}; mirror_root=${target%/packages/operator-core/lib/agent-tools/capability/pty.ts}; cd \"$mirror_root\" && P003_PTY_MODULE_PATH=\"$target\" PAPERCUSP_TEST_RUN_GROUP=p003-pty-mutation2-178930 npx vitest run --config packages/operator-core/vitest.integration.config.ts packages/operator-core/lib/agent-tools/capability/pty-resize.integration.test.ts",
+    "--expect",
+    "caught"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-13T12:16:34Z",
+  "finishedAt": "2026-09-13T12:16:59Z",
+  "summary": "The current-tree copy-out mutation probe disabled the adapter's resize call, the real node-PTY guard observed the unchanged 24x80 kernel geometry instead of 37x111 and failed, and the canonical source remained byte-identical.",
+  "assertions": [
+    {
+      "id": "canonical-baseline-green",
+      "passed": true,
+      "evidence": "mutation-probe completed its canonical-tree baseline with exit 0 before mutation."
+    },
+    {
+      "id": "copy-baseline-green",
+      "passed": true,
+      "evidence": "The unmutated copy-out mirror completed the same real node-PTY integration guard with exit 0."
+    },
+    {
+      "id": "resize-seam-mutant-caught",
+      "passed": true,
+      "evidence": "Replacing the authorized resizePty branch with if (false) left the child at 24 80; the guard required 37 111 and exited 1, yielding verdict=caught."
+    },
+    {
+      "id": "same-session-oracle",
+      "passed": true,
+      "evidence": "The integration guard queries stty inside the original task, asserts the original pid/task remain live after resize, and rejects replacement or early exit."
+    },
+    {
+      "id": "canonical-tree-integrity",
+      "passed": true,
+      "evidence": "mutation-probe reported packages/operator-core/lib/agent-tools/capability/pty.ts byte-identical to its pre-probe state."
+    }
+  ]
+}
