@@ -73,7 +73,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
-  });
+  }, 60_000);
 
   it('ranks the hot multi-tool broadly-reused recipe top, excludes the 1-tool wrapper, surfaces the merge cluster', async () => {
     const ws = 'ws-cand-main';

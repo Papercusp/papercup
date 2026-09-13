@@ -38,7 +38,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db?.cleanup();
-});
+}, 60_000);
 
 describe('profile-aware backfill against live catalog width', () => {
   it('classifies the real vector(384) typmod as skewed from the 768 storage declaration', async () => {

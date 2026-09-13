@@ -57,7 +57,7 @@ describe('code_recipes hybrid search (real PG)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
-  });
+  }, 60_000);
 
   it('ranks the same-use-case recipe top (lexical + structural)', async () => {
     const ws = 'ws-crs-rank';
