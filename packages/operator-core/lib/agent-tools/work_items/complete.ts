@@ -29,6 +29,7 @@
 
 import { z } from 'zod';
 import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { HARVESTED_COORD_NOTES_RULE } from '../../harness/improvements/observation-title-guidance';
@@ -70,6 +71,7 @@ import {
   subscribeWorkItem,
   SETTLED_WORK_ITEM_STATES,
   attachCompletionEvidenceToSettledItem,
+  commentWorkItem,
   type TerminalCompletionConflict,
 } from '../../work-items';
 import {
@@ -584,8 +586,17 @@ const itemSpec = z.object({
    * progress note (D-004), so it is not a terminal commitment and must remain callable
    * without an assumption declaration. The handler enforces the required declaration
    * once it knows the effective state, including the issue-family status inference.
-   */
+  */
   assumptions: z.preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional()),
+  /** Optional successor/boundary note, posted only after a terminal finish converges. */
+  boundaryNote: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe(
+      'Optional successor/boundary note to append after a terminal close and finish cleanup; ignored for record-only or non-terminal results.',
+    ),
 });
 
 type CompleteItem = z.infer<typeof itemSpec>;
@@ -1527,6 +1538,105 @@ function completionHasFilesChanged(completion: unknown): boolean {
 }
 
 /**
+ * Completion-specific Git trackedness seam for scratch-path references. `true` means Git
+ * definitely tracks the repo-relative path, `false` means Git definitely does not (including
+ * an ignored path), and `undefined`/`null` means ownership could not be determined. Only the
+ * definite positive suppresses the generic scratch warning; every other result stays
+ * fail-open and keeps the warning visible.
+ */
+export type CompletionTrackednessProbe = (
+  repoRoot: string,
+  repoRelativePath: string,
+) => boolean | null | undefined;
+
+export interface CompletionEphemeralDeliverableProbe {
+  /** Compatibility seam for one candidate checkout. */
+  repoRoot?: string | null;
+  /** Candidate checkouts; an explicit empty list means "cannot judge", never guess. */
+  repoRoots?: readonly (string | null)[];
+  /** Injectable Git answer used by focused tests and alternate checkout owners. */
+  isTracked?: CompletionTrackednessProbe;
+}
+
+/**
+ * Ask Git whether a path is in the index. `git ls-files --error-unmatch` returns status 1
+ * for both an ordinary untracked path and an ignored path, which are intentionally the same
+ * warning-bearing population here. Any other failure is ownership uncertainty and remains
+ * `undefined` so a broken Git/package install cannot silently suppress a warning.
+ */
+function defaultCompletionTrackedness(repoRoot: string, repoRelativePath: string): boolean | undefined {
+  try {
+    execFileSync('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', repoRelativePath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
+    });
+    return true;
+  } catch (error) {
+    const status =
+      typeof error === 'object' && error !== null && 'status' in error
+        ? (error as { status?: unknown }).status
+        : undefined;
+    return status === 1 ? false : undefined;
+  }
+}
+
+function completionScratchRepoRelativePath(reference: string, repoRoot: string): string | undefined {
+  const value = reference.trim();
+  if (!value || value.startsWith('~')) return undefined;
+
+  // A leading parent traversal is an external/ambiguous ownership claim. Keep it warning-
+  // bearing even if normalisation would happen to land under a candidate root.
+  if (value === '..' || value.startsWith('../') || value.startsWith('..\\')) return undefined;
+
+  const root = nodePath.resolve(repoRoot);
+  const absolute = nodePath.isAbsolute(value) ? nodePath.resolve(value) : nodePath.resolve(root, value);
+  const relative = nodePath.relative(root, absolute);
+  if (!relative || relative === '..' || relative.startsWith('..' + nodePath.sep) || nodePath.isAbsolute(relative)) {
+    return undefined;
+  }
+  return relative.split(nodePath.sep).join('/');
+}
+
+function completionCandidateRoots(probe: CompletionEphemeralDeliverableProbe): string[] {
+  const rawRoots = 'repoRoots' in probe ? probe.repoRoots : ['repoRoot' in probe ? probe.repoRoot : completionRoot()];
+  return [
+    ...new Set(
+      (rawRoots ?? [])
+        .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
+        .map((root) => nodePath.resolve(root)),
+    ),
+  ];
+}
+
+function filterTrackedCompletionScratchReferences(
+  references: ReturnType<typeof detectEphemeralDeliverableReferences>,
+  probe: CompletionEphemeralDeliverableProbe = {},
+): ReturnType<typeof detectEphemeralDeliverableReferences> {
+  const roots = completionCandidateRoots(probe);
+  if (roots.length === 0) return references;
+  const isTracked = probe.isTracked ?? defaultCompletionTrackedness;
+
+  return references.filter((reference) => {
+    if (reference.kind !== 'scratch-path') return true;
+    // Suppress only a definite positive. A false result (untracked/ignored), an unknown
+    // result, an exception, or a path that cannot be mapped to a candidate root all preserve
+    // the original advisory warning.
+    for (const root of roots) {
+      const relativePath = completionScratchRepoRelativePath(reference.reference, root);
+      if (!relativePath) continue;
+      try {
+        if (isTracked(root, relativePath) === true) return false;
+      } catch {
+        // Unknown ownership is deliberately fail-open: leave this reference in the warning.
+      }
+    }
+    return true;
+  });
+}
+
+/**
  * Completion evidence legitimately names loopback service/API origins while
  * explaining HOW a fix was verified. That is diagnostic provenance, not a
  * terminal deliverable. A loopback URL becomes durability-relevant only when
@@ -1535,7 +1645,11 @@ function completionHasFilesChanged(completion: unknown): boolean {
  * suspect only in deliverable-facing fields; verification and causal prose
  * routinely quote those references as forensic evidence.
  */
-export function completionEphemeralDeliverableReferences(completion: unknown, evidence: unknown) {
+export function completionEphemeralDeliverableReferences(
+  completion: unknown,
+  evidence: unknown,
+  probe: CompletionEphemeralDeliverableProbe = {},
+) {
   const deliverableTextParts = (value: unknown): string[] => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
     const record = value as Record<string, unknown>;
@@ -1566,9 +1680,10 @@ export function completionEphemeralDeliverableReferences(completion: unknown, ev
     ];
   };
 
-  return detectEphemeralDeliverableReferences(
+  const references = detectEphemeralDeliverableReferences(
     [...deliverableTextParts(completion), ...deliverableTextParts(evidence)].join('\n'),
   );
+  return filterTrackedCompletionScratchReferences(references, probe);
 }
 
 function completionStructuredEvidenceTexts(completion: unknown): {
@@ -3740,7 +3855,12 @@ async function completeOne(
   // advisory detector encounters malformed input.
   let ephemeralDeliverableWarning: string | undefined;
   try {
-    const references = completionEphemeralDeliverableReferences(it.completion, completionEvidenceToPersist);
+    const references = completionEphemeralDeliverableReferences(it.completion, completionEvidenceToPersist, {
+      // Reuse the roots already resolved for completion evidence; ordinary relative paths
+      // still use the canonical completion root, while cross-repository absolute paths retain
+      // the registered-root candidates discovered above.
+      repoRoots: registeredRepoRoots ?? [completionRoot()],
+    });
     ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(`completion for ${it.id}`, references);
   } catch {
     /* fail-open: the completion record must never be lost to an advisory check */
@@ -4415,6 +4535,29 @@ async function completeOne(
     ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. Re-call the SAME completion; finish legs are retry-safe and resume the missing legs.`
     : undefined;
 
+  // EI-22701142802555885: a successor/boundary note is intentionally a THREAD post,
+  // not a terminal checkpoint write. Post it only after the close and every finish leg
+  // converge, so it cannot be stranded behind checkpoint cleanup or cause a terminal
+  // lifecycle re-assertion. A comment failure is reported independently: the terminal
+  // close remains successful and callers must not retry the close just to recover a note.
+  let boundaryNotePosted = false;
+  let boundaryNoteError: string | undefined;
+  const boundaryNoteEligible =
+    Boolean(it.boundaryNote) && Boolean(effectiveState) && closeLanded && !stateError && finish?.complete;
+  if (boundaryNoteEligible) {
+    try {
+      const post = await commentWorkItem(it.id, it.boundaryNote!, ident.ownerId, {
+        workspaceId: ctx.workspaceId,
+        harness: it.harness ?? existing.harness ?? undefined,
+      });
+      if (post) boundaryNotePosted = true;
+      else boundaryNoteError = `boundaryNote for ${it.id} could not be persisted: work-item comment returned no post`;
+    } catch (error) {
+      boundaryNoteError =
+        `boundaryNote for ${it.id} could not be persisted after the terminal close: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
   // EI-19312103118112942: a fleet drain member's confirmed failure mode is treating
   // *completing* an item as the end of the wake instead of its midpoint — it closes
   // the item, holds nothing, and settles, even though its own claim spec still has
@@ -4453,6 +4596,7 @@ async function completeOne(
     id: it.id,
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
+    ...(boundaryNoteEligible ? { boundaryNotePosted, ...(boundaryNoteError ? { boundaryNoteError } : {}) } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(planGateParkWarning ? { planGateParkWarning } : {}),
     // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.
@@ -4747,8 +4891,17 @@ export default defineTool({
               .min(1)
               .max(40)
               .optional()
-              .describe(
+            .describe(
                 "Terminal intent: feature/chunk uses 'passed'|'deprecated' and issue uses 'resolved'|'closed'; unified 'done'|'dropped' aliases are also accepted. 'dropped'/'closed'/'deprecated' mean discard or wontfix; never use them for successful work.",
+              ),
+            /** Optional successor/boundary note for a successful terminal finish. */
+            boundaryNote: z
+              .string()
+              .min(1)
+              .max(2000)
+              .optional()
+              .describe(
+                'Optional successor/boundary note to append after a terminal close and finish cleanup; ignored for record-only or non-terminal results.',
               ),
             /** The structured completion record (single-complete shorthand). */
             completion: completionSpec.optional(),
@@ -4787,8 +4940,17 @@ export default defineTool({
               .min(1)
               .max(40)
               .optional()
-              .describe(
+            .describe(
                 "Default terminal intent for items that omit one. Feature/chunk success: 'passed'; issue success: 'resolved'. Legacy discard/wontfix: 'deprecated' or 'closed'; unified aliases 'done'|'dropped' are also accepted.",
+              ),
+            /** Optional default successor/boundary note for items that omit their own. */
+            boundaryNote: z
+              .string()
+              .min(1)
+              .max(2000)
+              .optional()
+              .describe(
+                "Default successor/boundary note for items that omit one; posted only after that item's terminal finish cleanup converges.",
               ),
             /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
             completion: completionSpec.optional(),
@@ -4850,6 +5012,7 @@ export default defineTool({
           ...it,
           harness: it.harness ?? args.harness,
           state: it.state ?? args.state,
+          boundaryNote: it.boundaryNote ?? args.boundaryNote,
           validateOnly: it.validateOnly ?? args.validateOnly,
         }))
       : [
@@ -4861,6 +5024,7 @@ export default defineTool({
             outputPayload: args.outputPayload,
             specAdequacy: 'specAdequacy' in args ? args.specAdequacy : undefined,
             assumptions: args.assumptions,
+            boundaryNote: args.boundaryNote,
             validateOnly: args.validateOnly,
           },
         ];

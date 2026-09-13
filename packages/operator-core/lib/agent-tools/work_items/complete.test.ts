@@ -70,10 +70,12 @@ vi.mock('../../plan-items/agent-names', () => ({
 // calls it, which complete.ts catches and reports as a stateError. That failure mode looks
 // like a product bug, not a stale mock (the trap this file has hit before).
 const attachCompletionEvidenceToSettledItem = vi.fn();
+const commentWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
   attachCompletionEvidenceToSettledItem: (...a: unknown[]) => attachCompletionEvidenceToSettledItem(...a),
+  commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
   setWorkItemClaimHold: (...a: unknown[]) => setWorkItemClaimHold(...a),
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
   mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
@@ -127,6 +129,7 @@ import complete, {
   WORK_ITEMS_COMPLETION_CONTRACT,
   claimsUniversalVerification,
   contentIdentityAdviceForOrigin,
+  completionEphemeralDeliverableReferences,
   hasEnumeratedVerificationCoverage,
   isVerificationWorkItem,
 } from './complete';
@@ -298,6 +301,8 @@ beforeEach(() => {
   // Default: the row had no competing completion record, so the evidence was stored. Note
   // this is only REACHED when the item is already terminal AND no state was passed.
   attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
+  commentWorkItem.mockReset();
+  commentWorkItem.mockResolvedValue({ id: 'post-1' });
 });
 
 // ── EI-20286699547467039: unmet completion gates accumulate into ONE refusal ──────────
@@ -686,6 +691,98 @@ describe('work_items:complete (keyed-array)', () => {
       expect.objectContaining({ harness: 'papercup', workItemId: 'F-12' }),
       null,
     );
+  });
+
+  describe('boundaryNote — terminal-safe successor continuity', () => {
+    const close = (boundaryNote?: string) =>
+      one({
+        id: 'F-12',
+        state: 'passed',
+        ...(boundaryNote === undefined ? {} : { boundaryNote }),
+        completion: { workItem: 'F-12', summary: 'shipped', tests: '40 green' },
+      });
+
+    it('posts the note after finish cleanup and reports the durable post', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+
+      const r = await close('successor: continue from the verified staging result');
+
+      expect(r.ok).toBe(true);
+      expect(r.boundaryNotePosted).toBe(true);
+      expect(r.boundaryNoteError).toBeUndefined();
+      expect(commentWorkItem).toHaveBeenCalledWith(
+        'F-12',
+        'successor: continue from the verified staging result',
+        'su-tester',
+        { workspaceId: 'default', harness: 'papercup' },
+      );
+      expect(commentWorkItem.mock.invocationCallOrder[0]).toBeGreaterThan(
+        setWorkItemCheckpoint.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('reports a comment failure without undoing a successful terminal close', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      commentWorkItem.mockRejectedValue(new Error('thread store unavailable'));
+
+      const r = await close('successor: preserve this note if possible');
+
+      expect(r.ok).toBe(true);
+      expect(r.workItem.state).toBe('passed');
+      expect(r.finish).toMatchObject({ complete: true, checkpointCleared: true });
+      expect(r.boundaryNotePosted).toBe(false);
+      expect(r.boundaryNoteError).toMatch(/thread store unavailable/);
+    });
+
+    it('does not post a boundary note for record-only or non-terminal calls', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const recordOnly = await one({
+        id: 'F-12',
+        boundaryNote: 'record-only note must not become a post',
+        completion: { summary: 'progress', tests: 'n/a' },
+      });
+      expect(recordOnly.ok).toBe(true);
+      expect(commentWorkItem).not.toHaveBeenCalled();
+
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'open' }));
+      const nonTerminal = await one({
+        id: 'F-12',
+        state: 'needs_human',
+        boundaryNote: 'non-terminal note must not become a post',
+        completion: { summary: 'needs review', tests: 'n/a' },
+      });
+      expect(nonTerminal.ok).toBe(true);
+      expect(commentWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('accepts the bulk default and per-item override without crossing into completion evidence', async () => {
+      getWorkItem.mockImplementation(async (id: string) => ({ ...item, id }));
+      setWorkItemStateWithAliasInfo.mockImplementation(async (id: string) =>
+        okState({ ...item, id, state: 'passed' }),
+      );
+
+      const out = await env({
+        boundaryNote: 'default successor note',
+        items: [
+          { id: 'F-1', state: 'passed', completion: { summary: 'one', tests: 'green' } },
+          {
+            id: 'F-2',
+            state: 'passed',
+            boundaryNote: 'specific successor note',
+            completion: { summary: 'two', tests: 'green' },
+          },
+        ],
+      });
+
+      expect(out.ok).toBe(true);
+      expect(out.counts).toEqual({ ok: 2, failed: 0 });
+      expect(commentWorkItem.mock.calls.map((call) => call[1])).toEqual([
+        'default successor note',
+        'specific successor note',
+      ]);
+    });
   });
 
   // EI-21462047954123123: a checkpoint holding checks is FOLDED into the persisted
@@ -3746,6 +3843,57 @@ describe('work_items:complete (keyed-array)', () => {
 });
 
 describe('work_items:complete ephemeral terminal-deliverable warning (EI-20268156880922192)', () => {
+  it('suppresses a scratch reference only when Git definitely tracks the repo-relative file', () => {
+    const isTracked = vi.fn((_root: string, relativePath: string) => relativePath.endsWith('/tracked-report.md'));
+    const references = completionEphemeralDeliverableReferences(
+      {
+        summary:
+          'Tracked source .papercusp/scratch/tracked-report.md; untracked source .papercusp/scratch/untracked-report.md.',
+      },
+      undefined,
+      { repoRoots: ['/repo'], isTracked },
+    );
+
+    expect(references).toEqual([
+      { kind: 'scratch-path', reference: '.papercusp/scratch/untracked-report.md' },
+    ]);
+    expect(isTracked).toHaveBeenCalledWith('/repo', '.papercusp/scratch/tracked-report.md');
+    expect(isTracked).toHaveBeenCalledWith('/repo', '.papercusp/scratch/untracked-report.md');
+  });
+
+  it.each(['untracked', 'ignored'])('keeps a definitely %s scratch path warning', (ownership) => {
+    const references = completionEphemeralDeliverableReferences(
+      { summary: `The ${ownership} report is at .papercusp/scratch/${ownership}-report.md.` },
+      undefined,
+      { repoRoot: '/repo', isTracked: () => false },
+    );
+
+    expect(references).toEqual([
+      { kind: 'scratch-path', reference: `.papercusp/scratch/${ownership}-report.md` },
+    ]);
+  });
+
+  it('keeps the warning when ownership is unknown or the trackedness probe throws', () => {
+    const unknown = completionEphemeralDeliverableReferences(
+      { summary: 'The report is at .papercusp/scratch/unknown-report.md.' },
+      undefined,
+      { repoRoots: ['/repo'], isTracked: () => undefined },
+    );
+    const throwing = completionEphemeralDeliverableReferences(
+      { summary: 'The report is at .papercusp/scratch/throwing-report.md.' },
+      undefined,
+      {
+        repoRoots: ['/repo'],
+        isTracked: () => {
+          throw new Error('git unavailable');
+        },
+      },
+    );
+
+    expect(unknown).toEqual([{ kind: 'scratch-path', reference: '.papercusp/scratch/unknown-report.md' }]);
+    expect(throwing).toEqual([{ kind: 'scratch-path', reference: '.papercusp/scratch/throwing-report.md' }]);
+  });
+
   it('warns while still recording completion prose that cites scratch/artifact references', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-ephemeral', kind: 'task', family: 'issue', state: 'open' });
 
