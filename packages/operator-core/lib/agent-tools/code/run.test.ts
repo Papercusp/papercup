@@ -101,15 +101,19 @@ beforeEach(() => {
 });
 
 /**
- * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
+ * B-CX-2A: the code:run tool registers into the projected registry, keeps its write-effect
  * (so it's itself dry-run-gateable), and is open to ALL roles (owner directive 2026-06-25 — the
- * facade stays role-scoped per inner call, so the grant is privilege-preserving).
+ * facade stays role-scoped per inner call, so the grant is privilege-preserving). The outer
+ * wrapper uses the read-only facade capability so evidence-only roles can orchestrate their
+ * already-authorized reads without receiving the shell capability.
  */
 describe('code:run registration (B-CX-2A)', () => {
   it('registers code:run as a write-effect tool open to every role', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     expect(tool).toBeDefined();
     expect(tool?.effect).toBe('write');
+    expect(tool?.capabilities).toEqual(['agent_tools:read']);
+    expect(tool?.capabilities).not.toContain('capability:bash');
     expect(tool?.needsWorkspaceTx).toBeFalsy();
     expect(tool?.agentRoles?.length ?? 0).toBeGreaterThan(0);
     // All-roles widening: roles excluded under the old [...SU_ROLES,'cup'] gate now qualify.

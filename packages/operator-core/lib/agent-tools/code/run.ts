@@ -163,9 +163,12 @@ export default defineTool({
       'recipes:run (run a saved composed recipe instead)',
     ],
   },
-  // Role-gated tools gate on agentRoles (not capability); capability sets tier + write-effect.
-  // code:run is as powerful as the shell capability — it can call any of the agent's write tools.
-  capability: 'capability:bash',
+  // Role-gated tools gate on agentRoles (not capability); capability sets the outer authorization
+  // requirement while effect preserves the write/dry-run contract. The wrapper itself uses the
+  // read-only facade capability so evidence-only roles (notably judge) can orchestrate the tools
+  // they already have; every inner call still runs through its own capability/role/envelope gates.
+  capability: 'agent_tools:read',
+  effect: 'write',
   requirePrincipal: false,
   // EI-20191260319468035: the orchestration handler itself never reads ctx.tx. Holding the
   // host's workspace transaction open around the whole script made a write through an inner
