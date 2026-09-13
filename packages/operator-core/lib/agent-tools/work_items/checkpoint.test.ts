@@ -584,6 +584,28 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(out.results[0].length).toBeGreaterThan(0);
   });
 
+  it('forwards the complete authoritative work-item subject to the checkpoint writer', async () => {
+    const item = {
+      id: 'WI-subject-forward',
+      harness: 'papercusp',
+      kind: 'bug',
+      title: 'subject title',
+      summary: 'subject summary',
+      state: 'open',
+    };
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'checkpoint body', priorLength: 0 });
+
+    const result = await one({ id: item.id, checkpoint: 'checkpoint body' });
+
+    expect(result).toMatchObject({ ok: true, id: item.id, verified: true });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledWith(
+      { harness: item.harness, workItemId: item.id, workspaceId: 'default' },
+      'checkpoint body',
+      expect.objectContaining({ workItem: item }),
+    );
+  });
+
   it('clears the checkpoint with an explicit null (cleared:true)', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue(null);
