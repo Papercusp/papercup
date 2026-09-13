@@ -39,6 +39,29 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(lintCarrySurfaceProvenance('owner requires a second review before merge').flagged).toBe(true);
   });
 
+  describe('EI-22787623747935751: peer-owned role prefixes are not human-owner attribution', () => {
+    it.each([
+      'Gate owner asked for an exact frozen0d6 shared-chat source/test closure.',
+      'the gate owner asked for the exact event emitter.',
+      'peer owner asked for a handoff update.',
+      'work-item owner requires the claim to stay open.',
+      'fleet owner directed the member to retry.',
+    ])('does not flag %s', (line) => {
+      expect(lintCarrySurfaceProvenance(line)).toEqual({ flagged: false, matches: [] });
+    });
+
+    it('keeps an unqualified human-owner attribution loud', () => {
+      const r = lintCarrySurfaceProvenance('the owner asked for an exact frozen0d6 shared-chat source/test closure.');
+      expect(r.flagged).toBe(true);
+      expect(r.matches).toEqual([
+        {
+          line: 'the owner asked for an exact frozen0d6 shared-chat source/test closure.',
+          kind: 'owner-attribution',
+        },
+      ]);
+    });
+  });
+
   it('flags a bare "do not X until Y" gate imperative even without the word owner', () => {
     const r = lintCarrySurfaceProvenance('do NOT resolve WI-3532 until the UI pass is done');
     expect(r.flagged).toBe(true);

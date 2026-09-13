@@ -254,6 +254,19 @@ const OWNER_ATTRIBUTION_RE =
   /\b(?:the )?owner\s+(?:said|says|wants|needs|requires|required|approved|approves|told me|instructed|directed|asked|demands|set an? (?:explicit )?gate|gave permission)\b/i;
 
 /**
+ * EI-22787623747935751: OWNER_ATTRIBUTION_RE can begin at the `owner` suffix of
+ * a peer-owned domain role — "Gate owner asked for ..." — and misclassify that
+ * role's report as an attribution to the interactive human owner. Keep this
+ * exclusion explicit and narrow: these are the role prefixes used for agent-owned
+ * coordination artifacts, while an unqualified "the owner asked ..." remains loud.
+ */
+const PEER_ROLE_OWNER_PREFIX_RE = /\b(?:gate|fleet|plan|peer|work[-\s]?item)\s*$/i;
+
+function isPeerRoleOwnerAttribution(line: string, match: RegExpExecArray): boolean {
+  return match.index !== undefined && PEER_ROLE_OWNER_PREFIX_RE.test(line.slice(0, match.index));
+}
+
+/**
  * EI-21459558956325262 / WI-41690: OWNER_ATTRIBUTION_RE requires the literal token
  * `owner` IMMEDIATELY FOLLOWED BY a verb, so it only ever sees ACTIVE voice with the
  * generic noun — "the owner approved this". Two forms that assert exactly the same
@@ -756,7 +769,11 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       continue;
     }
     if (SOURCE_TAG_RE.test(line)) continue; // [self-imposed]/[peer:]/[inferred] — not owner-authority
-    if (OWNER_ATTRIBUTION_RE.test(line) || isPassiveOwnerAttribution(line)) {
+    const ownerAttributionMatch = OWNER_ATTRIBUTION_RE.exec(line);
+    if (
+      (ownerAttributionMatch && !isPeerRoleOwnerAttribution(line, ownerAttributionMatch)) ||
+      isPassiveOwnerAttribution(line)
+    ) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });
       continue;
     }
