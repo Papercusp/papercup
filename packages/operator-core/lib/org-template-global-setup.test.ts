@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const mocks = vi.hoisted(() => ({
   getOrBuildTemplate: vi.fn(async () => 'tmpl_test'),
@@ -18,6 +19,13 @@ vi.mock('../test/_org-test-db.ts', () => ({
 const { default: setup } = await import('../test/_org-template.globalSetup.ts');
 
 describe('org template globalSetup', () => {
+  it('keeps the shared org fixture on the lightweight Postgres helper subpath', () => {
+    const source = readFileSync(new URL('../test/_org-test-db.ts', import.meta.url), 'utf8');
+
+    expect(source).toMatch(/from ['"]@papercusp\/test-config\/pg['"]/);
+    expect(source).not.toMatch(/from ['"]@papercusp\/test-config['"]/);
+  });
+
   it('pre-warms the migration-keyed template with the shared provisioner', async () => {
     await setup({} as never);
 

@@ -1521,6 +1521,16 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.pauseNotEnforcedWarning).toBeUndefined();
     });
 
+    it('does NOT warn when append-history explicitly resumes and clears an earlier pause', async () => {
+      const historical = [
+        PAUSE_NOTE,
+        'RESUMED — superseding the earlier temporary pause. Pause hold cleared.',
+      ].join('\n');
+      const r = await write({ id: 'WI-7' }, historical);
+      expect(r.ok).toBe(true);
+      expect(r.pauseNotEnforcedWarning).toBeUndefined();
+    });
+
     it('stays SILENT when the item could not be resolved — unknown hold state is not an absent one', async () => {
       // Fail-safe direction on purpose: reporting "no hold" from a failed read would nag the
       // authors who did set one, which is how a warn-only nudge earns being ignored.
