@@ -581,7 +581,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe:
       'A named resource exclusive hold was actually released at the release boundary. Await the exact resource key after a held_exclusive skip; this fires after the row is gone, never at refusal time, so retrying cannot wake into the same held state.',
     emitter:
-      'named-resource release path (packages/operator-core/lib/agent-tools/locks/resource-broadcast.ts) via emitResourceReleasedEvent',
+      'named-resource release path (packages/operator-core/lib/agent-tools/locks/resource-broadcast.ts → packages/operator-core/lib/harness/git-sync/git-sync-events.ts) via emitResourceReleasedEvent',
     exists: true,
     replacesPoll: 'polling locks:list or retrying git-sync after a held_exclusive refusal',
   },

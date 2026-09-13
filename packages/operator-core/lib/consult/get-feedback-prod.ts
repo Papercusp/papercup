@@ -11,7 +11,7 @@ export async function getFeedbackProd(
   } = {},
 ) {
   const [
-    { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedder },
+    { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs },
     { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { notifyAgents }, { makeConsultReviver },
   ] = await Promise.all([
     import('@papercusp/db-org'), import('./get-feedback-core'), import('./relevance-router'),
@@ -20,7 +20,12 @@ export async function getFeedbackProd(
     import('../agent-tools/coordination/conversations'), import('../agent-tools/coordination/notify-agents'),
     import('./revive-responder'),
   ]);
-  const embed = await buildQueryEmbedder();
+  // This is an interactive MCP path, so a cold/local or rate-limited embedder
+  // must degrade to the lexical fallback before the ~55s transport deadline.
+  // The shared helper keeps this budget aligned with the other interactive
+  // query surfaces (WI-3922); the losing acquisition continues warming the
+  // process for a later consult.
+  const embed = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
   return getFeedbackCore(request, {
     getSql: () => getOrgPg().sql,
     route: async (params) => {

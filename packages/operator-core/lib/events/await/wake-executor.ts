@@ -2819,7 +2819,8 @@ async function injectPsuHostWake(
     // the carry through their existing control-mode path.
     const codexColdRespawn =
       d.wakeHandle?.kind === 'adv-session' && d.wakeHandle.agent?.trim().toLowerCase() === 'codex';
-    const coldTransportMode = codexColdRespawn ? 'carry-respawn' : decision.mode;
+    const coldTransportMode: Parameters<typeof injectIntoHost>[1]['mode'] =
+      codexColdRespawn ? 'carry-respawn' : decision.mode;
     // WI-6862: book what we actually KNOW. injectIntoHost's bare boolean cannot tell a host ACK
     // from the optimistic bare-close fallback, and that fallback explicitly covers a host that
     // crashed or was killed mid-delivery after accepting the connection — precisely what a
@@ -2837,7 +2838,7 @@ async function injectPsuHostWake(
     // EI-19311270129974785: same delivery-id dedup rationale as injectWarm above —
     // the cold reset/recycle path goes through the identical gated pipeline and
     // is exposed to the identical ack-loss-then-retry duplicate.
-    const injectMsg = {
+    const injectMsg: Parameters<typeof injectIntoHost>[1] = {
       mode: coldTransportMode,
       data: coldText,
       ...(codexColdRespawn ? { systemPromptAddendum: coldText } : {}),

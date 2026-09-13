@@ -42,7 +42,7 @@ const OP_VALUES = [...LSP_FACADE_OPS] as [LspFacadeOp, ...LspFacadeOp[]];
 export default defineTool({
   name: 'lsp:query',
   description:
-    'Compiler-accurate READ-ONLY TypeScript/Rust intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. `refactor_preview` reports rename sites only. Empty `sites` proves absence only when `error===null` and `freshness.health==="healthy"`; unavailable servers return an error.',
+    'Compiler-accurate READ-ONLY TypeScript/Rust intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. Empty `sites` proves absence only when `error===null` and `freshness.health==="healthy"`; unavailable servers return an error.',
   guidance: {
     when: 'You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.',
     notWhen: `Use text/regex search (${RIPGREP_SCOPE_GUIDANCE}) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.`,

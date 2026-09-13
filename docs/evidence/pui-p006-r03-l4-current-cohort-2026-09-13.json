@@ -106,7 +106,7 @@
   ],
   "engineScope": {
     "measured": "OMP account=auto",
-    "caveat": "This L4 row proves the shared installed-PUI journey catches lost carry on OMP. Binding 4238 separately records current Claude R-03 success. Codex remains explicitly unevidenced and P-006 must not be reported complete from adequacy alone."
+    "caveat": "This L4 row proves the shared installed-PUI journey catches lost carry on OMP. Binding 4238 separately records the completed Claude R-03 success run, but its test fingerprint predates the detector-only edits recorded here. Codex remains explicitly unevidenced and P-006 must not be reported complete from adequacy alone."
   },
   "rawLogs": {
     "mutation": ".papercusp/scratch/p006/l4-mutation.log",
@@ -116,6 +116,46 @@
     "durability": "The raw logs are gitignored and transient. Every load-bearing result line, assertion delta, file set, and restore hash is copied into this tracked artifact."
   },
   "binding": {
-    "status": "pending server-measured append"
+    "status": "created and read back current",
+    "mutationHistory": [
+      {
+        "id": 4276,
+        "status": "superseded",
+        "reason": "Initial append omitted the execution-ledger reference; retained as immutable history and excluded from the exact grade."
+      },
+      {
+        "id": 4278,
+        "status": "current",
+        "testRunId": 17843015,
+        "bindingFingerprint": "2b63ab91d5edb41c3c80312f802b898df3e82843151c8b1c2ff9290857a9fc60"
+      }
+    ],
+    "cleanTest": {
+      "id": 4277,
+      "testRunId": 17843015,
+      "status": "current",
+      "bindingFingerprint": "d82dab469eadea1af5731d981315b254ab37941a2e601b295126ec16feff3bf7"
+    },
+    "serverMeasuredFingerprints": {
+      "source": "sha256-file-set-v1:32441a292b3eab7a99b46215670a30178a2e6c50629b84ace4339042cb978e1c",
+      "test": "sha256-file-set-v1:e97f2f096ffe8f463abede6938995636cef49e6ea1e9a12a0af61edf14ab64c0"
+    },
+    "adequacy": {
+      "selection": [
+        "docs/evidence/pui-p006-r03-l4-current-cohort-2026-09-13.json#carry-preservation-mutant",
+        "docs/evidence/pui-p006-r03-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17843015"
+      ],
+      "verdict": "pass",
+      "requiredProofFloor": "l4",
+      "wouldBlock": [],
+      "ratings": {
+        "execution-integrity": "pass",
+        "freshness": "pass",
+        "falsifiability": "pass",
+        "plan-class-risk-floor": "pass",
+        "oracle-independence": "pass",
+        "correct-layer": "pass"
+      }
+    }
   }
 }

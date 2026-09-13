@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import type { TaskReleaseJournal } from './task-manager/store';
+import type { TaskReleaseJournal, TaskReleaseReceipt } from './task-manager/store';
 import {
   BYOC_RELEASE_MILESTONES,
   projectByocReleaseCarry,
@@ -44,7 +44,7 @@ function journal(overrides: Partial<TaskReleaseJournal> = {}): TaskReleaseJourna
 
 describe('BYOC release carry adapter', () => {
   it('derives only a contiguous evidence-backed milestone prefix', () => {
-    const receipts = BYOC_RELEASE_MILESTONES.slice(0, 5).map((milestone, sequence) => ({
+    const receipts: TaskReleaseReceipt[] = BYOC_RELEASE_MILESTONES.slice(0, 5).map((milestone, sequence) => ({
       sequence,
       operationId: 'release-op-current',
       requestIdentity: `request-${sequence}`,
@@ -117,7 +117,7 @@ describe('BYOC release carry adapter', () => {
   });
 
   it('does not regress a verified phase when a later receipt revisits an earlier stage', () => {
-    const receipts = BYOC_RELEASE_MILESTONES.slice(0, 5).map((milestone, sequence) => ({
+    const receipts: TaskReleaseReceipt[] = BYOC_RELEASE_MILESTONES.slice(0, 5).map((milestone, sequence) => ({
       sequence,
       operationId: 'release-op-current', requestIdentity: `request-${sequence}`,
       stage: milestone.stages[0], state: 'committed' as const,

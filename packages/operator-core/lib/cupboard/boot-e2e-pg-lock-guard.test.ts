@@ -71,12 +71,20 @@ export function findMissingPgLockGuard(templatesDir: string): string[] {
       violations.push(`${rel}: missing the pgDataDirLockedBy preflight function (EI-22125738148136740)`);
       continue;
     }
-    if (!/pgDataDirLockedBy\(\s*section!\.pgDataDir\s*\)/.test(src)) {
-      violations.push(`${rel}: spawn leg never calls pgDataDirLockedBy(section!.pgDataDir)`);
+    const directCall = /pgDataDirLockedBy\(\s*section!\.pgDataDir\s*\)/.exec(src);
+    const resolvedPathCall =
+      /const\s+pgDataDir\s*=\s*bootPath\(\s*section!\.pgDataDir\s*\)\s*;[\s\S]*?pgDataDirLockedBy\(\s*pgDataDir\s*\)/.exec(
+        src,
+      );
+    const lockCall = directCall ?? resolvedPathCall;
+    if (!lockCall) {
+      violations.push(
+        `${rel}: spawn leg never calls pgDataDirLockedBy with section!.pgDataDir or its bootPath-resolved value`,
+      );
       continue;
     }
     // Order matters: the whole point is failing BEFORE the expensive legs.
-    const lockCallIdx = src.indexOf('pgDataDirLockedBy(section!.pgDataDir)');
+    const lockCallIdx = lockCall.index;
     const buildIdx = src.indexOf('section!.buildCommand?.length) {');
     const spawnIdx = src.indexOf('const [cmd, ...args] = section!.command!;');
     if (buildIdx !== -1 && lockCallIdx > buildIdx) {
