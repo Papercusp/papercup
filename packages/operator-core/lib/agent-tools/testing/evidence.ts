@@ -108,7 +108,10 @@ export async function prepareTestEvidence(request: Request, runId: string, files
   return prepared;
 }
 
-export function testEvidenceOutcome(binding: Request['bindings'][number], result?: TestFilesCoreResult) {
+export function testEvidenceOutcome(
+  binding: Request['bindings'][number],
+  result?: TestFilesCoreResult,
+): { outcome: string; collected: boolean; executed: boolean; skipped?: boolean; filteredSkipped?: number } {
   if (!result || result.error) return { outcome: result?.error ?? 'unknown', collected: false, executed: false };
   const counts = result.byFile[binding.testPath];
   if (!counts) return { outcome: 'unknown', collected: false, executed: false };

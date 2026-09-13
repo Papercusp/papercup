@@ -163,6 +163,12 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(cellTranscriptionHint(text)).toBeNull();
   });
 
+  it('does not classify an explicitly labeled Git blob hash as a deployed SHA', () => {
+    const text = 'InboxPane staging blob 6183d5ee';
+    expect(detectCellTranscriptions(text)).toEqual([]);
+    expect(cellTranscriptionHint(text)).toBeNull();
+  });
+
   it('does not classify a checkpoint hash from a coord summary with unrelated live-lock context', () => {
     const summary = 'WI-40905 checkpoint 721014582be1: waiting on two live Vite locks before final rebuild';
     const body =
