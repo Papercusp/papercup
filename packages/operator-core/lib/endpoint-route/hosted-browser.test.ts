@@ -122,6 +122,47 @@ describe('hosted browser route boundary', () => {
     expect(readControl).not.toHaveBeenCalled();
   });
 
+  it('keeps a denial fail-closed when the global Response constructor identity changes', async () => {
+    const nativeResponse = globalThis.Response;
+    const responseDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Response');
+    class AlternateRealmResponse extends nativeResponse {}
+    Object.defineProperty(globalThis, 'Response', {
+      configurable: true,
+      enumerable: responseDescriptor?.enumerable ?? false,
+      writable: true,
+      value: AlternateRealmResponse,
+    });
+
+    try {
+      // Response.json is not polymorphic: the inherited factory returns a
+      // native Response, which is not instanceof AlternateRealmResponse.
+      const calibration = Response.json({ ok: false }, { status: 403 });
+      expect(calibration).not.toBeInstanceOf(AlternateRealmResponse);
+
+      const readControl = vi.fn(async () => []);
+      const routes = createHostedBrowserRoutes({
+        publicOrigin: ORIGIN,
+        controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+        dependencies: { readControl },
+      }).routes;
+      const foreignPrincipal = createHostedPrincipal({
+        ...principal,
+        workspaceId: 'other-control-plane',
+      });
+      const response = await routeHandler(routes, HOSTED_BROWSER_REST_QUERY_PATH)(
+        new Request(`${ORIGIN}/api${HOSTED_BROWSER_REST_QUERY_PATH}?name=${HOSTED_BROWSER_QUERY_NAME}`),
+        context(foreignPrincipal),
+      );
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: 'control_plane_binding_mismatch' });
+      expect(readControl).not.toHaveBeenCalled();
+    } finally {
+      if (responseDescriptor) Object.defineProperty(globalThis, 'Response', responseDescriptor);
+      else Object.defineProperty(globalThis, 'Response', { configurable: true, writable: true, value: nativeResponse });
+    }
+  });
+
   it('requires the exact configured Origin for hosted cookie writes', async () => {
     const action = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     const routes = createHostedBrowserRoutes({

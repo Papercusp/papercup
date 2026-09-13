@@ -158,13 +158,21 @@ function noStore(response: Response): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-function selectedHostedPrincipal(ctx: RouteContext, controlPlaneWorkspaceId: string): HostedPrincipal | Response {
-  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return jsonError('hosted_principal_required', 401);
-  if (ctx.principal.workspaceId !== controlPlaneWorkspaceId) {
-    return jsonError('control_plane_binding_mismatch', 403);
+type HostedPrincipalSelection =
+  | { readonly ok: true; readonly principal: HostedPrincipal }
+  | { readonly ok: false; readonly response: Response };
+
+function selectedHostedPrincipal(ctx: RouteContext, controlPlaneWorkspaceId: string): HostedPrincipalSelection {
+  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) {
+    return { ok: false, response: jsonError('hosted_principal_required', 401) };
   }
-  if (!ctx.principal.selectedWorkspaceId) return jsonError('workspace_not_selected', 403);
-  return ctx.principal;
+  if (ctx.principal.workspaceId !== controlPlaneWorkspaceId) {
+    return { ok: false, response: jsonError('control_plane_binding_mismatch', 403) };
+  }
+  if (!ctx.principal.selectedWorkspaceId) {
+    return { ok: false, response: jsonError('workspace_not_selected', 403) };
+  }
+  return { ok: true, principal: ctx.principal };
 }
 
 function tenantContext(principal: HostedPrincipal): VerifiedTenantServerContext {
@@ -372,8 +380,9 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     cors: { origins: [origin] },
     sampleRate: 0,
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
-      if (principal instanceof Response) return principal;
+      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
       if (headerError) return headerError;
       const url = new URL(request.url);
@@ -420,8 +429,9 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     timeoutSec: null,
     sampleRate: 0,
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
-      if (principal instanceof Response) return principal;
+      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
       if (headerError) return headerError;
       const lastEventId = parseLastEventId(request);
@@ -458,8 +468,9 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     auth: HOSTED_CONNECTION_AUTH,
     cors: { origins: [origin] },
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
-      if (principal instanceof Response) return principal;
+      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
       const csrf = exactOriginOr403(request, origin);
       if (csrf) return csrf;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
@@ -476,8 +487,9 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     auth: HOSTED_OPERATE_AUTH,
     cors: { origins: [origin] },
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
-      if (principal instanceof Response) return principal;
+      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
       const csrf = exactOriginOr403(request, origin);
       if (csrf) return csrf;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
@@ -494,8 +506,9 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     auth: HOSTED_OPERATE_AUTH,
     cors: { origins: [origin] },
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
-      if (principal instanceof Response) return principal;
+      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
       const csrf = exactOriginOr403(request, origin);
       if (csrf) return csrf;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
