@@ -92,7 +92,10 @@ import { pinModuleState } from '@papercusp/module-singleton';
  * its own identity. The tool/capability being denied is incidental to that
  * misrouting, so the hint fires for the judge-mismatch SHAPE regardless of
  * which tool/capability triggered it — an allowlist here just re-files this
- * bug against the next tool it happens to hit.
+ * bug against the next tool it happens to hit. `tools:invoke` preserves the
+ * caller's principal, so recommending it from this judge session only repeats
+ * the same denial; the hint must direct the caller to a DIFFERENT authorized
+ * session instead.
  */
 export function authorizationFailureHint(input: {
   toolName: string;
@@ -107,7 +110,11 @@ export function authorizationFailureHint(input: {
   ) {
     return undefined;
   }
-  return `This is a judge-scoped MCP session; an authorized su/operator must invoke ${input.toolName} through the papercusp-su MCP server (for example, tools:invoke).`;
+  return (
+    `This is a judge-scoped MCP session; this principal lacks ${input.missingCapability} for ${input.toolName}. ` +
+    '`tools:invoke` preserves the same judge principal, so do not retry it in this session: it will be denied identically. ' +
+    'Use a separate authorized su/operator session through the papercusp-su MCP server to invoke the tool.'
+  );
 }
 
 /**

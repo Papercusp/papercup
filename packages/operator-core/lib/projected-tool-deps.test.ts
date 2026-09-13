@@ -202,14 +202,19 @@ describe('authorizationFailureHint — judge MCP route guidance (EI-215434503419
     },
   });
 
-  it('names the authorized papercusp-su route without widening judge capabilities', () => {
+  it('explains that tools:invoke preserves the denied principal and names the authorized route', () => {
     const hint = authorizationFailureHint({
       toolName: 'plans:audit',
       missingCapability: 'plans:write',
       ctx: judgeCtx,
     });
+    expect(hint).toContain('same judge principal');
+    expect(hint).toContain('do not retry it in this session');
+    expect(hint).toContain('denied identically');
+    expect(hint).toContain('separate authorized su/operator session');
     expect(hint).toContain('papercusp-su');
     expect(hint).toContain('tools:invoke');
+    expect(hint).not.toContain('for example, tools:invoke');
   });
 
   // EI-21907885860611918: the hint used to fire for plans:audit alone, so the
