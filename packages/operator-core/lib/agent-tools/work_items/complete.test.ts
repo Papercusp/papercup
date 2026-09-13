@@ -396,11 +396,11 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     });
     expect(r.ok).toBe(false);
     expect(r.rootCauseVerificationError).toMatch(/completion\.rootCauseVerification is missing/);
-    expect(r.error).toMatch(/if H1 then observable A; if H2 then observable B/);
+    expect(r.error).toMatch(/predictedObservations:\{hypothesis,alternativeHypothesis\}/);
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
-  it('rejects a block whose two hypotheses predict the same observable', () => {
+  it('rejects a block whose structured predictions name the same observable', () => {
     const result = (
       complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
     ).safeParse({
@@ -412,16 +412,20 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
         rootCauseVerification: {
           hypothesis: 'cache was stale',
           alternativeHypothesis: 'writer was stale',
-          distinguishingTest: 'if cache was stale then value is wrong; if writer was stale then value is wrong',
+          distinguishingTest: 'Compare the direct database read with the cached read.',
           testResult: 'value was wrong',
+          predictedObservations: {
+            hypothesis: 'the direct read is wrong',
+            alternativeHypothesis: 'the direct read is wrong',
+          },
         },
       },
     });
     expect(result.success).toBe(false);
-    expect(String(result.error)).toMatch(/two different conditional observables/);
+    expect(String(result.error)).toMatch(/predictedObservations.*must be meaningfully different/);
   });
 
-  it('accepts semantically equivalent conditional prose without a literal then separator', async () => {
+  it('accepts a plain procedure description when typed predictions distinguish the hypotheses', async () => {
     const r = await oneRaw({
       id: 'WI-root',
       state: 'resolved',
@@ -432,8 +436,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
         rootCauseVerification: {
           hypothesis: 'the missing callback brace caused the parser failure',
           alternativeHypothesis: 'the callback writer supplied an invalid handler',
-          distinguishingTest:
-            'If the missing callback brace is the cause, the parser reports a syntax error; if the writer supplied the invalid handler, the parser invokes the callback successfully',
+          distinguishingTest: 'Inspect the callback parser and compare both handlers with the same fixture.',
           testResult: 'the parser reported a syntax error before the fix',
           testProcedure: 'Parse the same callback once with the missing brace and once with a known-valid handler.',
           predictedObservations: {
@@ -453,7 +456,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
       expect.objectContaining({
         completionEvidence: expect.objectContaining({
           rootCauseVerification: expect.objectContaining({
-            distinguishingTest: expect.stringContaining('If the missing callback brace'),
+            distinguishingTest: expect.stringContaining('Inspect the callback parser'),
           }),
         }),
       }),

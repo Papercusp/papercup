@@ -2834,7 +2834,7 @@ async function completeOne(
     rootCauseVerificationError =
       `REJECTED — ${it.id} is a successful ${existing.kind === 'bug' ? 'bug' : 'capability-gap'} close, but ` +
       'completion.rootCauseVerification is missing. Add { hypothesis, alternativeHypothesis, ' +
-      'distinguishingTest: "if H1 then observable A; if H2 then observable B", testResult, testProcedure, ' +
+      'distinguishingTest: "the procedure used to distinguish them", testResult, testProcedure, ' +
       'predictedObservations:{hypothesis,alternativeHypothesis}, actualObservation, evidenceRefs } so the ' +
       'record preserves what would have looked different if the claimed cause were wrong. No completion ' +
       'record or state transition was written.';
