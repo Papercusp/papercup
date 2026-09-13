@@ -420,8 +420,20 @@ export const requirementIntentSchema = z
 
 export const requirementAcceptanceSchema = z
   .object({
-    condition: z.string().trim().min(1),
-    falsifier: z.string().trim().min(1),
+    condition: z
+      .string()
+      .trim()
+      .min(1)
+      .describe(
+        'canonical acceptance condition; if the legacy top-level `bar` or `model` alias is also supplied, it must match after canonical normalization; prefer this structured field and omit legacy aliases',
+      ),
+    falsifier: z
+      .string()
+      .trim()
+      .min(1)
+      .describe(
+        'canonical acceptance falsifier; if the legacy top-level `driftMarkers` alias is also supplied, it must match after canonical normalization; prefer this structured field and omit the legacy alias',
+      ),
     requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
     evidencePlane: acceptanceEvidencePlaneSchema.optional(),
     requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
@@ -434,7 +446,13 @@ export const requirementAcceptanceSchema = z
 
 export const requirementVerificationSchema = z
   .object({
-    method: z.string().trim().min(1),
+    method: z
+      .string()
+      .trim()
+      .min(1)
+      .describe(
+        'canonical verification method; if the legacy top-level `method` alias is also supplied, it must match after canonical normalization; prefer this structured field and omit the legacy alias',
+      ),
     check: rubricCriterionCheckSchema.optional(),
     replication: z.string().trim().min(1).optional(),
   })
@@ -584,9 +602,24 @@ export const acceptanceRubricCriterionSchema = rubricCriterionObjectSchema.parti
  */
 export const requirementCriterionInputSchema = acceptanceRubricCriterionSchema
   .extend({
-    bar: z.string().trim().min(1).optional(),
-    acceptance: requirementAcceptanceSchema.optional(),
-    verification: requirementVerificationSchema.optional(),
+    bar: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'legacy acceptance alias for `acceptance.condition`/`model`; when more than one representation is supplied, all corresponding aliases must match after canonical normalization. Prefer structured `acceptance.condition` and omit this alias',
+      ),
+    acceptance: requirementAcceptanceSchema
+      .optional()
+      .describe(
+        'structured acceptance form; prefer this over legacy top-level aliases. If both forms are supplied, corresponding values (`bar`/`model`↔`condition`, `driftMarkers`↔`falsifier`, and acceptance metadata) must match after canonical normalization or validation fails with `requirement_alias_conflict`',
+      ),
+    verification: requirementVerificationSchema
+      .optional()
+      .describe(
+        'structured verification form; prefer this over legacy top-level aliases. If both forms are supplied, method/check/replication must match after canonical normalization or validation fails with `requirement_alias_conflict`',
+      ),
   })
   .superRefine((input, ctx) => {
     try {
