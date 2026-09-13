@@ -51,6 +51,7 @@ vi.mock("../../events/await/store", () => ({
     expiresTs: "2030-01-01",
     timeoutBehavior: i.timeoutBehavior,
   })),
+  attachProducerHealthCertificate: vi.fn(async () => 4),
   cancelAwait: vi.fn(async () => true),
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
   FLEET_BENCH_NOTE_PREFIX: "[fleet:bench] ",
@@ -127,7 +128,12 @@ vi.mock("../../work-items-events", () => ({
 
 await import("./sugar");
 
-import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
+import {
+  registerAwait,
+  attachProducerHealthCertificate,
+  cancelAwait,
+  cancelAwaitsForSubscribersOnKeys,
+} from "../../events/await/store";
 import { probeNamedService, type ProbeResult } from "../../service-health";
 import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
@@ -157,6 +163,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(probeNamedService).mockResolvedValue(null);
   vi.mocked(cancelAwait).mockResolvedValue(true);
+  vi.mocked(attachProducerHealthCertificate).mockResolvedValue(4);
 });
 
 describe("checkpoint:await sugar", () => {
@@ -347,6 +354,69 @@ describe("checkpoint:await sugar", () => {
       .mocked(registerAwait)
       .mock.calls.map((c) => c[0].timeoutSec);
     expect(timeouts).toEqual([60, 60, 60, 60]);
+  });
+
+  it("registers every await before observing or attaching the producer certificate", async () => {
+    const order: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      vi.mocked(registerAwait).mockImplementationOnce(async (input) => {
+        order.push(`register:${String(input.eventKey)}`);
+        return {
+          id: 100 + i,
+          eventKey: input.eventKey,
+          expiresTs: "2030-01-01",
+          timeoutBehavior: input.timeoutBehavior,
+        } as never;
+      });
+    }
+    vi.mocked(gitPipelineSnapshot).mockImplementationOnce(async () => {
+      order.push("snapshot");
+      return { deploy: { deployed: { sha: "not-target" } } } as never;
+    });
+    vi.mocked(attachProducerHealthCertificate).mockImplementationOnce(async (input) => {
+      order.push("attach");
+      expect(input.awaitIds).toEqual([100, 101, 102, 103]);
+      expect(input.certificate).toMatchObject({
+        producer: { kind: "green-checkpoint" },
+        details: { pipeline: "papercusp" },
+      });
+      return 4;
+    });
+
+    await call({ pipeline: "papercusp", timeout_sec: 60 });
+
+    expect(order).toEqual([
+      "register:release:green:papercusp",
+      "register:green-checkpoint:red:papercusp",
+      "register:green-checkpoint:inconclusive:papercusp",
+      "register:green-checkpoint:held:papercusp",
+      "snapshot",
+      "attach",
+    ]);
+  });
+
+  it("keeps registered awaits usable when producer observation fails", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(gitPipelineSnapshot).mockRejectedValueOnce(new Error("snapshot unavailable"));
+
+    const out = await call({ pipeline: "papercusp", timeout_sec: 60 });
+
+    expect(out.ok).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(4);
+    expect(attachProducerHealthCertificate).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("keeps registered awaits usable when certificate attachment fails", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(attachProducerHealthCertificate).mockRejectedValueOnce(new Error("attach unavailable"));
+
+    const out = await call({ pipeline: "papercusp", timeout_sec: 60 });
+
+    expect(out.ok).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(4);
+    expect(attachProducerHealthCertificate).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });
 

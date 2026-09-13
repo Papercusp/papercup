@@ -414,6 +414,39 @@ export async function registerAwait(input: {
   return boundedOrgTxn((tx) => insertAwait(tx), AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
 }
 
+/**
+ * Attach producer health after an await is durably registered.
+ *
+ * Producer observation can be slower than the interactive registration budget,
+ * so callers must never build the certificate before inserting the await row.
+ * Restrict the update to rows that are still pending (and before their
+ * deadline): a fire, cancellation, supersession, or timeout that wins the
+ * race leaves the row as an ordinary timeout await.
+ */
+export async function attachProducerHealthCertificate(input: {
+  awaitIds: readonly number[];
+  certificate: ProducerHealthCertificate;
+}): Promise<number> {
+  const awaitIds = [...new Set(input.awaitIds)].filter((id) => Number.isInteger(id) && id > 0);
+  if (awaitIds.length === 0) return 0;
+
+  return boundedOrgTxn(async (tx) => {
+    const rows = await tx`
+      UPDATE harness_shared.event_awaits
+         SET producer_health = ${JSON.stringify(input.certificate)}::text::jsonb
+       WHERE workspace_id = ${eventsWs()}
+         AND id = ANY(${awaitIds}::bigint[])
+         AND producer_health IS NULL
+         AND fired_at IS NULL
+         AND cancelled_at IS NULL
+         AND superseded_at IS NULL
+         AND (expires_ts IS NULL OR expires_ts > now())
+      RETURNING id
+    `;
+    return rows.length;
+  }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
+}
+
 /** Fail before SQL rather than persisting an unaddressable lifecycle owner. */
 export function assertLifecycleBinding(binding: LifecycleBinding): LifecycleBinding {
   const kind = binding.kind?.trim();

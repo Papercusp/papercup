@@ -27,6 +27,7 @@ import { resolveAgentIdentity } from "../coordination/identity";
 import { captureWakeHandleForOwner } from "../../events/await/handle";
 import {
   registerAwait,
+  attachProducerHealthCertificate,
   cancelAwait,
   cancelAwaitsForSubscribersOnKeys,
   FLEET_BENCH_NOTE_PREFIX,
@@ -43,7 +44,6 @@ import { gitPipelinePosition } from "../../git-pipeline-position";
 import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { checkpointProducerCertificate } from "../../events/await/checkpoint-verified-wait";
-import type { ProducerHealthCertificate } from "../../events/await/verified-wait";
 import type { TimeoutBehavior } from "../../events/await/types";
 import { activeWorkspaceId } from "../../workspace-registry";
 import {
@@ -91,6 +91,11 @@ const onTimeoutArg = z
 // still always wins.
 export const CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC = CHECKPOINT_MAX_RUNTIME_SEC + 10 * 60; // 3h backstop + 10min grace for the verdict to land/emit after the process exits
 
+// Producer enrichment is best-effort. Registration is already durable before
+// this bounded observation/attachment window begins, so a slow or unavailable
+// snapshot leaves an ordinary timeout await in place.
+export const CHECKPOINT_PRODUCER_ENRICHMENT_TIMEOUT_MS = 3_000;
+
 const checkpointTimeoutArg = z
   .number()
   .int()
@@ -124,7 +129,6 @@ async function armAwaits(
   opts: {
     payloadFilter?: unknown;
     supersedeKeys?: string[];
-    producerHealthCertificate?: ProducerHealthCertificate;
     timeoutBehavior?: TimeoutBehavior;
   } = {},
 ): Promise<{
@@ -159,7 +163,8 @@ async function armAwaits(
       timeoutBehavior,
       timeoutSec: timeoutSec ?? DEFAULT_TIMEOUT_SEC,
       payloadFilter: opts.payloadFilter ?? null,
-      producerHealthCertificate: opts.producerHealthCertificate ?? null,
+      // Producer certificates are attached after all rows are registered.
+      producerHealthCertificate: null,
     });
     awaitIds.push(row.id);
   }
@@ -622,29 +627,56 @@ defineTool({
       }
     }
 
-    return reply(
-      await armAwaits(ctx, keys, note, timeoutSec, {
-        payloadFilter,
-        timeoutBehavior: args.on_timeout,
-        // EI-12457: a re-await for this pipeline supersedes any prior pending
-        // checkpoint-family wait this same subscriber still holds for it.
-        supersedeKeys: keys,
-        ...(pipeline
-          ? {
-              producerHealthCertificate: checkpointProducerCertificate({
-                pipeline,
-                ...(args.candidateSha ? { candidateSha: args.candidateSha } : {}),
-                ...(args.runId ? { runId: args.runId } : {}),
-                ownerId: resolveAgentIdentity(ctx).ownerId,
-                issuedAtMs: Date.now(),
-                expectedCadenceMs: CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC * 1000,
-                verificationDeadlineMs: Date.now() + timeoutSec * 1000,
-                snapshot: await gitPipelineSnapshot(pipeline, { includeActiveRun: true }),
-              }),
-            }
-          : {}),
-      }),
-    );
+    // Capture the registration start before the durable rows are created. The
+    // producer certificate is intentionally enriched only after registration;
+    // otherwise a slow git/DB snapshot can make the caller time out before an
+    // await exists at all.
+    const registrationStartedAtMs = Date.now();
+    const armed = await armAwaits(ctx, keys, note, timeoutSec, {
+      payloadFilter,
+      timeoutBehavior: args.on_timeout,
+      // EI-12457: a re-await for this pipeline supersedes any prior pending
+      // checkpoint-family wait this same subscriber still holds for it.
+      supersedeKeys: keys,
+    });
+
+    if (pipeline) {
+      try {
+        const snapshot = await withBoundedTimeout(
+          gitPipelineSnapshot(pipeline, { includeActiveRun: true }),
+          {
+            fallback: null,
+            timeoutMs: CHECKPOINT_PRODUCER_ENRICHMENT_TIMEOUT_MS,
+            label: "checkpoint-await:producerSnapshot",
+          },
+        );
+        if (snapshot.value) {
+          const certificate = checkpointProducerCertificate({
+            pipeline,
+            ...(args.candidateSha ? { candidateSha: args.candidateSha } : {}),
+            ...(args.runId ? { runId: args.runId } : {}),
+            ownerId: resolveAgentIdentity(ctx).ownerId,
+            issuedAtMs: registrationStartedAtMs,
+            expectedCadenceMs: CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC * 1000,
+            verificationDeadlineMs: registrationStartedAtMs + timeoutSec * 1000,
+            snapshot: snapshot.value,
+          });
+          await withBoundedTimeout(
+            attachProducerHealthCertificate({ awaitIds: armed.await_ids, certificate }),
+            {
+              fallback: 0,
+              timeoutMs: CHECKPOINT_PRODUCER_ENRICHMENT_TIMEOUT_MS,
+              label: "checkpoint-await:producerCertificateAttach",
+            },
+          );
+        }
+      } catch {
+        // The await rows are already durable. Keep them as plain timeout waits
+        // if certificate construction or enrichment cannot complete.
+      }
+    }
+
+    return reply(armed);
   },
 });
 
