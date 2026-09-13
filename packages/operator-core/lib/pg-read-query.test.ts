@@ -324,6 +324,52 @@ describe('boundedPgReadTxn — bounded internal loop reads', () => {
     }
   });
 
+  it('retries measured acquire-queue pressure without invoking the read callback twice', async () => {
+    vi.useFakeTimers();
+    const { beginAcquire, resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    resetAcquireRegistryForTest();
+    try {
+      // A recent successful acquire makes the first deadline decisively QUEUED,
+      // rather than the ambiguous dead-endpoint shape that must not be retried.
+      const seed = beginAcquire('org-admin');
+      seed.acquired();
+      seed.release();
+
+      let beginCalls = 0;
+      let callbackCalls = 0;
+      const tx = Object.assign(async () => [], { unsafe: async () => [] });
+      const client = {
+        begin: async (fn: (transaction: unknown) => Promise<unknown>) => {
+          beginCalls += 1;
+          if (beginCalls === 1) return new Promise(() => {});
+          return fn(tx);
+        },
+      };
+
+      const promise = boundedPgReadTxn(
+        async () => {
+          callbackCalls += 1;
+          return 'verified';
+        },
+        {
+          client: client as never,
+          acquirePool: 'org-admin',
+          timeoutMs: 100,
+          acquireTimeoutMs: 100,
+        },
+      );
+
+      // First acquire deadline (100ms) + the retry helper's first backoff (150ms).
+      await vi.advanceTimersByTimeAsync(251);
+      await expect(promise).resolves.toBe('verified');
+      expect(beginCalls).toBe(2);
+      expect(callbackCalls).toBe(1);
+    } finally {
+      resetAcquireRegistryForTest();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps injected-client acquisition deadlines unmeasured by default', async () => {
     vi.useFakeTimers();
     try {

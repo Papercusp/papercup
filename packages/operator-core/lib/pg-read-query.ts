@@ -28,6 +28,7 @@ import {
   getOrgPg,
   getOrgPgLosslessBigint,
   pgbouncerEnabled,
+  retryOnRetryableDbDeadline,
   withAcquisitionDeadline,
 } from '@papercusp/db-org';
 
@@ -3252,30 +3253,38 @@ export async function boundedPgReadTxn<T>(
   const sql = opts.client ?? getOrgPg().sql;
   const acquirePool = opts.acquirePool ?? (opts.client ? undefined : 'org-admin');
   const callDeadlineMs = acquireTimeoutMs + timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
-  const work = withAcquisitionDeadline(
-    ({ disarm, expired }) =>
-      sql.begin(async (tx) => {
-        // READ ONLY must be the first transaction setting before the query.
-        await tx.unsafe('SET TRANSACTION READ ONLY');
-        await tx`SELECT set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`;
-        await tx.unsafe(SET_LOCAL_UTC);
-        // A connection can arrive after the acquisition deadline's timer wins
-        // the race. Never invoke the caller's callback in that late transaction.
-        if (expired()) {
-          throw new DbCallDeadlineError(
-            'boundedPgReadTxn:acquire(admin)',
-            acquireTimeoutMs,
-            acquireTimeoutMs,
-            acquirePool,
-          );
-        }
-        disarm();
-        return fn(tx as unknown as OrgSql);
-      }),
-    { ms: acquireTimeoutMs, label: 'boundedPgReadTxn:acquire(admin)', pool: acquirePool },
-  );
-  await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
-  return (await work) as T;
+  // EI-22696820908231308: checkpoint verify-reads used this seam immediately
+  // after a committed write, but unlike boundedOrgTxn the read path surfaced the
+  // first measured pool-queue deadline directly. Retry only a DbCallDeadlineError
+  // that the local acquisition registry proved was transient queue pressure. The
+  // expired() guard prevents a late transaction from ever invoking fn, so retrying
+  // this PRE-callback phase cannot execute a read twice.
+  return retryOnRetryableDbDeadline(async () => {
+    const work = withAcquisitionDeadline(
+      ({ disarm, expired }) =>
+        sql.begin(async (tx) => {
+          // READ ONLY must be the first transaction setting before the query.
+          await tx.unsafe('SET TRANSACTION READ ONLY');
+          await tx`SELECT set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`;
+          await tx.unsafe(SET_LOCAL_UTC);
+          // A connection can arrive after the acquisition deadline's timer wins
+          // the race. Never invoke the caller's callback in that late transaction.
+          if (expired()) {
+            throw new DbCallDeadlineError(
+              'boundedPgReadTxn:acquire(admin)',
+              acquireTimeoutMs,
+              acquireTimeoutMs,
+              acquirePool,
+            );
+          }
+          disarm();
+          return fn(tx as unknown as OrgSql);
+        }),
+      { ms: acquireTimeoutMs, label: 'boundedPgReadTxn:acquire(admin)', pool: acquirePool },
+    );
+    await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
+    return (await work) as T;
+  });
 }
 
 /**
