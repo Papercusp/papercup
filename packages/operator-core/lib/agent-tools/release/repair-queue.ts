@@ -37,7 +37,12 @@ import {
   recordFrozenRepairEdit,
   type FrozenRepairEditLedgerRow,
 } from '../../release/frozen-repair-edit-ledger';
-import { buildCommittedPatchSource, buildHunkExactSource, summarizeForeignHunks, type HunkExactSuccess } from '../../release/hunk-exact-admission';
+import {
+  buildCommittedPatchSource,
+  buildHunkExactSource,
+  summarizeForeignHunks,
+  type HunkExactSuccess,
+} from '../../release/hunk-exact-admission';
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
 import { importCompletenessPreflight } from '../../release/admission-import-completeness';
 import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
@@ -57,8 +62,14 @@ const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: J
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
 const queueIdentityFields = {
   /** The frozen queue snapshot the caller read before building this admission. */
-  expectedCandidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/).optional(),
-  expectedRepairHead: z.string().regex(/^[0-9a-fA-F]{40,64}$/).optional(),
+  expectedCandidate: z
+    .string()
+    .regex(/^[0-9a-fA-F]{40,64}$/)
+    .optional(),
+  expectedRepairHead: z
+    .string()
+    .regex(/^[0-9a-fA-F]{40,64}$/)
+    .optional(),
   expectedUpdatedAtMs: z.number().int().nonnegative().optional(),
 };
 type QueueIdentityArgs = {
@@ -78,11 +89,7 @@ type QueueIdentity = {
  * handler calls equally fail-closed when a caller bypasses the parser in a unit test.
  */
 function readQueueIdentity(args: QueueIdentityArgs): QueueIdentity | null {
-  const fields: Array<keyof QueueIdentityArgs> = [
-    'expectedCandidate',
-    'expectedRepairHead',
-    'expectedUpdatedAtMs',
-  ];
+  const fields: Array<keyof QueueIdentityArgs> = ['expectedCandidate', 'expectedRepairHead', 'expectedUpdatedAtMs'];
   const supplied = fields.filter((field) => args[field] !== undefined);
   if (supplied.length === 0) return null;
   if (supplied.length !== fields.length) {
@@ -106,101 +113,117 @@ const argsSchema = z.preprocess(
     }
     return value;
   },
-  z.discriminatedUnion('op', [
-    z.object({ op: z.literal('get') }),
-    z.object({
-      op: z.literal('admit'),
-      /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
-      paths: z.array(z.string().min(1)).min(1).max(50),
-      reason: z.string().min(8).max(2000).optional(),
-      confirm: z.boolean().optional(),
-      ...queueIdentityFields,
-      /** P-020 (D-008 3a): ALSO replay these agents' ledgered hunks — a genuinely shared fix. Never implied. */
-      includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
-      /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
-      wholeBlob: z.boolean().optional(),
-      /** Explicit reviewed single-commit delta from staging history when hook capture is missing. Requires reason; incompatible with other source options. */
-      patchCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
-      /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
-      skipPrecheck: z.boolean().optional(),
-      precheckReason: z.string().min(8).max(2000).optional(),
-      /** Retry a terminal failed pre-check for the same immutable built commit. A running one is never duplicated. */
-      retryPrecheck: z.boolean().optional(),
-    }),
-    z.object({
-      /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
-      op: z.literal('converge'),
-      paths: z.array(z.string().min(1)).min(1).max(50),
-      reason: z.string().min(8).max(2000).optional(),
-      confirm: z.boolean().optional(),
-      ...queueIdentityFields,
-      includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
-      wholeBlob: z.boolean().optional(),
-      patchCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
-      skipPrecheck: z.boolean().optional(),
-      precheckReason: z.string().min(8).max(2000).optional(),
-      retryPrecheck: z.boolean().optional(),
-    }),
-    z.object({
-      /**
-       * P-021 (D-007 #1): claim one repair-manifest leg. Claiming a leg claims its subject
-       * paths — the caller's presence `current_files` is set to them so peers see the lane.
-       * `release:true` gives the leg back (only the holder may).
-       */
-      op: z.literal('claim-leg'),
-      /** The manifest row's `legId` (from get → repairQueue.manifest.rows[].legId). */
-      leg: z.string().min(1).max(300),
-      release: z.boolean().optional(),
-    }),
-    z.object({
-      /**
-       * P-019 (D-008 layer 1) — HOOK PLUMBING, never called by hand. The PostToolUse
-       * edit hook records the exact hunk of one Edit/Write made while a candidate is frozen,
-       * attributed to the calling per-session owner. P-020's hunk-exact admission replays it.
-       */
-      op: z.literal('record-edit'),
-      /** Repo-relative path the edit touched (normalized server-side). */
-      path: z.string().min(1).max(1024),
-      hunk: z.unknown(),
-      /** The client's tool_use_id — with editIndex, the idempotency key for a retried hook call. */
-      toolUseId: z.string().max(200).optional(),
-      editIndex: z.number().int().nonnegative().optional(),
-      atMs: z.number().int().positive().optional(),
-      /** The candidate the hook's marker named; a mismatch with the live queue is reported, never trusted. */
-      candidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/).optional(),
-      workItem: z.string().max(120).optional(),
-    }),
-    z.object({
-      op: z.literal('retire'),
-      expectedCandidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
-      expectedRepairHead: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
-      expectedUpdatedAtMs: z.number().int().nonnegative(),
-      reason: z.string().min(8).max(2000),
-      confirm: z.boolean().optional(),
-    }),
-  ]).superRefine((value, refinementCtx) => {
-    if (value.op !== 'admit' && value.op !== 'converge') return;
-    if (value.patchCommit !== undefined && (value.wholeBlob === true || value.includeHunksFrom !== undefined || !value.reason || value.reason.trim().length < 8)) {
-      refinementCtx.addIssue({ code: z.ZodIssueCode.custom, path: ['patchCommit'],
-        message: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom' });
-    }
-    const fields: Array<keyof QueueIdentityArgs> = [
-      'expectedCandidate',
-      'expectedRepairHead',
-      'expectedUpdatedAtMs',
-    ];
-    const supplied = fields.filter((field) => value[field] !== undefined).length;
-    if (supplied === 0 || supplied === fields.length) return;
-    for (const field of fields) {
-      if (value[field] === undefined) {
+  z
+    .discriminatedUnion('op', [
+      z.object({ op: z.literal('get') }),
+      z.object({
+        op: z.literal('admit'),
+        /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
+        paths: z.array(z.string().min(1)).min(1).max(50),
+        reason: z.string().min(8).max(2000).optional(),
+        confirm: z.boolean().optional(),
+        ...queueIdentityFields,
+        /** P-020 (D-008 3a): ALSO replay these agents' ledgered hunks — a genuinely shared fix. Never implied. */
+        includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+        /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
+        wholeBlob: z.boolean().optional(),
+        /** Explicit reviewed single-commit delta from staging history when hook capture is missing. Requires reason; incompatible with other source options. */
+        patchCommit: z
+          .string()
+          .regex(/^[0-9a-f]{40,64}$/)
+          .optional(),
+        /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
+        skipPrecheck: z.boolean().optional(),
+        precheckReason: z.string().min(8).max(2000).optional(),
+        /** Retry a terminal failed pre-check for the same immutable built commit. A running one is never duplicated. */
+        retryPrecheck: z.boolean().optional(),
+      }),
+      z.object({
+        /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
+        op: z.literal('converge'),
+        paths: z.array(z.string().min(1)).min(1).max(50),
+        reason: z.string().min(8).max(2000).optional(),
+        confirm: z.boolean().optional(),
+        ...queueIdentityFields,
+        includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+        wholeBlob: z.boolean().optional(),
+        patchCommit: z
+          .string()
+          .regex(/^[0-9a-f]{40,64}$/)
+          .optional(),
+        skipPrecheck: z.boolean().optional(),
+        precheckReason: z.string().min(8).max(2000).optional(),
+        retryPrecheck: z.boolean().optional(),
+      }),
+      z.object({
+        /**
+         * P-021 (D-007 #1): claim one repair-manifest leg. Claiming a leg claims its subject
+         * paths — the caller's presence `current_files` is set to them so peers see the lane.
+         * `release:true` gives the leg back (only the holder may).
+         */
+        op: z.literal('claim-leg'),
+        /** The manifest row's `legId` (from get → repairQueue.manifest.rows[].legId). */
+        leg: z.string().min(1).max(300),
+        release: z.boolean().optional(),
+      }),
+      z.object({
+        /**
+         * P-019 (D-008 layer 1) — HOOK PLUMBING, never called by hand. The PostToolUse
+         * edit hook records the exact hunk of one Edit/Write made while a candidate is frozen,
+         * attributed to the calling per-session owner. P-020's hunk-exact admission replays it.
+         */
+        op: z.literal('record-edit'),
+        /** Repo-relative path the edit touched (normalized server-side). */
+        path: z.string().min(1).max(1024),
+        hunk: z.unknown(),
+        /** The client's tool_use_id — with editIndex, the idempotency key for a retried hook call. */
+        toolUseId: z.string().max(200).optional(),
+        editIndex: z.number().int().nonnegative().optional(),
+        atMs: z.number().int().positive().optional(),
+        /** The candidate the hook's marker named; a mismatch with the live queue is reported, never trusted. */
+        candidate: z
+          .string()
+          .regex(/^[0-9a-fA-F]{40,64}$/)
+          .optional(),
+        workItem: z.string().max(120).optional(),
+      }),
+      z.object({
+        op: z.literal('retire'),
+        expectedCandidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
+        expectedRepairHead: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
+        expectedUpdatedAtMs: z.number().int().nonnegative(),
+        reason: z.string().min(8).max(2000),
+        confirm: z.boolean().optional(),
+      }),
+    ])
+    .superRefine((value, refinementCtx) => {
+      if (value.op !== 'admit' && value.op !== 'converge') return;
+      if (
+        value.patchCommit !== undefined &&
+        (value.wholeBlob === true ||
+          value.includeHunksFrom !== undefined ||
+          !value.reason ||
+          value.reason.trim().length < 8)
+      ) {
         refinementCtx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: [field],
-          message: 'expectedCandidate, expectedRepairHead, and expectedUpdatedAtMs must be supplied together',
+          path: ['patchCommit'],
+          message: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom',
         });
       }
-    }
-  }),
+      const fields: Array<keyof QueueIdentityArgs> = ['expectedCandidate', 'expectedRepairHead', 'expectedUpdatedAtMs'];
+      const supplied = fields.filter((field) => value[field] !== undefined).length;
+      if (supplied === 0 || supplied === fields.length) return;
+      for (const field of fields) {
+        if (value[field] === undefined) {
+          refinementCtx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [field],
+            message: 'expectedCandidate, expectedRepairHead, and expectedUpdatedAtMs must be supplied together',
+          });
+        }
+      }
+    }),
 );
 
 export type FrozenRepairFixerAuthorizationStatus =
@@ -240,9 +263,7 @@ export function assessFrozenRepairFixerAuthorization(
     isSuperuser?: boolean | null;
   },
 ): FrozenRepairFixerAuthorization {
-  const callerSpawnId = typeof caller.spawnId === 'string' && caller.spawnId.trim()
-    ? caller.spawnId.trim()
-    : null;
+  const callerSpawnId = typeof caller.spawnId === 'string' && caller.spawnId.trim() ? caller.spawnId.trim() : null;
   const queueFixerSpawnId = queue?.fixerSpawnId ?? null;
   const result = (
     status: FrozenRepairFixerAuthorizationStatus,
@@ -292,21 +313,13 @@ export function assessFrozenRepairFixerAuthorization(
     );
   }
   if (!callerSpawnId) {
-    return result(
-      'missing-spawn-id',
-      false,
-      'STOP: the signed request carried no usable spawn id.',
-    );
+    return result('missing-spawn-id', false, 'STOP: the signed request carried no usable spawn id.');
   }
   if (!queue) {
     return result('no-repair-queue', false, 'STOP: no frozen repair queue currently delegates work.');
   }
   if (queue.phase !== 'awaiting-fixer') {
-    return result(
-      'wrong-phase',
-      false,
-      `STOP: the repair queue is ${queue.phase}, not awaiting-fixer.`,
-    );
+    return result('wrong-phase', false, `STOP: the repair queue is ${queue.phase}, not awaiting-fixer.`);
   }
   if (!queue.fixerSpawnId) {
     return result(
@@ -316,16 +329,12 @@ export function assessFrozenRepairFixerAuthorization(
     );
   }
   if (queue.fixerSpawnId !== callerSpawnId) {
-    return result(
-      'different-fixer',
-      false,
-      `STOP: this queue is delegated to ${queue.fixerSpawnId}, not this caller.`,
-    );
+    return result('different-fixer', false, `STOP: this queue is delegated to ${queue.fixerSpawnId}, not this caller.`);
   }
   return result(
     'authorized-delegate',
     true,
-    'Proceed only with the assigned repair: author on the shared staging checkout and land it with op:\'admit\' (path-exact; there is no repair worktree). A separate held-live LIVE_GATE_OPS owner is your delegator, not a competing fixer. Do not claim the gate, launch a checkpoint, mutate deployment, or work outside this queue identity.',
+    "Proceed only with the assigned repair: author on the shared staging checkout and land it with op:'admit' (path-exact; there is no repair worktree). A separate held-live LIVE_GATE_OPS owner is your delegator, not a competing fixer. Do not claim the gate, launch a checkpoint, mutate deployment, or work outside this queue identity.",
   );
 }
 
@@ -341,7 +350,10 @@ export function assessFrozenRepairFixerAuthorization(
 async function reconcileQueueRowWithLineage(
   queueTarget: ReturnType<typeof target>,
   queue: FrozenCandidateRepairQueue,
-): Promise<{ queue: FrozenCandidateRepairQueue; ledger: { status: string; reconciled: number; detail: string } | null }> {
+): Promise<{
+  queue: FrozenCandidateRepairQueue;
+  ledger: { status: string; reconciled: number; detail: string } | null;
+}> {
   try {
     const { reconcileFrozenRepairQueueWithLineageRef } = await import('../../release/frozen-lineage-ledger-reconcile');
     const { applyFrozenCandidateRepairQueueTransition } = await import('../../harness/routines/release-actions');
@@ -400,7 +412,8 @@ function precheckRecordOf(
   ctx: { skipPrecheck: boolean; precheckReason: string; dryRun: boolean; population: FixPrecheckPopulation },
 ): NonNullable<FrozenRepairAdmission['precheck']> {
   if (verdict === null) {
-    if (ctx.skipPrecheck) return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files };
+    if (ctx.skipPrecheck)
+      return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files };
     if (ctx.population.files.length === 0) return { ran: false, reason: 'nothing-to-run' };
     return { ran: false, reason: ctx.dryRun ? 'dry-run' : 'not-run', wouldRun: ctx.population.files };
   }
@@ -432,12 +445,12 @@ function sameAdmissionPrecheck(
 ): state is FrozenRepairAdmissionPrecheck {
   return Boolean(
     state &&
-      state.candidate === input.candidate &&
-      state.repairHead === input.repairHead &&
-      state.builtCommit === input.builtCommit &&
-      state.actor === input.actor &&
-      state.files.length === input.files.length &&
-      state.files.every((file, index) => file === input.files[index]),
+    state.candidate === input.candidate &&
+    state.repairHead === input.repairHead &&
+    state.builtCommit === input.builtCommit &&
+    state.actor === input.actor &&
+    state.files.length === input.files.length &&
+    state.files.every((file, index) => file === input.files[index]),
   );
 }
 
@@ -474,10 +487,7 @@ async function settleAdmissionPrecheck(
   });
 }
 
-async function recordAudit(
-  actor: string,
-  details: Record<string, unknown>,
-): Promise<boolean> {
+async function recordAudit(actor: string, details: Record<string, unknown>): Promise<boolean> {
   try {
     const id = `repair-queue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await getOrgPg().sql.unsafe(
@@ -507,7 +517,9 @@ export default defineTool({
   capability: 'operator:write',
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
-    return op === undefined || op === 'get' || ((op === 'admit' || op === 'converge') && (args as { confirm?: unknown }).confirm !== true)
+    return op === undefined ||
+      op === 'get' ||
+      ((op === 'admit' || op === 'converge') && (args as { confirm?: unknown }).confirm !== true)
       ? 'read'
       : 'write';
   },
@@ -517,14 +529,13 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'release-fixer'],
   rolesQuota: { operator: { perRun: 20 } },
   guidance: {
-    when:
-      'After fixing a gate red on staging and git-sync commits it, use `admit{paths}` for exactly the changed files; also use it when a read reports repair-in-progress, a fossil/blocked queue, or a dead fixer.',
+    when: 'After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.',
     notWhen:
-      'Workspace-global: never pass harness/workspace. `admit` is path-exact — do not catch up to the tip. Never retire a live/unknown fixer, active dispatch, ready-to-verify work, or a phantom red. This tool does not launch checkpoints or deploy.',
+      'Workspace-global: omit harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
-      'Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true`. A non-empty R6 test population returns `precheck-running` immediately and publishes NOTHING; `get` exposes the durable operation, then repeat the confirmed call with the refreshed queue identity after it passes. Use `retryPrecheck:true` only for a terminal failed pre-check; a running one is never duplicated. Missing hook capture: explicit `patchCommit:<full SHA>, reason` replays only that single-parent staging commit’s named-path delta, not its whole blobs; review every delta since a sweep may mix work. Never combine with wholeBlob/includeHunksFrom or fabricate record-edit. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`.',
+      '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
     returns:
-      '{ ok, op, verdict?, repairQueue?, repairQueueRead?, callerAuthorization?, admitted?, pending?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. `get` reports repairQueueRead plus phase/age/fixer/reservation/decision diagnostics, any durable admission pre-check and its manifest. `claim-leg` reports claimed/released or a refusal reason. `admit` reports no-frozen-queue, already-admitted, would-admit, precheck-running, admitted, or a refusal with proof/containment; `retire` refuses live/unknown fixers or active reservations and uses CAS.',
+      '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. Read `nextAction`; mutations report verdict plus proof/containment and retire uses CAS.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
@@ -567,12 +578,11 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const inspected = await inspectQueue();
-    const compactRead = inspected.read.status === 'value'
-      ? { status: 'value' as const, schemaVersion: inspected.read.queue.schemaVersion }
-      : inspected.read;
-    const renderedQueue = inspected.read.status === 'unreadable'
-      ? inspected.read
-      : inspected.diagnostic;
+    const compactRead =
+      inspected.read.status === 'value'
+        ? { status: 'value' as const, schemaVersion: inspected.read.queue.schemaVersion }
+        : inspected.read;
+    const renderedQueue = inspected.read.status === 'unreadable' ? inspected.read : inspected.diagnostic;
     const callerAuthorization: FrozenRepairFixerAuthorization =
       inspected.read.status === 'unreadable'
         ? {
@@ -606,7 +616,13 @@ export default defineTool({
     }
     if (inspected.read.status === 'unreadable') {
       const op =
-        args.op === 'retire' ? 'retire' : args.op === 'claim-leg' ? 'claim-leg' : args.op === 'record-edit' ? 'record-edit' : 'admit';
+        args.op === 'retire'
+          ? 'retire'
+          : args.op === 'claim-leg'
+            ? 'claim-leg'
+            : args.op === 'record-edit'
+              ? 'record-edit'
+              : 'admit';
       return json({
         ok: false,
         op,
@@ -646,13 +662,16 @@ export default defineTool({
           refused: true,
           verdict: 'refused',
           reason: 'invalid-hunk',
-          detail: "hunk must be { kind:'edit', old, new, replaceAll? } | { kind:'write', body } | { kind:'oversize', of, bytes, sha256 }",
+          detail:
+            "hunk must be { kind:'edit', old, new, replaceAll? } | { kind:'write', body } | { kind:'oversize', of, bytes, sha256 }",
           judgedSha: queue.repairHead,
           ...base,
         });
       }
       const identity = readIdentity(ctx);
-      let outcome: Awaited<ReturnType<typeof recordFrozenRepairEdit>> | { ok: false; reason: 'persist_failed'; detail: string };
+      let outcome:
+        | Awaited<ReturnType<typeof recordFrozenRepairEdit>>
+        | { ok: false; reason: 'persist_failed'; detail: string };
       try {
         outcome = await recordFrozenRepairEdit(getOrgPg().sql, {
           workspaceId: inspected.target.workspaceId,
@@ -751,11 +770,9 @@ export default defineTool({
       const expectedQueueIdentity = readQueueIdentity(args);
       if (
         expectedQueueIdentity &&
-        (
-          queue.candidate !== expectedQueueIdentity.expectedCandidate ||
+        (queue.candidate !== expectedQueueIdentity.expectedCandidate ||
           queue.repairHead !== expectedQueueIdentity.expectedRepairHead ||
-          queue.updatedAtMs !== expectedQueueIdentity.expectedUpdatedAtMs
-        )
+          queue.updatedAtMs !== expectedQueueIdentity.expectedUpdatedAtMs)
       ) {
         return json({
           ok: false,
@@ -813,8 +830,7 @@ export default defineTool({
             repairHead: queue.repairHead,
             updatedAtMs: queue.updatedAtMs,
           },
-          note:
-            'This queue already has one live R6 admission pre-check. It is the only admitted decision in flight and NOTHING publishes in the background. Re-read op:get after it settles; do not start a second pre-check.',
+          note: 'This queue already has one live R6 admission pre-check. It is the only admitted decision in flight and NOTHING publishes in the background. Re-read op:get after it settles; do not start a second pre-check.',
         });
       }
       // P-020 (D-008 layers 2–3): HUNK-EXACT by default. The source the primitive admits from
@@ -824,10 +840,21 @@ export default defineTool({
       const wholeBlob = args.wholeBlob === true;
       const includeHunksFrom = (args.includeHunksFrom ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
       const mode = args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
-      if (args.patchCommit !== undefined && (wholeBlob || args.includeHunksFrom !== undefined || !args.reason || args.reason.trim().length < 8)) {
-        return json({ ...base, ok: false, admitted: false, refused: true, dryRun, verdict: 'refused',
-          mode, reason: 'invalid-patch-source',
-          detail: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom' });
+      if (
+        args.patchCommit !== undefined &&
+        (wholeBlob || args.includeHunksFrom !== undefined || !args.reason || args.reason.trim().length < 8)
+      ) {
+        return json({
+          ...base,
+          ok: false,
+          admitted: false,
+          refused: true,
+          dryRun,
+          verdict: 'refused',
+          mode,
+          reason: 'invalid-patch-source',
+          detail: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom',
+        });
       }
       let ledgerRows: FrozenRepairEditLedgerRow[] = [];
       let ledgerReadError: string | null = null;
@@ -847,12 +874,26 @@ export default defineTool({
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
       if (args.patchCommit !== undefined) {
         const built = buildCommittedPatchSource({
-          root, repairHead: queue.repairHead, patchCommit: args.patchCommit,
-          integrationRef: branch, paths, reason: args.reason!,
+          root,
+          repairHead: queue.repairHead,
+          patchCommit: args.patchCommit,
+          integrationRef: branch,
+          paths,
+          reason: args.reason!,
         });
         if (!built.ok) {
-          return json({ ...base, ok: false, admitted: false, refused: true, dryRun, verdict: 'refused',
-            mode, reason: built.code, detail: built.detail, judgedSha: queue.repairHead });
+          return json({
+            ...base,
+            ok: false,
+            admitted: false,
+            refused: true,
+            dryRun,
+            verdict: 'refused',
+            mode,
+            reason: built.code,
+            detail: built.detail,
+            judgedSha: queue.repairHead,
+          });
         }
         patch = built.patch;
         sourceRef = built.sourceCommit;
@@ -1001,8 +1042,7 @@ export default defineTool({
               repairHead: queue.repairHead,
               updatedAtMs: queue.updatedAtMs,
             },
-            note:
-              'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
+            note: 'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
           });
         }
         if (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true) {
@@ -1072,11 +1112,7 @@ export default defineTool({
               } catch (err) {
                 run = { ran: false, reason: 'runner-failed', detail: (err as Error).message };
               }
-              await settleAdmissionPrecheck(
-                inspected.target,
-                operationId,
-                evaluateFixPrecheck(population, run),
-              );
+              await settleAdmissionPrecheck(inspected.target, operationId, evaluateFixPrecheck(population, run));
             })(),
           ).catch((err) => {
             console.error(`[release:repair-queue] detached pre-check ${operationId} failed to settle`, err);
@@ -1096,8 +1132,7 @@ export default defineTool({
               repairHead: pendingQueue.repairHead,
               updatedAtMs: pendingQueue.updatedAtMs,
             },
-            note:
-              'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
+            note: 'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
           });
         }
         if (!precheck.ok) {
@@ -1131,20 +1166,27 @@ export default defineTool({
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
         : null;
-      const provenance = patch ? { mode, patch, source: { ref: sourceRef, root } } : hunkExact
-        ? {
-            mode,
-            hunks: hunksRecord,
-            hunkExact: hunkExact.perPath.map((p) => ({
-              path: p.path,
-              applied: p.applied,
-              agents: p.agents,
-              foreignHunksExcluded: p.foreignHunks,
-              foreignAgents: p.foreignAgents,
-              unchanged: p.unchanged,
-            })),
-          }
-        : { mode, foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, foreignHunksByPath: foreign.byPath };
+      const provenance = patch
+        ? { mode, patch, source: { ref: sourceRef, root } }
+        : hunkExact
+          ? {
+              mode,
+              hunks: hunksRecord,
+              hunkExact: hunkExact.perPath.map((p) => ({
+                path: p.path,
+                applied: p.applied,
+                agents: p.agents,
+                foreignHunksExcluded: p.foreignHunks,
+                foreignAgents: p.foreignAgents,
+                unchanged: p.unchanged,
+              })),
+            }
+          : {
+              mode,
+              foreignHunksAccepted: foreign.count,
+              foreignAgents: foreign.agents,
+              foreignHunksByPath: foreign.byPath,
+            };
       if (!outcome.ok) {
         if (outcome.code === 'nothing-to-admit') {
           return json({
@@ -1191,9 +1233,18 @@ export default defineTool({
         ...outcome.entry,
         mode,
         precheck: precheckEntry,
-        ...(patch ? { patch } : hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+        ...(patch
+          ? { patch }
+          : hunksRecord
+            ? { hunks: hunksRecord }
+            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
       };
-      const proof = { diff: outcome.diff, unchanged: outcome.unchanged, blobs: outcome.entry.blobs, tree: outcome.tree };
+      const proof = {
+        diff: outcome.diff,
+        unchanged: outcome.unchanged,
+        blobs: outcome.entry.blobs,
+        tree: outcome.tree,
+      };
       if (dryRun) {
         return json({
           ok: true,
@@ -1269,7 +1320,11 @@ export default defineTool({
         paths: outcome.entry.paths,
         unchanged: outcome.entry.unchanged,
         mode,
-        ...(patch ? { patch } : hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+        ...(patch
+          ? { patch }
+          : hunksRecord
+            ? { hunks: hunksRecord }
+            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
         precheck: precheckEntry,
         persisted,
         ...(retracted === null ? {} : { retracted }),
@@ -1487,10 +1542,7 @@ export default defineTool({
     // A broad liveness read can fail-soft to `null` while the exact terminal pair is still
     // durable. Let the transaction-scoped retire helper recheck that case; keep the other safety
     // refusals (live fixer, active reservation, unsafe phase) fail-closed at the read boundary.
-    if (
-      !inspected.diagnostic.retireAllowed &&
-      inspected.diagnostic.retireRefusal !== 'liveness-unknown'
-    ) {
+    if (!inspected.diagnostic.retireAllowed && inspected.diagnostic.retireRefusal !== 'liveness-unknown') {
       return json({
         ok: false,
         op: 'retire',
