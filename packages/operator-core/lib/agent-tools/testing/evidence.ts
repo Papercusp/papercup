@@ -133,7 +133,16 @@ export function testEvidenceOutcome(binding: Request['bindings'][number], result
     const exactFailure = result.failures.some(f => f.file === binding.testPath && f.test === negative.test && f.message.includes(negative.messageIncludes));
     outcome = executed && counts.failed === 1 && counts.skipped === 0 && exactFailure ? 'killed' : 'fail';
   }
-  return { outcome, collected: !counts.collectionFailed, executed, skipped: counts.skipped > 0 };
+  return {
+    outcome,
+    collected: !counts.collectionFailed,
+    executed,
+    // `skipped` is an adequacy claim about the selected proof, not the raw
+    // reporter total. A name-filtered run reports non-matching cases as
+    // skipped, but those cases were excluded rather than skipped evidence.
+    skipped: !nameFilterActive && counts.skipped > 0,
+    ...(nameFilterActive ? { filteredSkipped: counts.skipped } : {}),
+  };
 }
 
 /**
@@ -232,6 +241,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
       ...row.input.details,
         testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
           ...(testNamePattern ? { testNamePattern } : {}),
+          ...(outcome.filteredSkipped !== undefined ? { filteredSkipped: outcome.filteredSkipped } : {}),
           sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length,
           ledgerAttribution: attribution,
           ...(unattributedRows !== null ? { ledgerUnattributedRows: unattributedRows } : {}),

@@ -91,7 +91,20 @@ describe('test-time evidence continuity', () => {
 
   it('does not turn explicitly name-filtered exclusions into a skipped proof', () => {
     const filtered = { ...result({ passed: 2, skipped: 519 }), testNamePattern: 'P-001' };
-    expect(testEvidenceOutcome(binding, filtered)).toMatchObject({ outcome: 'pass', executed: true, skipped: true });
+    expect(testEvidenceOutcome(binding, filtered)).toMatchObject({ outcome: 'pass', executed: true,
+      skipped: false, filteredSkipped: 519 });
+  });
+
+  it('keeps filtered skip counts in execution metadata while adequacy describes selected proof', async () => {
+    const d = deps();
+    const filtered = { ...result({ passed: 2, skipped: 519 }), testNamePattern: 'P-001' };
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const bundle = await finishTestEvidence(prepared, runId, runId, scope, filtered, d);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
+    expect(d.bind.mock.calls[1][0].details.testExecution).toMatchObject({
+      testNamePattern: 'P-001', filteredSkipped: 519, measuredOutcome: 'pass' });
+    expect(d.bind.mock.calls[1][0].details.adequacy).toMatchObject({
+      collected: true, executed: true, skipped: false, outcome: 'pass' });
   });
 
   it('requires the exact declared assertion for a successful counterexample', () => {
