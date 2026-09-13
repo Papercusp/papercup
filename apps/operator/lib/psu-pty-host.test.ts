@@ -2291,6 +2291,16 @@ describe('quotaLimitBannerVisible (WI-1386682 (1) — usage-wall text detector)'
     expect(quotaLimitBannerVisible('You have reached your usage limit for this period.')).toBe(true);
   });
 
+  it('recognizes the Claude Fable model-limit wall', () => {
+    const wall =
+      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    expect(quotaLimitBannerVisible(wall, 'claude')).toBe(true);
+    expect(quotaLimitBannerMatch(wall, 'claude').excerpt).toContain('Fable 5 limit');
+    const detector = makeQuotaBlockDetector({ agent: 'claude' });
+    expect(detector.observe(wall)).toBe('detected');
+    expect(detector.isBlocked()).toBe(true);
+  });
+
   it('recognizes a limit/resets pairing on the same line', () => {
     expect(quotaLimitBannerVisible('Rate limit — resets at 3:00pm')).toBe(true);
     expect(quotaLimitBannerVisible('limit resetting shortly')).toBe(true);
