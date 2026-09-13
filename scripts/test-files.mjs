@@ -1286,6 +1286,31 @@ export function withInjectedJsonReport(vitestArgs, reportPath, { repoRoot = REPO
   };
 }
 
+/**
+ * Keep the injected JSON report private.
+ *
+ * Vitest's JSON reporter always logs `JSON report written to <path>` after flushing an output
+ * file. The router-generated path points into a disposable directory that `main()` removes in
+ * its finally block, so forwarding that notice advertises a path that cannot be inspected after
+ * the command exits. Suppress only the notice for the path THIS router injected; caller-selected
+ * reporters and output files remain untouched. The original output is still used below for
+ * classification and summary parsing, and the report itself remains available until those reads
+ * finish.
+ *
+ * @param {string} output captured child stdout/stderr
+ * @param {string | null} injectedReportPath the private path supplied by withInjectedJsonReport
+ * @returns {string} output with the disposable-path notice removed
+ */
+export function suppressInjectedJsonReportNotice(output, injectedReportPath) {
+  if (!output || !injectedReportPath) return output;
+  const escapedPath = injectedReportPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const notice = new RegExp(
+    `^[^\\r\\n]*JSON report written to ${escapedPath}[^\\r\\n]*(?:\\r?\\n|$)`,
+    'gm',
+  );
+  return output.replace(notice, '');
+}
+
 /** `--require-ran=<substring>` — this router's own option, not vitest's. */
 export function requireRanFrom(ownArgs) {
   const args = ownArgs ?? [];
@@ -2623,7 +2648,7 @@ export async function main(
     // `--outputFile` but would keep `--reporter=json`, and would then print JSON where a human is
     // meant to read a failure — never sees these args.
     const injectedReportDir = injectedReportDirFor();
-    const { args: groupVitestArgs } = withInjectedJsonReport(
+    const { args: groupVitestArgs, injectedReportPath } = withInjectedJsonReport(
       perGroupVitestArgs(vitestArgs, groupIndex, groups.length),
       injectedReportDir ? join(injectedReportDir, `group-${groupIndex}.json`) : null,
     );
@@ -2757,8 +2782,14 @@ export async function main(
         ...finalizationCallbacks(),
       },
     );
-    if (result.stdout) process.stdout.write(result.stdout);
-    if (result.stderr) process.stderr.write(result.stderr);
+    // The injected report is private and removed in main()'s finally. Do not leak Vitest's
+    // `JSON report written to ...` notice for that disposable path; otherwise callers receive a
+    // drill-down pointer that is guaranteed to be ENOENT after this command exits. Keep the raw
+    // result untouched for verdict parsing below, and preserve notices for caller-owned reports.
+    const visibleStdout = suppressInjectedJsonReportNotice(result.stdout ?? '', injectedReportPath);
+    const visibleStderr = suppressInjectedJsonReportNotice(result.stderr ?? '', injectedReportPath);
+    if (visibleStdout) process.stdout.write(visibleStdout);
+    if (visibleStderr) process.stderr.write(visibleStderr);
     if (result.timedOut) {
       console.error(
         `TEST_FILE_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(exact)} ` +

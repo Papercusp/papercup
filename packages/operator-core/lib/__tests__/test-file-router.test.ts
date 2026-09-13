@@ -29,6 +29,7 @@ import {
   transformFailureMarker,
   perGroupVitestArgs,
   runCapturedTestProcess,
+  suppressInjectedJsonReportNotice,
   defaultTestFileRunTimeoutMs,
   resolveTestChildLauncher,
   testFileRunTimeoutMs,
@@ -1043,6 +1044,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
 
   it('prints the failed assertion message before removing the injected report directory', async () => {
     let reportPath: string | undefined;
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const runCapturedTestProcessMock = vi.fn(async (_command: string, args: string[]) => {
       const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
       if (!outputArg) throw new Error('test fixture expected the injected output path');
@@ -1062,7 +1064,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
       return {
         status: 1,
         signal: null,
-        stdout: 'simulated assertion failure\n',
+        stdout: `simulated assertion failure\nJSON report written to ${reportPath}\n`,
         stderr: '',
         timedOut: false,
       };
@@ -1073,6 +1075,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
     delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
     delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
     let code: number;
+    let visibleOutput = '';
     try {
       code = await main(
         ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
@@ -1083,6 +1086,9 @@ describe('main() — failed assertion details survive private report cleanup (EI
       else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
       if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
       else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+      // Capture the writes before restoring the spy; mockRestore() clears its call history.
+      visibleOutput = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('');
+      stdoutSpy.mockRestore();
     }
 
     expect(code).toBe(1);
@@ -1092,7 +1098,23 @@ describe('main() — failed assertion details survive private report cleanup (EI
     );
     expect(output).not.toContain('file-level collection text must not be relabelled');
     expect(reportPath).toBeDefined();
+    expect(visibleOutput).toContain('simulated assertion failure');
+    expect(visibleOutput).not.toContain(`JSON report written to ${reportPath}`);
     expect(existsSync(reportPath!)).toBe(false);
+  });
+});
+
+describe('suppressInjectedJsonReportNotice', () => {
+  it('removes only the notice for the disposable injected path', () => {
+    const reportPath = '/dev/shm/pcv/papercusp-test-files-report-example/group-0.json';
+    const output =
+      `human output\nJSON report written to ${reportPath}\n` +
+      'Tests  1 passed (1)\n';
+    expect(suppressInjectedJsonReportNotice(output, reportPath)).toBe(
+      'human output\nTests  1 passed (1)\n',
+    );
+    expect(suppressInjectedJsonReportNotice(output, '/dev/shm/other.json')).toBe(output);
+    expect(suppressInjectedJsonReportNotice(output, null)).toBe(output);
   });
 });
 
