@@ -280,4 +280,62 @@ describe('persistent coverage-attribution venue', () => {
     expect(rows.every((row) => row.meets_l1 && row.meets_l3 && row.verdict === 'pass')).toBe(true);
     expect(rows.every((row) => row.test_file === TEST_FILE && row.test_case !== null)).toBe(true);
   });
+
+  it('attributes the real Learning observations REST transport at L3', async () => {
+    const app = new Hono();
+    registerRoute(app, restQueryRoute);
+
+    const queryArgs = encodeURIComponent(JSON.stringify({ limit: 1 }));
+    const response = await app.request(
+      `http://localhost/zero-harness/rest-query?name=learning.observations&args=${queryArgs}`,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      rows?: unknown[];
+      timing?: { unit?: string };
+    };
+    expect(Array.isArray(body.rows)).toBe(true);
+    expect(body.timing?.unit).toBe('ms');
+
+    await flushPendingTelemetry();
+    await flushTrafficEvidence();
+
+    expect(attributionStatus()).toMatchObject({
+      armed: true,
+      disabled: false,
+      buffered: 0,
+      unmatchedSurfaces: 0,
+      lastError: null,
+    });
+
+    const rows = await sql<{
+      surface_id: string;
+      meets_l1: boolean;
+      meets_l3: boolean;
+      test_file: string | null;
+      test_case: string | null;
+      verdict: string;
+    }[]>`
+      SELECT d.surface_id, d.meets_l1, d.meets_l3,
+             e.test_file, e.test_case, e.verdict
+        FROM harness_shared.testing_surface_depth d
+        JOIN harness_shared.coverage_evidence e ON e.surface_ref = d.id
+       WHERE d.workspace_id = ${WORKSPACE}
+         AND d.harness_slug = ${HARNESS}
+         AND d.surface_id = 'GET /zero-harness/rest-query'
+         AND e.evidence_kind = 'traffic'
+         AND e.test_file = ${TEST_FILE}
+         AND e.test_case LIKE '%Learning observations REST transport%'
+    `;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      surface_id: 'GET /zero-harness/rest-query',
+      meets_l1: true,
+      meets_l3: true,
+      test_file: TEST_FILE,
+      verdict: 'pass',
+    });
+    expect(rows[0]?.test_case).toContain('Learning observations REST transport');
+  });
 });

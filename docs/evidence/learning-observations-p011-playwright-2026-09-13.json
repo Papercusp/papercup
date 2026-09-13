@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Learning observations P-011 isolated browser regression",
+  "framework": "playwright",
+  "command": [
+    "OPERATOR_E2E_PORT=3957 npm run --silent --workspace apps/operator test:e2e -- observations-panel-long-body-clipping.spec.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-13T20:00:25.900Z",
+  "finishedAt": "2026-09-13T20:01:36.805Z",
+  "summary": "The isolated Chromium run on free port 3957 executed the real long-body Learning observations regression and passed 1/1 in 1.1 minutes, with durable capability task 0mu08nriev3u3el1hxn terminal markers and exit 0.",
+  "assertions": [
+    {
+      "id": "isolated-task-terminal",
+      "passed": true,
+      "evidence": "capability:bash_output for task 0mu08nriev3u3el1hxn returned status=completed, running=false, exit_code=0 and two durable JOB END markers at 2026-09-13T20:01:36Z."
+    },
+    {
+      "id": "chromium-test-executed",
+      "passed": true,
+      "evidence": "Playwright reported one Chromium worker, one executed test, one pass, and no failure or skip; the test body completed in 46.9s and the suite in 1.1m."
+    },
+    {
+      "id": "full-long-body-present",
+      "passed": true,
+      "evidence": "The passing browser assertion requires the rendered observation body to contain the distinctive tail after the 178-character unbroken token, so JavaScript or CSS truncation cannot pass."
+    },
+    {
+      "id": "no-horizontal-clipping",
+      "passed": true,
+      "evidence": "The passing browser assertion measured the observation detail panel and required scrollWidth - clientWidth <= 1px."
+    },
+    {
+      "id": "no-vertical-clipping",
+      "passed": true,
+      "evidence": "The passing browser assertion measured the observation detail panel and required clientHeight >= scrollHeight - 1px."
+    },
+    {
+      "id": "hermetic-learning-observation-data",
+      "passed": true,
+      "evidence": "The spec stubbed the fictional harness and learning.observations query, waited for the query to be served, and asserted the stub was reached after the browser measurements."
+    }
+  ],
+  "subject": {
+    "workItem": "WI-10001104",
+    "planItem": "learning-observations-residual-repair-2026-09-12#P-011",
+    "spec": "RESIDUAL-P011-AFFECTED-RADIUS@2",
+    "specFingerprint": "0a06b38e722d88d5e066f297ecd8f9c100be35778e857f58c7dc0dd181e1579c",
+    "taskId": "0mu08nriev3u3el1hxn",
+    "testFile": "apps/operator/e2e/observations-panel-long-body-clipping.spec.ts",
+    "port": 3957
+  }
+}
