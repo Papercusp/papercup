@@ -1,11 +1,13 @@
 /** scorecards:emit — the typed write facade over the canonical observation ledger. */
 import { z } from 'zod';
+import postgres from 'postgres';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
 import { parseJsonWithTrailer } from '@papercusp/tooldef';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
+import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import {
   classifyRubricEvidenceCurrentness,
   getRubric,
@@ -131,6 +133,93 @@ import type { SessionState } from '../coordination/presence-wakeability';
  */
 export const SCORECARD_EMIT_TIMEOUT_SEC = 15 * 60;
 export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 13 * 60_000;
+
+/**
+ * scorecards:emit's final read and ledger write form one deduplication critical
+ * section. The observation ledger's capture helper has its own atomic INSERT,
+ * but the scorecard fingerprint is computed by this caller before that INSERT;
+ * two emitters can therefore both observe an empty history and append the same
+ * card unless the read-to-write gap is serialized.
+ *
+ * This is a SESSION-level advisory lock, so it must use a dedicated direct
+ * connection. The org client may be routed through PgBouncer transaction
+ * pooling, which can move consecutive lock/read/unlock statements across
+ * backends and leak the session lock. `reserve()` pins the whole critical
+ * section to one backend and `idle_timeout: 0` keeps it alive while the capture
+ * helper is doing its work.
+ */
+const SCORECARD_EMIT_MUTEX_NAMESPACE = 'scorecards:emit:dedup';
+let _scorecardEmitMutexSql: postgres.Sql | null = null;
+
+export function scorecardEmitMutexUrl(): string {
+  return getHarnessAdminUrl();
+}
+
+function scorecardEmitMutexSql(): postgres.Sql {
+  if (!_scorecardEmitMutexSql) {
+    _scorecardEmitMutexSql = postgres(scorecardEmitMutexUrl(), {
+      onnotice: () => {},
+      max: 1,
+      idle_timeout: 0,
+      connection: {
+        application_name: `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63),
+      },
+    });
+  }
+  return _scorecardEmitMutexSql;
+}
+
+/** Test-only — close + drop the dedicated scorecard emit mutex connection. */
+export async function _closeScorecardEmitMutexForTests(): Promise<void> {
+  if (_scorecardEmitMutexSql) {
+    await _scorecardEmitMutexSql.end({ timeout: 1 }).catch(() => {});
+    _scorecardEmitMutexSql = null;
+  }
+}
+
+function scorecardEmitMutexKey(input: {
+  workspaceId: string;
+  rubricRef: string;
+  sourceHive?: string;
+}): string {
+  // The final scorecard history read is partitioned by workspace, rubric and
+  // sourceHive. Keep the same scope here; subject is intentionally omitted
+  // because the final read also omits subjectRef, and a narrower lock would not
+  // protect that actual read/write predicate.
+  return [
+    SCORECARD_EMIT_MUTEX_NAMESPACE,
+    input.workspaceId,
+    input.rubricRef,
+    input.sourceHive ?? '<unscoped>',
+  ]
+    .map((part) => `${part.length}:${part}`)
+    .join('|');
+}
+
+type ScorecardEmitMutexReservation = Awaited<ReturnType<ReturnType<typeof scorecardEmitMutexSql>['reserve']>>;
+
+async function acquireScorecardEmitMutex(key: string): Promise<() => Promise<void>> {
+  const reserved: ScorecardEmitMutexReservation = await scorecardEmitMutexSql().reserve();
+  let acquired = false;
+  try {
+    await reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
+    acquired = true;
+    return async () => {
+      if (!acquired) return;
+      acquired = false;
+      try {
+        // If the backend has died, PostgreSQL already released the session lock;
+        // still drop the reserved client so a future emit can reconnect cleanly.
+        await reserved`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`.catch(() => {});
+      } finally {
+        reserved.release();
+      }
+    };
+  } catch (error) {
+    reserved.release();
+    throw error;
+  }
+}
 
 const specTestAdequacyFingerprintSchema = z.string().trim().min(1).max(256);
 const specTestAdequacyEvaluatorBuildSchema = z
@@ -937,6 +1026,7 @@ export async function emitScorecard(
   }
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
+  let releaseScorecardEmitMutex: (() => Promise<void>) | undefined;
   try {
     let runningGenerationRead = false;
     let runningGeneration: Awaited<ReturnType<typeof readRunningGeneration>> | null = null;
@@ -1956,6 +2046,18 @@ export async function emitScorecard(
     }
     // Preserve the existing source-hive partition for unchanged-evidence dedup.
     // The broad population read above is only for the cross-hive redundancy guard.
+    // Unit suites mock the ledger and do not boot Postgres; their ordinary Vitest
+    // calls intentionally remain PG-free. Integration tests opt into this same
+    // production path with PAPERCUSP_SCORECARD_EMIT_MUTEX_TEST=1.
+    if (!process.env.VITEST || process.env.PAPERCUSP_SCORECARD_EMIT_MUTEX_TEST === '1') {
+      releaseScorecardEmitMutex = await acquireScorecardEmitMutex(
+        scorecardEmitMutexKey({
+          workspaceId: input.workspaceId ?? activeWorkspaceId(),
+          rubricRef: args.rubricRef,
+          sourceHive,
+        }),
+      );
+    }
     const latest = (await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 }))[0];
     const latestFingerprint = latest
       ? (latest.evidenceFingerprint ??
@@ -2251,6 +2353,13 @@ export async function emitScorecard(
         },
       },
     });
+    // The advisory lock covers the final dedup read through the complete ledger
+    // capture. Post-write notifications/audit settlement are deliberately outside
+    // the critical section so a slow subscriber cannot serialize future emits.
+    if (releaseScorecardEmitMutex) {
+      await releaseScorecardEmitMutex();
+      releaseScorecardEmitMutex = undefined;
+    }
     if (result.created) {
       // Push-on-write (push-audit 2026-07-26): the Verify stage's scorecard
       // list + rubric trend + release-readiness strip all fold this filing in.
@@ -2397,6 +2506,13 @@ export async function emitScorecard(
   } catch (error) {
     if (error instanceof ObservationEvidenceError) return { ok: false as const, error: error.message };
     throw error;
+  } finally {
+    // Covers every refusal/exception between the final dedup read and capture,
+    // including a failed deterministic check or a capture that throws.
+    if (releaseScorecardEmitMutex) {
+      await releaseScorecardEmitMutex().catch(() => {});
+      releaseScorecardEmitMutex = undefined;
+    }
   }
 }
 
