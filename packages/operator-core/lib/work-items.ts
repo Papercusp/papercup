@@ -46,7 +46,7 @@ import {
   type DeliveryMode,
   type ThreadPostRow,
 } from '@papercusp/coordination/capabilities';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { DEFAULT_COORD_WORKSPACE, withPgContentionRetry } from '@papercusp/coordination/event-log';
 // Embedding-coverage awareness (WI-9393). The SURFACE-level door, deliberately not
 // `assessSourceCoverage`: this consumer is not a registered `SearchSource`, and
 // SEARCH_SOURCE_SURFACES is asserted exhaustive in both directions against
@@ -5046,7 +5046,7 @@ export async function claimWorkItem(
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
     const ws = activeWorkspaceId();
-    const rows = await sql<FeatureRowDb[]>`
+    const rows = await withPgContentionRetry(() => sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = CASE
                WHEN target.taken_by = ${assignee}
@@ -5114,7 +5114,7 @@ export async function claimWorkItem(
                  )`
              : admittedWhereSql(sql);
          })()}
-      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`);
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
   // plugin-system-hive-port P-004: a successful claim fires `work-item:claimed:<id>`
