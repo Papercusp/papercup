@@ -30,6 +30,7 @@ import capabilityRead from '../capability/read';
 import agentReview from '../improvements/agent-review';
 import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
+import scorecardEvaluate from '../scorecards/evaluate';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
 import {
   ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT,
@@ -1164,6 +1165,26 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).toContain('remedy:object{kind:enum(spec-widen)');
     expect(compact).toContain('instructions:string');
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+  });
+
+  it('preserves record entry fields in the live scorecards:evaluate discovery schema', async () => {
+    expect(scorecardEvaluate.name).toBe('scorecards:evaluate');
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('scorecards:evaluate')) ?? '';
+
+    // instrumentSnapshots is a z.record(...), so the callable value is a map
+    // whose every entry has the typed snapshot contract. A bare object here
+    // sends callers back to runtime validation to discover verdict/measuredAt.
+    expect(compact).toContain('instrumentSnapshots?:object{*:object{');
+    expect(compact).toContain('verdict:enum(pass|fail|unknown)');
+    expect(compact).toContain('measuredAt:string');
+    expect(compact).toContain('window?:object');
+    expect(compact).toContain('evidenceRef?:string');
+    expect(compact.length).toBeLessThanOrEqual(2_200);
+
+    const result = await callHandler({ query: 'scorecards:evaluate', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'scorecards:evaluate');
+    expect(hit?.argSchema).toContain('instrumentSnapshots?:object{*:object{');
   });
 
   it('renders a JSON-schema const as a singleton enum in nested discovery output', () => {
