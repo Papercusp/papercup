@@ -13,7 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── module-seam mocks (arrow-deref so the hoisted vi.mock factory sees them) ──
-const writePresence = vi.fn(async () => {});
+const writePresence = vi.fn(async () => 'x' as string | null);
 const getPresence = vi.fn(async () => ({ ownerId: 'su-test', intent: 'x' }));
 vi.mock('../presence', async (importOriginal) => ({
   // Spread the real module so PRESENCE_STALE_MS (consumed transitively by
@@ -412,6 +412,11 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
     const res = parse(await tool.handler({ intent: 'work' }, ctx));
     expect(res.ok).toBe(true);
     expect(writePresence).toHaveBeenCalledTimes(1);
+    // EI-23110847647700079: the upsert itself returns the pre-write intent.
+    // Only the post-write response-shaping read remains; a separate pre-read
+    // would recreate the 1500ms warning that red-pinned installed-PUI tests.
+    expect(getPresence).toHaveBeenCalledTimes(1);
+    expect(writePresence.mock.invocationCallOrder[0]).toBeLessThan(getPresence.mock.invocationCallOrder[0]);
     // getPresence's value flows through the bound unchanged (fleet label joined).
     expect(res.presence).toMatchObject({ ownerId: 'su-test', fleetSlug: null, fleetRole: null });
   });
@@ -442,12 +447,9 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
-      // Both getPresence reads wedged: the P-015 prev-intent capture (before
-      // writePresence) and the return-payload read. Each is independently
-      // bounded — the declaration still lands, presence degrades to null.
-      getPresence
-        .mockImplementationOnce(() => new Promise<never>(() => {}))
-        .mockImplementationOnce(() => new Promise<never>(() => {}));
+      // Only the return-payload read remains; the upsert returns the previous
+      // intent atomically for P-015 pivot detection.
+      getPresence.mockImplementationOnce(() => new Promise<never>(() => {}));
       const p = tool.handler({ intent: 'work' }, ctx);
       await vi.advanceTimersByTimeAsync(40_000);
       const res = parse(await p);
@@ -583,7 +585,7 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
     const mod = await import('./declare-intent');
     mod.__resetPivotEmbedWarmForTest();
     const t = mod.default as unknown as Tool;
-    getPresence.mockResolvedValue({ ownerId: 'su-test', intent: LONG_A });
+    writePresence.mockResolvedValue(LONG_A);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const first = parse(await t.handler({ intent: LONG_B }, ctx));
