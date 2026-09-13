@@ -181,6 +181,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'coord:whoami',
     'locks:queue',
     'tools:find',
+    'plans:get',
     'work_items:get',
     'loop:status',
   ].map(normalizeMcpName),
@@ -210,6 +211,7 @@ const COORD_WHOAMI_NAME = normalizeMcpName('coord:whoami');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const PLANS_GET_NAME = normalizeMcpName('plans:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
 const SCORECARDS_EVALUATE_NAME = normalizeMcpName('scorecards:evaluate');
@@ -458,6 +460,43 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (!singleId && !singleIds) return false;
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
+  return true;
+}
+
+/**
+ * `plans:get` is a composite read whose default/full forms can load an entire
+ * plan, its decisions, and history decorations. The critical-pressure recovery
+ * exception is limited to one heading-narrowed read: a caller can inspect the
+ * Decisions section or one P-NNN subsection, while bulk slugs, selectors,
+ * full-mode payloads, and ship-readiness evaluation remain shed. `detail:'full'`
+ * is accepted only alongside explicit `mode:'sections'`, because the handler's
+ * canonical mode takes precedence over that compatibility alias.
+ */
+function isBoundedPlansGetArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['slug', 'harness', 'heading', 'mode', 'detail']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!isBoundedCriticalText(args.slug, 200, true)) return false;
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_LOOP_STATUS_MAX_STRING_CHARS, true)
+  ) {
+    return false;
+  }
+  if (!isBoundedCriticalText(args.heading, 120, true)) return false;
+  const heading = args.heading.trim().toLowerCase();
+  if (heading !== 'decisions' && !/^p-\d{3,}$/.test(heading)) return false;
+  if (args.mode !== undefined && args.mode !== 'sections') return false;
+  if (
+    args.detail !== undefined &&
+    !(
+      args.detail === false ||
+      args.detail === 'summary' ||
+      (args.mode === 'sections' && (args.detail === true || args.detail === 'full'))
+    )
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -1274,6 +1313,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === EVENTS_STATUS_NAME) return isBoundedEventsStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
+  if (normalized === PLANS_GET_NAME) return isBoundedPlansGetArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (normalized === SCORECARDS_EVALUATE_NAME) {
     return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestUrl);
@@ -1292,7 +1332,8 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
     return isJudgeRoleRequest(requestUrl) && isBoundedJudgeSpecEvidenceArgs(args);
   }
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
-  return normalized !== WORK_ITEMS_GET_NAME || isBoundedWorkItemsGetArgs(args);
+  if (normalized === WORK_ITEMS_GET_NAME) return isBoundedWorkItemsGetArgs(args);
+  return true;
 }
 
 function isCriticalPressureDiagnosticCall(message: unknown, requestUrl?: string): boolean {

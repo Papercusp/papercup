@@ -169,6 +169,61 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    'plans:get',
+    'plans_get',
+    'mcp__papercusp-su__plans_get',
+    'mcp__papercusp_su__plans_get',
+  ])('does NOT shed a bounded heading-narrowed plans:get under critical pressure: %s', (name) => {
+    const args = {
+      slug: 'portal-voice-parity-and-release-2026-09-08',
+      harness: 'papercusp',
+      heading: 'Decisions',
+      mode: 'sections',
+      // Explicit mode wins over this compatibility alias in the handler.
+      detail: 'full',
+    };
+    const body = toolsCall(18, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits a P-NNN subsection and the bounded shape through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 19,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__plans_get',
+          args: {
+            slug: 'portal-voice-parity-and-release-2026-09-08',
+            harness: 'papercusp',
+            heading: 'P-031',
+            mode: 'sections',
+            detail: 'full',
+          },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad, full, and ship-readiness plans:get forms sheddable', () => {
+    for (const args of [
+      { slug: 'plan', mode: 'sections' },
+      { slug: 'plan', heading: 'Decisions', detail: 'full' },
+      { slug: 'plan', heading: 'Decisions', mode: 'full' },
+      { slugs: ['plan-a', 'plan-b'], heading: 'Decisions', mode: 'sections' },
+      { slug: 'plan', heading: 'Decisions', mode: 'sections', shipReadiness: true },
+      { slug: 'plan', heading: 'Context', mode: 'sections' },
+    ]) {
+      expect(classifyMcpBody(toolsCall(20, 'plans:get', args))).toEqual({ sheddable: true, id: 20 });
+    }
+  });
+
+  it.each([
     ['owner', { owner: 'su-target' }],
     ['ownerId', { ownerId: 'su-target' }],
     ['owners', { owners: ['su-target', 'su-peer'] }],
@@ -1303,6 +1358,17 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
+  });
+  it('admits a bounded heading-narrowed plans:get under critical pressure', async () => {
+    const req = post(toolsCall(38, 'plans:get', {
+      slug: 'portal-voice-parity-and-release-2026-09-08',
+      harness: 'papercusp',
+      heading: 'Decisions',
+      mode: 'sections',
+      detail: 'full',
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('plans:get');
   });
   it('admits a bounded scheduler self-pull under critical pressure for direct staging calls', async () => {
     const req = post(toolsCall(17, 'scheduler:get_next', {
