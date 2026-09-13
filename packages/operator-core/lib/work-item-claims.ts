@@ -438,8 +438,9 @@ export async function getClaim(
 export async function getActiveClaimForOwner(
   workspaceId: string,
   owner: string,
+  sqlOverride?: Sql,
 ): Promise<WorkItemClaim | null> {
-  const { sql } = getOrgPg();
+  const sql = sqlOverride ?? getOrgPg().sql;
   const rows = await sql<ClaimDbRow[]>`
     SELECT workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
              owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,

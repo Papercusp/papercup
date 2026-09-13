@@ -333,8 +333,8 @@ export async function listPresence(
 }
 
 /** Read one presence record by owner id, or null. */
-export async function getPresence(ownerId: string): Promise<PresenceRecord | null> {
-  return store.get(ownerId);
+export async function getPresence(ownerId: string, db?: Sql): Promise<PresenceRecord | null> {
+  return store.get(ownerId, db);
 }
 
 /** Delete presence rows whose heartbeat is older than maxAgeMs (true dead

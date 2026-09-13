@@ -908,19 +908,21 @@ export async function resolvePlanHarnessSlug(
 export async function planHarnessesForSlugs(
   workspaceId: string,
   slugs: readonly string[],
+  sqlOverride?: Sql,
 ): Promise<Map<string, string[]>> {
   const valid = [...new Set(slugs)].filter(
     (s): s is string => typeof s === 'string' && VALID_PLAN_SLUG.test(s),
   );
   const out = new Map<string, string[]>();
   if (valid.length === 0) return out;
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<{ plan_slug: string; harness_slug: string }[]>`
+  const query = async (tx: Sql) => tx<{ plan_slug: string; harness_slug: string }[]>`
       SELECT plan_slug, harness_slug FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND plan_slug = ANY(${valid})
        ORDER BY updated_at DESC
     `;
-  });
+  const rows = await (sqlOverride
+    ? query(sqlOverride)
+    : withWorkspace(workspaceId, async (tx) => query(tx)));
   for (const row of rows) {
     const list = out.get(row.plan_slug);
     if (list) list.push(row.harness_slug);

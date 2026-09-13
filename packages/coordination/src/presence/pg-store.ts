@@ -420,9 +420,9 @@ export class PgPresenceStore implements PresenceStore {
     return rows.map((r) => toRecord(r, now));
   }
 
-  async get(ownerId: string): Promise<PresenceRecord | null> {
+  async get(ownerId: string, sqlOverride?: Sql): Promise<PresenceRecord | null> {
     await this.opts.ensureSchema();
-    const sql = this.opts.getSql();
+    const sql = sqlOverride ?? this.opts.getSql();
     const rows = await sql<CoordPresenceDbRow[]>`
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
