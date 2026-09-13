@@ -10,11 +10,13 @@ import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import {
   CANONICAL_PROMPT_PATH,
   GENERATED_PROMPT_PATHS,
+  PROMPT_PROJECTION_GROUPS,
   PROMPT_PROJECTIONS_MARKER,
+  compareAllPromptProjections,
   comparePromptProjections,
 } from '../../../../scripts/check-prompt-projections.mjs';
 
@@ -30,6 +32,14 @@ function writeFixture(root: string, relativePath: string, content: Uint8Array): 
 function seedFixture(root: string, source: Uint8Array = Buffer.from([0x73, 0x75, 0x0a])): void {
   writeFixture(root, CANONICAL_PROMPT_PATH, source);
   for (const path of GENERATED_PROMPT_PATHS) writeFixture(root, path, source);
+}
+
+function seedAllProjectionGroups(root: string): void {
+  PROMPT_PROJECTION_GROUPS.forEach((group, index) => {
+    const source = Buffer.from(`source-${index}\n`);
+    writeFixture(root, group.sourcePath, source);
+    for (const path of group.projectionPaths) writeFixture(root, path, source);
+  });
 }
 
 function withFixture(test: (root: string) => void): void {
@@ -95,10 +105,11 @@ describe('comparePromptProjections', () => {
 });
 
 describe('check-prompt-projections CLI', () => {
-  it('returns a failing verdict when a fixture projection is stale', () => {
+  it('returns a failing verdict without modifying a stale projection by default', () => {
     withFixture((root) => {
       seedFixture(root);
-      writeFixture(root, GENERATED_PROMPT_PATHS[0], Buffer.from([0x73, 0x58, 0x0a]));
+      const stale = Buffer.from([0x73, 0x58, 0x0a]);
+      writeFixture(root, GENERATED_PROMPT_PATHS[0], stale);
       const result = spawnSync(process.execPath, [SCRIPT, '--root', root], {
         cwd: REPO_ROOT,
         encoding: 'utf8',
@@ -110,6 +121,56 @@ describe('check-prompt-projections CLI', () => {
       expect(output).toContain(PROMPT_PROJECTIONS_MARKER);
       expect(output).toContain(GENERATED_PROMPT_PATHS[0]);
       expect(output).toContain('content-differs');
+      expect(readFileSync(join(root, GENERATED_PROMPT_PATHS[0]))).toEqual(stale);
+    });
+  });
+
+  it('--write atomically refreshes every stale maintained projection and rechecks green', () => {
+    withFixture((root) => {
+      seedAllProjectionGroups(root);
+      for (const group of PROMPT_PROJECTION_GROUPS) {
+        writeFixture(root, group.projectionPaths[0], Buffer.from('stale\n'));
+      }
+
+      const result = spawnSync(process.execPath, [SCRIPT, '--root', root, '--write'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect((result.stdout ?? '') + (result.stderr ?? '')).toContain('2 refreshed');
+      expect(compareAllPromptProjections({ root }).ok).toBe(true);
+      for (const group of PROMPT_PROJECTION_GROUPS) {
+        const source = readFileSync(join(root, group.sourcePath));
+        for (const path of group.projectionPaths) {
+          const target = join(root, path);
+          expect(readFileSync(target)).toEqual(source);
+          expect(
+            readdirSync(dirname(target)).filter((name) => name.includes('.prompt-projection-')),
+          ).toEqual([]);
+        }
+      }
+    });
+  });
+
+  it('--write refuses before changing any target when a maintained source is missing', () => {
+    withFixture((root) => {
+      seedAllProjectionGroups(root);
+      const firstTarget = PROMPT_PROJECTION_GROUPS[0].projectionPaths[0];
+      const stale = Buffer.from('keep-stale\n');
+      writeFixture(root, firstTarget, stale);
+      unlinkSync(join(root, PROMPT_PROJECTION_GROUPS[1].sourcePath));
+
+      const result = spawnSync(process.execPath, [SCRIPT, '--root', root, '--write'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(2);
+      expect((result.stdout ?? '') + (result.stderr ?? '')).toContain('refused to write');
+      expect(readFileSync(join(root, firstTarget))).toEqual(stale);
     });
   });
 });
