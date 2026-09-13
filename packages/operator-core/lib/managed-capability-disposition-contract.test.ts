@@ -114,7 +114,7 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
         for (const anchor of citation.anchors) {
           expect(source, `${entry.family}: ${citation.path} must contain ${JSON.stringify(anchor)}`).toContain(anchor);
         }
-        for (const absent of citation.absentAnchors ?? []) {
+        for (const absent of 'absentAnchors' in citation ? (citation.absentAnchors ?? []) : []) {
           expect(source, `${entry.family}: ${citation.path} must not contain ${JSON.stringify(absent)}`).not.toContain(
             absent,
           );
