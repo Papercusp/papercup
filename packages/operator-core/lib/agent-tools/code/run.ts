@@ -2135,7 +2135,8 @@ async function maybeCaptureRecipe(
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) return null; // no workspace ⇒ nothing to scope a recipe to
 
-    const { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } = await import('../search/embedder');
+    const { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } = await import('../search/embedder');
+    const { resolveProseProfileSelection } = await import('../../search/prose-vector-dims');
     const { potHomeSlugForHarness } = await import('../../hive-federation');
     const { resolveAgentIdentity } = await import('../coordination/identity');
 
@@ -2146,12 +2147,15 @@ async function maybeCaptureRecipe(
       ownerId = null; // unattributable ctx (e.g. a test/in-process call) — still capture
     }
 
-    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    const profile = resolved ? resolveProseProfileSelection(resolved.mode, resolved.profile) : null;
 
     const captured = await captureRecipe(
       {
         sql: getOrgPg().sql,
-        embed: async (text) => (embedder ? embedder(text) : null),
+        embed: async (text) => resolved && profile
+          ? { vector: await resolved.embed(text), mode: resolved.mode, profile }
+          : null,
         resolveHive: potHomeSlugForHarness,
         log: (msg) => ctx.log(msg),
       },
