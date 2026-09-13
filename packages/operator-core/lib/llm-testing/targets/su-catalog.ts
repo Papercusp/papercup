@@ -608,7 +608,12 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
       'Use dryRun:true to preview write-effect mutations without executing them.',
     input: obj(
       {
-        script: { type: 'string', description: 'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary.' },
+        script: {
+          type: 'string',
+          description:
+            'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). ' +
+            'Call tools via `await tools.ns.verb(args)`; `return` a compact summary.',
+        },
         dryRun: { type: 'boolean', description: 'Preview: record effect:write tool calls without executing them (reads still run).' },
         timeoutSec: { type: 'number', description: 'Wall-clock budget (default 30s).' },
       },

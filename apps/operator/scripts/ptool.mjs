@@ -1653,6 +1653,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // acquire returns its typed busy result instead of an outcome-unknown 30s
   // client timeout.
   ['locks:acquire', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22593064345817096: locks:release can spend the same transaction
+  // contention/retry window as acquire before its durable receipt returns.
+  // Keep direct and tools:invoke-wrapped releases outside the flat 30s client
+  // cutoff so a completed release is not surfaced as outcome-unknown.
+  ['locks:release', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['locks:heartbeat_resource', PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS],
 ]);
 

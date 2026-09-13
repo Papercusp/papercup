@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-003 live managed PTY terminal-latch acceptance",
+  "spec": {
+    "plan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
+    "planItem": "P-003",
+    "workItem": "WI-10001163",
+    "specId": "CAP-CONTRACT-P003-PTY-RESIZE",
+    "specRevision": 1,
+    "specContentHash": "a6a4bf6d47bb88e75303b428682a378ea67f29a7b287050851ad510e67ea4fbc"
+  },
+  "framework": "operational",
+  "command": [
+    "dev:restart { target: staging, confirm: true, authorize: true }",
+    "dev:listening_ports { port: 3170 }",
+    "capability:pty_open { command: bash -lc 'sleep 1; exit 23', cols: 80, rows: 24 }",
+    "events:status { event: task:terminal:0mtzy995sfcxgxs1oww }",
+    "events:await { event: task:terminal:0mtzy995sfcxgxs1oww, timeout_sec: 30, on_timeout: wake }",
+    "capability:pty_read_screen { task_id: 0mtzy995sfcxgxs1oww }",
+    "events:status { event: task:terminal:0mtzy995sfcxgxs1oww }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-13T15:08:17.923Z",
+  "finishedAt": "2026-09-13T15:10:03.839Z",
+  "summary": "The remotely-contained P-003 build restarted on staging, a fresh managed PTY entered one authoritative exited state, task-manager latched its exact terminal event before registration, and a later exact await returned already_fired immediately without leaving a waiter or starting a replacement.",
+  "assertions": [
+    {
+      "id": "current-runtime-loaded",
+      "passed": true,
+      "evidence": "The coordinated staging restart replaced PID 537612 with listener PID 2349941 before the PTY probe."
+    },
+    {
+      "id": "terminal-fire-precedes-await",
+      "passed": true,
+      "evidence": "events:status observed task-manager fire_count=1 at 2026-09-13 11:09:15.292807-04 with zero waiters before events:await was invoked at 11:09:42-04."
+    },
+    {
+      "id": "late-await-consumes-latch",
+      "passed": true,
+      "evidence": "The later exact events:await returned already_fired=true immediately with the identical fired_at timestamp rather than registering a pending waiter."
+    },
+    {
+      "id": "first-terminal-event-only",
+      "passed": true,
+      "evidence": "The final exact event snapshot still reported task-manager fire_count=1 and waiters=[], with no duplicate fire or residual waiter."
+    },
+    {
+      "id": "terminal-state-honest",
+      "passed": true,
+      "evidence": "The post-exit managed PTY read returned state=exited, exit_code=23, reattachment=not_applicable, and replacement_started=false."
+    }
+  ]
+}

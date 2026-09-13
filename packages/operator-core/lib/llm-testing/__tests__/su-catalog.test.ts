@@ -177,6 +177,16 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     });
   });
 
+  it('keeps the curated code:run fixture aligned with its JavaScript-only runtime contract', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'code:run')!;
+    const properties = (entry.input as { properties?: Record<string, any> }).properties ?? {};
+    const script = properties.script as { description?: string };
+
+    expect(script.description).toContain('Plain JavaScript body only');
+    expect(script.description).toContain('TypeScript annotations such as `: any` are not supported');
+    expect(script.description).not.toContain('JS/TS body');
+  });
+
   it('work_items:set_state is advertised with keyed lifecycle args', () => {
     const e = SU_CATALOG.find((e) => e.name === 'work_items:set_state')!;
     const props = (e.input as { properties?: Record<string, unknown> }).properties ?? {};
