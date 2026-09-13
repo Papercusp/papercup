@@ -940,6 +940,7 @@ import './db/migrate-policy';
 // live-configurability-audit-2026-06-20 P-002 — read/retune/pause the system routines (git-sync, …):
 import './routines/list';
 import './routines/set';
+import './routines/fire';
 import './learning/dream-control';
 import './routines/group-set';
 import './routines/revert';
