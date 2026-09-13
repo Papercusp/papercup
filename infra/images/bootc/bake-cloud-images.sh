@@ -272,6 +272,7 @@ verify_release_disk_metadata() (
   set -euo pipefail
   local disk="$1" version="$2" loopdev="" mount_dir="" mounted=0
   local root_part release_dir deployment_root metadata uid gid mode kind mode_value required_value
+  local nftables_config host_prepare_unit
   local -a privilege=() root_parts=() release_dirs=()
 
   disk_fail() {
@@ -296,7 +297,7 @@ verify_release_disk_metadata() (
   [ -n "$version" ] || disk_fail 'release-version-empty'
   [ -s "$disk" ] && [ -f "$disk" ] && [ ! -L "$disk" ] \
     || disk_fail 'disk-missing-or-not-regular'
-  for tool in losetup lsblk mount umount udevadm find stat readlink awk; do
+  for tool in losetup lsblk mount umount udevadm find stat readlink awk cat grep; do
     command -v "$tool" >/dev/null 2>&1 || disk_fail "tool-missing:$tool"
   done
   if [ "$(id -u)" -ne 0 ]; then
@@ -359,7 +360,32 @@ verify_release_disk_metadata() (
   [ "$metadata" = "releases/$version" ] \
     || disk_fail "current-symlink-target:$metadata:expected=releases/$version"
 
-  echo "BAKE_RELEASE_DISK_METADATA=PASS version=$version disk=$disk release=$release_dir"
+  nftables_config="$deployment_root/etc/sysconfig/nftables.conf"
+  metadata="$("${privilege[@]}" stat -c '%u:%g:%a:%F' -- "$nftables_config")" \
+    || disk_fail 'nftables-config-stat-failed'
+  [ "$metadata" = '0:0:600:regular file' ] \
+    || disk_fail "nftables-config-metadata:$metadata:expected=0:0:600:regular-file"
+  metadata="$("${privilege[@]}" cat -- "$nftables_config")" \
+    || disk_fail 'nftables-config-read-failed'
+  [ "$metadata" = 'include "/etc/nftables/papercusp-workspace-host.nft"' ] \
+    || disk_fail "nftables-config-content:$metadata"
+  "${privilege[@]}" grep -Fx 'table inet papercusp_workspace_host {' \
+    "$deployment_root/etc/nftables/papercusp-workspace-host.nft" >/dev/null \
+    || disk_fail 'nftables-ruleset-table-missing'
+
+  host_prepare_unit="$deployment_root/usr/lib/systemd/system/papercusp-host-prepare.service"
+  "${privilege[@]}" grep -Fx 'Requires=local-fs.target nftables.service' "$host_prepare_unit" >/dev/null \
+    || disk_fail 'host-prepare-nftables-requires-missing'
+  "${privilege[@]}" grep -Fx 'After=local-fs.target nftables.service' "$host_prepare_unit" >/dev/null \
+    || disk_fail 'host-prepare-nftables-order-missing'
+  [ "$("${privilege[@]}" readlink -- "$deployment_root/etc/systemd/system/multi-user.target.wants/nftables.service")" \
+      = '/usr/lib/systemd/system/nftables.service' ] \
+    || disk_fail 'nftables-enable-link-invalid'
+  [ "$("${privilege[@]}" readlink -- "$deployment_root/etc/systemd/system/multi-user.target.wants/papercusp-host-prepare.service")" \
+      = '/usr/lib/systemd/system/papercusp-host-prepare.service' ] \
+    || disk_fail 'host-prepare-enable-link-invalid'
+
+  echo "BAKE_RELEASE_DISK_METADATA=PASS version=$version disk=$disk release=$release_dir firewall=exact-and-ordered"
 )
 
 # Requested clouds are validated UP FRONT, before the expensive build. A typo'd cloud name that

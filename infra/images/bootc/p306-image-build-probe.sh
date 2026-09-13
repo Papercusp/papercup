@@ -311,6 +311,23 @@ for u in papercusp-host-prepare.service nftables.service dnf-automatic.timer \
     fail "NOT enabled: $u"
   fi
 done
+nftables_config="$(in_image "cat /etc/sysconfig/nftables.conf")"
+if [[ "$nftables_config" == 'include "/etc/nftables/papercusp-workspace-host.nft"' ]]; then
+  pass "committed nftables config loads the Papercusp ruleset"
+else
+  fail "committed nftables config is '$nftables_config', expected the Papercusp ruleset include"
+fi
+if [[ "$(in_image "stat -c '%u:%g:%a:%F' /etc/sysconfig/nftables.conf")" == '0:0:600:regular file' ]]; then
+  pass "committed nftables config is root:root 0600"
+else
+  fail "committed nftables config metadata drifted"
+fi
+if [[ -n "$(in_image "grep -Fx 'Requires=local-fs.target nftables.service' /usr/lib/systemd/system/papercusp-host-prepare.service")" \
+   && -n "$(in_image "grep -Fx 'After=local-fs.target nftables.service' /usr/lib/systemd/system/papercusp-host-prepare.service")" ]]; then
+  pass "host-prepare requires and follows nftables"
+else
+  fail "host-prepare lacks the required nftables dependency/order"
+fi
 # The guest agent activates OS Login dynamically from instance metadata on the
 # booted host, so the image cannot honestly assert the generated sshd/PAM text.
 # It can and must prove that the helper executable and readable PAM/NSS shared

@@ -2901,6 +2901,42 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("tools:find"))).toBe(true);
     expect(isReservedControlPlaneCall(call("dev:service_health"))).toBe(true);
     expect(isReservedControlPlaneCall(call("dev:pg_query"))).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: { name: "dev:telemetry", arguments: { hours: 24, limit: 50 } },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__dev_telemetry",
+                args: { hours: 24, limit: 50 },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: { name: "dev:telemetry", arguments: { hours: 24, limit: 51 } },
+          }),
+        ),
+      ),
+    ).toBe(false);
     expect(isReservedControlPlaneCall(call("loop:arm"))).toBe(true);
     expect(isReservedControlPlaneCall(call("plans:get"))).toBe(true);
     expect(isReservedControlPlaneCall(call("improvements:capture"))).toBe(true);

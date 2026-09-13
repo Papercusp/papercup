@@ -24,11 +24,13 @@ const SCRIPT = join(ROOT, 'infra/images/bootc/bake-cloud-images.sh');
 const HEALTH = join(ROOT, 'infra/images/bootc/p307-build-health.sh');
 const CONTAINERFILE = join(ROOT, 'infra/images/bootc/workspace-host.Containerfile');
 const HOST_PREPARE = join(ROOT, 'infra/images/bootc/papercusp-host-prepare.sh');
+const HOST_PREPARE_UNIT = join(ROOT, 'infra/images/bootc/papercusp-host-prepare.service');
 const GOOGLE_OSLOGIN_TMPFILES = join(ROOT, 'infra/images/bootc/papercusp-google-oslogin.conf');
 const IMAGE_BUILD_PROBE = join(ROOT, 'infra/images/bootc/p306-image-build-probe.sh');
 const SOURCE = readFileSync(SCRIPT, 'utf8');
 const CONTAINERFILE_SOURCE = readFileSync(CONTAINERFILE, 'utf8');
 const HOST_PREPARE_SOURCE = readFileSync(HOST_PREPARE, 'utf8');
+const HOST_PREPARE_UNIT_SOURCE = readFileSync(HOST_PREPARE_UNIT, 'utf8');
 const GOOGLE_OSLOGIN_TMPFILES_SOURCE = readFileSync(GOOGLE_OSLOGIN_TMPFILES, 'utf8');
 const IMAGE_BUILD_PROBE_SOURCE = readFileSync(IMAGE_BUILD_PROBE, 'utf8');
 const SNAPSHOT_MARKER = '# EI-22355025813361885 — freeze the entrypoint';
@@ -47,7 +49,7 @@ function runFixture(
   release?: { root?: string; version?: string },
   sourceImage?: { ref: string; exists?: boolean },
   inhibitFails = false,
-  diskMetadata: 'pass' | 'bad-release-dir' | 'missing-root' = 'pass',
+  diskMetadata: 'pass' | 'bad-release-dir' | 'bad-firewall-config' | 'missing-root' = 'pass',
 ): {
   status: number;
   output: string;
@@ -200,6 +202,24 @@ printf '#!/bin/sh\\n' > "$release_dir/bin/node"
 chmod 0640 "$release_dir/serve.mjs"
 chmod 0755 "$release_dir/bin/node"
 ln -s "releases/$BAKE_TEST_RELEASE_VERSION" "\${release_dir%/releases/*}/current"
+deployment_root="\${release_dir%/opt/papercusp/releases/*}"
+mkdir -p "$deployment_root/etc/sysconfig" "$deployment_root/etc/nftables" \
+  "$deployment_root/etc/systemd/system/multi-user.target.wants" \
+  "$deployment_root/usr/lib/systemd/system"
+if [ "$BAKE_TEST_DISK_METADATA" = "bad-firewall-config" ]; then
+  printf '%s\\n' '# base sample, no Papercusp include' > "$deployment_root/etc/sysconfig/nftables.conf"
+else
+  printf '%s\\n' 'include "/etc/nftables/papercusp-workspace-host.nft"' > "$deployment_root/etc/sysconfig/nftables.conf"
+fi
+chmod 0600 "$deployment_root/etc/sysconfig/nftables.conf"
+printf '%s\\n' 'table inet papercusp_workspace_host {' '}' > "$deployment_root/etc/nftables/papercusp-workspace-host.nft"
+printf '%s\\n' '[Unit]' 'Requires=local-fs.target nftables.service' 'After=local-fs.target nftables.service' \
+  > "$deployment_root/usr/lib/systemd/system/papercusp-host-prepare.service"
+printf '%s\\n' '[Unit]' > "$deployment_root/usr/lib/systemd/system/nftables.service"
+ln -s /usr/lib/systemd/system/nftables.service \
+  "$deployment_root/etc/systemd/system/multi-user.target.wants/nftables.service"
+ln -s /usr/lib/systemd/system/papercusp-host-prepare.service \
+  "$deployment_root/etc/systemd/system/multi-user.target.wants/papercusp-host-prepare.service"
 `, { mode: 0o755 });
   chmodSync(join(bin, 'mount'), 0o755);
   writeFileSync(join(bin, 'umount'), `#!/usr/bin/env bash
@@ -212,6 +232,9 @@ rm -rf -- "$mount_dir/ostree"
 set -euo pipefail
 target="\${@: -1}"
 case "$target" in
+  */ostree/deploy/*/etc/sysconfig/nftables.conf)
+    printf '0:0:600:regular file\\n'
+    ;;
   */ostree/deploy/*/opt/papercusp/releases/*/serve.mjs)
     printf '0:912:640:regular file\\n'
     ;;
@@ -433,6 +456,26 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     }
   });
 
+  it('rejects a converted release disk whose nftables config retained the lower-layer sample', () => {
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'p305-bad-firewall-config-root-'));
+    try {
+      const result = runFixture(
+        SOURCE,
+        'raw',
+        { root: releaseRoot, version: '0.0.18-r21' },
+        undefined,
+        false,
+        'bad-firewall-config',
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.output).toContain('nftables-config-content:# base sample, no Papercusp include');
+      expect(result.manifest).toBeNull();
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when the host UDisks automount inhibitor cannot guard the renderer', () => {
     const result = runFixture(SOURCE, 'raw', undefined, undefined, true);
 
@@ -595,6 +638,18 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain(
       'committed runtime readable by service+agent, hidden from SSH; state hidden from agent+SSH',
     );
+  });
+
+  it('commits the exact nftables config through a fresh inode and orders host preparation behind it', () => {
+    const write = CONTAINERFILE_SOURCE.indexOf('> "$NFTABLES_CONFIG_TMP"');
+    const replace = CONTAINERFILE_SOURCE.indexOf('mv -f -- "$NFTABLES_CONFIG_TMP" "$NFTABLES_CONFIG"');
+    expect(write).toBeGreaterThan(-1);
+    expect(replace).toBeGreaterThan(write);
+    expect(CONTAINERFILE_SOURCE).not.toContain('> /etc/sysconfig/nftables.conf');
+    expect(HOST_PREPARE_UNIT_SOURCE).toContain('Requires=local-fs.target nftables.service');
+    expect(HOST_PREPARE_UNIT_SOURCE).toContain('After=local-fs.target nftables.service');
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('committed nftables config loads the Papercusp ruleset');
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('host-prepare requires and follows nftables');
   });
 
   it('recreates Google OS Login user state at boot instead of committing /var residue', () => {

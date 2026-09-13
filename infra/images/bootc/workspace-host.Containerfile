@@ -395,8 +395,13 @@ RUN set -eu; \
 # never the risk worth guarding; "the rules are absent" is.
 COPY papercusp-firewall.nft /etc/nftables/papercusp-workspace-host.nft
 RUN set -eux; \
+    NFTABLES_CONFIG=/etc/sysconfig/nftables.conf; \
+    NFTABLES_CONFIG_TMP="$(mktemp --tmpdir=/etc/sysconfig .nftables.conf.XXXXXX)"; \
     printf 'include "/etc/nftables/papercusp-workspace-host.nft"\n' \
-      > /etc/sysconfig/nftables.conf; \
+      > "$NFTABLES_CONFIG_TMP"; \
+    chmod 0600 "$NFTABLES_CONFIG_TMP"; \
+    mv -f -- "$NFTABLES_CONFIG_TMP" "$NFTABLES_CONFIG"; \
+    [ "$(cat "$NFTABLES_CONFIG")" = 'include "/etc/nftables/papercusp-workspace-host.nft"' ]; \
     systemctl enable nftables.service
 
 # ── Layer 5: unattended security updates ──────────────────────────────────────
