@@ -1374,6 +1374,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside
   // the MCP transport floor instead of reporting an outcome-unknown timeout.
   ['dev:service_health', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22707343179859326: pipeline-position aggregates commit, gate, deploy, and
+  // activation reads; keep its direct and deferred calls beyond the flat 30s
+  // client deadline so the structured position result remains observable.
+  ['dev:pipeline_position', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-22810897251728336: blueprint:publish legitimately composes three
   // independently bounded network stages (GitHub repo metadata, best-effort
   // publisher attestation, and the complete Cupboard POST/body read). Their

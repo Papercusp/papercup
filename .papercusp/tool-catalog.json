@@ -26560,9 +26560,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After fixing a gate red on staging and git-sync commits it, use `admit{paths}` for exactly the changed files; also use it when a read reports repair-in-progress, a fossil/blocked queue, or a dead fixer.",
-        "notWhen": "Workspace-global: never pass harness/workspace. `admit` is path-exact — do not catch up to the tip. Never retire a live/unknown fixer, active dispatch, ready-to-verify work, or a phantom red. This tool does not launch checkpoints or deploy.",
-        "chaining": "Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true`. A non-empty R6 test population returns `precheck-running` immediately and publishes NOTHING; `get` exposes the durable operation, then repeat the confirmed call with the refreshed queue identity after it passes. Use `retryPrecheck:true` only for a terminal failed pre-check; a running one is never duplicated. Missing hook capture: explicit `patchCommit:<full SHA>, reason` replays only that single-parent staging commit’s named-path delta, not its whole blobs; review every delta since a sweep may mix work. Never combine with wholeBlob/includeHunksFrom or fabricate record-edit. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`."
+        "when": "After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.",
+        "notWhen": "Workspace-global: omit harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.",
+        "chaining": "`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity."
       }
     },
     {

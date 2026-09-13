@@ -22,6 +22,7 @@
  *   4. a question that was never asked (no candidates) gets no verdict.
  */
 import { describe, expect, it } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { confirmSimilarPlans, type PlanConfirmDeps } from './semantic-dedup';
 // Import the contracts rather than restating numbers: a width change or a floor
 // re-tune then moves these fixtures automatically instead of stranding them.
@@ -50,13 +51,11 @@ const snapshot = (pct: number): CoverageSnapshot =>
   ]);
 
 /** A working classifier: resolves an embedder and returns the given similarities. */
-const deps = (
-  sims: Map<string, number>,
-  loadCoverage?: () => Promise<CoverageSnapshot>,
-): PlanConfirmDeps => ({
+const deps = (sims: Map<string, number>, loadCoverage?: () => Promise<CoverageSnapshot>): PlanConfirmDeps => ({
   resolveEmbedder: async () => ({
-    mode: 'test-mode',
+    mode: 'gemma',
     dims: PROSE_VECTOR_DIMS,
+    profile: EMBEDDER_DIM_SPECS.gemma,
     embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
   }),
   querySimilarities: async () => sims,
@@ -64,8 +63,7 @@ const deps = (
   // background sample is what makes a real verdict possible at all. These
   // fixtures are ABOUT coverage reporting, not about calibration — a plain
   // spread background keeps them measuring what they were written to measure.
-  queryBackgroundSimilarities: async () =>
-    Array.from({ length: 200 }, (_, i) => 0.65 + (i / 199) * 0.25),
+  queryBackgroundSimilarities: async () => Array.from({ length: 200 }, (_, i) => 0.65 + (i / 199) * 0.25),
   ...(loadCoverage ? { loadCoverage } : {}),
 });
 

@@ -40,10 +40,13 @@ describe('member baseline causal-evidence contract', () => {
     expect(completionRule?.body).toContain('rootCauseVerification');
     for (const field of [
       'testProcedure',
-      'predictedObservations:{hypothesis,alternativeHypothesis}',
+      'predictedObservations:{hypothesis:',
+      'alternativeHypothesis:',
       'actualObservation',
       'evidenceRefs',
     ]) expect(completionRule?.body).toContain(field);
+    expect(completionRule?.body).toContain('The typed predictions must differ');
+    expect(completionRule?.body).toContain('requires no prose template');
   });
 });
 

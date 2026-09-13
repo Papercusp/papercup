@@ -150,7 +150,7 @@ agent_user=papercusp-agent
 runtime_read_group=papercusp-runtime-read
 
 fail() { printf 'PAPERCUSP-P305-FAIL phase=%s %s\\n' "$phase" "$*" >&2; exit 1; }
-for command in bootc cut find getfacl getent grep journalctl openssl readlink runuser sed sha256sum skopeo stat systemctl tail; do
+for command in bootc cut find getfacl getent grep journalctl mktemp openssl readlink rmdir runuser sed sha256sum skopeo stat systemctl tail; do
   command -v "$command" >/dev/null 2>&1 || fail "missing-command=$command"
 done
 
@@ -246,21 +246,32 @@ install -d -o root -g root -m 0700 "$sentinel_dir"
 umask 077
 printf '%s' "$sentinel_token" >"$sentinel_path"
 
-observed_digest="$(skopeo inspect --policy /etc/containers/policy.json --tls-verify=false \
-  --format '{{.Digest}}' "docker://$update_ref")" || fail signed-reference-rejected
+# skopeo inspect resolves metadata but does not evaluate containers/image signature policy.
+# Keep it only as the cheap reachability/digest control; bootc switch with
+# --enforce-container-sigpolicy below is the positive signature-enforcement path.
+observed_digest="$(skopeo inspect --tls-verify=false --format '{{.Digest}}' \
+  "docker://$update_ref")" || fail update-reference-unreachable
 [[ "$observed_digest" == "$update_digest" ]] || fail "signed-digest=$observed_digest expected=$update_digest"
 
-trap 'rm -f /tmp/p305-wrong-key.pem /tmp/p305-wrong-key.pub /tmp/p305-wrong-policy.json /tmp/p305-wrong.err' EXIT
+wrong_copy_dir="$(mktemp -d /tmp/p305-wrong-copy.XXXXXX)" || fail wrong-key-copy-dir-create-failed
+cleanup_signature_probe() {
+  rm -f /tmp/p305-wrong-key.pem /tmp/p305-wrong-key.pub /tmp/p305-wrong-policy.json /tmp/p305-wrong.err
+  find "$wrong_copy_dir" -mindepth 1 -delete 2>/dev/null || true
+  rmdir -- "$wrong_copy_dir" 2>/dev/null || true
+}
+trap cleanup_signature_probe EXIT
 openssl ecparam -name prime256v1 -genkey -noout -out /tmp/p305-wrong-key.pem >/dev/null 2>&1
 openssl ec -in /tmp/p305-wrong-key.pem -pubout -out /tmp/p305-wrong-key.pub >/dev/null 2>&1
 sed 's#/etc/pki/papercusp/release-signing.pub#/tmp/p305-wrong-key.pub#g' \
   /etc/containers/policy.json >/tmp/p305-wrong-policy.json
-if skopeo inspect --policy /tmp/p305-wrong-policy.json --tls-verify=false \
-  "docker://$update_ref" >/dev/null 2>/tmp/p305-wrong.err; then
+if skopeo copy --policy /tmp/p305-wrong-policy.json --src-tls-verify=false \
+  "docker://$update_ref" "dir:$wrong_copy_dir" >/dev/null 2>/tmp/p305-wrong.err; then
   fail wrong-signing-key-was-accepted
 fi
-grep -Eiq 'signature|sigstore|policy requirement|Source image rejected' /tmp/p305-wrong.err \
+grep -Fqi 'cryptographic signature verification failed' /tmp/p305-wrong.err \
   || fail wrong-key-control-did-not-reach-signature-policy
+[[ -z "$(find "$wrong_copy_dir" -mindepth 1 -print -quit)" ]] \
+  || fail wrong-key-control-wrote-image
 `
     : 'test -f "$sentinel_path" || fail persisted-sentinel-missing'
 }
@@ -282,8 +293,8 @@ set -euo pipefail
 update_ref=${shellQuote(update.reference)}
 update_digest=${shellQuote(update.digest)}
 systemctl mask --runtime --now bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service >/dev/null 2>&1 || true
-observed_digest="$(skopeo inspect --policy /etc/containers/policy.json --tls-verify=false \
-  --format '{{.Digest}}' "docker://$update_ref")"
+observed_digest="$(skopeo inspect --tls-verify=false --format '{{.Digest}}' \
+  "docker://$update_ref")"
 [[ "$observed_digest" == "$update_digest" ]]
 bootc switch --enforce-container-sigpolicy "$update_ref"
 bootc status --json | grep -F "$update_digest" >/dev/null

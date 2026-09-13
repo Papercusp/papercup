@@ -105,6 +105,7 @@ import {
 } from '../../release/gate-collision-guard';
 import { checkBgHostQuiesce } from './bg-host-quiesce-guard';
 import { mockImplementationTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import type { StagingRestartReadiness } from './restart';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
@@ -165,13 +166,16 @@ const gatewayListenerResult = (pid: number) =>
         ownerVisible: true,
         reserved: false,
         acceptQueue: { pending: 0, backlog: 511 },
+        app: null,
+        appUnknownReason: 'not-attempted',
+        localUrl: `http://127.0.0.1:8788`,
       },
     ],
     matched: 1,
     totalListening: 1,
     truncated: false,
     ownerHidden: 0,
-  }) as never;
+  }) satisfies Awaited<ReturnType<typeof listListeningSockets>>;
 
 const clearGateCollision = () => ({
   blocked: false,
@@ -219,10 +223,7 @@ const {
 } = restartModule;
 
 type Out = { content: { text: string }[] };
-type Fence = {
-  assertCurrent: () => Promise<{ current: boolean; reason?: string; live_fence_seq?: number }>;
-  seq?: number;
-};
+type Fence = Pick<FenceToken, 'assertCurrent' | 'seq'>;
 type FreshnessSnapshot = {
   bundleMtimeMs: number | null;
   newestSourceMtimeMs: number | null;
@@ -238,34 +239,48 @@ const freshnessM = vi.fn(
   }),
 );
 const systemdDaemonReloadM = vi.fn(async (): Promise<void> => undefined);
-const stagingReadinessM = vi.fn(async (before: { mainPid?: number }) => ({
-  ready: true,
-  observed: true,
-  outcome: 'ready' as const,
-  pidChanged: true,
-  observedPid: (before.mainPid ?? 0) + 1,
-  activeState: 'active',
-  result: 'success',
-  listener: {
-    port: 3170,
-    checked: true,
-    ownedByPid: true,
-    ownerVisible: true,
-    observedPids: [(before.mainPid ?? 0) + 1],
-    detail: 'listener belongs to replacement',
-  },
-  waitedMs: 5,
-}));
+const stagingReadinessM = vi.fn(
+  async (before: { mainPid?: number }): Promise<StagingRestartReadiness> => ({
+    ready: true,
+    observed: true,
+    outcome: 'ready' as const,
+    pidChanged: true,
+    observedPid: (before.mainPid ?? 0) + 1,
+    activeState: 'active',
+    result: 'success',
+    listener: {
+      port: 3170,
+      checked: true,
+      ownedByPid: true,
+      ownerVisible: true,
+      observedPids: [(before.mainPid ?? 0) + 1],
+      detail: 'listener belongs to replacement',
+    },
+    waitedMs: 5,
+  }),
+);
 /** Drive guardResource's mock as `(spec, run) => run(fence)` — a thin,
  *  explicitly-typed stand-in for the real drain+fence primitive (which has
  *  its own coverage elsewhere) so `run` never infers to `never` through the
  *  generic mock. */
-const runGuard = (fence: Fence) => async (_spec: unknown, run: (f: Fence) => Promise<unknown>) => ({
-  acquired: true,
-  result: await run(fence),
-  lock_id: 'L-test',
+const runGuard =
+  (fence: Fence) =>
+  async <T>(_spec: GuardSpec, run: (f: FenceToken) => Promise<T>): Promise<GuardOutcome<T>> => ({
+    acquired: true,
+    result: await run({
+      resource: 'test-resource',
+      coordinationDomain: 'test-domain',
+      lockId: 'L-test',
+      mode: 'exclusive',
+      seq: fence.seq ?? 1,
+      assertCurrent: fence.assertCurrent,
+    }),
+    lock_id: 'L-test',
+  });
+const fenceOk = (seq = 1): Fence => ({
+  assertCurrent: async () => ({ current: true, live_fence_seq: seq }),
+  seq,
 });
-const fenceOk = (seq = 1): Fence => ({ assertCurrent: async () => ({ current: true }), seq });
 const fenceStale = (seq = 1): Fence => ({
   assertCurrent: async () => ({ current: false, reason: 'superseded', live_fence_seq: 2 }),
   seq,
@@ -323,6 +338,7 @@ beforeEach(() => {
 
 afterAll(() => {
   configureBgHostRestartFreshnessReaderForTests();
+  configureStagingRestartReadinessReaderForTests();
   configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   else process.env.PAPERCUSP_ALLOW_DEV_RESTART = ORIGINAL_ENV;
@@ -1343,7 +1359,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
   });
 
   it('also clears a failed MainPID=0 unit when systemd retains Result=exit-code', async () => {
-    acquireM.mockResolvedValue({
+    mockResolvedTyped(acquireM, {
       ok: true,
       mode: 'exclusive',
       status: 'held',
@@ -1351,14 +1367,14 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       expires_ts: new Date(),
       shared_holders: [],
       fence_seq: 1,
-    } as never);
-    guardM.mockImplementation(runGuard(fenceOk(10)) as never);
-    probeM.mockResolvedValue({
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(10)));
+    mockResolvedTyped(probeM, {
       ok: true,
       mainPid: 0,
       activeState: 'failed',
       result: 'exit-code',
-    } as never);
+    });
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
@@ -1375,7 +1391,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
   });
 
   it('does not report restarted when the detached staging command is not observed succeeding', async () => {
-    acquireM.mockResolvedValue({
+    mockResolvedTyped(acquireM, {
       ok: true,
       mode: 'exclusive',
       status: 'held',
@@ -1383,9 +1399,9 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       expires_ts: new Date(),
       shared_holders: [],
       fence_seq: 1,
-    } as never);
-    guardM.mockImplementation(runGuard(fenceOk(10)) as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 0, activeState: 'failed', result: 'exit-code' } as never);
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(10)));
+    mockResolvedTyped(probeM, { ok: true, mainPid: 0, activeState: 'failed', result: 'exit-code' });
     stagingReadinessM.mockResolvedValueOnce({
       ready: false,
       observed: false,
@@ -1412,11 +1428,11 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
   });
 
   it('observes the real staging transition through new-PID listener ownership', async () => {
-    probeM.mockResolvedValueOnce({ ok: true, mainPid: 5252, activeState: 'active', result: 'success' } as never);
-    listeningSocketsM.mockResolvedValue({
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, activeState: 'active', result: 'success' });
+    mockResolvedTyped(listeningSocketsM, {
       ...gatewayListenerResult(5252),
-      sockets: gatewayListenerResult(5252).sockets.map((socket: { port: number }) => ({ ...socket, port: 3170 })),
-    } as never);
+      sockets: gatewayListenerResult(5252).sockets.map((socket) => ({ ...socket, port: 3170 })),
+    });
 
     const readiness = await waitForStagingRestartReadiness({
       ok: true,

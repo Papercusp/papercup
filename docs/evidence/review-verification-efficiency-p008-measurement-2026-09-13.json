@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 bounded before/after measurement and refusal controls",
+  "framework": "operational",
+  "command": [
+    "ptool",
+    "dev:pg_query + work_items:complete(validateOnly) + plans:evaluate-spec-test-adequacy + scorecards:evaluate",
+    "--url=http://localhost:3170",
+    "--workspace=papercusp-workspace"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-13T07:57:28.477Z",
+  "finishedAt": "2026-09-13T08:33:00.000Z",
+  "summary": "The bounded P-008 cohort shows lower current-build completion-dispatch friction and near-elimination of sentence-grammar refusals without removing product checks. A remaining v2 false rejection was found, fixed at commit 29d342360971f0297b0b9f36816a878a935e78b7, verified by 699 acceptance tests and live validateOnly controls, and separated from still-old deployed build e66be3c4ff. General agent-tool latency regressed in this short window; no causal attribution or fleet-wide escaped-defect claim is made.",
+  "population": {
+    "checked": [
+      "P-001 baseline completion-dispatch cohort: 2026-09-02T00:00:00Z through 2026-09-09T00:00:00Z",
+      "P-008 post-P-002 completion-dispatch cohort: 2026-09-11T02:51:14.782Z through 2026-09-13T08:00:00Z",
+      "Post cohort on serving builds other than deployed e66be3c4ff: 790 work_items:complete calls from 83 agents",
+      "Post cohort still served by deployed e66be3c4ff: 1062 work_items:complete calls",
+      "Matched local/staging test-file paths present in baseline and post windows: 1041",
+      "Plan item workflows P-003 through P-007: WI-10000980 through WI-10000984",
+      "P-008 live validateOnly controls: positive structured evidence, incomplete evidence, identical predictions",
+      "P-008 stale-proof replay: SPEC-P002-COMPLETION-CONTRACT@1",
+      "P-008 self-review preflight: acceptance-review-verification-efficiency-2026-09-09@3",
+      "P-008 acceptance test run group ccce83c6-bae2-4779-8de1-49fa2256f35d: 12 requested/matched/executed files",
+      "Plan-surfaced defect/follow-up rows checked: EI-23074025929199961, EI-23131390361609814, EI-23131564135958331, EI-23131720079991421, EI-20253384051880991, EI-23133597080653238, EI-23134487722445604"
+    ],
+    "notChecked": [
+      "Native-shell calls outside the MCP invocation ledger",
+      "Fleet-wide escaped-defect census",
+      "Queue/admission, model-inference, and human-idle time for every plan",
+      "A randomized counterfactual with verification removed",
+      "Completed-plan medians after P-002; the pilot plan is still unfinished in this measurement"
+    ],
+    "notApplicable": [
+      "Aggregate test-file duration as plan elapsed time",
+      "A force-past-red deployment",
+      "A new standing monitoring system"
+    ],
+    "residue": []
+  },
+  "measurements": {
+    "completionDispatch": {
+      "writer": "packages/operator-core/lib/projected-tool-deps.ts: buildTelemetryRow stamps dispatch-settle invokedAt, status, callOrigin, owner and servingBuildSha into harness_shared.tool_invocations",
+      "denominator": "agent-origin work_items:complete dispatches in harness papercusp",
+      "baselineRecent": {
+        "window": "2026-09-02T00:00:00Z/2026-09-09T00:00:00Z",
+        "calls": 9140,
+        "nonOk": 1833,
+        "nonOkPercent": 20.1,
+        "sentenceGrammarRefusals": 1429,
+        "sentenceRefusalsPercentOfCalls": 15.6,
+        "sentenceRefusalsPercentOfNonOk": 78.0
+      },
+      "postCurrentBuilds": {
+        "window": "2026-09-11T02:51:14.782Z/2026-09-13T08:00:00Z",
+        "servingBuildPredicate": "serving_build_sha <> e66be3c4ff",
+        "calls": 790,
+        "owners": 83,
+        "nonOk": 67,
+        "nonOkPercent": 8.5,
+        "sentenceGrammarRefusals": 1,
+        "sentenceRefusalsPercentOfCalls": 0.13,
+        "sentenceRefusalsPercentOfNonOk": 1.5,
+        "interpretation": "The one refusal was a genuine remaining false rejection on descendant build 9d1890626d and led to the P-008 fix. This cohort is shorter and not randomized."
+      },
+      "postOldDeployedBuild": {
+        "window": "2026-09-11T02:51:14.782Z/2026-09-13T08:00:00Z",
+        "servingBuildSha": "e66be3c4ff",
+        "calls": 1062,
+        "nonOk": 319,
+        "sentenceGrammarRefusals": 210,
+        "interpretation": "The old parser remains deployed during current-build acceptance; this is delivery pending, not evidence that the committed staging fix failed."
+      }
+    },
+    "agentToolLatency": {
+      "writer": "packages/operator-core/lib/projected-tool-deps.ts duration_ms is dispatcher settlement latency; call_origin is defined by telemetry-call-origin.ts",
+      "baselineRecent": {
+        "medianMs": 191,
+        "p95Ms": 10294
+      },
+      "postWindow": {
+        "calls": 139394,
+        "medianMs": 394,
+        "p95Ms": 13390
+      },
+      "interpretation": "The short post window is slower. The query does not identify queue, inference, database, or other causes, so no load or plan-duration attribution is made."
+    },
+    "matchedTestFiles": {
+      "writer": "libs/test-config/src/admin-test-runs-reporter.ts writes one diagnostic-duration row per completed Vitest module",
+      "matchedFilePaths": 1041,
+      "baselineMedianOfFileMediansMs": 29.0,
+      "postMedianOfFileMediansMs": 30.5,
+      "medianPairedRatio": 1.063,
+      "interpretation": "Per-file module diagnostics are not additive and do not include all startup, admission, queueing, or plan time."
+    },
+    "planWorkflow": {
+      "completionCallsP003ThroughP007": 20,
+      "completionCallsOk": 19,
+      "completionCallsInvalidInput": 1,
+      "validateOnlyCalls": 7,
+      "terminalOrRecordCalls": 13,
+      "p007ClaimToTerminalMinutes": 433.5,
+      "unfinishedPlanAgeHoursAtSnapshot": 87.03,
+      "interpretation": "These are ledgered mechanical calls and elapsed wall time, not exclusive engineering time. P-002 had no attributable call in this exact args-json slice and is not silently imputed."
+    },
+    "testing": {
+      "finalAcceptanceRunGroup": "ccce83c6-bae2-4779-8de1-49fa2256f35d",
+      "testedSha": "29d342360971f0297b0b9f36816a878a935e78b7",
+      "files": 12,
+      "testsPassed": 699,
+      "testsFailed": 0,
+      "testsSkipped": 0,
+      "testedPathsCleanAtPreRun": true,
+      "reporterWorktreeDirty": true,
+      "dirtyScopeNote": "The router's pre-run provenance reported uncommitted=0 for all 12 named test paths at SHA 29d3423609. The reporter's repo-wide dirty bit was true because separate prompt-guidance files were edited during the run; it does not identify a mutation to those 12 tested paths or their relevant source graph.",
+      "promptGuidanceTestsPassed": 137,
+      "focusedContractTestsPassed": 422,
+      "justifiedReruns": [
+        "The first two-file contract run exposed four stale/budget assertions caused by the contract change; those assertions were corrected and the exact pair reran once.",
+        "The final 12-file matrix ran once after the fix. Its status projection remained stale-running after task exit, but all 12 durable test rows passed; it was not rerun solely to reconstruct a receipt."
+      ]
+    }
+  },
+  "controls": [
+    {
+      "id": "structured-positive",
+      "passed": true,
+      "evidence": "Current-build work_items:complete validateOnly accepted an ordinary procedure sentence plus distinct typed predictedObservations and returned work-items-completion-v2 with all seven requirements in one response."
+    },
+    {
+      "id": "partial-refuses-completely",
+      "passed": true,
+      "evidence": "The same handler returned exactly five missing v2 fields together: testProcedure, both predictedObservations arms, actualObservation, and evidenceRefs; it wrote no completion or lifecycle transition."
+    },
+    {
+      "id": "false-identical-predictions-refuse",
+      "passed": true,
+      "evidence": "Identical typed predictions were rejected at completion.rootCauseVerification.predictedObservations.alternativeHypothesis with the structured-difference constraint."
+    },
+    {
+      "id": "stale-proof-refuses",
+      "passed": true,
+      "evidence": "Current evaluator 29d3423609 replayed the three exact SPEC-P002-COMPLETION-CONTRACT@1 references after their source/test changed and returned verdict=fail, wouldBlock=[freshness], with server-measured source-stale/test-stale/testRun-stale reasons."
+    },
+    {
+      "id": "caller-cannot-forge-stale",
+      "passed": true,
+      "evidence": "Supplying a fake source fingerprint for server-measured P-007 operational evidence did not override recomputation; freshness remained current. The row still failed unrelated completeness criteria, so no false passing verdict was produced."
+    },
+    {
+      "id": "self-review-refuses",
+      "passed": true,
+      "evidence": "Current scorecards:evaluate marked su-97fccf61-e827-47ed-b670-751d6675a8a9 disqualified and blocksEmit=true with code grader_in_implementer_lineage, naming all principal implementers."
+    },
+    {
+      "id": "validate-only-no-write",
+      "passed": true,
+      "evidence": "Before and after the three live controls, EI-20253384051880991 remained open/unassigned, updatedAt stayed 2026-09-13T08:03:34.235Z, closedAt stayed null, completion stayed null, hasCompletionEvidence stayed false, and lifecycleCount stayed 3."
+    }
+  ],
+  "defects": {
+    "checked": 7,
+    "resolved": [
+      "EI-23074025929199961"
+    ],
+    "open": [
+      "EI-23131390361609814",
+      "EI-23131564135958331",
+      "EI-23131720079991421",
+      "EI-20253384051880991",
+      "EI-23133597080653238",
+      "EI-23134487722445604"
+    ],
+    "reopened": [
+      "EI-20253384051880991"
+    ],
+    "newlyPreventedBeforeShipment": "The live post-change sentence-grammar false rejection was caught during P-008 and fixed before plan shipment."
+  },
+  "sourceRefs": {
+    "workItem": "WI-10000985",
+    "plan": "review-verification-efficiency-2026-09-09",
+    "baselineReport": "scratchpad/plan-throughput-verification-audit-2026-09-09.md",
+    "completionValidator": "packages/operator-core/lib/coord-lifecycle/records.ts",
+    "completionHandler": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
+    "completionTests": "packages/operator-core/lib/agent-tools/work_items/complete.test.ts",
+    "discoveryTests": "packages/operator-core/lib/agent-tools/tools/find.test.ts",
+    "promptSource": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+    "acceptanceRubric": "acceptance-review-verification-efficiency-2026-09-09@3",
+    "verifiedVia": "current-build :3170 plus read-only durable ledgers"
+  }
+}

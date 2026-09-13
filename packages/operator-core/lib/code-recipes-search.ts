@@ -36,12 +36,12 @@ import {
   type RecipeAuthorityProof,
   type RecipeAuthorityRefs,
 } from './recipe-authority';
-import { stampEmbedderMode } from './search/embedder-mode-registry';
 import {
   proseProfilePredicateSql,
   resolveProseProfileIdSelection,
   type ProseProfileSelection,
 } from './search/prose-vector-dims';
+import { proseMinScoreFloors } from './search/prose-min-score';
 
 /**
  * EI-9312: bound the ACTUAL per-query embed call, not just the embedder's
@@ -82,7 +82,14 @@ export const codeRecipesSource: SearchSource = {
        WHERE status = 'active'
          AND title_tsv @@ ${orQuery}
     ORDER BY rank DESC LIMIT ${limit}
-    `) as unknown as Array<{ id: string; title: string; description: string; run_count: number | string; tools_used: string[] | null; rank: number }>;
+    `) as unknown as Array<{
+      id: string;
+      title: string;
+      description: string;
+      run_count: number | string;
+      tools_used: string[] | null;
+      rank: number;
+    }>;
     return rows.map((r) => ({
       key: `code_recipes:${r.id}`,
       score: r.rank,
@@ -109,7 +116,14 @@ export const codeRecipesSource: SearchSource = {
          AND ${proseProfilePredicateSql(sql as postgres.Sql, selection, 'embedding_profile', 'embedding_mode')}
     ORDER BY embedding <=> ${qVec}::vector
        LIMIT ${limit}
-    `) as unknown as Array<{ id: string; title: string; description: string; run_count: number | string; tools_used: string[] | null; sim: number }>;
+    `) as unknown as Array<{
+      id: string;
+      title: string;
+      description: string;
+      run_count: number | string;
+      tools_used: string[] | null;
+      sim: number;
+    }>;
     return rows.map((r) => ({
       key: `code_recipes:${r.id}`,
       score: r.sim,
@@ -195,17 +209,18 @@ export async function searchSimilarRecipes(
   const limit = input.limit ?? 5;
   const query = `${input.title}\n${input.description}`;
 
-  // Feed the PRE-COMPUTED embedding straight through as a one-shot embedder so
-  // runHybridSearch reuses it (no second embed of the same text) — the cosine
-  // leg still runs even when no live embedder was wired, as long as the caller
-  // computed the vector once for the upsert.
-  let embedder = deps.embedder ?? null;
+  let queryVector: number[] | undefined;
+  let queryVectorProfile: ProseProfileSelection | undefined;
   if (input.embedding && input.embedding.length > 0) {
     if (!input.embeddingMode || !input.embeddingProfile) {
       throw new Error('searchSimilarRecipes: a pre-computed embedding requires exact mode and profile provenance');
     }
-    embedder = async () => input.embedding as number[];
-    stampEmbedderMode(embedder, input.embeddingMode, input.embeddingProfile.profileId);
+    queryVectorProfile =
+      resolveProseProfileIdSelection(input.embeddingProfile.profileId, input.embeddingMode) ?? undefined;
+    if (!queryVectorProfile) {
+      throw new Error('searchSimilarRecipes: pre-computed embedding profile is not accepted by prose storage');
+    }
+    queryVector = input.embedding;
   }
 
   // Over-fetch so the exclude + structural re-rank + HARD entity filter have
@@ -222,7 +237,14 @@ export async function searchSimilarRecipes(
     scopeFilter: null,
     limit: searchLimit,
     mode: 'hybrid',
-    embedder,
+    embedder: deps.embedder ?? null,
+    ...(queryVector
+      ? {
+          queryVector,
+          embeddingProfile: queryVectorProfile,
+          minScore: proseMinScoreFloors(input.embeddingMode ?? undefined),
+        }
+      : {}),
     embedTimeoutMs: RECIPE_EMBED_CALL_TIMEOUT_MS,
     log: deps.log,
   });
