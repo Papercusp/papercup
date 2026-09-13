@@ -12,7 +12,7 @@
  * afterEach so a thrown assertion can't leak a dir or an open store.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import Corestore from 'corestore';
 import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, tmpdir, userInfo } from 'node:os';
@@ -32,6 +32,7 @@ import {
 import { DROP_SNAPSHOT_ROW, produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
 const cleanups: Array<() => void | Promise<void>> = [];
+const NEVER_EMIT_MARKER = 'never-emit-me';
 
 afterEach(async () => {
   while (cleanups.length) {
@@ -95,6 +96,74 @@ interface TestCore {
 }
 
 describe('corestore seed provider', () => {
+  it('delivers bounded fold attribution through the default seed sink', async () => {
+    const source = makeStore(tmpDir('seed-stall-source-'));
+    const staging = makeStore(tmpDir('seed-stall-staging-'));
+    await source.ready();
+    await staging.ready();
+    const own = await openOwnLog(source);
+    await own.append({ ...op(0), value: { secret: NEVER_EMIT_MARKER } });
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let reportStall!: () => void;
+    const reported = new Promise<void>((resolve) => { reportStall = resolve; });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => reportStall());
+    const originalStoreGet = source.get.bind(source);
+    const restoreReads: Array<() => void> = [];
+    const storeReads = vi.spyOn(source, 'get').mockImplementation((...args) => {
+      const result = originalStoreGet(...args);
+      const core = result as unknown as TestCore;
+      const originalCoreGet = core.get.bind(core);
+      const coreReads = vi.spyOn(core, 'get').mockImplementation(async (index, options) => {
+        await readGate;
+        return originalCoreGet(index, options);
+      });
+      restoreReads.push(() => coreReads.mockRestore());
+      return result;
+    });
+    let settled = false;
+    const pending = mintFilteredSeedContentCore({
+      sourceStore: source,
+      ownerKeyHex: own.keyHex,
+      stagingStore: staging,
+      redactValues: [],
+      filteredScanStallMs: 25,
+      onProjection: () => {},
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+    try {
+      await reported;
+      expect(errors).toHaveBeenCalledTimes(1);
+      const message = String(errors.mock.calls[0]![0]);
+      for (const field of [
+        '[seed:corestore]',
+        'phase=filtered-source-scan',
+        `core=${own.keyHex}`,
+        'sourceStart=0',
+        'sourceEnd=1',
+        'cursor=0/1',
+        'decodedOps=0',
+        'decodedBytes=0',
+        'stalledForMs=',
+      ]) expect(message).toContain(field);
+      expect(message).not.toContain(NEVER_EMIT_MARKER);
+      expect(message.length).toBeLessThan(600);
+      await new Promise<void>((resolve) => setTimeout(resolve, 75));
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      releaseRead();
+      expect((await pending).length).toBeGreaterThan(0);
+    } finally {
+      releaseRead();
+      await pending;
+      for (const restore of restoreReads) restore();
+      storeReads.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
   it('cut → restore pre-positions blocks offline; replication carries only the delta; no own-log collision', async () => {
     // --- Peer A (owner): an admitted author log with 3 ops ---
     const dirA = tmpDir('seed-A-');

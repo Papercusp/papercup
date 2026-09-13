@@ -2,13 +2,54 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   produceLogSnapshot,
   produceFilteredSnapshotIntoLog,
+  formatSnapshotFoldStall,
   SnapshotRowFolder,
   isSnapshotOp,
   SNAPSHOT_READ_CONCURRENCY,
+  FILTERED_SNAPSHOT_SCAN_STALL_MS,
   type SnapshotPayload,
   type SnapshotFoldProgress,
 } from '../log-snapshot';
 import type { OwnLog, PeerLogOp } from '../peer-log';
+
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
+describe('bounded snapshot fold stall formatting', () => {
+  it('bounds and sanitizes attribution labels without serializing extra data', () => {
+    const diagnostic = {
+      phase: `fold\n\u001b${'x'.repeat(10_000)}`,
+      coreKey: `core\r\n${'a'.repeat(10_000)}`,
+      sourceStart: 12,
+      sourceEnd: 32,
+      processed: 24,
+      total: 32,
+      decodedOps: 12,
+      decodedBytes: 1024,
+      stalledForMs: 30_000,
+      rawValue: { secret: NEVER_EMIT_MARKER },
+    };
+    const message = formatSnapshotFoldStall(diagnostic);
+    expect(message).toContain(`phase=fold__${'x'.repeat(58)}`);
+    expect(message).toContain(`core=core__${'a'.repeat(58)}`);
+    expect(message).toContain('sourceStart=12 sourceEnd=32 cursor=24/32 decodedOps=12 decodedBytes=1024 stalledForMs=30000');
+    expect(message).not.toMatch(/[\r\n\u001b]|rawValue/);
+    expect(message).not.toContain(NEVER_EMIT_MARKER);
+    expect(message.length).toBeLessThan(300);
+  });
+
+  it('reports unknown rather than inventing an absent core identity', () => {
+    expect(formatSnapshotFoldStall({
+      phase: 'source-scan',
+      sourceStart: 0,
+      sourceEnd: 1,
+      processed: 0,
+      total: 1,
+      decodedOps: 0,
+      decodedBytes: 0,
+      stalledForMs: 30_000,
+    })).toBe('phase=source-scan core=unknown sourceStart=0 sourceEnd=1 cursor=0/1 decodedOps=0 decodedBytes=0 stalledForMs=30000');
+  });
+});
 
 /**
  * EI-20108164746219771 — the SERVER installer ships the build box owner's identity.
@@ -388,6 +429,100 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
       expect(stalls).toHaveLength(1);
       void pending;
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { mode: 'own', sink: 'default' },
+    { mode: 'filtered', sink: 'default' },
+    { mode: 'own', sink: 'custom' },
+    { mode: 'filtered', sink: 'custom' },
+  ])('delivers attributed $mode stalls through the $sink sink without aborting', async ({ mode, sink }) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const customStall = vi.fn();
+    const source = memLog('ab'.repeat(32));
+    const total = SNAPSHOT_READ_CONCURRENCY + 1;
+    let decodedBytes = 0;
+    for (let index = 0; index < total; index++) {
+      const operation = put('private-table', `private-row-${index}`, { secret: NEVER_EMIT_MARKER }, index);
+      await source.append(operation);
+      if (index < SNAPSHOT_READ_CONCURRENCY) decodedBytes += Buffer.byteLength(JSON.stringify(operation), 'utf8');
+    }
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let reportBlocked!: () => void;
+    const blocked = new Promise<void>((resolve) => { reportBlocked = resolve; });
+    const originalGet = source.get.bind(source);
+    let tailReads = 0;
+    const reads = vi.spyOn(source, 'get').mockImplementation(async (index) => {
+      if (index === SNAPSHOT_READ_CONCURRENCY && ++tailReads === (mode === 'own' ? 2 : 1)) {
+        reportBlocked();
+        await readGate;
+      }
+      return originalGet(index);
+    });
+    const options = { now: 2000, schemaVersion: 1, ...(sink === 'custom' ? { onStall: customStall } : {}) };
+    let settled = false;
+    const pending = (mode === 'own'
+      ? produceLogSnapshot(source, options)
+      : produceFilteredSnapshotIntoLog(source, memLog('synthetic-seed-core'), options)
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+    try {
+      await blocked;
+      await vi.advanceTimersByTimeAsync(FILTERED_SNAPSHOT_SCAN_STALL_MS - 1);
+      expect(errors).not.toHaveBeenCalled();
+      expect(customStall).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const phase = mode === 'own' ? 'own-compaction' : 'filtered-source-scan';
+      if (sink === 'default') {
+        expect(errors).toHaveBeenCalledTimes(1);
+        const message = String(errors.mock.calls[0]![0]);
+        for (const field of [
+          `phase=${phase}`,
+          `core=${source.keyHex}`,
+          'sourceStart=0',
+          `sourceEnd=${total}`,
+          `cursor=${SNAPSHOT_READ_CONCURRENCY}/${total}`,
+          `decodedOps=${SNAPSHOT_READ_CONCURRENCY}`,
+          `decodedBytes=${decodedBytes}`,
+          `stalledForMs=${FILTERED_SNAPSHOT_SCAN_STALL_MS}`,
+        ]) expect(message).toContain(field);
+        expect(message).not.toMatch(/private-table|private-row/);
+        expect(message).not.toContain(NEVER_EMIT_MARKER);
+        expect(message.length).toBeLessThan(600);
+      } else {
+        expect(errors).not.toHaveBeenCalled();
+        expect(customStall).toHaveBeenCalledExactlyOnceWith({
+          phase,
+          coreKey: source.keyHex,
+          sourceStart: 0,
+          sourceEnd: total,
+          processed: SNAPSHOT_READ_CONCURRENCY,
+          total,
+          decodedOps: SNAPSHOT_READ_CONCURRENCY,
+          decodedBytes,
+          stalledForMs: FILTERED_SNAPSHOT_SCAN_STALL_MS,
+        });
+      }
+      await vi.advanceTimersByTimeAsync(FILTERED_SNAPSHOT_SCAN_STALL_MS * 2);
+      expect(errors).toHaveBeenCalledTimes(sink === 'default' ? 1 : 0);
+      expect(customStall).toHaveBeenCalledTimes(sink === 'custom' ? 1 : 0);
+      expect(settled).toBe(false);
+      releaseRead();
+      expect((await pending).appended).toBe(true);
+      await vi.advanceTimersByTimeAsync(FILTERED_SNAPSHOT_SCAN_STALL_MS * 2);
+      expect(errors).toHaveBeenCalledTimes(sink === 'default' ? 1 : 0);
+      expect(customStall).toHaveBeenCalledTimes(sink === 'custom' ? 1 : 0);
+    } finally {
+      releaseRead();
+      await pending;
+      reads.mockRestore();
+      errors.mockRestore();
       vi.useRealTimers();
     }
   });

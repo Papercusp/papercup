@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RpcFrame, SuStdioPeer } from './su-session-stdio-peer';
 
-const processState = vi.hoisted(() => ({ children: new Map<string, ChildProcess>(), stderr: '' }));
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
+const processState = vi.hoisted(() => ({ children: new Map<string, ChildProcess>(), stderr: '', killFailure: '' }));
 vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (binary: string, args: string[], _spec: unknown, options: { spawnOptions: object }) => {
   const child = spawn(binary, args, options.spawnOptions);
   const taskId = randomUUID(); processState.children.set(taskId, child);
@@ -17,7 +19,8 @@ vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (binary: st
   return { child, taskId };
 } }));
 vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
-  processState.children.get(taskId)?.kill('SIGKILL'); return { ok: true };
+  processState.children.get(taskId)?.kill('SIGKILL');
+  return processState.killFailure ? { ok: false, error: 'command_failed', detail: processState.killFailure } : { ok: true };
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
@@ -27,7 +30,7 @@ const homes: string[] = [];
 afterEach(async () => {
   for (const peer of peers.splice(0)) await peer.close();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
-  processState.children.clear(); processState.stderr = '';
+  processState.children.clear(); processState.stderr = ''; processState.killFailure = '';
 });
 
 async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}) {
@@ -40,6 +43,25 @@ async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {},
 }
 
 describe('native JSON-line pipe transport', () => {
+  it('preserves the tracked teardown cause while redacting credentials', async () => {
+    const secret = NEVER_EMIT_MARKER;
+    const p = await peer(process.execPath, ['-e', `
+      setInterval(()=>{},1000);
+      process.stdin.on('data',line=>process.stdout.write(JSON.stringify({id:JSON.parse(line).id,result:{ready:true}})+'\\n'));
+    `], { PUI_TEST_SECRET: secret });
+    await p.request({ method: 'initialize' });
+    processState.killFailure = `Unit pc-test.scope not loaded; credential=${secret}`;
+    try {
+      const failure = await p.close().catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain('Unit pc-test.scope not loaded');
+      expect((failure as Error).message).not.toContain(secret);
+    } finally {
+      peers.splice(peers.indexOf(p), 1);
+      await p.done;
+    }
+  });
+
   it('separates responses, notifications and server requests across fragmented writes', async () => {
     const events: RpcFrame[] = [];
     const p = await peer(process.execPath, ['-e', `
@@ -70,6 +92,25 @@ describe('native JSON-line pipe transport', () => {
     const p = await peer(process.execPath, ['-e', "process.stdin.once('data',()=>process.stdout.write('not json\\n'))"]);
     await expect(p.request({ method: 'initialize' })).rejects.toThrow();
     await expect(p.done).rejects.toThrow();
+  });
+
+  it('retains a bounded startup diagnostic and redacts credentials split across stderr writes', async () => {
+    const secret = NEVER_EMIT_MARKER;
+    const p = await peer(process.execPath, ['-e', `
+      process.stdin.once('data',()=>{
+        const secret=process.env.PUI_TEST_SECRET;
+        process.stderr.write('x'.repeat(20000)+'\\nNative config refused\\nAuthorization: Bearer '+secret.slice(0,12));
+        setTimeout(()=>process.stderr.write(secret.slice(12)+'\\n',()=>process.exit(7)),5);
+      });
+    `], { PUI_TEST_SECRET: secret });
+    const failure = await p.request({ method: 'initialize' }).catch((error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain('Native config refused');
+    expect(message).toContain('[redacted]');
+    expect(message).not.toContain(secret);
+    expect(message.length).toBeLessThanOrEqual(3000);
+    await expect(p.done).rejects.toThrow('Native config refused');
   });
 });
 
