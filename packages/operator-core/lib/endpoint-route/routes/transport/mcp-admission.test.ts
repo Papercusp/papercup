@@ -22,12 +22,16 @@ import {
   isBoundedCoordRosterArgs,
   isBoundedCoordInboxArgs,
   isBoundedCoordDeclareIntentArgs,
+  isBoundedDocsGetArgs,
   isBoundedEventsStatusArgs,
   isBoundedBashOutputArgs,
+  isBoundedGitSyncRunArgs,
+  isBoundedSessionRequestCompactionArgs,
   isBoundedLoopArmArgs,
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
   isBoundedSessionsSearchArgs,
+  isBoundedWorkItemsSearchArgs,
   isBoundedWorkItemsSetStateArgs,
 } from './mcp-admission';
 
@@ -308,6 +312,219 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     ]) {
       expect(classifyMcpBody(toolsCall(12, 'work_items:get', args))).toEqual({ sheddable: true, id: 12 });
     }
+  });
+
+  it.each([
+    ['canonical', 'docs:get'],
+    ['underscore', 'docs_get'],
+    ['mcp-advertised', 'mcp__papercusp-su__docs_get'],
+    ['mcp-advertised-underscore', 'mcp__papercusp_su__docs_get'],
+  ])('does NOT shed a bounded single-page docs:get recovery read under critical pressure: %s', (_label, name) => {
+    const args = {
+      slugs: ['agent-insights/coordination/checkpoints-and-facts'],
+      harness: 'engineering',
+    };
+    expect(isBoundedDocsGetArgs(args)).toBe(true);
+    const body = toolsCall(12, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps batched, partial-source, malformed, and oversized docs:get reads sheddable under critical pressure', () => {
+    for (const args of [
+      { slugs: ['one', 'two'] },
+      { slugs: [] },
+      { slugs: ['one'], slug: 'one' },
+      { slugs: ['one'], source: true, heading: 'intro' },
+      { slugs: ['one'], offset: -1 },
+      { slugs: ['one'], offset: Number.MAX_SAFE_INTEGER + 1 },
+      { slugs: ['one'], source: 'true' },
+      { slugs: ['one'], heading: 'x'.repeat(257) },
+      { slugs: ['one'], harness: 'x'.repeat(121) },
+      { slugs: ['x'.repeat(513)] },
+      { slugs: ['one'], extra: 'unbounded' },
+    ]) {
+      expect(isBoundedDocsGetArgs(args)).toBe(false);
+      const body = toolsCall(13, 'docs:get', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 13 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded docs:get through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 14,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__docs_get',
+          args: { slugs: ['agent-insights/coordination/checkpoints-and-facts'], harness: 'all' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'work_items:search'],
+    ['underscore', 'work_items_search'],
+    ['mcp-advertised', 'mcp__papercusp-su__work_items_search'],
+    ['mcp-advertised-underscore', 'mcp__papercusp_su__work_items_search'],
+  ])('does NOT shed a bounded lexical-only work_items:search under critical pressure: %s', (_label, name) => {
+    const args = {
+      query: 'request shed during validation drain',
+      harness: 'papercusp',
+      kind: 'bug',
+      limit: 5,
+      semantic: false,
+      includeObservations: false,
+    };
+    expect(isBoundedWorkItemsSearchArgs(args)).toBe(true);
+    const body = toolsCall(12, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps semantic, broad, malformed, and enriched work_items:search forms sheddable under critical pressure', () => {
+    for (const args of [
+      { query: 'recover this', limit: 5 },
+      { query: 'recover this', semantic: true, limit: 5 },
+      { query: 'recover this', semantic: false, limit: 21 },
+      { query: 'recover this', semantic: false, limit: 0 },
+      { query: 'recover this', semantic: false, limit: 5, includeObservations: true },
+      { query: 'recover this', semantic: false, cursor: 'opaque' },
+      { query: 'x'.repeat(401), semantic: false, limit: 5 },
+      { query: 'recover this', semantic: false, harness: 'x'.repeat(81), limit: 5 },
+      { query: 'recover this', semantic: false, kind: 'x'.repeat(81), limit: 5 },
+      { query: 'recover this', semantic: false, limit: 5, extra: 'unbounded' },
+    ]) {
+      expect(isBoundedWorkItemsSearchArgs(args)).toBe(false);
+      const body = toolsCall(13, 'work_items:search', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 13 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded lexical-only work_items:search through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 14,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__work_items_search',
+          args: { query: 'request shed', semantic: false, limit: 5 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'git-sync:run',
+    'git_sync_run',
+    'mcp__papercusp-su__git_sync_run',
+    'mcp__papercusp_su__git_sync_run',
+  ])('does NOT shed a bounded read-only git-sync:run preview under critical pressure: %s', (name) => {
+    const args = { installSlug: 'papercusp', dryRun: true, reason: 'inspect the selected staging checkout' };
+    expect(isBoundedGitSyncRunArgs(args)).toBe(true);
+    const body = toolsCall(13, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps non-preview, ambiguous, malformed, or oversized git-sync:run shapes sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { installSlug: 'papercusp' },
+      { installSlug: 'papercusp', dryRun: false },
+      { installSlug: 'papercusp', dryRun: true, harness: 'papercusp' },
+      { installSlug: 'x'.repeat(121), dryRun: true },
+      { harness: 'papercusp', dryRun: true, reason: 'x'.repeat(1_001) },
+      { harness: 'papercusp', dryRun: true, reason: 42 },
+      { harness: 'papercusp', dryRun: true, extra: 'unbounded' },
+    ]) {
+      expect(isBoundedGitSyncRunArgs(args)).toBe(false);
+      const body = toolsCall(14, 'git-sync:run', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 14 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded read-only git-sync:run preview through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__git_sync_run',
+          args: { harness: 'papercusp', dryRun: true, reason: 'inspect before retry' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'session:request-compaction',
+    'session_request_compaction',
+    'mcp__papercusp-su__session_request_compaction',
+    'mcp__papercusp_su__session_request_compaction',
+  ])('does NOT shed a bounded session:request-compaction recovery call under critical pressure: %s', (name) => {
+    const args = {
+      focus: 'resume the current fleet lane',
+      autoContinue: false,
+      resumeMode: 'same',
+      reason: 'clean stopping point',
+      respawn: true,
+      continueNote: 'Re-orient from the carry document and resume the current fleet lane.',
+    };
+    expect(isBoundedSessionRequestCompactionArgs(args)).toBe(true);
+    const body = toolsCall(16, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps malformed or oversized session:request-compaction calls sheddable under critical pressure', () => {
+    for (const args of [
+      { focus: 'x'.repeat(601) },
+      { continueNote: 'x'.repeat(1_001) },
+      { reason: 'x'.repeat(601) },
+      { autoContinue: 'false' },
+      { respawn: 1 },
+      { resumeMode: 'fresh' },
+      { unsupported: true },
+    ]) {
+      expect(isBoundedSessionRequestCompactionArgs(args)).toBe(false);
+      const body = toolsCall(17, 'session:request-compaction', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 17 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded session:request-compaction through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 18,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__session_request_compaction',
+          args: { focus: 'resume the current lane', autoContinue: true, resumeMode: 'same' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
   it.each([
@@ -1743,10 +1960,148 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
   });
+  it('admits a bounded single-page docs:get under critical pressure so recovery can read the canonical runbook', async () => {
+    const req = post(
+      toolsCall(9, 'docs:get', {
+        slugs: ['agent-insights/coordination/checkpoints-and-facts'],
+        harness: 'engineering',
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('docs:get');
+  });
+  it('admits a bounded docs:get through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 10,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__docs_get',
+            args: { slugs: ['agent-insights/coordination/checkpoints-and-facts'], harness: 'all' },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds a batched docs:get under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(11, 'docs:get', { slugs: ['one', 'two'], harness: 'engineering' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
   it('admits a bounded testing:run-status read under critical pressure so a detached test can be recovered', async () => {
     const req = post(toolsCall(39, 'testing:run-status', { runId: 'run-1' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('testing:run-status');
+  });
+  it('admits a bounded lexical-only work_items:search under critical pressure', async () => {
+    const req = post(
+      toolsCall(46, 'work_items:search', {
+        query: 'request shed during validation drain',
+        harness: 'papercusp',
+        kind: 'bug',
+        limit: 5,
+        semantic: false,
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('work_items:search');
+  });
+  it('admits a bounded lexical-only work_items:search through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 47,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__work_items_search',
+            args: { query: 'request shed', semantic: false, limit: 5 },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds semantic work_items:search under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(48, 'work_items:search', { query: 'request shed', limit: 5 })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('admits a bounded read-only git-sync:run preview under critical pressure', async () => {
+    const req = post(
+      toolsCall(42, 'git-sync:run', {
+        installSlug: 'papercusp',
+        dryRun: true,
+        reason: 'inspect the selected staging checkout',
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('git-sync:run');
+  });
+  it('still sheds a commit-capable git-sync:run call under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(43, 'git-sync:run', { installSlug: 'papercusp', reason: 'commit current staging' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('admits session:request-compaction directly under critical pressure', async () => {
+    const req = post(
+      toolsCall(44, 'session:request-compaction', {
+        focus: 'resume the current lane',
+        autoContinue: true,
+        resumeMode: 'same',
+        reason: 'clean stopping point',
+        respawn: true,
+        continueNote: 'Re-orient from the carry document and resume the current lane.',
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('session:request-compaction');
+  });
+  it('admits session:request-compaction through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 45,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__session_request_compaction',
+            args: { focus: 'resume the current lane', autoContinue: true, resumeMode: 'same' },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
   });
   it('admits bounded post-compaction sessions:search self-recall under critical pressure', async () => {
     const req = post(toolsCall(40, 'sessions:search', {

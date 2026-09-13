@@ -186,7 +186,11 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'locks:queue',
     'tools:find',
     'plans:get',
+    'docs:get',
     'work_items:get',
+    'work_items:search',
+    'git-sync:run',
+    'session:request-compaction',
     'testing:run-status',
     'sessions:search',
     'loop:status',
@@ -221,6 +225,22 @@ const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const LOCKS_RELEASE_NAME = normalizeMcpName('locks:release');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const DOCS_GET_NAME = normalizeMcpName('docs:get');
+const CRITICAL_DOCS_GET_MAX_SLUG_CHARS = 512;
+const CRITICAL_DOCS_GET_MAX_HEADING_CHARS = 256;
+const CRITICAL_DOCS_GET_MAX_HARNESS_CHARS = 120;
+const WORK_ITEMS_SEARCH_NAME = normalizeMcpName('work_items:search');
+const CRITICAL_WORK_ITEMS_SEARCH_MAX_QUERY_CHARS = 400;
+const CRITICAL_WORK_ITEMS_SEARCH_MAX_HARNESS_CHARS = 80;
+const CRITICAL_WORK_ITEMS_SEARCH_MAX_KIND_CHARS = 80;
+const CRITICAL_WORK_ITEMS_SEARCH_MAX_LIMIT = 20;
+const GIT_SYNC_RUN_NAME = normalizeMcpName('git-sync:run');
+const CRITICAL_GIT_SYNC_RUN_MAX_SCOPE_CHARS = 120;
+const CRITICAL_GIT_SYNC_RUN_MAX_REASON_CHARS = 1_000;
+const SESSION_REQUEST_COMPACTION_NAME = normalizeMcpName('session:request-compaction');
+const CRITICAL_SESSION_COMPACTION_FOCUS_MAX_CHARS = 600;
+const CRITICAL_SESSION_COMPACTION_CONTINUE_NOTE_MAX_CHARS = 1_000;
+const CRITICAL_SESSION_COMPACTION_REASON_MAX_CHARS = 600;
 const TESTING_RUN_STATUS_NAME = normalizeMcpName('testing:run-status');
 const CRITICAL_TESTING_RUN_STATUS_MAX_RUN_ID_CHARS = 120;
 const SESSIONS_SEARCH_NAME = normalizeMcpName('sessions:search');
@@ -491,6 +511,142 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
   return true;
+}
+
+/**
+ * `docs:get` is the canonical runbook read needed to recover a stalled lane,
+ * but its normal schema can batch ten pages and page a large source. Keep the
+ * critical-pressure exception to one bounded slug and the engine's own capped
+ * single-page controls. Unknown/enriched fields, batches, and a partial source
+ * slice remain on the retryable path so the recovery reserve cannot become a
+ * document export lane.
+ */
+export function isBoundedDocsGetArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['slugs', 'heading', 'offset', 'source', 'harness']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    !Array.isArray(args.slugs) ||
+    args.slugs.length !== 1 ||
+    !isBoundedCriticalText(args.slugs[0], CRITICAL_DOCS_GET_MAX_SLUG_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    args.heading !== undefined &&
+    !isBoundedCriticalText(args.heading, CRITICAL_DOCS_GET_MAX_HEADING_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    args.offset !== undefined &&
+    (!Number.isSafeInteger(args.offset) || (args.offset as number) < 0)
+  ) {
+    return false;
+  }
+  if (args.source !== undefined && typeof args.source !== 'boolean') return false;
+  // The docs engine refuses this combination: a heading slice is not a whole
+  // canonical document, so do not reserve pressure capacity for it.
+  if (args.source === true && args.heading !== undefined) return false;
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_DOCS_GET_MAX_HARNESS_CHARS, true)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * `work_items:search` is the duplicate-detection read used during triage, but
+ * its default semantic leg can invoke the embedder and its normal result limit
+ * reaches 200 rows before the response shaper runs. Admit only the cheap
+ * lexical-only form with a small result page and bounded source filters while
+ * critical pressure is active. Explicit `includeObservations:false` is the
+ * harmless compatibility spelling of the default; observations and all other
+ * enrichment remain on the retryable path.
+ */
+export function isBoundedWorkItemsSearchArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['query', 'harness', 'kind', 'limit', 'semantic', 'includeObservations']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!isBoundedCriticalText(args.query, CRITICAL_WORK_ITEMS_SEARCH_MAX_QUERY_CHARS, true)) return false;
+  if (args.semantic !== false) return false;
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_WORK_ITEMS_SEARCH_MAX_HARNESS_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    args.kind !== undefined &&
+    !isBoundedCriticalText(args.kind, CRITICAL_WORK_ITEMS_SEARCH_MAX_KIND_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    args.limit !== undefined &&
+    (!Number.isInteger(args.limit) ||
+      (args.limit as number) < 1 ||
+      (args.limit as number) > CRITICAL_WORK_ITEMS_SEARCH_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  if (args.includeObservations !== undefined && args.includeObservations !== false) return false;
+  return true;
+}
+
+/**
+ * `git-sync:run` has a read-only preview branch used to inspect the selected
+ * checkout after a commit notification, while its normal form fires the
+ * commit+push action. Admit only the preview branch during critical pressure;
+ * keep the two scope aliases mutually exclusive and cap every caller-supplied
+ * string so this recovery exception cannot become a synchronization lane.
+ */
+export function isBoundedGitSyncRunArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['installSlug', 'harness', 'dryRun', 'reason']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (args.dryRun !== true) return false;
+
+  const scopes = ['installSlug', 'harness'].filter((field) => args[field] !== undefined);
+  if (scopes.length > 1) return false;
+  for (const field of scopes) {
+    if (!isBoundedCriticalText(args[field], CRITICAL_GIT_SYNC_RUN_MAX_SCOPE_CHARS, true)) return false;
+  }
+  if (
+    args.reason !== undefined &&
+    !isBoundedCriticalText(args.reason, CRITICAL_GIT_SYNC_RUN_MAX_REASON_CHARS, true)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * `session:request-compaction` is the recovery boundary for the current
+ * context, so it must remain callable while critical pressure sheds ordinary
+ * MCP traffic. Keep the exception to the published, bounded wire shape: the
+ * optional prompt/annotation strings are capped, legacy booleans retain their
+ * boolean type, and `resumeMode` accepts only its documented compatibility
+ * literal. The handler still performs the host, carry, and lineage checks.
+ */
+export function isBoundedSessionRequestCompactionArgs(args: unknown): boolean {
+  if (args === undefined) return true;
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['focus', 'autoContinue', 'resumeMode', 'reason', 'respawn', 'continueNote']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  for (const [field, max] of [
+    ['focus', CRITICAL_SESSION_COMPACTION_FOCUS_MAX_CHARS],
+    ['continueNote', CRITICAL_SESSION_COMPACTION_CONTINUE_NOTE_MAX_CHARS],
+    ['reason', CRITICAL_SESSION_COMPACTION_REASON_MAX_CHARS],
+  ] as const) {
+    if (args[field] !== undefined && (typeof args[field] !== 'string' || args[field].length > max)) return false;
+  }
+  for (const field of ['autoContinue', 'respawn'] as const) {
+    if (args[field] !== undefined && typeof args[field] !== 'boolean') return false;
+  }
+  return args.resumeMode === undefined || args.resumeMode === 'same';
 }
 
 /**
@@ -1631,6 +1787,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === WORK_ITEMS_SET_STATE_NAME) return isBoundedWorkItemsSetStateArgs(args);
   if (normalized === PLANS_GET_NAME) return isBoundedPlansGetArgs(args);
+  if (normalized === DOCS_GET_NAME) return isBoundedDocsGetArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (normalized === SCORECARDS_EVALUATE_NAME) {
     return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestUrl);
@@ -1650,6 +1807,9 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   }
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
   if (normalized === WORK_ITEMS_GET_NAME) return isBoundedWorkItemsGetArgs(args);
+  if (normalized === WORK_ITEMS_SEARCH_NAME) return isBoundedWorkItemsSearchArgs(args);
+  if (normalized === GIT_SYNC_RUN_NAME) return isBoundedGitSyncRunArgs(args);
+  if (normalized === SESSION_REQUEST_COMPACTION_NAME) return isBoundedSessionRequestCompactionArgs(args);
   if (normalized === TESTING_RUN_STATUS_NAME) return isBoundedTestingRunStatusArgs(args);
   if (normalized === SESSIONS_SEARCH_NAME) return isBoundedSessionsSearchArgs(args);
   return true;
