@@ -942,6 +942,20 @@ if (!process.env.VITEST) {
   void warmToolFindIndex().catch(() => {});
 }
 
+/**
+ * Normalize the common legacy `q` spelling before the strict discovery args
+ * schema runs. Search callers frequently use `q`, while this tool's canonical
+ * field is `query`; when both are supplied, explicit `query` wins.
+ */
+export function normalizeToolsFindArgs(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const args = raw as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(args, 'q')) return raw;
+
+  const { q, ...rest } = args;
+  return rest.query !== undefined ? rest : { ...rest, query: q };
+}
+
 export default defineTool({
   name: 'tools:find',
   description:
@@ -979,37 +993,46 @@ export default defineTool({
   // embedding index; retaining an ambient org-app transaction makes that recovery
   // door wait behind the very DB pool queue it is meant to diagnose.
   skipWorkspaceTx: true,
-  args: z.object({
-    /** What you want to do, in natural language or keywords. */
-    query: z.string().min(1).max(400),
-    /** Max results (default 8). */
-    limit: z.number().int().positive().max(25).optional(),
-    // EI-21854434860586936: every other harness/workspace-scoped tool in the
-    // catalog accepts a `harness` (and often `workspace`) arg, so callers
-    // naturally reach for the same shape here — but this tool is catalog-global
-    // and its scope is already resolved from ctx automatically. Rejecting the
-    // near-universal convention as `invalid_args` produced a recurring
-    // caller-error watchdog signal even after the guidance.notWhen text was
-    // added (2026-08-27) explicitly telling callers not to pass it — the text
-    // wasn't visible enough to prevent the mistake. Accept-and-ignore (the same
-    // "compatibility hint" pattern already used by rubrics:get's `harness` arg)
-    // removes the friction without changing behavior for anyone who was already
-    // calling correctly.
-    harness: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
-      ),
-    workspace: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
-      ),
-  }),
+  args: z.preprocess(
+    normalizeToolsFindArgs,
+    z.object({
+      /** What you want to do, in natural language or keywords. */
+      query: z.string().min(1).max(400),
+      q: z
+        .string()
+        .min(1)
+        .max(400)
+        .optional()
+        .describe('Compatibility alias for `query`; explicit `query` wins when both are supplied.'),
+      /** Max results (default 8). */
+      limit: z.number().int().positive().max(25).optional(),
+      // EI-21854434860586936: every other harness/workspace-scoped tool in the
+      // catalog accepts a `harness` (and often `workspace`) arg, so callers
+      // naturally reach for the same shape here — but this tool is catalog-global
+      // and its scope is already resolved from ctx automatically. Rejecting the
+      // near-universal convention as `invalid_args` produced a recurring
+      // caller-error watchdog signal even after the guidance.notWhen text was
+      // added (2026-08-27) explicitly telling callers not to pass it — the text
+      // wasn't visible enough to prevent the mistake. Accept-and-ignore (the same
+      // "compatibility hint" pattern already used by rubrics:get's `harness` arg)
+      // removes the friction without changing behavior for anyone who was already
+      // calling correctly.
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
+        ),
+      workspace: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
+        ),
+    }),
+  ),
   result: z
     .object({
       query: z.unknown().optional(),

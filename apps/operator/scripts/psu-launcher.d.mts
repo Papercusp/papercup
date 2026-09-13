@@ -1191,8 +1191,9 @@ export function applyOmpOperatorOrigin(mcpJsonText: any, operatorUrl: any): any;
  */
 export function probeOmpOperatorMcp(operatorMcpUrl: any, timeoutMs?: number, fetchImpl?: typeof fetch): Promise<boolean>;
 /**
- * Resolve the operator origin for native OMP's per-session mcp.json. This is
- * the launcher-side counterpart to orchestrator spawn-mcp's async resolver:
+ * Resolve the operator origin for native OMP's per-session mcp.json and
+ * resume-time config-repair requests. This is the launcher-side counterpart to
+ * orchestrator spawn-mcp's async resolver:
  * probe the runtime-selected local route, then recover on canonical :3070
  * when a copied PAPERCUSP_HONO_PORT is stale. A live non-green port remains
  * authoritative, so staging :3170 never silently falls through to green.
@@ -3481,10 +3482,12 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * Idempotent and non-destructive: a healthy home is left byte-identical and the
  * call reports `repaired: false`.
  */
-export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
     requireGatewayProvider?: boolean | undefined;
     fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: any;
+    operatorUrl?: undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+    probe?: typeof probeOmpOperatorMcp | undefined;
     token?: null | undefined;
     timeoutMs?: number | undefined;
 }): Promise<any>;

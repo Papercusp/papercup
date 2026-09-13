@@ -72,6 +72,7 @@ import toolFind, {
   compactSchemaForResult,
   DISCOVERY_RESULT_MAX_BYTES,
   ensureIndex,
+  normalizeToolsFindArgs,
   filterCorpusForConfirmedHiveScope,
   warmToolFindIndex,
 } from './find';
@@ -124,6 +125,36 @@ describe('tools:find tool registration', () => {
     expect(def.args.safeParse({ query: 'feature flag' }).success).toBe(true);
     expect(def.args.safeParse({ query: '' }).success).toBe(false);
     expect(def.args.safeParse({}).success).toBe(false);
+  });
+
+  it('accepts legacy q and normalizes it to query, with query taking precedence', () => {
+    const def = toolFind as unknown as {
+      args: {
+        safeParse: (value: unknown) => {
+          success: boolean;
+          data?: { query?: unknown; q?: unknown };
+        };
+      };
+    };
+
+    const legacy = def.args.safeParse({ q: 'find a feature flag' });
+    expect(legacy.success).toBe(true);
+    expect(legacy.data).toMatchObject({ query: 'find a feature flag' });
+    expect(legacy.data).not.toHaveProperty('q');
+
+    const both = def.args.safeParse({ q: 'legacy intent', query: 'canonical intent' });
+    expect(both.success).toBe(true);
+    expect(both.data).toMatchObject({ query: 'canonical intent' });
+    expect(both.data).not.toHaveProperty('q');
+  });
+
+  it('keeps tools:find normalization pure for non-object input and canonical precedence', () => {
+    const original = { query: 'canonical intent' };
+    expect(normalizeToolsFindArgs(original)).toBe(original);
+    expect(normalizeToolsFindArgs('legacy intent')).toBe('legacy intent');
+    expect(normalizeToolsFindArgs({ q: 'legacy intent', query: 'canonical intent' })).toEqual({
+      query: 'canonical intent',
+    });
   });
 
   it('EI-21854434860586936: accepts (and ignores) caller-supplied harness/workspace scope hints', () => {
@@ -233,6 +264,8 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(self).toBeDefined();
     // tools:find takes { query, limit? } → its arg-schema text mentions the query arg.
     expect(self?.argSchema).toContain('query');
+    expect(self?.argSchema).toContain('q');
+    expect(self?.argSchema).toContain('Compatibility alias for `query`');
     // The embed text folds name + description + arg schema.
     const text = embedText.get('tools:find');
     expect(text).toContain('tools:find');
