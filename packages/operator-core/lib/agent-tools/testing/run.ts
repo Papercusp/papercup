@@ -99,6 +99,15 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { managedSpawn, type ManagedSpawnResult } from '../../task-manager/managed-spawn';
 import { killScopeUnit, type ScopeControlOutcome } from '../../task-manager/control';
 import {
+  absCgroupDir,
+  nodeCgroupFs,
+  readProcessCgroupPath,
+  sampleCgroup,
+  walkCgroupTree,
+  type CgroupFs,
+} from '../../task-manager/cgroup-read';
+import { deriveUserManagerRoot, scopeCgroupRelPath } from '../../task-manager/types';
+import {
   admissionContextFromEnvironment,
   governedExecutionLeaseTtlForTimeout,
   runGovernedOperation,
@@ -1434,6 +1443,7 @@ export interface ManagedTestProcess {
   child: ChildProcess;
   taskId: string;
   scopeUnit: string | null;
+  scopeCgroupPath: string | null;
   confined: boolean;
   /** Idempotent whole-tree termination. Confined runs address their exact scope;
    *  fail-soft/unconfined runs retain the legacy negative-PGID cleanup. */
@@ -1486,6 +1496,7 @@ export async function launchManagedTestProcess(
       title: `testing:run foreground ${opts.runGroup}`,
       argv: [opts.command, ...opts.args],
       cwd: opts.cwd,
+      harnessSlug: opts.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
       launchedBy: `testing:run:${opts.runGroup}`,
       // The in-process timer owns the ordinary verdict. This slightly wider
       // kernel deadline is the restart-safe backstop and still bounds the task
@@ -1508,6 +1519,14 @@ export async function launchManagedTestProcess(
       },
     },
   );
+  const scopeCgroupPath =
+    launched.confined && launched.scopeUnit
+      ? scopeCgroupRelPath(
+          deriveUserManagerRoot(readProcessCgroupPath(process.pid)),
+          'test-run',
+          launched.scopeUnit,
+        )
+      : null;
 
   let terminationStarted = false;
   const terminateProcessGroup = (): void => {
@@ -1532,6 +1551,7 @@ export async function launchManagedTestProcess(
 
   return {
     ...launched,
+    scopeCgroupPath,
     terminate(): void {
       if (terminationStarted) return;
       terminationStarted = true;
@@ -1545,13 +1565,48 @@ export async function launchManagedTestProcess(
       void killOwnedScope(launched.scopeUnit, {
         signal: 'SIGTERM',
         escalateAfterMs: FOREGROUND_TERMINATION_GRACE_MS,
-      }).then(
-        (outcome) => {
-          if (!outcome.ok && outcome.error !== 'already_gone') terminateProcessGroup();
-        },
-        () => terminateProcessGroup(),
-      );
+      }).catch(() => {
+        // Do NOT signal the systemd-run client's process group here: once the
+        // payload has entered its sibling scope, killing only that client can
+        // orphan the real router. The scope's RuntimeMaxSec backstop was set at
+        // launch and remains authoritative even if this control call fails.
+      });
     },
+  };
+}
+
+/** Aggregate actual residency from the task's whole cgroup, not merely from
+ * the systemd-run client pid. Falls back to the legacy process-tree reader on
+ * hosts where managed confinement is unavailable. */
+export async function readManagedTestProcessResourceSnapshot(
+  running: Pick<ManagedTestProcess, 'child' | 'scopeCgroupPath'>,
+  deps: {
+    fs?: CgroupFs;
+    readFileDescriptors?: (pid: number) => Promise<number | null>;
+  } = {},
+): Promise<TestProcessResourceSnapshot> {
+  if (!running.scopeCgroupPath) {
+    return running.child.pid
+      ? readTestProcessResourceSnapshot(running.child.pid)
+      : { cpuMicros: null, rssBytes: null, fileDescriptors: null };
+  }
+  const fs = deps.fs ?? nodeCgroupFs;
+  const readFileDescriptors = deps.readFileDescriptors ?? procFileDescriptors;
+  const root = absCgroupDir(running.scopeCgroupPath);
+  const cgroup = sampleCgroup(root, fs);
+  const pids = new Set<number>();
+  for (const node of walkCgroupTree(root, fs)) {
+    for (const pid of node.pids) pids.add(pid);
+  }
+  const descriptors = await Promise.all([...pids].map(readFileDescriptors));
+  const measuredDescriptors = descriptors.filter((count): count is number => count !== null);
+  return {
+    cpuMicros: cgroup.cpuUsec,
+    rssBytes: cgroup.peakMemoryBytes ?? cgroup.memoryBytes,
+    fileDescriptors:
+      measuredDescriptors.length > 0
+        ? measuredDescriptors.reduce((total, count) => total + count, 0)
+        : null,
   };
 }
 
@@ -1733,7 +1788,7 @@ function runTestProcess(
             // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
             // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
             // router and every child/grandchild it spawned — instead of just the router itself.
-            const sampler = createTestProcessDemandSampler(plannedDemand);
+            let sampler = createTestProcessDemandSampler(plannedDemand);
             let timer: NodeJS.Timeout | null = null;
             let onAbort: (() => void) | null = null;
             const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
@@ -1750,6 +1805,18 @@ function runTestProcess(
               );
             };
             const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
+            let running: ManagedTestProcess | null = null;
+            onAbort = () => {
+              if (settled) return;
+              aborted = true;
+              running?.terminate();
+            };
+            if (childSignal.aborted) onAbort();
+            else childSignal.addEventListener('abort', onAbort, { once: true });
+            timer = setTimeout(() => {
+              timedOut = true;
+              running?.terminate();
+            }, launchTimeoutMs);
             void launchManagedTestProcess({
               command,
               args: [...commandArgs, ...args],
@@ -1757,34 +1824,20 @@ function runTestProcess(
               env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
               timeoutMs: launchTimeoutMs,
               runGroup,
-              workspaceId: activeWorkspaceId(),
+              workspaceId: env.PAPERCUSP_WORKSPACE_ID ?? activeWorkspaceId(),
             }).then(
-              (running) => {
-                const child = running.child;
+              (launched) => {
+                running = launched;
+                const child = launched.child;
+                sampler = createTestProcessDemandSampler(
+                  plannedDemand,
+                  () => readManagedTestProcessResourceSnapshot(launched),
+                );
                 sampler.attach(child.pid);
-                onAbort = () => {
-                  if (settled) return;
-                  aborted = true;
-                  // code:run owns the signal passed to inner dispatches. Timeout and abort
-                  // both terminate the exact task scope (or the fallback process group), so
-                  // the router and every Vitest descendant share one cleanup contract.
-                  running.terminate();
-                };
-                if (childSignal.aborted) {
-                  onAbort();
-                } else {
-                  childSignal.addEventListener('abort', onAbort, { once: true });
-                  const remaining = remainingTimeoutMs();
-                  if (remaining <= 0) {
-                    timedOut = true;
-                    running.terminate();
-                  } else {
-                    timer = setTimeout(() => {
-                      timedOut = true;
-                      running.terminate();
-                    }, remaining);
-                  }
-                }
+                // The deadline starts before managedSpawn's async probe/ledger
+                // admission. If it elapsed (or the caller aborted) while that
+                // boundary was resolving, terminate immediately on handoff.
+                if (timedOut || aborted || childSignal.aborted) launched.terminate();
                 // Cap retained diagnostics — the router's own output is a fallback for the
                 // error paths, never the success path's payload.
                 const append = (channel: 'stdout' | 'stderr') => (b: Buffer) => {
