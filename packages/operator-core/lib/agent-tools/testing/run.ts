@@ -361,7 +361,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
     'let exitCode = 0;',
     'for (const entry of commands) {',
     "  const result = spawnSync(entry.command, entry.args, { cwd: entry.cwd, stdio: 'inherit' });",
-    "  if (result.error || result.status === null) { exitCode ||= 2; } else if (result.status !== 0) { exitCode ||= result.status; }",
+    '  if (result.error || result.status === null) { exitCode ||= 2; } else if (result.status !== 0) { exitCode ||= result.status; }',
     '}',
     'process.exitCode = exitCode;',
   ].join('\n');
@@ -1162,7 +1162,15 @@ export function nameFilterNoMatchRefusal(opts: {
     `verified — this is NOT a pass (${skipped} test(s) were collected and skipped). The pattern ` +
     "matches a test's FULL name — every enclosing `describe` joined to the `it` text — as a " +
     'REGEX, not as literal text.';
-  const common = { ok: false as const, runId, root, error: 'name_filter_no_match' as const, skipped, files, patternIsValidRegex };
+  const common = {
+    ok: false as const,
+    runId,
+    root,
+    error: 'name_filter_no_match' as const,
+    skipped,
+    files,
+    patternIsValidRegex,
+  };
   if (escaped === pattern) {
     return {
       ...common,
@@ -1457,10 +1465,7 @@ export interface ManagedTestProcessDeps {
     spec: Parameters<typeof managedSpawn>[2],
     opts?: Parameters<typeof managedSpawn>[3],
   ) => Promise<ManagedTestSpawn>;
-  killScopeUnitFn?: (
-    scopeUnit: string,
-    opts?: Parameters<typeof killScopeUnit>[1],
-  ) => Promise<ScopeControlOutcome>;
+  killScopeUnitFn?: (scopeUnit: string, opts?: Parameters<typeof killScopeUnit>[1]) => Promise<ScopeControlOutcome>;
   killProcessGroupFn?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
@@ -1501,10 +1506,7 @@ export async function launchManagedTestProcess(
       // The in-process timer owns the ordinary verdict. This slightly wider
       // kernel deadline is the restart-safe backstop and still bounds the task
       // when the operator (and therefore its timer) disappears mid-run.
-      runtimeMaxSec: Math.max(
-        1,
-        Math.ceil((opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000),
-      ),
+      runtimeMaxSec: Math.max(1, Math.ceil((opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000)),
       detail: { runGroup: opts.runGroup, foreground: true },
     },
     {
@@ -1521,11 +1523,7 @@ export async function launchManagedTestProcess(
   );
   const scopeCgroupPath =
     launched.confined && launched.scopeUnit
-      ? scopeCgroupRelPath(
-          deriveUserManagerRoot(readProcessCgroupPath(process.pid)),
-          'test-run',
-          launched.scopeUnit,
-        )
+      ? scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)), 'test-run', launched.scopeUnit)
       : null;
 
   let terminationStarted = false;
@@ -1565,12 +1563,16 @@ export async function launchManagedTestProcess(
       void killOwnedScope(launched.scopeUnit, {
         signal: 'SIGTERM',
         escalateAfterMs: FOREGROUND_TERMINATION_GRACE_MS,
-      }).catch(() => {
-        // Do NOT signal the systemd-run client's process group here: once the
-        // payload has entered its sibling scope, killing only that client can
-        // orphan the real router. The scope's RuntimeMaxSec backstop was set at
-        // launch and remains authoritative even if this control call fails.
-      });
+      }).then(
+        (outcome) => {
+          if (!outcome.ok && outcome.error !== 'already_gone') {
+            void killOwnedScope(launched.scopeUnit!, { signal: 'SIGKILL' }).catch(() => undefined);
+          }
+        },
+        () => {
+          void killOwnedScope(launched.scopeUnit!, { signal: 'SIGKILL' }).catch(() => undefined);
+        },
+      );
     },
   };
 }
@@ -1604,9 +1606,7 @@ export async function readManagedTestProcessResourceSnapshot(
     cpuMicros: cgroup.cpuUsec,
     rssBytes: cgroup.peakMemoryBytes ?? cgroup.memoryBytes,
     fileDescriptors:
-      measuredDescriptors.length > 0
-        ? measuredDescriptors.reduce((total, count) => total + count, 0)
-        : null,
+      measuredDescriptors.length > 0 ? measuredDescriptors.reduce((total, count) => total + count, 0) : null,
   };
 }
 
@@ -1806,16 +1806,29 @@ function runTestProcess(
             };
             const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
             let running: ManagedTestProcess | null = null;
+            const settleBeforeLaunchHandoff = (): void => {
+              finish({
+                code: null,
+                signal: null,
+                timedOut,
+                aborted,
+                output: timedOut
+                  ? `managed test-process launch exceeded its ${launchTimeoutMs}ms budget before a child handle was available`
+                  : 'caller aborted while managed test-process launch was still pending',
+              });
+            };
             onAbort = () => {
               if (settled) return;
               aborted = true;
-              running?.terminate();
+              if (running) running.terminate();
+              else settleBeforeLaunchHandoff();
             };
             if (childSignal.aborted) onAbort();
             else childSignal.addEventListener('abort', onAbort, { once: true });
             timer = setTimeout(() => {
               timedOut = true;
-              running?.terminate();
+              if (running) running.terminate();
+              else settleBeforeLaunchHandoff();
             }, launchTimeoutMs);
             void launchManagedTestProcess({
               command,
@@ -1828,10 +1841,17 @@ function runTestProcess(
             }).then(
               (launched) => {
                 running = launched;
+                if (settled) {
+                  // A bounded caller may have returned while managedSpawn's
+                  // probe/ledger admission was still pending. Observe the late
+                  // handoff and terminate it immediately; never leak work that
+                  // arrived after its caller's deadline.
+                  launched.terminate();
+                  return;
+                }
                 const child = launched.child;
-                sampler = createTestProcessDemandSampler(
-                  plannedDemand,
-                  () => readManagedTestProcessResourceSnapshot(launched),
+                sampler = createTestProcessDemandSampler(plannedDemand, () =>
+                  readManagedTestProcessResourceSnapshot(launched),
                 );
                 sampler.attach(child.pid);
                 // The deadline starts before managedSpawn's async probe/ledger
@@ -1874,8 +1894,8 @@ function runTestProcess(
                 finish({
                   code: null,
                   signal: null,
-                  timedOut: false,
-                  aborted: childSignal.aborted,
+                  timedOut,
+                  aborted: aborted || childSignal.aborted,
                   spawnError,
                   output: outputCapture.finish(),
                 });
@@ -2457,18 +2477,19 @@ export async function runTestFilesCore(opts: {
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedStart = hasRouter && opts.allowDetachedRecovery !== false
-        ? await startRunDurable(
-            buildDetachedTestRunRequest({
-              root,
-              files: pathResolution.files,
-              ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
-              ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
-              ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
-              timeoutMs,
-            }),
-          )
-        : undefined;
+      const detachedStart =
+        hasRouter && opts.allowDetachedRecovery !== false
+          ? await startRunDurable(
+              buildDetachedTestRunRequest({
+                root,
+                files: pathResolution.files,
+                ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
+                ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
+                ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+                timeoutMs,
+              }),
+            )
+          : undefined;
       const detachedSnapshot = detachedStart?.snapshot;
       const detachedDurable = detachedStart?.durable === true;
       const detachedRunId = detachedSnapshot?.runId;
