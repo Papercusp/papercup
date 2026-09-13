@@ -49,6 +49,12 @@ export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
  */
 export const GRADING_AUDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
 /**
+ * A route/launch failure that has no provider reset still needs a bounded retry
+ * window. Releasing the reservation without one lets every sweep reserve the
+ * same card again while producing neither a consult nor a task.
+ */
+export const GRADING_AUDIT_FAILURE_BACKOFF_MS = GRADING_AUDIT_RESERVATION_TTL_MS;
+/**
  * EI-22978598482930667 — reset-aware re-dispatch suppression.
  *
  * A terminal quota failure carries a KNOWN future recovery instant, and until
@@ -161,7 +167,12 @@ export interface DispatchPendingGradingAuditsDeps {
   now?: () => number;
 }
 
-export type GradingAuditReservationStatus = 'claimed' | 'already-reserved' | 'not-pending' | 'quota-backoff';
+export type GradingAuditReservationStatus =
+  | 'claimed'
+  | 'already-reserved'
+  | 'not-pending'
+  | 'quota-backoff'
+  | 'dispatch-backoff';
 
 /**
  * Why a card must not be re-dispatched yet, recorded on the card itself so the
@@ -175,7 +186,7 @@ export interface GradingAuditDispatchBackoff {
    * wall was measured but no reset was recoverable from either source — it is a
    * conservative window, NOT a claim about when capacity returns.
    */
-  source: 'account-ledger' | 'launcher-horizon' | 'default';
+  source: 'account-ledger' | 'launcher-horizon' | 'default' | 'retry-window';
   /** The terminal failure code that produced the suppression. */
   code: string;
   recordedAt: string;
@@ -188,7 +199,7 @@ export interface GradingAuditReservationResult {
     key: string;
     reservedAt: string;
   };
-  /** Present on `quota-backoff`: the live suppression that refused the claim. */
+  /** Present on a live quota or general dispatch backoff that refused the claim. */
   backoff?: GradingAuditDispatchBackoff;
 }
 
@@ -341,6 +352,23 @@ export async function resolveGradingAuditQuotaBackoff(input: {
   };
 }
 
+/** Build the durable suppression used when routing/launching failed without a
+ * provider-specific recovery horizon. */
+export function resolveGradingAuditFailureBackoff(input: {
+  code: string;
+  reason: string;
+  nowMs?: number;
+}): GradingAuditDispatchBackoff {
+  const nowMs = input.nowMs ?? Date.now();
+  return {
+    until: new Date(nowMs + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString(),
+    source: 'retry-window',
+    code: input.code,
+    recordedAt: new Date(nowMs).toISOString(),
+    reason: input.reason,
+  };
+}
+
 /**
  * Atomically reserve one pending scorecard for an auditor launch.
  *
@@ -479,7 +507,10 @@ export async function reservePendingGradingAudit(
     // on a dispatcher that is not in fact running.
     const until = row.backoff?.until ? Date.parse(row.backoff.until) : NaN;
     if (row.backoff && Number.isFinite(until) && until > now.getTime()) {
-      return { status: 'quota-backoff' as const, backoff: row.backoff };
+      return {
+        status: row.backoff.code === 'model_quota_exhausted' ? ('quota-backoff' as const) : ('dispatch-backoff' as const),
+        backoff: row.backoff,
+      };
     }
     return row.has_reservation ? { status: 'already-reserved' as const } : { status: 'not-pending' as const };
   });
@@ -722,6 +753,8 @@ export async function dispatchPendingGradingAudits(
             reservation.status === 'quota-backoff'
               ? `re-dispatch suppressed until ${reservation.backoff?.until} ` +
                 `(${reservation.backoff?.source ?? 'unknown'} reset after terminal ${reservation.backoff?.code ?? 'quota failure'})`
+              : reservation.status === 'dispatch-backoff'
+                ? `re-dispatch suppressed until ${reservation.backoff?.until} after ${reservation.backoff?.code ?? 'dispatch failure'}`
               : reservation.status === 'already-reserved'
                 ? 'another dispatcher already reserved this scorecard'
                 : 'target is no longer a pending scorecard',
@@ -944,14 +977,22 @@ export async function dispatchPendingGradingAudits(
         }
 
         if (result.isError) {
-          await releaseReservation();
+          const reason = result.content?.[0]?.text ?? 'grading auditor launch failed';
+          await releaseReservation(
+            resolveGradingAuditFailureBackoff({
+              code: 'launch_failed',
+              reason,
+              ...(deps.now ? { nowMs: deps.now() } : {}),
+            }),
+          );
+          console.warn(`[grading-integrity] pending audit dispatch failed for ${issueId}: ${reason}`);
           receipt = {
             issueId,
             rubricRef: card.rubricRef,
             state: 'failed',
             idempotencyKey: currentIdempotencyKey,
             launch: result.data?.launch,
-            reason: result.content?.[0]?.text ?? 'grading auditor launch failed',
+            reason,
             ...recoveryFields(),
           };
         } else {
@@ -978,13 +1019,21 @@ export async function dispatchPendingGradingAudits(
         },
       );
     } catch (error) {
-      await releaseReservation();
+      const reason = error instanceof Error ? error.message : String(error);
+      await releaseReservation(
+        resolveGradingAuditFailureBackoff({
+          code: 'dispatch_exception',
+          reason,
+          ...(deps.now ? { nowMs: deps.now() } : {}),
+        }),
+      );
+      console.warn(`[grading-integrity] pending audit dispatch failed for ${issueId}: ${reason}`);
       receipts.push({
         issueId,
         rubricRef: card.rubricRef,
         state: 'failed',
         idempotencyKey: currentIdempotencyKey,
-        reason: error instanceof Error ? error.message : String(error),
+        reason,
         ...recoveryFields(),
       });
     }
