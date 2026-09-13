@@ -91,7 +91,7 @@ afterEach(() => {
 describe('buildQueryEmbedder — OpenAI path', () => {
   it('carries the exact immutable query profile beside the compatibility mode and width', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
-    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       status: 200,
