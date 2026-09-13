@@ -202,6 +202,10 @@ export type CreateOneWorkItemResult =
       /** EI-20191260047847804: explicit payload.paths that could not be resolved
        *  against the selected project tree. Warn-only; the item was still created. */
       explicitPathsWarning?: string;
+      /** Inline links are best-effort, but a schema-valid link with an unsupported
+       *  satisfaction requirement must not disappear silently. The edge is retained
+       *  when its relation is otherwise valid and this carries the per-link warning. */
+      inlineLinkWarnings?: string[];
       /** WI-39604: set when `conditionKey` resolved to an OPEN incumbent —
        *  `workItem` is that incumbent (refreshed to this reading), NOT a new row.
        *  `duplicateLeftOpen` reports a lost-race stand-down that failed. */
@@ -1277,6 +1281,7 @@ export async function createOneWorkItem(
     // { detail:true } without a separate work_items:link round-trip. Each edge is
     // best-effort + non-fatal — identical contract to the plan-coverage edge above: an
     // unresolvable target is skipped, never turning a successful create into an error.
+    const inlineLinkWarnings: string[] = [];
     for (const l of args.links ?? []) {
       try {
         const dst = l.target_id
@@ -1284,15 +1289,29 @@ export async function createOneWorkItem(
           : l.target_kind && l.target_ref
             ? { kind: l.target_kind, ref: l.target_ref }
             : null;
-        if (dst && (!l.satisfaction || (l.rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')))) {
-          await linkWorkItem(workItem.id, dst, l.rel, {
+        if (dst) {
+          const supportsSatisfaction =
+            !l.satisfaction || (l.rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature'));
+          const linked = await linkWorkItem(workItem.id, dst, l.rel, {
             harness: harnessForItem,
             by: ctx.ownerId,
-            satisfaction: l.satisfaction,
+            ...(supportsSatisfaction && l.satisfaction ? { satisfaction: l.satisfaction } : {}),
           });
+          if ('error' in linked) {
+            inlineLinkWarnings.push(
+              `inline link ${l.rel} → ${dst.kind}:${dst.ref} was not written: ${linked.error}`,
+            );
+          } else if (!supportsSatisfaction) {
+            inlineLinkWarnings.push(
+              `inline link ${l.rel} → ${dst.kind}:${dst.ref} was written without satisfaction '${l.satisfaction}'; ` +
+                'satisfaction is supported only for blocks edges to work-item targets',
+            );
+          }
         }
       } catch {
-        // Non-fatal — an inline edge is best-effort, like the coverage edge.
+        // Non-fatal — an inline edge is best-effort, like the coverage edge. Known
+        // semantic refusals are surfaced above; unexpected exceptions retain the
+        // historical fail-open behavior for create itself.
       }
     }
     // ── Goal provenance (goal-mode-2026-08-07 P-016) ────────────────────
@@ -1358,6 +1377,7 @@ export async function createOneWorkItem(
       ...(queueAdmission ? { queueAdmission } : {}),
       ...(stateError ? { stateError } : {}),
       ...(explicitPathsWarning ? { explicitPathsWarning } : {}),
+      ...(inlineLinkWarnings.length > 0 ? { inlineLinkWarnings } : {}),
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

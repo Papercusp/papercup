@@ -61,7 +61,7 @@ import {
 } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   errorsOnly,
@@ -354,6 +354,13 @@ export interface SelectedTypecheckRoot {
   source: TypecheckRootSource;
 }
 
+export type TypecheckCwdSource = 'caller' | 'external-project';
+
+export interface SelectedTypecheckCwd {
+  cwd: string;
+  source: TypecheckCwdSource;
+}
+
 /**
  * Select the checkout that actually contains the requested TypeScript project.
  *
@@ -377,6 +384,30 @@ export function selectTypecheckRoot(
     resolvesEvery: (root) => resolveProjectPath(root, project) !== null,
   });
   return selected ?? preferred;
+}
+
+/**
+ * Pick the cwd used to launch the compiler after the project config is resolved.
+ *
+ * `npx` resolves a package-local binary from its cwd. Keeping the caller workspace
+ * as cwd for an absolute project outside that workspace therefore runs the caller's
+ * TypeScript against the target config (EI-22565359278502654). That is especially
+ * misleading when the target intentionally pins a different compiler version.
+ * Relative and in-tree absolute operands retain the existing workspace cwd; an
+ * external absolute operand runs from the directory containing its tsconfig so its
+ * own `node_modules/.bin/tsc` (or nearest package-local ancestor) wins.
+ */
+export function resolveTypecheckCwd(
+  project: string,
+  requestedRoot: string,
+  resolvedProject: string,
+): SelectedTypecheckCwd {
+  const rel = relative(requestedRoot, resolvedProject);
+  const outsideRequestedRoot = rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  if (!isAbsolute(project) || !outsideRequestedRoot) {
+    return { cwd: requestedRoot, source: 'caller' };
+  }
+  return { cwd: dirname(resolvedProject), source: 'external-project' };
 }
 
 /**
@@ -851,6 +882,13 @@ export default defineTool({
       };
     }
 
+    // `npx tsc` searches from cwd. For a project explicitly outside the caller's
+    // workspace, launch from the target config directory so the target's package-local
+    // TypeScript is used instead of the caller repo's compiler. This cwd also feeds the
+    // scoped throwaway config: its rootDir and ambient typeRoot must describe the target
+    // project, not the unrelated caller workspace.
+    const typecheckCwd = resolveTypecheckCwd(args.project, root, resolved).cwd;
+
     // Clamp BELOW the ~55s MCP transport cap so this handler always wins the race and can
     // return the structured timeout below, instead of the transport killing the call and
     // surfacing an opaque `CONNECTION_CLOSED 127.0.0.1:6432` (EI-18776865728050036).
@@ -872,7 +910,7 @@ export default defineTool({
           },
         };
       }
-      scoped = buildScopedTsconfig(root, resolved, args.files);
+      scoped = buildScopedTsconfig(typecheckCwd, resolved, args.files);
       if (!scoped.resolvedFiles.length) {
         scoped.cleanup();
         return {
@@ -910,7 +948,7 @@ export default defineTool({
 
     let outcome: TscOutcome;
     try {
-      outcome = await runTsc(tscArgs, root, timeoutMs);
+      outcome = await runTsc(tscArgs, typecheckCwd, timeoutMs);
       await execution.finish();
     } catch (error) {
       await execution.cancel(error instanceof Error ? error.message : String(error));

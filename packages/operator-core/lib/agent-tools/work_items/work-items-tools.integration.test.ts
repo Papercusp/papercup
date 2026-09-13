@@ -663,6 +663,38 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(await db.sql`SELECT rel FROM harness_shared.coord_links WHERE rel = 'blocks'`).toEqual([]);
   });
 
+  it('create: inline blocks→plan_item persists the edge and reports unsupported satisfaction (EI-22565376775974873)', async () => {
+    const created = await createOne({
+      kind: 'change',
+      title: 'block a plan item from an inline create',
+      harness: 'papercup',
+      links: [
+        {
+          rel: 'blocks',
+          target_kind: 'plan_item',
+          target_ref: 'some-plan#P-009',
+          satisfaction: 'success',
+        },
+      ],
+    });
+    expect(created.ok).toBe(true);
+    const newId = (created.workItem as Record<string, unknown>).id as string;
+
+    // The relation itself is valid on the polymorphic coord_links substrate. The
+    // satisfaction requirement is not meaningful for a plan_item, so the create
+    // keeps the edge and makes that per-link normalization visible to the caller.
+    expect(String(created.warning)).toMatch(/plan_item.*written without satisfaction/i);
+    expect(created.inlineLinkWarnings).toEqual([
+      expect.stringMatching(/blocks.*plan_item:some-plan#P-009.*satisfaction/i),
+    ]);
+    expect(await db.sql<{ rel: string; dst_kind: string; dst_ref: string }[]>`
+      SELECT rel, dst_kind, dst_ref FROM harness_shared.coord_links
+       WHERE src_kind = 'issue' AND src_ref = ${newId} ORDER BY rel
+    `).toEqual([
+      { rel: 'blocks', dst_kind: 'plan_item', dst_ref: 'some-plan#P-009' },
+    ]);
+  });
+
   it('tag + subscribe return success envelopes', async () => {
     const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;

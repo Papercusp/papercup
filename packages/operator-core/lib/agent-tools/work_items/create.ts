@@ -582,7 +582,7 @@ export default defineTool({
         const dedupCoverageWarning = res.dedupCoverage?.degraded
           ? describeDedupCoverageWarning(res.dedupCoverage)
           : undefined;
-        const warnings = [codeTaskWarning, dedupCoverageWarning].filter(
+        const warnings = [codeTaskWarning, dedupCoverageWarning, ...(res.inlineLinkWarnings ?? [])].filter(
           (value): value is string => Boolean(value),
         );
         // EI-18655063958515097 non-blocking nudge: a title/summary that reads like an
@@ -684,6 +684,7 @@ export default defineTool({
           // names the item the caller should work instead.)
           ...(res.dedupEdges !== undefined ? { dedupEdges: res.dedupEdges } : {}),
           ...(res.explicitPathsWarning !== undefined ? { explicitPathsWarning: res.explicitPathsWarning } : {}),
+          ...(res.inlineLinkWarnings !== undefined ? { inlineLinkWarnings: res.inlineLinkWarnings } : {}),
           // EI-20075667133396690: goal attribution, and its failure. This row is
           // REBUILT from an allowlist rather than spread from `res`, so a new core
           // outcome field reaches the agent only if it is named here — `goalId` was

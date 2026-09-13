@@ -56,6 +56,7 @@ import buildTypecheck, {
   ambientTypePackages,
   projectDeclaresTypes,
   selectTypecheckRoot,
+  resolveTypecheckCwd,
   partitionScopedDiagnostics,
 } from './typecheck';
 // The EI-18776865728050036 class guard moved to capability/foreground-transport-cap.test.ts
@@ -451,6 +452,63 @@ describe('selectTypecheckRoot — phantom-root fallback', () => {
     } finally {
       if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
       else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+    }
+  });
+});
+
+describe('resolveTypecheckCwd — absolute external projects use their package-local toolchain', () => {
+  let callerRoot: string;
+  let externalRoot: string;
+
+  beforeAll(() => {
+    callerRoot = mkdtempSync(join(tmpdir(), 'build-typecheck-caller-'));
+    externalRoot = mkdtempSync(join(tmpdir(), 'build-typecheck-external-'));
+    writeFileSync(join(externalRoot, 'tsconfig.json'), '{}');
+    // The marker models the target's package-local compiler. The handler still spawns
+    // `npx tsc`; its cwd is the selection that makes this binary win over the caller's.
+    mkdirSync(join(externalRoot, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(join(externalRoot, 'node_modules', '.bin', 'tsc'), '#!/usr/bin/env node\n');
+  });
+
+  afterAll(() => {
+    rmSync(callerRoot, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  });
+
+  it('selects the external config directory for an absolute project outside the caller root', () => {
+    expect(resolveTypecheckCwd(join(externalRoot, 'tsconfig.json'), callerRoot, join(externalRoot, 'tsconfig.json')))
+      .toEqual({ cwd: externalRoot, source: 'external-project' });
+  });
+
+  it('keeps the caller workspace cwd for relative and in-tree absolute projects', () => {
+    expect(resolveTypecheckCwd('tsconfig.json', callerRoot, join(callerRoot, 'tsconfig.json')))
+      .toEqual({ cwd: callerRoot, source: 'caller' });
+    expect(resolveTypecheckCwd(join(callerRoot, 'tsconfig.json'), callerRoot, join(callerRoot, 'tsconfig.json')))
+      .toEqual({ cwd: callerRoot, source: 'caller' });
+  });
+
+  it('passes the external cwd through the handler to the compiler spawn', async () => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => child.emit('close', 0));
+      return child;
+    });
+    try {
+      const raw = await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: join(externalRoot, 'tsconfig.json') }, { projectDir: callerRoot });
+
+      expect(raw.data).toMatchObject({ ok: true, errorCount: 0 });
+      expect(spawnMock).toHaveBeenCalledWith(
+        'npx',
+        expect.arrayContaining(['tsc', '-p', join(externalRoot, 'tsconfig.json')]),
+        expect.objectContaining({ cwd: externalRoot }),
+      );
+    } finally {
+      spawnMock.mockReset();
     }
   });
 });

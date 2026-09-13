@@ -44,6 +44,17 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(() => z.toJSONSchema(amendTool.args as never)).not.toThrow();
   });
 
+  it('publishes the structured/legacy alias equality contract before payload construction', () => {
+    const schema = z.toJSONSchema(amendTool.args as never);
+    const rendered = JSON.stringify(schema);
+
+    expect(rendered).toContain('must match after canonical normalization');
+    expect(rendered).toContain('`bar`/`model`');
+    expect(rendered).toContain('`acceptance.condition`');
+    expect(rendered).toContain('`requirement_alias_conflict`');
+    expect(rendered).toContain('omit legacy aliases');
+  });
+
   it('accepts a full criterion set with structured checks', () => {
     const parsed = rubricsAmendArgs.safeParse({
       rubricRef: 'acceptance-example',
