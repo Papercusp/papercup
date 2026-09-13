@@ -104,7 +104,9 @@ interface FixtureOverrides {
     context: GatewayKernelAttemptContext<RouteValue>,
   ) => Promise<KernelResponse>;
   downstreamWrite?: (chunk: Uint8Array) => void | Promise<void>;
+  downstreamStart?: (response: { status: number; metadata: ResponseMetadata }) => void | Promise<void>;
   span?: KernelOptions['span'];
+  deferSpanFinalization?: boolean;
 }
 
 function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) {
@@ -153,6 +155,7 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
     policy: { ...DEFAULT_POLICY, ...overrides.policy },
     telemetry,
     span: overrides.span,
+    deferSpanFinalization: overrides.deferSpanFinalization,
     admission: {
       async run({ route }, task) {
         events.push(`admit:${route.value.name}`);
@@ -214,6 +217,7 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
       async start(response) {
         started.push({ status: response.status, metadata: response.metadata });
         events.push(`downstream:start:${response.status}`);
+        await overrides.downstreamStart?.(response);
       },
       async write(chunk) {
         await overrides.downstreamWrite?.(chunk);
@@ -938,6 +942,55 @@ describe('gateway request kernel caller-supplied span adoption', () => {
     // What `beginRequestTelemetry`'s res finish/close handler does afterwards.
     expect(span.finish('ok', 200)).toBeNull();
     expect(caller.snapshot().requests).toMatchObject({ started: 1, finalized: 1, active: 0 });
+  });
+
+  it('defers an intercepted pass and finalizes one borrowed timeline from the eventual recovery response', async () => {
+    const caller = new GatewayRequestTelemetry();
+    const span = caller.begin({ ownerId: 'su-outer', provider: 'codex', protocol: lane.protocol });
+    const intercept = new Error('outer recovery intercept');
+    const first = fixture(lane, {
+      span,
+      deferSpanFinalization: true,
+      executeAttempt: async (prepared, context) => ({
+        status: 429,
+        streaming: false,
+        transport: context.route.transport,
+        metadata: { contentType: 'application/json' },
+        body: null,
+        discard: () => undefined,
+      }),
+      downstreamStart: async () => {
+        throw intercept;
+      },
+    });
+
+    const firstError = await caughtKernelError(executeGatewayRequestKernel(first.options));
+    expect(firstError).toMatchObject({ code: 'gateway-error', status: 500 });
+    expect(caller.snapshot().requests).toMatchObject({ started: 1, finalized: 0, active: 1 });
+
+    const second = fixture(lane, {
+      span,
+      deferSpanFinalization: true,
+      streaming: false,
+      executeAttempt: async (_prepared, context) => ({
+        status: 200,
+        streaming: false,
+        transport: context.route.transport,
+        metadata: { contentType: 'application/json' },
+        body: null,
+      }),
+    });
+    const result = await executeGatewayRequestKernel(second.options);
+
+    expect(result.timeline).toMatchObject({
+      requestId: span.requestId,
+      finalStatus: 200,
+      outcome: 'ok',
+      attempts: 2,
+      missingStages: [],
+    });
+    expect(caller.snapshot().requests).toMatchObject({ started: 1, finalized: 1, active: 0 });
+    expect(span.finish('ok', 200)).toBeNull();
   });
 
   it('CONTROL: without adoption the kernel begins its own span, as it always has', async () => {

@@ -5498,6 +5498,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // D-008: adopt the span this HTTP request already opened, or the kernel
             // would begin a SECOND one and double-count the request.
             span: stageSpan,
+            // The outer recovery loop may intercept this pass before relay and re-enter
+            // the kernel. Keep the adopted HTTP span open across that failed pass; the
+            // terminal pass (or the response lifecycle when no span was adopted) owns
+            // the one final timeline.
+            deferSpanFinalization: stageSpan !== undefined,
             admission: {
               // P-011 / D-023: the lane's admission arrives from the entry executor's caller.
               // While `anthropic-messages` is still bridge-admitted this is the pass-through
@@ -7135,6 +7140,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           },
           telemetry: requestStageTelemetry,
           span: stageSpan,
+          // The outer recovery loop may intercept this pass before relay and re-enter
+          // the kernel; do not publish that intermediate failure as the request's
+          // terminal telemetry. A successful terminal pass still finalizes the span.
+          deferSpanFinalization: stageSpan !== undefined,
           admission: {
             // P-011 / D-027: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`,
             // and PASS-THROUGH by design rather than by transition. `proxyOpenAi` takes the
@@ -8080,6 +8089,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // D-008: adopt the span this HTTP request already opened. Without it the
           // kernel would begin a SECOND span and double-count the request.
           span: stageSpan,
+          // The bearer 429 recovery loop may re-enter the kernel after an intercept;
+          // preserve one borrowed span across those passes and finalize only the
+          // eventual terminal response.
+          deferSpanFinalization: stageSpan !== undefined,
           admission: {
             // P-011 / D-027: arrives from this executor's caller and is PASS-THROUGH by design.
             // `proxyOpenAi`'s entry wrapper already took the `openai-responses` slot around this

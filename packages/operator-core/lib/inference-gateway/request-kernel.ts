@@ -259,8 +259,15 @@ export interface ExecuteGatewayRequestKernelOptions<TRoute, TPrepared, TChunk, T
    * wins and the other is a no-op. When adopted, `requestId`, `ownerId` and
    * `startedAt` come from the caller's span, which is what keeps one request
    * reporting under one id.
-   */
+  */
   span?: GatewayRequestSpan;
+  /**
+   * Keep an adopted span open when this kernel pass fails before the caller can
+   * decide whether to re-enter recovery. The successful terminal pass still
+   * finalizes the span, so a caller-level retry does not publish an intermediate
+   * 500 while a missing caller span cannot leak an active telemetry request.
+   */
+  deferSpanFinalization?: boolean;
   admission: GatewayKernelAdmissionController<TRoute, TChunk, TMetadata>;
   adapter: GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata>;
   downstream: GatewayKernelDownstream<TChunk, TMetadata>;
@@ -1187,7 +1194,9 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     clearTimeout(ceilingTimer);
     opts.request.signal?.removeEventListener('abort', onCallerAbort);
     opts.downstream.signal?.removeEventListener('abort', onDownstreamAbort);
-    timeline = span.finish(finalOutcome, finalStatus);
+    if (!opts.deferSpanFinalization || failure === null) {
+      timeline = span.finish(finalOutcome, finalStatus);
+    }
   }
 
   if (failure) {
