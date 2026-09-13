@@ -3217,9 +3217,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       frames.history = resumedPane.screen();
       await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
       const resumedReply = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
-      resumedPane.write(
-        'Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.',
-      );
+      // The optional approval probe precedes `greeting`, so "my first
+      // greeting" is ambiguous there: a real model can correctly recall the
+      // permission-fixture marker instead. Name the expected historical
+      // marker while still requiring the resumed native conversation to have
+      // retained it across the operator-process boundary.
+      resumedPane.write(`Reply exactly RESUMED:${greetingReply}. Do not use tools.`);
       frames.beforeSubmit = resumedPane.screen();
       resumedPane.enter();
       await resumedPane.waitForReply(resumedReply);
@@ -3520,8 +3523,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await putViewState('Plans');
       const resumedPane = new PuiPane(bin, operatorPort, home);
       let resumedDescriptor;
-      const resumePrompt =
-        'Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.';
+      const resumePrompt = `Reply exactly RESUMED:${greetingReply}. Do not use tools.`;
       const resumedReply = `RESUMED:${greetingReply}`;
       // Recall of the unknown marker is the assertion, not whether a model
       // inserts whitespace after the label. The marker itself stays exact.
