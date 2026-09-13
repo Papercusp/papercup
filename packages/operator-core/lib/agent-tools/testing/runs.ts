@@ -36,6 +36,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
 
@@ -75,6 +76,7 @@ const testingRunResultSchema = z
     id: z.number().int().positive(),
     workspaceId: z.string().nullable(),
     harnessSlug: z.string().nullable(),
+    root: z.string().nullable(),
     filePath: z.string(),
     status: z.enum(['pass', 'fail', 'skip', 'cancelled', 'error', 'running']),
     framework: z.string(),
@@ -274,7 +276,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      'Each row: { id, workspaceId, harnessSlug, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. outputTail is populated only for fail/error rows and is truncated.',
+      'Each row: { id, workspaceId, harnessSlug, root, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. outputTail is populated only for fail/error rows and is truncated.',
       '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
@@ -536,6 +538,7 @@ export default defineTool({
         id: string;
         workspace_id: string | null;
         harness_slug: string | null;
+        execution_details: unknown;
         file_path: string;
         status: string;
         framework: string;
@@ -560,7 +563,7 @@ export default defineTool({
       ), picked AS (
         ${picked}
       )
-      SELECT p.id::text, p.workspace_id, p.harness_slug,
+      SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
              p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
              CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
                   THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
@@ -583,6 +586,7 @@ export default defineTool({
           id: Number(r.id),
           workspaceId: r.workspace_id,
           harnessSlug: r.harness_slug,
+          root: parseTestRunExecutionDetails(r.execution_details)?.root ?? null,
           filePath: r.file_path,
           status: r.status,
           framework: r.framework,
