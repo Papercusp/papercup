@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const sql = vi.fn(async () => []);
+const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => []);
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql }),
@@ -92,7 +92,7 @@ describe('recovery audit reconciliation route', () => {
       reconciledEventIds: [first.eventId, second.eventId],
     });
     expect(sql).toHaveBeenCalledTimes(2);
-    const text = sql.mock.calls.map((call) => call[0].join('?')).join('\n');
+    const text = sql.mock.calls.map(([strings]) => strings.join('?')).join('\n');
     expect(text).toContain('INSERT INTO harness_shared.audit_log');
     expect(text).toContain('ON CONFLICT (id) DO NOTHING');
     expect(recoveryAuditRowId(first.eventId)).toBe(`psu-recovery:${first.eventId}`);
