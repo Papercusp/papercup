@@ -100,11 +100,25 @@ import { readFileSync } from 'node:fs';
 // Resolves to the MOCK above (that is the point) — so its keys are the double's real export set.
 import * as workItemsMocked from '../../work-items';
 import { continuityProbeRevision } from '../../continuity-probes';
+import { LIMITS } from '../limits';
 
 const WORK_ITEM_CONTINUITY_TEST_TOOL = 'test:work-item-continuity-read';
+const WORK_ITEM_LONG_CONTINUITY_TEST_TOOL = `test:${'x'.repeat(167 - 'test:'.length)}`;
 defineTool({
   name: WORK_ITEM_CONTINUITY_TEST_TOOL,
   description: 'read-only fixture for work-item checkpoint executable probes',
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: ['su'],
+  effect: 'read',
+  args: z.object({ value: z.string() }),
+  async handler(args) {
+    return { data: { value: args.value } };
+  },
+});
+defineTool({
+  name: WORK_ITEM_LONG_CONTINUITY_TEST_TOOL,
+  description: 'read-only fixture for long work-item checkpoint executable probes',
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: ['su'],
@@ -612,6 +626,19 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     // `kind` is the executable discriminator here, not a legacy claim alias;
     // the old `{kind, command, result}` compatibility path remains covered below.
     expect(parsed.checks[0]).not.toHaveProperty('kind');
+  });
+
+  it('accepts a 167-character flattened executable tool name at the shared identifier cap', () => {
+    const probe = {
+      kind: 'tool' as const,
+      tool: WORK_ITEM_LONG_CONTINUITY_TEST_TOOL,
+      args: { value: 'green' },
+      schemaRevision: continuityProbeRevision(WORK_ITEM_LONG_CONTINUITY_TEST_TOOL)!,
+      expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+    };
+    expect(WORK_ITEM_LONG_CONTINUITY_TEST_TOOL).toHaveLength(167);
+    expect(LIMITS.IDENT).toBeGreaterThanOrEqual(167);
+    expect(() => parse({ id: 'WI-7', checks: [{ claim: 'long tool is accepted', ...probe }] })).not.toThrow();
   });
 
   it('EI-21674755057848047: accepts a NESTED probe whose kind is implied by `tool`', () => {

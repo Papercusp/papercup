@@ -201,6 +201,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { LIMITS } from '../limits';
 
 /**
  * D-010: the note length below which the capture advisory stays SILENT.
@@ -901,7 +902,7 @@ function checksSpec() {
             // flattened executable-probe fields into `probe`. They must still
             // be present in the published row schema because some clients
             // validate the manifest before invoking the server-side parser.
-            tool: z.string().min(1).max(160).optional().describe('Compatibility field for a flattened tool probe.'),
+            tool: z.string().min(1).max(LIMITS.IDENT).optional().describe('Compatibility field for a flattened tool probe.'),
             args: z
               .record(z.string(), z.unknown())
               .optional()
