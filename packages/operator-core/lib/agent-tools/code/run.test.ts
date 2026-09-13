@@ -949,6 +949,86 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
       expect(prefix).not.toContain('P305_VERDICT verdict=fail');
     });
   });
+
+  // EI-22572881407380085: a Promise.all of release:trace reads must keep every target identity
+  // and the authoritative fields needed to decide what to do next. The generic projector is
+  // intentionally allowed to omit incidental detail; this fixture makes that detail large enough
+  // to force its aggressive ladder so the identity-preservation seam is exercised.
+  describe('release:trace multi-result identity projection', () => {
+    const releaseTraceRows = () =>
+      Array.from({ length: 3 }, (_, index) => {
+        const sha = String(index + 1).repeat(40);
+        return {
+          ok: true,
+          generatedAtMs: index + 1,
+          target: { path: `packages/example-${index}.ts`, sha },
+          gate: {
+            state: 'green',
+            authoritative: true,
+            consecutiveReds: 0,
+            failingTests: [`gate-${index}`],
+            failingTestsMeasured: true,
+            observedCandidate: sha,
+            fixCommitContainment: {
+              fixSha: sha,
+              observedCandidate: sha,
+              verdict: 'contained',
+              reason: null,
+            },
+          },
+          greenPin: { sha, source: 'green-checkpoint' },
+          deploy: { sha, state: 'green' },
+          testedDeployedParity: { testedSha: sha, deployedSha: sha, match: true },
+          nextVerb: {
+            name: 'checkpoint:await',
+            args: { pipeline: `pipeline-${index}` },
+            reason: `await the exact candidate ${sha}`,
+          },
+          noise: Object.fromEntries(Array.from({ length: 24 }, (_, field) => [`noise${field}`, 'x'.repeat(900)])),
+        };
+      });
+
+    it('keeps all three SHAs and authoritative gate fields within the summary budget', () => {
+      const rows = releaseTraceRows();
+      const shaped = shapeCodeRunSummary({ summary: { releaseTraces: rows } }) as {
+        summary: {
+          releaseTraces: Array<{
+            target: { sha: string };
+            gate: { authoritative: boolean; failingTests: string[]; fixCommitContainment: { verdict: string } };
+            greenPin: { sha: string };
+            testedDeployedParity: { testedSha: string; deployedSha: string };
+            nextVerb: { name: string };
+          }>;
+        };
+        summaryNotice: { truncated: true; paths: string[] };
+      };
+
+      expect(shaped.summary.releaseTraces).toHaveLength(rows.length);
+      for (const [index, row] of shaped.summary.releaseTraces.entries()) {
+        const sha = String(index + 1).repeat(40);
+        expect(row.target.sha).toBe(sha);
+        expect(row.gate).toMatchObject({
+          authoritative: true,
+          failingTests: [`gate-${index}`],
+          fixCommitContainment: { verdict: 'contained' },
+        });
+        expect(row.greenPin.sha).toBe(sha);
+        expect(row.testedDeployedParity).toMatchObject({ testedSha: sha, deployedSha: sha });
+        expect(row.nextVerb.name).toBe('checkpoint:await');
+      }
+      expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+      expect(shaped.summaryNotice).toMatchObject({ truncated: true });
+      expect(shaped.summaryNotice.paths).toContain('summary.releaseTraces[0]');
+    });
+
+    it('CONTROL: the old aggressive array rung could only retain a two-row prefix', () => {
+      const rows = releaseTraceRows();
+      const oldAggressivePrefix = rows.slice(0, 2);
+
+      expect(oldAggressivePrefix).toHaveLength(2);
+      expect(oldAggressivePrefix.map((row) => row.target.sha)).not.toContain(rows[2]?.target.sha);
+    });
+  });
 });
 
 // EI-21163938645109933 / EI-21164455886001541 (P-007). Both were filed as "false field-miss

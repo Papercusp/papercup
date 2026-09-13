@@ -960,6 +960,53 @@ const CODE_RUN_SUMMARY_PROJECTION_STEPS = [
 const CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS = 80;
 const CODE_RUN_SUMMARY_PATH_LIMIT = 16;
 
+// EI-22572881407380085: release:trace is a deliberately wide diagnostic envelope. A common
+// code:run summary is `Promise.all([...release:trace])`, where every row carries a distinct target
+// SHA plus authoritative gate/parity/next-verb fields. The generic depth/array ladder can spend
+// its whole budget on the first rows' incidental detail and drop the later identities. Keep a
+// compact, path-independent identity projection for that specific row shape; ordinary arrays keep
+// their historical prefix behavior.
+const CODE_RUN_RELEASE_TRACE_ROW_KEYS = [
+  'ok',
+  'generatedAtMs',
+  'target',
+  'gate',
+  'greenPin',
+  'deploy',
+  'testedDeployedParity',
+  'nextVerb',
+  'constraints',
+  'awaits',
+  'staleWake',
+  'resync',
+  'repairQueue',
+  'repairQueueRead',
+  'trace',
+  'summary',
+  'error',
+  'subject',
+  'harnessMismatch',
+  'plane',
+] as const;
+const CODE_RUN_RELEASE_TRACE_TARGET_KEYS = ['path', 'sha'] as const;
+const CODE_RUN_RELEASE_TRACE_GATE_KEYS = [
+  'state',
+  'status',
+  'authoritative',
+  'consecutiveReds',
+  'failingTests',
+  'failingTestsMeasured',
+  'failingTestsCarriedForward',
+  'recordedVerdict',
+  'observedCandidate',
+  'fixCommitContainment',
+  'inconclusive',
+  'redOwner',
+  'checkpointRunInFlight',
+] as const;
+const CODE_RUN_RELEASE_TRACE_NEXT_VERB_KEYS = ['name', 'args', 'reason'] as const;
+const CODE_RUN_RELEASE_TRACE_MIN_ROWS = 3;
+
 export interface CodeRunSummaryNotice {
   truncated: true;
   originalChars: number;
@@ -1053,6 +1100,134 @@ function codeRunSummaryArrayIndices(value: unknown[], path: string, limit: numbe
     selected.add(index);
   }
   return [...selected].sort((left, right) => left - right);
+}
+
+function codeRunReleaseTraceRow(value: unknown): Record<string, unknown> | undefined {
+  if (!isCodeRunSummaryRecord(value)) return undefined;
+  const target = value.target;
+  const isTargeted = isCodeRunSummaryRecord(target) && typeof target.sha === 'string';
+  if (!isTargeted) return undefined;
+
+  // The normal release:trace result has `gate`; its bounded timeout response has `error`.
+  // Accept both so a mixed Promise.all still keeps every target identity visible.
+  if (!isCodeRunSummaryRecord(value.gate) && !isCodeRunSummaryRecord(value.error)) return undefined;
+  return value;
+}
+
+function projectCodeRunReleaseTraceObject(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+  path: string,
+  options: CodeRunSummaryProjectionOptions,
+  stats: CodeRunSummaryProjectionStats,
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  const keep = new Set(keys);
+  for (const key of keys) {
+    if (!(key in value)) continue;
+    projected[key] = projectCodeRunSummaryValue(
+      value[key],
+      `${path}.${key}`,
+      0,
+      {
+        ...options,
+        // One bounded nested object per selected authority is enough to retain its identity and
+        // scalar verdicts without allowing one verbose reason/await list to crowd out later rows.
+        maxDepth: Math.min(options.maxDepth, 2),
+        arrayLimit: Math.max(options.arrayLimit, CODE_RUN_RELEASE_TRACE_MIN_ROWS),
+      },
+      stats,
+    );
+  }
+  const omitted = Object.keys(value).filter((key) => !keep.has(key));
+  if (omitted.length > 0) {
+    stats.valuesTruncated += omitted.length;
+    stats.omittedItems += omitted.length;
+    noteCodeRunSummaryPath(stats, path);
+  }
+  return projected;
+}
+
+function projectCodeRunReleaseTraceRow(
+  value: Record<string, unknown>,
+  path: string,
+  options: CodeRunSummaryProjectionOptions,
+  stats: CodeRunSummaryProjectionStats,
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  const keep = new Set(CODE_RUN_RELEASE_TRACE_ROW_KEYS);
+  for (const key of CODE_RUN_RELEASE_TRACE_ROW_KEYS) {
+    if (!(key in value)) continue;
+    const entry = value[key];
+    if (key === 'target' && isCodeRunSummaryRecord(entry)) {
+      projected[key] = projectCodeRunReleaseTraceObject(
+        entry,
+        CODE_RUN_RELEASE_TRACE_TARGET_KEYS,
+        `${path}.${key}`,
+        options,
+        stats,
+      );
+    } else if (key === 'gate' && isCodeRunSummaryRecord(entry)) {
+      projected[key] = projectCodeRunReleaseTraceObject(
+        entry,
+        CODE_RUN_RELEASE_TRACE_GATE_KEYS,
+        `${path}.${key}`,
+        options,
+        stats,
+      );
+    } else if (key === 'nextVerb' && isCodeRunSummaryRecord(entry)) {
+      projected[key] = projectCodeRunReleaseTraceObject(
+        entry,
+        CODE_RUN_RELEASE_TRACE_NEXT_VERB_KEYS,
+        `${path}.${key}`,
+        options,
+        stats,
+      );
+    } else {
+      projected[key] = projectCodeRunSummaryValue(
+        entry,
+        `${path}.${key}`,
+        0,
+        {
+          ...options,
+          maxDepth: Math.min(options.maxDepth, 2),
+          arrayLimit: Math.max(options.arrayLimit, CODE_RUN_RELEASE_TRACE_MIN_ROWS),
+        },
+        stats,
+      );
+    }
+  }
+  const omitted = Object.keys(value).filter((key) => !keep.has(key));
+  if (omitted.length > 0) {
+    stats.valuesTruncated += omitted.length;
+    stats.omittedItems += omitted.length;
+    noteCodeRunSummaryPath(stats, path);
+  }
+  return projected;
+}
+
+function projectCodeRunReleaseTraceArray(
+  value: unknown[],
+  path: string,
+  options: CodeRunSummaryProjectionOptions,
+  stats: CodeRunSummaryProjectionStats,
+): unknown[] | undefined {
+  const rows = value.map(codeRunReleaseTraceRow);
+  if (value.length === 0 || rows.some((row) => row === undefined)) return undefined;
+
+  // Keep at least three rows: the reported triage flow compares frozen, observed, and repair
+  // heads, and the third row is exactly the one the generic array rung used to discard.
+  const limit = Math.max(options.arrayLimit, CODE_RUN_RELEASE_TRACE_MIN_ROWS);
+  const indices = codeRunSummaryArrayIndices(value, path, limit);
+  const projected = indices.map((index) =>
+    projectCodeRunReleaseTraceRow(rows[index] as Record<string, unknown>, `${path}[${index}]`, options, stats),
+  );
+  if (value.length > limit) {
+    stats.arraysTruncated++;
+    stats.omittedItems += value.length - limit;
+    noteCodeRunSummaryPath(stats, path);
+  }
+  return projected;
 }
 
 function noteCodeRunSummaryPath(stats: CodeRunSummaryProjectionStats, path: string): void {
@@ -1253,6 +1428,11 @@ function projectCodeRunSummaryValue(
     return clipCodeRunSummaryString(value, path, options.stringChars, stats);
   }
   if (isCodeRunSummaryScalar(value)) return value;
+
+  if (Array.isArray(value)) {
+    const releaseTraceProjection = projectCodeRunReleaseTraceArray(value, path, options, stats);
+    if (releaseTraceProjection !== undefined) return releaseTraceProjection;
+  }
 
   if (depth >= options.maxDepth) {
     const boundaryProjection = projectCodeRunSummaryDepthBoundary(value, path, options, stats);
