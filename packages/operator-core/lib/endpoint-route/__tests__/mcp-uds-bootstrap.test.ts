@@ -15,7 +15,10 @@ vi.mock('../routes/transport/_mcp-host', () => ({
   pinVerifiedMcpRequest: (info: object) => info,
 }));
 
-import { startDesktopAgentMcp } from '../routes/transport/_mcp-uds-bootstrap';
+import {
+  agentMcpBootstrapFailureCode,
+  startDesktopAgentMcp,
+} from '../routes/transport/_mcp-uds-bootstrap';
 import { readAgentMcpDiscoveryForPort, endpointIpcDiscoveryPathForPort } from '../../endpoint-ipc-discovery';
 
 beforeEach(async () => {
@@ -30,6 +33,17 @@ afterEach(async () => {
 });
 
 describe('desktop bootstrap publishes a separately authenticated MCP endpoint', () => {
+  it('reports only a credential-safe startup failure class', () => {
+    expect(agentMcpBootstrapFailureCode(Object.assign(new Error('secret /tmp/private.sock'), {
+      code: 'EADDRINUSE',
+    }))).toBe('system:EADDRINUSE');
+    expect(agentMcpBootstrapFailureCode(new Error('uds_socket_not_private')))
+      .toBe('uds:uds_socket_not_private');
+    expect(agentMcpBootstrapFailureCode(new TypeError('Bearer secret-value')))
+      .toBe('runtime:TypeError');
+    expect(agentMcpBootstrapFailureCode('Bearer secret-value')).toBe('unknown');
+  });
+
   it('publishes only after bind, retains the legacy UI path, and rejects the closed generation', async () => {
     const before = process.listenerCount('SIGTERM');
     const listener = await startDesktopAgentMcp('/tmp/ui.sock', 33170);

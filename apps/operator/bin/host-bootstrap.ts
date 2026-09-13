@@ -1053,19 +1053,24 @@ export function runBootstrap(): void {
         // Separate authenticated agent protocol, never the trusted UI principal.
         // One selected-port descriptor owner; cluster workers must not race it.
         if (cluster.isPrimary) {
+          let classifyAgentMcpFailure = (_error: unknown) => 'bootstrap-unavailable';
           try {
             // Same readiness boundary as HTTP; UI IPC may advertise early for
             // boot progress, but agent writes must not outrun migrations.
             await waitForBootMigrationGate();
-            const { startDesktopAgentMcp } = await import(
+            const { startDesktopAgentMcp, agentMcpBootstrapFailureCode } = await import(
               '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-bootstrap'
             );
+            classifyAgentMcpFailure = agentMcpBootstrapFailureCode;
             await startDesktopAgentMcp(
               server.socketPath, Number(process.env.PAPERCUSP_HONO_PORT) || 3070,
             );
-          } catch {
+          } catch (error) {
             // No credential or untrusted metadata in startup diagnostics.
-            console.error('[agent-mcp-uds] listener unavailable; existing HTTP route retained');
+            console.error(
+              `[agent-mcp-uds] listener unavailable (${classifyAgentMcpFailure(error)}); ` +
+              'existing HTTP route retained',
+            );
           }
         }
       } catch (err) {
