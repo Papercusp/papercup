@@ -45,6 +45,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { emitScorecard } = await import('./emit');
+const { getRubricCriteriaHash } = await import('../../rubrics');
 const { createIssue, issuesScopeWorkspace } = await import('../../issues-engineer');
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
@@ -123,6 +124,11 @@ async function fileIndependentGrading(opts: {
   ratings?: Record<string, { rating: string; evidence: string }>;
   rubricRevision?: number;
 }): Promise<string> {
+  // The exact-reference rail compares BOTH halves of the current rubric identity.
+  // Derive the hash from the same live rubric read the writer uses instead of
+  // freezing a fixture constant that drifts whenever the criterion contract moves.
+  const criteriaHash = await getRubricCriteriaHash(RUBRIC);
+  if (!criteriaHash) throw new Error(`fixture could not resolve criteriaHash for '${RUBRIC}'`);
   const issue = await createIssue({
     title: 'independent grading',
     kind: 'change',
@@ -133,6 +139,7 @@ async function fileIndependentGrading(opts: {
         rubricRef: RUBRIC,
         sourceHive: 'papercusp',
         rubricRevision: opts.rubricRevision ?? REVISION,
+        criteriaHash,
         subject: { kind: 'plan', ref: opts.subjectRef ?? SUBJECT_PLAN },
         ratings: opts.ratings ?? GRADER_RATINGS,
       },
