@@ -3,10 +3,11 @@
  * check changed-line whitespace without imposing a whole-file Prettier baseline
  * on packages that intentionally retain legacy formatting.
  */
-import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // prettier-ignore
@@ -17,6 +18,7 @@ import {
   buildPrettierCheckArgs,
   buildPrettierStdinArgs,
   buildPrettierWholeFileArgs,
+  changedLineRanges,
   characterRangeForLines,
   formatRangeDiagnostic,
   formatRangeWithPrettier,
@@ -49,6 +51,40 @@ describe('scoped repository format check', () => {
       { startLine: 1, endLine: 3 },
       { startLine: 9, endLine: 10 },
     ]);
+  });
+
+  it('gets changed ranges from the nested repository that owns a submodule file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'format-check-nested-repo-'));
+    const nested = join(root, 'libs', 'papercusp');
+    const file = join(nested, 'src', 'fixture.ts');
+    try {
+      execFileSync('git', ['init', '-q', nested], { timeout: 30_000, killSignal: 'SIGKILL' });
+      execFileSync('git', ['-C', nested, 'config', 'user.email', 'format-check@example.test'], {
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      execFileSync('git', ['-C', nested, 'config', 'user.name', 'format-check-test'], {
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, 'const value = 1;\nconst untouched = 2;\n');
+      execFileSync('git', ['-C', nested, 'add', '--', 'src/fixture.ts'], {
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      execFileSync('git', ['-C', nested, 'commit', '-qm', 'baseline'], {
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      writeFileSync(file, 'const value=1;\nconst untouched = 2;\n');
+
+      expect(changedLineRanges('libs/papercusp/src/fixture.ts', readFileSync(file, 'utf8'), root)).toEqual([
+        { startLine: 1, endLine: 1 },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('maps changed lines to character ranges for Prettier', () => {

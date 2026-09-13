@@ -15,6 +15,13 @@ export function characterRangeForLines(source: any, range: any): {
  * range ends earlier; use its first parse error to expand the range and retry.
  */
 export function applyPrettierRangeWrites(source: any, lineRanges: any, formatRange: any, repoPath?: string): any;
+/**
+ * Return added line ranges from the repository that owns the requested file.
+ *
+ * `repoRoot` is optional for hermetic tests that build a temporary superproject
+ * containing a nested repository; production callers use the canonical root.
+ */
+export function changedLineRanges(repoPath: any, source: any, repoRoot?: string): any;
 /** Validate and normalize explicit in-repository file paths. */
 export function normalizeScopedPaths(args: any): any;
 export function buildPrettierCheckArgs(cli: any, repoPath: any, range: any): any[];

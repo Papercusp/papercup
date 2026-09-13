@@ -71,6 +71,15 @@ import {
   reexecExitCodeFrom,
 } from "./psu-pty-host.mjs";
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
+import {
+  RECOVERY_CAPABILITY_DIAGNOSTIC,
+  issueRecoveryGrant,
+  readRecoveryAncestorCmdlines,
+  reconcileRecoveryAudit,
+  recoveryAuthorizationEligibility,
+  runRecoveryGrant,
+  stripRecoveryMarkers,
+} from "./psu-recovery.mjs";
 // Shared with the proxy itself (WI-6738) — psu must not give up while the proxy is still
 // retrying on its behalf. Plain .mjs so this bare-node script and the tsx-run proxy can
 // import the SAME definition.
@@ -237,6 +246,11 @@ Launcher controls:
   --force                            Override launch preflight guards
   --set-claude-token[=<token>]       Store the default Claude OAuth token
   --clear-claude-token               Clear the stored Claude OAuth token
+  --recovery-authorize               Locally authorize one exact diagnostic argv
+  --recovery-reason=<text>           Required authorization reason
+  --recovery-ttl=<seconds>           Grant lifetime (default 300, max 900)
+  --recovery-max-runtime=<seconds>   Command deadline (default 60, max 300)
+  --recovery-grant=<uuid>            Consume a signed one-use recovery grant
   --                                 Forward remaining arguments to the backend
 
 Values may use either --name=value or (where supported) --name value form.
@@ -747,6 +761,11 @@ export function parseArgs(argv) {
     setClaudeToken: false,
     setClaudeTokenValue: null,
     clearClaudeToken: false,
+    recoveryAuthorize: false,
+    recoveryGrant: null,
+    recoveryReason: null,
+    recoveryTtlMs: null,
+    recoveryMaxRuntimeMs: null,
     allowSubagents: null,
     kickoffPromptText: null,
     label: null,
@@ -780,6 +799,7 @@ export function parseArgs(argv) {
   let pendingModeSubject = false;
   let pendingModeInstructions = false;
   let pendingTui = false;
+  let pendingRecoveryReason = false;
   for (const a of argv) {
     if (rest) {
       out.passthrough.push(a);
@@ -847,6 +867,11 @@ export function parseArgs(argv) {
       out.tui = a;
       continue;
     }
+    if (pendingRecoveryReason) {
+      pendingRecoveryReason = false;
+      out.recoveryReason = a;
+      continue;
+    }
     // `--account <id>` (space form) — the previous token armed this; take the
     // value verbatim (an account id never starts with `--`).
     if (pendingAccount) {
@@ -887,6 +912,31 @@ export function parseArgs(argv) {
       continue;
     } else if (a === "--clear-claude-token") {
       out.clearClaudeToken = true;
+      continue;
+    }
+    if (a === "--recovery-authorize") {
+      out.recoveryAuthorize = true;
+      continue;
+    } else if (a.startsWith("--recovery-grant=")) {
+      out.recoveryGrant = a.slice("--recovery-grant=".length) || null;
+      continue;
+    } else if (a === "--recovery-reason") {
+      pendingRecoveryReason = true;
+      continue;
+    } else if (a.startsWith("--recovery-reason=")) {
+      out.recoveryReason = a.slice("--recovery-reason=".length);
+      continue;
+    } else if (a.startsWith("--recovery-ttl=")) {
+      const seconds = Number(a.slice("--recovery-ttl=".length));
+      if (!Number.isInteger(seconds) || seconds <= 0)
+        throw new Error("--recovery-ttl must be a positive whole number of seconds");
+      out.recoveryTtlMs = seconds * 1_000;
+      continue;
+    } else if (a.startsWith("--recovery-max-runtime=")) {
+      const seconds = Number(a.slice("--recovery-max-runtime=".length));
+      if (!Number.isInteger(seconds) || seconds <= 0)
+        throw new Error("--recovery-max-runtime must be a positive whole number of seconds");
+      out.recoveryMaxRuntimeMs = seconds * 1_000;
       continue;
     }
     if (a === "--no-picker") out.picker = false;
@@ -9529,7 +9579,7 @@ export async function reportSessionPortDelivery(
  * Direct credentials are route selectors too: the explicit envelope re-adds
  * only the credential source selected for this child. */
 export function sanitizeInheritedEnv(env) {
-  const out = { ...env };
+  const out = stripRecoveryMarkers(env);
   for (const key of Object.keys(out)) {
     if (
       key === "INIT_CWD" ||
@@ -13813,7 +13863,7 @@ async function launchHostHandoff(handoff) {
     handoff?.childEnv &&
     typeof handoff.childEnv === "object" &&
     !Array.isArray(handoff.childEnv)
-      ? { ...handoff.childEnv }
+      ? stripRecoveryMarkers(handoff.childEnv)
       : {};
   if (handoff?.ownerId) childEnv.PAPERCUSP_SID = String(handoff.ownerId);
   if (handoff?.agent) childEnv.PAPERCUSP_AGENT = String(handoff.agent);
@@ -13844,6 +13894,125 @@ async function launchHostHandoff(handoff) {
   });
 }
 
+function psuClientVersion() {
+  return String(
+    process.env.PAPERCUSP_BUILD_ID ||
+      process.env.npm_package_version ||
+      "unknown",
+  );
+}
+
+async function recoveryFlow(args) {
+  if (!args.recoveryAuthorize && !args.recoveryGrant) return false;
+  if (args.recoveryAuthorize && args.recoveryGrant)
+    throw new Error("--recovery-authorize and --recovery-grant are mutually exclusive");
+  const terminalId = resolveOwnedTtyPath();
+  if (!terminalId)
+    throw new Error("native recovery requires a real local terminal");
+
+  if (args.recoveryAuthorize) {
+    const eligibility = recoveryAuthorizationEligibility({
+      env: process.env,
+      ancestorCmdlines: readRecoveryAncestorCmdlines(),
+    });
+    if (!eligibility.ok) {
+      throw new Error(
+        `native recovery authorization refused (${eligibility.reason}); authorize only from a direct local owner terminal, never from an agent session`,
+      );
+    }
+    if (!args.recoveryReason?.trim())
+      throw new Error("--recovery-authorize requires --recovery-reason=<why>");
+    if (!Array.isArray(args.passthrough) || args.passthrough.length === 0)
+      throw new Error("--recovery-authorize requires an exact argv after `--`");
+    const ttlMs = args.recoveryTtlMs ?? 5 * 60_000;
+    const maxRuntimeMs = args.recoveryMaxRuntimeMs ?? 60_000;
+    const preview = [
+      "PAPERCUSP NATIVE RECOVERY AUTHORIZATION",
+      "This bypasses the operator/MCP control plane for one exact diagnostic command.",
+      `Command argv: ${JSON.stringify(args.passthrough)}`,
+      `Cwd: ${process.cwd()}`,
+      `Reason: ${args.recoveryReason.trim()}`,
+      `Grant ttl: ${ttlMs}ms · command deadline: ${maxRuntimeMs}ms · uses: 1`,
+      "The signed grant is bound to this terminal and audited outside the repository.",
+    ].join("\n");
+    console.error(preview);
+    const { confirm } = await import("@inquirer/prompts");
+    const approved = await confirm({
+      message: "Authorize this exact one-use native recovery command?",
+      default: false,
+    });
+    if (!approved) {
+      console.error("psu: recovery authorization cancelled; no grant was created.");
+      return true;
+    }
+    const grant = issueRecoveryGrant(
+      {
+        capability: RECOVERY_CAPABILITY_DIAGNOSTIC,
+        argv: args.passthrough,
+        cwd: process.cwd(),
+        reason: args.recoveryReason,
+        ttlMs,
+        maxRuntimeMs,
+      },
+      {
+        token: readToken(),
+        terminalId,
+        clientVersion: psuClientVersion(),
+      },
+    );
+    console.error(
+      `psu: recovery grant ${grant.grantId} authorized for one use; expires ${new Date(grant.expiresAtMs).toISOString()}.`,
+    );
+    console.error(`psu: execute it from this terminal with: psu --recovery-grant=${grant.grantId}`);
+    return true;
+  }
+
+  if (args.passthrough?.length)
+    throw new Error("--recovery-grant executes only the signed argv; additional `--` arguments are refused");
+  const result = await runRecoveryGrant(args.recoveryGrant, {
+    token: readToken(),
+    terminalId,
+    clientVersion: psuClientVersion(),
+  });
+  if (!result.ok) {
+    console.error(`psu: recovery grant refused: ${result.reason}`);
+    process.exitCode = 1;
+  } else if (result.timedOut) {
+    console.error(`psu: recovery command exceeded its ${result.grant.maxRuntimeMs}ms deadline.`);
+    process.exitCode = 124;
+  } else if (result.error) {
+    console.error(`psu: recovery command failed to start: ${result.error}`);
+    process.exitCode = 1;
+  } else if (result.signal) {
+    console.error(`psu: recovery command ended by ${result.signal}.`);
+    process.exitCode = 1;
+  } else {
+    process.exitCode = result.exitCode ?? 1;
+  }
+  return true;
+}
+
+async function reconcileRecoveryAuditSoft() {
+  try {
+    const result = await reconcileRecoveryAudit({
+      send: (events) =>
+        api("/api/agent-mcp/recovery-audit/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ events }),
+        }),
+    });
+    if (result.reconciled > 0) {
+      console.error(
+        `psu: reconciled ${result.reconciled} local recovery audit event(s) into the operator audit log.`,
+      );
+    }
+  } catch (error) {
+    console.error(
+      `psu: recovery audit is still pending local reconciliation (${error?.message ?? error}); launch continues.`,
+    );
+  }
+}
+
 async function main() {
   const connection = await runPsuConnectionFrontController(
     process.argv.slice(2),
@@ -13859,6 +14028,7 @@ async function main() {
     process.stdout.write(`${PSU_HELP_TEXT}\n`);
     return;
   }
+  if (await recoveryFlow(args)) return;
   // A host-code adoption handoff is consumed BEFORE any normal fresh/resume
   // flow. Re-running bootstrap-su here would select or mint another adv row
   // while the handoff's already-minted child belongs to the predecessor row.
@@ -13894,6 +14064,7 @@ async function main() {
     clearClaudeTokenFlow();
     return;
   }
+  await reconcileRecoveryAuditSoft();
   // --fork only has meaning when resuming an existing session — warn (don't fail)
   // so a stray `psu --fork` on a fresh launch doesn't silently look honored.
   if (args.fork && !args.resume) {

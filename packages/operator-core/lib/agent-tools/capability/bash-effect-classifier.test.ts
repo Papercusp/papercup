@@ -5,7 +5,7 @@
  * The classifier is intentionally conservative: unknown shell syntax remains a
  * write so dry-run safety is never weakened by an incomplete shell parser.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,6 +42,35 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     const registered = lookupByMcpName('capability:bash');
     expect(registered?.effect).toBe('write');
     expect(registered?.effectForCall?.({ command: 'ss -ltnp' })).toBe('read');
+  });
+
+  it('classifies the df/findmnt filesystem diagnostic as read-only', async () => {
+    const command = 'df -P . && findmnt -T .';
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+
+    const bash = {
+      pluginName: 'agent-mcp',
+      description: 'capability:bash',
+      inputSchema: { type: 'object' },
+      capabilities: ['capability:bash'],
+      effect: 'write' as const,
+      effectForCall: classifyCapabilityBashEffect,
+      expose: { mcp: { name: 'capability:bash' } },
+      fn: vi.fn(async () => json({ ok: true, status: 'completed', output: 'filesystem diagnostic' })),
+    } as unknown as ProjectedTool;
+
+    const result = await runToolOrchestration(
+      `const probe = await tools.capability.bash({ command: '${command}' });
+       return { ok: probe.ok, status: probe.status };`,
+      { ctx: context(), deps: {}, tools: [bash], dryRun: true },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.summary).toEqual({ ok: true, status: 'completed' });
+    expect(result.plannedMutations).toEqual([]);
+    expect(result.callRecords).toEqual([
+      expect.objectContaining({ tool: 'capability:bash', effect: 'read', disposition: 'settled' }),
+    ]);
   });
 
   it.each([

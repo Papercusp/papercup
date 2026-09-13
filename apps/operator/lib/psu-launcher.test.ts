@@ -2832,6 +2832,11 @@ describe("psu-launcher arg parsing", () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
+      recoveryAuthorize: false,
+      recoveryGrant: null,
+      recoveryReason: null,
+      recoveryTtlMs: null,
+      recoveryMaxRuntimeMs: null,
       compactionLimit: null,
       // subagent-launch governance (owner mandate 2026-07-02): tri-state, default
       // null (unset) — the picker prompts (falling back to DENY); a flag preselects.
@@ -2978,12 +2983,35 @@ describe("psu-launcher arg parsing", () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
+      recoveryAuthorize: false,
+      recoveryGrant: null,
+      recoveryReason: null,
+      recoveryTtlMs: null,
+      recoveryMaxRuntimeMs: null,
       compactionLimit: null,
       allowSubagents: null,
       kickoffPromptText: null,
       label: null,
       tui: null,
     });
+  });
+
+  it("parses bounded native-recovery authorization and redemption flags", () => {
+    expect(parseArgs([
+      "--recovery-authorize",
+      "--recovery-reason", "operator endpoint unavailable",
+      "--recovery-ttl=120",
+      "--recovery-max-runtime=15",
+      "--", "printf", "%s", "offline-ok",
+    ])).toMatchObject({
+      recoveryAuthorize: true,
+      recoveryReason: "operator endpoint unavailable",
+      recoveryTtlMs: 120_000,
+      recoveryMaxRuntimeMs: 15_000,
+      passthrough: ["printf", "%s", "offline-ok"],
+    });
+    expect(parseArgs(["--recovery-grant=1234"]).recoveryGrant).toBe("1234");
+    expect(() => parseArgs(["--recovery-ttl=1.5"])).toThrow(/whole number/);
   });
 
   it("parses repeatable identity stack refs in equals and space forms", () => {

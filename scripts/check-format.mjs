@@ -166,9 +166,9 @@ export function applyPrettierRangeWrites(
   return current;
 }
 
-function git(args) {
+function git(args, cwd = REPO_ROOT) {
   const result = spawnSync("git", args, {
-    cwd: REPO_ROOT,
+    cwd,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
   });
@@ -179,34 +179,71 @@ function git(args) {
   return result.stdout;
 }
 
-function isTracked(repoPath) {
+function isWithinRoot(candidate, root) {
+  const rootRelative = relative(root, candidate);
+  return (
+    rootRelative !== ".." &&
+    !rootRelative.startsWith(`..${sep}`) &&
+    !isAbsolute(rootRelative)
+  );
+}
+
+/** Resolve the Git repository that owns an explicit path. */
+function gitRepoRootForPath(absolutePath, fallbackRoot) {
+  try {
+    const output = git(
+      ["rev-parse", "--show-toplevel"],
+      dirname(absolutePath),
+    ).trim();
+    if (!output) return fallbackRoot;
+    const candidate = resolve(output);
+    return isWithinRoot(candidate, fallbackRoot) ? candidate : fallbackRoot;
+  } catch {
+    return fallbackRoot;
+  }
+}
+
+function isTracked(repoPath, repoRoot = REPO_ROOT) {
   const result = spawnSync(
     "git",
     ["ls-files", "--error-unmatch", "--", repoPath],
     {
-      cwd: REPO_ROOT,
+      cwd: repoRoot,
       encoding: "utf8",
     },
   );
   return result.status === 0;
 }
 
-function changedLineRanges(repoPath, source) {
-  if (!isTracked(repoPath)) {
+/**
+ * Return added line ranges from the repository that owns the requested file.
+ *
+ * `repoRoot` is optional for hermetic tests that build a temporary superproject
+ * containing a nested repository; production callers use the canonical root.
+ */
+export function changedLineRanges(repoPath, source, repoRoot = REPO_ROOT) {
+  const absolutePath = resolve(repoRoot, repoPath);
+  const ownerRoot = gitRepoRootForPath(absolutePath, repoRoot);
+  const ownerPath = relative(ownerRoot, absolutePath).split(sep).join("/");
+
+  if (!isTracked(ownerPath, ownerRoot)) {
     return source.length === 0
       ? []
       : [{ startLine: 1, endLine: lineStartOffsets(source).length }];
   }
   return parseAddedLineRanges(
-    git([
-      "diff",
-      "--no-ext-diff",
-      "--unified=0",
-      "--no-color",
-      "HEAD",
-      "--",
-      repoPath,
-    ]),
+    git(
+      [
+        "diff",
+        "--no-ext-diff",
+        "--unified=0",
+        "--no-color",
+        "HEAD",
+        "--",
+        ownerPath,
+      ],
+      ownerRoot,
+    ),
   );
 }
 
