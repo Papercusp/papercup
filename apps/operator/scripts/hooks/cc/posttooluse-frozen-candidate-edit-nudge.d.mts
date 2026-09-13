@@ -30,15 +30,6 @@ export function warningFor(marker: any, editedPath: string, ledger?: {
 } | null): string | null;
 /** Every path an Edit/Write/MultiEdit payload touched. */
 export function editedPathsFrom(payload: any): any[];
-/**
- * P-019: the hunks a payload made — MUST match `hunksFromToolCall` in
- * packages/operator-core/lib/release/frozen-repair-edit-ledger.ts (pinned by the parity test).
- *   Edit / capability_edit         { file_path, old_string, new_string, replace_all? }
- *   Write / capability_write       { file_path, content }
- *   MultiEdit / capability_multi_edit { file_path, edits:[{ old_string, new_string, replace_all? }] }
- *   Codex write_file               { path, content }
- *   Codex apply_patch              patch text — not a hunk pair; nothing extracted (recorded as absent).
- */
 export function hunksFrom(payload: any): any[];
 /** Did the client report the edit itself failed? A failed edit made no hunk to record. */
 export function toolCallFailed(payload: any): boolean;
