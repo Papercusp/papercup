@@ -413,7 +413,11 @@ export interface RenameChatInput {
 /** Rename the displayed chat identity; blank/control-only titles are refused. */
 export async function renameChat(input: RenameChatInput): Promise<Result<{ title: string }>> {
   const title = [...String(input.title ?? '')]
-    .filter((ch) => (ch.codePointAt(0) ?? 0) >= 32 && ch.codePointAt(0) !== 127)
+    .map((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      if (ch === '\n' || ch === '\r' || ch === '\t') return ' ';
+      return code >= 32 && code !== 127 ? ch : '';
+    })
     .join('')
     .replace(/\s+/g, ' ')
     .trim()

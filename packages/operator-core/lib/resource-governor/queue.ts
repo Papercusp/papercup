@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_DB_CALL_DEADLINE_MS, getOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import {
@@ -32,6 +32,12 @@ type LivenessVerdict = import('../agent-tools/coordination/liveness-oracle').Liv
 export const RESOURCE_GOVERNOR_PAYLOAD_KEY = 'resource_governor';
 export const RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION = 1 as const;
 export const RESOURCE_GOVERNOR_PARK_OWNER = 'system:resource-governor';
+/**
+ * The liveness census runs before the bounded mutation transaction. Keep its
+ * raw-pool query under the same caller-facing ceiling as other admin-pool
+ * round trips so a dead/saturated pool cannot strand leaseReceipt forever.
+ */
+export const RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS = DEFAULT_DB_CALL_DEADLINE_MS;
 
 /**
  * The vocabulary `harness_shared.work_items_signal_origin_chk` accepts for
@@ -388,19 +394,22 @@ export async function readActiveGovernorLeaseOwners(
 ): Promise<QueueLeaseOwnerObservation[]> {
   const namespacePredicate =
     namespace === null ? sql`` : sql`AND payload->'resource_governor'->>'namespace' = ${namespace}`;
-  const rows = await sql<QueueLeaseOwnerDbRow[]>`
-    SELECT feature_id AS receipt_id,
-           payload->'resource_governor'->'lease'->>'leaseId' AS lease_id,
-           payload->'resource_governor'->'lease'->>'owner' AS owner
-      FROM harness_shared.work_items
-     WHERE workspace_id = ${workspaceId}
-       AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-       ${namespacePredicate}
-       AND payload->'resource_governor'->>'state' IN ('leased', 'running')
-       AND jsonb_typeof(payload->'resource_governor'->'lease') = 'object'
-       AND btrim(COALESCE(payload->'resource_governor'->'lease'->>'leaseId', '')) <> ''
-       AND btrim(COALESCE(payload->'resource_governor'->'lease'->>'owner', '')) <> ''
-     ORDER BY feature_id ASC`;
+  const rows = await withDbCallDeadline(
+    sql<QueueLeaseOwnerDbRow[]>`
+      SELECT feature_id AS receipt_id,
+             payload->'resource_governor'->'lease'->>'leaseId' AS lease_id,
+             payload->'resource_governor'->'lease'->>'owner' AS owner
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+         ${namespacePredicate}
+         AND payload->'resource_governor'->>'state' IN ('leased', 'running')
+         AND jsonb_typeof(payload->'resource_governor'->'lease') = 'object'
+         AND btrim(COALESCE(payload->'resource_governor'->'lease'->>'leaseId', '')) <> ''
+         AND btrim(COALESCE(payload->'resource_governor'->'lease'->>'owner', '')) <> ''
+       ORDER BY feature_id ASC`,
+    { ms: RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS, label: 'resource-governor.work-item-liveness-read' },
+  );
   return mapQueueLeaseOwnerRows(rows);
 }
 

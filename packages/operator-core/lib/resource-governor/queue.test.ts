@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AdmissionIdempotencyConflictError,
   AdmissionPersistenceError,
@@ -7,6 +7,7 @@ import {
 } from './admission';
 import {
   PgWorkItemAdmissionQueueStore,
+  RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS,
   WorkItemAdmissionQueueDriver,
   mapGovernorQueuePopulationRows,
   mapQueueLeaseOwnerRows,
@@ -18,6 +19,7 @@ import {
   type QueueReconciliationResult,
   type StoredAdmissionRecord,
 } from './queue';
+import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
 import { MemoryAdmissionQueueStore } from './memory-admission-queue-store';
 
 class MemoryQueueStore implements DurableAdmissionQueueStore {
@@ -385,6 +387,39 @@ describe('resource-governor queue liveness and census boundaries (EI-219699)', (
         { receipt_id: 'WI-2', lease_id: null, owner: 'owner-2' },
       ]),
     ).toEqual([{ receiptId: 'WI-1', leaseId: 'lease-1', owner: 'owner-1' }]);
+  });
+});
+
+describe('resource-governor liveness-read deadline (EI-23122978932795934)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    [
+      'legacy work-item store',
+      (sql: never) => new PgWorkItemAdmissionQueueStore({ sql, workspaceId: 'workspace-test' }),
+    ],
+    [
+      'canonical ledger store',
+      (sql: never) => new PgAdmissionLedgerQueueStore({ sql, workspaceId: 'workspace-test' }),
+    ],
+  ])('bounds a hung %s raw-pool liveness query', async (_label, makeStore) => {
+    vi.useFakeTimers();
+    const hangingSql = Object.assign(
+      (strings: TemplateStringsArray) =>
+        strings.join('').includes('SELECT') ? new Promise<never>(() => {}) : { fragment: strings.join('') },
+      {},
+    ) as never;
+    const store = makeStore(hangingSql);
+    const pending = store.readActiveLeaseOwners();
+    const assertion = expect(pending).rejects.toMatchObject({
+      name: 'DbCallDeadlineError',
+      deadlineMs: RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS,
+    });
+
+    await vi.advanceTimersByTimeAsync(RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS);
+    await assertion;
   });
 });
 

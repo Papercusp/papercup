@@ -2,15 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  assessFrozenLineageLaunchCas,
-  type FrozenRepairQueuePreflight,
-} from './checkpoint-required-ancestor';
+import { assessFrozenLineageLaunchCas, type FrozenRepairQueuePreflight } from './checkpoint-required-ancestor';
 import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
-import {
-  projectFrozenRepairMarker,
-  readFrozenRepairMarker,
-} from './frozen-repair-edit-marker';
+import { projectFrozenRepairMarker, readFrozenRepairMarker } from './frozen-repair-edit-marker';
 import {
   classifyFrozenLineageShellCommand,
   evaluateFrozenLineageCarryText,
@@ -114,13 +108,14 @@ describe('frozen lineage stale-D-017 recurrence', () => {
 
     for (const command of [
       'npm --workspace packages/operator-core test -- frozen-lineage-execution-policy.integration.test.ts',
-      "ptool release:repair-queue --json - <<'JSON'\n{\"op\":\"admit\",\"paths\":[\"a.ts\"]}\nJSON",
+      'ptool release:repair-queue --json - <<\'JSON\'\n{"op":"admit","paths":["a.ts"]}\nJSON',
     ]) {
       const classification = classifyFrozenLineageShellCommand({ command, cwd: ROOT });
       expect(classification).toBeNull();
-      await expect(
-        evaluateFrozenLineageShellCommand(classification, ROOT, { marker }),
-      ).resolves.toMatchObject({ allowed: true, reason: 'operation-not-governed' });
+      await expect(evaluateFrozenLineageShellCommand(classification, ROOT, { marker })).resolves.toMatchObject({
+        allowed: true,
+        reason: 'operation-not-governed',
+      });
     }
   });
 });

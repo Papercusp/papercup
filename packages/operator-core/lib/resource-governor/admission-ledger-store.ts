@@ -4,7 +4,7 @@
  * Unlike the bounded legacy adapter, this store has no work-item dependency:
  * every new receipt is an RG-UUID row in resource_governor_admissions.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { AdmissionPersistenceError, type QueueReceiptState } from './admission';
@@ -21,6 +21,7 @@ import {
   type QueueReconciliationResult,
   type SqlClient,
   type StoredAdmissionRecord,
+  RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS,
   selectEndedLeaseOwners,
   readGovernorQueuePopulation,
 } from './queue';
@@ -346,17 +347,20 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   /** Read active ledger lease identities without taking row locks or mutating state. */
   async readActiveLeaseOwners(namespace: string | null = null): Promise<QueueLeaseOwnerObservation[]> {
     const namespacePredicate = namespace === null ? this.sql`` : this.sql`AND namespace = ${namespace}`;
-    const rows = await this.sql<Array<{ receipt_id: string | null; lease_id: string | null; owner: string | null }>>`
-      SELECT receipt_id,
-             record->'lease'->>'leaseId' AS lease_id,
-             lease_owner AS owner
-        FROM harness_shared.resource_governor_admissions
-       WHERE workspace_id = ${this.workspaceId}
-         ${namespacePredicate}
-         AND state IN ('leased', 'running')
-         AND btrim(COALESCE(record->'lease'->>'leaseId', '')) <> ''
-         AND lease_owner IS NOT NULL
-       ORDER BY receipt_id ASC`;
+    const rows = await withDbCallDeadline(
+      this.sql<Array<{ receipt_id: string | null; lease_id: string | null; owner: string | null }>>`
+        SELECT receipt_id,
+               record->'lease'->>'leaseId' AS lease_id,
+               lease_owner AS owner
+          FROM harness_shared.resource_governor_admissions
+         WHERE workspace_id = ${this.workspaceId}
+           ${namespacePredicate}
+           AND state IN ('leased', 'running')
+           AND btrim(COALESCE(record->'lease'->>'leaseId', '')) <> ''
+           AND lease_owner IS NOT NULL
+         ORDER BY receipt_id ASC`,
+      { ms: RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS, label: 'resource-governor.ledger-liveness-read' },
+    );
     return rows.flatMap((row) => {
       const receiptId = row.receipt_id?.trim();
       const leaseId = row.lease_id?.trim();
