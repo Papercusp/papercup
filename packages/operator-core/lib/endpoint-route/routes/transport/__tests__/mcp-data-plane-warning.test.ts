@@ -100,6 +100,26 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not add the proxy degradation warning to a populated coord:whoami identity result', () => {
+    const body = {
+      ownerId: 'su-1',
+      ownerLabel: 'su · su-1',
+      source: 'omp-hook-session',
+      workspaceId: 'papercusp-workspace',
+      inbox_wake_key: 'coord-wake:su-1',
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-06T17:27:06.548Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it('does not add the proxy degradation warning to a populated coord:inbox result without ok', () => {
     const body = {
       owner_id: 'su-1',

@@ -2103,6 +2103,20 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   // non-empty entries array is nevertheless direct proof that the response is
   // populated; an empty entries array remains warning-eligible.
   if (Array.isArray(body.entries) && body.entries.length > 0) return true;
+
+  // coord:whoami is a successful identity envelope without an `ok` field or a
+  // generic result field. A resolved ownerId together with its source proves
+  // the identity lookup populated the response; an unresolved fallback has no
+  // ownerId and remains warning-eligible.
+  if (
+    typeof body.ownerId === 'string' &&
+    body.ownerId.trim().length > 0 &&
+    typeof body.source === 'string' &&
+    body.source.trim().length > 0
+  ) {
+    return true;
+  }
+
   if (body.ok !== true) return false;
 
   // Lifecycle tools return concrete success markers instead of one of the
