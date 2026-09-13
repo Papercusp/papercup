@@ -154,7 +154,8 @@ function reportRow(r: CapacityProbeResult) {
 
 /** Args for {@link runCapacityProbe} — the same shape as the `accounts:probe-capacity` tool's
  *  own zod args, so a caller (the tool handler, or a scheduled system action) picks defaults
- *  identically to a direct MCP invocation. */
+ *  identically to a direct MCP invocation. Direct probes are read-only by default; scheduled
+ *  repair actions must opt into `apply:true`. */
 export interface CapacityProbeArgs {
   id?: string;
   ids?: string[];
@@ -199,7 +200,9 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
   const { recordProbeFailure } = await import('../../deployment/account-pool');
   const { recordAccountWindowWithBurnAlert } = await import('../../inference-gateway/burn-alert');
   const ws = args.workspace ?? activeWorkspaceId();
-  const apply = args.apply ?? true;
+  // A direct probe is an observation, not an implicit repair. The scheduled reprobe action passes
+  // apply:true explicitly because it owns the bounded probe → projection → gateway convergence loop.
+  const apply = args.apply ?? false;
   const provider: AccountProvider = args.provider ?? 'claude';
 
   const pool = await loadAccountPool(ws);
@@ -325,7 +328,7 @@ export type CapacityProbeReport = Awaited<ReturnType<typeof runCapacityProbe>>;
 export default defineTool({
   name: 'accounts:probe-capacity',
   description:
-    "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Optionally pass `model:'gpt-reserve'` to measure Luna's base-model-inference reserve bucket instead of the default Sol/generic bucket. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
+    "Probe upstream capacity for the selected account pool (read-only by default). Pass `apply:true` to write the observed projection and converge gateway exclusions. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Optionally pass `model:'gpt-reserve'` to measure Luna's base-model-inference reserve bucket instead of the default Sol/generic bucket. Sends one minimal request per selected account; a 429 confirms a wall. Returns { ok, provider, probed, serving, rows[] }.",
   guidance: {
     when: "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex, and `model:'gpt-reserve'` when checking Luna reserve capacity.",
     notWhen: 'Clearing local pauses (`accounts:reset-rate`) or gateway exclusions (POST `/admin/readmit`).',
@@ -358,7 +361,7 @@ export default defineTool({
     apply: z
       .boolean()
       .optional()
-      .describe('Write the upstream reading into the account-pool projection (default true). false ⇒ read-only dry run.'),
+      .describe('Write the upstream reading into the account-pool projection and gateway (default false). true ⇒ apply repair; false ⇒ read-only dry run.'),
     workspace: wsArg,
   }),
   async handler(args) {

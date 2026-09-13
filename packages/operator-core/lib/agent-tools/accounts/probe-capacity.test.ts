@@ -66,7 +66,7 @@ describe('accounts:probe-capacity — failure persistence', () => {
     probeM.mockResolvedValue([
       { accountId: 'a', ok: false, windows: {}, before: {}, unwalls: false, error: 'fetch failed' },
     ]);
-    const out = body((await tool.handler({} as never, {} as never)) as Out);
+    const out = body((await tool.handler({ apply: true } as never, {} as never)) as Out);
     expect(out.ok).toBe(true);
     expect(out.failed).toEqual(['a']);
     expect(out.applied).toEqual([]);
@@ -81,11 +81,26 @@ describe('accounts:probe-capacity — failure persistence', () => {
     expect(getAccount(pool, 'a')!.rate.lastProbeFailedAt).toBeUndefined();
   });
 
+  it('defaults to read-only so a successful probe does not mutate projection or gateway state', async () => {
+    probeM.mockResolvedValue([
+      { accountId: 'a', ok: true, status: 200, windows: { utilization: 0.25 }, before: {}, unwalls: false },
+    ]);
+
+    const out = body((await tool.handler({} as never, {} as never)) as Out);
+
+    expect(out.dryRun).toBe(true);
+    expect(out.serving).toEqual(['a']);
+    expect(out.applied).toEqual([]);
+    expect(out.gatewayReadmitted).toEqual([]);
+    expect(getAccount(pool, 'a')!.rate.utilization).toBeUndefined();
+    expect(gatewayFetchM).not.toHaveBeenCalled();
+  });
+
   it('a successful probe records the window and does NOT touch lastProbeFailedAt on other accounts', async () => {
     probeM.mockResolvedValue([
       { accountId: 'a', ok: true, status: 200, windows: { utilization: 0.5 }, before: {}, unwalls: false },
     ]);
-    const out = body((await tool.handler({} as never, {} as never)) as Out);
+    const out = body((await tool.handler({ apply: true } as never, {} as never)) as Out);
     expect(out.applied).toEqual(['a']);
     expect(getAccount(pool, 'a')!.rate.utilization).toBe(0.5);
     expect(getAccount(pool, 'a')!.rate.lastProbeFailedAt).toBeUndefined();
@@ -95,13 +110,13 @@ describe('accounts:probe-capacity — failure persistence', () => {
     probeM.mockResolvedValue([
       { accountId: 'a', ok: false, windows: {}, before: {}, unwalls: false, error: 'fetch failed' },
     ]);
-    await tool.handler({} as never, {} as never);
+    await tool.handler({ apply: true } as never, {} as never);
     expect(getAccount(pool, 'a')!.rate.lastProbeFailedAt).toBeDefined();
 
     probeM.mockResolvedValue([
       { accountId: 'a', ok: true, status: 200, windows: { utilization: 0.3 }, before: {}, unwalls: false },
     ]);
-    await tool.handler({} as never, {} as never);
+    await tool.handler({ apply: true } as never, {} as never);
     expect(getAccount(pool, 'a')!.rate.lastProbeFailedAt).toBeUndefined();
   });
 
@@ -118,7 +133,7 @@ describe('accounts:probe-capacity — failure persistence', () => {
       { accountId: 'codex-account', ok: true, status: 200, windows: {}, before: {}, unwalls: false },
     ]);
 
-    const out = body((await tool.handler({} as never, {} as never)) as Out);
+    const out = body((await tool.handler({ apply: true } as never, {} as never)) as Out);
 
     expect(out.serving).toEqual(['a']);
     expect(gatewayFetchM).toHaveBeenCalledTimes(1);
@@ -147,7 +162,7 @@ describe('accounts:probe-capacity — failure persistence', () => {
       },
     ]);
 
-    const out = body((await tool.handler({} as never, {} as never)) as Out);
+    const out = body((await tool.handler({ apply: true } as never, {} as never)) as Out);
 
     expect(out.rows[0]).toMatchObject({
       accountId: 'a',
@@ -178,7 +193,7 @@ describe('accounts:probe-capacity — failure persistence', () => {
       }),
     );
 
-    const out = body((await tool.handler({ provider: 'codex' } as never, {} as never)) as Out);
+    const out = body((await tool.handler({ provider: 'codex', apply: true } as never, {} as never)) as Out);
 
     expect(out.provider).toBe('codex');
     expect(out.probed).toBe(1);
@@ -205,7 +220,7 @@ describe('accounts:probe-capacity — failure persistence', () => {
       ]);
       gatewayFetchM.mockImplementation(() => new Promise<Response>(() => undefined));
 
-      const pending = tool.handler({} as never, {} as never) as Promise<Out>;
+      const pending = tool.handler({ apply: true } as never, {} as never) as Promise<Out>;
       await vi.advanceTimersByTimeAsync(mod.GATEWAY_READMIT_PHASE_TIMEOUT_MS);
       const out = body(await pending);
 
@@ -240,7 +255,7 @@ describe('accounts:probe-capacity — failure persistence', () => {
       },
     ]);
 
-    const out = body((await tool.handler({ provider: 'codex', model: 'gpt-reserve' } as never, {} as never)) as Out);
+    const out = body((await tool.handler({ provider: 'codex', model: 'gpt-reserve', apply: true } as never, {} as never)) as Out);
 
     expect(out.reserveNotProjected).toEqual(['codex-account']);
     expect(out.applied).toEqual([]);
