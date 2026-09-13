@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 
 // WI-6824: runGitSync's `log` sink defaults to console.warn. It used to default to a no-op,
 // which is why an unrelated-history merge failure alarmed the fleet for ~10h while leaving
@@ -93,6 +93,21 @@ const directRunGit: RunGit = async (args, cwd) => {
     stderr: String(result.stderr ?? result.error ?? ''),
   };
 };
+
+// The production sidecar is selected through the shared enable flag. Tests in
+// this file create disposable repositories and must exercise the injected/local
+// runner regardless of the host's inherited sidecar setting. Preserve an
+// explicit caller override so the suite remains non-destructive to its process.
+let savedGitSyncSidecarOverride: string | undefined;
+beforeAll(() => {
+  savedGitSyncSidecarOverride = process.env.PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR;
+  process.env.PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR = '0';
+});
+afterAll(() => {
+  if (savedGitSyncSidecarOverride === undefined) delete process.env.PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR;
+  else process.env.PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR = savedGitSyncSidecarOverride;
+  savedGitSyncSidecarOverride = undefined;
+});
 
 const REPO_ROOT = resolve(__dirname, '../../../../..');
 
