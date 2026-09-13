@@ -123,6 +123,7 @@ const READ_ONLY_COMMANDS = new Set([
   'free',
   'fuser',
   'getconf',
+  'findmnt',
   'groups',
   'head',
   'hostname',
