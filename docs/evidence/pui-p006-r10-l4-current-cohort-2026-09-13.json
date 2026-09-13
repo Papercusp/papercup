@@ -115,6 +115,25 @@
     ],
     "allProbeLocksReleased": true
   },
+  "postProbeCleanRun": {
+    "testRunId": 17849139,
+    "testFileResult": "requested=1 executed=1 matched=1 status=passed head=6d3bb01633 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T02:37:38.660Z skippedTests=25",
+    "commitSha": "6d3bb01633cbb03a0160d85129b06548929bb023",
+    "finishedAt": "2026-09-13T02:41:30.482Z",
+    "durationMs": 222648,
+    "source": "local",
+    "rssMb": 677.2,
+    "namedTestPathClean": true,
+    "measurementCohortUnchangedThroughBinding": true,
+    "removedFailureAbsent": "The exact `[bounded-timeout] declare-intent:prev-intent` warning from the rejected attempt does not occur in the clean run log.",
+    "rejectedAttempt": {
+      "startedAt": "2026-09-13T02:12:37.141Z",
+      "evidenceVerdict": "invalid",
+      "reason": "The otherwise-unmutated journey failed only because a redundant pre-upsert previous-intent lookup exceeded its 1500ms advisory bound and vitest-fail-on-console rejected the warning. HEAD also moved during that attempt, so its provenance was unknown independently.",
+      "rootCauseRepair": "EI-23110847647700079",
+      "rawLog": ".papercusp/scratch/p006/r10-current-bindable.log"
+    }
+  },
   "engineScope": {
     "measured": "OMP account=auto",
     "caveat": "This mutation proves sensitivity of the shared installed-PUI R-10 journey on OMP. It does not fill the separately required per-engine Claude and Codex coverage, so P-006 must remain open after an adequacy pass."
@@ -122,13 +141,49 @@
   "rawLogs": {
     "mutation": ".papercusp/scratch/p006/r10-current-mutation.log",
     "mutationSha256": "77566b59e15f7fe710bf0abafb5a9247214e2c1c1f477757debc84968184f620",
+    "postProbe": ".papercusp/scratch/p006/r10-current-bindable-2.log",
+    "postProbeSha256": "81605cc4070c3dc1c3b8481cef4be317b557c7b0011330a93a499bff8ee9d59b",
     "durability": "The log and secondary guard are gitignored transient scratch. Every load-bearing result line, source delta, assertion, file set, catalog equivalence, and restore hash is copied into this tracked artifact."
   },
   "binding": {
-    "status": "pending one unmutated post-probe ledger run and server-measured evidence bindings",
-    "mutation": null,
-    "cleanTest": null,
-    "serverMeasuredFingerprints": null,
-    "adequacy": null
+    "status": "created and read back current",
+    "mutation": {
+      "id": 4314,
+      "evidenceRef": "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#tool-turn-correlation-mutant",
+      "testRunId": 17849139,
+      "bindingFingerprint": "5461ebaa769ee202282511d34491f76a51e12bf6a6bbd09bc903a88eb750386c",
+      "status": "current"
+    },
+    "cleanTest": {
+      "id": 4313,
+      "evidenceRef": "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17849139",
+      "testRunId": 17849139,
+      "bindingFingerprint": "430e0504b2626343ff434fe868707345e7be9831fcff33cdb50aae0baf9d7e1f",
+      "status": "current"
+    },
+    "serverMeasuredFingerprints": {
+      "source": "sha256-file-set-v1:32441a292b3eab7a99b46215670a30178a2e6c50629b84ace4339042cb978e1c",
+      "test": "sha256-file-set-v1:f9034fb7ed887bcab7af4eda3f7cca04ed86208674cde65125b7bdd4f455585c"
+    },
+    "adequacy": {
+      "selection": [
+        "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17849139",
+        "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#tool-turn-correlation-mutant"
+      ],
+      "verdict": "pass",
+      "requiredProofFloor": "l3",
+      "wouldBlock": [],
+      "ratings": {
+        "execution-integrity": "pass",
+        "freshness": "pass",
+        "falsifiability": "pass",
+        "plan-class-risk-floor": "pass",
+        "oracle-independence": "pass",
+        "correct-layer": "pass",
+        "traceability": "pass",
+        "fixture-calibration": "not-applicable"
+      },
+      "scopeCaveat": "This is a test-adequacy verdict for the exact OMP references, not the spec's required cross-engine parity verdict."
+    }
   }
 }
