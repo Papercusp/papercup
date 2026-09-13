@@ -59,6 +59,33 @@ describe('migration runner beforeApply guard', () => {
     expect(client.unsafe.mock.calls.some(([sql]) => sql.includes('BEGIN;'))).toBe(true);
   });
 
+  it('honours an explicit database-enforced deadline inside every migration transaction', async () => {
+    const client = fakeClient();
+    await applyPendingMigrations({
+      client,
+      sqlDir: fixtureDir(),
+      migrationStatementTimeoutMs: 12_345,
+    });
+
+    const transaction = client.unsafe.mock.calls.map(([sql]) => sql).find((sql) => sql.includes('BEGIN;'));
+    expect(transaction).toContain('SET LOCAL statement_timeout = 12345;');
+  });
+
+  it('preserves the unbounded production default and rejects malformed deadline values', async () => {
+    const client = fakeClient();
+    await applyPendingMigrations({ client, sqlDir: fixtureDir() });
+    const transaction = client.unsafe.mock.calls.map(([sql]) => sql).find((sql) => sql.includes('BEGIN;'));
+    expect(transaction).toContain('SET LOCAL statement_timeout = 0;');
+
+    await expect(
+      applyPendingMigrations({
+        client: fakeClient(),
+        sqlDir: fixtureDir(),
+        migrationStatementTimeoutMs: -1,
+      }),
+    ).rejects.toThrow('migrationStatementTimeoutMs must be a non-negative integer');
+  });
+
   it('commits statement-breakpoint chunks separately and records only the final chunk', async () => {
     const client = fakeClient();
     const result = await applyPendingMigrations({

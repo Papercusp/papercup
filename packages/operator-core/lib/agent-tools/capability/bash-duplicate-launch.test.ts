@@ -15,6 +15,16 @@ const store = vi.hoisted(() => ({
 }));
 const jobs = vi.hoisted(() => ({
   startBackground: vi.fn(),
+  waitForJobResponse: vi.fn(async () => 'terminal' as const),
+  snapshotJobResult: vi.fn(() => ({
+    status: 'completed' as const,
+    exitCode: 0,
+    output: 'ordinary-ok',
+    totalBytes: 11,
+    truncated: false,
+    logPath: '/tmp/bash-new.log',
+    durationMs: 1,
+  })),
 }));
 
 vi.mock('../../task-manager/store', async (importOriginal) => ({
@@ -24,6 +34,8 @@ vi.mock('../../task-manager/store', async (importOriginal) => ({
 vi.mock('./bash-jobs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./bash-jobs')>()),
   startBackground: jobs.startBackground,
+  waitForJobResponse: jobs.waitForJobResponse,
+  snapshotJobResult: jobs.snapshotJobResult,
 }));
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
@@ -134,5 +146,14 @@ describe('capability:bash — duplicate live background launch guard', () => {
 
     expect(payload(result)).toMatchObject({ ok: true, status: 'running', cwd: CWD });
     expect(jobs.startBackground).toHaveBeenCalledOnce();
+  });
+
+  it('does not cross-reject an ordinary call merely because an identical detached task is live', async () => {
+    const result = await bash.handler({ command: COMMAND, cwd: CWD }, ctx());
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0]!.text).toContain('ordinary-ok');
+    expect(jobs.startBackground).toHaveBeenCalledOnce();
+    expect(store.listLiveTasks).not.toHaveBeenCalled();
   });
 });
