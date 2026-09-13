@@ -7,7 +7,7 @@
     "WI-10000428",
     "EI-23109266856170951"
   ],
-  "recordedAt": "2026-09-13T02:15:00Z",
+  "recordedAt": "2026-09-13T05:14:00Z",
   "spec": {
     "specId": "AUTO-BAR-R-10-P-006",
     "specRevision": 6,
@@ -139,10 +139,10 @@
     "caveat": "This mutation proves sensitivity of the shared installed-PUI R-10 journey on OMP. It does not fill the separately required per-engine Claude and Codex coverage, so P-006 must remain open after an adequacy pass."
   },
   "rawLogs": {
-    "mutation": ".papercusp/scratch/p006/r10-current-mutation.log",
-    "mutationSha256": "77566b59e15f7fe710bf0abafb5a9247214e2c1c1f477757debc84968184f620",
-    "postProbe": ".papercusp/scratch/p006/r10-current-bindable-2.log",
-    "postProbeSha256": "81605cc4070c3dc1c3b8481cef4be317b557c7b0011330a93a499bff8ee9d59b",
+    "mutation": ".papercusp/scratch/p006/r10-current-mutation-2.log",
+    "mutationSha256": "6cc9d54afd2d531412aa4d6db4883855fc59ad07dc3f48899dfe2906b653e5d2",
+    "postProbe": ".papercusp/scratch/p006/r10-current-bindable-3.log",
+    "postProbeSha256": "2ab0d1c8e6b97cb8bb6857f22c6f4ce9bce4cafc6ff38d32428a19749fa3e274",
     "durability": "The log and secondary guard are gitignored transient scratch. Every load-bearing result line, source delta, assertion, file set, catalog equivalence, and restore hash is copied into this tracked artifact."
   },
   "binding": {
