@@ -1072,6 +1072,50 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(h.sendMessage).toHaveBeenCalledTimes(1); // no second nudge
   });
 
+  it('timeout wake receiving an early psu-host accepted ACK stays durable and parks for retry', async () => {
+    const timedOut = awaitRow({
+      id: 401,
+      subscriberId: 'su-timeout-host',
+      eventKey: 'completion:await:timeout',
+      firedReason: 'timeout',
+      firedAt: new Date(10_000).toISOString(),
+      expiresTs: new Date(9_000).toISOString(),
+    });
+    const delivery = workRow({
+      id: 402,
+      awaitId: timedOut.id,
+      subscriberId: timedOut.subscriberId,
+      eventKey: timedOut.eventKey,
+      payload: { timeout: true, guidance: 'reconcile' },
+      attempts: 1,
+    });
+    h.store.fireTimedOutAwaits.mockResolvedValueOnce([timedOut]);
+    h.store.claimDueDeliveries.mockResolvedValueOnce([delivery]);
+    h.executeWake.mockResolvedValueOnce({
+      kind: 'park',
+      reason: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+    });
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith({
+      awaits: [timedOut],
+      payload: { timeout: true, guidance: expect.any(String) },
+      summary: expect.any(String),
+    });
+    expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({
+      id: delivery.id,
+      awaitId: timedOut.id,
+      payload: { timeout: true, guidance: 'reconcile' },
+    }), expect.anything());
+    expect(h.store.markDeliveryParked).toHaveBeenCalledWith(
+      delivery.id,
+      'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+      45_000,
+    );
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(delivery.id, expect.anything(), expect.anything());
+  });
+
   it('caps repeated park retries and degrades the wake to inbox delivery', async () => {
     h.executeWake.mockResolvedValueOnce({ kind: 'park', reason: 'alive, no pty' });
     h.store.claimDueDeliveries.mockResolvedValueOnce([
