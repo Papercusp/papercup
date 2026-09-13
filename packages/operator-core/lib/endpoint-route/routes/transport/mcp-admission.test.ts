@@ -157,6 +157,39 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    ['canonical', 'loop:status'],
+    ['underscore', 'loop_status'],
+    ['mcp-advertised', 'mcp__papercusp_su__loop_status'],
+  ])('does NOT shed a bounded loop status read under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(17, name, { harness: 'papercusp', ownerId: 'self' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('still sheds an opaque loop status payload under critical pressure', () => {
+    expect(
+      classifyMcpBody(toolsCall(18, 'loop:status', { unexpected: 'unbounded' })),
+    ).toEqual({ sheddable: true, id: 18 });
+  });
+
+  it('recognizes a bounded loop status read through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 19,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__loop_status',
+          args: { owner: 'self' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
     ['canonical', 'work_items:checkpoint'],
     ['underscore', 'work_items_checkpoint'],
     ['mcp-advertised', 'mcp__papercusp_su__work_items_checkpoint'],
@@ -752,6 +785,24 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('scheduler:get_next');
+  });
+  it('admits a bounded loop status read under critical pressure for resumed reconciliation', async () => {
+    const req = post(toolsCall(22, 'loop:status', { ownerId: 'self' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('loop:status');
+  });
+
+  it('still sheds a loop status read with an unknown argument under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(23, 'loop:status', { unknown: true })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('still sheds an unbounded scheduler self-pull under critical pressure', async () => {
     const shed = await evaluateAdmission(
