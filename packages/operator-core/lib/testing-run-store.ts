@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import { isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { resolveGitContext } from './testing-branch-resolve';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
@@ -1680,7 +1681,11 @@ export interface HarnessTestRunIdQuery {
   harnessSlug: string;
   workspaceId: string;
   runGroupId: string;
+  /** When supplied, read exactly these durable ledger rows, never a latest/nearby substitute. */
+  testRunIds?: readonly number[];
   filePath?: string;
+  /** Exact path set used by trusted provenance validation. */
+  filePaths?: readonly string[];
   sql?: SqlLike;
 }
 
@@ -1689,6 +1694,11 @@ export interface HarnessTestRunEvidence {
   file_path: string;
   status: string;
   finished_at: string | Date | null;
+  workspace_id: string | null;
+  harness_slug: string | null;
+  run_group_id: string | null;
+  commit_sha: string | null;
+  worktree_dirty: boolean;
   /** Nullable versioned reporter measurement. Consumers must validate, not cast. */
   execution_details?: unknown;
 }
@@ -1701,14 +1711,19 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
       const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
+    const requestedFilePaths = params.filePaths ?? (params.filePath === undefined ? null : [params.filePath]);
+    const requestedTestRunIds = params.testRunIds === undefined ? null : params.testRunIds;
+    const resultLimit = requestedTestRunIds === null ? 200 : Math.max(1, requestedTestRunIds.length);
     const rows = await sql`
-      SELECT id, file_path, status, finished_at,
+      SELECT id, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
+             commit_sha, worktree_dirty,
              to_jsonb(test_runs)->'execution_details' AS execution_details
         FROM harness_shared.test_runs
        WHERE workspace_id = ${params.workspaceId} AND harness_slug = ${params.harnessSlug}
          AND run_group_id = ${params.runGroupId}
-         AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})
-       ORDER BY id DESC LIMIT 200`;
+         AND (${requestedTestRunIds}::bigint[] IS NULL OR id = ANY(${requestedTestRunIds}::bigint[]))
+         AND (${requestedFilePaths}::text[] IS NULL OR file_path = ANY(${requestedFilePaths}::text[]))
+       ORDER BY id DESC LIMIT ${resultLimit}`;
     if (!Array.isArray(rows)) return null;
     return rows.flatMap(raw => {
       const row = raw as HarnessTestRunEvidence;
@@ -1716,6 +1731,115 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
       return id === null ? [] : [{ ...row, id }];
     });
   } catch { return null; }
+}
+
+/** The exact request shape consumed by the capture freshness bridge. */
+export interface TrustedHarnessTestRunProvenanceQuery {
+  testRunIds: readonly number[];
+  workspaceId: string;
+  harnessSlug: string;
+  runGroupId: string;
+  root: string;
+  filePaths: readonly string[];
+  sql?: SqlLike;
+}
+
+export interface TrustedHarnessTestRunProvenance {
+  commitSha: string;
+  testRunIds: number[];
+  workspaceId: string;
+  harnessSlug: string;
+  runGroupId: string;
+  root: string;
+  filePaths: string[];
+}
+
+function normalizeCommitSha(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function parseStoredTestRunDetails(value: unknown): TestRunExecutionDetails | undefined {
+  if (typeof value !== 'string') return parseTestRunExecutionDetails(value);
+  try {
+    return parseTestRunExecutionDetails(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Pure validation of server-read rows. A non-null result means every requested
+ * durable ID was returned exactly once and carries complete, mutually
+ * consistent provenance; caller-provided SHA/runtime labels never enter here.
+ */
+export function validateHarnessTestRunProvenance(
+  query: Omit<TrustedHarnessTestRunProvenanceQuery, 'sql'>,
+  rows: readonly HarnessTestRunEvidence[],
+): TrustedHarnessTestRunProvenance | null {
+  const requestedIds = [...query.testRunIds];
+  const requestedPaths = [...query.filePaths];
+  if (!query.workspaceId || !query.harnessSlug || !query.runGroupId || !query.root
+    || requestedIds.length === 0 || requestedPaths.length === 0
+    || requestedIds.some((id) => !Number.isSafeInteger(id) || id <= 0)
+    || new Set(requestedIds).size !== requestedIds.length
+    || new Set(requestedPaths).size !== requestedPaths.length
+    || rows.length !== requestedIds.length) {
+    return null;
+  }
+
+  const requestedIdSet = new Set(requestedIds);
+  const requestedPathSet = new Set(requestedPaths);
+  const observedPathSet = new Set<string>();
+  let trustedSha: string | null = null;
+
+  for (const row of rows) {
+    if (!requestedIdSet.has(row.id) || observedPathSet.has(row.file_path)
+      || row.workspace_id !== query.workspaceId || row.harness_slug !== query.harnessSlug
+      || row.run_group_id !== query.runGroupId || !requestedPathSet.has(row.file_path)
+      || row.finished_at === null || row.status === 'running' || row.worktree_dirty !== false) {
+      return null;
+    }
+    const details = parseStoredTestRunDetails(row.execution_details);
+    const rowSha = normalizeCommitSha(row.commit_sha);
+    const detailsSha = normalizeCommitSha(details?.commitSha);
+    if (!details || details.root !== query.root || details.filePath !== row.file_path
+      || details.workspaceId !== query.workspaceId || details.harnessSlug !== query.harnessSlug
+      || details.runGroupId !== query.runGroupId || details.worktreeDirty !== false
+      || rowSha === null || detailsSha === null || rowSha !== detailsSha) {
+      return null;
+    }
+    if (trustedSha === null) trustedSha = rowSha;
+    else if (trustedSha !== rowSha) return null;
+    observedPathSet.add(row.file_path);
+  }
+
+  if (trustedSha === null || observedPathSet.size !== requestedPathSet.size) return null;
+  const observedIds = new Set(rows.map((row) => row.id));
+  if (observedIds.size !== requestedIdSet.size) return null;
+  return {
+    commitSha: trustedSha,
+    testRunIds: requestedIds,
+    workspaceId: query.workspaceId,
+    harnessSlug: query.harnessSlug,
+    runGroupId: query.runGroupId,
+    root: query.root,
+    filePaths: requestedPaths,
+  };
+}
+
+/**
+ * Read and validate exact server-owned test ledger rows. Null is deliberately
+ * ambiguous to callers: unreadable, incomplete, mismatched, dirty, or
+ * inconsistent evidence must all fall back to the deployed-runtime oracle.
+ */
+export async function readTrustedHarnessTestRunProvenance(
+  params: TrustedHarnessTestRunProvenanceQuery,
+): Promise<TrustedHarnessTestRunProvenance | null> {
+  const rows = await readHarnessTestRunEvidence(params);
+  if (!rows) return null;
+  return validateHarnessTestRunProvenance(params, rows);
 }
 
 function positiveSafeInteger(value: unknown): number | null {
