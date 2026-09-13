@@ -879,6 +879,14 @@ Preserve this plan body.
       VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
               'Acceptance round-trip subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
               false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+    // Migration 1111 stamps every newly inserted ordinary plan into the strict
+    // post-epoch cohort. This case models a legacy read projection, so preserve
+    // that fixture identity explicitly before authoring its pre-contract rubric.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${subjectPlan}`;
 
     const first = await rubrics.proposeRubric({
       rubricId: 'acceptance-empty-prose',
@@ -1066,6 +1074,14 @@ Preserve this plan body.
       VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
               'Acceptance amend subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
               false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+    // Keep this legacy-projection fixture outside the server-owned BAR epoch;
+    // an adopted subject without barContract is intentionally refused by the
+    // persistence guard and belongs in the recovery-path coverage below.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${subjectPlan}`;
 
     const first = await rubrics.proposeRubric({
       rubricId,
@@ -1133,6 +1149,14 @@ Preserve this plan body.
       VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
               'Retired acceptance subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
               false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+    // This regression starts from the same pre-adoption legacy contract as the
+    // original incident. Clear the paired marker the insert trigger adds so the
+    // test exercises retirement preservation, not orphaned-contract recovery.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${subjectPlan}`;
 
     const initialCriteria = [
       {
