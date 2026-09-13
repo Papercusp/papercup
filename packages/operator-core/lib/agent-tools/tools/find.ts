@@ -79,6 +79,7 @@ type JsonSchemaNode = {
   properties?: unknown;
   required?: unknown;
   items?: unknown;
+  additionalProperties?: unknown;
   anyOf?: unknown;
   oneOf?: unknown;
   minItems?: unknown;
@@ -179,9 +180,27 @@ function nestedObjectProperties(
   node: JsonSchemaNode,
 ): { properties: Record<string, unknown>; required: Set<string> } | null {
   const direct = objectProperties(node);
+  const candidates = [node, ...schemaNodes(node)];
+
+  // z.record() publishes its value schema under `additionalProperties`, not
+  // under named `properties`. Treat the map value as a synthetic `*` field so
+  // compact discovery keeps the entry contract visible (for example,
+  // `object{*:object{verdict,measuredAt}}`) instead of downgrading the record
+  // to a misleading bare `object`. Prefer this over an empty direct
+  // properties object, which some schema emitters include alongside the map.
+  for (const candidate of candidates) {
+    const additional = candidate.additionalProperties;
+    if (!additional || typeof additional !== 'object' || Array.isArray(additional)) continue;
+    const valueSchema = additional as JsonSchemaNode;
+    const valueProperties = objectProperties(valueSchema);
+    if (valueProperties && Object.keys(valueProperties.properties).length > 0) {
+      return { properties: { '*': valueSchema }, required: new Set(['*']) };
+    }
+  }
+
   if (direct) return direct;
 
-  for (const candidate of [node, ...schemaNodes(node)]) {
+  for (const candidate of candidates) {
     if (!candidate.items || typeof candidate.items !== 'object' || Array.isArray(candidate.items)) continue;
     const item = objectProperties(candidate.items as JsonSchemaNode);
     if (item) return item;
