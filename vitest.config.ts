@@ -6,11 +6,13 @@ import {
   sharedHostWorkerCap,
 } from '@papercusp/test-config/vitest-config';
 
-// Direct root runs need the workspace aliases used by apps/operator's source imports.
+// Direct root runs need the workspace aliases used by apps/operator and apps/operator-vite
+// source imports.
 // Keep this list explicit: loading every workspace tsconfig here would make the generic
 // root fallback parse the entire monorepo and could apply an unrelated package's paths.
 export const ROOT_VITEST_TSCONFIG_PROJECTS = [
   resolve(__dirname, 'apps/operator/tsconfig.json'),
+  resolve(__dirname, 'apps/operator-vite/tsconfig.json'),
 ] as const;
 
 // Direct repository-root `vitest run <path>` invocations use Vitest's default

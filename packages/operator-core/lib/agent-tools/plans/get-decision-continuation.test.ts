@@ -215,6 +215,40 @@ describe("narrowDecisionPayload continuation envelope", () => {
     expect(out.slug).toBe(BASE.slug);
     expect(out.version).toBe(7);
   });
+
+  it("preserves a selected item payload when item and decision selectors are combined", () => {
+    const selected = [decision("D-001", 100)];
+    const itemPayload = {
+      items: [{ id: "P-003", text: "selected item" }],
+      itemSelection: {
+        requested: ["P-003", "P-404"],
+        matched: ["P-003"],
+        missing: ["P-404"],
+      },
+      linkedFeatures: { "P-003": { featureId: "F-003" } },
+      planItemTests: { "P-003": { covered: 1 } },
+      blockingIssues: { "P-003": ["EI-003"] },
+    };
+    const out = narrowDecisionPayload(BASE, ["D-001"], selected, 10_000, itemPayload);
+
+    expect(out.items).toEqual(itemPayload.items);
+    expect(out.itemSelection).toEqual(itemPayload.itemSelection);
+    expect(out.linkedFeatures).toEqual(itemPayload.linkedFeatures);
+    expect(out.planItemTests).toEqual(itemPayload.planItemTests);
+    expect(out.blockingIssues).toEqual(itemPayload.blockingIssues);
+    expect(out.decisions).toEqual(selected);
+  });
+
+  it("keeps decision-only reads free of the optional item payload", () => {
+    const selected = [decision("D-001", 100)];
+    const out = narrowDecisionPayload(BASE, ["D-001"], selected, 10_000);
+
+    expect(out).not.toHaveProperty("items");
+    expect(out).not.toHaveProperty("itemSelection");
+    expect(out).not.toHaveProperty("linkedFeatures");
+    expect(out).not.toHaveProperty("planItemTests");
+    expect(out).not.toHaveProperty("blockingIssues");
+  });
 });
 
 describe("decisionPageBudgetChars", () => {

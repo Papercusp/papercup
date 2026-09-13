@@ -18,6 +18,7 @@ describe('repository-root Vitest discovery', () => {
     expect(ROOT_VITEST_TSCONFIG_PROJECTS).toEqual(
       expect.arrayContaining([
         expect.stringMatching(/[/\\]apps[/\\]operator[/\\]tsconfig\.json$/),
+        expect.stringMatching(/[/\\]apps[/\\]operator-vite[/\\]tsconfig\.json$/),
       ]),
     );
     expect(rootConfig.plugins).toEqual(

@@ -23,8 +23,10 @@ import {
   parseVitestJsonForHarnessRows,
   persistHarnessTestRuns,
   persistHarnessTestRunsWithIds,
+  validateHarnessTestRunProvenance,
   isLikelySaturationArtifact,
   type HarnessTestFileRow,
+  type HarnessTestRunEvidence,
 } from '../testing-run-store';
 
 const ROOT = '/work/harness-repo';
@@ -276,6 +278,65 @@ describe('persistHarnessTestRuns', () => {
       sql: throwingSql,
     });
     expect(written).toBe(0);
+  });
+});
+
+describe('trusted test-run provenance', () => {
+  const query = {
+    testRunIds: [17700101, 17700102],
+    workspaceId: 'ws-proof',
+    harnessSlug: 'h-proof',
+    runGroupId: 'run-proof',
+    root: '/work/harness-repo',
+    filePaths: ['src/a.test.ts', 'src/b.test.ts'],
+  } as const;
+
+  const row = (id: number, filePath: string, commitSha = 'ABC123'): HarnessTestRunEvidence => ({
+    id,
+    file_path: filePath,
+    status: 'pass',
+    finished_at: '2026-09-13T21:00:00Z',
+    workspace_id: query.workspaceId,
+    harness_slug: query.harnessSlug,
+    run_group_id: query.runGroupId,
+    commit_sha: commitSha,
+    worktree_dirty: false,
+    execution_details: {
+      schemaVersion: 1,
+      root: query.root,
+      filePath,
+      runGroupId: query.runGroupId,
+      workspaceId: query.workspaceId,
+      harnessSlug: query.harnessSlug,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha,
+      worktreeDirty: false,
+    },
+  });
+
+  it('returns one normalized SHA only for the complete exact row set', () => {
+    expect(validateHarnessTestRunProvenance(query, [
+      row(17700101, 'src/a.test.ts'),
+      row(17700102, 'src/b.test.ts'),
+    ])).toMatchObject({
+      commitSha: 'abc123',
+      testRunIds: [17700101, 17700102],
+      filePaths: ['src/a.test.ts', 'src/b.test.ts'],
+    });
+  });
+
+  it.each([
+    ['missing exact row', [row(17700101, 'src/a.test.ts')]],
+    ['dirty worktree', [row(17700101, 'src/a.test.ts'), { ...row(17700102, 'src/b.test.ts'), worktree_dirty: true }]],
+    ['inconsistent SHA', [row(17700101, 'src/a.test.ts'), row(17700102, 'src/b.test.ts', 'def456')]],
+    ['incomplete details', [row(17700101, 'src/a.test.ts'), { ...row(17700102, 'src/b.test.ts'), execution_details: null }]],
+  ])('rejects %s instead of returning runtime identity', (_name, rows) => {
+    expect(validateHarnessTestRunProvenance(query, rows)).toBeNull();
   });
 });
 

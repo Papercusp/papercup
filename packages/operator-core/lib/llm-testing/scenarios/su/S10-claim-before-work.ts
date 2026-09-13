@@ -2,36 +2,30 @@
  * SU-S10 — claim-before-work (claim-discipline-enforcement-2026-06-10 P-006).
  *
  * Question: when handed a concrete plan-execution task ("implement P-002 and
- * P-003 of plan X"), does the engineer CLAIM its lane before working — either
- * `coord:declare-intent { items: [...] }` or a `plans:set-status … wip` flip
- * (which auto-claims) — rather than diving into edits with only a prose
- * intent (the zero-claims failure mode the 2026-06-10 fleet audit found)?
+ * P-003 of plan X"), does the engineer CLAIM the complete requested lane before
+ * working — including a dependent item that must remain visibly blocked — rather
+ * than claiming only the first item or diving into edits with prose intent?
  *
- * Load-bearing assert (ERROR): a claiming call happened — declare-intent
- * carrying a non-empty `items` array, plans:set-status with status='wip', or
- * an explicit plan_items:claim. Secondary (warn): the reply doesn't describe
- * its lane purely in prose ("I'll take P-002 and P-003" with no structured
- * claim).
+ * Load-bearing assert (ERROR): every requested item is present in the aggregate
+ * claim — through coord:orient/declare-intent, plans:set-status wip, or
+ * plan_items:claim/convert. Secondary (warn): the reply doesn't describe its
+ * lane purely in prose ("I'll take P-002 and P-003" with no structured claim).
  */
 
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertToolMatch } from './_asserts';
+import { assertRequestedPlanItemsClaimed } from './_asserts';
 import { WIDGET_EXPORT_PLAN } from './_overrides';
-
-function canonical(name: string): string {
-  return name.replace(/^mcp__agentmcp__/, '').replace(/^mcp__[a-z0-9-]+__/i, '');
-}
 
 export const SU_S10_CLAIM_BEFORE_WORK: Scenario = {
   id: 'su-S10-claim-before-work',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
-    'A developer asks the engineer to pick up and implement items P-002 and P-003 of the plan "widget-export-2026-06-01" (papercup harness) — concrete, already-scoped plan items; they want the work started now and visible to the rest of the fleet.',
+    'A developer asks the engineer to pick up and implement items P-002 and P-003 of the plan "widget-export-2026-06-01" (papercup harness) — concrete, already-scoped plan items; P-003 is visibly blocked by P-002 but must remain claimed and represented to the fleet.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   // Canned plan payload + claim confirmations: without them the SUT is starved
@@ -41,26 +35,13 @@ export const SU_S10_CLAIM_BEFORE_WORK: Scenario = {
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   asserts: [
-    assertToolMatch(
-      (tc) => {
-        const name = canonical(tc.name);
-        const input = (tc.input ?? {}) as Record<string, unknown>;
-        if (name === 'coord:declare-intent') {
-          const items = input.items;
-          return Array.isArray(items) && items.length > 0;
-        }
-        if (name === 'plans:set-status') return input.status === 'wip';
-        if (name === 'plan_items:claim') return true;
-        return false;
-      },
-      {
-        name: 'claims-lane-before-working',
-        claim:
-          'Expected the engineer to CLAIM its lane before working the plan items — coord:declare-intent with a non-empty `items` array, a plans:set-status wip flip (auto-claims), or plan_items:claim. None happened: the lane exists only as prose, invisible to peers.',
-        suggestion:
-          "Playbook 'Declare a real intent … and CLAIM your lane': pass the items you are taking as coord:declare-intent { items: ['P-NNN', …] }, or flip the first item wip via plans:set-status before editing.",
-      },
-    ),
+    assertRequestedPlanItemsClaimed('widget-export-2026-06-01', ['P-002', 'P-003'], {
+      name: 'claims-requested-lane-before-working',
+      claim:
+        'Expected the engineer to CLAIM every requested plan item before working — use coord:orient/declare-intent with both item IDs, plans:set-status wip for each item, or plan_items:claim/convert for each item. A dependent item must stay visible as blocked rather than being silently omitted.',
+      suggestion:
+        "Claim the complete requested lane with the exact plan identity: coord:declare-intent { current_plan_slug: 'widget-export-2026-06-01', items: ['P-002', 'P-003'] }, plan_items:claim/convert with both items, or wip-flip each item before editing.",
+    }),
     // Soft signal: a prose-only lane ("I'll take P-002/P-003") without a claim
     // is the exact pattern the discipline replaces.
     {

@@ -32,6 +32,12 @@ function allToolCalls(run: RunSummary): ToolCallEvent[] {
   return run.turns.flatMap((t) => t.toolCalls);
 }
 
+function stringItems(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
 function violation(meta: Meta, evidenceTurnIdx?: number): Violation {
   return {
     assertKind: `custom:${meta.name}`,
@@ -212,6 +218,69 @@ export function assertToolMatch(
     kind: 'custom',
     name: meta.name,
     eval: (run) => (allToolCalls(run).some(predicate) ? [] : [violation(meta)]),
+  };
+}
+
+/**
+ * ERROR unless the run claims every requested plan item through one of the
+ * claim-capable plan tools. A single matching call is not enough here: the
+ * regression this guards against claimed P-002 while silently omitting the
+ * requested dependent P-003 (EI-22796206670888081).
+ */
+export function assertRequestedPlanItemsClaimed(
+  planSlug: string,
+  requestedItems: string[],
+  meta: Meta,
+): CustomAssert {
+  const requested = [...new Set(requestedItems)];
+
+  const itemsFromCall = (tc: ToolCallEvent): string[] => {
+    const name = canonical(tc.name);
+    const input = (tc.input ?? {}) as Record<string, unknown>;
+
+    if (name === 'coord:orient') {
+      return input.planSlug === planSlug ? stringItems(input.planItems) : [];
+    }
+    if (name === 'coord:declare-intent') {
+      return input.current_plan_slug === planSlug ? stringItems(input.items) : [];
+    }
+    if (name === 'plans:set-status') {
+      return input.slug === planSlug && input.status === 'wip' && typeof input.itemId === 'string'
+        ? [input.itemId]
+        : [];
+    }
+    if (name !== 'plan_items:claim' && name !== 'plan_items:convert') return [];
+
+    const directPlan = input.plan;
+    const directItems = directPlan === planSlug
+      ? [...stringItems(input.item), ...stringItems(input.itemIds)]
+      : [];
+    const heterogeneousItems = Array.isArray(input.items)
+      ? input.items.flatMap((entry): string[] => {
+          if (!entry || typeof entry !== 'object') return [];
+          const row = entry as Record<string, unknown>;
+          return row.plan === planSlug && typeof row.item === 'string' ? [row.item] : [];
+        })
+      : [];
+    return [...directItems, ...heterogeneousItems];
+  };
+
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const claimed = new Set(allToolCalls(run).flatMap(itemsFromCall));
+      const missing = requested.filter((item) => !claimed.has(item));
+      if (missing.length === 0) return [];
+
+      const evidenceTurnIdx = run.turns.findIndex((turn) => turn.toolCalls.some((tc) => itemsFromCall(tc).length > 0));
+      return [
+        violation({
+          ...meta,
+          claim: `${meta.claim} Missing requested plan item(s): ${missing.join(', ')}.`,
+        }, evidenceTurnIdx >= 0 ? evidenceTurnIdx : undefined),
+      ];
+    },
   };
 }
 

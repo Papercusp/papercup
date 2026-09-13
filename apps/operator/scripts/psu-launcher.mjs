@@ -73,12 +73,14 @@ import {
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import {
   RECOVERY_CAPABILITY_DIAGNOSTIC,
+  hasRecoveryCliFlag,
   issueRecoveryGrant,
   readRecoveryAncestorCmdlines,
   reconcileRecoveryAudit,
   recoveryAuthorizationEligibility,
   runRecoveryGrant,
   stripRecoveryMarkers,
+  validateRecoveryCliArgv,
 } from "./psu-recovery.mjs";
 // Shared with the proxy itself (WI-6738) — psu must not give up while the proxy is still
 // retrying on its behalf. Plain .mjs so this bare-node script and the tsx-run proxy can
@@ -13907,8 +13909,9 @@ function psuClientVersion() {
   return "unknown";
 }
 
-async function recoveryFlow(args) {
+async function recoveryFlow(args, { rawArgv = [] } = {}) {
   if (!args.recoveryAuthorize && !args.recoveryGrant) return false;
+  validateRecoveryCliArgv(rawArgv);
   if (args.recoveryAuthorize && args.recoveryGrant)
     throw new Error("--recovery-authorize and --recovery-grant are mutually exclusive");
   if (
@@ -14038,9 +14041,9 @@ async function main() {
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
   const rawArgv = process.argv.slice(2);
-  if (rawArgv.some((cell) => cell === "--recovery-authorize" || cell.startsWith("--recovery-grant="))) {
+  if (hasRecoveryCliFlag(rawArgv)) {
     const recoveryArgs = parseArgs(rawArgv);
-    if (await recoveryFlow(recoveryArgs)) return;
+    if (await recoveryFlow(recoveryArgs, { rawArgv })) return;
   }
   const connection = await runPsuConnectionFrontController(
     rawArgv,
@@ -14056,7 +14059,7 @@ async function main() {
     process.stdout.write(`${PSU_HELP_TEXT}\n`);
     return;
   }
-  if (await recoveryFlow(args)) return;
+  if (await recoveryFlow(args, { rawArgv: connection.argv })) return;
   // A host-code adoption handoff is consumed BEFORE any normal fresh/resume
   // flow. Re-running bootstrap-su here would select or mint another adv row
   // while the handoff's already-minted child belongs to the predecessor row.

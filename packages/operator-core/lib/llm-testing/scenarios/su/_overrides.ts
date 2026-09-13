@@ -1158,7 +1158,7 @@ export const WIDGET_EXPORT_PLAN: ToolDispatchOverride = {
               now: {
                 state:
                   'P-001 (export menu + format picker UI) shipped. Exporter backend not started; the picker is wired to a disabled stub.',
-                next: 'Implement P-002 then P-003; both are scoped and unblocked.',
+                next: 'Implement P-002; P-003 is blocked by P-002 and must remain visible as a claimed blocked item.',
               },
               items: [
                 { id: 'P-001', text: 'Export menu + format picker on the widget table toolbar', status: 'done' },
@@ -1169,8 +1169,9 @@ export const WIDGET_EXPORT_PLAN: ToolDispatchOverride = {
                 },
                 {
                   id: 'P-003',
-                  text: 'XLSX exporter: same column model via exceljs, one sheet per widget view; picker XLSX entry; blocked-by: P-002 (shares the column-model helper it introduces)',
-                  status: 'todo',
+                  text: 'XLSX exporter: same column model via exceljs, one sheet per widget view; picker XLSX entry (shares the column-model helper introduced by P-002)',
+                  status: 'blocked',
+                  blockedBy: ['P-002'],
                 },
               ],
               decisions: [

@@ -476,6 +476,18 @@ export function pageDecisionsToBudget<T extends { id: string }>(
   };
 }
 
+interface NarrowDecisionItemPayload {
+  items: unknown[];
+  itemSelection: {
+    requested: string[];
+    matched: string[];
+    missing: string[];
+  };
+  linkedFeatures: Record<string, unknown>;
+  planItemTests: Record<string, unknown>;
+  blockingIssues: Record<string, unknown>;
+}
+
 /**
  * Build the decision-id-narrowed payload.
  *
@@ -483,8 +495,9 @@ export function pageDecisionsToBudget<T extends { id: string }>(
  * complete body did not fit in a plan read. Keep only identity/CAS fields
  * around the selected records; carrying the plan's prose, items, or
  * decorations here would recreate the overflow this selector is meant to
- * avoid. `decisionSelection` is deliberately in-band so a missing id cannot
- * be mistaken for a complete read.
+ * avoid. A combined item+decision selector opts into only its selected item
+ * records and item-keyed decorations. `decisionSelection` is deliberately
+ * in-band so a missing id cannot be mistaken for a complete read.
  *
  * EI-21573289806322713 — CONTINUATION, and why it is not truncation.
  *
@@ -523,6 +536,7 @@ export function narrowDecisionPayload<T extends { id: string }>(
   requestedIds: string[],
   selected: T[],
   budgetChars?: number,
+  itemPayload?: NarrowDecisionItemPayload,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const identityFields = new Set([
@@ -545,8 +559,20 @@ export function narrowDecisionPayload<T extends { id: string }>(
     }
     out[key] = value;
   }
-  // Page AFTER the identity envelope is built, so the budget is measured
-  // against what the response actually carries rather than an estimate.
+  // A combined item+decision selector is still a narrow read: carry only the
+  // explicitly selected item records and their item-keyed decorations. Keep
+  // this opt-in so ordinary decision-only reads retain their identity/CAS-only
+  // envelope and do not pay for the plan-item payload they did not request.
+  if (itemPayload) {
+    out.items = itemPayload.items;
+    out.itemSelection = itemPayload.itemSelection;
+    out.linkedFeatures = itemPayload.linkedFeatures;
+    out.planItemTests = itemPayload.planItemTests;
+    out.blockingIssues = itemPayload.blockingIssues;
+  }
+  // Page AFTER the complete narrow envelope is built, so the budget is measured
+  // against what the response actually carries rather than an estimate. This
+  // includes the optional item payload for combined selector reads.
   const { returned, deferred } = pageDecisionsToBudget(out, selected, budgetChars);
 
   out.decisions = returned;
@@ -1055,6 +1081,18 @@ export default defineTool({
                   requestedDecisionIds,
                   selectedDecisions,
                   decisionPageBudgetChars(ctxAny.ownerId, slugs.length),
+                  requestedItemIds && itemSelection
+                    ? {
+                        items:
+                          mode === 'full'
+                            ? responseItems
+                            : responseItems.map(({ rawLine: _rawLine, ...rest }) => rest),
+                        itemSelection,
+                        linkedFeatures: selectItemMap(linkedFeatures),
+                        planItemTests: selectItemMap(planItemTests),
+                        blockingIssues: selectItemMap(blockingIssues),
+                      }
+                    : undefined,
                 ),
               };
             }

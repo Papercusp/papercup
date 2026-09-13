@@ -13,6 +13,7 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fchmodSync,
   fstatSync,
   linkSync,
   lstatSync,
@@ -27,7 +28,7 @@ import {
 } from "node:fs";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir, hostname, userInfo } from "node:os";
-import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 
 export const RECOVERY_PROTOCOL_VERSION = 1;
 export const RECOVERY_CAPABILITY_DIAGNOSTIC = "diagnostic-command";
@@ -44,6 +45,51 @@ const MAX_ARG_BYTES = 4_096;
 const MAX_ARGV_BYTES = 32_768;
 const MAX_REASON_BYTES = 2_000;
 const FUTURE_SKEW_MS = 30_000;
+
+/** Does argv request recovery before the backend passthrough delimiter? */
+export function hasRecoveryCliFlag(argv) {
+  for (const cell of argv) {
+    if (cell === "--") return false;
+    if (cell === "--recovery-authorize" || cell.startsWith("--recovery-grant="))
+      return true;
+  }
+  return false;
+}
+
+/**
+ * Recovery is a closed CLI namespace. A connection/account/agent flag must not
+ * be silently ignored while the launcher takes its no-control-plane branch.
+ */
+export function validateRecoveryCliArgv(argv) {
+  let passthrough = false;
+  let pendingReason = false;
+  for (const cell of argv) {
+    if (passthrough) continue;
+    if (pendingReason) {
+      pendingReason = false;
+      continue;
+    }
+    if (cell === "--") {
+      passthrough = true;
+      continue;
+    }
+    if (cell === "--recovery-authorize") continue;
+    if (cell.startsWith("--recovery-grant=")) continue;
+    if (cell === "--recovery-reason") {
+      pendingReason = true;
+      continue;
+    }
+    if (
+      cell.startsWith("--recovery-reason=") ||
+      cell.startsWith("--recovery-ttl=") ||
+      cell.startsWith("--recovery-max-runtime=")
+    ) continue;
+    throw new Error(
+      `native recovery cannot be combined with non-recovery argument ${JSON.stringify(cell)}`,
+    );
+  }
+  if (pendingReason) throw new Error("--recovery-reason requires a value");
+}
 
 /** @typedef {{ uid: number | null, username: string, hostname: string }} RecoveryIdentity */
 /** @typedef {{ name: "psu", version: string }} RecoveryClient */
@@ -315,7 +361,7 @@ function appendRecoveryAuditRow(row, { home = homedir() } = {}) {
       throw new Error("recovery audit must be an owner-held regular file");
     }
     writeSync(fd, `${JSON.stringify(row)}\n`, null, "utf8");
-    chmodSync(paths.audit, 0o600);
+    fchmodSync(fd, 0o600);
   } finally {
     if (fd != null) closeSync(fd);
   }
@@ -372,7 +418,7 @@ function refusalAudit(grantId, reason, atMs, opts = {}) {
  * }} opts
  * @returns {RecoveryGrant}
  */
-export function issueRecoveryGrant(input, opts = {}) {
+export function issueRecoveryGrant(input, opts) {
   const { reason, ttlMs, maxRuntimeMs } = validateIssueInput(input);
   const token = validateToken(opts.token);
   const terminalId = String(opts.terminalId ?? "").trim();
@@ -532,9 +578,18 @@ export function executeExactRecoveryCommand(
     let timedOut = false;
     let deadline = null;
     let hardKillTimer = null;
+    let pendingResult = null;
     const detached = platform !== "win32";
     const finish = (result) => {
       if (settled) return;
+      // A direct child may exit on SIGTERM while one of its descendants ignores
+      // it. Keep the process-group SIGKILL armed and delay the result until that
+      // second signal has fired; otherwise the apparent timeout can leave work
+      // running after the bounded recovery session returned.
+      if (timedOut && hardKillTimer) {
+        pendingResult = result;
+        return;
+      }
       settled = true;
       if (deadline) clearTimeout(deadline);
       if (hardKillTimer) clearTimeout(hardKillTimer);
@@ -558,8 +613,14 @@ export function executeExactRecoveryCommand(
     deadline = setTimeout(() => {
       timedOut = true;
       signalTree("SIGTERM");
-      hardKillTimer = setTimeout(() => signalTree("SIGKILL"), 1_000);
-      hardKillTimer.unref?.();
+      hardKillTimer = setTimeout(() => {
+        signalTree("SIGKILL");
+        hardKillTimer = null;
+        if (pendingResult) finish(pendingResult);
+      }, 50);
+      // Keep this timer referenced. The direct child may already have exited;
+      // an unref'd timer would let Node terminate before killing its descendant
+      // group and before appending execution-finished to the recovery audit.
     }, timeoutMs);
     deadline.unref?.();
     child.once("error", (error) =>
@@ -586,7 +647,7 @@ export function executeExactRecoveryCommand(
  *   writeBanner?: (text: string) => void,
  * }} opts
  */
-export async function runRecoveryGrant(grantId, opts = {}) {
+export async function runRecoveryGrant(grantId, opts) {
   const home = opts.home ?? homedir();
   const token = validateToken(opts.token);
   const now = opts.now ?? (() => Date.now());
@@ -680,7 +741,7 @@ export async function readRecoveryAudit({ home = homedir() } = {}) {
  *   send: (events: RecoveryAuditRow[]) => Promise<{ reconciledEventIds?: string[] }>,
  * }} opts
  */
-export async function reconcileRecoveryAudit({ home = homedir(), send } = {}) {
+export async function reconcileRecoveryAudit({ home = homedir(), send }) {
   if (typeof send !== "function") throw new Error("recovery audit reconciliation requires a sender");
   const rows = await readRecoveryAudit({ home });
   const reconciled = new Set();
