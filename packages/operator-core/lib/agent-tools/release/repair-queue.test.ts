@@ -644,6 +644,48 @@ describe('release:repair-queue', () => {
       expect(mocks.write).not.toHaveBeenCalled();
     });
 
+    it('an expired running pre-check is replaced by one fresh operation instead of wedging the queue', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const expiredOperationId = 'repair-precheck-expired';
+      mocks.readState.mockResolvedValue({
+        status: 'value',
+        queue: {
+          ...queueWithoutPrecheck(),
+          admissionPrecheck: {
+            ...queue.admissionPrecheck,
+            operationId: expiredOperationId,
+            status: 'running' as const,
+            verdict: undefined,
+            expiresAtMs: Date.now() - 1,
+          },
+        },
+      });
+
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: true,
+        verdict: 'precheck-running',
+        precheckOperation: { status: 'running', builtCommit: NEW_HEAD },
+      });
+      expect(result.precheckOperation.operationId).not.toBe(expiredOperationId);
+      expect(dryRuns()).toEqual([true]);
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+      expect(mocks.write).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          admissionPrecheck: expect.objectContaining({ operationId: result.precheckOperation.operationId }),
+          dispatchReservation: expect.objectContaining({ token: result.precheckOperation.operationId }),
+        }),
+        expect.anything(),
+      );
+      await drainDetached();
+    });
+
     it('confirm:true returns after a durable pre-check marker; a later confirmed call publishes only after the stored pass', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));
       // The serving host's root is a LINKED worktree on :3170; the runner must be created for the
@@ -733,6 +775,50 @@ describe('release:repair-queue', () => {
       });
       expect(dryRuns()).toEqual([true, true]);
       expect(JSON.stringify(result.precheck)).toContain('runner-failed');
+    });
+
+    it('retryPrecheck:true replaces a matching terminal failure without publishing in that call', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const failedOperationId = 'repair-precheck-failed';
+      mocks.readState.mockResolvedValue({
+        status: 'value',
+        queue: {
+          ...queueWithoutPrecheck(),
+          admissionPrecheck: {
+            ...queue.admissionPrecheck,
+            operationId: failedOperationId,
+            status: 'failed' as const,
+            verdict: {
+              ok: false as const,
+              ran: false as const,
+              code: 'admission-precheck-unavailable' as const,
+              reason: 'runner-failed' as const,
+              detail: 'setup-release-checkout exited 1',
+              population: queue.admissionPrecheck.verdict.population,
+            },
+          },
+        },
+      });
+
+      const result = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never,
+          { role: 'su' } as never,
+        ),
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: true,
+        verdict: 'precheck-running',
+        precheckOperation: { status: 'running', builtCommit: NEW_HEAD },
+      });
+      expect(result.precheckOperation.operationId).not.toBe(failedOperationId);
+      expect(dryRuns()).toEqual([true]);
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+      await drainDetached();
+      expect(dryRuns()).toEqual([true]);
     });
 
     it('checkpoint-tree-busy settles as the explicit pass-through and publishes loud only on the follow-up', async () => {
