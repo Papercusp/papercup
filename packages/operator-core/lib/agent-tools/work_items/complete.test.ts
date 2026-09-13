@@ -3894,6 +3894,105 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(throwing).toEqual([{ kind: 'scratch-path', reference: '.papercusp/scratch/throwing-report.md' }]);
   });
 
+  it('suppresses an artifact URL when a declared repository path has matching server blob identities', () => {
+    const blobSha = 'b'.repeat(40);
+    const references = completionEphemeralDeliverableReferences(
+      {
+        summary: 'Copied the report from https://claude.ai/artifacts/durable-source.',
+        filesChanged: ['docs/report.md'],
+      },
+      undefined,
+      {
+        repoRoots: ['/repo'],
+        treeStamp: {
+          headSha: 'a'.repeat(40),
+          contentIdentity: [
+            {
+              path: 'docs/report.md',
+              workingTreeBlobSha: blobSha,
+              headBlobSha: blobSha,
+            },
+          ],
+        },
+        isTracked: () => false,
+      },
+    );
+
+    expect(references).toEqual([]);
+  });
+
+  it('keeps an artifact URL when the matching identity belongs to a different declared path', () => {
+    const blobSha = 'b'.repeat(40);
+    const references = completionEphemeralDeliverableReferences(
+      {
+        summary: 'The source artifact is https://claude.ai/artifacts/unrelated-source.',
+        filesChanged: ['docs/report.md'],
+      },
+      undefined,
+      {
+        repoRoots: ['/repo'],
+        treeStamp: {
+          headSha: 'a'.repeat(40),
+          contentIdentity: [
+            {
+              path: 'src/other.ts',
+              workingTreeBlobSha: blobSha,
+              headBlobSha: blobSha,
+            },
+          ],
+        },
+        isTracked: () => false,
+      },
+    );
+
+    expect(references).toEqual([{ kind: 'artifact-url', reference: 'https://claude.ai/artifacts/unrelated-source' }]);
+  });
+
+  it('wires the persisted tree stamp into the handler warning decision', async () => {
+    getWorkItem.mockResolvedValue({
+      ...item,
+      id: 'WI-ephemeral-durable',
+      kind: 'task',
+      family: 'issue',
+      state: 'open',
+    });
+
+    const r = await one({
+      id: 'WI-ephemeral-durable',
+      completion: {
+        summary: 'The source report was copied from https://claude.ai/artifacts/durable-handler-source.',
+        filesChanged: ['packages/operator-core/package.json'],
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.ephemeralDeliverableWarning).toBeUndefined();
+  });
+
+  it.each([
+    ['mismatched blobs', { workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'c'.repeat(40) }],
+    ['missing working-tree blob', { workingTreeBlobSha: null, headBlobSha: 'b'.repeat(40) }],
+    ['deleted path', { workingTreeBlobSha: null, headBlobSha: null, deletion: true as const }],
+  ])('keeps an artifact URL when the server cannot prove a durable changed path (%s)', (_name, identity) => {
+    const references = completionEphemeralDeliverableReferences(
+      {
+        summary: 'The source artifact is https://claude.ai/artifacts/unproven-source.',
+        filesChanged: ['docs/report.md'],
+      },
+      undefined,
+      {
+        repoRoots: ['/repo'],
+        treeStamp: {
+          headSha: 'a'.repeat(40),
+          contentIdentity: [{ path: 'docs/report.md', ...identity }],
+        },
+        isTracked: () => false,
+      },
+    );
+
+    expect(references).toEqual([{ kind: 'artifact-url', reference: 'https://claude.ai/artifacts/unproven-source' }]);
+  });
+
   it('warns while still recording completion prose that cites scratch/artifact references', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-ephemeral', kind: 'task', family: 'issue', state: 'open' });
 

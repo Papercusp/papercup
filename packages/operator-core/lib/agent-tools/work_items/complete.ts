@@ -86,6 +86,7 @@ import {
   CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
   type CompletionCoverage,
   type CompletionRecord,
+  type CompletionTreeStamp,
   type PersistedCompletionEvidence,
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
@@ -1556,6 +1557,10 @@ export interface CompletionEphemeralDeliverableProbe {
   repoRoots?: readonly (string | null)[];
   /** Injectable Git answer used by focused tests and alternate checkout owners. */
   isTracked?: CompletionTrackednessProbe;
+  /** Server-observed evidence identity used to clear an artifact URL after durable remediation. */
+  treeStamp?: CompletionTreeStamp | null;
+  /** Completion/evidence filesChanged paths paired with the server identity stamp. */
+  changedPaths?: readonly string[];
 }
 
 /**
@@ -1610,16 +1615,64 @@ function completionCandidateRoots(probe: CompletionEphemeralDeliverableProbe): s
   ];
 }
 
+type CompletionTreeIdentity = NonNullable<CompletionTreeStamp['contentIdentity']>[number];
+
+function completionIdentityMatchesChangedPath(
+  identity: CompletionTreeIdentity,
+  changedPaths: readonly string[],
+  treeStamp: CompletionTreeStamp,
+): boolean {
+  const normalize = (path: string): string =>
+    path
+      .trim()
+      .replaceAll('\\', '/')
+      .replace(/^\.\/+/, '');
+  const identityPath = normalize(identity.path);
+  const roots = [identity.repositoryRoot, treeStamp.repositoryRoot]
+    .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
+    .map((root) => nodePath.resolve(root));
+
+  return changedPaths.some((rawPath) => {
+    const declaredPath = normalize(rawPath);
+    if (declaredPath === identityPath) return true;
+    return roots.some((root) => {
+      const declaredAbsolute = nodePath.isAbsolute(rawPath)
+        ? nodePath.resolve(rawPath)
+        : nodePath.resolve(root, rawPath);
+      const identityAbsolute = nodePath.resolve(root, identityPath);
+      return declaredAbsolute === identityAbsolute || declaredPath === `${nodePath.basename(root)}/${identityPath}`;
+    });
+  });
+}
+
 function filterTrackedCompletionScratchReferences(
   references: ReturnType<typeof detectEphemeralDeliverableReferences>,
   probe: CompletionEphemeralDeliverableProbe = {},
 ): ReturnType<typeof detectEphemeralDeliverableReferences> {
+  // An artifact URL is normally account/session-local, but it is a legitimate source
+  // citation when the same completion also names a non-deleted repository path whose
+  // server-observed working-tree and HEAD blobs match.  Do not infer this from
+  // `filesChanged` alone: that field is caller testimony, while the tree stamp is the
+  // server's durable identity proof.  Missing, mismatched, deleted, and out-of-repo
+  // identities deliberately keep the warning visible (fail-open).
+  const hasProvenDurableChangedPath = Boolean(
+    probe.treeStamp?.contentIdentity?.some(
+      (identity) =>
+        completionIdentityMatchesChangedPath(identity, probe.changedPaths ?? [], probe.treeStamp!) &&
+        identity.outOfRepoArtifact !== true &&
+        identity.deletion !== true &&
+        identity.workingTreeBlobSha !== null &&
+        identity.headBlobSha !== null &&
+        identity.workingTreeBlobSha === identity.headBlobSha,
+    ),
+  );
   const roots = completionCandidateRoots(probe);
-  if (roots.length === 0) return references;
   const isTracked = probe.isTracked ?? defaultCompletionTrackedness;
 
   return references.filter((reference) => {
+    if (reference.kind === 'artifact-url') return !hasProvenDurableChangedPath;
     if (reference.kind !== 'scratch-path') return true;
+    if (roots.length === 0) return true;
     // Suppress only a definite positive. A false result (untracked/ignored), an unknown
     // result, an exception, or a path that cannot be mapped to a candidate root all preserve
     // the original advisory warning.
@@ -1683,7 +1736,10 @@ export function completionEphemeralDeliverableReferences(
   const references = detectEphemeralDeliverableReferences(
     [...deliverableTextParts(completion), ...deliverableTextParts(evidence)].join('\n'),
   );
-  return filterTrackedCompletionScratchReferences(references, probe);
+  return filterTrackedCompletionScratchReferences(references, {
+    ...probe,
+    changedPaths: [...completionFilesChanged(completion), ...completionFilesChanged(evidence)],
+  });
 }
 
 function completionStructuredEvidenceTexts(completion: unknown): {
@@ -3860,6 +3916,7 @@ async function completeOne(
       // still use the canonical completion root, while cross-repository absolute paths retain
       // the registered-root candidates discovered above.
       repoRoots: registeredRepoRoots ?? [completionRoot()],
+      treeStamp: completionEvidenceToPersist?.treeStamp,
     });
     ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(`completion for ${it.id}`, references);
   } catch {
