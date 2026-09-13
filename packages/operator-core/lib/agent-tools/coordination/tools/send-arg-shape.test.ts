@@ -35,7 +35,7 @@ import { z } from 'zod';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 
 import sendTool, { itemSpec } from './send';
-import { SECTION_ONLY_FIELDS } from '../message-fields';
+import { BODY_MUST_BE_ARRAY_MESSAGE, SECTION_ONLY_FIELDS } from '../message-fields';
 import { DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 
 describe('EI-20223353810864057 — primary coord:send guidance names required summary', () => {
@@ -201,6 +201,57 @@ describe('EI-21335862819188804 — section-only fields name their body home', ()
     for (const field of SECTION_ONLY_FIELDS) {
       expect(schema.properties, `envelope must not declare \`${field}\``).not.toHaveProperty(field);
     }
+  });
+});
+
+describe('EI-23083567306363709 — `body` schema matches its runtime refusal', () => {
+  type BodySchema = {
+    type?: string;
+    anyOf?: unknown[];
+    minItems?: number;
+    maxItems?: number;
+  };
+
+  it('publishes an array-only body shape on both single and items[] forms', () => {
+    const schema = z.toJSONSchema(sendTool.args) as {
+      properties?: {
+        body?: BodySchema;
+        items?: { items?: { properties?: { body?: BodySchema } } };
+      };
+    };
+    const bodies = [
+      schema.properties?.body,
+      schema.properties?.items?.items?.properties?.body,
+    ];
+
+    for (const body of bodies) {
+      expect(body).toMatchObject({ type: 'array', minItems: 1, maxItems: 20 });
+      expect(body).not.toHaveProperty('anyOf');
+    }
+  });
+
+  it('still refuses plain strings with the actionable array-shape message', () => {
+    const inputs = [
+      { to: ['peer'], summary: 'hi', expects: 'none', body: 'plain prose' },
+      { items: [{ to: ['peer'], summary: 'hi', expects: 'none', body: 'plain prose' }] },
+    ];
+
+    for (const input of inputs) {
+      const parsed = sendTool.args.safeParse(input);
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues.some((issue) => issue.message === BODY_MUST_BE_ARRAY_MESSAGE)).toBe(true);
+      }
+    }
+  });
+
+  it('accepts the minimum structured array on both forms', () => {
+    expect(
+      sendTool.args.safeParse({ to: ['peer'], summary: 'hi', expects: 'none', body: [{ text: 'x' }] }).success,
+    ).toBe(true);
+    expect(
+      sendTool.args.safeParse({ items: [{ to: ['peer'], summary: 'hi', expects: 'none', body: [{ text: 'x' }] }] }).success,
+    ).toBe(true);
   });
 });
 

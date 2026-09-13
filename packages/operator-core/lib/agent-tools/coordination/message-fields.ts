@@ -536,11 +536,16 @@ function shapeTaughtArray<E>(
   entry: z.ZodType<E>,
   message: string,
   max = 20,
+  min = 0,
 ): z.ZodType<E[]> {
   const guard = z
     .unknown()
     .superRefine((value, ctx) => {
       if (typeof value === 'string' || !Array.isArray(value)) {
+        ctx.addIssue({ code: 'custom', message });
+        return;
+      }
+      if (value.length < min) {
         ctx.addIssue({ code: 'custom', message });
         return;
       }
@@ -555,7 +560,8 @@ function shapeTaughtArray<E>(
   // `.pipe()` is intentional. A trailing `.transform()` makes the output impossible to
   // represent in JSON Schema, while this pipeline publishes the strict array/member shape
   // and still preserves the guard's custom refusal for malformed runtime values.
-  return guard.pipe(z.array(entry).max(max));
+  const array = min > 0 ? z.array(entry).min(min) : z.array(entry);
+  return guard.pipe(array.max(max));
 }
 
 const youMayNotKnowEntrySchema = z.object({
@@ -1013,10 +1019,12 @@ export const messageSectionSchema = z
  * traffic; an optional structure next to a free-text alternative is the same "a default is
  * how a field dies" mechanism D-016 names, and here the default was the entire format.
  *
- * So the union stays only to CATCH the string and refuse it with a message that teaches
- * the shape — a bare `z.array(...)` would emit zod's "expected array, received string",
- * which tells an agent what it did wrong but not what to do instead. The refusal is the
- * tier-2 GATE this behaviour never had; per D-016 the prompt was never going to be one.
+ * So the runtime guard catches the string and refuses it with a message that teaches the
+ * shape — a bare `z.array(...)` would emit zod's "expected array, received string",
+ * which tells an agent what it did wrong but not what to do instead. The published side
+ * of the guard is a strict array pipeline, so schema-first callers never see the refused
+ * string as an alternative. The refusal is the tier-2 GATE this behaviour never had;
+ * per D-016 the prompt was never going to be one.
  */
 // EI-19407756530556168: hoisted out of the superRefine below so send.ts's cross-field
 // preprocess can raise the IDENTICAL message. zod v4's `z.preprocess` is a two-stage
@@ -1044,13 +1052,14 @@ export const BODY_MUST_BE_ARRAY_MESSAGE =
   'ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and are refused on a ' +
   'section.';
 
-export const messageBodyArg = z
-  .union([z.string(), z.array(messageSectionSchema).min(1).max(20)])
+export const messageBodyArg = shapeTaughtArray(
+  'body',
+  messageSectionSchema,
+  BODY_MUST_BE_ARRAY_MESSAGE,
+  20,
+  1,
+)
   .optional()
-  .superRefine((value, ctx) => {
-    if (typeof value !== 'string') return;
-    ctx.addIssue({ code: 'custom', message: BODY_MUST_BE_ARRAY_MESSAGE });
-  })
   .describe(
     'The message body: an ARRAY of sections. A plain string is REFUSED — the minimum is ' +
       '[{ text: "..." }]. Use SEVERAL sections when the parts of your message have different ' +

@@ -40,6 +40,12 @@ export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
  * unbounded fan-out when a historical backlog is present.
  */
 export const GRADING_AUDIT_DISPATCH_LIMIT = 50;
+/**
+ * Keep independent scorecard dispatches moving in parallel without turning a
+ * repair sweep into an unbounded launch/PG fan-out. Four matches the bounded
+ * process-kill fan-out and leaves headroom for the caller's own work.
+ */
+export const GRADING_AUDIT_DISPATCH_CONCURRENCY = 4;
 /** Maximum scorecard history scanned when selecting an oldest-first backlog batch. */
 export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
 /**
@@ -101,6 +107,26 @@ const GRADING_AUDIT_FALLBACK = {
   // when the account that caused the terminal failure is walled.
   account: GRADING_AUDIT_ACCOUNT,
 };
+
+/** Bounded worker pool that preserves input order for deterministic receipts. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      out[index] = await fn(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
 
 export type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
 type GradingAuditLaunchHandler = typeof launchAgentTool.handler;
@@ -664,31 +690,27 @@ export async function dispatchPendingGradingAudits(
           .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)
           .map((card) => card.issueId);
 
-  const receipts: PendingGradingAuditDispatchReceipt[] = [];
-  for (const issueId of requestedTargetIds) {
+  const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
     const card = pendingById.get(issueId);
     if (!card) {
-      receipts.push({
+      return {
         issueId,
         state: 'skipped',
         reason: 'target is no longer a current pending standard-rubric scorecard',
-      });
-      continue;
+      };
     }
 
     const rubric = await resolveRubric(card.rubricRef);
     if (!rubric) {
-      receipts.push({ issueId, rubricRef: card.rubricRef, state: 'skipped', reason: 'target rubric not found' });
-      continue;
+      return { issueId, rubricRef: card.rubricRef, state: 'skipped', reason: 'target rubric not found' };
     }
     if (rubric.kind !== 'standard') {
-      receipts.push({
+      return {
         issueId,
         rubricRef: card.rubricRef,
         state: 'skipped',
         reason: `target rubric kind '${rubric.kind}' is not standard`,
-      });
-      continue;
+      };
     }
 
     const idempotencyKey = `grading-audit:${issueId}`;
@@ -821,7 +843,7 @@ export async function dispatchPendingGradingAudits(
         currentness: card.gradingAuditCurrentness,
       });
       if (reservation.status !== 'claimed') {
-        receipts.push({
+        return {
           issueId,
           rubricRef: card.rubricRef,
           state: 'skipped',
@@ -835,14 +857,12 @@ export async function dispatchPendingGradingAudits(
               : reservation.status === 'already-reserved'
                 ? 'another dispatcher already reserved this scorecard'
                 : 'target is no longer a pending scorecard',
-        });
-        continue;
+        };
       }
       reservationReservedAt = reservation.reservation?.reservedAt ?? reservationReservedAt;
       reservationHeld = true;
       if (!(await confirmOwnedPendingReservation())) {
-        receipts.push(receipt!);
-        continue;
+        return receipt!;
       }
       /**
        * The reservation is a bounded dispatch lease, not the auditor's
@@ -913,8 +933,7 @@ export async function dispatchPendingGradingAudits(
         }
       }
       if (receipt) {
-        receipts.push(receipt);
-        continue;
+        return receipt;
       }
       if (viableLiveTasks.length > 0) {
         await releaseReservation();
@@ -940,8 +959,7 @@ export async function dispatchPendingGradingAudits(
               : `${viableLiveTasks.length} existing live grading auditor tasks own ${idempotencyKey}; duplicate launch suppressed`,
           ...recoveryFields(),
         };
-        receipts.push(receipt);
-        continue;
+        return receipt;
       }
       const routed = await (deps.route ?? routeSourceGradingAudit)({
         card,
@@ -951,7 +969,7 @@ export async function dispatchPendingGradingAudits(
         ...(harness && harness !== '*' ? { harness } : {}),
       });
       if (routed.state !== 'fallback') {
-        receipts.push({
+        return {
           issueId,
           rubricRef: card.rubricRef,
           idempotencyKey,
@@ -959,8 +977,7 @@ export async function dispatchPendingGradingAudits(
           conversationId: routed.conversationId,
           ...(routed.reason ? { reason: routed.reason } : {}),
           ...recoveryFields(),
-        });
-        continue;
+        };
       }
       routingFallback = routed.reason;
 
@@ -1128,7 +1145,7 @@ export async function dispatchPendingGradingAudits(
         break;
       }
 
-      receipts.push(
+      return (
         receipt ?? {
           issueId,
           rubricRef: card.rubricRef,
@@ -1136,7 +1153,7 @@ export async function dispatchPendingGradingAudits(
           idempotencyKey: currentIdempotencyKey,
           reason: 'grading auditor terminal recovery exhausted without a receipt',
           ...recoveryFields(),
-        },
+        }
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -1148,16 +1165,22 @@ export async function dispatchPendingGradingAudits(
         }),
       );
       console.warn(`[grading-integrity] pending audit dispatch failed for ${issueId}: ${reason}`);
-      receipts.push({
+      return {
         issueId,
         rubricRef: card.rubricRef,
         state: 'failed',
         idempotencyKey: currentIdempotencyKey,
         reason,
         ...recoveryFields(),
-      });
+      };
     }
-  }
+  };
+
+  const receipts = await mapWithConcurrency(
+    requestedTargetIds,
+    GRADING_AUDIT_DISPATCH_CONCURRENCY,
+    dispatchTarget,
+  );
 
   return { requestedTargetIds, receipts };
 }

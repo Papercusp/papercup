@@ -154,23 +154,21 @@ describe('D-104 — the refusal stays ACTIONABLE, not merely correct', () => {
     readFileSync(fileURLToPath(new URL('./message-fields.ts', import.meta.url)), 'utf8'),
   );
 
-  it('messageBodyArg KEEPS z.string() in its union so the refusal can teach', () => {
-    // The union looks like dead weight and is the obvious "cleanup": drop
-    // z.string() and let z.array() reject the string. That silently downgrades
-    // the refusal to zod's "expected array, received string", which tells an
-    // agent what it did wrong but not what to do instead — and the whole reason
-    // the gate is a tier-2 mechanism rather than prompt guidance (D-016) is that
-    // the message has to carry the fix. Nothing else pins this; without it the
-    // regression is invisible because the gate still REFUSES, just uselessly.
-    // NB: the declaration wraps as `= z\n  .union([...])`, so the `z` and the
-    // `.union(` are separated by a newline — a `z\.union\(` pattern misses it.
-    const union = /messageBodyArg[\s\S]{0,120}?\.union\(\s*\[\s*z\.string\(\)/;
+  it('messageBodyArg uses a strict array pipeline while retaining the taught runtime refusal', () => {
+    // The old teaching trick used a string arm in a union and then rejected that arm
+    // in superRefine. That made z.toJSONSchema advertise a shape the runtime refused.
+    // The guard now teaches malformed callers while `.pipe(z.array(...))` publishes
+    // only the accepted array/member shape. The runtime behavior is pinned in the
+    // coord:send schema tests; this source guard prevents the old union from returning.
+    const strictPipeline =
+      /messageBodyArg\s*=\s*shapeTaughtArray\(\s*['"]body['"]\s*,\s*messageSectionSchema\s*,\s*BODY_MUST_BE_ARRAY_MESSAGE\s*,\s*20\s*,\s*1\s*,?\s*\)/;
+    const oldUnion = /messageBodyArg[\s\S]{0,120}?\.union\(\s*\[\s*z\.string\(\)/;
     expect(
-      union.test(fieldsSrc),
-      'messageBodyArg no longer accepts z.string() in its union. It is there ON PURPOSE — to CATCH ' +
-        'the string and refuse it with a message that teaches the shape. Removing it makes zod emit ' +
-        '"expected array, received string" instead, which is a correct refusal that helps nobody.',
+      strictPipeline.test(fieldsSrc),
+      'messageBodyArg must use the taught strict-array pipeline with a one-section minimum so ' +
+        'the published schema contains only the runtime-accepted body shape.',
     ).toBe(true);
+    expect(oldUnion.test(fieldsSrc)).toBe(false);
   });
 
   it('the refusal names the exact minimum shape an agent should write', () => {

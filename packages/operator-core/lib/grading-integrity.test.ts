@@ -5,6 +5,7 @@ import type { TaskRow } from './task-manager/types';
 import {
   dispatchPendingGradingAudits,
   GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
+  GRADING_AUDIT_DISPATCH_CONCURRENCY,
   GRADING_AUDIT_DISPATCH_LIMIT,
   GRADING_AUDIT_FAILURE_BACKOFF_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS,
@@ -459,6 +460,38 @@ describe('dispatchPendingGradingAudits', () => {
     expect(firstBrief).toContain('Never read or write shared fixed names such as /tmp/eval-args.json');
     expect(secondBrief).toContain('mktemp -d /tmp/grading-integrity-EI-audit-b.XXXXXX');
     expect(secondBrief).not.toContain('/tmp/grading-integrity-EI-audit-a.XXXXXX');
+  });
+
+  it('dispatches independent targets with bounded concurrency while preserving receipt order', async () => {
+    const d = deps();
+    const targetIds = Array.from({ length: GRADING_AUDIT_DISPATCH_CONCURRENCY + 1 }, (_, i) => `EI-parallel-${i + 1}`);
+    d.listScorecards.mockResolvedValue(targetIds.map((issueId) => card(issueId)));
+
+    let active = 0;
+    let peak = 0;
+    let started = 0;
+    let releaseFirstBatch!: () => void;
+    const firstBatchReleased = new Promise<void>((resolve) => {
+      releaseFirstBatch = resolve;
+    });
+    d.launch.mockImplementation(async (args) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      started += 1;
+      if (started === GRADING_AUDIT_DISPATCH_CONCURRENCY) releaseFirstBatch();
+      if (started <= GRADING_AUDIT_DISPATCH_CONCURRENCY) await firstBatchReleased;
+      active -= 1;
+      return launchResult({
+        deduped: false,
+        launch: { opened: 1, tasks: [{ taskId: `task-${String((args as { idempotencyKey: string }).idempotencyKey)}` }] },
+      });
+    });
+
+    const result = await dispatchPendingGradingAudits({ targetIds, ctx }, d);
+
+    expect(peak).toBe(GRADING_AUDIT_DISPATCH_CONCURRENCY);
+    expect(result.receipts.map((receipt) => receipt.issueId)).toEqual(targetIds);
+    expect(d.launch).toHaveBeenCalledTimes(targetIds.length);
   });
 
   it('instructs auditors to re-check live grading state before emitting', async () => {
