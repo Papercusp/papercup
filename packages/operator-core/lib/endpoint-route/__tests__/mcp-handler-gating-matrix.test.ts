@@ -223,6 +223,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
         return h.signingRows;
       } }) }) }) },
     }),
+    // scheduler:get_next deliberately uses its own small admin pool so ordinary
+    // MCP reads cannot starve claims. This dispatcher matrix tests only that the
+    // transport does not open the org-app workspace transaction; keep the
+    // scheduler's dedicated pool on the same empty SQL double instead of letting
+    // this unit test escape to a live database whose schema/data are unrelated.
+    getLongLivedAdminPool: () => h.fakeSql,
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
       if (h.workspaceAcquireError) {
