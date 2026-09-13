@@ -85,7 +85,6 @@ const readClaimConcurrencyM = vi.hoisted(() =>
   vi.fn(async () => ({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] as string[] })),
 );
 const clearClaimSpecM = vi.hoisted(() => vi.fn(async () => ({ ok: true, errors: [] as string[], cleared: true })));
-
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
 }));
@@ -151,6 +150,14 @@ vi.mock('../coordination/context-pressure', async (importOriginal) => ({
 vi.mock('../../goals/holder-authority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readGoalHolderAuthority: readGoalHolderAuthorityM,
+}));
+// The work-scope gate is a pure allow/deny decision for this scheduler suite. Mocking the
+// dynamically imported module keeps its pot-control-policy sync listener (and its real PG
+// connection) out of fake-timer tests, so a missing local database cannot become an unrelated
+// console error after the timeout watchdog settles.
+vi.mock('../../work-scope-policy', () => ({
+  gateWorkScope: vi.fn(async () => ({ allowed: true, reason: 'no-policy' })),
+  workScopeRefusal: vi.fn(),
 }));
 vi.mock('../../memory/claim-port', () => ({
   buildClaimRecallBlock: buildClaimRecallBlockM,
@@ -1248,6 +1255,15 @@ describe('scheduler:get_next bounds post-claim enrichment (EI-21834503221873518)
       data?: unknown;
       content?: Array<{ text?: string }>;
     }>;
+    // The handler reaches the post-claim enrichment only after several async preflight and
+    // claim continuations, including dynamic imports. Wait for the mocked enrichment seam before
+    // advancing fake time so its bounded watchdog is armed against the current clock; advancing
+    // first jumps past the deadline and leaves the test promise waiting forever
+    // (EI-22737331452243764).
+    await vi.waitFor(() => expect(buildClaimRecallBlockM).toHaveBeenCalledOnce(), {
+      timeout: 1_000,
+      interval: 1,
+    });
     await vi.advanceTimersByTimeAsync(GET_NEXT_TOTAL_BUDGET_MS + 100);
 
     const out = await pending;
