@@ -762,6 +762,20 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(b.loop.workItem).toBe('WI-7');
   });
 
+  it('EI-22679872218957064: a WARM goal never auto-detects or binds prohibited IDs', async () => {
+    detectM.mockReturnValue('WI-10000659' as never);
+    const b = body(
+      await call({
+        carry: 'warm',
+        goal: 'WI-10000659 is DONE and RELEASED. Do NOT re-grade, re-emit, re-claim, or re-read it; continue the next lane.',
+      }),
+    );
+
+    expect(detectM).not.toHaveBeenCalled();
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, loop: { workItem: null }, workItemClaim: null });
+  });
+
   it('detects the full cold-loop id from a goal before the soft 4000-character clamp', async () => {
     const id = 'EI-21402283154473718';
     const goal = `${'x'.repeat(3995)}${id}`;
