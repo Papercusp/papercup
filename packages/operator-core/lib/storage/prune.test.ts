@@ -153,6 +153,24 @@ describe('pruneStorageCategory — PG', () => {
 const FULL_CHUNK = 10_000;
 
 describe('pruneStorageCategory — wall-time budget + continuation (EI-11379)', () => {
+  it('uses a transport-safe default wall-time budget', async () => {
+    h.statsQueue = [{ b: 100_000, r: 10_000 }];
+    h.deleteQueue = [FULL_CHUNK, FULL_CHUNK];
+    h.countMatched = 12_345;
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(27_000);
+    try {
+      const r = await pruneStorageCategory(REQ());
+      expect(r.partial).toBe(true);
+      expect(r.complete).toBe(false);
+      expect(r.removed).toBe(FULL_CHUNK);
+      expect(r.totalRemaining).toBe(12_345);
+      expect(r.continuation).toEqual({ categoryId: 'route-invocations', olderThanDays: 90 });
+      expect(h.deleteQueue.length).toBe(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('returns a continuation (not the whole delete) when the wall-time budget is hit mid-drain', async () => {
     h.statsQueue = [{ b: 100_000, r: 10_000 }]; // perRow 10
     // Two full chunks are queued, but timeBudgetMs:0 stops after the FIRST —

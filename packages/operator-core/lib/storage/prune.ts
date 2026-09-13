@@ -84,12 +84,12 @@ export interface PruneResult {
 const CHUNK = 10_000;
 const MAX_ROWS_PER_CALL = 20_000_000;
 /**
- * Default wall-time budget (ms) for the chunked delete loop. Safely under the
- * ~55s MCP transport cap (docstrings clamp a foreground call to ~50s), leaving
- * headroom to measure `totalRemaining` and serialize the continuation before
- * the caller's envelope elapses (EI-11379).
+ * Default wall-time budget (ms) for the chunked delete loop. Keep this well
+ * below the observed ~34s MCP request window, leaving headroom to measure
+ * `totalRemaining` and serialize the continuation before the caller's
+ * envelope elapses (EI-11379, EI-23178687033301213).
  */
-const DEFAULT_TIME_BUDGET_MS = 40_000;
+const DEFAULT_TIME_BUDGET_MS = 20_000;
 /** plain-disk-store guard: never remove an entry touched within this window. */
 const PLAIN_DISK_FLOOR_MS = 60_000;
 
