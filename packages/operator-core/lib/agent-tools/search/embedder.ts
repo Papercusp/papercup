@@ -35,7 +35,7 @@
  */
 
 import type { Embedder } from '@papercusp/search';
-import { normalizeEmbeddingText } from '@papercusp/memory';
+import { normalizeEmbeddingText, type EmbedderProfileSpec } from '@papercusp/memory';
 import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../memory/embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 import {
@@ -95,6 +95,8 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
 export interface ResolvedQueryEmbedder {
   mode: 'openai' | 'local' | 'gemma' | 'harrier';
   dims: number;
+  /** Exact query-space provenance; mode/width alone never establish compatibility. */
+  profile: EmbedderProfileSpec;
   embed: Embedder;
 }
 
@@ -243,7 +245,7 @@ function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder
  * not build. Re-exported so existing importers keep working; the definition
  * (and the WeakMap) live in the leaf registry.
  */
-export { embedderModeOf } from '../../search/embedder-mode-registry';
+export { embedderModeOf, embedderProfileIdOf } from '../../search/embedder-mode-registry';
 import { stampEmbedderMode } from '../../search/embedder-mode-registry';
 
 export async function buildQueryEmbedderResolved(
@@ -281,11 +283,11 @@ export async function buildQueryEmbedderResolved(
     const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
     if (resolved === null || resolved.mode === 'disabled') return null;
     // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
-    const embed = cachedQueryEmbed(resolved.mode, resolved.dims, resolved.embed);
+    const embed = cachedQueryEmbed(resolved.profile.profileId, resolved.dims, resolved.embed);
     // P-017: stamp the space onto the instance every caller will actually hold,
     // so the floor policy can recognise it without any caller passing a mode.
-    stampEmbedderMode(embed, resolved.mode);
-    return { mode: resolved.mode, dims: resolved.dims, embed };
+    stampEmbedderMode(embed, resolved.mode, resolved.profile.profileId);
+    return { mode: resolved.mode, dims: resolved.dims, profile: resolved.profile, embed };
   } catch (err) {
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
     // model fetch failed, …) degrades to BM25-only rather than throwing.

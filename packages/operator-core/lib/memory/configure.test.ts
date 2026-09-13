@@ -391,7 +391,11 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
       localInstalled: async () => true, // shares the @huggingface/transformers package
     });
     const res = await resolveEmbedderWith(deps);
-    expect(res).toMatchObject({ mode: 'gemma', dims: declaredDims('gemma') });
+    expect(res).toMatchObject({
+      mode: 'gemma',
+      dims: declaredDims('gemma'),
+      profile: EMBEDDER_DIM_SPECS.gemma,
+    });
     expect(buildGemma).toHaveBeenCalledOnce();
     // gemma is its OWN model — never the BGE ('local') or OpenAI builder
     expect(buildLocal).not.toHaveBeenCalled();

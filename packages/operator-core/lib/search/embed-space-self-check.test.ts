@@ -10,6 +10,34 @@ import {
 } from './embed-space-self-check';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 import type { Sql } from 'postgres';
+import { EMBEDDER_DIM_SPECS, type EmbedderMode, type EmbedderProfileSpec, type ResolvedEmbedder } from '@papercusp/memory';
+
+const SELF_CHECK_PROFILES: Record<'local' | 'openai', EmbedderProfileSpec> = {
+  local: {
+    ...EMBEDDER_DIM_SPECS.local,
+    profileId: 'self-check-local-space@v1',
+    model: 'self-check-local',
+    modelRevision: 'test-revision',
+    nativeDims: 3,
+    mrl: 'none',
+    trainedDims: [3],
+    targetDims: 3,
+  },
+  openai: {
+    ...EMBEDDER_DIM_SPECS.openai,
+    profileId: 'self-check-openai-space@v1',
+    model: 'self-check-openai',
+    modelRevision: 'test-revision',
+    nativeDims: 3,
+    mrl: 'none',
+    trainedDims: [3],
+    targetDims: 3,
+  },
+};
+
+function resolved(mode: 'local' | 'openai', embed: () => Promise<number[]>): ResolvedEmbedder {
+  return { mode: mode as EmbedderMode, dims: 3, profile: SELF_CHECK_PROFILES[mode], embed };
+}
 
 // `pickCanary` is injected in every case below, so this handle is never dereferenced —
 // it exists only to stop the tick falling back to `getOrgPg().sql`, which opens a real
@@ -154,7 +182,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
   it('no canary row in the active space → skips, no escalate', async () => {
     let escalateCalled = false;
     const result = await runTick({
-      resolveEmbedder: async () => ({ mode: 'local', dims: 3, embed: async () => [1, 0, 0] }),
+      resolveEmbedder: async () => resolved('local', async () => [1, 0, 0]),
       pickCanary: async () => null,
       escalate: async () => {
         escalateCalled = true;
@@ -166,13 +194,9 @@ describe('runEmbedSpaceSelfCheckTick', () => {
 
   it('embed() throws → fails soft (ok:false, skipped: embed_failed)', async () => {
     const result = await runTick({
-      resolveEmbedder: async () => ({
-        mode: 'local',
-        dims: 3,
-        embed: async () => {
+      resolveEmbedder: async () => resolved('local', async () => {
           throw new Error('embed backend down');
-        },
-      }),
+        }),
       pickCanary: async () => mkCanary(),
     });
     expect(result.ok).toBe(false);
@@ -184,7 +208,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
     let resolvedMsgId: string | null = null;
     const openRec = { msg_id: 'esc-1', from: 'system:embed-space-self-check', dedupKind: 'embed-space-desync', subjectSignature: 'embed-space-self-check' } as unknown as EscalationRecord;
     const result = await runTick({
-      resolveEmbedder: async () => ({ mode: 'local', dims: 3, embed: async () => [1, 0, 0] }),
+      resolveEmbedder: async () => resolved('local', async () => [1, 0, 0]),
       pickCanary: async () => mkCanary({ storedVectorText: '[1,0,0]' }),
       escalate: async () => {
         escalateCalled = true;
@@ -203,7 +227,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
   it('fresh vector far from stored vector → escalates once with advisory severity + dedup meta', async () => {
     let escalateInput: Record<string, unknown> | null = null;
     const result = await runTick({
-      resolveEmbedder: async () => ({ mode: 'openai', dims: 3, embed: async () => [0, 1, 0] }),
+      resolveEmbedder: async () => resolved('openai', async () => [0, 1, 0]),
       pickCanary: async () => mkCanary({ storedVectorText: '[1,0,0]' }), // orthogonal → distance 1
       escalate: async (input) => {
         escalateInput = input;
@@ -222,7 +246,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
   it('distance exactly at the threshold is healthy (boundary is inclusive, <=)', async () => {
     let escalateCalled = false;
     const result = await runTick({
-      resolveEmbedder: async () => ({ mode: 'local', dims: 3, embed: async () => [1, 0, 0] }),
+      resolveEmbedder: async () => resolved('local', async () => [1, 0, 0]),
       pickCanary: async () => mkCanary({ storedVectorText: '[1,0,0]' }),
       escalate: async () => {
         escalateCalled = true;

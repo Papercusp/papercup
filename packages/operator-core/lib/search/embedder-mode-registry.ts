@@ -42,15 +42,26 @@ import type { Embedder } from '@papercusp/search';
 /** The embedding spaces this host can build a query embedder for. */
 export type EmbedderMode = 'openai' | 'local' | 'gemma' | 'harrier';
 
+/** Versioned exact space identity. Kept structurally local so this import-pure
+ * leaf never gains a runtime dependency on the memory package. */
+export type EmbedderProfileId = `${string}@v${number}`;
+
 /** A WeakMap so a discarded embedder is still collectable. */
-const embedderModes = new WeakMap<Embedder, EmbedderMode>();
+const embedderProvenance = new WeakMap<
+  Embedder,
+  { mode: EmbedderMode; profileId?: EmbedderProfileId }
+>();
 
 /**
  * Record the space an embedder ranks in. Called by the ONE embedder factory,
  * on every embedder it hands out, so provenance travels with the instance.
  */
-export function stampEmbedderMode(embedder: Embedder, mode: EmbedderMode): void {
-  embedderModes.set(embedder, mode);
+export function stampEmbedderMode(
+  embedder: Embedder,
+  mode: EmbedderMode,
+  profileId?: EmbedderProfileId,
+): void {
+  embedderProvenance.set(embedder, { mode, profileId });
 }
 
 /**
@@ -65,5 +76,14 @@ export function stampEmbedderMode(embedder: Embedder, mode: EmbedderMode): void 
  * embedders through UNWRAPPED.
  */
 export function embedderModeOf(embedder: Embedder | null | undefined): EmbedderMode | undefined {
-  return embedder ? embedderModes.get(embedder) : undefined;
+  return embedder ? embedderProvenance.get(embedder)?.mode : undefined;
+}
+
+/** Exact profile id carried by a host-built query embedder. Missing means the
+ * instance predates profile-aware provenance or was supplied externally; such
+ * an embedder must never be assumed compatible from mode/width alone. */
+export function embedderProfileIdOf(
+  embedder: Embedder | null | undefined,
+): EmbedderProfileId | undefined {
+  return embedder ? embedderProvenance.get(embedder)?.profileId : undefined;
 }

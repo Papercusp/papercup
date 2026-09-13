@@ -51,7 +51,14 @@ vi.mock('../../memory/embed-sidecar-wiring', () => ({
   isLocalEmbedAcquisitionCheap: vi.fn().mockReturnValue(true),
 }));
 
-import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } from './embedder';
+import {
+  buildQueryEmbedder,
+  buildQueryEmbedderResolved,
+  embedderProfileIdOf,
+  withAcquireBudget,
+  _clearQueryEmbedCacheForTests,
+} from './embedder';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 // Import the width rather than restating it: this assertion is ABOUT the prose
 // column contract, so a future width change must move it automatically instead
 // of stranding a fixture here (the 384→768 strand this line was fixed for).
@@ -82,6 +89,26 @@ afterEach(() => {
 });
 
 describe('buildQueryEmbedder — OpenAI path', () => {
+  it('carries the exact immutable query profile beside the compatibility mode and width', async () => {
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ embedding: [0.1] }] }),
+    })));
+
+    const resolved = await buildQueryEmbedderResolved();
+    expect(resolved).toMatchObject({
+      mode: 'openai',
+      dims: EMBEDDER_DIM_SPECS.openai.targetDims,
+      profile: EMBEDDER_DIM_SPECS.openai,
+    });
+    expect(embedderProfileIdOf(resolved!.embed)).toBe(
+      EMBEDDER_DIM_SPECS.openai.profileId,
+    );
+  });
+
   it('(a) openai mode + key → an embedder that POSTs OpenAI with dimensions:PROSE_VECTOR_DIMS, returns the vector', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
     vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);

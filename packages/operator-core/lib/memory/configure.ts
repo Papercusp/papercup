@@ -31,9 +31,9 @@ import {
   Mem0Backend,
   invalidateMemoryClient,
   dynamicImport,
-  HARRIER_NATIVE_DIMS,
   EMBEDDER_DIM_SPECS,
   type EmbedFn,
+  type EmbedderMode,
   type ResolvedEmbedder,
 } from '@papercusp/memory';
 import { readCredentials } from '../credentials';
@@ -549,6 +549,15 @@ export interface ResolveEmbedderDeps {
   isOpenAiRecentlyExhausted: () => boolean;
 }
 
+/** Build the enabled resolved shape from the ONE production profile registry.
+ * Keeping `dims` for existing callers is intentional compatibility; deriving it
+ * here prevents that legacy projection from drifting away from the exact
+ * profile carried beside it. */
+function resolvedEmbedder(mode: EmbedderMode, embed: EmbedFn): ResolvedEmbedder {
+  const profile = EMBEDDER_DIM_SPECS[mode];
+  return { mode, dims: profile.targetDims, profile, embed };
+}
+
 /**
  * Pure cascade core. 'disabled' is a hard stop; 'openai'/'local' are forced
  * (fall to disabled with a specific reason if their dependency is missing);
@@ -573,13 +582,13 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
   const key = await deps.resolveKey();
 
   if (preference === 'openai') {
-    if (key) return { mode: 'openai', dims: EMBEDDER_DIM_SPECS.openai.targetDims, embed: deps.buildOpenAi(key) };
+    if (key) return resolvedEmbedder('openai', deps.buildOpenAi(key));
     return { mode: 'disabled', reason: 'openai_forced_but_no_key' };
   }
 
   if (preference === 'local') {
     if (await deps.localInstalled()) {
-      return { mode: 'local', dims: EMBEDDER_DIM_SPECS.local.targetDims, embed: await deps.buildLocal() };
+      return resolvedEmbedder('local', await deps.buildLocal());
     }
     return { mode: 'disabled', reason: 'local_forced_but_not_installed' };
   }
@@ -589,7 +598,7 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     // localInstalled() gates it. Its OWN space (native 768, mode 'gemma' →
     // memory_vec_gemma) so its vectors never mix with BGE ('local') or OpenAI.
     if (await deps.localInstalled()) {
-      return { mode: 'gemma', dims: EMBEDDER_DIM_SPECS.gemma.targetDims, embed: await deps.buildGemma() };
+      return resolvedEmbedder('gemma', await deps.buildGemma());
     }
     return { mode: 'disabled', reason: 'gemma_forced_but_transformers_not_installed' };
   }
@@ -599,7 +608,7 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     // below never reaches it. Its OWN space at NATIVE 1024 dims (mode
     // 'harrier' → memory_vec_harrier, migration 547). Same transformers gate.
     if (await deps.localInstalled()) {
-      return { mode: 'harrier', dims: HARRIER_NATIVE_DIMS, embed: await deps.buildHarrier() };
+      return resolvedEmbedder('harrier', await deps.buildHarrier());
     }
     return { mode: 'disabled', reason: 'harrier_forced_but_transformers_not_installed' };
   }
@@ -608,12 +617,12 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
   // single-key exhaustion must not keep re-trying a key we just learned is unusable when a
   // local embedder can serve the request instead.
   if (deps.isOpenAiRecentlyExhausted() && (await deps.localInstalled())) {
-    return { mode: 'local', dims: EMBEDDER_DIM_SPECS.local.targetDims, embed: await deps.buildLocal() };
+    return resolvedEmbedder('local', await deps.buildLocal());
   }
   // 'auto' — openai first, then local, then disabled.
-  if (key) return { mode: 'openai', dims: EMBEDDER_DIM_SPECS.openai.targetDims, embed: deps.buildOpenAi(key) };
+  if (key) return resolvedEmbedder('openai', deps.buildOpenAi(key));
   if (await deps.localInstalled()) {
-    return { mode: 'local', dims: EMBEDDER_DIM_SPECS.local.targetDims, embed: await deps.buildLocal() };
+    return resolvedEmbedder('local', await deps.buildLocal());
   }
   return { mode: 'disabled', reason: 'no_openai_key_and_local_not_installed' };
 }

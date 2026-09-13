@@ -14,6 +14,18 @@ import {
 } from './carry-fact-staleness';
 import type { FactSourceProvenance } from './agent-facts/store';
 import type { HydratedRef } from './agent-tools/coordination/ref-hydrate';
+import { EMBEDDER_DIM_SPECS, type EmbedderProfileSpec } from '@papercusp/memory';
+
+const FACT_TEST_PROFILE: EmbedderProfileSpec = {
+  ...EMBEDDER_DIM_SPECS.openai,
+  profileId: 'fact-staleness-test-space@v1',
+  model: 'fact-staleness-test',
+  modelRevision: 'test-revision',
+  nativeDims: 8,
+  mrl: 'none',
+  trainedDims: [8],
+  targetDims: 8,
+};
 
 function provenance(overrides: Partial<FactSourceProvenance> = {}): FactSourceProvenance {
   return {
@@ -48,7 +60,7 @@ function fakeEmbedder(mode: 'openai' | 'disabled' = 'openai') {
   return async () =>
     mode === 'disabled'
       ? ({ mode: 'disabled' as const } as const)
-      : ({ mode: 'openai' as const, dims: 8, embed } as const);
+      : ({ mode: 'openai' as const, dims: 8, profile: FACT_TEST_PROFILE, embed } as const);
 }
 
 function hydrateOk(snippet: string): (refs: unknown[]) => Promise<HydratedRef[]> {
@@ -169,6 +181,7 @@ describe('checkFactStaleness', () => {
       resolveEmbedderFn: async () => ({
         mode: 'openai' as const,
         dims: 8,
+        profile: FACT_TEST_PROFILE,
         embed: async () => {
           throw new Error('embed_admission_shed');
         },

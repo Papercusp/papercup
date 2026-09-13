@@ -234,7 +234,7 @@ describe('canonical memory vector backfill — the predicate (real PG)', () => {
     };
     const deps = {
       sql: db.sql,
-      resolveVecTable: async () => ({ mode: 'local' as const, schema: SCHEMA, table: VEC }),
+      resolveVecTable: async () => ({ mode: 'local' as const, profileId: 'local-bge-small-en-v1.5@v1' as const, schema: SCHEMA, table: VEC }),
       embed,
     };
 
@@ -258,7 +258,7 @@ describe('canonical memory vector backfill — the predicate (real PG)', () => {
   it('a failed embed leaves the row queued for the next tick (self-healing)', async () => {
     const deps = {
       sql: db.sql,
-      resolveVecTable: async () => ({ mode: 'local' as const, schema: SCHEMA, table: VEC }),
+      resolveVecTable: async () => ({ mode: 'local' as const, profileId: 'local-bge-small-en-v1.5@v1' as const, schema: SCHEMA, table: VEC }),
       embed: async () => false, // embedder down / quota-cooled
     };
     const r = await backfillCanonicalMemoryVectors(deps);

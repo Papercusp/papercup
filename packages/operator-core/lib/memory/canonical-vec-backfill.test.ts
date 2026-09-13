@@ -16,7 +16,7 @@ import {
   type CanonicalVecBackfillDeps,
 } from './canonical-vec-backfill';
 
-const ACTIVE = { mode: 'local' as const, schema: 'harness_shared', table: 'memory_vec_local' };
+const ACTIVE = { mode: 'local' as const, profileId: 'local-bge-small-en-v1.5@v1' as const, schema: 'harness_shared', table: 'memory_vec_local' };
 
 const rows = (...ids: string[]): CanonicalMemoryRow[] =>
   ids.map((id) => ({ id, data: `text for ${id}` }));
@@ -64,7 +64,7 @@ describe('backfillCanonicalMemoryVectors', () => {
     const selectRows = vi.fn(async () => []);
     await backfillCanonicalMemoryVectors(
       deps({
-        resolveVecTable: async () => ({ mode: 'harrier', schema: 'hs', table: 'memory_vec_harrier' }),
+        resolveVecTable: async () => ({ mode: 'harrier', profileId: 'harrier-oss-v1-0.6b-1024@v1', schema: 'hs', table: 'memory_vec_harrier' }),
         selectRows,
         limit: 7,
       }),
@@ -122,7 +122,7 @@ describe('backfillCanonicalMemoryVectors', () => {
   it('always names the resolved mode + table', async () => {
     const r = await backfillCanonicalMemoryVectors(
       deps({
-        resolveVecTable: async () => ({ mode: 'harrier', schema: 'hs', table: 'memory_vec_harrier' }),
+        resolveVecTable: async () => ({ mode: 'harrier', profileId: 'harrier-oss-v1-0.6b-1024@v1', schema: 'hs', table: 'memory_vec_harrier' }),
       }),
     );
     expect(r.mode).toBe('harrier');

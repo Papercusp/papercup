@@ -21,6 +21,9 @@ import { CanonicalVectorStore } from '../../../../libs/generic/memory/src/canoni
 import { HybridBackend } from '../../../../libs/generic/memory/src/hybrid-backend';
 import { LexicalLegBackend } from '../../../../libs/generic/memory/src/lexical-leg';
 import { Mem0Backend } from '../../../../libs/generic/memory/src/mem0-backend';
+import { EMBEDDER_DIM_SPECS } from '../../../../libs/generic/memory/src/embedder-dims';
+import { MEMORY_VECTOR_STORAGE_PROFILES } from '../../../../libs/generic/memory/src/vec-write';
+import type { EmbedderProfileSpec } from '../../../../libs/generic/memory/src/embedder-dims';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { purgeJournalForMemory } from './write-journal';
 
@@ -69,6 +72,8 @@ describe('memory removal parity (fully migrated real PG)', () => {
       collectionName: 'operator_memory_local',
       vecTable: 'memory_vec_local',
       embeddingModelDims: VECTOR_384.length,
+      embeddingProfile: EMBEDDER_DIM_SPECS.local,
+      storageProfile: MEMORY_VECTOR_STORAGE_PROFILES.local,
     });
 
     const client = {
@@ -187,6 +192,25 @@ describe('memory removal parity (fully migrated real PG)', () => {
         (SELECT count(*)::int FROM harness_shared.memory_anchors WHERE memory_id = ${id}::uuid) AS anchors`;
     return row;
   }
+
+  it('ranks only an exact-profile query and fails closed for an equal-width foreign profile', async () => {
+    await seedMemory(TARGET_ID, SCOPE_A, 'profile-bound semantic target');
+    const exact = await store.searchWithProfile(
+      VECTOR_384,
+      EMBEDDER_DIM_SPECS.local,
+      5,
+      { user_id: SCOPE_A },
+    );
+    expect(exact.map((row) => row.id)).toEqual([TARGET_ID]);
+
+    const foreign: EmbedderProfileSpec = {
+      ...EMBEDDER_DIM_SPECS.local,
+      profileId: 'equal-width-foreign-space@v1',
+    };
+    await expect(
+      store.searchWithProfile(VECTOR_384, foreign, 5, { user_id: SCOPE_A }),
+    ).resolves.toEqual([]);
+  });
 
   it('hard forget removes every recall surface and replay source without crossing scopes', async () => {
     const targetText = 'private cobalt needle';

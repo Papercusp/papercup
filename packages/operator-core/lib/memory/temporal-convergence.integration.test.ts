@@ -1,12 +1,29 @@
 /** Real-Postgres guards for temporal-lite's immutable-winner contract. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CanonicalVectorStore } from '../../../../libs/generic/memory/src/canonical-store';
+import { EMBEDDER_DIM_SPECS, type EmbedderProfileSpec } from '../../../../libs/generic/memory/src/embedder-dims';
+import { MEMORY_VECTOR_STORAGE_PROFILES, type MemoryVectorStorageProfile } from '../../../../libs/generic/memory/src/vec-write';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 
 const SCHEMA = 'harness_shared';
 const OLD_ID = '11111111-1111-4111-8111-111111111111';
 const WINNER_A = '22222222-2222-4222-8222-222222222222';
 const WINNER_B = '33333333-3333-4333-8333-333333333333';
+const TEST_PROFILE: EmbedderProfileSpec = {
+  ...EMBEDDER_DIM_SPECS.local,
+  profileId: 'temporal-convergence-test@v1',
+  model: 'temporal-convergence-test',
+  modelRevision: 'test-revision',
+  nativeDims: 3,
+  mrl: 'none',
+  trainedDims: [3],
+  targetDims: 3,
+};
+const TEST_STORAGE: MemoryVectorStorageProfile = {
+  ...MEMORY_VECTOR_STORAGE_PROFILES.local,
+  acceptedProfileIds: [TEST_PROFILE.profileId],
+  dimensions: 3,
+};
 
 describe('temporal supersession convergence (real PG)', () => {
   let db: FreshPgDb;
@@ -30,6 +47,7 @@ describe('temporal supersession convergence (real PG)', () => {
       host: 'unused', port: 5432, user: 'unused', password: 'unused', dbname: 'unused',
       schema: SCHEMA, collectionName: 'operator_memory_local',
       vecTable: 'memory_vec_local', embeddingModelDims: 3,
+      embeddingProfile: TEST_PROFILE, storageProfile: TEST_STORAGE,
     });
     (store as unknown as { pool: unknown }).pool = {
       query: async (text: string, params: unknown[] = []) => {

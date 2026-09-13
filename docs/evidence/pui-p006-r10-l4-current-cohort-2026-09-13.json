@@ -1,0 +1,134 @@
+{
+  "schemaVersion": "papercusp-evidence-v1",
+  "title": "P-006 / AUTO-BAR-R-10-P-006 — current-cohort targeted L4 tool-turn-correlation mutation proof",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItems": [
+    "WI-10000428",
+    "EI-23109266856170951"
+  ],
+  "recordedAt": "2026-09-13T02:15:00Z",
+  "spec": {
+    "specId": "AUTO-BAR-R-10-P-006",
+    "specRevision": 6,
+    "behaviorClass": "happy-path",
+    "behavior": "The installed first-message journey succeeds independently on Claude, Codex and OMP.",
+    "falsifier": "Any supported engine needs its native interface or fails the composer-to-reply journey.",
+    "whyL4": "The plan-class feature-ship adequacy evaluation requires a falsifiable current-cohort proof beyond the passing end-to-end journey. This targeted mutation demonstrates that R-10's same-turn tool-result oracle becomes red when the asserted property is broken."
+  },
+  "currentCohort": {
+    "measurement": {
+      "schemaVersion": 1,
+      "kind": "repo-files",
+      "sourcePaths": [
+        "packages/operator-core/lib/su-session-claude-adapter.ts",
+        "packages/operator-core/lib/su-session-claude-engine.ts",
+        "packages/operator-core/lib/su-session-codex-adapter.ts",
+        "packages/operator-core/lib/su-session-host.ts",
+        "packages/operator-core/lib/su-session-omp-adapter.ts",
+        "packages/operator-core/lib/su-session-resume.ts",
+        "packages/operator-core/lib/su-session-rpc-engine.ts"
+      ],
+      "testPaths": [
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+        "packages/operator-core/lib/pui-e2e/operator-process.mts"
+      ]
+    },
+    "note": "The evidence binding server measures these exact file sets. No caller-computed fingerprint is used."
+  },
+  "mutation": {
+    "semanticChange": "Tool completion loses correlation with the owner turn that started the real file-tool call.",
+    "sites": [
+      {
+        "file": "packages/operator-core/lib/su-session-rpc-engine.ts",
+        "lineAtMeasurement": 338,
+        "before": "else emit({ type: 'tool', phase: 'completed', turnId: ownerTurnId, callId, name, output: frame.result as SuSessionJsonValue, isError: frame.isError === true });",
+        "after": "else emit({ type: 'tool', phase: 'completed', turnId: 'mutant-turn', callId, name, output: frame.result as SuSessionJsonValue, isError: frame.isError === true });"
+      },
+      {
+        "file": "packages/operator-core/lib/su-session-omp-adapter.ts",
+        "lineAtMeasurement": 518,
+        "before": "this.host.emit({ type: 'tool', phase: 'completed', turnId, callId, name, output: asJsonValue(entry.text ?? ''), isError } as SuSessionEventInput<'omp'>);",
+        "after": "this.host.emit({ type: 'tool', phase: 'completed', turnId: 'mutant-turn', callId, name, output: asJsonValue(entry.text ?? ''), isError } as SuSessionEventInput<'omp'>);"
+      }
+    ],
+    "whyTwoSites": "A real OMP tool completion can reach the host through the live RPC-frame path or transcript-snapshot replay. Mutating only one site can be masked by the other, so the probe applies one semantic break at both live completion emitters.",
+    "deadCodeTrapAvoided": "The visually similar Codex-only RPC branch is not live on the OMP route. The probe mutates the OMP fall-through emitter at the branch established from the current call graph, rather than a dead site that could create a false survived verdict.",
+    "targetOracle": "expect(readEnd, 'the real tool result must return in the same turn').toMatchObject({ turnId: readStart?.turnId })"
+  },
+  "probe": {
+    "tool": "scripts/mutation-probe.sh",
+    "mode": "tier-3 in-tree with a two-path sweep-exclusion file lock",
+    "primaryFile": "packages/operator-core/lib/su-session-rpc-engine.ts",
+    "secondaryGuard": ".papercusp/scratch/p006/r10-multisite-guard.sh",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PUI_REAL_ENGINE=1 PUI_BIN=$HOME/.cargo/bin/pui PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$REPO/.papercusp/scratch/p006/account-catalog.json\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'greeting, real file tool, interrupt and continued reply stay in one first-party session'",
+    "replayCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PUI_REAL_ENGINE=1 PUI_BIN=$HOME/.cargo/bin/pui PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$REPO/docs/evidence/pui-p006-account-catalog.json\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'greeting, real file tool, interrupt and continued reply stay in one first-party session'",
+    "accountCatalog": {
+      "measuredPath": ".papercusp/scratch/p006/account-catalog.json",
+      "measuredSha256": "c40346a0b0e3190da8f228977db27173f52b88ad645e12039ee2fffe2ad99b75",
+      "durableReplayPath": "docs/evidence/pui-p006-account-catalog.json",
+      "durableReplaySha256": "efc4c2457b9b225f5093af5a79370e6db46efbb6e75e53145c4066a8890365bf",
+      "equivalence": "The two catalogs contain the identical sorted set of ten {id, provider} records, which is the metadata consumed by this fixture; the durable copy carries additional explanatory metadata."
+    },
+    "modelPin": "Intentionally omitted for OMP account=auto under plan Decision D-013; this backend refuses an incompatible model pin instead of silently substituting it.",
+    "launchGuards": [
+      "The wrapper required the named selector to request, execute and match exactly one collected test.",
+      "The secondary guard required exactly one current source occurrence before applying its mutation.",
+      "A caught verdict required the mutant to fail at the exact same-turn correlation assertion, not merely exit nonzero."
+    ]
+  },
+  "result": {
+    "verdict": "caught",
+    "expected": "caught",
+    "baseline": {
+      "exit": 0,
+      "testFileResult": "requested=1 executed=1 matched=1 status=passed head=9270490e3c uncommittedPaths=1/1 provenance=stamped startedAt=2026-09-13T01:55:15.137Z skippedTests=25"
+    },
+    "mutant": {
+      "exit": 1,
+      "testFileResult": "requested=1 executed=1 matched=1 status=failed head=9270490e3c uncommittedPaths=1/1 provenance=stamped startedAt=2026-09-13T01:57:49.789Z skippedTests=25",
+      "duration": "95.98s",
+      "decisiveFailure": "AssertionError: the real tool result must return in the same turn; expected the owner turn id and received mutant-turn.",
+      "notCleanupMasked": true
+    },
+    "probeLine": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1 mutant_parse=unchecked",
+    "meaning": "The current installed-PUI R-10 journey is falsifiable for same-turn tool-result correlation: correct current source passes, while the same test fails on its direct semantic oracle when both live OMP completion routes lose their turn id."
+  },
+  "restoreProof": {
+    "method": "Both tracked sources were compared byte-for-byte by SHA-256 with values captured before the mutation, and the wrapper independently reported tree integrity for the primary source.",
+    "files": [
+      {
+        "path": "packages/operator-core/lib/su-session-rpc-engine.ts",
+        "expectedSha256": "d90584584ad02ee2784d91de646a653be847fc858cd4fbdb2eeec750ce60a3f8",
+        "actualSha256": "d90584584ad02ee2784d91de646a653be847fc858cd4fbdb2eeec750ce60a3f8",
+        "mutantOccurrenceCount": 0,
+        "match": true
+      },
+      {
+        "path": "packages/operator-core/lib/su-session-omp-adapter.ts",
+        "expectedSha256": "d8a496dccb9d0135d91aa52497ca2d3510b61a36415d865bf76d3e6041bbb756",
+        "actualSha256": "d8a496dccb9d0135d91aa52497ca2d3510b61a36415d865bf76d3e6041bbb756",
+        "mutantSha256": "642fbb05ac17a3ef899761f5a97a6d5beb7ba04f38b946c7a8e948361db2dd33",
+        "mutantOccurrenceCount": 0,
+        "match": true
+      }
+    ],
+    "allProbeLocksReleased": true
+  },
+  "engineScope": {
+    "measured": "OMP account=auto",
+    "caveat": "This mutation proves sensitivity of the shared installed-PUI R-10 journey on OMP. It does not fill the separately required per-engine Claude and Codex coverage, so P-006 must remain open after an adequacy pass."
+  },
+  "rawLogs": {
+    "mutation": ".papercusp/scratch/p006/r10-current-mutation.log",
+    "mutationSha256": "77566b59e15f7fe710bf0abafb5a9247214e2c1c1f477757debc84968184f620",
+    "durability": "The log and secondary guard are gitignored transient scratch. Every load-bearing result line, source delta, assertion, file set, catalog equivalence, and restore hash is copied into this tracked artifact."
+  },
+  "binding": {
+    "status": "pending one unmutated post-probe ledger run and server-measured evidence bindings",
+    "mutation": null,
+    "cleanTest": null,
+    "serverMeasuredFingerprints": null,
+    "adequacy": null
+  }
+}
