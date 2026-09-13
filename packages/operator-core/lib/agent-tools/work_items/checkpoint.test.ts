@@ -458,7 +458,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(21709);
+    expect(JSON.stringify(json)).toHaveLength(23151);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -486,6 +486,37 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(() => parse({ id: 'WI-7', checkpoint: { did: 'progress', notAField: 'drop me' } })).toThrow();
   });
 
+  it('EI-23125773053698900: accepts loop carry aliases at the single-shorthand root', () => {
+    const reporterShape = parse({
+      id: 'EI-23116653414837836',
+      workItem: 'ei-23116653414837836',
+      checkpoint: 'canonical checkpoint wins',
+      left: 'focused tests and terminal disposition',
+      keyInsight: 'shared carry vocabulary',
+      nextAction: 'run the focused suite',
+    }) as { checkpoint: string; id: string; workItem: string };
+    expect(reporterShape).toMatchObject({
+      id: 'EI-23116653414837836',
+      workItem: 'ei-23116653414837836',
+      checkpoint: 'canonical checkpoint wins',
+    });
+
+    const aliasesOnly = parse({
+      workItem: 'WI-7',
+      did: 'implemented compatibility',
+      left: 'verify it',
+      keyInsight: 'root aliases now share the loop contract',
+      nextAction: 'run Vitest',
+    }) as { workItem: string };
+    expect(aliasesOnly.workItem).toBe('WI-7');
+    expect(() => parse({ id: 'WI-7', workItem: 'WI-8', checkpoint: 'wrong target' })).toThrow(
+      /identify different work-items/,
+    );
+    expect(() => parse({ items: [{ id: 'WI-7', checkpoint: 'batch' }], nextAction: 'ignored before fix' })).toThrow(
+      /single shorthand/,
+    );
+  });
+
   it('keeps terminal-only assumptions off the checkpoint contract', () => {
     expect(() => parse({ id: 'WI-7', checkpoint: 'progress', assumptions: 'none' })).toThrow();
   });
@@ -503,6 +534,28 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
       { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
       '## Did\nstored structured progress\n\n## Next action\nverify the focused test',
+    );
+  });
+
+  it('EI-23125773053698900: renders root carry aliases and resolves workItem as the single id', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);
+
+    const r = await one({
+      workItem: 'WI-7',
+      did: 'stored root-shaped progress',
+      left: 'verify the focused test',
+      keyInsight: 'loop payloads can cross the work-item boundary',
+      nextAction: 'run Vitest',
+    } as never);
+
+    expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: false, verified: true });
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+      { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
+      '## Did\nstored root-shaped progress\n\n' +
+        '## Left\nverify the focused test\n\n' +
+        '## Key insight\nloop payloads can cross the work-item boundary\n\n' +
+        '## Next action\nrun Vitest',
     );
   });
 

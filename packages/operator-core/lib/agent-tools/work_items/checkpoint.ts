@@ -634,6 +634,45 @@ function checkpointBodySpec(): z.ZodType<string | null | undefined> {
 const checkpointBodySchema = checkpointBodySpec().meta({ id: 'work-items-checkpoint-body-v1' });
 
 /**
+ * EI-23125773053698900: `loop:checkpoint` and `work_items:checkpoint` deliberately
+ * share the structured carry vocabulary, but only the loop tool accepted that
+ * vocabulary at the top level. A caller reusing its already-valid loop payload
+ * therefore failed before the work-item handler ran, even when it also supplied a
+ * canonical `checkpoint` string. Keep these as compatibility inputs for the SINGLE
+ * shorthand: `checkpoint` wins, then `note`, then the structured fields. `workItem`
+ * aliases `id` and a disagreement is rejected rather than redirecting the write.
+ */
+const rootCarryAliasField = z.string().max(CHECKPOINT_CAP).nullish();
+
+function checkpointFromRootAliases(args: {
+  checkpoint?: string | null;
+  note?: string | null;
+  did?: string | null;
+  left?: string | null;
+  insight?: string | null;
+  next?: string | null;
+  keyInsight?: string | null;
+  nextAction?: string | null;
+  goal?: string | null;
+}): string | null | undefined {
+  if (args.checkpoint !== undefined) return args.checkpoint;
+  if (args.note !== undefined) return args.note;
+  if (
+    [args.did, args.left, args.insight, args.next, args.keyInsight, args.nextAction, args.goal].every(
+      (value) => value === undefined || value === null,
+    )
+  ) {
+    return undefined;
+  }
+  return renderCarryNote({
+    did: args.did ?? undefined,
+    left: args.left ?? undefined,
+    insight: args.insight ?? args.keyInsight ?? undefined,
+    next: args.next ?? args.nextAction ?? args.goal ?? undefined,
+  });
+}
+
+/**
  * EI-23074991388482969: some transports materialize an omitted optional string as
  * an empty string. `contentHash` is ignored for ordinary writes and is already
  * checked as missing by the attestation branch, so a blank value must follow the
@@ -1102,6 +1141,24 @@ export default defineTool({
       checkpoint: checkpointBodySchema.describe(
         'single shorthand: compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks`, `dependsOn`, `learned`, or `learnedLevel` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
       ),
+      note: z
+        .string()
+        .max(CHECKPOINT_CAP)
+        .nullish()
+        .describe('loop:checkpoint compatibility alias for the single shorthand checkpoint; explicit checkpoint wins.'),
+      did: rootCarryAliasField.describe('loop:checkpoint compatibility field for the single shorthand checkpoint.'),
+      left: rootCarryAliasField.describe('loop:checkpoint compatibility field for the single shorthand checkpoint.'),
+      insight: rootCarryAliasField.describe('loop:checkpoint compatibility field for the single shorthand checkpoint.'),
+      next: rootCarryAliasField.describe('loop:checkpoint compatibility field for the single shorthand checkpoint.'),
+      keyInsight: rootCarryAliasField.describe('compatibility alias for insight; explicit insight wins.'),
+      nextAction: rootCarryAliasField.describe('compatibility alias for next; explicit next wins.'),
+      goal: rootCarryAliasField.describe('compatibility alias for next; explicit next and nextAction win.'),
+      workItem: z
+        .string()
+        .min(1)
+        .max(120)
+        .optional()
+        .describe('loop:checkpoint compatibility alias for id; when both are set they must identify the same item.'),
       clear: looseBoolean().describe(
         'single shorthand default for `clear`; explicitly clear the checkpoint body (equivalent to checkpoint:null).',
       ),
@@ -1155,9 +1212,24 @@ export default defineTool({
         'single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.',
       ),
     })
-    .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
-      message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',
-    }),
+    .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id) || Boolean(a.workItem), {
+      message: 'pass { id, checkpoint? } (workItem aliases id) for one, or items:[{ id, checkpoint? }] for many',
+    })
+    .refine((a) => !a.id || !a.workItem || a.id.trim().toUpperCase() === a.workItem.trim().toUpperCase(), {
+      message: 'id and workItem identify different work-items; pass one identity or make them match',
+      path: ['workItem'],
+    })
+    .refine(
+      (a) =>
+        !a.items?.length ||
+        [a.note, a.did, a.left, a.insight, a.next, a.keyInsight, a.nextAction, a.goal, a.workItem].every(
+          (value) => value === undefined,
+        ),
+      {
+        message: 'loop carry aliases apply only to the single shorthand; put checkpoint on each items[] entry',
+        path: ['items'],
+      },
+    ),
   result: z
     .object({
       ok: z.boolean().optional(),
@@ -1168,12 +1240,13 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null; spawnId?: string | null };
+    const inlineCheckpoint = checkpointFromRootAliases(args);
     const items = args.items?.length
       ? args.items
       : [
           {
-            id: args.id as string,
-            checkpoint: args.checkpoint,
+            id: (args.id ?? args.workItem) as string,
+            checkpoint: inlineCheckpoint,
             clear: args.clear,
             confirmClear: args.confirmClear,
             harness: args.harness,
