@@ -39,6 +39,7 @@ export async function getFeedbackProd(
         getSql: () => getOrgPg().sql,
         embed,
         embeddingProfile,
+        embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
         getLiveness: async (ownerIds) => {
           const [verdicts, pausedOwners] = await Promise.all([
             resolveSessionStates(ownerIds.map((ownerId) => ({ ownerId })), {

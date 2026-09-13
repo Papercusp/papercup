@@ -270,6 +270,9 @@ export interface RouteResult {
   /** Exact profile that produced queryVec; null iff the semantic instrument
    * was unavailable or its identity could not be established. */
   queryProfile: ProseProfileSelection | null;
+  /** Human-readable mode projection for queryVec. Exact comparability comes
+   * from queryProfile; this remains useful for operators and legacy readers. */
+  queryMode: string | null;
 }
 
 export interface ConsultRouteParams {
@@ -299,6 +302,7 @@ export interface ConsultRouteDeps {
   /** null = no embedder available this host right now (honest degrade). */
   embed: ConsultEmbedder | null;
   embeddingProfile: ProseProfileSelection | null;
+  embeddingMode: string | null;
   /** Presence oracle: ownerId → sessionState. Optional; default 'unknown'. */
   /** `null` for an owner the liveness oracle could not measure
    *  (EI-18771777750306094 — the oracle reports an unknown IN BAND rather than
@@ -471,6 +475,7 @@ export async function routeConsult(
       snapshot: { ...base, candidates: snapshotCandidates, degraded: 'embed-unavailable', fallback: 'lexical' },
       queryVec: null,
       queryProfile: null,
+      queryMode: null,
     };
   }
 
@@ -515,6 +520,7 @@ export async function routeConsult(
       snapshot: { ...base, candidates: [] },
       queryVec: vec,
       queryProfile: deps.embeddingProfile,
+      queryMode: deps.embeddingMode,
     };
   }
 
@@ -628,5 +634,6 @@ export async function routeConsult(
     snapshot: { ...base, candidates: snapshotCandidates },
     queryVec: vec,
     queryProfile: deps.embeddingProfile,
+    queryMode: deps.embeddingMode,
   };
 }

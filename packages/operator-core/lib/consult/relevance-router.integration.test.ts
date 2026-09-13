@@ -52,6 +52,7 @@ const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): 
   embeddingProfile: embedTheta === null
     ? null
     : resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+  embeddingMode: embedTheta === null ? null : 'gemma',
   now: () => NOW,
   ...over,
 });
