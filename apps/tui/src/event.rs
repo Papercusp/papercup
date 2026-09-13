@@ -104,6 +104,20 @@ pub enum Event {
         session_key: String,
         result: Result<Vec<SessionTranscriptTurn>, String>,
     },
+    /// Completion of a Sessions rename/archive write. `session_key` prevents a
+    /// late result from clearing the busy state of a newer selection.
+    SessionBrowserMutation {
+        session_key: String,
+        result: Result<String, String>,
+    },
+    /// A linked continuation row was created. The reducer verifies the returned
+    /// lineage before rebinding the Agent Chat pane and opening its SU runtime.
+    SessionBrowserContinued {
+        session_key: String,
+        source_chat_id: String,
+        harness: String,
+        result: Result<crate::agent_chats::AgentChat, String>,
+    },
     /// Fresh inbox (attention) items from the backend poller.
     Inbox(Vec<AttentionItem>),
     /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).

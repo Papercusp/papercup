@@ -1590,6 +1590,47 @@ async fn run<B: Backend>(
                     tokio::spawn(fetch_session_transcript(session_key, reference, tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::RenameAgentChat {
+                    session_key,
+                    harness,
+                    chat_id,
+                    title,
+                } => {
+                    tokio::spawn(rename_browser_agent_chat(
+                        session_key,
+                        harness,
+                        chat_id,
+                        title,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::ArchiveAgentChat {
+                    session_key,
+                    harness,
+                    chat_id,
+                } => {
+                    tokio::spawn(archive_browser_agent_chat(
+                        session_key,
+                        harness,
+                        chat_id,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::ContinueAgentChat {
+                    session_key,
+                    harness,
+                    source_chat_id,
+                } => {
+                    tokio::spawn(continue_browser_agent_chat(
+                        session_key,
+                        harness,
+                        source_chat_id,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
                 Action::FetchPlanItemStates { harness, plan } => {
                     // pui-plans-status-board P-008: the plans board's selection
                     // moved — fetch the selected plan's per-item states for the
@@ -1921,6 +1962,29 @@ async fn run<B: Backend>(
                         carry,
                         launch,
                         (pending, existing_chat),
+                        session_tx,
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::OpenContinuedSuSession {
+                    harness,
+                    chat_id,
+                    role,
+                    backend,
+                    launch,
+                } => {
+                    let session_tx = SuSessionEventSender {
+                        tx: tx.clone(),
+                        harness: harness.clone(),
+                        load_token: app.next_agent_chat_load_token(),
+                    };
+                    tokio::spawn(open_su_session_task(
+                        harness,
+                        role,
+                        backend,
+                        "warm".into(),
+                        launch,
+                        (None, Some(chat_id)),
                         session_tx,
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
@@ -4225,6 +4289,68 @@ async fn fetch_session_browser(query: String, tx: UnboundedSender<Event>) {
         Err(error) => Err(error.to_string()),
     };
     let _ = tx.send(Event::SessionBrowser { query, result });
+}
+
+async fn rename_browser_agent_chat(
+    session_key: String,
+    harness: String,
+    chat_id: String,
+    title: String,
+    tx: UnboundedSender<Event>,
+) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .rename_agent_chat(&harness, &chat_id, &title)
+            .await
+            .map(|title| format!("Renamed session to {title}"))
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::SessionBrowserMutation {
+        session_key,
+        result,
+    });
+}
+
+async fn archive_browser_agent_chat(
+    session_key: String,
+    harness: String,
+    chat_id: String,
+    tx: UnboundedSender<Event>,
+) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .archive_agent_chat(&harness, &chat_id)
+            .await
+            .map(|()| "Archived session (history remains recoverable)".to_string())
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::SessionBrowserMutation {
+        session_key,
+        result,
+    });
+}
+
+async fn continue_browser_agent_chat(
+    session_key: String,
+    harness: String,
+    source_chat_id: String,
+    tx: UnboundedSender<Event>,
+) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .continue_agent_chat(&harness, &source_chat_id)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::SessionBrowserContinued {
+        session_key,
+        source_chat_id,
+        harness,
+        result,
+    });
 }
 
 async fn resolve_session_transcript(

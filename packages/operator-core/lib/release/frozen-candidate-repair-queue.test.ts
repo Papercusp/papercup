@@ -63,6 +63,7 @@ describe('frozen-candidate repair queue', () => {
         candidate: C,
         repairHead: C,
         builtCommit: C1,
+        builtTree: C2,
         files: ['lib/a.test.ts'],
         actor: 'su-test',
         startedAtMs: T0 + 1,

@@ -471,6 +471,16 @@ pub struct RosterEntry {
     /// (or omit both), never a conflicting `id`.
     #[serde(default, alias = "id")]
     pub adv_session_id: Option<i64>,
+    /// Stable agent-chat identity when this roster/search row is backed by the
+    /// operator-owned chat store.  Session controls key off this value rather
+    /// than trying to reverse-engineer an id from a transcript reference.
+    #[serde(default)]
+    pub agent_chat_id: Option<String>,
+    /// Exact harness carried by the indexed agent-chat provenance.  A missing
+    /// value disables chat mutations; the ambient selected pot is never used as
+    /// a guess because that could rename/archive a same-id fixture elsewhere.
+    #[serde(default)]
+    pub session_harness: Option<String>,
     /// Whether a joinable adv_sessions launch row exists (resume/focus eligible).
     #[serde(default)]
     pub has_launch_record: bool,

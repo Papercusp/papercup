@@ -493,8 +493,16 @@ fn merge_session_switcher_rows(
             .or_else(|| hit.get("ts"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        let session_harness = provenance
+            .get("harness_slug")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let agent_chat_id = (source == "agent_chat").then(|| session_id.to_string());
         let already_present = rows.iter().position(|row| {
-            row.native_session
+            row.agent_chat_id.as_deref() == agent_chat_id.as_deref()
+                || row.native_session
                 .as_ref()
                 .and_then(|native| {
                     models::ConversationContextProjectionTarget::from_native_session(native, None)
@@ -515,6 +523,10 @@ fn merge_session_switcher_rows(
             }
             if transcript_at.is_some() {
                 row.transcript_at = transcript_at;
+            }
+            if agent_chat_id.is_some() {
+                row.agent_chat_id = agent_chat_id;
+                row.session_harness = session_harness;
             }
             continue;
         }
@@ -561,6 +573,8 @@ fn merge_session_switcher_rows(
             transcript_availability: SessionTranscriptAvailability::Available,
             transcript_excerpt,
             transcript_at,
+            agent_chat_id,
+            session_harness,
             ..RosterEntry::default()
         });
     }
