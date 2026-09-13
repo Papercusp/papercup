@@ -1300,15 +1300,18 @@ export default defineTool({
         // stale/non-terminal task-ledger row. The marker is appended from the
         // child close handler, so once it is present the job has a recoverable
         // terminal verdict even though the in-memory BashJob and/or its ledger
-        // update may have been lost. Return the normal BashOutput success shape
-        // instead of making callers poll a process that already finished.
-        if (strandedLog.terminal) {
+        // update may have been lost. A terminal ledger row is stronger still:
+        // it is the durable task-manager verdict, so it must win when a later
+        // marker conflicts with the recorded exit (for example, a successful
+        // extractor followed by a failed operator-normalized marker).
+        if (strandedLog.terminal && ledgerVerdict.kind !== 'confirmed_dead') {
+          const markerOk = strandedLog.terminal.status === 'completed';
           return {
             content: [
               {
                 type: 'text' as const,
                 text: JSON.stringify({
-                  ok: true,
+                  ok: markerOk,
                   ...jobIdentity,
                   status: strandedLog.terminal.status,
                   exit_code: strandedLog.terminal.exitCode,
@@ -1323,6 +1326,7 @@ export default defineTool({
                 }),
               },
             ],
+            ...(markerOk ? {} : { isError: true }),
           };
         }
 

@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TaskRow } from '../../task-manager/types';
 import type { BashJob } from './bash-jobs';
+import { formatJobLogEndMarker } from './bash-jobs';
 
 const store = vi.hoisted(() => ({
   getTask: vi.fn(),
@@ -468,6 +469,80 @@ describe('capability:bash_output — durable task attachment', () => {
       });
       expect(payload).not.toHaveProperty('reason', 'task_not_attachable');
       expect(jobs.getJob).not.toHaveBeenCalled();
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the terminal ledger verdict over a conflicting JOB END marker', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-terminal-marker-conflict-'));
+    const logPath = join(stateDir, 'terminal.log');
+    try {
+      writeFileSync(
+        logPath,
+        [
+          'extractor build complete',
+          formatJobLogEndMarker('completed', 0, Date.UTC(2026, 8, 13, 15, 0, 0)),
+          formatJobLogEndMarker('failed', 1, Date.UTC(2026, 8, 13, 15, 0, 1)),
+        ].join('\n'),
+      );
+      store.getTask.mockResolvedValue(
+        taskRow({
+          state: 'exited',
+          exitCode: 0,
+          logPath,
+        }),
+      );
+      jobs.getJob.mockReturnValue(null);
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({
+        ok: true,
+        task_id: 'task-carry-1',
+        status: 'completed',
+        exit_code: 0,
+        running: false,
+        recovered_from_ledger: true,
+      });
+      expect(payload).not.toHaveProperty('recovered_from_log_marker');
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a failed JOB END marker to resolve a stale nonterminal ledger row as an error', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-stale-marker-failure-'));
+    const logPath = join(stateDir, 'stale.log');
+    try {
+      writeFileSync(logPath, `partial output${formatJobLogEndMarker('failed', 1, Date.UTC(2026, 8, 13, 15, 1, 0))}`);
+      store.getTask.mockResolvedValue(
+        taskRow({
+          state: 'running',
+          pid: null,
+          processIdentity: null,
+          cgroupPath: null,
+          logPath,
+        }),
+      );
+      jobs.getJob.mockReturnValue(null);
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBe(true);
+      expect(payload).toMatchObject({
+        ok: false,
+        task_id: 'task-carry-1',
+        status: 'failed',
+        exit_code: 1,
+        running: false,
+        recovered_from_log_marker: true,
+      });
       expect(jobs.startBackground).not.toHaveBeenCalled();
     } finally {
       rmSync(stateDir, { recursive: true, force: true });
