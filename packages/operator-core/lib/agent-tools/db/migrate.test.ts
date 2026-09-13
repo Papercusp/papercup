@@ -385,6 +385,18 @@ describe('db:migrate — withheld (PAPERCUSP_ALLOW_DB_MIGRATE unset)', () => {
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
 
+  it('EI-23131029724498087: the withheld fallback preserves statement-breakpoint transactions too', async () => {
+    h.readFileSync.mockReturnValue(['SELECT 1;', '--> statement-breakpoint', 'SELECT 2;'].join('\n'));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    const command = out.fallback.command as string;
+    expect(command).not.toContain('\\i ');
+    expect(command.match(/^BEGIN;\nSET LOCAL statement_timeout = 0;$/gm)).toHaveLength(2);
+    expect(command.match(/^COMMIT;$/gm)).toHaveLength(2);
+    expect(command.match(/INSERT INTO harness_shared\.schema_migrations/g)).toHaveLength(1);
+  });
+
   it('EI-13299: a routine withheld confirm (no escalate) never raises a coord:escalate', async () => {
     const out = parse(
       await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
@@ -475,6 +487,39 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     // The su_meta coordination-domain idempotency ledger is STILL recorded —
     // a separate, additive concern from the schema_migrations row above.
     expect(h.recordResourceAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-23131029724498087: preserves statement-breakpoint transactions and records only the final chunk', async () => {
+    h.readFileSync.mockReturnValue(
+      [
+        'ALTER TABLE harness_shared.first_hot ADD COLUMN IF NOT EXISTS profile text;',
+        '--> statement-breakpoint',
+        'ALTER TABLE harness_shared.second_hot ADD COLUMN IF NOT EXISTS profile text;',
+      ].join('\n'),
+    );
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    expect(out).toMatchObject({ ok: true, applied: true, schema_migrations_recorded: true });
+
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).not.toContain('\\i ');
+    expect(script.match(/^BEGIN;\nSET LOCAL statement_timeout = 0;$/gm)).toHaveLength(2);
+    expect(script.match(/^COMMIT;$/gm)).toHaveLength(2);
+    expect(script.match(/DO \$papercusp_migration_reservation_guard\$/g)).toHaveLength(2);
+    expect(script.match(/INSERT INTO harness_shared\.schema_migrations/g)).toHaveLength(1);
+
+    const first = script.indexOf('ALTER TABLE harness_shared.first_hot');
+    const firstCommit = script.indexOf('COMMIT;', first);
+    const second = script.indexOf('ALTER TABLE harness_shared.second_hot');
+    const ledger = script.indexOf('INSERT INTO harness_shared.schema_migrations');
+    const secondCommit = script.indexOf('COMMIT;', second);
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(firstCommit).toBeGreaterThan(first);
+    expect(second).toBeGreaterThan(firstCommit);
+    expect(ledger).toBeGreaterThan(second);
+    expect(secondCommit).toBeGreaterThan(ledger);
   });
 
   it('EI-217072: places the completed pre-destructive snapshot admission guard before guarded DDL', async () => {

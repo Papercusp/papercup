@@ -42,6 +42,7 @@ import {
   preDestructiveSnapshotAdmissionGuardSql,
   requiresPreDestructiveSnapshotAdmission,
 } from '@papercusp/backup/snapshot-admission';
+import { migrationTransactionChunks } from '@papercusp/embedded-postgres-server/src/migration-runner.js';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 60;
@@ -182,6 +183,53 @@ export function migrationBackupLockGuardSql(): string {
     `END\n` +
     `$papercusp_backup_lock_guard$;\n`
   );
+}
+
+/**
+ * Build the psql program that applies one migration and records its raw-file
+ * hash. Ordinary migrations keep the historical one-transaction `\i` path.
+ *
+ * EI-23131029724498087: breakpoint migrations must preserve the exact
+ * per-chunk transaction contract used by the production boot runner. Reusing
+ * its exported splitter prevents the blessed manual path from collapsing a
+ * lock-bounded migration back into one cross-hot-table transaction. Earlier
+ * chunks commit independently; only the final chunk writes schema_migrations.
+ * Every chunk repeats the safety preamble because every chunk is a new
+ * transaction and SET LOCAL / advisory-xact guards expire at COMMIT.
+ */
+export function migrationPsqlScript(args: {
+  sqlText: string;
+  resolvedFile: string;
+  filenameLiteral: string;
+  sha256: string;
+  lockTimeoutSec: number;
+  guardPreamble: string;
+}): string {
+  const breakpoint = args.sqlText.includes('statement-breakpoint');
+  const bodies = breakpoint
+    ? migrationTransactionChunks(args.sqlText).map((chunk) => `${chunk};\n`)
+    : [`\\i ${args.resolvedFile}\n`];
+  if (bodies.length === 0) {
+    throw new Error(`migration ${args.resolvedFile} contains no executable statement-breakpoint chunks`);
+  }
+
+  return bodies
+    .map((body, index) => {
+      const ledgerWrite =
+        index === bodies.length - 1
+          ? `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${args.filenameLiteral}', '${args.sha256}');\n`
+          : '';
+      return (
+        `BEGIN;\n` +
+        `SET LOCAL statement_timeout = 0;\n` +
+        `SET LOCAL lock_timeout = '${args.lockTimeoutSec}s';\n` +
+        args.guardPreamble +
+        body +
+        ledgerWrite +
+        `COMMIT;\n`
+      );
+    })
+    .join('');
 }
 
 // EI-19320461261471579: these predicates + the backoff now live in the
@@ -671,7 +719,15 @@ export default defineTool({
             // opt-in, so a stripped-down copy is a silent, fleet-wide bypass
             // of a fail-closed safety rail rather than a local shortcut.
             const url = getHarnessAdminUrl();
-            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n${migrationGuardPreamble(DEFAULT_LOCK_TIMEOUT_SEC)}\\i ${resolvedFile}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(resolvedFile)}', '<sha256 of the file bytes, e.g. sha256sum ${resolvedFile}>');\nCOMMIT;\nSQL`;
+            const readyScript = migrationPsqlScript({
+              sqlText,
+              resolvedFile,
+              filenameLiteral: path.basename(resolvedFile).replace(/'/g, "''"),
+              sha256: `<sha256 of the file bytes, e.g. sha256sum ${resolvedFile}>`,
+              lockTimeoutSec: DEFAULT_LOCK_TIMEOUT_SEC,
+              guardPreamble: migrationGuardPreamble(DEFAULT_LOCK_TIMEOUT_SEC),
+            });
+            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\n${readyScript}SQL`;
             // EI-13299: escalate:true is the sanctioned fast path when the caller
             // (typically a cup with no shell/PG access at all) has no other way to
             // get an urgent, already-committed migration applied while the deploy
@@ -780,24 +836,19 @@ export default defineTool({
           const lockTimeoutSec = args.lock_timeout_sec ?? DEFAULT_LOCK_TIMEOUT_SEC;
           const migrationMaxAttempts =
             args.lock_timeout_sec != null ? CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS : LOCK_RETRY_MAX_ATTEMPTS;
-          const script =
-            `BEGIN;\n` +
-            `SET LOCAL statement_timeout = 0;\n` +
-            // EI-9417: fail FAST on lock contention (was unset — could hang
-            // indefinitely against a hot table) instead of waiting it out; the
-            // retry loop below is what actually rides out the contention.
-            // WI-6381: caller-widened when riding out a known long-lived
-            // non-operator holder instead (see migrationMaxAttempts above).
-            `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n` +
-            // WI-1373379: the shared guard preamble (constructed above, with
-            // the per-guard rationale) — byte-identical to the preamble
-            // embedded in the withheld-branch fallback command, so a migration
-            // applied by hand carries exactly the rails one applied by this
-            // tool does.
-            migrationGuardPreamble(lockTimeoutSec) +
-            `\\i ${resolvedFile}\n` +
-            `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
-            `COMMIT;\n`;
+          // EI-9417/WI-6381: fail fast on ordinary hot-table contention, or
+          // honour the caller-widened wait for a known long-lived holder.
+          // WI-1373379: migrationPsqlScript repeats the shared guard preamble
+          // in every breakpoint transaction, byte-identical to the withheld
+          // fallback path built by the same helper above.
+          const script = migrationPsqlScript({
+            sqlText,
+            resolvedFile,
+            filenameLiteral,
+            sha256,
+            lockTimeoutSec,
+            guardPreamble: migrationGuardPreamble(lockTimeoutSec),
+          });
           // perf:allow A4 — this tool IS the sanctioned dev-only migration
           // applier: psql's meta-command interpreter runs full .sql files
           // (dollar-quoted functions, DO blocks, COPY, \meta-commands) that
