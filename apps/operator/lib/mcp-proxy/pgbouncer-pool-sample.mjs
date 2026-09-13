@@ -69,10 +69,12 @@ export const MIN_SAMPLE_INTERVAL_MS = Number(process.env.PAPERCUSP_PGBOUNCER_SAM
 /**
  * Pure: the exact argv used to query the PgBouncer admin console. Exported so the invariant —
  * we ask SHOW POOLS + SHOW STATS, against the admin virtual `pgbouncer` database, as the
- * configured admin user — is unit-testable without spawning a real process.
+ * configured admin user — is unit-testable without spawning a real process. `-At` keeps the
+ * diagnostic output tuple-only: the header/aligned formatter was the shape observed hanging
+ * during the original incident, while the same query in this mode returned promptly.
  */
 export function buildShowPoolsArgs({ host = ADMIN_HOST, port = ADMIN_PORT, user = ADMIN_USER } = {}) {
-  return ['-h', host, '-p', String(port), '-U', user, '-d', 'pgbouncer', '-c', 'SHOW POOLS;', '-c', 'SHOW STATS;'];
+  return ['-h', host, '-p', String(port), '-U', user, '-d', 'pgbouncer', '-At', '-c', 'SHOW POOLS;', '-c', 'SHOW STATS;'];
 }
 
 let lastSampleAt = 0;
@@ -97,7 +99,10 @@ export async function samplePgBouncerPools(reason, { execFileImpl = execFile, no
       execFileImpl(
         'psql',
         args,
-        { env: { ...process.env, PGPASSWORD: ADMIN_PASSWORD }, timeout: SAMPLE_TIMEOUT_MS },
+        // SIGKILL cannot be caught by psql. The timeout must be a hard upper bound for this
+        // watchdog diagnostic, rather than a best-effort SIGTERM that could leave a child
+        // process (and this Promise) alive while the data-plane incident is unfolding.
+        { env: { ...process.env, PGPASSWORD: ADMIN_PASSWORD }, timeout: SAMPLE_TIMEOUT_MS, killSignal: 'SIGKILL' },
         (err, stdout, stderr) => {
           if (settled) return; // execFile guarantees one callback, but stay defensive under test doubles
           settled = true;

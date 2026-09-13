@@ -1,8 +1,9 @@
 /**
  * facts:assert — upsert a standing fact: a deterministic, scoped CONCLUSION
  * that will be folded VERBATIM into every relevant future brief / dossier /
- * orient until it expires or is retracted. Declared conventions with no
- * explicit TTL are unbounded; ordinary facts default to 7 days.
+ * orient until it expires or is retracted. Every ordinary write must declare
+ * a lifetime; conventions, typed safety slots, and confidence tiers have their
+ * documented lifetime rules, and there is no silent ordinary 7-day default.
  * (queen-memory-hybrid-2026-07-02 L1b; D-001: harness/work_item scopes optional).
  *
  * THE LINE vs the other memory surfaces (put facts HERE, not there):
@@ -576,7 +577,7 @@ export default defineTool({
       .enum(FACT_CONFIDENCE_LEVELS)
       .optional()
       .describe(
-        "Evidence strength (WI-6052): 'verified' (you confirmed it directly / it's replicated), 'provisional' (a single run / one data point — plausible but unreplicated), or 'suspected' (a hunch / a peer's hedge relayed second-hand). Omit = legacy/unset, renders unbadged, ordinary TTL. Setting 'provisional'/'suspected' shortens the default TTL so a hedge can't quietly calcify into settled fact. Never write a peer's provisional evidence at higher confidence than they stated it.",
+        "Evidence strength (WI-6052): 'verified' (you confirmed it directly / it's replicated), 'provisional' (a single run / one data point — plausible but unreplicated), or 'suspected' (a hunch / a peer's hedge relayed second-hand). Omit = legacy/unset and renders unbadged; an ordinary write still needs an explicit ttlSec or another documented lifetime rule. When no ttlSec is supplied, 'provisional'/'suspected' provides a short TTL so a hedge can't quietly calcify into settled fact. Never write a peer's provisional evidence at higher confidence than they stated it.",
       ),
     subjectVolatile: z
       .boolean()
@@ -1025,7 +1026,7 @@ export default defineTool({
     // key PREFIX rather than on this tool's `slot` argument. The line here used to read
     // `args.ttlSec ?? (args.slot === 'wall' ? WALL_DEFAULT_TTL_SEC : undefined)`, which
     // gave the long TTL to the wall slot ALONE — a dead-end: or guard-rail: fact fell to
-    // the ordinary 7d, lapsed out of folds, and became reaper-eligible. That is exactly
+    // the legacy ordinary 7d lifetime, lapsed out of folds, and became reaper-eligible. That is exactly
     // the defect WI-2141838 documented at this file:line. Keying on the PREFIX instead
     // also covers a caller who writes a `wall:` key without passing slot:'wall', which
     // this line could never see, and puts the rule where every writer passes through.

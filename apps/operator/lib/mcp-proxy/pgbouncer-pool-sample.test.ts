@@ -40,7 +40,7 @@ afterEach(() => {
 describe('pgbouncer pool sampler — buildShowPoolsArgs (EI-19384024494946006)', () => {
   it('queries SHOW POOLS + SHOW STATS against the admin virtual database, as the admin user', () => {
     const args = buildShowPoolsArgs({ host: '127.0.0.1', port: 6432, user: 'harness_admin' });
-    expect(args).toEqual(['-h', '127.0.0.1', '-p', '6432', '-U', 'harness_admin', '-d', 'pgbouncer', '-c', 'SHOW POOLS;', '-c', 'SHOW STATS;']);
+    expect(args).toEqual(['-h', '127.0.0.1', '-p', '6432', '-U', 'harness_admin', '-d', 'pgbouncer', '-At', '-c', 'SHOW POOLS;', '-c', 'SHOW STATS;']);
   });
 
   it('defaults to the box-standard admin console coordinates when no override is given', () => {
@@ -75,6 +75,7 @@ describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)
     expect(call.args).toEqual(buildShowPoolsArgs());
     expect(call.options.env).toMatchObject({ PGPASSWORD: expect.any(String) });
     expect(call.options.timeout).toBeGreaterThan(0);
+    expect(call.options.killSignal).toBe('SIGKILL');
 
     const logged = readFileSync(SAMPLE_LOG_FILE, 'utf8');
     expect(logged).toContain('reason=test-reason');

@@ -16,7 +16,7 @@ import {
   resolveHarnessScope,
   type HarnessScope,
 } from '../_harness-scope';
-import { coerceDocsGetSlugs, normalizeDocsGetRef } from './get-coerce';
+import { coerceDocsGetSlugs, normalizeDocsGetRef, normalizeEngineeringDocsGetRef } from './get-coerce';
 
 /**
  * Prefix every rendered body with the agent-readable `# title` + `URL:` header.
@@ -66,7 +66,9 @@ export async function resolveAdapter(
     }
     // D-005 / P-016: engineering branch is for papercusp-su (SU/engineer) only.
     if (opts.isSuperuser) {
-      const adapter = opts.slugs?.length ? engineeringAdapterForSlugs(opts.slugs) : engineeringBase;
+      const adapter = opts.slugs?.length
+        ? engineeringAdapterForSlugs(opts.slugs.map(normalizeEngineeringDocsGetRef))
+        : engineeringBase;
       return { adapter: wrapWithPreamble(adapter), surface: 'engineering' };
     }
     return {
@@ -223,16 +225,11 @@ export default defineTool({
     // Keep routing-only fields out of the source-agnostic engine call, and make
     // the direct handler boundary as strict as the zod-preprocessed dispatch
     // path. Tests and internal callers invoke handlers directly as well.
-    const getArgs = {
-      slugs: args.slugs.map(normalizeDocsGetRef),
-      ...(args.heading ? { heading: args.heading } : {}),
-      ...(args.offset ? { offset: args.offset } : {}),
-      ...(args.source ? { source: true as const } : {}),
-    };
+    const inputSlugs = args.slugs.map(normalizeDocsGetRef);
     const effectiveSlug = scope.kind === 'all' ? '*' : scope.slug;
     const resolved = await resolveAdapter(effectiveSlug, {
       isSuperuser: ctxAny.isSuperuser,
-      slugs: getArgs.slugs,
+      slugs: inputSlugs,
     });
     if (resolved.error) {
       return {
@@ -243,6 +240,13 @@ export default defineTool({
       };
     }
     ctxAny.metadata?.({ surface: resolved.surface, ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}) });
+
+    const getArgs = {
+      slugs: resolved.surface === 'engineering' ? inputSlugs.map(normalizeEngineeringDocsGetRef) : inputSlugs,
+      ...(args.heading ? { heading: args.heading } : {}),
+      ...(args.offset ? { offset: args.offset } : {}),
+      ...(args.source ? { source: true as const } : {}),
+    };
 
     const response = await getDocs(resolved.adapter, getArgs, {
       ...(ctxAny.signal && { signal: ctxAny.signal }),

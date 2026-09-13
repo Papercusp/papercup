@@ -17,7 +17,8 @@
  * Scoping (owner amendment D-001: harness/work_item OPTIONAL):
  *   workspace (ref NULL) | role | owner | harness | work_item.
  * Upsert identity: (workspace, scope, coalesce(ref,''), key). Soft-retract.
- * Hygiene: mandatory TTL (default 7d), per-scope cap, expiry sweep on the
+ * Hygiene: ordinary facts require an explicit lifetime (typed slots and confidence
+ * tiers may supply their documented defaults), per-scope cap, expiry sweep on the
  * routines tick. The cap evicts by the ranking at the ORDER BY around L1221 —
  * confidence, then the remaining fraction of declared TTL, with
  * `updated_at DESC` only as a tiebreak. An ordinary write that would evict
@@ -50,8 +51,8 @@ export type FactScope = (typeof FACT_SCOPES)[number];
  * unreplicated run at IDENTICAL authority to a verified, replicated
  * measurement — this is the dimension that was missing. NULL (unset) is the
  * legacy/default shape and renders exactly as before (no badge) —
- * fully backward compatible; only an explicit 'provisional'/'suspected'/
- * 'verified' changes fold rendering + TTL defaulting.
+ * fully backward compatible; an explicit confidence changes fold rendering,
+ * while only 'provisional'/'suspected' also supply a default TTL.
  *   verified    — you (or the platform) confirmed it directly / replicated it.
  *   provisional — a single run / one data point; plausible but unreplicated.
  *   suspected   — a hunch / a peer's hedge relayed second-hand; weakest tier.
@@ -243,8 +244,8 @@ export function parseFactRecheck(raw: unknown): FactRecheck | null {
 /** P-007: bounded verbatim quote inside a source-provenance stamp (fold-friendly —
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
 export const FACT_PROVENANCE_QUOTE_CHARS = 160;
-/** Ordinary facts expire after a week. A convention with no explicit ttlSec
- * uses PostgreSQL's `infinity` timestamp instead (see assertFact). */
+/** Legacy resolver fallback retained only for total-function compatibility; ordinary
+ * writes are rejected before resolution when they declare no lifetime. */
 export const FACT_DEFAULT_TTL_SEC = 7 * 24 * 3600;
 /** PostgreSQL's canonical no-expiry timestamptz representation. */
 export const FACT_PERMANENT_EXPIRY = 'infinity';
@@ -260,7 +261,7 @@ export function isPermanentFactExpiry(expiresAt: string): boolean {
  */
 export const FACT_VOLATILE_MAX_TTL_SEC = 15 * 60;
 /** EI-18681964809855890: a 'provisional' fact (one unreplicated run) defaults
- *  to a much shorter TTL than a plain/'verified' conclusion — "stale
+ *  to a much shorter TTL than an ordinary bounded conclusion — "stale
  *  certainty is worse than stale doubt" (the owner's framing). Overridable
  *  via an explicit `ttlSec` like every other default here. */
 export const FACT_PROVISIONAL_DEFAULT_TTL_SEC = 24 * 3600;
@@ -385,15 +386,17 @@ export const DEAD_END_KEY_PREFIX = 'dead-end:';
  * `facts:assert { slot:'wall' }` (facts/assert.ts normalizeWallSlot) keys the
  * fact under this prefix — machine-greppable (`key LIKE 'wall:%'`), same
  * convention as {@link DEAD_END_KEY_PREFIX} — and defaults its TTL to
- * {@link WALL_DEFAULT_TTL_SEC} instead of the ordinary 7-day default, so a
- * routine decay window can't silently clear it. {@link listLapsedWallFacts}
+ * {@link WALL_DEFAULT_TTL_SEC}; unlike an ordinary fact, this typed slot has
+ * an explicit store-owned lifetime so a routine decay window can't silently
+ * clear it. {@link listLapsedWallFacts}
  * is the read leg the wall-lapse watchdog sweeps so an eventual lapse is LOUD
  * (an escalation), never silent.
  */
 export const WALL_KEY_PREFIX = 'wall:';
 /** Default TTL applied to a `slot:'wall'` assert when the caller omits
  *  `ttlSec` — the schema's own max (90d, no schema change needed). Long
- *  enough that ordinary 7d decay never silently clears an unremediated risk;
+ *  enough that a shorter ordinary lifetime cannot silently clear an
+ *  unremediated risk;
  *  the wall-lapse watchdog is the loud backstop for when even 90d elapses
  *  without a re-assert or an explicit retract. */
 export const WALL_DEFAULT_TTL_SEC = 90 * 24 * 3600;
@@ -906,17 +909,15 @@ export interface AssertFactInput {
 /**
  * EI-18681964809855890: the TTL default a confidence tier implies when the
  * caller omits an explicit `ttlSec` — 'provisional'/'suspected' facts decay
- * far faster than the ordinary 7d default so a hedge can't quietly calcify
- * into settled fact via TTL refresh. Returns undefined for null/undefined/
- * 'verified' (falls through to the caller's own default — FACT_DEFAULT_TTL_SEC
- * in {@link assertFact}, or WALL_DEFAULT_TTL_SEC for a wall slot), preserving
- * exact pre-existing behavior for every caller that never sets confidence.
+ * far faster than an ordinary bounded fact so a hedge can't quietly calcify
+ * into settled fact. Returns undefined for null/undefined/'verified'; those
+ * callers must provide an explicit TTL or another applicable lifetime rule.
  * PURE — no IO, unit-tested without PG.
  */
 export function defaultTtlSecForConfidence(confidence: FactConfidence | null | undefined): number | undefined {
   if (confidence === 'provisional') return FACT_PROVISIONAL_DEFAULT_TTL_SEC;
   if (confidence === 'suspected') return FACT_SUSPECTED_DEFAULT_TTL_SEC;
-  return undefined; // null / undefined / 'verified' — ordinary default applies
+  return undefined; // null / undefined / 'verified' — caller must declare a lifetime
 }
 
 /**
@@ -1711,8 +1712,9 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   }
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
   // EI-18681964809855890: an explicit ttlSec always wins; otherwise a
-  // provisional/suspected confidence tier shortens the default (see
-  // defaultTtlSecForConfidence) before falling back to FACT_DEFAULT_TTL_SEC.
+  // provisional/suspected confidence tier supplies its documented short TTL
+  // (see defaultTtlSecForConfidence). Ordinary writes are validated above and
+  // must declare a lifetime before this resolver is reached.
   // P-028 / EI-20038280125466267: a declared convention is normative state,
   // not a decaying observation. With no explicit TTL, store it with
   // PostgreSQL's `infinity` timestamp; callers can still opt into a bounded
@@ -3101,7 +3103,7 @@ export const NEVER_DROP_KEY_PREFIXES: readonly string[] = [
  * EI-18725816532600240: coord:orient's monitor tick used to skip the facts fold
  * ENTIRELY for context budget, which deleted exactly the override signal a stale
  * carry-note needs (a cold wake was told to go implement an approach a dead-end
- * fact had already falsified). Ordinary 7d conclusions can wait for a full
+ * fact had already falsified). Ordinary bounded conclusions can wait for a full
  * orient; these two slots cannot.
  */
 export async function foldNeverDropFacts(
