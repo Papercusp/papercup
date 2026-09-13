@@ -105,6 +105,30 @@ describe('blueprint:publish tool', () => {
     } as unknown as Awaited<ReturnType<typeof publishListingToCupboard>>);
   });
 
+  it('documents and enforces the unscoped-only global publication contract', async () => {
+    expect(publishTool.crossWorkspace).toBe(true);
+    expect(publishTool.description).toMatch(/UNSCOPED-ONLY/i);
+    const guidance = `${publishTool.guidance?.when ?? ''}\n${publishTool.guidance?.notWhen ?? ''}\n${publishTool.guidance?.chaining ?? ''}`;
+    expect(guidance).toMatch(/unscoped \(--all-workspaces\)/i);
+    expect(guidance).toMatch(/workspace-scoped session.*refus/i);
+    expect(publishTool.args.shape.workspace.description).toMatch(/does not make a workspace-scoped call eligible/i);
+    expect(publishTool.args.shape.workspace.description).toMatch(/unscoped \(--all-workspaces\)/i);
+
+    const repo = repoWithBlueprint('scoped-bp', 'id: scoped-bp\nextends: coding\n');
+    const res = body(
+      await call(
+        publishTool,
+        { blueprintId: 'scoped-bp', title: 'T', description: 'D', repoDir: repo, workspace: 'ws-scoped' },
+        { principal: { workspaceId: 'ws-scoped' } },
+      ),
+    );
+    expect(res).toMatchObject({ ok: false, error: 'workspace_forbidden', status: 403 });
+    expect(res.hint).toMatch(/unscoped \(--all-workspaces\)/i);
+    expect(mockPrepareRelease).not.toHaveBeenCalled();
+    expect(mockCoords).not.toHaveBeenCalled();
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
   it('returns blueprint_not_in_repo when the blueprint dir is missing (never reaches coords/publish)', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'bp-pub-empty-'));
     dirs.push(repo);

@@ -73,17 +73,39 @@ function publishStageTimeout(error: unknown): ReturnType<typeof text> | null {
     : null;
 }
 
+/**
+ * `repoDir` is caller-selected and the publish side effect is a workspace-global
+ * Cupboard write. There is no trustworthy seam here to prove that an arbitrary
+ * path belongs to the caller's workspace, so scoped callers must fail closed even
+ * when the transport clamp is disabled. The transport's cross-workspace clamp
+ * remains the first line of defense for normal scoped superuser requests.
+ */
+function refuseScopedPublish(ctx: { principal?: { workspaceId?: string | null } }): ReturnType<typeof text> | null {
+  const workspaceId = ctx.principal?.workspaceId?.trim();
+  if (!workspaceId || workspaceId === '*') return null;
+
+  return text({
+    ok: false,
+    error: 'workspace_forbidden',
+    status: 403,
+    detail:
+      'blueprint:publish cannot self-confine a caller-selected repoDir: it reads local/GitHub repository state and writes a workspace-global Cupboard listing.',
+    hint:
+      'Run blueprint:publish from an unscoped (--all-workspaces) superuser session. The optional workspace argument is informational only and does not change transport scope.',
+  });
+}
+
 export default defineTool({
   name: 'blueprint:publish',
   capability: 'harness:write',
   description:
-    "List a local/private blueprint on the Comb: resolves the member repo's GitHub coords + publishes a kind='blueprint' listing (listing_ref = blueprintId) with the operator's gh token + attestation. DELTA-NOT-COPY — the blueprint is listed keeping its `extends:`, so an install composes it against the upstream parent and inherits upstream improvements. Lands PENDING (D-007) — an operator must approve it before it is publicly visible.",
+    "UNSCOPED-ONLY: List a local/private blueprint on the Comb: resolves the member repo's GitHub coords + publishes a kind='blueprint' listing (listing_ref = blueprintId) with the operator's gh token + attestation. Because repoDir is caller-selected and the publication is a workspace-global Cupboard write, this requires an unscoped (--all-workspaces) superuser session; workspace-scoped sessions are refused. DELTA-NOT-COPY — the blueprint is listed keeping its `extends:`, so an install composes it against the upstream parent and inherits upstream improvements. Lands PENDING (D-007) — an operator must approve it before it is publicly visible.",
   guidance: {
-    when: "Sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
+    when: "From an unscoped (--all-workspaces) superuser session, sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
     notWhen:
-      "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
+      "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); calling from a workspace-scoped session (the transport and handler refuse this global publication; the workspace argument cannot make it safe); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
     chaining:
-      'Run after the blueprint files are committed + pushed via the project\'s normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing.',
+      'Run from an unscoped (--all-workspaces) superuser session after the blueprint files are committed + pushed via the project\'s normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing.',
     seeAlso: [
       'blueprint:validate (validate before publishing)',
       'blueprint:catalog (where the published blueprint appears)',
@@ -106,9 +128,18 @@ export default defineTool({
       .describe(
         'Absolute path of the member repo (its origin remote names the GitHub repo; must contain .papercusp/blueprints/<blueprintId>/blueprint.yaml).',
       ),
-    workspace: z.string().max(120).optional(),
+    workspace: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Compatibility label only; it does not make a workspace-scoped call eligible or change transport scope. Because repoDir is arbitrary and publication is global, use an unscoped (--all-workspaces) superuser session.',
+      ),
   }),
   async handler(args, ctx) {
+    const scopedRefusal = refuseScopedPublish(ctx);
+    if (scopedRefusal) return scopedRefusal;
+
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 
     // 1. The blueprint must already be a file tree in the repo (delta-not-copy:

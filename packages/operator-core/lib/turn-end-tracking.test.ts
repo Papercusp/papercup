@@ -285,7 +285,7 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
    */
   describe('awaitGuaranteesRewake — registered is NOT the same as guaranteeing', () => {
     const PREFIX = 'coord:inbox-wake:';
-    const bounded = { eventKey: 'release:deployed', expiresTs: '2026-07-28T08:34:12.000Z' };
+    const bounded = { eventKey: 'release:deployed', expiresTs: '2026-07-28T08:34:12.000Z', once: true };
 
     it('counts a BOUNDED await that wakes on its deadline', () => {
       expect(awaitGuaranteesRewake(bounded, PREFIX)).toBe(true);
@@ -303,12 +303,26 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
       expect(awaitGuaranteesRewake({ ...bounded, timeoutBehavior: 'expire' }, PREFIX)).toBe(false);
     });
 
+    it('counts an explicit bounded events:await on an inbox-wake key', () => {
+      expect(awaitGuaranteesRewake({ ...bounded, eventKey: `${PREFIX}su-8d9a671c` }, PREFIX)).toBe(true);
+    });
+
     it('REFUSES the always-armed inbox-wake keepalive — liveness, not a deliberate wake', () => {
-      expect(awaitGuaranteesRewake({ eventKey: `${PREFIX}su-8d9a671c`, expiresTs: null }, PREFIX)).toBe(false);
-      // Even bounded, the keepalive is not this session's pending-work wake.
-      // (Spread FIRST — `bounded` carries its own eventKey and would otherwise
-      //  overwrite the prefixed one, silently making this case test nothing.)
-      expect(awaitGuaranteesRewake({ ...bounded, eventKey: `${PREFIX}su-8d9a671c` }, PREFIX)).toBe(false);
+      expect(
+        awaitGuaranteesRewake(
+          { eventKey: `${PREFIX}su-8d9a671c`, expiresTs: null, once: false, timeoutBehavior: 'expire' },
+          PREFIX,
+        ),
+      ).toBe(false);
+    });
+
+    it('does not mistake an unbounded inbox-key await for a guarantee', () => {
+      expect(
+        awaitGuaranteesRewake(
+          { eventKey: `${PREFIX}su-8d9a671c`, expiresTs: null, once: true, timeoutBehavior: 'wake' },
+          PREFIX,
+        ),
+      ).toBe(false);
     });
   });
 

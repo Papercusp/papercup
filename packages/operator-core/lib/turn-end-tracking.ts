@@ -856,6 +856,8 @@ export interface RewakeAwaitShape {
   expiresTs?: string | null;
   /** What happens at the deadline; defaults to 'wake' (the store's own default). */
   timeoutBehavior?: string | null;
+  /** Cardinality: the platform keepalive is the only standing inbox-wake row. */
+  once?: boolean | null;
 }
 
 /**
@@ -874,7 +876,18 @@ export interface RewakeAwaitShape {
  * an armed loop — the session reads active:true / parked:true and produces no turns.
  */
 export function awaitGuaranteesRewake(a: RewakeAwaitShape, inboxWakePrefix: string): boolean {
-  if (a.eventKey.startsWith(inboxWakePrefix)) return false;
+  // The platform's always-armed inbox keepalive is specifically a standing,
+  // no-deadline, silently-expiring row (`once=false`, `expire`). An explicit
+  // bounded `events:await` may intentionally use the same owner-keyed event
+  // (the incident that motivated this guard), and must count as a wake source.
+  // Classify the keepalive by its persisted shape instead of excluding the
+  // entire key family by prefix.
+  const isStandingInboxWakeKeepalive =
+    a.eventKey.startsWith(inboxWakePrefix) &&
+    a.once !== true &&
+    a.expiresTs == null &&
+    (a.timeoutBehavior ?? 'expire') === 'expire';
+  if (isStandingInboxWakeKeepalive) return false;
   if (a.expiresTs == null) return false;
   return (a.timeoutBehavior ?? 'wake') === 'wake';
 }
