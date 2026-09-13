@@ -148,6 +148,19 @@ describe('ptool MCP identity binding', () => {
     expect(url.searchParams.get('ctx_tier')).toBe('trimmed');
   });
 
+  it('accepts an explicit MCP endpoint URL without duplicating the path', () => {
+    const url = buildMcpUrl('http://127.0.0.1:3170/api/mcp?client=explicit-client', {
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+    });
+
+    expect(url.pathname).toBe('/api/mcp');
+    expect(url.searchParams.get('superuser')).toBe('1');
+    expect(url.searchParams.get('client')).toBe('explicit-client');
+    expect(url.searchParams.get('workspace')).toBe('papercusp-workspace');
+    expect(url.searchParams.get('harness')).toBe('papercusp');
+  });
+
   it('defaults direct sessions to trimmed payloads and allows an explicit full escape hatch', () => {
     expect(resolveContextTier({ env: { NODE_ENV: 'test' } })).toBe('trimmed');
     expect(resolveContextTier({ env: { NODE_ENV: 'test', PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
