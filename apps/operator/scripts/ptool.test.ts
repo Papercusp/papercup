@@ -7,6 +7,7 @@ import {
   canDispatchWithoutCatalog,
   buildMcpUrl,
   connectWithLocalRetry,
+  codeRunRequestHash,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
   importSdkModuleWithInstallAwareness,
@@ -24,7 +25,7 @@ import {
   formatToolCatalogBypass,
   formatToolCatalogFailure,
   isLoopPressureShed,
-  isReadOnlyTool,
+  isValidCodeRunReplayProof,
   isTransportFailure,
   printResult,
   stdoutDeliveryError,
@@ -50,13 +51,13 @@ import {
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS,
   PTOOL_RETRY_JITTER_MS,
-  PTOOL_READ_ONLY_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
   ptoolConnectAttemptTimeoutMs,
   resultToText,
   retryWaitMsWithJitter,
+  retryCodeRunWithProof,
   sanitizeJsonText,
   scratchUriToPath,
   shouldPrintRawResult,
@@ -807,10 +808,38 @@ describe('ptool catalog-independent scripted dispatch', () => {
 });
 
 describe('ptool keyed result recovery without concurrent replay', () => {
-  it('allows replay only for an explicitly read-only listed tool', () => {
-    expect(isReadOnlyTool({ name: 'work_items:get', annotations: { readOnlyHint: true } })).toBe(true);
-    expect(isReadOnlyTool({ name: 'work_items:complete', annotations: { readOnlyHint: false } })).toBe(false);
-    expect(isReadOnlyTool({ name: 'work_items:get' })).toBe(false);
+  it('authorizes replay only with a server-owned proof for the exact code:run body', () => {
+    const params = buildCallToolParams('code:run', {
+      timeoutSec: 10,
+      script: 'return { ok: true };',
+    }, { idempotencyKey: 'ptool-code-run-1' });
+    const proof = {
+      schemaVersion: 1,
+      kind: 'settled-read',
+      tool: 'code:run',
+      callCount: 1,
+      requestHash: codeRunRequestHash(params.arguments),
+    };
+
+    expect(isValidCodeRunReplayProof(proof, params)).toBe(true);
+    expect(isValidCodeRunReplayProof(
+      { ...proof, requestHash: codeRunRequestHash({ ...params.arguments, script: 'return 2;' }) },
+      params,
+    )).toBe(false);
+    expect(isValidCodeRunReplayProof({
+      schemaVersion: 1,
+      kind: 'settled-read',
+      tool: 'work_items:get',
+      callCount: 1,
+      requestHash: codeRunRequestHash(params.arguments),
+    }, params)).toBe(false);
+  });
+
+  it('canonicalizes object-key order without weakening exact-body matching', () => {
+    expect(codeRunRequestHash({ script: 'return 1;', timeoutSec: 10 }))
+      .toBe(codeRunRequestHash({ timeoutSec: 10, script: 'return 1;' }));
+    expect(codeRunRequestHash({ script: 'return 1;', timeoutSec: 10 }))
+      .not.toBe(codeRunRequestHash({ script: 'return 1;', timeoutSec: 11 }));
   });
 
   it('puts one caller-supplied idempotency key beside the format metadata', () => {
@@ -887,9 +916,9 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     expect(first.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
   });
 
-  it('reconnects and replays one time after a post-connect close for a read-only tool', async () => {
-    const params = buildCallToolParams('work_items:get', { id: 'WI-41554' }, {
-      idempotencyKey: 'ptool-read-key-1',
+  it('replays one exact code:run body only through the explicit proof helper', async () => {
+    const params = buildCallToolParams('code:run', { script: 'return { ok: true };' }, {
+      idempotencyKey: 'ptool-code-run-key-1',
     });
     const failure = Object.assign(new Error('fetch failed'), { code: 'UND_ERR_SOCKET' });
     const first = {
@@ -901,18 +930,39 @@ describe('ptool keyed result recovery without concurrent replay', () => {
       close: vi.fn(),
     };
     const reconnect = vi.fn().mockResolvedValue(second);
+    const proof = {
+      schemaVersion: 1,
+      kind: 'settled-read',
+      tool: 'code:run',
+      callCount: 1,
+      requestHash: codeRunRequestHash(params.arguments),
+    };
 
-    const recovered = await callToolWithReplayRecovery(first, params, {
+    const recovered = await retryCodeRunWithProof(first, params, proof, {
       reconnect,
-      readOnly: true,
       timeoutMs: 1,
     });
 
-    expect(PTOOL_READ_ONLY_POST_CONNECT_RETRIES).toBe(1);
     expect(recovered).toEqual({ client: second, result: { content: [{ type: 'text', text: '{"ok":true}' }] } });
     expect(first.close).toHaveBeenCalledTimes(1);
     expect(reconnect).toHaveBeenCalledTimes(1);
     expect(second.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
+  });
+
+  it('refuses explicit replay when the proof body does not match', async () => {
+    const params = buildCallToolParams('code:run', { script: 'return 1;' });
+    const client = { callTool: vi.fn(), close: vi.fn() };
+    const proof = {
+      schemaVersion: 1,
+      kind: 'settled-read',
+      tool: 'code:run',
+      callCount: 1,
+      requestHash: codeRunRequestHash({ script: 'return 2;' }),
+    };
+
+    await expect(retryCodeRunWithProof(client, params, proof, { timeoutMs: 1 }))
+      .rejects.toThrow('valid server-owned settled-read proof');
+    expect(client.callTool).not.toHaveBeenCalled();
   });
 
   it('cannot re-enable automatic replay with a larger per-call retry budget', async () => {
@@ -1101,6 +1151,32 @@ describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
     expect(await unwrapOutputEnvelope(envelope)).toEqual({ ok: true, lock_id: '94ed8996-abc' });
   });
 
+  it('preserves outer server metadata while unwrapping inline JSON', async () => {
+    const proof = {
+      schemaVersion: 1,
+      kind: 'settled-read',
+      tool: 'code:run',
+      callCount: 1,
+      requestHash: 'a'.repeat(64),
+    };
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      _meta: { codeRunReplayProof: proof, resultProjection: { applied: true } },
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          _meta: { codeRunReplayProof: { callerAuthored: true }, innerOnly: true },
+        }),
+      }],
+    };
+
+    expect(await unwrapOutputEnvelope(envelope)).toEqual({
+      ok: true,
+      _meta: { codeRunReplayProof: proof, innerOnly: true, resultProjection: { applied: true } },
+    });
+  });
+
   it('unwraps a SPILLED envelope by reading the referenced file, scanning for the parseable part (never trusting position)', async () => {
     const envelope = {
       schemaVersion: 'papercusp.output-envelope/v1',
@@ -1128,6 +1204,39 @@ describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
     expect(readSpill).toHaveBeenCalledWith(
       expect.stringContaining('locks:acquire/5084d585-0000-4000-8000-000000000000/result-door-123.spill'),
     );
+  });
+
+  it('preserves outer server metadata while unwrapping spilled JSON', async () => {
+    const proof = {
+      schemaVersion: 1,
+      kind: 'settled-read',
+      tool: 'code:run',
+      callCount: 1,
+      requestHash: 'b'.repeat(64),
+    };
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      _meta: { codeRunReplayProof: proof, outerOnly: 'kept' },
+      content: [{
+        kind: 'evidence-reference',
+        uri: 'papercusp://scratch/ws/tool/00000000-0000-4000-8000-000000000000/result.spill',
+      }],
+    };
+    const readSpill = vi.fn().mockResolvedValue({
+      _meta: {
+        codeRunReplayProof: { callerAuthored: true },
+        spilledOnly: 'kept',
+      },
+      content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+    });
+
+    expect(await unwrapOutputEnvelope(envelope, {
+      readSpill,
+      fileExists: () => true,
+    })).toEqual({
+      ok: true,
+      _meta: { codeRunReplayProof: proof, outerOnly: 'kept', spilledOnly: 'kept' },
+    });
   });
 
   it('returns the envelope UNCHANGED — never a fabricated success — when the reference cannot be read or parsed', async () => {
