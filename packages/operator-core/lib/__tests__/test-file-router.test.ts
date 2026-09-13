@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
@@ -15,7 +15,9 @@ import {
   discoverVitestRoute,
   evaluateMatch,
   formatUnsupportedTestInputs,
+  formatFailedAssertionDiagnostics,
   formatRouteError,
+  failedAssertionsFromReport,
   groupRoutes,
   isTestFilePath,
   listedFiles,
@@ -957,6 +959,140 @@ describe('aggregateGroupResults — no group may be silently abandoned (EI-13535
   it('a clean run with no timed-out group reports anyTimedOut=false (no false positive)', () => {
     const summary = aggregateGroupResults([okGroup(1, 1, 1), okGroup(2, 2, 2)]);
     expect(summary.anyTimedOut).toBe(false);
+  });
+});
+
+describe('failed assertion diagnostics — consume the report before private cleanup (EI-22591950423157299)', () => {
+  const withReport = (body: unknown, run: (path: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), 'failed-assertion-report-'));
+    try {
+      const path = join(dir, 'report.json');
+      writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body));
+      run(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('reads failed assertion names/messages but keeps collection errors out of the assertion list', () => {
+    withReport({
+      testResults: [{
+        name: '/repo/lib/bad.test.ts',
+        status: 'failed',
+        message: 'collection error belongs to the file, not an assertion',
+        assertionResults: [{
+          status: 'failed',
+          fullName: 'suite > compares values',
+          failureMessages: ['Expected 1 to be 2'],
+        }],
+      }, {
+        name: '/repo/lib/collect.test.ts',
+        status: 'failed',
+        message: 'SyntaxError: invalid source',
+        assertionResults: [],
+      }],
+    }, (path) => {
+      const failures = failedAssertionsFromReport(path, '/repo');
+      expect(failures).toEqual([{
+        file: '/repo/lib/bad.test.ts',
+        name: 'suite > compares values',
+        messages: ['Expected 1 to be 2'],
+      }]);
+      expect(formatFailedAssertionDiagnostics(failures)).toContain(
+        'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="suite > compares values" message="Expected 1 to be 2"',
+      );
+      expect(formatFailedAssertionDiagnostics(failures)).not.toContain('SyntaxError: invalid source');
+    });
+  });
+
+  it('keeps unreadable reports distinct from readable reports with no assertion failures', () => {
+    expect(failedAssertionsFromReport(null, '/repo')).toBeNull();
+    expect(failedAssertionsFromReport('/nope/missing.json', '/repo')).toBeNull();
+    withReport('{ not json', (path) => expect(failedAssertionsFromReport(path, '/repo')).toBeNull());
+    withReport({ testResults: [{ assertionResults: [{ status: 'passed', fullName: 'ok' }] }] }, (path) => {
+      expect(failedAssertionsFromReport(path, '/repo')).toEqual([]);
+      expect(formatFailedAssertionDiagnostics(failedAssertionsFromReport(path, '/repo'))).toBe('');
+    });
+  });
+
+  it('bounds each field and the complete diagnostic output', () => {
+    const diagnostics = formatFailedAssertionDiagnostics(Array.from({ length: 30 }, (_, i) => ({
+      file: `file-${i}-${'f'.repeat(1000)}`,
+      name: `assertion-${i}-${'n'.repeat(1000)}`,
+      messages: [`message-${i}-${'m'.repeat(5000)}`],
+    })));
+    expect(diagnostics.length).toBeLessThanOrEqual(12_000);
+    expect(diagnostics).toContain('…');
+    expect(diagnostics).toContain('TEST_FILE_ASSERTION_FAILURES_TRUNCATED');
+  });
+});
+
+describe('main() — failed assertion details survive private report cleanup (EI-22591950423157299)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('prints the failed assertion message before removing the injected report directory', async () => {
+    let reportPath: string | undefined;
+    const runCapturedTestProcessMock = vi.fn(async (_command: string, args: string[]) => {
+      const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
+      if (!outputArg) throw new Error('test fixture expected the injected output path');
+      reportPath = outputArg.slice('--outputFile='.length);
+      writeFileSync(reportPath, JSON.stringify({
+        testResults: [{
+          name: '/repo/lib/bad.test.ts',
+          status: 'failed',
+          message: 'file-level collection text must not be relabelled',
+          assertionResults: [{
+            status: 'failed',
+            fullName: 'router > reports the real assertion',
+            failureMessages: ['Expected 1 to be 2'],
+          }],
+        }],
+      }));
+      return {
+        status: 1,
+        signal: null,
+        stdout: 'simulated assertion failure\n',
+        stderr: '',
+        timedOut: false,
+      };
+    });
+
+    const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    let code: number;
+    try {
+      code = await main(
+        ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+        { runCapturedTestProcessImpl: runCapturedTestProcessMock },
+      );
+    } finally {
+      if (readyMarker === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
+      if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+    }
+
+    expect(code).toBe(1);
+    const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(output).toContain(
+      'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="router > reports the real assertion" message="Expected 1 to be 2"',
+    );
+    expect(output).not.toContain('file-level collection text must not be relabelled');
+    expect(reportPath).toBeDefined();
+    expect(existsSync(reportPath!)).toBe(false);
   });
 });
 

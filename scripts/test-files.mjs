@@ -1128,6 +1128,109 @@ export function assertionOutcomesFromReport(reportPath, cwd) {
   return { executed, skipped };
 }
 
+const MAX_FAILED_ASSERTION_DIAGNOSTICS = 20;
+const MAX_FAILED_ASSERTION_FIELD_CHARS = 500;
+const MAX_FAILED_ASSERTION_MESSAGE_CHARS = 2_000;
+const MAX_FAILED_ASSERTION_OUTPUT_CHARS = 12_000;
+
+/**
+ * Failed assertion details from a Vitest JSON report.
+ *
+ * This intentionally reads assertionResults only. A file-level `message` describes an import or
+ * collection failure, not an ordinary assertion, and belongs to the collection-failure path
+ * above. Keeping the two shapes separate prevents a collection error from being mislabelled as a
+ * failed test when both are present in one report.
+ *
+ * Like assertionOutcomesFromReport, null means the report was unreadable and [] means it was
+ * readable but contained no failed assertions. Callers must preserve that distinction.
+ *
+ * @param {string | null} reportPath value of --outputFile, if any
+ * @param {string} [cwd] the group's cwd — vitest resolves a relative --outputFile against it
+ * @returns {Array<{ file: string, name: string, messages: string[] }> | null}
+ */
+export function failedAssertionsFromReport(reportPath, cwd) {
+  if (!reportPath) return null;
+  const resolved = isAbsolute(reportPath) ? reportPath : resolve(cwd ?? process.cwd(), reportPath);
+  let report;
+  try {
+    report = JSON.parse(readFileSync(resolved, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!report || typeof report !== 'object' || !Array.isArray(report.testResults)) return null;
+  const failures = [];
+  for (const fileResult of report.testResults) {
+    const file = typeof fileResult?.name === 'string' ? fileResult.name : '';
+    for (const assertion of Array.isArray(fileResult?.assertionResults) ? fileResult.assertionResults : []) {
+      if (assertion?.status !== 'failed') continue;
+      const name =
+        typeof assertion?.fullName === 'string' && assertion.fullName.trim() !== ''
+          ? assertion.fullName
+          : typeof assertion?.title === 'string'
+            ? assertion.title
+            : '';
+      const messages = Array.isArray(assertion?.failureMessages)
+        ? assertion.failureMessages.filter((message) => typeof message === 'string' && message.trim() !== '')
+        : [];
+      failures.push({
+        file,
+        name,
+        messages,
+      });
+    }
+  }
+  return failures;
+}
+
+function boundedDiagnosticText(value, maxChars) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+/**
+ * Format failed assertion details for a live test:file caller.
+ *
+ * Every field, assertion count, and the complete output are bounded. JSON-encoding the fields
+ * keeps each diagnostic on one line while preserving multiline assertion messages for a caller to
+ * decode or copy. An empty string means there are no details to print; null input is deliberately
+ * treated the same way at this formatting boundary because report readability is handled by the
+ * parser's null-vs-empty result.
+ *
+ * @param {Array<{ file: string, name: string, messages: string[] }> | null} failures
+ * @returns {string}
+ */
+export function formatFailedAssertionDiagnostics(failures) {
+  if (!Array.isArray(failures) || failures.length === 0) return '';
+  const lines = [];
+  let chars = 0;
+  for (const failure of failures.slice(0, MAX_FAILED_ASSERTION_DIAGNOSTICS)) {
+    const file = boundedDiagnosticText(failure?.file, MAX_FAILED_ASSERTION_FIELD_CHARS) || '(unknown file)';
+    const name = boundedDiagnosticText(failure?.name, MAX_FAILED_ASSERTION_FIELD_CHARS) || '(unnamed assertion)';
+    const message = boundedDiagnosticText(
+      Array.isArray(failure?.messages)
+        ? failure.messages.filter((entry) => typeof entry === 'string').join('\n')
+        : '',
+      MAX_FAILED_ASSERTION_MESSAGE_CHARS,
+    ) || '(failure message unavailable)';
+    const line =
+      `TEST_FILE_ASSERTION_FAILURE file=${JSON.stringify(file)} name=${JSON.stringify(name)} ` +
+      `message=${JSON.stringify(message)}`;
+    const nextChars = chars + (lines.length > 0 ? 1 : 0) + line.length;
+    if (nextChars > MAX_FAILED_ASSERTION_OUTPUT_CHARS) break;
+    lines.push(line);
+    chars = nextChars;
+  }
+  const omitted = failures.length - lines.length;
+  if (omitted > 0) {
+    const truncation = `TEST_FILE_ASSERTION_FAILURES_TRUNCATED omitted=${omitted} ` +
+      `limit=${MAX_FAILED_ASSERTION_OUTPUT_CHARS}chars`;
+    const nextChars = chars + (lines.length > 0 ? 1 : 0) + truncation.length;
+    if (nextChars <= MAX_FAILED_ASSERTION_OUTPUT_CHARS) lines.push(truncation);
+  }
+  return lines.join('\n');
+}
+
 /**
  * Whether the caller already chose a reporter or a report path.
  *
@@ -2700,6 +2803,14 @@ export async function main(
     // for a run that produced no verdict at all. A reaped group is NOT MEASURED, never `failed`;
     // skip the classifier entirely rather than run it against a killed process's exit state.
     const groupFailed = result.timedOut ? false : vitestRunFailed({ status: result.status, output: runOutput });
+    const reportPath = outputFilePathFrom(groupVitestArgs);
+    // EI-22591950423157299: the private report is removed in main()'s finally, so consume the
+    // ordinary assertion failures while it is still present. This is deliberately separate from
+    // the file-level collection-failure recovery below: a report with no assertionResults has no
+    // assertion detail to print, and must not turn a collection error into a test-name failure.
+    const failedAssertionDiagnostics = groupFailed
+      ? formatFailedAssertionDiagnostics(failedAssertionsFromReport(reportPath, group.cwd))
+      : '';
     if (!result.timedOut && result.status === 0 && groupFailed) {
       const summary = parseSummaryFailedCounts(runOutput);
       console.error(
@@ -2715,6 +2826,7 @@ export async function main(
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=not-measured`);
     } else if (groupFailed) {
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
+      if (failedAssertionDiagnostics) console.error(failedAssertionDiagnostics);
       if (result.freezeMs > 0) {
         console.error(
           `TEST_FILE_FREEZE_QUALIFIER cwd=${cwdLabel} frozenMs=${result.freezeMs} — a pc-heavy PSI ` +
@@ -2765,7 +2877,7 @@ export async function main(
     // EI-19380376466745152: read the per-assertion outcomes ONCE per group, before the push below
     // consumes them for three different fields. `null` here means no readable report, not an empty
     // run — the difference is what keeps "names unavailable" from rendering as "nothing skipped".
-    const groupOutcomes = assertionOutcomesFromReport(outputFilePathFrom(groupVitestArgs), group.cwd);
+    const groupOutcomes = assertionOutcomesFromReport(reportPath, group.cwd);
     groupResults.push({
       requested: verdict.requested,
       matched: verdict.matched,
@@ -2781,7 +2893,7 @@ export async function main(
       // `??` and not `||`: a measured 0 is the whole point of this check and must NOT be
       // retried as if it were unreadable.
       testsExecuted: nameFilter
-        ? testsExecutedFromReport(outputFilePathFrom(groupVitestArgs), group.cwd) ??
+        ? testsExecutedFromReport(reportPath, group.cwd) ??
           testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
         : undefined,
       // EI-19380376466745152: skipped is measured on EVERY run, not only under a name filter —
