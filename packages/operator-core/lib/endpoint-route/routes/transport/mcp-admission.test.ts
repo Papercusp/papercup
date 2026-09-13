@@ -21,6 +21,7 @@ import {
   isBoundedCoordPresenceArgs,
   isBoundedCoordRosterArgs,
   isBoundedEventsStatusArgs,
+  isBoundedLoopArmArgs,
 } from './mcp-admission';
 
 afterEach(() => resetMcpAdmissionForTests());
@@ -250,6 +251,55 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
     expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'loop:arm'],
+    ['underscore', 'loop_arm'],
+    ['mcp-advertised', 'mcp__papercusp_su__loop_arm'],
+  ])('does NOT shed a bounded short work loop arm under critical pressure: %s', (_label, name) => {
+    const args = { intervalSec: 60, goal: 'resume the current fleet work item', carry: 'cold', mode: 'work' };
+    expect(isBoundedLoopArmArgs(args)).toBe(true);
+    const body = toolsCall(20, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('recognizes a bounded loop arm through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 21,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__loop_arm',
+          args: {
+            intervalSec: 60,
+            goal: 'resume the current fleet work item',
+            workItem: 'EI-23122062573237933',
+            carry: 'cold',
+          },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps unbounded or non-work loop arms sheddable under critical pressure', () => {
+    for (const args of [
+      { intervalSec: 60, goal: 'resume the current fleet work item', wakePrompt: 'custom wake' },
+      { intervalSec: 60, goal: 'resume the current fleet work item', mode: 'monitor' },
+      { intervalSec: 60, goal: 'resume the current fleet work item', continuation: 'gated' },
+      { intervalSec: 60, goal: 'x'.repeat(501) },
+      { intervalSec: 60, goal: 'resume the current fleet work item', blockedOn: { reason: 'peer' } },
+      { intervalSec: 60, goal: 'resume the current fleet work item', ownerId: 'su-peer' },
+    ]) {
+      expect(isBoundedLoopArmArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(22, 'loop:arm', args))).toEqual({ sheddable: true, id: 22 });
+      expect(classifyMcpRequest(toolsCall(22, 'loop:arm', args))).toBe('ordinary');
+    }
   });
 
   it.each([
@@ -1177,6 +1227,53 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(22, 'loop:status', { ownerId: 'self' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('loop:status');
+  });
+  it('admits a bounded loop arm under critical pressure so a cold wake can restore its cadence', async () => {
+    const req = post(toolsCall(23, 'loop:arm', {
+      intervalSec: 60,
+      goal: 'resume the current fleet work item',
+      workItem: 'EI-23122062573237933',
+      carry: 'cold',
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('loop:arm');
+  });
+  it('admits a deferred bounded loop arm under critical pressure', async () => {
+    const req = post(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 24,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__loop_arm',
+          args: {
+            intervalSec: 60,
+            goal: 'resume the current fleet work item',
+            workItem: null,
+            carry: 'cold',
+          },
+        },
+      },
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds an unbounded loop arm under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(25, 'loop:arm', {
+        intervalSec: 60,
+        goal: 'resume the current fleet work item',
+        wakePrompt: 'custom wake',
+      })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
 
   it.each([

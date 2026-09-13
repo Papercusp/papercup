@@ -542,7 +542,15 @@ export async function applyPendingMigrationsNow(
     // green-checkpoint / checkpoint-run preflight included) still see them as
     // pending rather than silently vanishing from the report.
     if (coolingDown.size > 0) {
-      const retryAfterEntries = coolingDownEntries.map(([file, entry]) => {
+      // EI-23139733173512725: db:migrate (or another operator) can apply a file
+      // while an earlier boot failure for it is still cooling down. The applied
+      // ledger is authoritative: never re-inject that settled file as a synthetic
+      // failure, which otherwise keeps request-serving hosts crash-looping until
+      // the wall-clock cooldown expires despite the schema already being current.
+      const appliedRows = await client<{ filename: string }[]>`
+        SELECT filename FROM harness_shared.schema_migrations`;
+      const appliedFilenames = new Set(appliedRows.map((row) => row.filename));
+      const retryAfterEntries = coolingDownEntries.filter(([file]) => !appliedFilenames.has(file)).map(([file, entry]) => {
         const retryInSec = Math.max(1, Math.ceil((entry.lastFailedAt + cooldownMs - cooldownNow) / 1000));
         return {
           file,

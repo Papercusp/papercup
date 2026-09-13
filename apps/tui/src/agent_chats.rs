@@ -108,11 +108,11 @@ pub struct AgentChatSummary {
     #[serde(default)]
     pub turn_count: u32,
     #[serde(default)]
-    pub total_input_tokens: u64,
+    pub total_input_tokens: Option<u64>,
     #[serde(default)]
-    pub total_output_tokens: u64,
+    pub total_output_tokens: Option<u64>,
     #[serde(default)]
-    pub total_cost_usd_cents: f64,
+    pub total_cost_usd_cents: Option<f64>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -149,11 +149,11 @@ pub struct AgentChat {
     #[serde(default)]
     pub transcript: Vec<AgentChatTranscriptTurn>,
     #[serde(default)]
-    pub total_input_tokens: u64,
+    pub total_input_tokens: Option<u64>,
     #[serde(default)]
-    pub total_output_tokens: u64,
+    pub total_output_tokens: Option<u64>,
     #[serde(default)]
-    pub total_cost_usd_cents: f64,
+    pub total_cost_usd_cents: Option<f64>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -162,6 +162,36 @@ pub struct AgentChat {
     pub archived_at: Option<String>,
     #[serde(default)]
     pub feature_lock: Option<AgentChatFeatureLock>,
+}
+
+/// Measurements the selected Agent Chat can state without inference.
+/// `None` is preserved so an omitted provider measurement never becomes a
+/// fabricated zero in the PUI.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgentChatUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_usd_cents: Option<f64>,
+}
+
+impl From<&AgentChatSummary> for AgentChatUsage {
+    fn from(chat: &AgentChatSummary) -> Self {
+        Self {
+            input_tokens: chat.total_input_tokens,
+            output_tokens: chat.total_output_tokens,
+            cost_usd_cents: chat.total_cost_usd_cents,
+        }
+    }
+}
+
+impl From<&AgentChat> for AgentChatUsage {
+    fn from(chat: &AgentChat) -> Self {
+        Self {
+            input_tokens: chat.total_input_tokens,
+            output_tokens: chat.total_output_tokens,
+            cost_usd_cents: chat.total_cost_usd_cents,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -324,6 +354,9 @@ mod tests {
         .expect("decode list");
         assert_eq!(list.chats[0].turn_count, 2);
         assert_eq!(list.chats[0].feature_id.as_deref(), Some("WI-1"));
+        assert_eq!(list.chats[0].total_input_tokens, Some(11));
+        assert_eq!(list.chats[0].total_output_tokens, Some(7));
+        assert_eq!(list.chats[0].total_cost_usd_cents, Some(1.25));
 
         let chat: AgentChat = serde_json::from_value(json!({
             "id": "chat-1",
@@ -363,11 +396,28 @@ mod tests {
             Some("claude-sonnet-4-6:high")
         );
         assert_eq!(chat.transcript[0].account_route.as_deref(), Some("auto"));
+        assert_eq!(chat.total_input_tokens, Some(11));
+        assert_eq!(chat.total_output_tokens, Some(7));
+        assert_eq!(chat.total_cost_usd_cents, Some(1.25));
         assert_eq!(
             chat.transcript[0].tools[0].answered.as_ref().unwrap().picks[0].option_id,
             "yes"
         );
         assert!(chat.feature_lock.unwrap().active);
+    }
+
+    #[test]
+    fn missing_usage_fields_remain_unknown_instead_of_becoming_zero() {
+        let chat: AgentChat = serde_json::from_value(json!({
+            "id": "legacy-chat",
+            "role": "operator",
+            "transcript": []
+        }))
+        .expect("decode chat without optional usage");
+        let usage = AgentChatUsage::from(&chat);
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.output_tokens, None);
+        assert_eq!(usage.cost_usd_cents, None);
     }
 
     #[test]

@@ -765,6 +765,32 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     const state = JSON.parse(raw) as Record<string, unknown>;
     expect(state['964-temp-broken.sql']).toBeUndefined();
   });
+
+  it('an externally applied migration clears its stale cooldown immediately instead of blocking the next boot', async () => {
+    const cooldownFile = freshCooldownFile();
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = cooldownFile;
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS = String(60_000);
+    const filename = '965-external-apply.sql';
+    h.bootSqlDir = makeSqlDir({
+      [filename]: 'CREATE TABLE no_such_schema_xyz.cooldown_external (id int);',
+    });
+    await seedMigrationReservations([filename]);
+
+    const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(first!.failed.map((f) => f.file)).toEqual([filename]);
+
+    // Mirrors coordinated db:migrate repairing the pending file while boot's
+    // cross-process cooldown still remembers the earlier failure.
+    await rootSql`
+      INSERT INTO harness_shared.schema_migrations (filename, sha256)
+      VALUES (${filename}, ${'0'.repeat(64)})`;
+
+    const second = await applyPendingMigrationsNow();
+    expect(second).toMatchObject({ applied: 0, failed: [] });
+    const raw = await readFile(cooldownFile, 'utf8').catch(() => '{}');
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    expect(state[filename]).toBeUndefined();
+  });
 });
 
 describe('migration reservation reconciliation (WI-38354)', () => {

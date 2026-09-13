@@ -2407,6 +2407,9 @@ pub struct App {
     /// The concrete role/persona and selectable sessions under the active pot.
     pub agent_chat_role: String,
     pub agent_chat_summaries: Vec<crate::agent_chats::AgentChatSummary>,
+    /// Presence-preserving measurements for the selected chat. Missing fields
+    /// stay `None`; a measured zero remains distinguishable from no reading.
+    pub agent_chat_usage: crate::agent_chats::AgentChatUsage,
     /// Monotonic token for async chat loads. Late responses from an earlier
     /// selection are discarded instead of replacing the newly selected chat.
     pub chat_load_token: u64,
@@ -2779,6 +2782,7 @@ impl App {
             agent_chat_id: None,
             agent_chat_role: "operator".to_string(),
             agent_chat_summaries: Vec::new(),
+            agent_chat_usage: crate::agent_chats::AgentChatUsage::default(),
             chat_load_token: 0,
             pending_approvals: Vec::new(),
             su_backend: None,
@@ -3335,6 +3339,7 @@ impl App {
     pub fn reset_agent_chat_binding(&mut self) {
         self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
+        self.agent_chat_usage = crate::agent_chats::AgentChatUsage::default();
         self.su_session = None;
         self.su_connection_error = None;
         self.su_rendered_owner_turns.clear();
@@ -5625,10 +5630,14 @@ impl App {
     /// Concrete execution identity rendered next to the composer.
     pub fn agent_chat_selection_label(&self) -> String {
         if let Some(label) = self.su_session_selection_label() {
-            return format!(
+            let label = format!(
                 "{} · pot {} · role {}",
                 label, self.harness, self.agent_chat_role
             );
+            return self
+                .agent_chat_usage_label()
+                .map(|usage| format!("{label} · {usage}"))
+                .unwrap_or(label);
         }
         let session = self
             .agent_chat_id
@@ -5653,10 +5662,38 @@ impl App {
         let backend = self
             .backend_identity_status()
             .unwrap_or_else(|| "backend loading".to_string());
-        format!(
+        let label = format!(
             "pot {} · role {} · session {} · backend {} · model {} · effort {} · account {} · mode {} · {}",
             self.harness, self.agent_chat_role, session, selected_backend, model, effort, account, mode, backend
-        )
+        );
+        self.agent_chat_usage_label()
+            .map(|usage| format!("{label} · {usage}"))
+            .unwrap_or(label)
+    }
+
+    /// Honest selected-session measurement summary. The current Agent Chat
+    /// contract has no context-consumption value, so that field is explicitly
+    /// unknown rather than inferred from transcript length or model defaults.
+    pub fn agent_chat_usage_label(&self) -> Option<String> {
+        self.agent_chat_id.as_ref()?;
+        let input = self
+            .agent_chat_usage
+            .input_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into());
+        let output = self
+            .agent_chat_usage
+            .output_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into());
+        let cost = self
+            .agent_chat_usage
+            .cost_usd_cents
+            .map(|value| format!("${:.4}", value / 100.0))
+            .unwrap_or_else(|| "unknown".into());
+        Some(format!(
+            "usage in {input} / out {output} / cost {cost} / context unknown"
+        ))
     }
 
     /// Settings tab (P10): store the operator feature flags as a sorted Vec (the
@@ -8697,6 +8734,7 @@ impl App {
                 };
                 let chat_id = chat.id.clone();
                 let role = chat.role.clone();
+                let usage = crate::agent_chats::AgentChatUsage::from(&chat);
                 let messages = chat
                     .transcript
                     .into_iter()
@@ -8704,6 +8742,7 @@ impl App {
                     .collect();
                 self.reset_agent_chat_binding();
                 self.agent_chat_id = Some(chat_id.clone());
+                self.agent_chat_usage = usage;
                 self.agent_chat_role = role.clone();
                 self.pui_runtime_class = Some(crate::su_session::PuiRuntimeClass::SuSession);
                 self.chat_messages = messages;
@@ -9858,6 +9897,7 @@ impl App {
             }
             Event::AgentChatBound(id) => {
                 self.agent_chat_id = Some(id);
+                self.agent_chat_usage = crate::agent_chats::AgentChatUsage::default();
                 Action::Render
             }
             Event::AgentChatLoaded {
@@ -9895,6 +9935,11 @@ impl App {
                                 .and_then(|s| s.su_runtime_class.as_deref()),
                         )
                     });
+                    self.agent_chat_usage = chat_id
+                        .as_deref()
+                        .and_then(|id| summaries.iter().find(|summary| summary.id == id))
+                        .map(crate::agent_chats::AgentChatUsage::from)
+                        .unwrap_or_default();
                     self.agent_chat_id = chat_id;
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
@@ -13904,9 +13949,9 @@ mod tests {
             continued_from_turn_count: None,
             title: Some("Review the patch".into()),
             turn_count: 4,
-            total_input_tokens: 10,
-            total_output_tokens: 20,
-            total_cost_usd_cents: 1.0,
+            total_input_tokens: Some(10),
+            total_output_tokens: Some(20),
+            total_cost_usd_cents: Some(1.0),
             created_at: "2026-08-25".into(),
             updated_at: "2026-08-25T01:00:00Z".into(),
             archived_at: None,
@@ -13948,9 +13993,9 @@ mod tests {
             continued_from_turn_count: None,
             title: Some("session".into()),
             turn_count: 2,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            total_cost_usd_cents: 0.0,
+            total_input_tokens: Some(0),
+            total_output_tokens: Some(0),
+            total_cost_usd_cents: Some(0.0),
             created_at: "2026-08-29".into(),
             updated_at: "2026-08-29T00:00:00Z".into(),
             archived_at: None,
@@ -14965,9 +15010,9 @@ mod tests {
             continued_from_turn_count: None,
             title: Some("Live SU session".into()),
             turn_count: 1,
-            total_input_tokens: 1,
-            total_output_tokens: 1,
-            total_cost_usd_cents: 0.0,
+            total_input_tokens: Some(1),
+            total_output_tokens: Some(1),
+            total_cost_usd_cents: Some(0.0),
             created_at: "2026-08-29".into(),
             updated_at: "2026-08-29T00:00:00Z".into(),
             archived_at: None,

@@ -8301,6 +8301,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chat_composer_renders_missing_usage_as_unknown_and_preserves_measured_zero() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-usage".into());
+
+        let unknown = render(&app, 120, 24);
+        assert!(
+            unknown.contains("usage in unknown / out unknown / cost unknown / context unknown"),
+            "{unknown}"
+        );
+        assert!(!unknown.contains("cost $0.0000"), "{unknown}");
+
+        app.agent_chat_usage = crate::agent_chats::AgentChatUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            cost_usd_cents: Some(0.0),
+        };
+        let measured_zero = render(&app, 120, 24);
+        assert!(
+            measured_zero.contains("usage in 0 / out 0 / cost $0.0000 / context unknown"),
+            "{measured_zero}"
+        );
+    }
+
     /// EI-22067863854642076: a legacy/unclassified conversation's composer
     /// must say it is read-only up front — not keep the "Enter send"
     /// affordance while `on_key`'s Enter arm silently no-ops (see

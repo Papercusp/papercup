@@ -191,12 +191,16 @@ const CRITICAL_DEV_TELEMETRY_MAX_STRING_CHARS = 120;
 const DEV_TELEMETRY_TRANSPORTS = new Set(['http', 'mcp', 'ipc', 'in_process', 'unknown']);
 const SCHEDULER_GET_NEXT_NAME = normalizeMcpName('scheduler:get_next');
 const LOOP_STATUS_NAME = normalizeMcpName('loop:status');
+const LOOP_ARM_NAME = normalizeMcpName('loop:arm');
 const EVENTS_STATUS_NAME = normalizeMcpName('events:status');
 const CRITICAL_SCHEDULER_MAX_HARNESS_CHARS = 200;
 const CRITICAL_SCHEDULER_MAX_HELD_PATH_CHARS = 512;
 const CRITICAL_SCHEDULER_MAX_HELD_PATHS = 500;
 const CRITICAL_SCHEDULER_STATES = new Set(['open', 'failing']);
 const CRITICAL_LOOP_STATUS_MAX_STRING_CHARS = 120;
+const CRITICAL_LOOP_ARM_MAX_STRING_CHARS = 120;
+const CRITICAL_LOOP_ARM_MAX_GOAL_CHARS = 500;
+const CRITICAL_LOOP_ARM_MAX_INTERVAL_SEC = 15 * 60;
 const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
@@ -757,6 +761,46 @@ export function isBoundedEventsStatusArgs(args: unknown): boolean {
 }
 
 /**
+ * Keep the loop's own recovery arm available while critical pressure is shedding
+ * ordinary writes. This is deliberately the smallest useful WORK-loop shape:
+ * the required short cadence and goal, with only bounded identity/carry fields.
+ * Custom wake prompts, monitor/gated loops, blocker metadata, and owner overrides
+ * stay on the retryable path because they add extra orchestration or can target a
+ * different session. The loop handler still performs its normal schema and scope
+ * checks after admission.
+ */
+export function isBoundedLoopArmArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['intervalSec', 'goal', 'harness', 'workItem', 'carry', 'continuation', 'mode']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    !Number.isInteger(args.intervalSec) ||
+    (args.intervalSec as number) < 60 ||
+    (args.intervalSec as number) > CRITICAL_LOOP_ARM_MAX_INTERVAL_SEC
+  ) {
+    return false;
+  }
+  if (!isBoundedCriticalText(args.goal, CRITICAL_LOOP_ARM_MAX_GOAL_CHARS, true)) return false;
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_LOOP_ARM_MAX_STRING_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    args.workItem !== undefined &&
+    args.workItem !== null &&
+    !isBoundedCriticalText(args.workItem, CRITICAL_LOOP_ARM_MAX_STRING_CHARS, true)
+  ) {
+    return false;
+  }
+  if (args.carry !== undefined && !['warm', 'cold'].includes(args.carry as string)) return false;
+  if (args.continuation !== undefined && args.continuation !== 'settle') return false;
+  if (args.mode !== undefined && args.mode !== 'work') return false;
+  return true;
+}
+
+/**
  * A single checkpoint is the smallest durable recovery write: it preserves the
  * successor state needed to resume after the pressure condition clears. Keep the
  * exemption to one identified item so a bulk checkpoint request cannot turn the
@@ -1145,6 +1189,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
+  if (normalized === LOOP_ARM_NAME) return isBoundedLoopArmArgs(args);
   if (normalized === EVENTS_STATUS_NAME) return isBoundedEventsStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
