@@ -37,6 +37,7 @@ const FEED_BODY_CAP = 200;
 const FEED_BODY_BUDGET = 8_000;
 const FEED_SUMMARY_CAP = 400;
 const FEED_SUMMARY_BUDGET = 10_000;
+const ISO_TIMESTAMP = z.string().datetime({ offset: true });
 
 export default defineTool({
   name: 'coord:feed',
@@ -116,13 +117,11 @@ export default defineTool({
       .optional()
       .describe('Compatibility alias for audience: a fleet slug or human name, normalized to @fleet:<slug>. If both fleet and audience are supplied, audience wins.'),
     q: z.string().optional().describe('Case-insensitive substring over summary/body/from/to/plan_slug.'),
-    since: z
-      .string()
+    since: ISO_TIMESTAMP
       .optional()
       .describe('Preferred strictly-later-than ISO timestamp (older bound). Use this instead of legacy since_ts.'),
-    since_ts: z.string().optional().describe('Strictly later than this ISO timestamp (older bound).'),
-    before_ts: z
-      .string()
+    since_ts: ISO_TIMESTAMP.optional().describe('Strictly later than this ISO timestamp (older bound).'),
+    before_ts: ISO_TIMESTAMP
       .optional()
       .describe('Timestamp half of the pagination cursor; pass back the returned next_cursor together with next_cursor_msg_id.'),
     before_msg_id: z

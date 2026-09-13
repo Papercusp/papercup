@@ -63,6 +63,25 @@ describe('coord:feed — since compatibility', () => {
   });
 });
 
+describe('coord:feed — ISO time-boundary validation', () => {
+  it.each(['since', 'since_ts', 'before_ts'] as const)('rejects malformed double-Z `%s` values', (field) => {
+    expect(
+      tool.args.safeParse({ [field]: '2026-09-08T09:12:00ZZ' }).success,
+      `${field} must reject malformed ISO timestamps before they become NaN filter bounds`,
+    ).toBe(false);
+  });
+
+  it('accepts valid ISO time-boundary values', () => {
+    expect(
+      tool.args.safeParse({
+        since: '2026-09-08T09:12:00.000Z',
+        since_ts: '2026-09-08T09:12:00+00:00',
+        before_ts: '2026-09-08T09:12:00Z',
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe('coord:feed — fleet compatibility alias', () => {
   it('declares both canonical audience and legacy fleet filters', () => {
     expect(Object.keys(tool.args.shape)).toContain('audience');
