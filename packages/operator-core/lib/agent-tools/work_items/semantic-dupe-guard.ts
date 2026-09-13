@@ -35,9 +35,15 @@ import { issuesScopeWorkspace } from '../../issues-engineer';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import { withIterativeScan } from '../search/hnsw-iterative-scan';
+import type { EmbedderProfileSpec } from '@papercusp/memory';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
-import { fitsProseColumns } from '../../search/prose-vector-dims';
+import {
+  fitsProseColumns,
+  proseProfilePredicateSql,
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from '../../search/prose-vector-dims';
 // Embedding-coverage awareness (WI-9393). The SURFACE-level door, deliberately not
 // `assessSourceCoverage`: this guard is not a `SearchSource`, and SEARCH_SOURCE_SURFACES
 // is asserted exhaustive in both directions against SEARCH_SOURCES.
@@ -152,14 +158,25 @@ export interface SemanticDupeResult {
 /** Injectable seams (tests + any future non-backfill space). */
 export interface SemanticDupeDeps {
   resolveEmbedder: () => Promise<
-    | { mode: string; dims: number; embed: (t: string) => Promise<number[]> }
+    | {
+        mode: string;
+        dims: number;
+        profile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>;
+        embed: (t: string) => Promise<number[]>;
+      }
     | { mode: 'disabled'; reason?: string }
     | null
   >;
   /** `title` is the NEW item's title, passed so the query can score pg_trgm title
    *  similarity in SQL alongside the cosine. Optional 4th arg: existing seams that
    *  ignore it keep working, they just forfeit the co-signal promotion. */
-  queryCandidates: (vec: number[], mode: string, harness?: string, title?: string) => Promise<SemanticDupeCandidate[]>;
+  queryCandidates: (
+    vec: number[],
+    mode: string,
+    harness?: string,
+    title?: string,
+    selection?: ProseProfileSelection,
+  ) => Promise<SemanticDupeCandidate[]>;
   /** The embedding-coverage snapshot backing {@link SemanticDupeResult.coverage}.
    *  Optional so no existing caller/test changes; tests inject it to assess without a
    *  DB. Omitted ⇒ the real TTL-memoised loader. */
@@ -190,7 +207,14 @@ function withBudget<T>(ms: number, p: Promise<T | null>): Promise<T | null> {
   });
 }
 
-export async function queryCandidatesReal(vec: number[], mode: string, harness?: string, title?: string): Promise<SemanticDupeCandidate[]> {
+export async function queryCandidatesReal(
+  vec: number[],
+  mode: string,
+  harness?: string,
+  title?: string,
+  selection?: ProseProfileSelection,
+): Promise<SemanticDupeCandidate[]> {
+  if (!selection) return [];
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
   // ONE query covers BOTH families: migration 374 unified issues + features
@@ -211,7 +235,7 @@ export async function queryCandidatesReal(vec: number[], mode: string, harness?:
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND embedding IS NOT NULL
-       AND embedding_mode = ${mode}
+       AND ${proseProfilePredicateSql(scanSql, selection, 'embedding_profile', 'embedding_mode')}
        AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))
        AND ${harness ? scanSql`harness_slug = ${harness}` : scanSql`TRUE`}
      ORDER BY embedding <=> ${vecLit}::vector
@@ -239,10 +263,20 @@ async function classify(d: SemanticDupeDeps, input: { title: string; summary?: s
   const resolved = await d.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
   if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
+  const selection = resolved.profile
+    ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+    : null;
+  if (!selection) return null;
   // Mirror the stored shape exactly (TARGETS bodySql: title || '\n' || left(body, 2000)).
   const vec = await resolved.embed(`${input.title}\n${(input.summary ?? '').slice(0, 2000)}`);
   if (!fitsProseColumns(vec.length)) return null;
-  const candidates = await d.queryCandidates(vec, resolved.mode, input.harness, input.title);
+  const candidates = await d.queryCandidates(
+    vec,
+    resolved.mode,
+    input.harness,
+    input.title,
+    selection,
+  );
   const t = dupeThresholds();
   const sorted = [...candidates].sort((a, b) => b.similarity - a.similarity);
   // The co-signal (see CO_SIGNAL_* above): an ordinary cosine plus a genuinely

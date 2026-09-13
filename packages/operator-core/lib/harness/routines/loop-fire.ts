@@ -335,6 +335,11 @@ export function readLoopCostCapCents(payloadTemplate: Record<string, unknown> | 
 
 export const LOOP_WAKE_CHECKPOINT_MAX_CHARS = 3_000;
 
+/** Settled checks are durable history, not a per-wake action queue. Keep only the
+ * newest few expanded; older verified rows remain addressable by stable id in one
+ * summary line. Predicted/contested rows are never compacted. */
+export const LOOP_WAKE_EXPANDED_VERIFIED_CHECKS = 2;
+
 /** EI-18187907490692276: clip an over-long carry-note for a wake prompt WITHOUT dropping
  *  the load-bearing tail. A loop:checkpoint carry-note is authored Did → Left → Insight →
  *  Next action, so the single most load-bearing section — `## Next action`, i.e. what to
@@ -546,11 +551,26 @@ export function renderLoopWallsBlock(walls: ReadonlyArray<WallEntry>, nowMs: num
  *  shape), exactly what walls-splitting exists to prevent. */
 export function renderLoopChecksBlock(checks: ReadonlyArray<CheckEntry>): string | null {
   if (!checks.length) return null;
+  const unsettled = checks.filter((check) => !check.verified || Boolean(check.contested));
+  const verified = checks.filter((check) => Boolean(check.verified) && !check.contested && Boolean(check.id));
+  const unaddressableVerified = checks.filter(
+    (check) => Boolean(check.verified) && !check.contested && !check.id,
+  );
+  const expandedVerified = verified.slice(-LOOP_WAKE_EXPANDED_VERIFIED_CHECKS);
+  const compactedVerified = verified.slice(0, -LOOP_WAKE_EXPANDED_VERIFIED_CHECKS);
+  const compactedLine = compactedVerified.length
+    ? `  • ✓ ${compactedVerified.length} older verified check(s) retained in loop:checkpoint: ${compactedVerified
+        .map((check) => `#${check.id}`)
+        .join(', ')}`
+    : null;
+  const rendered = [...unsettled, ...unaddressableVerified, ...expandedVerified].map(
+    (c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`,
+  );
   return (
     '🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ⚠ CONTESTED: evidence contradicts verification; ' +
     '? PREDICTED: run the re-check before ' +
     'relying on it; update/clear via loop:checkpoint { checks }):\n' +
-    checks.map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`).join('\n')
+    [...(compactedLine ? [compactedLine] : []), ...rendered].join('\n')
   );
 }
 

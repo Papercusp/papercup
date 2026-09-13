@@ -9,6 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 
 import { corpusNovelty, type CorpusEntry } from './critique-core';
 import {
@@ -54,6 +55,7 @@ function makeDeps(opts: {
       : {
           mode: opts.mode ?? 'gemma',
           dims: opts.dims ?? DIM,
+          profile: EMBEDDER_DIM_SPECS.gemma,
           embed: async () => new Array(opts.embedLen ?? DIM).fill(0.01),
         };
   const queryImplementationCorpus = vi.fn(async () => {
@@ -192,8 +194,18 @@ describe('resolveSemanticNoveltySims — JOIN partition + fail-open', () => {
     expect(sims!.has('some-plan#D-3')).toBe(false);
     expect(sims!.has('gym:step-7')).toBe(false);
     // Slugs/ids are stripped of their ref prefix before the join.
-    expect(deps.queryPlanSims).toHaveBeenCalledWith(expect.anything(), 'gemma', ['alpha']);
-    expect(deps.queryWorkItemSims).toHaveBeenCalledWith(expect.anything(), 'gemma', ['F-1']);
+    expect(deps.queryPlanSims).toHaveBeenCalledWith(
+      expect.anything(),
+      'gemma',
+      ['alpha'],
+      expect.objectContaining({ profileId: EMBEDDER_DIM_SPECS.gemma.profileId }),
+    );
+    expect(deps.queryWorkItemSims).toHaveBeenCalledWith(
+      expect.anything(),
+      'gemma',
+      ['F-1'],
+      expect.objectContaining({ profileId: EMBEDDER_DIM_SPECS.gemma.profileId }),
+    );
   });
 
   it('fail-opens to null when the embedder is disabled', async () => {

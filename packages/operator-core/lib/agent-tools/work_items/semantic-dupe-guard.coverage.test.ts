@@ -14,6 +14,7 @@
  *   3. the surface asked about is the one the guard actually reads.
  */
 import { describe, expect, it } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
   findSemanticDupes,
   type SemanticDupeCandidate,
@@ -60,6 +61,7 @@ const deps = (
   resolveEmbedder: async () => ({
     mode: 'gemma',
     dims: PROSE_VECTOR_DIMS,
+    profile: EMBEDDER_DIM_SPECS.gemma,
     embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
   }),
   queryCandidates: async () => candidates,

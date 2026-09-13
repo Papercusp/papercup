@@ -54,13 +54,19 @@
  * follow-up idea filing rather than shipped on an unvalidated guess.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { EmbedderProfileSpec } from '@papercusp/memory';
 
 import { dedupSignature, type DupCluster } from '../harness/improvements/digest';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { parseVectorText } from '../search/embed-space-self-check';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
-import { fitsProseColumns } from '../search/prose-vector-dims';
+import {
+  fitsProseColumns,
+  proseProfilePredicateSql,
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from '../search/prose-vector-dims';
 /** Whole-leg budget (resolve the current embedding mode + one stored-vector PG join
  *  + the O(n²) cosine pass — no embed() calls since WI-4183/EI-9694 reused stored
  *  vectors). A slow join or a wedged embedder-preference read simply forfeits THIS
@@ -80,7 +86,12 @@ const MAX_EMBED_CANDIDATES = 600;
 /** Injectable seam (tests + any future non-backfill embedding space). */
 export interface DigestEmbedClusterDeps {
   resolveEmbedder: () => Promise<
-    | { mode: string; dims: number; embed: (t: string) => Promise<number[]> }
+    | {
+        mode: string;
+        dims: number;
+        profile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>;
+        embed: (t: string) => Promise<number[]>;
+      }
     | { mode: 'disabled'; reason?: string }
     | null
   >;
@@ -90,7 +101,7 @@ export interface DigestEmbedClusterDeps {
    *  storage: an id absent from the returned map has no usable stored vector
    *  (not yet backfilled, or backfilled under a different mode) and is excluded
    *  from clustering rather than embedded fresh. */
-  queryStoredVectors: (mode: string, ids: string[]) => Promise<Map<string, number[]>>;
+  queryStoredVectors: (mode: string, ids: string[], selection: ProseProfileSelection) => Promise<Map<string, number[]>>;
 }
 
 /** The experiment is OPT-IN — lexical clustering is the control AND the default. */
@@ -173,7 +184,7 @@ export function clusterByCosine(
   return clusters;
 }
 
-async function queryStoredVectorsReal(mode: string, ids: string[]): Promise<Map<string, number[]>> {
+async function queryStoredVectorsReal(mode: string, ids: string[], selection: ProseProfileSelection): Promise<Map<string, number[]>> {
   if (ids.length === 0) return new Map();
   const { sql } = getOrgPg();
   // migration 374 unified issues + features into harness_shared.work_items;
@@ -184,7 +195,7 @@ async function queryStoredVectorsReal(mode: string, ids: string[]): Promise<Map<
       FROM harness_shared.work_items
      WHERE feature_id = ANY(${ids})
        AND embedding IS NOT NULL
-       AND embedding_mode = ${mode}`;
+       AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}`;
   return new Map(rows.map((r) => [r.id, parseVectorText(r.embedding)]));
 }
 
@@ -203,9 +214,14 @@ async function embedAndCluster(
   const resolved = await deps.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
   if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
+  const selection = resolved.profile
+    ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+    : null;
+  if (!selection) return null;
   const vectorById = await deps.queryStoredVectors(
     resolved.mode,
     candidates.map((c) => c.id),
+    selection,
   );
   // Fail-open PER ROW: a candidate whose stored vector hasn't backfilled yet (or is
   // stored under a different mode) is excluded from clustering, not embedded fresh —

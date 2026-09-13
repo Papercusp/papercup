@@ -47,6 +47,12 @@ import {
   type OverlapScanReport,
   type OverlapUnit,
 } from '@papercusp/overlap-clusters';
+import {
+  proseProfilePredicateSql,
+  resolveCurrentProseProfileSelection,
+  resolveProseProfileIdSelection,
+  type ProseProfileSelection,
+} from './prose-vector-dims';
 
 /** The two synced corpora workstream C scans. */
 export const DOC_OVERLAP_SOURCES = ['papercusp-guidance', 'papercusp-engineering'] as const;
@@ -141,16 +147,26 @@ export interface DocOverlapUnitLoad {
 /** Injectable seam — tests and any future non-552 store. */
 export interface DocOverlapDeps {
   /** Every section in the given sources and space, split into vectorised and not. */
-  loadUnits: (sources: readonly string[], mode: string) => Promise<DocOverlapUnitLoad>;
+  loadUnits: (
+    sources: readonly string[],
+    mode: string,
+    selection: ProseProfileSelection,
+  ) => Promise<DocOverlapUnitLoad>;
   /** ANN neighbours of one section, excluding its own page. */
   neighboursOf: (
     ref: DocSectionRef,
     sources: readonly string[],
     mode: string,
     limit: number,
+    selection: ProseProfileSelection,
   ) => Promise<NeighbourHit[]>;
   /** Sampled cosine between unrelated pairs, per ordered source pair. */
-  sampleNullPairs: (sources: readonly string[], mode: string, sampleSize: number) => Promise<NullPairSample[]>;
+  sampleNullPairs: (
+    sources: readonly string[],
+    mode: string,
+    sampleSize: number,
+    selection: ProseProfileSelection,
+  ) => Promise<NullPairSample[]>;
 }
 
 export interface NullPairSample {
@@ -165,7 +181,11 @@ export interface NullPairSample {
   max: number;
 }
 
-async function loadUnitsReal(sources: readonly string[], mode: string): Promise<DocOverlapUnitLoad> {
+async function loadUnitsReal(
+  sources: readonly string[],
+  mode: string,
+  selection: ProseProfileSelection,
+): Promise<DocOverlapUnitLoad> {
   const { sql } = getOrgPg();
   // The `embedding IS NOT NULL` test is deliberately a SELECTED COLUMN, not a
   // WHERE clause. As a predicate it silently shrinks the population and takes
@@ -176,7 +196,7 @@ async function loadUnitsReal(sources: readonly string[], mode: string): Promise<
     SELECT source_key, slug, anchor, (embedding IS NOT NULL) AS has_vector
       FROM harness_shared.doc_sections
      WHERE source_key = ANY(${sources as string[]})
-       AND embedding_mode = ${mode}
+       AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}
      ORDER BY source_key, slug, anchor`;
   // The vector field is deliberately omitted: an ANN-backed provider never
   // reads it, and materialising ~10k x 768 floats into process memory just to
@@ -200,6 +220,7 @@ async function neighboursOfReal(
   sources: readonly string[],
   mode: string,
   limit: number,
+  selection: ProseProfileSelection,
 ): Promise<NeighbourHit[]> {
   const { sql } = getOrgPg();
   // The probe's own page is excluded HERE as well as by the generic module's
@@ -210,7 +231,7 @@ async function neighboursOfReal(
     WITH probe AS (
       SELECT embedding FROM harness_shared.doc_sections
        WHERE source_key = ${ref.sourceKey} AND slug = ${ref.slug} AND anchor = ${ref.anchor}
-         AND embedding_mode = ${mode}
+         AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}
        LIMIT 1
     )
     SELECT d.source_key, d.slug, d.anchor,
@@ -218,7 +239,7 @@ async function neighboursOfReal(
       FROM harness_shared.doc_sections d
      WHERE d.source_key = ANY(${sources as string[]})
        AND d.embedding IS NOT NULL
-       AND d.embedding_mode = ${mode}
+       AND ${proseProfilePredicateSql(sql, selection, 'd.embedding_profile', 'd.embedding_mode')}
        AND NOT (d.source_key = ${ref.sourceKey} AND d.slug = ${ref.slug})
      ORDER BY d.embedding <=> (SELECT embedding FROM probe)
      LIMIT ${limit}`;
@@ -232,6 +253,7 @@ async function sampleNullPairsReal(
   sources: readonly string[],
   mode: string,
   sampleSize: number,
+  selection: ProseProfileSelection,
 ): Promise<NullPairSample[]> {
   const { sql } = getOrgPg();
   // Two INDEPENDENT random draws, joined with the SAME page exclusion the scan
@@ -243,11 +265,13 @@ async function sampleNullPairsReal(
   >`
     WITH a AS (
       SELECT source_key, slug, anchor, embedding FROM harness_shared.doc_sections
-       WHERE source_key = ANY(${sources as string[]}) AND embedding IS NOT NULL AND embedding_mode = ${mode}
+       WHERE source_key = ANY(${sources as string[]}) AND embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}
        ORDER BY random() LIMIT ${sampleSize}
     ), b AS (
       SELECT source_key, slug, anchor, embedding FROM harness_shared.doc_sections
-       WHERE source_key = ANY(${sources as string[]}) AND embedding IS NOT NULL AND embedding_mode = ${mode}
+       WHERE source_key = ANY(${sources as string[]}) AND embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}
        ORDER BY random() LIMIT ${sampleSize}
     ), pairs AS (
       SELECT a.source_key AS a_src, b.source_key AS b_src,
@@ -283,13 +307,33 @@ export interface DocOverlapOptions {
   sources?: readonly string[];
   /** The embedding space to scan. All comparisons happen inside it. */
   mode: string;
+  /** Exact profile to scan. Omitted means this mode's declared current profile;
+   * unknown/ineligible modes fail closed instead of falling back to mode-only. */
+  profileId?: string;
   deps?: DocOverlapDeps;
+}
+
+function profileSelectionFor(opts: Pick<DocOverlapOptions, 'mode' | 'profileId'>): ProseProfileSelection {
+  const selection = opts.profileId
+    ? resolveProseProfileIdSelection(opts.profileId, opts.mode)
+    : resolveCurrentProseProfileSelection(opts.mode);
+  if (!selection) {
+    throw new Error(
+      `doc-section-overlap: no accepted prose profile for mode ${JSON.stringify(opts.mode)}` +
+        (opts.profileId ? ` and profile ${JSON.stringify(opts.profileId)}` : ''),
+    );
+  }
+  return selection;
 }
 
 /** Every section in the scanned sources, split into vectorised units and a shortfall count. */
 export function loadDocSectionUnits(opts: DocOverlapOptions): Promise<DocOverlapUnitLoad> {
   const deps = opts.deps ?? realDocOverlapDeps;
-  return deps.loadUnits(opts.sources ?? DOC_OVERLAP_SOURCES, opts.mode);
+  return deps.loadUnits(
+    opts.sources ?? DOC_OVERLAP_SOURCES,
+    opts.mode,
+    profileSelectionFor(opts),
+  );
 }
 
 /**
@@ -303,6 +347,7 @@ export function loadDocSectionUnits(opts: DocOverlapOptions): Promise<DocOverlap
 export function createDocSectionNeighbourProvider(opts: DocOverlapOptions): NeighbourProvider {
   const deps = opts.deps ?? realDocOverlapDeps;
   const sources = opts.sources ?? DOC_OVERLAP_SOURCES;
+  const selection = profileSelectionFor(opts);
   return async (unit: OverlapUnit, limit: number): Promise<readonly NeighbourHit[]> => {
     const ref = decodeSectionId(unit.id);
     if (!ref) {
@@ -311,7 +356,7 @@ export function createDocSectionNeighbourProvider(opts: DocOverlapOptions): Neig
           'refusing to report zero neighbours for it, because that is indistinguishable from a clean section',
       );
     }
-    return deps.neighboursOf(ref, sources, opts.mode, limit);
+    return deps.neighboursOf(ref, sources, opts.mode, limit, selection);
   };
 }
 
@@ -327,7 +372,12 @@ export function measureNullBaseline(
   if (!Number.isInteger(sampleSize) || sampleSize < 2) {
     throw new TypeError('measureNullBaseline: sampleSize must be an integer >= 2');
   }
-  return deps.sampleNullPairs(opts.sources ?? DOC_OVERLAP_SOURCES, opts.mode, sampleSize);
+  return deps.sampleNullPairs(
+    opts.sources ?? DOC_OVERLAP_SOURCES,
+    opts.mode,
+    sampleSize,
+    profileSelectionFor(opts),
+  );
 }
 
 /**

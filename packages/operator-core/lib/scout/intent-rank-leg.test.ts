@@ -8,6 +8,7 @@
  *     all degrade to null → the caller keeps newest-first).
  */
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 
 import {
   rankByIntent,
@@ -46,7 +47,12 @@ function makeDeps(opts: {
   const resolveEmbedder = async () =>
     opts.disabled
       ? ({ mode: 'disabled' as const, reason: 'test' })
-      : { mode: opts.mode ?? 'gemma', dims: opts.dims ?? DIM, embed };
+      : {
+          mode: opts.mode ?? 'gemma',
+          dims: opts.dims ?? DIM,
+          profile: EMBEDDER_DIM_SPECS.gemma,
+          embed,
+        };
   return { resolveEmbedder, queryPlanSims, queryWorkItemSims, embed };
 }
 
@@ -113,8 +119,18 @@ describe('resolveIntentSims — JOIN partition + fail-open', () => {
     expect(sims!.has('gym:step-7')).toBe(false);
     expect(sims!.has('weird-ref')).toBe(false);
     // prefixes stripped before the join.
-    expect(deps.queryPlanSims).toHaveBeenCalledWith(expect.anything(), 'gemma', ['alpha']);
-    expect(deps.queryWorkItemSims).toHaveBeenCalledWith(expect.anything(), 'gemma', ['F-1']);
+    expect(deps.queryPlanSims).toHaveBeenCalledWith(
+      expect.anything(),
+      'gemma',
+      ['alpha'],
+      expect.objectContaining({ profileId: EMBEDDER_DIM_SPECS.gemma.profileId }),
+    );
+    expect(deps.queryWorkItemSims).toHaveBeenCalledWith(
+      expect.anything(),
+      'gemma',
+      ['F-1'],
+      expect.objectContaining({ profileId: EMBEDDER_DIM_SPECS.gemma.profileId }),
+    );
   });
 
   it('ranks a re-worded artifact ABOVE a newer one end-to-end (resolve → rankByIntent)', async () => {

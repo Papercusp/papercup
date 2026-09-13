@@ -13,6 +13,7 @@
  * `queryStoredVectors` directly rather than mocking an `embed` function.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 
 import { dedupSignature, findLikelyDuplicates, type DupCluster } from '../harness/improvements/digest';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
@@ -59,7 +60,12 @@ function makeDeps(opts: {
   const resolveEmbedder = async () =>
     opts.disabled
       ? ({ mode: 'disabled' as const, reason: 'test' })
-      : { mode: opts.mode ?? 'gemma', dims: opts.dims ?? DIM, embed: vi.fn() };
+      : {
+          mode: opts.mode ?? 'gemma',
+          dims: opts.dims ?? DIM,
+          profile: opts.mode === 'openai' ? EMBEDDER_DIM_SPECS.openai : EMBEDDER_DIM_SPECS.gemma,
+          embed: vi.fn(),
+        };
   return { resolveEmbedder, queryStoredVectors };
 }
 
@@ -127,7 +133,14 @@ describe('clusterFrictionByEmbedding — the experiment (flag-gated, fail-open)'
       vectorsById: { 'wi:1': vecFor(0), 'wi:2': vecFor(0), 'wi:3': vecFor(1) },
     });
     await clusterFrictionByEmbedding(reworded, deps);
-    expect(deps.queryStoredVectors).toHaveBeenCalledWith('harrier-ish-but-384', ['wi:1', 'wi:2', 'wi:3']);
+    expect(deps.queryStoredVectors).toHaveBeenCalledWith(
+      'harrier-ish-but-384',
+      ['wi:1', 'wi:2', 'wi:3'],
+      expect.objectContaining({
+        profileId: EMBEDDER_DIM_SPECS.gemma.profileId,
+        legacyMode: null,
+      }),
+    );
   });
 
   it('is deterministic — same candidates + stored vectors ⇒ identical clusters', async () => {

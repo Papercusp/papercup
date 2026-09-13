@@ -31,7 +31,10 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 // 600-row request on the live 302k-row corpus.
 import { withIterativeScan } from './hnsw-iterative-scan';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
-import { resolveProseProfileIdSelection } from '../../search/prose-vector-dims';
+import {
+  proseProfilePredicateSql,
+  resolveProseProfileIdSelection,
+} from '../../search/prose-vector-dims';
 
 /** Exact stored-space predicate for every vector source below. No extra read:
  * provenance comes from the query embedder through the engine policy. Unknown
@@ -48,12 +51,7 @@ function proseProfileSql(
         p.embeddingProfile.legacyMode,
       )
     : null;
-  if (!selection) return p.sql`FALSE`;
-  const profile = p.sql.unsafe(profileColumn);
-  const mode = p.sql.unsafe(modeColumn);
-  return selection.legacyMode
-    ? p.sql`(${profile} = ${selection.profileId} OR (${profile} IS NULL AND ${mode} = ${selection.legacyMode}))`
-    : p.sql`${profile} = ${selection.profileId}`;
+  return proseProfilePredicateSql(p.sql, selection, profileColumn, modeColumn);
 }
 
 /**

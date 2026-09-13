@@ -26,9 +26,15 @@
  * a seam; keep the two in sync if the embedding schema moves.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { EmbedderProfileSpec } from '@papercusp/memory';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
-import { fitsProseColumns } from '../search/prose-vector-dims';
+import {
+  fitsProseColumns,
+  proseProfilePredicateSql,
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from '../search/prose-vector-dims';
 /** Whole-leg budget (embed + both join queries). A warm sidecar answers in ~10ms; a
  *  cold in-process model load (~2.8s) simply forfeits THIS read's intent ranking and
  *  falls back to newest-first. */
@@ -40,14 +46,19 @@ export type IntentSimByRef = Map<string, number>;
 /** Injectable seams (tests + any future non-backfill space) — mirrors SemanticNoveltyDeps. */
 export interface IntentRankDeps {
   resolveEmbedder: () => Promise<
-    | { mode: string; dims: number; embed: (t: string) => Promise<number[]> }
+    | {
+        mode: string;
+        dims: number;
+        profile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>;
+        embed: (t: string) => Promise<number[]>;
+      }
     | { mode: 'disabled'; reason?: string }
     | null
   >;
   /** plan_slug → cosine similarity for the slugs that HAVE a vector in `mode`'s space. */
-  queryPlanSims: (vec: number[], mode: string, slugs: string[]) => Promise<Map<string, number>>;
+  queryPlanSims: (vec: number[], mode: string, slugs: string[], selection: ProseProfileSelection) => Promise<Map<string, number>>;
   /** feature_id → cosine similarity for the ids that HAVE a vector in `mode`'s space. */
-  queryWorkItemSims: (vec: number[], mode: string, ids: string[]) => Promise<Map<string, number>>;
+  queryWorkItemSims: (vec: number[], mode: string, ids: string[], selection: ProseProfileSelection) => Promise<Map<string, number>>;
 }
 
 function clamp01(n: number): number {
@@ -76,7 +87,7 @@ function withBudget<T>(ms: number, p: Promise<T | null>): Promise<T | null> {
   });
 }
 
-async function queryPlanSimsReal(vec: number[], mode: string, slugs: string[]): Promise<Map<string, number>> {
+async function queryPlanSimsReal(vec: number[], mode: string, slugs: string[], selection: ProseProfileSelection): Promise<Map<string, number>> {
   if (slugs.length === 0) return new Map();
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
@@ -85,11 +96,11 @@ async function queryPlanSimsReal(vec: number[], mode: string, slugs: string[]): 
       FROM harness_shared.harness_plans
      WHERE plan_slug = ANY(${slugs})
        AND embedding IS NOT NULL
-       AND embedding_mode = ${mode}`;
+       AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}`;
   return new Map(rows.map((r) => [r.plan_slug, Number(r.similarity)]));
 }
 
-async function queryWorkItemSimsReal(vec: number[], mode: string, ids: string[]): Promise<Map<string, number>> {
+async function queryWorkItemSimsReal(vec: number[], mode: string, ids: string[], selection: ProseProfileSelection): Promise<Map<string, number>> {
   if (ids.length === 0) return new Map();
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
@@ -101,7 +112,7 @@ async function queryWorkItemSimsReal(vec: number[], mode: string, ids: string[])
       FROM harness_shared.work_items
      WHERE feature_id = ANY(${ids})
        AND embedding IS NOT NULL
-       AND embedding_mode = ${mode}`;
+       AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}`;
   return new Map(rows.map((r) => [r.id, Number(r.similarity)]));
 }
 
@@ -176,11 +187,15 @@ async function resolveSims(
   const resolved = await deps.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
   if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
+  const selection = resolved.profile
+    ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+    : null;
+  if (!selection) return null;
   const vec = await resolved.embed(intent.slice(0, 2000));
   if (!fitsProseColumns(vec.length)) return null;
   const [planSims, wiSims] = await Promise.all([
-    deps.queryPlanSims(vec, resolved.mode, [...planSlugToRefs.keys()]),
-    deps.queryWorkItemSims(vec, resolved.mode, [...wiIdToRefs.keys()]),
+    deps.queryPlanSims(vec, resolved.mode, [...planSlugToRefs.keys()], selection),
+    deps.queryWorkItemSims(vec, resolved.mode, [...wiIdToRefs.keys()], selection),
   ]);
   const out: IntentSimByRef = new Map();
   for (const [slug, rs] of planSlugToRefs) {

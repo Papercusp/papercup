@@ -29,6 +29,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
   confirmSimilarPlans,
   planDupeAbsoluteOverride,
@@ -58,7 +59,12 @@ const LIVE_SHAPED_BACKGROUND = Array.from({ length: 200 }, (_, i) => 0.65 + (i /
 
 function deps(over: Partial<PlanConfirmDeps> = {}): PlanConfirmDeps {
   return {
-    resolveEmbedder: async () => ({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => VEC }),
+    resolveEmbedder: async () => ({
+      mode: 'gemma',
+      dims: PROSE_VECTOR_DIMS,
+      profile: EMBEDDER_DIM_SPECS.gemma,
+      embed: async () => VEC,
+    }),
     querySimilarities: async () => new Map(),
     queryBackgroundSimilarities: async () => LIVE_SHAPED_BACKGROUND,
     ...over,
@@ -107,7 +113,14 @@ describe('confirmSimilarPlans', () => {
   it('returns candidates unchanged when the embedder is unavailable / wrong dims / throws', async () => {
     for (const d of [
       deps({ resolveEmbedder: async () => null }),
-      deps({ resolveEmbedder: async () => ({ mode: 'harrier', dims: 1024, embed: async () => VEC }) }),
+      deps({
+        resolveEmbedder: async () => ({
+          mode: 'harrier',
+          dims: 1024,
+          profile: EMBEDDER_DIM_SPECS.harrier,
+          embed: async () => VEC,
+        }),
+      }),
       deps({ resolveEmbedder: async () => { throw new Error('boom'); } }),
       deps({ querySimilarities: async () => { throw new Error('553 absent'); } }),
     ]) {

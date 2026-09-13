@@ -13,6 +13,7 @@ import {
   rescheduleLoopAfterAwaitSuppression,
   LOOP_WAKE_FULL_TEMPLATE_EVERY,
   LOOP_WAKE_CHECKPOINT_MAX_CHARS,
+  LOOP_WAKE_EXPANDED_VERIFIED_CHECKS,
   LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS,
   LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS,
   type LoopFireDeps,
@@ -154,6 +155,37 @@ describe('renderLoopChecksBlock — contested verification is explicit on wake',
     expect(out).toContain('• ⚠ ');
     expect(out).toContain('STILL RUNNING');
     expect(out).not.toContain('✓ verified w/ evidence · ? PREDICTED');
+  });
+
+  it('keeps unsettled checks expanded and compacts older verified history by stable id', () => {
+    const verified = Array.from({ length: 12 }, (_, index) => ({
+      id: `settled-${index + 1}`,
+      claim: `historical verified claim ${index + 1} ${'x'.repeat(180)}`,
+      recheck: `probe-${index + 1}`,
+      verified: `evidence-${index + 1}`,
+    }));
+    const out = renderLoopChecksBlock([
+      ...verified,
+      { id: 'pending', claim: 'audit is pending', recheck: 'read audit' },
+      { id: 'contested', claim: 'gate is green', recheck: 'read gate', verified: 'pass', contested: 'red' },
+    ])!;
+
+    expect(out).toContain(`✓ ${verified.length - LOOP_WAKE_EXPANDED_VERIFIED_CHECKS} older verified check(s)`);
+    expect(out).toContain('#settled-1');
+    expect(out).toContain('#settled-12');
+    expect(out).toContain('[#pending] audit is pending');
+    expect(out).toContain('[#contested] gate is green');
+    expect(out).not.toContain(`historical verified claim 1 ${'x'.repeat(180)}`);
+    expect(out.length).toBeLessThan(1_500);
+  });
+
+  it('never compacts verified rows that lack a stable address', () => {
+    const out = renderLoopChecksBlock(
+      Array.from({ length: 4 }, (_, index) => ({ claim: `unaddressed ${index}`, verified: `evidence ${index}` })),
+    )!;
+    expect(out).not.toContain('older verified check(s)');
+    expect(out).toContain('unaddressed 0');
+    expect(out).toContain('unaddressed 3');
   });
 });
 

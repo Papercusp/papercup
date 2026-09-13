@@ -4,6 +4,8 @@
  * finds an eligible row and the caller reads NULL as "no candidate".
  */
 import { describe, expect, it, vi } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 
 const mocks = vi.hoisted(() => {
   const sql = vi.fn(async () => [
@@ -16,6 +18,7 @@ const mocks = vi.hoisted(() => {
       title_similarity: 0.51,
     },
   ]);
+  Object.assign(sql, { unsafe: vi.fn((value: string) => value) });
   const withIterativeScan = vi.fn(
     async (_handle: unknown, body: (handle: unknown) => Promise<unknown>) => body(sql),
   );
@@ -34,7 +37,13 @@ import { queryCandidatesReal } from './semantic-dupe-guard';
 
 describe('semantic-dupe-guard real ANN query', () => {
   it('runs the selective work_items query through the iterative-scan wrapper', async () => {
-    const result = await queryCandidatesReal([0.1, 0.2], 'gemma', 'papercusp', 'new title');
+    const result = await queryCandidatesReal(
+      [0.1, 0.2],
+      'gemma',
+      'papercusp',
+      'new title',
+      resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!,
+    );
 
     expect(mocks.withIterativeScan).toHaveBeenCalledTimes(1);
     expect(mocks.withIterativeScan).toHaveBeenCalledWith(mocks.sql, expect.any(Function));

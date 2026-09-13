@@ -6,6 +6,7 @@
  * never be blocked by embedder health.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
   findSemanticDupes,
   dupeThresholds,
@@ -28,7 +29,12 @@ const cand = (id: string, similarity: number): SemanticDupeCandidate => ({
 });
 
 const okDeps = (candidates: SemanticDupeCandidate[], dims = PROSE_VECTOR_DIMS): SemanticDupeDeps => ({
-  resolveEmbedder: async () => ({ mode: 'gemma', dims, embed: async () => new Array(dims).fill(0.1) }),
+  resolveEmbedder: async () => ({
+    mode: 'gemma',
+    dims,
+    profile: EMBEDDER_DIM_SPECS.gemma,
+    embed: async () => new Array(dims).fill(0.1),
+  }),
   queryCandidates: async () => candidates,
 });
 
@@ -100,6 +106,7 @@ describe('classification', () => {
         resolveEmbedder: async () => ({
           mode: 'gemma',
           dims: PROSE_VECTOR_DIMS,
+          profile: EMBEDDER_DIM_SPECS.gemma,
           embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
         }),
         queryCandidates: async (_vec, _mode, _harness, title) => {
@@ -118,6 +125,7 @@ describe('classification', () => {
       resolveEmbedder: async () => ({
         mode: 'gemma',
         dims: PROSE_VECTOR_DIMS,
+        profile: EMBEDDER_DIM_SPECS.gemma,
         embed: async (t: string) => {
           seen.push(t);
           return new Array(PROSE_VECTOR_DIMS).fill(0.1);
@@ -142,6 +150,7 @@ describe('classification', () => {
       resolveEmbedder: async () => ({
         mode: 'openai',
         dims: PROSE_VECTOR_DIMS,
+        profile: EMBEDDER_DIM_SPECS.openai,
         embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
       }),
       queryCandidates: async (_vec, mode, harness) => {
@@ -174,6 +183,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
       resolveEmbedder: async () => ({
         mode: 'gemma',
         dims: PROSE_VECTOR_DIMS,
+        profile: EMBEDDER_DIM_SPECS.gemma,
         embed: async () => {
           throw new Error('sidecar down');
         },
@@ -185,7 +195,12 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
 
   it('candidate-query throw (e.g. migration 548 not applied)', async () => {
     const deps: SemanticDupeDeps = {
-      resolveEmbedder: async () => ({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1) }),
+      resolveEmbedder: async () => ({
+        mode: 'gemma',
+        dims: PROSE_VECTOR_DIMS,
+        profile: EMBEDDER_DIM_SPECS.gemma,
+        embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
+      }),
       queryCandidates: async () => {
         throw new Error('column "embedding" does not exist');
       },
@@ -218,6 +233,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
         resolveEmbedder: async () => ({
           mode: 'gemma',
           dims: PROSE_VECTOR_DIMS,
+          profile: EMBEDDER_DIM_SPECS.gemma,
           embed: () => new Promise<number[]>(() => {}), // never settles
         }),
         queryCandidates: async () => [cand('EI-1', 0.99)],
@@ -242,6 +258,28 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
     };
     expect(await findSemanticDupes({ title: 't' }, deps)).toBeNull();
     expect(touched).toBe(false);
+  });
+
+  it('fails closed before embedding or querying when exact profile provenance is missing', async () => {
+    let embedded = false;
+    let queried = false;
+    const deps: SemanticDupeDeps = {
+      resolveEmbedder: async () => ({
+        mode: 'gemma',
+        dims: PROSE_VECTOR_DIMS,
+        embed: async () => {
+          embedded = true;
+          return new Array(PROSE_VECTOR_DIMS).fill(0.1);
+        },
+      }),
+      queryCandidates: async () => {
+        queried = true;
+        return [cand('EI-1', 0.99)];
+      },
+    };
+    expect(await findSemanticDupes({ title: 't' }, deps)).toBeNull();
+    expect(embedded).toBe(false);
+    expect(queried).toBe(false);
   });
 
   it('inert under vitest WITHOUT injected deps (never lazy-loads the real model in tests)', async () => {

@@ -65,10 +65,16 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
+import type { EmbedderProfileSpec } from '@papercusp/memory';
 import { resolvePlanScope, type PlanSourceOpts } from './source';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
-import { fitsProseColumns } from '../../search/prose-vector-dims';
+import {
+  fitsProseColumns,
+  proseProfilePredicateSql,
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from '../../search/prose-vector-dims';
 // Embedding-coverage awareness (WI-9393). The SURFACE-level door, deliberately not
 // `assessSourceCoverage`: this classifier is not a `SearchSource`, and
 // SEARCH_SOURCE_SURFACES is asserted exhaustive in both directions against
@@ -208,9 +214,20 @@ export function resolveConfirmCalibration(
 
 /** Injectable seams (tests + any future non-553 store). */
 export interface PlanConfirmDeps {
-  resolveEmbedder: () => Promise<{ mode: string; dims: number; embed: (t: string) => Promise<number[]> } | null>;
+  resolveEmbedder: () => Promise<{
+    mode: string;
+    dims: number;
+    profile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>;
+    embed: (t: string) => Promise<number[]>;
+  } | null>;
   /** slug → similarity for the given slugs that HAVE a vector in `mode`'s space. */
-  querySimilarities: (vec: number[], mode: string, slugs: string[], opts: PlanSourceOpts) => Promise<Map<string, number>>;
+  querySimilarities: (
+    vec: number[],
+    mode: string,
+    slugs: string[],
+    opts: PlanSourceOpts,
+    selection: ProseProfileSelection,
+  ) => Promise<Map<string, number>>;
   /**
    * The proposed vector's similarity against a BACKGROUND sample of the same
    * corpus, excluding the candidates themselves — the distribution the
@@ -223,6 +240,7 @@ export interface PlanConfirmDeps {
     excludeSlugs: string[],
     limit: number,
     opts: PlanSourceOpts,
+    selection: ProseProfileSelection,
   ) => Promise<number[]>;
   /** Test seam for the WI-9393 coverage assessment; injecting it also opts in
    *  under vitest, where the assessment is otherwise inert. */
@@ -234,6 +252,7 @@ async function querySimilaritiesReal(
   mode: string,
   slugs: string[],
   opts: PlanSourceOpts,
+  selection: ProseProfileSelection,
 ): Promise<Map<string, number>> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const vecLit = `[${vec.join(',')}]`;
@@ -244,7 +263,7 @@ async function querySimilaritiesReal(
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ANY(${slugs})
          AND embedding IS NOT NULL
-         AND embedding_mode = ${mode}`;
+         AND ${proseProfilePredicateSql(tx, selection, 'embedding_profile', 'embedding_mode')}`;
   });
   return new Map(rows.map((r) => [r.plan_slug, Number(r.similarity)]));
 }
@@ -267,6 +286,7 @@ async function queryBackgroundSimilaritiesReal(
   excludeSlugs: string[],
   limit: number,
   opts: PlanSourceOpts,
+  selection: ProseProfileSelection,
 ): Promise<number[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const vecLit = `[${vec.join(',')}]`;
@@ -278,7 +298,7 @@ async function queryBackgroundSimilaritiesReal(
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
              AND embedding IS NOT NULL
-             AND embedding_mode = ${mode}
+             AND ${proseProfilePredicateSql(tx, selection, 'embedding_profile', 'embedding_mode')}
              AND NOT (plan_slug = ANY(${excludeSlugs}))
            ORDER BY md5(plan_slug)
            LIMIT ${limit}
@@ -406,10 +426,14 @@ async function confirmSimilarPlansCore<T extends { slug: string }>(
     const d = deps ?? confirmDeps;
     const resolved = await d.resolveEmbedder();
     if (!resolved || !fitsProseColumns(resolved.dims)) return noVerdict;
+    const selection = resolved.profile
+      ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+      : null;
+    if (!selection) return noVerdict;
     const vec = await resolved.embed(`${proposed.title}\n${(proposed.body ?? '').slice(0, 2000)}`);
     if (!fitsProseColumns(vec.length)) return noVerdict;
     const slugs = candidates.map((c) => c.slug);
-    const sims = await d.querySimilarities(vec, resolved.mode, slugs, opts);
+    const sims = await d.querySimilarities(vec, resolved.mode, slugs, opts, selection);
 
     // The cut. An absolute override skips the background read entirely; the
     // normal path calibrates against the corpus and DECLINES TO CLASSIFY when
@@ -426,6 +450,7 @@ async function confirmSimilarPlansCore<T extends { slug: string }>(
               slugs,
               BACKGROUND_SAMPLE_LIMIT,
               opts,
+              selection,
             )
           : [];
     const calibration = resolveConfirmCalibration(background, {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 
 import {
   DOC_OVERLAP_SOURCES,
@@ -199,6 +200,26 @@ describe('loadDocSectionUnits', () => {
       }),
     });
     expect(got).toEqual({ sources: DOC_OVERLAP_SOURCES, mode: MODE });
+  });
+
+  it('passes the mode\'s exact current profile to the storage query', async () => {
+    let profileId: string | null = null;
+    await loadDocSectionUnits({
+      mode: MODE,
+      deps: stubDeps({
+        loadUnits: async (_sources, _mode, selection) => {
+          profileId = selection.profileId;
+          return { units: [], unavailable: 0 };
+        },
+      }),
+    });
+    expect(profileId).toBe(EMBEDDER_DIM_SPECS.gemma.profileId);
+  });
+
+  it('fails closed for an unknown mode instead of issuing a mode-only scan', async () => {
+    expect(() =>
+      loadDocSectionUnits({ mode: 'future-mode', deps: stubDeps() }),
+    ).toThrow(/no accepted prose profile/);
   });
 });
 
