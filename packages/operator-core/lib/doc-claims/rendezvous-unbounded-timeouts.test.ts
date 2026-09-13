@@ -19,6 +19,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const RENDEZVOUS_SITES = [
   'packages/operator-core/lib/db-boot-migrate.ts',
   'packages/operator-core/lib/backup/configure.ts',
+  'packages/operator-core/lib/agent-tools/db/migrate.ts',
 ] as const;
 
 describe('WI-1194246 rendezvous-unbounded-timeouts claim', () => {

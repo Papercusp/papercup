@@ -191,6 +191,7 @@ import {
   withCarryNoteChecks,
   withCarryNoteWalls,
   CHECKPOINT_BODY_CAP_CHARS,
+  type WorkItemSubject,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { describeUnreadRun } from '../../carry-note-unread-run';
@@ -2214,6 +2215,7 @@ export default defineTool({
           res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
             ...(typeof (joinAddendumStored ?? checkpointToStore) === 'string'
               ? { latestUpdate: (joinAddendumStored ?? checkpointToStore)! } : {}),
+            ...(item ? { workItem: item as WorkItemSubject } : {}),
             ...(checksTransform ? { transform: checksTransform } : {}),
             guard: composeGuards(
               appendBaseGuard,
@@ -2260,6 +2262,7 @@ export default defineTool({
               checkpointToStore,
               {
                 ...(typeof checkpointToStore === 'string' ? { latestUpdate: checkpointToStore } : {}),
+                ...(item ? { workItem: item as WorkItemSubject } : {}),
                 ...(checksTransform ? { transform: checksTransform } : {}),
                 guard: composeGuards(bodyPreservationGuard, overflowGuard),
                 ...depsOpt,

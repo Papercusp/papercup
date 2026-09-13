@@ -47,6 +47,9 @@
  *      and converted 721's timeout into a deadlock. Fix is two LOCK TABLE lines
  *      in reader order. Enforced from VIEW_LOCK_ORDER_ENFORCED_FROM;
  *      `-- lint-migrations: allow-view-lock-order <reason>` opts out.
+ *      Dynamic `EXECUTE format(...)` pairs whose relation names cannot be
+ *      recovered fail closed unless the author records the reviewed order with
+ *      `-- lint-migrations: dynamic-view-lock-order <reason>`.
  *
  *   4c. VIEW DROP WITHOUT A DEPENDENT ACCOUNT — `DROP VIEW <v>` (bare OR
  *      CASCADE, static or via `EXECUTE format(...)`) with no stated reason why
@@ -617,6 +620,16 @@ export const VIEW_LOCK_ORDER_ACK =
   /^[ \t]*--[ \t]*lint-migrations:[ \t]*allow-view-lock-order[ \t]+\S/im;
 
 /**
+ * Required account for an unresolved dynamic ALTER-table → view-replace pair.
+ * When table/view names come from PL/pgSQL variables, only the author can state
+ * the complete relation order they reviewed. Requiring a non-empty reason makes
+ * that claim visible at the exact migration site instead of silently treating
+ * dynamic SQL as safe.
+ */
+export const DYNAMIC_VIEW_LOCK_ORDER_ACK =
+  /^[ \t]*--[ \t]*lint-migrations:[ \t]*dynamic-view-lock-order[ \t]+\S/im;
+
+/**
  * The migration-721 class (EI-19320370563025481): a file that `ALTER TABLE <t>`
  * and THEN `CREATE OR REPLACE VIEW <v>` where `<v>` selects from `<t>`, without
  * first taking the lock on `<v>`.
@@ -644,6 +657,13 @@ export const VIEW_LOCK_ORDER_ACK =
  *     LOCK TABLE harness_shared.engineer_issues IN ACCESS EXCLUSIVE MODE;
  *     LOCK TABLE harness_shared.work_items      IN ACCESS EXCLUSIVE MODE;
  *
+ * Dynamic `EXECUTE format('ALTER TABLE %s …')` / `EXECUTE format('CREATE OR
+ * REPLACE VIEW %s …')` pairs cannot expose their relation identity to this
+ * text-only detector. They fail closed unless the author records the reviewed
+ * reader-order account with `-- lint-migrations: dynamic-view-lock-order
+ * <reason>`. The generic allow-view-lock-order pragma remains the explicit
+ * opt-out for a genuinely safe inversion.
+ *
  * PRECISION. Two shapes are deliberately NOT flagged, because neither can
  * deadlock: (a) the view re-declared BEFORE the ALTER — that is already reader
  * order; (b) a base table CREATEd in the same migration — a brand-new relation
@@ -655,7 +675,7 @@ export const VIEW_LOCK_ORDER_ACK =
  * executes, whereas prose describing the hazard must read clean.
  *
  * @param {string} sqlText raw migration text
- * @returns {{ view: string, table: string, hot: boolean }[]}
+ * @returns {{ view: string, table: string, hot: boolean, dynamic?: boolean }[]}
  */
 export function findViewLockOrderInversion(sqlText) {
   // The ack is a COMMENT, so it is tested against the RAW text — masking would
@@ -663,6 +683,29 @@ export function findViewLockOrderInversion(sqlText) {
   if (VIEW_LOCK_ORDER_ACK.test(sqlText)) return [];
   const stripped = maskLiveBodies(sqlText);
   const IDENT = '(?:"?[\\w$]+"?\\.)?"?[\\w$]+"?';
+
+  // Dynamic form: string contents are masked, so anchor on the live EXECUTE
+  // token in raw source. We cannot recover relation identities from `%s` / `%I`
+  // plus PL/pgSQL variables, but we can prove the dangerous statement order.
+  // This is the exact shape migration 1154 used when the static detector
+  // incorrectly returned clean and the live apply convoyed readers.
+  const dynamicAlterRe = /\bEXECUTE\s+format\s*\(\s*(['"])\s*ALTER\s+TABLE\b/gi;
+  const dynamicViewRe = /\bEXECUTE\s+format\s*\(\s*(['"])\s*CREATE\s+OR\s+REPLACE\s+VIEW\b/gi;
+  const dynamicAlters = [];
+  const dynamicViews = [];
+  let dynamic;
+  while ((dynamic = dynamicAlterRe.exec(sqlText)) !== null) {
+    if (isLiveCodeAt(sqlText, stripped, dynamic.index)) dynamicAlters.push(dynamic.index);
+  }
+  while ((dynamic = dynamicViewRe.exec(sqlText)) !== null) {
+    if (isLiveCodeAt(sqlText, stripped, dynamic.index)) dynamicViews.push(dynamic.index);
+  }
+  const unresolvedDynamicOrder = dynamicAlters.some((alterIdx) =>
+    dynamicViews.some((viewIdx) => alterIdx < viewIdx),
+  );
+  if (unresolvedDynamicOrder && !DYNAMIC_VIEW_LOCK_ORDER_ACK.test(sqlText)) {
+    return [{ view: '<dynamic-view>', table: '<dynamic-table>', hot: true, dynamic: true }];
+  }
 
   const alters = [];
   const alterRe = new RegExp(
@@ -1331,7 +1374,9 @@ async function main() {
     const first = hits[0];
     console.error(
       `✗ ${f}: ${hits
-        .map((h) => `ALTER TABLE ${h.table} … then CREATE OR REPLACE VIEW ${h.view} (which selects from ${h.table})`)
+        .map((h) => h.dynamic
+          ? 'dynamic ALTER TABLE … then dynamic CREATE OR REPLACE VIEW (relation order unresolved)'
+          : `ALTER TABLE ${h.table} … then CREATE OR REPLACE VIEW ${h.view} (which selects from ${h.table})`)
         .join(
           " · ",
         )} — this takes the two locks in the INVERSE of reader order and deadlocks${

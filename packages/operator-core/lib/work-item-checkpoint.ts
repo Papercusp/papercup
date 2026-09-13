@@ -33,6 +33,7 @@ import {
   splitCarryNoteWalls,
   workItemScope,
   attestCarryNoteUnchanged,
+  type WorkItemSubject,
   type CarryJournalEntry,
   type CarryNoteAttestationResult,
   type CarryNoteAttestationRefusal,
@@ -135,8 +136,9 @@ async function bumpCheckpointProgressAnchor(ref: WorkItemCheckpointRef, ws: stri
 export async function setWorkItemCheckpoint(
   ref: WorkItemCheckpointRef,
   checkpoint: string | null | undefined,
+  opts?: { workItem?: WorkItemSubject },
 ): Promise<string | null> {
-  return (await setWorkItemCheckpointWithPrior(ref, checkpoint)).stored;
+  return (await setWorkItemCheckpointWithPrior(ref, checkpoint, opts)).stored;
 }
 
 /** A checkpoint write's result plus the PRIOR checkpoint's length (EI-9325) — free,
@@ -172,6 +174,8 @@ export async function setWorkItemCheckpointWithPrior(
   opts?: {
     /** Latest authored update before history/check-row preservation transforms. */
     latestUpdate?: string;
+    /** Authoritative work-item subject bound to any newly appended journal entry. */
+    workItem?: WorkItemSubject;
     guard?: (priorNote: string | null, priorLength: number) => string | null;
     /**
      * P-007/D-013 declared dependencies as `kind:ref` tags (see
@@ -287,6 +291,7 @@ export async function setWorkItemCheckpointWithPrior(
       guard: opts?.guard,
       ...(opts?.transform ? { transform: opts.transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
+      ...(opts?.workItem ? { workItem: opts.workItem } : {}),
       bounded: true,
     },
   );

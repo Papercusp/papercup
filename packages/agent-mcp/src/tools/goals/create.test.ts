@@ -24,7 +24,15 @@ const { goalKickoffConsultMock } = vi.hoisted(() => ({ goalKickoffConsultMock: v
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} as never }) }));
 vi.mock('@papercusp/operator-core/lib/consult/relevance-router', () => ({ routeConsult: vi.fn() }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/search/embedder', () => ({
-  buildQueryEmbedder: vi.fn(async () => vi.fn(async () => [0])),
+  buildQueryEmbedderResolved: vi.fn(async () => ({
+    mode: 'local',
+    dims: 1,
+    profile: { provider: 'fixture' },
+    embed: vi.fn(async () => [0]),
+  })),
+}));
+vi.mock('@papercusp/operator-core/lib/search/prose-vector-dims', () => ({
+  resolveProseProfileSelection: vi.fn(() => ({ provider: 'fixture' })),
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/coordination/liveness-oracle', () => ({
   resolveSessionStates: vi.fn(async () => new Map()),

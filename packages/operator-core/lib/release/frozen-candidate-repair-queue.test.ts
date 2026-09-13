@@ -53,6 +53,41 @@ function fresh(): FrozenCandidateRepairQueue {
 }
 
 describe('frozen-candidate repair queue', () => {
+  it('round-trips an observable admission pre-check and clears it when an admission publishes', () => {
+    const pending: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      admissionPrecheck: {
+        schemaVersion: 1,
+        operationId: 'repair-precheck-1',
+        status: 'running',
+        candidate: C,
+        repairHead: C,
+        builtCommit: C1,
+        files: ['lib/a.test.ts'],
+        actor: 'su-test',
+        startedAtMs: T0 + 1,
+        updatedAtMs: T0 + 1,
+        expiresAtMs: T0 + 60_000,
+      },
+    };
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
+    expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
+    expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 2 }).admissionPrecheck).toEqual(
+      pending.admissionPrecheck,
+    );
+    const admitted = markFrozenRepairAdmitted(parsed!, {
+      atMs: T0 + 3,
+      actor: 'su-test',
+      source: { ref: C2, sha: C2 },
+      fromRepairHead: C,
+      toRepairHead: C2,
+      paths: ['lib/a.test.ts'],
+      unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 },
+    });
+    expect(admitted.admissionPrecheck).toBeUndefined();
+  });
+
   it('round-trips committed patch provenance without relabeling it as hook attribution', () => {
     const patch = { commit: C1, parent: C, sha256: 'f'.repeat(64) };
     const admission = {

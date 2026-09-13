@@ -2373,11 +2373,91 @@ export const CARRY_JOURNAL_MAX_ENTRIES = 15;
 export const CARRY_JOURNAL_NOTE_MAX_CHARS = 600;
 export const CARRY_JOURNAL_TOTAL_MAX_CHARS = 6_000;
 
+/**
+ * The fields that identify the work-item subject of a checkpoint. Keep this
+ * list explicit and ordered: JSON object insertion order is not a structural
+ * identity contract, while a journal entry must remain comparable after the
+ * work-item row is rewritten or re-projected.
+ */
+export const WORK_ITEM_SUBJECT_FINGERPRINT_VERSION = 1 as const;
+export const WORK_ITEM_SUBJECT_FIELDS = [
+  'id',
+  'harness',
+  'kind',
+  'title',
+  'summary',
+  'state',
+] as const;
+
+export interface WorkItemSubject {
+  id: string;
+  harness: string | null;
+  kind: string;
+  title: string;
+  summary: string;
+  state: string;
+}
+
+/** Versioned metadata stored on newly appended work-item checkpoint entries. */
+export interface WorkItemSubjectFingerprint {
+  version: typeof WORK_ITEM_SUBJECT_FINGERPRINT_VERSION;
+  sha256: string;
+}
+
+export type WorkItemSubjectFingerprintStatus = 'current' | 'mismatch' | 'unknown';
+
+export interface WorkItemSubjectFingerprintComparison {
+  status: WorkItemSubjectFingerprintStatus;
+  current?: WorkItemSubjectFingerprint;
+  stored?: WorkItemSubjectFingerprint;
+}
+
+/** Compute a stable structural SHA-256 over the canonical subject fields. */
+export function computeWorkItemSubjectFingerprint(subject: WorkItemSubject): WorkItemSubjectFingerprint {
+  const structural = WORK_ITEM_SUBJECT_FIELDS.map((field) => [field, subject[field] ?? null]);
+  return {
+    version: WORK_ITEM_SUBJECT_FINGERPRINT_VERSION,
+    sha256: createHash('sha256').update(JSON.stringify(structural), 'utf8').digest('hex'),
+  };
+}
+
+/** Back-compat-friendly short name for callers that describe this as a subject fingerprint. */
+export const workItemSubjectFingerprint = computeWorkItemSubjectFingerprint;
+
+/** Accept only the current metadata shape; legacy journal entries remain unknown. */
+export function normalizeWorkItemSubjectFingerprint(value: unknown): WorkItemSubjectFingerprint | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as { version?: unknown; sha256?: unknown };
+  if (
+    candidate.version !== WORK_ITEM_SUBJECT_FINGERPRINT_VERSION ||
+    typeof candidate.sha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(candidate.sha256)
+  ) return undefined;
+  return { version: WORK_ITEM_SUBJECT_FINGERPRINT_VERSION, sha256: candidate.sha256.toLowerCase() };
+}
+
+/** Compare the newest journal metadata with the current authoritative subject. */
+export function compareWorkItemSubjectFingerprint(
+  subject: WorkItemSubject | null | undefined,
+  storedValue: unknown,
+): WorkItemSubjectFingerprintComparison {
+  const current = subject ? computeWorkItemSubjectFingerprint(subject) : undefined;
+  const stored = normalizeWorkItemSubjectFingerprint(storedValue);
+  if (!current || !stored) return { status: 'unknown', ...(current ? { current } : {}), ...(stored ? { stored } : {}) };
+  return {
+    status: stored.sha256 === current.sha256 ? 'current' : 'mismatch',
+    current,
+    stored,
+  };
+}
+
 export interface CarryJournalEntry {
   at: number;
   note: string;
   /** Position of the latest authored update in the current, hash-bound note. */
   latestUpdate?: { noteHash: string; offset: number; length: number };
+  /** Subject identity captured when this entry was written; absent on legacy entries. */
+  subjectFingerprint?: WorkItemSubjectFingerprint;
 }
 
 export function readCarryLatestUpdate(note: string, value: unknown):
@@ -2418,11 +2498,19 @@ export function appendCarryJournal(
   journal: ReadonlyArray<CarryJournalEntry> | undefined,
   note: string,
   at: number,
+  subject?: WorkItemSubject | WorkItemSubjectFingerprint,
 ): CarryJournalEntry[] {
   const trimmed = note.trim();
   const cur = [...(journal ?? [])];
   if (!trimmed) return cur;
-  cur.push({ at, note: trimmed.slice(0, CARRY_JOURNAL_NOTE_MAX_CHARS) });
+  const subjectFingerprint = subject
+    ? ('sha256' in subject ? normalizeWorkItemSubjectFingerprint(subject) : computeWorkItemSubjectFingerprint(subject))
+    : undefined;
+  cur.push({
+    at,
+    note: trimmed.slice(0, CARRY_JOURNAL_NOTE_MAX_CHARS),
+    ...(subjectFingerprint ? { subjectFingerprint } : {}),
+  });
   while (cur.length > CARRY_JOURNAL_MAX_ENTRIES) cur.shift();
   let total = cur.reduce((n, e) => n + e.note.length, 0);
   while (total > CARRY_JOURNAL_TOTAL_MAX_CHARS && cur.length > 1) {
@@ -2476,7 +2564,7 @@ function resolveRef(ref: CarryNoteRef | string): { ws: string; scope: string } {
 export async function setCarryNote(
   ref: CarryNoteRef | string,
   note: string | null | undefined,
-  opts?: { journal?: boolean },
+  opts?: { journal?: boolean; workItem?: WorkItemSubject },
 ): Promise<string | null> {
   return (await setCarryNoteWithPrior(ref, note, opts)).stored;
 }
@@ -2540,6 +2628,8 @@ export async function setCarryNoteWithPrior(
   note: string | null | undefined,
   opts?: {
     journal?: boolean;
+    /** Authoritative work-item subject to bind to the newly appended journal entry. */
+    workItem?: WorkItemSubject;
     /** Work-item continuation focus; undefined preserves a prior valid focus on metadata-only writes. */
     latestUpdate?: string;
     guard?: (priorNote: string | null, priorLength: number) => string | null;
@@ -2645,7 +2735,7 @@ export async function setCarryNoteWithPrior(
     const effectiveNote = opts?.transform ? opts.transform(priorNote, note) : note;
     const trimmed = (effectiveNote ?? '').trim();
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
-    const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now) : [];
+    const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now, opts?.workItem) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;
     if (journalEnabled && noteCol !== null && opts && 'latestUpdate' in opts) {
       const latest = opts.latestUpdate === undefined

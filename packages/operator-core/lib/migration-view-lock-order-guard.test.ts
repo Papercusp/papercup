@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  DYNAMIC_VIEW_LOCK_ORDER_ACK,
   VIEW_LOCK_ORDER_ACK,
   VIEW_LOCK_ORDER_ENFORCED_FROM,
   findViewLockOrderInversion,
@@ -28,6 +29,16 @@ const FIXED = [
   'LOCK TABLE harness_shared.engineer_issues IN ACCESS EXCLUSIVE MODE;',
   'LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE;',
   REAL_OFFENCE,
+].join('\n');
+
+/** The unresolved dynamic spelling that migration 1154 used. */
+const DYNAMIC_OFFENCE = [
+  'DO $migration$',
+  'BEGIN',
+  "  EXECUTE format('ALTER TABLE %s ADD COLUMN IF NOT EXISTS %I text', qualified, column_name);",
+  "  EXECUTE format('CREATE OR REPLACE VIEW %s AS %s', view_name, definition);",
+  'END',
+  '$migration$;',
 ].join('\n');
 
 /**
@@ -64,6 +75,30 @@ describe('migration view lock-order inversion guard (EI-19320370563025481)', () 
   it('is not satisfied by locking only the BASE TABLE (the half-fix)', () => {
     const halfFixed = ['LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE;', REAL_OFFENCE].join('\n');
     expect(findViewLockOrderInversion(halfFixed)).toHaveLength(1);
+  });
+
+  it('fails closed on unresolved dynamic ALTER-table then view-replace order', () => {
+    expect(findViewLockOrderInversion(DYNAMIC_OFFENCE)).toEqual([
+      { view: '<dynamic-view>', table: '<dynamic-table>', hot: true, dynamic: true },
+    ]);
+  });
+
+  it('requires a stated reader-order account for the unresolved dynamic form', () => {
+    expect(DYNAMIC_VIEW_LOCK_ORDER_ACK.test('-- lint-migrations: dynamic-view-lock-order')).toBe(false);
+    const reviewed = [
+      '-- lint-migrations: dynamic-view-lock-order outer view then inner view then base table',
+      DYNAMIC_OFFENCE,
+    ].join('\n');
+    expect(findViewLockOrderInversion(reviewed)).toEqual([]);
+  });
+
+  it('does not misread a dynamic pair quoted only in prose as executable', () => {
+    const prose = [
+      "-- EXECUTE format('ALTER TABLE %s ADD COLUMN c int', qualified);",
+      "-- EXECUTE format('CREATE OR REPLACE VIEW %s AS %s', view_name, definition);",
+      'SELECT 1;',
+    ].join('\n');
+    expect(findViewLockOrderInversion(prose)).toEqual([]);
   });
 
   it('is not satisfied by locking the view AFTER the ALTER (order is the point)', () => {
@@ -133,6 +168,12 @@ describe('migration view lock-order inversion guard (EI-19320370563025481)', () 
 
   it('accepts the REAL migration 721 as it shipped (its LOCK lines are the fix)', () => {
     expect(findViewLockOrderInversion(sql('721-work-items-lane-generated-column.sql'))).toEqual([]);
+  });
+
+  it('accepts the REAL migration 1154 only with its explicit dynamic reader-order account', () => {
+    const migration = sql('1154-prose-embedding-profile-identity.sql');
+    expect(migration).toMatch(DYNAMIC_VIEW_LOCK_ORDER_ACK);
+    expect(findViewLockOrderInversion(migration)).toEqual([]);
   });
 
   /**

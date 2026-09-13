@@ -207,6 +207,13 @@ export function findUnacknowledgedExclusiveLock(sqlText: string): {
  *     LOCK TABLE harness_shared.engineer_issues IN ACCESS EXCLUSIVE MODE;
  *     LOCK TABLE harness_shared.work_items      IN ACCESS EXCLUSIVE MODE;
  *
+ * Dynamic `EXECUTE format('ALTER TABLE %s …')` / `EXECUTE format('CREATE OR
+ * REPLACE VIEW %s …')` pairs cannot expose their relation identity to this
+ * text-only detector. They fail closed unless the author records the reviewed
+ * reader-order account with `-- lint-migrations: dynamic-view-lock-order
+ * <reason>`. The generic allow-view-lock-order pragma remains the explicit
+ * opt-out for a genuinely safe inversion.
+ *
  * PRECISION. Two shapes are deliberately NOT flagged, because neither can
  * deadlock: (a) the view re-declared BEFORE the ALTER — that is already reader
  * order; (b) a base table CREATEd in the same migration — a brand-new relation
@@ -218,12 +225,13 @@ export function findUnacknowledgedExclusiveLock(sqlText: string): {
  * executes, whereas prose describing the hazard must read clean.
  *
  * @param {string} sqlText raw migration text
- * @returns {{ view: string, table: string, hot: boolean }[]}
+ * @returns {{ view: string, table: string, hot: boolean, dynamic?: boolean }[]}
  */
 export function findViewLockOrderInversion(sqlText: string): {
     view: string;
     table: string;
     hot: boolean;
+    dynamic?: boolean;
 }[];
 /**
  * The migration-678 / migration-374 class (EI-18748424931934157): a file that
@@ -500,6 +508,14 @@ export const VIEW_LOCK_ORDER_ENFORCED_FROM: 678;
  * author to STATE why the inversion is safe here, not to prove it.
  */
 export const VIEW_LOCK_ORDER_ACK: RegExp;
+/**
+ * Required account for an unresolved dynamic ALTER-table → view-replace pair.
+ * When table/view names come from PL/pgSQL variables, only the author can state
+ * the complete relation order they reviewed. Requiring a non-empty reason makes
+ * that claim visible at the exact migration site instead of silently treating
+ * dynamic SQL as safe.
+ */
+export const DYNAMIC_VIEW_LOCK_ORDER_ACK: RegExp;
 /**
  * Enforcement boundary for the VIEW-DROP DEPENDENCY check (below).
  *

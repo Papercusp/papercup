@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { drainDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 
 const queue = {
@@ -14,6 +15,36 @@ const queue = {
   fixerSpawnId: 'fixer-1',
   failingTests: ['lib/red.test.ts'],
   signature: [],
+  admissionPrecheck: {
+    schemaVersion: 1 as const,
+    operationId: 'repair-precheck-fixture',
+    status: 'passed' as const,
+    candidate: 'a'.repeat(40),
+    repairHead: 'c'.repeat(40),
+    builtCommit: 'd'.repeat(40),
+    files: ['lib/red.test.ts'],
+    actor: 'su-test',
+    startedAtMs: 1,
+    updatedAtMs: 2,
+    expiresAtMs: 60_002,
+    verdict: {
+      ok: true as const,
+      ran: true as const,
+      commit: 'd'.repeat(40),
+      population: {
+        signatureTestFiles: [],
+        admittedTestFiles: ['lib/red.test.ts'],
+        nonTestKinds: [],
+        canProveDoesNotFix: false,
+        files: ['lib/red.test.ts'],
+      },
+      results: [{ path: 'lib/red.test.ts', status: 'pass' as const }],
+      passing: ['lib/red.test.ts'],
+      failing: [],
+      unmeasured: [],
+      fixes: [],
+    },
+  },
 };
 const NEW_HEAD = 'd'.repeat(40);
 const mocks = vi.hoisted(() => ({
@@ -36,8 +67,10 @@ const mocks = vi.hoisted(() => ({
   // creates for the canonical root, and the root canonicalization it consults first.
   precheckFactory: vi.fn(),
   canonicalRoot: vi.fn(),
+  transition: vi.fn(),
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
+  applyFrozenCandidateRepairQueueTransition: mocks.transition,
   readFrozenCandidateRepairQueue: mocks.read,
   readFrozenCandidateRepairQueueState: mocks.readState,
   retireFrozenCandidateRepairQueue: mocks.retire,
@@ -45,6 +78,14 @@ vi.mock('../../harness/routines/release-actions', () => ({
 }));
 vi.mock('../../release/fixer-liveness', () => ({ releaseFixerSpawnAlive: mocks.alive }));
 vi.mock('../../release-deploy-launch', () => ({ integrationRoot: () => '/repo' }));
+vi.mock('../../release/frozen-lineage-ledger-reconcile', () => ({
+  reconcileFrozenRepairQueueWithLineageRef: (current: unknown) => ({
+    status: 'in-sync',
+    queue: current,
+    detail: 'fixture lineage is in sync',
+    reconciled: [],
+  }),
+}));
 vi.mock('../../release/admission-fix-precheck', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/admission-fix-precheck')>()),
   createCheckpointTreeFixPrecheckRunner: mocks.precheckFactory,
@@ -148,6 +189,12 @@ beforeEach(() => {
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
   mocks.write.mockResolvedValue(undefined);
+  mocks.transition.mockImplementation(async (_target, transition) => ({
+    status: 'written',
+    queue: transition((mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue),
+    fresh: (mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue,
+    retries: 0,
+  }));
   mocks.presence.mockResolvedValue(undefined);
   mocks.retract.mockReturnValue(true);
   mocks.ledger.mockResolvedValue([]);
@@ -561,8 +608,43 @@ describe('release:repair-queue', () => {
 
   describe('R6 admission pre-check wiring (P-006)', () => {
     const dryRuns = () => mocks.admit.mock.calls.map((c) => (c[0] as { dryRun: boolean }).dryRun);
+    const queueWithoutPrecheck = () => ({ ...queue, admissionPrecheck: undefined });
+    const settledPrecheckQueue = async () => {
+      await drainDetached();
+      const transitionResult = mocks.transition.mock.results.at(-1)?.value as
+        | Promise<{ queue: typeof queue }>
+        | undefined;
+      if (!transitionResult) throw new Error('expected detached pre-check settlement');
+      return (await transitionResult).queue;
+    };
 
-    it('confirm:true is two-phase: build dryRun:true → measure at the built commit in the CANONICAL root → publish dryRun:false', async () => {
+    it('a live pre-check serializes the queue: another confirmed admission returns the same handle without building or launching', async () => {
+      const pending = {
+        ...queueWithoutPrecheck(),
+        admissionPrecheck: {
+          ...queue.admissionPrecheck,
+          status: 'running' as const,
+          verdict: undefined,
+          expiresAtMs: Date.now() + 60_000,
+        },
+      };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: pending });
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/other.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: true,
+        verdict: 'precheck-running',
+        precheckOperation: { operationId: 'repair-precheck-fixture', status: 'running' },
+      });
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.precheckFactory).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('confirm:true returns after a durable pre-check marker; a later confirmed call publishes only after the stored pass', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));
       // The serving host's root is a LINKED worktree on :3170; the runner must be created for the
       // main worktree (checkpoint tree, run-lock and setup-release-checkout all key off it).
@@ -573,36 +655,72 @@ describe('release:repair-queue', () => {
         results: files.map((path) => ({ path, status: 'pass' as const })),
       }));
       mocks.precheckFactory.mockReturnValue(runner);
-      const result = body(
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      const started = body(
         await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
       );
-      expect(result).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
-      expect(dryRuns()).toEqual([true, false]);
+      expect(started).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: true,
+        verdict: 'precheck-running',
+        builtCommit: NEW_HEAD,
+        precheckOperation: { status: 'running', builtCommit: NEW_HEAD, files: ['lib/red.test.ts'] },
+      });
+      expect(dryRuns()).toEqual([true]);
+      expect(mocks.write).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ admissionPrecheck: expect.objectContaining({ status: 'running' }) }),
+        { expectedUpdatedAtMs: queue.updatedAtMs },
+      );
       expect(mocks.canonicalRoot).toHaveBeenCalledWith('/repo');
       expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
       expect(mocks.precheckFactory).toHaveBeenCalledWith({ integrationRoot: '/canonical', checkpointRoot: checkpointRootMirror('/canonical') });
       expect(runner).toHaveBeenCalledWith({ commit: NEW_HEAD, files: ['lib/red.test.ts'] });
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({ status: 'passed', builtCommit: NEW_HEAD });
+      expect(settled.dispatchReservation).toBeUndefined();
+      expect(dryRuns()).toEqual([true]); // the detached leg never publishes
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
+      const published = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(published).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
+      expect(dryRuns()).toEqual([true, true, false]);
     });
 
-    it('a red measurement REFUSES and publishes nothing: one build call, no queue write, the built commit named', async () => {
+    it('a stored red measurement refuses on the follow-up and the detached leg never publishes', async () => {
       mocks.admit.mockReturnValue(admissionOf(false));
       mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
         ran: true as const,
         commit,
         results: files.map((path) => ({ path, status: 'fail' as const })),
       }));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      const started = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(started).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
+      const settled = await settledPrecheckQueue();
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const result = body(
         await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
       );
       expect(result).toMatchObject({ ok: false, refused: true, admitted: false, builtCommit: NEW_HEAD });
       expect(result.reason).toMatch(/^admission-(does-not-fix|imports-red)$/);
-      expect(dryRuns()).toEqual([true]);
-      expect(mocks.write).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true, true]);
     });
 
-    it('a runner failure refuses publication; the busy-tree exception remains a separate accepted branch', async () => {
+    it('a stored runner failure refuses publication; retryPrecheck is the explicit restart route', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.precheckFactory.mockReturnValue(async () => ({ ran: false as const, reason: 'runner-failed' as const, detail: 'setup-release-checkout exited 1' }));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      const started = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(started).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
+      const settled = await settledPrecheckQueue();
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const result = body(
         await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
       );
@@ -613,12 +731,11 @@ describe('release:repair-queue', () => {
         reason: 'admission-precheck-unavailable',
         builtCommit: NEW_HEAD,
       });
-      expect(dryRuns()).toEqual([true]);
+      expect(dryRuns()).toEqual([true, true]);
       expect(JSON.stringify(result.precheck)).toContain('runner-failed');
-      expect(mocks.write).not.toHaveBeenCalled();
     });
 
-    it('checkpoint-tree-busy remains the explicit fail-open exception and publishes loud', async () => {
+    it('checkpoint-tree-busy settles as the explicit pass-through and publishes loud only on the follow-up', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.precheckFactory.mockReturnValue(async () => ({
         ran: false as const,
@@ -626,11 +743,18 @@ describe('release:repair-queue', () => {
         detail: 'gate run holds the checkpoint tree',
         holder: { pid: 7, elapsedSec: 30 },
       }));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      const started = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+      expect(started).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
+      const settled = await settledPrecheckQueue();
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const result = body(
         await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
       );
       expect(result).toMatchObject({ ok: true, admitted: true });
-      expect(dryRuns()).toEqual([true, false]);
+      expect(dryRuns()).toEqual([true, true, false]);
       expect(JSON.stringify(result.precheck)).toContain('checkpoint-tree-busy');
     });
 

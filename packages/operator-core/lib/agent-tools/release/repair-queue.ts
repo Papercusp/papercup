@@ -13,7 +13,9 @@ import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agen
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { trackDetached } from '../../detached-imports';
 import {
+  applyFrozenCandidateRepairQueueTransition,
   readFrozenCandidateRepairQueueState,
   retireFrozenCandidateRepairQueue,
   writeFrozenCandidateRepairQueue,
@@ -27,6 +29,7 @@ import {
   normalizeRepoPath,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
+  type FrozenRepairAdmissionPrecheck,
 } from '../../release/frozen-candidate-repair-queue';
 import {
   parseFrozenRepairEditHunk,
@@ -121,6 +124,8 @@ const argsSchema = z.preprocess(
       /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
       skipPrecheck: z.boolean().optional(),
       precheckReason: z.string().min(8).max(2000).optional(),
+      /** Retry a terminal failed pre-check for the same immutable built commit. A running one is never duplicated. */
+      retryPrecheck: z.boolean().optional(),
     }),
     z.object({
       /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
@@ -134,6 +139,7 @@ const argsSchema = z.preprocess(
       patchCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
       skipPrecheck: z.boolean().optional(),
       precheckReason: z.string().min(8).max(2000).optional(),
+      retryPrecheck: z.boolean().optional(),
     }),
     z.object({
       /**
@@ -416,6 +422,58 @@ function precheckRecordOf(
   };
 }
 
+const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 20 * 60_000;
+const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
+const ADMISSION_PRECHECK_SETTLEMENT_BUDGET_MS = 60_000;
+
+function sameAdmissionPrecheck(
+  state: FrozenRepairAdmissionPrecheck | undefined,
+  input: { candidate: string; repairHead: string; builtCommit: string; files: readonly string[]; actor: string },
+): state is FrozenRepairAdmissionPrecheck {
+  return Boolean(
+    state &&
+      state.candidate === input.candidate &&
+      state.repairHead === input.repairHead &&
+      state.builtCommit === input.builtCommit &&
+      state.actor === input.actor &&
+      state.files.length === input.files.length &&
+      state.files.every((file, index) => file === input.files[index]),
+  );
+}
+
+function admissionPrecheckDeadline(startedAtMs: number, files: readonly string[]): number {
+  return (
+    startedAtMs +
+    ADMISSION_PRECHECK_SETUP_BUDGET_MS +
+    files.length * ADMISSION_PRECHECK_PER_FILE_BUDGET_MS +
+    ADMISSION_PRECHECK_SETTLEMENT_BUDGET_MS
+  );
+}
+
+async function settleAdmissionPrecheck(
+  queueTarget: ReturnType<typeof target>,
+  operationId: string,
+  verdict: FixPrecheckVerdict,
+): Promise<void> {
+  const settledAtMs = Date.now();
+  await applyFrozenCandidateRepairQueueTransition(queueTarget, (fresh) => {
+    const current = fresh.admissionPrecheck;
+    if (!current || current.operationId !== operationId || current.status !== 'running') return fresh;
+    const { dispatchReservation, ...rest } = fresh;
+    return {
+      ...rest,
+      ...(dispatchReservation?.token === operationId ? {} : { dispatchReservation }),
+      admissionPrecheck: {
+        ...current,
+        status: verdict.ok ? 'passed' : 'failed',
+        verdict,
+        updatedAtMs: settledAtMs,
+      },
+      updatedAtMs: Math.max(fresh.updatedAtMs + 1, settledAtMs),
+    };
+  });
+}
+
 async function recordAudit(
   actor: string,
   details: Record<string, unknown>,
@@ -445,7 +503,7 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, admit named paths onto, claim a manifest leg, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; dry-run unless `confirm:true`. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
+    'Inspect, admit named paths onto, claim a manifest leg, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
   capability: 'operator:write',
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
@@ -464,9 +522,9 @@ export default defineTool({
     notWhen:
       'Workspace-global: never pass harness/workspace. `admit` is path-exact — do not catch up to the tip. Never retire a live/unknown fixer, active dispatch, ready-to-verify work, or a phantom red. This tool does not launch checkpoints or deploy.',
     chaining:
-      'Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true` and the same tuple. Missing hook capture: explicit `patchCommit:<full SHA>, reason` replays only that single-parent staging commit’s named-path delta, not its whole blobs; review every delta since a sweep may mix work. Never combine with wholeBlob/includeHunksFrom or fabricate record-edit. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`.',
+      'Landing: `get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify `would-admit` proof → repeat with `confirm:true`. A non-empty R6 test population returns `precheck-running` immediately and publishes NOTHING; `get` exposes the durable operation, then repeat the confirmed call with the refreshed queue identity after it passes. Use `retryPrecheck:true` only for a terminal failed pre-check; a running one is never duplicated. Missing hook capture: explicit `patchCommit:<full SHA>, reason` replays only that single-parent staging commit’s named-path delta, not its whole blobs; review every delta since a sweep may mix work. Never combine with wholeBlob/includeHunksFrom or fabricate record-edit. Retiring: `get` → verify exact identity + `retireAllowed` → `retire` with those fields and `confirm:true`.',
     returns:
-      '{ ok, op, verdict?, repairQueue?, repairQueueRead?, callerAuthorization?, admitted?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. `get` reports repairQueueRead plus phase/age/fixer/reservation/decision diagnostics and its manifest. `claim-leg` reports claimed/released or a refusal reason. `admit` reports no-frozen-queue, already-admitted, would-admit, admitted, or a refusal with proof/containment; `retire` refuses live/unknown fixers or active reservations and uses CAS.',
+      '{ ok, op, verdict?, repairQueue?, repairQueueRead?, callerAuthorization?, admitted?, pending?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. `get` reports repairQueueRead plus phase/age/fixer/reservation/decision diagnostics, any durable admission pre-check and its manifest. `claim-leg` reports claimed/released or a refusal reason. `admit` reports no-frozen-queue, already-admitted, would-admit, precheck-running, admitted, or a refusal with proof/containment; `retire` refuses live/unknown fixers or active reservations and uses CAS.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
@@ -739,6 +797,26 @@ export default defineTool({
         );
       }
       const identity = readIdentity(ctx);
+      const activePrecheck = queue.admissionPrecheck;
+      if (!dryRun && activePrecheck?.status === 'running' && activePrecheck.expiresAtMs > Date.now()) {
+        return json({
+          ...base,
+          ok: true,
+          admitted: false,
+          pending: true,
+          dryRun: false,
+          verdict: 'precheck-running',
+          judgedSha: queue.repairHead,
+          precheckOperation: activePrecheck,
+          currentQueueIdentity: {
+            candidate: queue.candidate,
+            repairHead: queue.repairHead,
+            updatedAtMs: queue.updatedAtMs,
+          },
+          note:
+            'This queue already has one live R6 admission pre-check. It is the only admitted decision in flight and NOTHING publishes in the background. Re-read op:get after it settles; do not start a second pre-check.',
+        });
+      }
       // P-020 (D-008 layers 2–3): HUNK-EXACT by default. The source the primitive admits from
       // is a synthesised commit = repairHead + ONLY the caller's ledgered hunks per path, so a
       // peer's concurrent work in the same file never rides in. `wholeBlob:true` (with a
@@ -899,14 +977,129 @@ export default defineTool({
         // The serving host's root may be a LINKED worktree (`:3170` runs from papercusp-staging);
         // the checkpoint tree, its run-lock and setup-release-checkout all key off the MAIN one.
         const precheckRoot = resolveCanonicalIntegrationRoot(root);
-        const runner = createCheckpointTreeFixPrecheckRunner({ integrationRoot: precheckRoot, checkpointRoot: checkpointRootMirror(precheckRoot) });
-        let run: Awaited<ReturnType<typeof runner>>;
-        try {
-          run = await runner({ commit: builtCommit, files: population.files });
-        } catch (err) {
-          run = { ran: false, reason: 'runner-failed', detail: (err as Error).message };
+        const matchingPrecheck = sameAdmissionPrecheck(queue.admissionPrecheck, {
+          candidate: queue.candidate,
+          repairHead: queue.repairHead,
+          builtCommit,
+          files: population.files,
+          actor: identity.ownerId,
+        })
+          ? queue.admissionPrecheck
+          : undefined;
+        if (matchingPrecheck?.status === 'running' && matchingPrecheck.expiresAtMs > Date.now()) {
+          return json({
+            ...base,
+            ok: true,
+            admitted: false,
+            pending: true,
+            dryRun: false,
+            verdict: 'precheck-running',
+            judgedSha: queue.repairHead,
+            precheckOperation: matchingPrecheck,
+            currentQueueIdentity: {
+              candidate: queue.candidate,
+              repairHead: queue.repairHead,
+              updatedAtMs: queue.updatedAtMs,
+            },
+            note:
+              'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
+          });
         }
-        precheck = evaluateFixPrecheck(population, run);
+        if (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true) {
+          precheck = matchingPrecheck.verdict;
+        } else if (
+          matchingPrecheck?.status === 'failed' &&
+          matchingPrecheck.verdict?.ok === false &&
+          args.retryPrecheck !== true
+        ) {
+          precheck = matchingPrecheck.verdict;
+        } else {
+          const startedAtMs = Date.now();
+          const operationId =
+            `repair-precheck-${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
+            `${startedAtMs.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const operation: FrozenRepairAdmissionPrecheck = {
+            schemaVersion: 1,
+            operationId,
+            status: 'running',
+            candidate: queue.candidate,
+            repairHead: queue.repairHead,
+            builtCommit,
+            files: [...population.files],
+            actor: identity.ownerId,
+            startedAtMs,
+            updatedAtMs: startedAtMs,
+            expiresAtMs: admissionPrecheckDeadline(startedAtMs, population.files),
+          };
+          const pendingQueue: FrozenCandidateRepairQueue = {
+            ...queue,
+            admissionPrecheck: operation,
+            dispatchReservation: {
+              token: operationId,
+              claimedAtMs: startedAtMs,
+              expiresAtMs: operation.expiresAtMs,
+            },
+            updatedAtMs: Math.max(queue.updatedAtMs + 1, startedAtMs),
+          };
+          try {
+            await writeFrozenCandidateRepairQueue(inspected.target, pendingQueue, {
+              expectedUpdatedAtMs: queue.updatedAtMs,
+            });
+          } catch (err) {
+            return json({
+              ...base,
+              ok: false,
+              admitted: false,
+              refused: true,
+              dryRun: false,
+              verdict: 'refused',
+              reason: 'precheck-state-conflict',
+              detail:
+                `The queue changed before the R6 pre-check marker could be persisted (${(err as Error).message}). ` +
+                'No pre-check was launched and nothing was published; re-read op:get.',
+              judgedSha: queue.repairHead,
+            });
+          }
+          const runner = createCheckpointTreeFixPrecheckRunner({
+            integrationRoot: precheckRoot,
+            checkpointRoot: checkpointRootMirror(precheckRoot),
+          });
+          void trackDetached(
+            (async () => {
+              let run: Awaited<ReturnType<typeof runner>>;
+              try {
+                run = await runner({ commit: builtCommit, files: population.files });
+              } catch (err) {
+                run = { ran: false, reason: 'runner-failed', detail: (err as Error).message };
+              }
+              await settleAdmissionPrecheck(
+                inspected.target,
+                operationId,
+                evaluateFixPrecheck(population, run),
+              );
+            })(),
+          ).catch((err) => {
+            console.error(`[release:repair-queue] detached pre-check ${operationId} failed to settle`, err);
+          });
+          return json({
+            ...base,
+            ok: true,
+            admitted: false,
+            pending: true,
+            dryRun: false,
+            verdict: 'precheck-running',
+            judgedSha: queue.repairHead,
+            builtCommit,
+            precheckOperation: operation,
+            currentQueueIdentity: {
+              candidate: pendingQueue.candidate,
+              repairHead: pendingQueue.repairHead,
+              updatedAtMs: pendingQueue.updatedAtMs,
+            },
+            note:
+              'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
+          });
+        }
         if (!precheck.ok) {
           return json({
             ...base,

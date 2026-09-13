@@ -54,6 +54,7 @@ import {
   isBoundedDevTelemetryArgs,
   isBoundedCoordPresenceArgs,
   isBoundedCoordRosterArgs,
+  isBoundedJudgeScorecardsEvaluateArgs,
   isBoundedScorecardsEvaluateArgs,
   isBoundedScorecardsListArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
@@ -774,7 +775,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:claimable",
   // Exact rubric+subject audit reads are side-effect-free and safe to replay.
   "scorecards:list",
-  // The skeleton-only grading preflight is also side-effect-free and safe to replay.
+  // The bounded grading preflight is also side-effect-free and safe to replay.
   "scorecards:evaluate",
   "plans:get",
   "plans:list",
@@ -1565,9 +1566,11 @@ const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
 const COORD_PRESENCE_TOOL_NAME = normalizeMcpName("coord:presence");
 const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
 
-function isReservedControlPlaneTool(name: string, args?: unknown): boolean {
+function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: string): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
-  if (name === SCORECARDS_EVALUATE_TOOL_NAME) return isBoundedScorecardsEvaluateArgs(args);
+  if (name === SCORECARDS_EVALUATE_TOOL_NAME) {
+    return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestPath);
+  }
   if (name === DEV_TELEMETRY_TOOL_NAME) return isBoundedDevTelemetryArgs(args);
   if (name === COORD_PRESENCE_TOOL_NAME) return isBoundedCoordPresenceArgs(args);
   if (name === COORD_ROSTER_TOOL_NAME) return isBoundedCoordRosterArgs(args);
@@ -2051,7 +2054,7 @@ export function isReservedControlPlaneCall(
       if (call.method !== "tools/call" || typeof call.params?.name !== "string")
         return false;
       const calledTool = normalizeMcpName(call.params.name);
-      if (isReservedControlPlaneTool(calledTool, call.params.arguments)) return true;
+      if (isReservedControlPlaneTool(calledTool, call.params.arguments, requestPath)) return true;
       if (calledTool !== TOOLS_INVOKE_NAME) return false;
       const invokeArgs = call.params.arguments;
       if (
@@ -2066,6 +2069,7 @@ export function isReservedControlPlaneCall(
         isReservedControlPlaneTool(
           normalizeMcpName(target),
           (invokeArgs as { args?: unknown }).args,
+          requestPath,
         )
       );
     });

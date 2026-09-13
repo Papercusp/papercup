@@ -12,7 +12,7 @@
  *   1. the shipped shell block builds from RELEASE_ROOT (never copies a newer
  *      integration-tree artifact across the submodule pin), and
  *   2. a repository-wide detector requires every workspace package that
- *      declares a gitignored main/require/default target to appear in the
+ *      declares a gitignored bin/main/require/default target to appear in the
  *      block's explicit registry, and
  *   3. the desktop sidecar rebuilds the same registry after its scoped npm
  *      install, which can erase generated outputs behind intact symlinks.
@@ -72,7 +72,7 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  it('builds @papercusp/sse from the pinned release tree, never from integration output', () => {
+  it('builds registered runtime workspaces from pinned source, never integration output', () => {
     expect(BLOCK, 'the pinned workspace runtime-build block is missing').not.toBe('');
 
     const root = mkdtempSync(join(tmpdir(), 'setup-runtime-build-'));
@@ -82,6 +82,9 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     const packageRoot = join(releaseRoot, 'libs/generic/sse');
     const integrationPackageRoot = join(integrationRoot, 'libs/generic/sse');
     const integrationDist = join(integrationRoot, 'libs/generic/sse/dist');
+    const ompRoot = join(releaseRoot, 'packages/omp-plugin');
+    const integrationOmpRoot = join(integrationRoot, 'packages/omp-plugin');
+    const integrationOmpDist = join(integrationOmpRoot, 'dist');
     const fakeBin = join(root, 'bin');
     const trace = join(root, 'npm-trace');
 
@@ -90,13 +93,22 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     mkdirSync(join(integrationRoot, 'node_modules/@papercusp'), { recursive: true });
     mkdirSync(join(integrationPackageRoot, 'node_modules'), { recursive: true });
     mkdirSync(integrationDist, { recursive: true });
+    mkdirSync(ompRoot, { recursive: true });
+    mkdirSync(join(integrationOmpRoot, 'node_modules'), { recursive: true });
+    mkdirSync(integrationOmpDist, { recursive: true });
     mkdirSync(fakeBin, { recursive: true });
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@papercusp/sse' }));
     writeFileSync(join(packageRoot, 'PINNED_SOURCE'), 'pinned');
+    writeFileSync(join(ompRoot, 'package.json'), JSON.stringify({ name: '@papercusp/omp' }));
+    writeFileSync(join(ompRoot, 'PINNED_SOURCE'), 'pinned');
     writeFileSync(join(integrationPackageRoot, 'node_modules/PINNED_TOOLCHAIN'), 'typescript-5.9');
+    writeFileSync(join(integrationOmpRoot, 'node_modules/PINNED_TOOLCHAIN'), 'esbuild-pinned');
     writeFileSync(join(integrationDist, 'index.js'), 'wrong-newer-integration-output');
+    writeFileSync(join(integrationOmpDist, 'native-client.cjs'), 'wrong-newer-integration-output');
     symlinkSync('../../libs/generic/sse', join(releaseRoot, 'node_modules/@papercusp/sse'));
     symlinkSync('../../libs/generic/sse', join(integrationRoot, 'node_modules/@papercusp/sse'));
+    symlinkSync('../../packages/omp-plugin', join(releaseRoot, 'node_modules/@papercusp/omp'));
+    symlinkSync('../../packages/omp-plugin', join(integrationRoot, 'node_modules/@papercusp/omp'));
 
     const fakeNpm = join(fakeBin, 'npm');
     writeFileSync(
@@ -104,12 +116,24 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
-        'if [ "$*" = "--workspace @papercusp/sse pkg get name" ]; then exit 0; fi',
-        'test "$*" = "--workspace @papercusp/sse run build"',
-        'printf "%s|%s\\n" "$PWD" "$*" > "$NPM_TRACE"',
-        'test -f "$PWD/libs/generic/sse/node_modules/PINNED_TOOLCHAIN"',
-        'mkdir -p "$PWD/libs/generic/sse/dist"',
-        'printf "built-from-%s\\n" "$(cat "$PWD/libs/generic/sse/PINNED_SOURCE")" > "$PWD/libs/generic/sse/dist/index.js"',
+        'case "$*" in',
+        '  "--workspace @papercusp/omp pkg get name"|"--workspace @papercusp/sse pkg get name") exit 0 ;;',
+        '  "--workspace @papercusp/omp run build")',
+        '    printf "%s|%s\\n" "$PWD" "$*" >> "$NPM_TRACE"',
+        '    test -f "$PWD/packages/omp-plugin/node_modules/PINNED_TOOLCHAIN"',
+        '    mkdir -p "$PWD/packages/omp-plugin/dist"',
+        '    printf "native-from-%s\\n" "$(cat "$PWD/packages/omp-plugin/PINNED_SOURCE")" > "$PWD/packages/omp-plugin/dist/native-client.cjs"',
+        '    printf "extension-from-%s\\n" "$(cat "$PWD/packages/omp-plugin/PINNED_SOURCE")" > "$PWD/packages/omp-plugin/dist/native-extension.mjs"',
+        '    printf "cli-from-%s\\n" "$(cat "$PWD/packages/omp-plugin/PINNED_SOURCE")" > "$PWD/packages/omp-plugin/dist/cli.js"',
+        '    ;;',
+        '  "--workspace @papercusp/sse run build")',
+        '    printf "%s|%s\\n" "$PWD" "$*" >> "$NPM_TRACE"',
+        '    test -f "$PWD/libs/generic/sse/node_modules/PINNED_TOOLCHAIN"',
+        '    mkdir -p "$PWD/libs/generic/sse/dist"',
+        '    printf "built-from-%s\\n" "$(cat "$PWD/libs/generic/sse/PINNED_SOURCE")" > "$PWD/libs/generic/sse/dist/index.js"',
+        '    ;;',
+        '  *) echo "unexpected fake npm invocation: $*" >&2; exit 1 ;;',
+        'esac',
       ].join('\n'),
     );
     chmodSync(fakeNpm, 0o755);
@@ -134,23 +158,39 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       encoding: 'utf8',
     });
     expect(run.status, run.stderr).toBe(0);
-    expect(readFileSync(trace, 'utf8').trim()).toBe(`${releaseRoot}|--workspace @papercusp/sse run build`);
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
+      `${releaseRoot}|--workspace @papercusp/omp run build`,
+      `${releaseRoot}|--workspace @papercusp/sse run build`,
+    ]);
     expect(readFileSync(join(packageRoot, 'node_modules/PINNED_TOOLCHAIN'), 'utf8')).toBe('typescript-5.9');
     expect(readFileSync(join(packageRoot, 'dist/index.js'), 'utf8')).toBe('built-from-pinned\n');
+    expect(readFileSync(join(ompRoot, 'dist/native-client.cjs'), 'utf8')).toBe('native-from-pinned\n');
+    expect(readFileSync(join(ompRoot, 'dist/native-extension.mjs'), 'utf8')).toBe('extension-from-pinned\n');
+    expect(readFileSync(join(ompRoot, 'dist/cli.js'), 'utf8')).toBe('cli-from-pinned\n');
     expect(readFileSync(join(integrationDist, 'index.js'), 'utf8')).toBe('wrong-newer-integration-output');
     expect(BLOCK).not.toContain('run build 1>/dev/null');
   });
 
   it('covers every workspace package whose declared runtime entry is gitignored', () => {
     const registered = extractRegisteredRuntimeBuildWorkspaces(BLOCK);
-    const uncovered = listIgnoredRuntimeEntryWorkspaces(REPO_ROOT)
+    const ignoredEntries = listIgnoredRuntimeEntryWorkspaces(REPO_ROOT);
+    expect(ignoredEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: '@papercusp/omp',
+          target: 'dist/cli.js',
+        }),
+      ]),
+    );
+    const uncovered = ignoredEntries
       .filter(({ name }) => !registered.has(name));
     expect(
       uncovered,
-      'A workspace package exposes a gitignored main/require/default entry but the release setup does not ' +
+      'A workspace package exposes a gitignored bin/main/require/default entry but the release setup does not ' +
         'build it from pinned source. Add its package name to RUNTIME_BUILD_WORKSPACES; copying integration ' +
         'dist would violate submodule pin isolation.',
     ).toEqual([]);
+    expect(registered).toContain('@papercusp/omp');
   });
 
   it('rebuilds every ignored runtime entry after the desktop scoped install', () => {
@@ -170,6 +210,7 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     expect(resolutionGuardIndex).toBeGreaterThan(blockIndex);
 
     const registered = extractRegisteredRuntimeBuildWorkspaces(SIDECAR_POST_INSTALL_BLOCK);
+    expect(registered).toContain('@papercusp/omp');
     const uncovered = listIgnoredRuntimeEntryWorkspaces(REPO_ROOT)
       .filter(({ name }) => !registered.has(name));
     expect(
@@ -182,9 +223,11 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     tempRoots.push(root);
     const fakeBin = join(root, 'bin');
     const packageRoot = join(root, 'libs/generic/sse');
+    const ompRoot = join(root, 'packages/omp-plugin');
     const trace = join(root, 'npm-trace');
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(packageRoot, { recursive: true });
+    mkdirSync(ompRoot, { recursive: true });
     mkdirSync(join(root, 'scripts'), { recursive: true });
     writeFileSync(
       join(root, 'scripts/npm-install-safe.mjs'),
@@ -202,6 +245,13 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
         devDependencies: { typescript: '~6.0.0' },
       }),
     );
+    writeFileSync(
+      join(ompRoot, 'package.json'),
+      JSON.stringify({
+        name: '@papercusp/omp',
+        devDependencies: { esbuild: '^0.27.3' },
+      }),
+    );
 
     const fakeNpm = join(fakeBin, 'npm');
     writeFileSync(
@@ -211,6 +261,20 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
         'set -euo pipefail',
         'trace_npm() { printf "%s|%s\\n" "$PWD" "$(printf "%s" "$1" | tr "\\n" " ")" >> "$NPM_TRACE"; }',
         'case "$*" in',
+        '  "install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/omp")',
+        '    trace_npm "$*"',
+        '    ;;',
+        '  "--workspace=@papercusp/omp exec -- node -e "*)',
+        '    trace_npm "$*"',
+        '    printf "  ✓ @papercusp/omp: build command owns toolchain validation\\n"',
+        '    ;;',
+        '  "--workspace @papercusp/omp run build")',
+        '    trace_npm "$*"',
+        '    mkdir -p "$PWD/packages/omp-plugin/dist"',
+        '    printf "rebuilt-native\\n" > "$PWD/packages/omp-plugin/dist/native-client.cjs"',
+        '    printf "rebuilt-extension\\n" > "$PWD/packages/omp-plugin/dist/native-extension.mjs"',
+        '    printf "rebuilt-cli\\n" > "$PWD/packages/omp-plugin/dist/cli.js"',
+        '    ;;',
         '  "install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/sse")',
         '    trace_npm "$*"',
         '    mkdir -p "$PWD/libs/generic/sse/node_modules/typescript"',
@@ -249,18 +313,26 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     });
     expect(run.status, run.stderr).toBe(0);
     const traceLines = readFileSync(trace, 'utf8').trim().split('\n');
-    expect(traceLines).toHaveLength(3);
+    expect(traceLines).toHaveLength(6);
     expect(traceLines[0]).toBe(
+      `${root}|install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/omp`,
+    );
+    expect(traceLines[1]).toContain(`${root}|--workspace=@papercusp/omp exec -- node -e `);
+    expect(traceLines[2]).toBe(`${root}|--workspace @papercusp/omp run build`);
+    expect(traceLines[3]).toBe(
       `${root}|install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/sse`,
     );
-    expect(traceLines[1]).toContain(`${root}|--workspace=@papercusp/sse exec -- node -e `);
-    expect(traceLines[2]).toBe(`${root}|--workspace @papercusp/sse run build`);
+    expect(traceLines[4]).toContain(`${root}|--workspace=@papercusp/sse exec -- node -e `);
+    expect(traceLines[5]).toBe(`${root}|--workspace @papercusp/sse run build`);
     expect(readFileSync(join(packageRoot, 'node_modules/PINNED_TOOLCHAIN'), 'utf8')).toBe(
       'typescript-6.0.3\n',
     );
     expect(readFileSync(join(packageRoot, 'dist/index.js'), 'utf8')).toBe(
       'rebuilt-after-install\n',
     );
+    expect(readFileSync(join(ompRoot, 'dist/native-client.cjs'), 'utf8')).toBe('rebuilt-native\n');
+    expect(readFileSync(join(ompRoot, 'dist/native-extension.mjs'), 'utf8')).toBe('rebuilt-extension\n');
+    expect(readFileSync(join(ompRoot, 'dist/cli.js'), 'utf8')).toBe('rebuilt-cli\n');
   });
 
   it('skips a package present before an older rollback pin registered it as a workspace', () => {

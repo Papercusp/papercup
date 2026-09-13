@@ -3669,7 +3669,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ).toBe(false);
   });
 
-  it("reserves only a skeleton scorecards:evaluate read, including deferred tools:invoke", () => {
+  it("reserves a skeleton scorecards:evaluate read for general callers, including deferred tools:invoke", () => {
     const args = { rubricRef: "spec-test-adequacy" };
     expect(
       isReservedControlPlaneCall(
@@ -3699,6 +3699,27 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         ),
       ),
     ).toBe(false);
+  });
+
+  it("reserves a bounded complete scorecards:evaluate only for the judge role", () => {
+    const args = {
+      rubricRef: "grading-integrity",
+      sourceHive: "papercusp",
+      ratings: { criteria: { rating: "pass", evidence: "bounded grading evidence" } },
+    };
+    const direct = Buffer.from(
+      JSON.stringify({ method: "tools/call", params: { name: "scorecards:evaluate", arguments: args } }),
+    );
+    expect(isReservedControlPlaneCall(direct, "/api/mcp?role=judge")).toBe(true);
+    expect(isReservedControlPlaneCall(direct, "/api/mcp?role=worker")).toBe(false);
+
+    const deferred = Buffer.from(
+      JSON.stringify({
+        method: "tools/call",
+        params: { name: "tools:invoke", arguments: { name: "scorecards_evaluate", args } },
+      }),
+    );
+    expect(isReservedControlPlaneCall(deferred, "/api/mcp?role=judge")).toBe(true);
   });
 
   it("recognizes a JSON-RPC batch when any member is a reserved control-plane call", () => {

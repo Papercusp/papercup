@@ -79,6 +79,56 @@ describe('boundedOrgTxn', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('does not execute tagged or unsafe SQL fragments while tracking cancellable queries', async () => {
+    const executed: string[] = [];
+    const makeQuery = (text: string) => {
+      let settled = false;
+      const query = {
+        fragment: false,
+        cancel: vi.fn(),
+        then(resolve: (rows: unknown[]) => void) {
+          if (!settled) {
+            settled = true;
+            executed.push(text);
+          }
+          resolve([]);
+        },
+      };
+      return query;
+    };
+    const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      for (const value of values) {
+        if (value && typeof value === 'object' && 'fragment' in value) {
+          (value as { fragment: boolean }).fragment = true;
+        }
+      }
+      return makeQuery(strings.join('?'));
+    };
+    const tx = Object.assign(tag, {
+      unsafe: (text: string) => makeQuery(text),
+    });
+    const client = {
+      begin: async (cb: (transaction: unknown) => Promise<unknown>) => cb(tx),
+    } as never;
+    const controller = new AbortController();
+
+    await boundedOrgTxn(
+      async (transaction) => {
+        const taggedFragment = (transaction as never as (strings: TemplateStringsArray, ...values: unknown[]) => unknown)`
+          (last_released_by IS NULL)
+        `;
+        const unsafeFragment = (transaction as never as { unsafe: (text: string) => unknown }).unsafe('item_kind');
+        await (transaction as never as (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>)`
+          SELECT 1 WHERE ${taggedFragment} AND ${unsafeFragment}
+        `;
+      },
+      { client, signal: controller.signal },
+    );
+
+    expect(executed.filter((text) => text.includes('last_released_by') || text === 'item_kind')).toEqual([]);
+    expect(executed.filter((text) => text.includes('SELECT 1 WHERE'))).toHaveLength(1);
+  });
+
   it('fails a stalled admin-pool acquisition before entering fn', async () => {
     let fnRan = false;
     const client = {
