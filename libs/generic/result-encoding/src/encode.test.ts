@@ -122,11 +122,13 @@ describe('encodeToonChecked — lossless round-trip size-gate (P1-1 / F-A1)', ()
     expect(r.text.length).toBeLessThanOrEqual(TOON_VERIFY_MAX_BYTES);
   });
 
-  it('reports not-lossless on the rare encoder edge case (small payload, verify runs)', () => {
-    // Empty-string key wrapping a nested object — the documented round-trip-
-    // breaking shape. Below the gate, the verify catches it and reports false.
+  it('verifies the formerly problematic empty-key nested object shape', () => {
+    // @toon-format/toon 2.3.1 now round-trips this shape losslessly. Keep the
+    // regression focused on the live dependency behavior so a future encoder
+    // regression still makes the lossless check fail loudly.
     const r = encodeToonChecked([{ '': { ':': 0 } }]);
-    expect(r.lossless).toBe(false);
+    expect(r.lossless).toBe(true);
+    expect(decode(r.text, 'toon')).toEqual([{ '': { ':': 0 } }]);
   });
 
   it('SKIPS the verify above the byte gate and reports not-lossless (so callers use JSON)', () => {
