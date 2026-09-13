@@ -281,6 +281,44 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    ['canonical', 'scorecards:evaluate'],
+    ['underscore', 'scorecards_evaluate'],
+    ['mcp-advertised', 'mcp__papercusp_su__scorecards_evaluate'],
+  ])('does NOT shed a skeleton scorecards:evaluate read under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(16, name, { rubricRef: 'spec-test-adequacy' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('recognizes an empty-ratings scorecards:evaluate skeleton through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 17,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__scorecards_evaluate',
+          args: { rubricRef: 'spec-test-adequacy', ratings: {} },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps completed or opaque scorecards:evaluate payloads sheddable under critical pressure', () => {
+    for (const args of [
+      { rubricRef: 'spec-test-adequacy', ratings: { criterion: { rating: 'pass', evidence: 'evidence' } } },
+      { rubricRef: 'spec-test-adequacy', instrumentSnapshots: {} },
+      { rubricRef: 'spec-test-adequacy', testedSha: '01a80572c224' },
+      { rubricRef: 'spec-test-adequacy', unknown: true },
+    ]) {
+      expect(classifyMcpBody(toolsCall(18, 'scorecards:evaluate', args))).toEqual({ sheddable: true, id: 18 });
+    }
+  });
+
+  it.each([
     ['canonical', 'scorecards:get'],
     ['underscore', 'scorecards_get'],
     ['mcp-advertised', 'mcp__papercusp_su__scorecards_get'],

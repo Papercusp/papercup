@@ -23,6 +23,7 @@
 
 import { z } from 'zod';
 import { HarnessRequiredError } from '@papercusp/agent-mcp';
+import type { Sql } from 'postgres';
 
 /** Canonical "all harnesses / operator scope" sentinel. `'*'` can't collide
  *  with a real slug; `'all'` is an accepted friendly alias. */
@@ -348,6 +349,29 @@ function concreteWorkspace(input: HarnessScopeInheritanceInput): string | null {
 }
 
 /**
+ * Give an inherited-scope reader the same bounded acquisition + connection-setup
+ * retry as an ordinary workspace-scoped handler. These readers run BEFORE the
+ * dispatcher can enter its normal handler transaction, so a bare org-pool read
+ * here would bypass the only connect-phase deadline and can wedge scope
+ * resolution indefinitely (EI-22575830430557187).
+ *
+ * Keep the workspace check outside `withWorkspace`: an incomplete bootstrap
+ * input should remain an empty binding, not turn into a second "workspace is
+ * empty" error. Each source reader supplies one callback, so related reads
+ * (presence + plan ownership) share one bounded transaction rather than opening
+ * nested transactions.
+ */
+async function withInheritedWorkspace<T>(
+  input: HarnessScopeInheritanceInput,
+  read: (tx: Sql) => Promise<T>,
+): Promise<T | undefined> {
+  const workspaceId = concreteWorkspace(input);
+  if (!workspaceId) return undefined;
+  const { withWorkspace } = await import('@papercusp/db-org');
+  return withWorkspace(workspaceId, read);
+}
+
+/**
  * Production readers are loaded lazily so this foundational module does not import the
  * coordination, scheduler, plan, and carry stores back into every synchronous caller.
  * Tests inject small readers and exercise the decision independently of Postgres.
@@ -355,7 +379,13 @@ function concreteWorkspace(input: HarnessScopeInheritanceInput): string | null {
 export const defaultHarnessScopeInheritanceReaders: HarnessScopeInheritanceReaders = {
   async claim(input) {
     const { getActiveClaimForOwner } = await import('../work-item-claims');
-    return readClaimHarnessBinding(input, getActiveClaimForOwner);
+    return (
+      (await withInheritedWorkspace(input, (tx) =>
+        readClaimHarnessBinding(input, (workspaceId, ownerId) =>
+          getActiveClaimForOwner(workspaceId, ownerId, tx),
+        ),
+      )) ?? {}
+    );
   },
 
   async plan(input) {
@@ -363,17 +393,33 @@ export const defaultHarnessScopeInheritanceReaders: HarnessScopeInheritanceReade
       import('./coordination/presence'),
       import('./plans/source'),
     ]);
-    return readPlanHarnessBinding(input, getPresence, planHarnessesForSlugs);
+    return (
+      (await withInheritedWorkspace(input, (tx) =>
+        readPlanHarnessBinding(
+          input,
+          (ownerId) => getPresence(ownerId, tx),
+          (workspaceId, slugs) => planHarnessesForSlugs(workspaceId, slugs, tx),
+        ),
+      )) ?? {}
+    );
   },
 
   async fleet(input) {
     const { getClaimSpecRecord } = await import('../scheduler/claim-spec-store');
-    return readFleetHarnessBinding(input, getClaimSpecRecord);
+    return (
+      (await withInheritedWorkspace(input, (tx) =>
+        readFleetHarnessBinding(input, (args) => getClaimSpecRecord(args, tx)),
+      )) ?? {}
+    );
   },
 
   async brief(input) {
     const { getSessionBrief } = await import('../session-brief');
-    return readBriefHarnessBinding(input, (ownerId) => getSessionBrief({ ownerId }));
+    return (
+      (await withInheritedWorkspace(input, (tx) =>
+        readBriefHarnessBinding(input, (ownerId) => getSessionBrief({ ownerId }, tx)),
+      )) ?? {}
+    );
   },
 };
 

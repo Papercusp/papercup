@@ -196,6 +196,7 @@ const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
+const SCORECARDS_EVALUATE_NAME = normalizeMcpName('scorecards:evaluate');
 const SCORECARDS_GET_NAME = normalizeMcpName('scorecards:get');
 const SCORECARDS_EMIT_NAME = normalizeMcpName('scorecards:emit');
 const RUBRICS_GET_NAME = normalizeMcpName('rubrics:get');
@@ -602,6 +603,38 @@ export function isBoundedScorecardsListArgs(args: unknown): boolean {
 }
 
 /**
+ * `scorecards:evaluate` is a read-only grading preflight, but its optional
+ * ratings/instrument payloads can be arbitrarily large and make the evaluator
+ * do the full validation path. Reserve only the skeleton form used to discover
+ * criterion keys (an empty ratings map is equivalent in the handler); the
+ * complete evaluation remains sheddable until pressure clears.
+ */
+export function isBoundedScorecardsEvaluateArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['rubricRef', 'sourceHive', 'ratings']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.rubricRef !== 'string' ||
+    args.rubricRef.trim().length === 0 ||
+    args.rubricRef.length > 120
+  ) {
+    return false;
+  }
+  if (
+    args.sourceHive !== undefined &&
+    (typeof args.sourceHive !== 'string' ||
+      args.sourceHive.trim().length === 0 ||
+      args.sourceHive.length > 120)
+  ) {
+    return false;
+  }
+  if (args.ratings !== undefined && (!isRecord(args.ratings) || Object.keys(args.ratings).length !== 0)) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * `scorecards:get` is the evidence-first read used by grading-integrity audits.
  * Its handler accepts one issue id plus an optional criterion page cursor and
  * performs one bounded projection per call. Keep the critical-pressure
@@ -755,6 +788,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
+  if (normalized === SCORECARDS_EVALUATE_NAME) return isBoundedScorecardsEvaluateArgs(args);
   if (normalized === SCORECARDS_GET_NAME) return isBoundedScorecardsGetArgs(args);
   if (normalized === SCORECARDS_EMIT_NAME) return isBoundedJudgeGradingAuditEmitArgs(args, requestUrl);
   if (normalized === RUBRICS_GET_NAME) return isBoundedRubricsGetArgs(args);

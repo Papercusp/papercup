@@ -383,7 +383,7 @@ export function startSuRpcEngine(
       if (thread.cwd && resolve(string(thread.cwd)) !== resolve(boot.cwd)) throw new Error('Codex started in a different project');
       nativePath = string(thread.path) || null;
       native = { ...native as CodexNativeSessionHandle, rolloutId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
-      (adapter as CodexSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, rolloutId: id }, rolloutPath: nativePath });
+      await (adapter as CodexSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, rolloutId: id }, rolloutPath: nativePath });
       for (const frame of initializingFrames.splice(0)) onMessage(frame);
       initializingFrameBytes = 0;
       const servers = await peer.request({ method: 'mcpServerStatus/list', params: {} });
@@ -435,7 +435,7 @@ export function startSuRpcEngine(
       native = { ...native as OmpNativeSessionHandle, ompThreadId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
       const linked = await setAdvSessionOmpThreadId(binding.advSessionId, id);
       if (linked !== 'linked' && linked !== 'already_linked') throw new Error(`OMP native identity link failed (${linked})`);
-      (adapter as OmpSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, ompThreadId: id }, transcriptPath: nativePath });
+      await (adapter as OmpSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, ompThreadId: id }, transcriptPath: nativePath });
       const model = object(state.model);
       actualModel = [string(model.provider), string(model.id)].filter(Boolean).join('/');
     }

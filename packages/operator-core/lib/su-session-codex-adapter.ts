@@ -479,9 +479,12 @@ export class CodexSuSessionAdapter {
     this.host.updateAccountServed(account);
   }
 
-  materializeRuntime(runtime: CodexSuRuntimeBinding): void {
+  async materializeRuntime(runtime: CodexSuRuntimeBinding): Promise<void> {
     if (this.host.descriptor().identity.nativeSessionId !== runtime.nativeSession.rolloutId) {
       this.host.materializeNativeSessionId(runtime.nativeSession.rolloutId);
+      if (!await this.host.persistDescriptorNow()) {
+        throw new Error('Could not persist the native session identity and resume descriptor');
+      }
     }
     this.runtimeValue = runtime;
   }

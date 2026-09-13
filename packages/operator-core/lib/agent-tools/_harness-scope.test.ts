@@ -2,7 +2,7 @@
  * Unit tests for the explicit harness-scope resolver (_harness-scope.ts).
  * Pure function — covers the arg/ctx precedence + the '*'-as-no-choice rule.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HarnessRequiredError } from '@papercusp/agent-mcp';
 import {
   allowStalePlanRecoveryForMcpCall,
@@ -12,10 +12,30 @@ import {
   isAllHarnessSentinel,
   isEngineeringDocsSentinel,
   resolveConcreteHarnessSlug,
+  defaultHarnessScopeInheritanceReaders,
   resolveHarnessScope,
   resolveInheritedHarnessScope,
   stripCallerOperatorScope,
 } from './_harness-scope';
+
+const defaultReaderMocks = vi.hoisted(() => ({
+  withWorkspace: vi.fn(),
+  getClaim: vi.fn(),
+  getPresence: vi.fn(),
+  getPlanHarnesses: vi.fn(),
+  getClaimSpec: vi.fn(),
+  getBrief: vi.fn(),
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withWorkspace: defaultReaderMocks.withWorkspace,
+}));
+vi.mock('../work-item-claims', () => ({ getActiveClaimForOwner: defaultReaderMocks.getClaim }));
+vi.mock('./coordination/presence', () => ({ getPresence: defaultReaderMocks.getPresence }));
+vi.mock('./plans/source', () => ({ planHarnessesForSlugs: defaultReaderMocks.getPlanHarnesses }));
+vi.mock('../scheduler/claim-spec-store', () => ({ getClaimSpecRecord: defaultReaderMocks.getClaimSpec }));
+vi.mock('../session-brief', () => ({ getSessionBrief: defaultReaderMocks.getBrief }));
 
 const emptyReaders = () => ({
   claim: vi.fn(async () => ({})),
@@ -227,6 +247,85 @@ describe('resolveInheritedHarnessScope (P-006)', () => {
   it('keeps the explicit all sentinel distinct from one-harness inference', async () => {
     const result = await resolveInheritedHarnessScope({ explicitHarness: 'all' }, emptyReaders());
     expect(result).toEqual({ kind: 'all', source: 'explicit', candidates: [], conflictingBindings: [] });
+  });
+});
+
+describe('default inherited-scope readers (EI-22575830430557187)', () => {
+  const input = { ownerId: 'su-1', workspaceId: 'ws-1' };
+  const tx = { transaction: true };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    defaultReaderMocks.withWorkspace.mockImplementation(async (_workspaceId, read) => read(tx));
+  });
+
+  it('routes claim lookup through one workspace transaction and forwards its tx', async () => {
+    defaultReaderMocks.getClaim.mockResolvedValue({
+      workspaceId: 'ws-1',
+      harnessSlug: 'claimed',
+      workItemId: 'WI-1',
+      expired: false,
+    });
+
+    await expect(defaultHarnessScopeInheritanceReaders.claim(input)).resolves.toEqual({
+      harnesses: ['claimed'],
+      refs: ['WI-1'],
+    });
+    expect(defaultReaderMocks.withWorkspace).toHaveBeenCalledOnce();
+    expect(defaultReaderMocks.withWorkspace).toHaveBeenCalledWith('ws-1', expect.any(Function));
+    expect(defaultReaderMocks.getClaim).toHaveBeenCalledWith('ws-1', 'su-1', tx);
+  });
+
+  it('shares one bounded transaction across presence and plan ownership reads', async () => {
+    defaultReaderMocks.getPresence.mockResolvedValue({ currentPlanSlug: 'plan-a', workspaceId: 'ws-1' });
+    defaultReaderMocks.getPlanHarnesses.mockResolvedValue(new Map([['plan-a', ['planned']]]));
+
+    await expect(defaultHarnessScopeInheritanceReaders.plan(input)).resolves.toEqual({
+      harnesses: ['planned'],
+      refs: ['plan-a'],
+    });
+    expect(defaultReaderMocks.withWorkspace).toHaveBeenCalledOnce();
+    expect(defaultReaderMocks.getPresence).toHaveBeenCalledWith('su-1', tx);
+    expect(defaultReaderMocks.getPlanHarnesses).toHaveBeenCalledWith('ws-1', ['plan-a'], tx);
+  });
+
+  it('routes fleet-spec and session-brief lookups through the same bounded seam', async () => {
+    defaultReaderMocks.getClaimSpec.mockResolvedValue({
+      source: 'fleet',
+      harnessSlug: 'fleet-harness',
+      fleetSlug: 'fleet-a',
+    });
+    await expect(defaultHarnessScopeInheritanceReaders.fleet(input)).resolves.toEqual({
+      harnesses: ['fleet-harness'],
+      refs: ['fleet-a'],
+    });
+    expect(defaultReaderMocks.withWorkspace).toHaveBeenCalledOnce();
+    expect(defaultReaderMocks.getClaimSpec).toHaveBeenCalledWith(
+      { cupId: 'su-1', workspaceId: 'ws-1' },
+      tx,
+    );
+
+    defaultReaderMocks.withWorkspace.mockClear();
+    defaultReaderMocks.getBrief.mockResolvedValue({ workspaceId: 'ws-1', harnessSlug: 'brief-harness' });
+    await expect(defaultHarnessScopeInheritanceReaders.brief(input)).resolves.toEqual({
+      harnesses: ['brief-harness'],
+      refs: ['su-1'],
+    });
+    expect(defaultReaderMocks.withWorkspace).toHaveBeenCalledOnce();
+    expect(defaultReaderMocks.getBrief).toHaveBeenCalledWith({ ownerId: 'su-1' }, tx);
+  });
+
+  it('does not open a transaction until a concrete workspace is available', async () => {
+    await expect(defaultHarnessScopeInheritanceReaders.claim({ ownerId: 'su-1' })).resolves.toEqual({});
+    expect(defaultReaderMocks.withWorkspace).not.toHaveBeenCalled();
+    expect(defaultReaderMocks.getClaim).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an acquisition failure to the resolver instead of falling back to a raw read', async () => {
+    const failure = new Error('ConnectPhaseDeadlineError');
+    defaultReaderMocks.withWorkspace.mockRejectedValue(failure);
+    await expect(defaultHarnessScopeInheritanceReaders.claim(input)).rejects.toBe(failure);
+    expect(defaultReaderMocks.getClaim).not.toHaveBeenCalled();
   });
 });
 

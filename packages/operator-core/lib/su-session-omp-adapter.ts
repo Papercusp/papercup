@@ -426,9 +426,12 @@ export class OmpSuSessionAdapter {
     this.host.updateAccountServed(account);
   }
 
-  materializeRuntime(runtime: OmpSuRuntimeBinding): void {
+  async materializeRuntime(runtime: OmpSuRuntimeBinding): Promise<void> {
     if (this.host.descriptor().identity.nativeSessionId !== runtime.nativeSession.ompThreadId) {
       this.host.materializeNativeSessionId(runtime.nativeSession.ompThreadId);
+      if (!await this.host.persistDescriptorNow()) {
+        throw new Error('Could not persist the native session identity and resume descriptor');
+      }
     }
     this.runtimeValue = runtime;
   }

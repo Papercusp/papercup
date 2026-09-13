@@ -52,6 +52,7 @@ import {
 import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
 import {
   isBoundedDevTelemetryArgs,
+  isBoundedScorecardsEvaluateArgs,
   isBoundedScorecardsListArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
@@ -771,6 +772,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:claimable",
   // Exact rubric+subject audit reads are side-effect-free and safe to replay.
   "scorecards:list",
+  // The skeleton-only grading preflight is also side-effect-free and safe to replay.
+  "scorecards:evaluate",
   "plans:get",
   "plans:list",
   "plans:items",
@@ -1554,10 +1557,12 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
   ].map(normalizeMcpName),
 );
 const SCORECARDS_LIST_TOOL_NAME = normalizeMcpName("scorecards:list");
+const SCORECARDS_EVALUATE_TOOL_NAME = normalizeMcpName("scorecards:evaluate");
 const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
 
 function isReservedControlPlaneTool(name: string, args?: unknown): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
+  if (name === SCORECARDS_EVALUATE_TOOL_NAME) return isBoundedScorecardsEvaluateArgs(args);
   if (name === DEV_TELEMETRY_TOOL_NAME) return isBoundedDevTelemetryArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);
 }

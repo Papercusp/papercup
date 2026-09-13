@@ -197,6 +197,33 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     expect(f.engine.nativeSession().exactResumeSupported).toBe(false);
   });
 
+  it('waits for durable native identity persistence before signaling readiness', async () => {
+    let release!: () => void;
+    const persistenceGate = new Promise<void>((resolve) => { release = resolve; });
+    let nativePersistenceStarted!: () => void;
+    const nativePersistence = new Promise<void>((resolve) => { nativePersistenceStarted = resolve; });
+    mocks.persist.mockImplementation(async (...args: unknown[]) => {
+      const descriptor = args[0] as { identity?: { nativeSessionId?: string | null } } | undefined;
+      if (descriptor?.identity?.nativeSessionId) {
+        nativePersistenceStarted();
+        await persistenceGate;
+      }
+      return true;
+    });
+    const f = fixture(backend);
+    let ready = false;
+    void f.engine.ready.then(() => { ready = true; });
+    await nativePersistence;
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    release();
+    await f.engine.ready;
+    expect(ready).toBe(true);
+    expect(mocks.persist).toHaveBeenCalledWith(expect.objectContaining({
+      identity: expect.objectContaining({ nativeSessionId: `native-${backend}` }),
+    }));
+  });
+
   it('refuses a greeting when the SU tool connection is absent', async () => {
     const f = fixture(backend, { tools: false });
     await expect(f.engine.ready).rejects.toThrow('SU tools are not connected');

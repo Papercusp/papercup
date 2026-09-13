@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { computeRowDigest, diffFromDigest, applySemanticDelta } from '@papercusp/tooldef';
+import { generateToolFacadeTypes, lookupByMcpName } from '@papercusp/agent-mcp';
 import tool from './recent';
 
 const delta = (tool as unknown as { delta: import('@papercusp/tooldef').DeltaCapability }).delta;
@@ -16,6 +17,26 @@ const itemKey = (r: unknown) => delta.itemKey!(r);
 const row = (id: string, kind = 'tool', extra: Record<string, unknown> = {}) => ({ id, kind, summary: `s${id}`, ...extra });
 
 describe('activity:recent delta capability', () => {
+  it('publishes its typed data root to code:run callers', () => {
+    const projected = lookupByMcpName('activity:recent');
+    expect(projected?.outputJsonSchema).toMatchObject({
+      type: 'object',
+      properties: {
+        activity: { type: 'array' },
+        count: { type: 'integer' },
+      },
+      required: expect.arrayContaining(['activity', 'count']),
+    });
+
+    const signature = generateToolFacadeTypes([projected!], {
+      allowed: new Set(['activity:recent']),
+    });
+    const recentLine = signature.split('\n').find((line) => line.includes('recent('));
+    expect(recentLine).toContain('Promise<{ activity: Array<{');
+    expect(recentLine).toContain('count: number');
+    expect(recentLine).not.toContain('Promise<unknown>');
+  });
+
   it('extracts the activity row array via rows() (null when absent → opts out)', () => {
     expect(delta.rows!({ activity: [row('1')], count: 1 })).toEqual([row('1')]);
     expect(delta.rows!({ count: 0 })).toBeNull();

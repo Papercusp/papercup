@@ -29,22 +29,29 @@ const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 
-interface ActivityRow {
-  id: string;
-  owner_id: string;
-  agent: string | null;
-  session_id: string | null;
-  harness_slug: string | null;
-  kind: string;
-  tool_name: string | null;
-  phase: string | null;
-  tool_use_id: string | null;
-  summary: string | null;
-  status: string | null;
-  detail: unknown;
-  cwd: string | null;
-  created_at: string;
-}
+const ACTIVITY_ROW_SCHEMA = z.object({
+  id: z.string(),
+  owner_id: z.string(),
+  agent: z.string().nullable(),
+  session_id: z.string().nullable(),
+  harness_slug: z.string().nullable(),
+  kind: z.string(),
+  tool_name: z.string().nullable(),
+  phase: z.string().nullable(),
+  tool_use_id: z.string().nullable(),
+  summary: z.string().nullable(),
+  status: z.string().nullable(),
+  detail: z.unknown(),
+  cwd: z.string().nullable(),
+  created_at: z.string(),
+});
+
+type ActivityRow = z.infer<typeof ACTIVITY_ROW_SCHEMA>;
+
+const ACTIVITY_RECENT_RESULT_SCHEMA = z.object({
+  activity: z.array(ACTIVITY_ROW_SCHEMA),
+  count: z.number().int().nonnegative(),
+});
 
 export default defineTool({
   name: 'activity:recent',
@@ -108,6 +115,13 @@ export default defineTool({
     /** Max rows (default 50, max 500). */
     limit: z.number().int().positive().max(MAX_LIMIT).optional(),
   }),
+  // EI-23112015757282201: code:run receives the unwrapped, typed data root from
+  // every nested tool call. Without a result schema, code:tools could only
+  // advertise Promise<unknown> for this tool, so a caller reasonably guessed
+  // the outer MCP content[] envelope and hit the intentional fail-loud
+  // structured_result_shape guard. Declare the data shape here so both the MCP
+  // outputSchema and the generated code:run facade point at activity/count.
+  result: ACTIVITY_RECENT_RESULT_SCHEMA,
   // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, P-015 — Lane F rollout,
   // mirrors the P-013 plans:attention exemplar). The repeated "what's recent" poll (no
   // since_id) is a stable, high-churn view: the diffable unit is the `activity` row set,

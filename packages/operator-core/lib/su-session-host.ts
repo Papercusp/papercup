@@ -95,7 +95,7 @@ export interface SuSessionHostOptions<B extends SuSessionBackend> {
   /** Persist the descriptor after every identity/lifecycle mutation. The
    * callback is deliberately fire-and-forget so a PG outage never blocks the
    * live event stream; the adv row remains the authoritative identity. */
-  persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
+  persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | boolean | Promise<void | boolean>;
   /**
    * How this host's runtime was reconciled against the durable adv row when it
    * was rebuilt after an operator/PUI restart. `null` (the default) means no
@@ -318,6 +318,21 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       identity: { ...this.descriptorValue.identity, nativeSessionId },
     } as SuSessionDescriptor<B>;
     this.emit({ type: 'session', descriptor: this.descriptorValue } as SuSessionEventInput<B>);
+  }
+
+  /**
+   * Await the descriptor write that follows runtime identity materialization.
+   * Ordinary lifecycle/event persistence remains best-effort, but a native id
+   * must reach the adv row before a fast process exit can trigger archival.
+   */
+  async persistDescriptorNow(): Promise<boolean> {
+    const persist = this.persistDescriptor;
+    if (!persist) return true;
+    try {
+      return (await persist(this.descriptor())) !== false;
+    } catch {
+      return false;
+    }
   }
 
   snapshot(): SuSessionHostSnapshot<B> {

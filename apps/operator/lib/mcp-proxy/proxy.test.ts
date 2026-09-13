@@ -3606,6 +3606,38 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ).toBe(false);
   });
 
+  it("reserves only a skeleton scorecards:evaluate read, including deferred tools:invoke", () => {
+    const args = { rubricRef: "spec-test-adequacy" };
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(JSON.stringify({ method: "tools/call", params: { name: "scorecards:evaluate", arguments: args } })),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: { name: "tools:invoke", arguments: { name: "scorecards_evaluate", args } },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "scorecards:evaluate",
+              arguments: { rubricRef: "spec-test-adequacy", ratings: { criterion: { rating: "pass" } } },
+            },
+          }),
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("recognizes a JSON-RPC batch when any member is a reserved control-plane call", () => {
     expect(
       isReservedControlPlaneCall(
@@ -3675,6 +3707,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     "work_items:claimable",
     "work_items:get",
     "scorecards:list",
+    "scorecards:evaluate",
     "work_items:search",
     "work_items:release",
     "work_items:complete",
@@ -3726,6 +3759,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
               arguments:
                 controlPlaneTool === "scorecards:list"
                   ? { rubricRef: "grading-integrity", subjectRef: "EI-22581128473264750", limit: 1 }
+                  : controlPlaneTool === "scorecards:evaluate"
+                    ? { rubricRef: "spec-test-adequacy" }
                   : {},
             },
       });
