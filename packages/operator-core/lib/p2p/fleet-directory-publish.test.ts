@@ -11,7 +11,12 @@
  * Run: cd packages/operator-core && npx vitest run lib/p2p/fleet-directory-publish.test.ts
  */
 import { describe, expect, it, vi } from 'vitest';
-import { publishFleetDirectoryRecord, type PublishFleetDirectoryDeps } from './fleet-directory-publish';
+import {
+  describeFleetDirectoryOutcome,
+  publishFleetDirectoryRecord,
+  publishFleetDirectoryRecordBestEffort,
+  type PublishFleetDirectoryDeps,
+} from './fleet-directory-publish';
 import { DEFAULT_FLEET_BILLING, type FleetDirectoryRecord } from './fleet-directory-schema';
 import type { StoredFleetRecord } from './fleet-directory';
 
@@ -217,5 +222,52 @@ describe('publishFleetDirectoryRecord — failure passthrough', () => {
     const r = await publishFleetDirectoryRecord(OPTS, d);
     expect(r).toEqual({ ok: false, error: 'device signer unavailable: keychain locked' });
     expect(putRecord).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-23024280755553126: a non-publishing directory record is never silent', () => {
+  it('reports a benign skip with its reason', async () => {
+    const log = vi.fn();
+    const { d } = deps({ resolveActor: vi.fn(async () => null), log });
+    publishFleetDirectoryRecordBestEffort(OPTS, d);
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1));
+    const line = log.mock.calls[0]![0] as string;
+    expect(line).toContain('NOT PUBLISHED');
+    expect(line).toContain('no_github_identity');
+    expect(line).toContain('fleet:alpha');
+  });
+
+  it('reports a real authoring error with its cause', async () => {
+    const log = vi.fn();
+    const { d } = deps({
+      putRecord: vi.fn(async () => ({ ok: false as const, error: 'stale version' })),
+      log,
+    });
+    publishFleetDirectoryRecordBestEffort(OPTS, d);
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1));
+    expect(log.mock.calls[0]![0]).toContain('stale version');
+  });
+
+  it('reports an unexpected throw while preserving the fire-and-forget contract', async () => {
+    const log = vi.fn();
+    const { d } = deps({
+      resolveScope: vi.fn(async () => {
+        throw new Error('scope lookup failed');
+      }),
+      log,
+    });
+    expect(() => publishFleetDirectoryRecordBestEffort(OPTS, d)).not.toThrow();
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1));
+    expect(log.mock.calls[0]![0]).toContain('publish THREW');
+    expect(log.mock.calls[0]![0]).toContain('scope lookup failed');
+  });
+
+  it('labels successful and no-churn outcomes distinctly', () => {
+    expect(describeFleetDirectoryOutcome(OPTS, { ok: true, stored: {} as never, changed: true }).msg).toContain(
+      'published',
+    );
+    const noChurn = describeFleetDirectoryOutcome(OPTS, { ok: true, stored: {} as never, changed: false });
+    expect(noChurn.msg).toContain('already current');
+    expect(noChurn.level).toBe('info');
   });
 });

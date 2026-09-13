@@ -72,6 +72,7 @@ function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
     costCapCents: null,
     maxFires: null,
     maxDurationSec: null,
+    fireStarved: false,
     stalled: false,
     stalledSinceMs: null,
     lastDeliveryOutcome: null,

@@ -501,10 +501,16 @@ describe('restoreToClone — slug/path + dir creation + failure event (Gap 4)', 
 
     await expect(wb.restoreToClone({ kopiaSnapshotId: 'snapFail' })).rejects.toThrow(/kopia boom/);
 
+    const started = evt.mock.calls.find(
+      ([kind, payload]) => kind === 'restore' && (payload as { phase?: string }).phase === 'started',
+    );
     const failed = evt.mock.calls.find(
       ([kind, payload]) => kind === 'restore' && (payload as { phase?: string }).phase === 'failed',
     );
+    const target = (started?.[1] as { target?: string } | undefined)?.target;
+    expect(target).toBeTruthy();
     expect(failed).toBeTruthy();
+    expect((failed![1] as { target?: string }).target).toBe(target);
     expect((failed![1] as { error?: string }).error).toMatch(/kopia boom/);
   });
 
@@ -614,6 +620,24 @@ describe('restoreInPlace — skipSafetySnapshot step routing (Gap 8)', () => {
     expect(calls).toEqual(['restore-kopia-apply']);
     expect(r.prevSnapshotId).toBeNull();
     expect(snapSpy).not.toHaveBeenCalled();
+  });
+
+  it('(c) failed apply includes its target so liveness cleanup does not retain it forever', async () => {
+    const target = join(root, 'live');
+    configureBackupStepRunner(recordingRunner([]));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(wb as any, 'kopia').mockRejectedValue(new Error('restore apply failed'));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const evt = vi.spyOn(wb as any, 'detachedEvent');
+
+    await expect(
+      wb.restoreInPlace({ kopiaSnapshotId: 'snap-fail', target, skipSafetySnapshot: true }),
+    ).rejects.toThrow(/restore apply failed/);
+
+    const failed = evt.mock.calls.find(
+      ([kind, payload]) => kind === 'restore' && (payload as { phase?: string }).phase === 'failed',
+    );
+    expect((failed?.[1] as { target?: string } | undefined)?.target).toBe(target);
   });
 });
 

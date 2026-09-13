@@ -64,6 +64,8 @@ export interface PublishFleetDirectoryDeps {
   getRecord?: typeof getFleetRecord;
   putRecord?: typeof putFleetRecord;
   buildSigner?: (githubUserId: number) => Promise<FleetRecordSigner>;
+  /** Where the best-effort wrapper reports its outcome. */
+  log?: (msg: string) => void;
 }
 
 async function defaultBuildSigner(githubUserId: number): Promise<FleetRecordSigner> {
@@ -169,11 +171,42 @@ export async function publishFleetDirectoryRecord(
   return { ok: true, stored: res.stored, changed: true };
 }
 
+/** One-line, greppable report of a directory publish outcome. The lifecycle
+ * caller is fire-and-forget, so a skip or error must remain observable even
+ * though it is deliberately not load-bearing. */
+export function describeFleetDirectoryOutcome(
+  opts: Pick<PublishFleetDirectoryOpts, 'fleetSlug' | 'archived'>,
+  outcome: FleetDirectoryPublishOutcome,
+): { level: 'info' | 'warn'; msg: string } {
+  const what = `fleet:${opts.fleetSlug}${opts.archived ? ' (archive)' : ''}`;
+  if (outcome.ok) {
+    return {
+      level: 'info',
+      msg: `${what} → ${outcome.changed ? 'published' : 'already current (no version churn)'}`,
+    };
+  }
+  if ('skipped' in outcome) {
+    return { level: 'warn', msg: `${what} → NOT PUBLISHED (skipped: ${outcome.skipped})` };
+  }
+  return { level: 'warn', msg: `${what} → NOT PUBLISHED (error: ${outcome.error})` };
+}
+
 /**
  * The fire-and-forget wrapper the agent-fleets-store lifecycle calls: never
  * throws, never blocks the fleet write it rides on. Kept here (not inline in
  * the store) so the store stays PG-pure and the swallow is one audited place.
  */
-export function publishFleetDirectoryRecordBestEffort(opts: PublishFleetDirectoryOpts): void {
-  void publishFleetDirectoryRecord(opts).catch(() => {});
+export function publishFleetDirectoryRecordBestEffort(
+  opts: PublishFleetDirectoryOpts,
+  deps: PublishFleetDirectoryDeps = {},
+): void {
+  const log = deps.log ?? ((m: string) => console.warn(`[fleet-directory-publish] ${m}`));
+  void publishFleetDirectoryRecord(opts, deps)
+    .then((outcome) => {
+      const { msg } = describeFleetDirectoryOutcome(opts, outcome);
+      log(msg);
+    })
+    .catch((e: unknown) => {
+      log(`fleet:${opts.fleetSlug} → publish THREW: ${String(e)}`);
+    });
 }

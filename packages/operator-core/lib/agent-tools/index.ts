@@ -582,6 +582,7 @@ import './saved_prompts/list';
 import './backup/snapshot_create';
 import './backup/snapshot_list';
 import './backup/restore';
+import './backup/restore_clone_cleanup';
 import './backup/diff';
 import './backup/promote';
 import './backup/rollback';

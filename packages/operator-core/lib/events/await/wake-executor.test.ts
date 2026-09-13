@@ -1619,6 +1619,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
       costCapCents: null,
       maxFires: null,
       maxDurationSec: null,
+      fireStarved: false,
       stalled: false,
       stalledSinceMs: null,
       lastDeliveryOutcome: null,

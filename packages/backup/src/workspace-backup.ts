@@ -1098,7 +1098,7 @@ export class WorkspaceBackup {
       await this.detachedEvent('restore', { phase: 'done', target });
     } catch (err) {
       await this.markMissingSnapshotReceipt(opts.kopiaSnapshotId, err);
-      await this.detachedEvent('restore', { phase: 'failed', error: String(err) });
+      await this.detachedEvent('restore', { phase: 'failed', target, error: String(err) });
       throw err;
     }
     return { targetPath: target };
@@ -1145,7 +1145,7 @@ export class WorkspaceBackup {
       await this.detachedEvent('restore', { phase: 'done', mode: 'in_place', target });
     } catch (err) {
       await this.markMissingSnapshotReceipt(opts.kopiaSnapshotId, err);
-      await this.detachedEvent('restore', { phase: 'failed', mode: 'in_place', error: String(err) });
+      await this.detachedEvent('restore', { phase: 'failed', mode: 'in_place', target, error: String(err) });
       throw err;
     }
     return { targetPath: target, prevSnapshotId };

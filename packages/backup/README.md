@@ -85,11 +85,18 @@ backup:snapshot_create    — pre-destructive op snapshot (all roles)
 backup:snapshot_list      — recent snapshots (all roles)
 backup:diff               — file-level diff between two snapshots (all roles)
 backup:restore            — restore-to-clone (operator/debugger/reviewer)
+backup:restore_clone_cleanup — preview/remove aged restore clones (operator/debugger)
 backup:promote            — promote clone → live (operator/debugger)
 backup:rollback           — undo a promote (operator/debugger)
 backup:settings_get       — settings + stats (all roles)
 backup:settings_set       — patch settings (operator/debugger)
 ```
+
+Restore clones are retained for 30 days by the daily `backupRecoveryDebrisCleanup`
+workflow. The cleanup tool is preview-first (`dryRun: true`); an explicit
+`dryRun: false` pass removes only direct `.restored/<snapshot>/<slug>` directories
+whose restore-event liveness and promotion-sidecar reference proofs both succeed.
+Unreadable or malformed proof sources are retained.
 
 ## Event triggers wired
 

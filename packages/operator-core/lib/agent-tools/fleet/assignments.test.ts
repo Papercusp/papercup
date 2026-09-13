@@ -622,6 +622,7 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     costCapCents: null,
     maxFires: null,
     maxDurationSec: null,
+    fireStarved: false,
     stalled: false,
     stalledSinceMs: null,
     lastDeliveryOutcome: 'loop-lifecycle',
