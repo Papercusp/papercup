@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 capability:bash response-yield mutation probe",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/agent-tools/capability/bash.ts",
+    "--mutate",
+    "s|const disposition = await waitForJobResponse\\(job, ctx\\.signal, Math\\.max\\(0, responseDeadlineAtMs - Date\\.now\\(\\)\\)\\);|const disposition = 'terminal' as const;|",
+    "--test",
+    "cd packages/operator-core && PROBE_AGENT_TOOLS_DIR=\"$(dirname \"$(dirname {})\")\" npx vitest run lib/agent-tools/capability/foreground-transport-cap.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-13T10:39:11.710Z",
+  "finishedAt": "2026-09-13T10:39:51.949Z",
+  "summary": "The current-tree copy-out mutation probe removed the awaited response-yield decision, the focused guard failed, and the canonical source remained byte-identical.",
+  "assertions": [
+    {
+      "id": "canonical-baseline-green",
+      "passed": true,
+      "evidence": "The canonical-tree baseline ran foreground-transport-cap.test.ts: 29 passed, 0 failed."
+    },
+    {
+      "id": "copy-baseline-green",
+      "passed": true,
+      "evidence": "The unmutated copy-out mirror ran foreground-transport-cap.test.ts: 29 passed, 0 failed."
+    },
+    {
+      "id": "yield-seam-mutant-caught",
+      "passed": true,
+      "evidence": "Replacing the awaited waitForJobResponse disposition with the constant terminal disposition caused the guard to fail: guard_exit=1, verdict=caught."
+    },
+    {
+      "id": "canonical-tree-integrity",
+      "passed": true,
+      "evidence": "mutation-probe reported the canonical packages/operator-core/lib/agent-tools/capability/bash.ts remained byte-identical to its pre-probe state."
+    }
+  ]
+}

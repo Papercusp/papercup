@@ -69,8 +69,10 @@ export const STREAM_LINE_TRUNCATION_MARKER = `[capability:bash] line truncated a
 /** Hard ceiling on retained in-memory output per job (bytes). Beyond this the
  *  in-memory tail is trimmed (the full stream is still on disk). 5 MB. */
 const MEM_BUFFER_CAP = 5 * 1024 * 1024;
-/** Default + max command wall-clock (ms) for a FOREGROUND run. It holds the
- *  caller's request open, so it stays short by design. */
+/** Default + max command wall-clock (ms) for the legacy blocking runner used
+ *  by capability:inspect. capability:bash ordinary calls use DEFAULT_TIMEOUT_MS
+ *  as their independent execution deadline but yield the durable job at the
+ *  shorter response window instead of holding the request open. */
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 600_000;
 /**
@@ -491,7 +493,8 @@ export interface BashJob {
    * restarting it wipes every handle, which is why an inherited "job COMPLETED"
    * claim has to be re-verified against the OS). The ledger row does not, and the
    * cgroup scope makes the job's whole subtree addressable without a pid.
-   * Undefined for foreground runs, which by construction cannot outlive the call.
+   * Present for startBackground jobs, including capability:bash ordinary calls
+   * that may yield. The legacy runForeground helper has no BashJob object.
    */
   taskId?: string;
   scopeUnit?: string | null;
@@ -507,9 +510,8 @@ export interface BashJob {
    * pid produces.
    */
   lastCpuSample?: CgroupCpuSample | null;
-  /** WI-6677: the EFFECTIVE wall-clock this job will be terminated at, after
-   *  clamping — so a caller can be told its deadline instead of discovering it
-   *  as an unexplained death. Undefined for foreground runs. */
+  /** WI-6677: the EFFECTIVE execution wall-clock at which this durable job is
+   *  terminated, independent of the launching request's response window. */
   timeoutMs?: number;
   /** Epoch ms of that deadline (`startedAt + timeoutMs`). */
   deadlineAt?: number;
@@ -2186,8 +2188,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     );
   }
 
-  // EI-16635: background:true — this job is a run_in_background spawn, meant to
-  // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
+  // EI-16635 / P-002: startBackground jobs are durable whether the caller asks
+  // for immediate background return or waits through the bounded response
+  // window, so the sandbox path (when enabled) must not die-with-parent.
   const child = spawnShell(
     opts.command,
     opts.cwd,
