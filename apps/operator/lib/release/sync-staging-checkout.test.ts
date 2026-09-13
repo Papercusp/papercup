@@ -425,6 +425,45 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
   });
 });
 
+describe('sync-staging-checkout.sh post-restart readiness budget (EI-23131564135958331)', () => {
+  const script = readFileSync(SCRIPT_PATH, 'utf8');
+
+  function normalize(value: string): { status: number | null; stdout: string; stderr: string } {
+    return runFn(
+      ['normalize_staging_readiness_timeout_sec'],
+      'normalize_staging_readiness_timeout_sec "$VALUE"',
+      { env: { VALUE: value } },
+    );
+  }
+
+  it('accepts a migration-sized default and explicit positive overrides', () => {
+    expect(normalize('300')).toMatchObject({ status: 0, stdout: '300\n' });
+    expect(normalize('480')).toMatchObject({ status: 0, stdout: '480\n' });
+  });
+
+  it('rejects zero and malformed values so the readiness wait stays bounded and intentional', () => {
+    expect(normalize('0').status).toBe(1);
+    expect(normalize('30s').status).toBe(1);
+    expect(normalize('-1').status).toBe(1);
+    expect(normalize('').status).toBe(1);
+  });
+
+  it('uses the configured positive timeout rather than the old fixed ~60s attempt count', () => {
+    expect(script).toContain('PAPERCUSP_STAGING_SYNC_READINESS_TIMEOUT_SEC:-300');
+    expect(script).toContain('normalize_staging_readiness_timeout_sec');
+    expect(script).toContain('while [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ]');
+    expect(script).toContain('within ${READINESS_TIMEOUT_SEC}s after restart');
+    expect(script).not.toContain('seq 1 30');
+  });
+
+  it('validates the readiness budget before requesting dev:restart', () => {
+    const validationIdx = script.indexOf('invalid PAPERCUSP_STAGING_SYNC_READINESS_TIMEOUT_SEC');
+    const restartIdx = script.indexOf('requesting coordinated restart');
+    expect(validationIdx).toBeGreaterThan(-1);
+    expect(restartIdx).toBeGreaterThan(validationIdx);
+  });
+});
+
 /**
  * Structural guards. The gates above are only worth anything if the shipped
  * script actually consults them on the path to the restart — an edit that

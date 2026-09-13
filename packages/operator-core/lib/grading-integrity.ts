@@ -28,7 +28,7 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
 import { routeSourceGradingAudit } from './grading-audit-routing';
-import { getTask } from './task-manager/store';
+import { getTask, listTasks } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
@@ -153,6 +153,8 @@ export interface DispatchPendingGradingAuditsDeps {
   /** Re-check the owned reservation after the candidate snapshot is claimed. */
   confirmReservation?: typeof confirmPendingGradingAuditReservation;
   release?: typeof releasePendingGradingAudit;
+  /** Check for a still-live task from an earlier reservation epoch. */
+  listTasks?: typeof listTasks;
   getTask?: typeof getTask;
   readLogTail?: (path: string) => string | Promise<string>;
   killTask?: typeof killTask;
@@ -610,6 +612,7 @@ export async function dispatchPendingGradingAudits(
   const reserve = deps.reserve ?? reservePendingGradingAudit;
   const confirmReservation = deps.confirmReservation ?? confirmPendingGradingAuditReservation;
   const release = deps.release ?? releasePendingGradingAudit;
+  const readTasks = deps.listTasks ?? listTasks;
   const workspaceId = input.ctx.workspaceId?.trim();
   const readWorkspaceWideStanddowns =
     deps.listWorkspaceWideLoopStanddownOwners ??
@@ -764,6 +767,46 @@ export async function dispatchPendingGradingAudits(
       reservationHeld = true;
       if (!(await confirmOwnedPendingReservation())) {
         receipts.push(receipt!);
+        continue;
+      }
+      /**
+       * The reservation is a bounded dispatch lease, not the auditor's
+       * identity. Once its TTL expires, a still-running task from the prior
+       * lease must win over a new route or launch. The launcher's idempotency
+       * receipt can be absent or stale even while the task-manager row remains
+       * live, so query the durable task label directly before any fallback
+       * side effect.
+       */
+      const liveTasks = await readTasks({
+        workspaceId: input.ctx.workspaceId,
+        states: ['pending', 'running'],
+        labelPrefix: idempotencyKey,
+        limit: 10,
+      });
+      if (liveTasks.length > 0) {
+        await releaseReservation();
+        receipt = {
+          issueId,
+          rubricRef: card.rubricRef,
+          state: 'deduped',
+          idempotencyKey,
+          launch: {
+            deduped: true,
+            opened: 0,
+            failed: 0,
+            mode: 'live-task-guard',
+            tasks: liveTasks.map((task) => ({
+              taskId: task.taskId,
+              logPath: task.logPath ?? null,
+              label: typeof task.detail?.label === 'string' ? task.detail.label : idempotencyKey,
+            })),
+          },
+          reason:
+            liveTasks.length === 1
+              ? `existing live grading auditor task '${liveTasks[0]?.taskId ?? 'unknown'}' owns ${idempotencyKey}; duplicate launch suppressed`
+              : `${liveTasks.length} existing live grading auditor tasks own ${idempotencyKey}; duplicate launch suppressed`,
+        };
+        receipts.push(receipt);
         continue;
       }
       const routed = await (deps.route ?? routeSourceGradingAudit)({

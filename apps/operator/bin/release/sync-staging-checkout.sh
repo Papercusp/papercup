@@ -23,6 +23,9 @@
 #     SPA-build failure) BEFORE any restart, so a bad staging commit can never
 #     cut :3170 over to a tree that would crash-loop — the previous good
 #     checkout keeps serving.
+#   - post-restart source readiness is verified with a bounded wall-clock
+#     budget, long enough for request-only startup migrations but never an
+#     unbounded wait.
 #
 # Reverse the whole tier: stop+disable papercup-staging-sync.timer, delete the
 # 50-staging-checkout.conf drop-in, daemon-reload, restart papercusp-staging-api.
@@ -40,6 +43,9 @@ Options:
 
 Configuration is supplied through the PAPERCUSP_* environment variables used
 by the staging sync timer; this command accepts no positional arguments.
+
+PAPERCUSP_STAGING_SYNC_READINESS_TIMEOUT_SEC controls the bounded health
+readiness wait after a coordinated restart (default: 300 seconds).
 USAGE
 }
 
@@ -88,6 +94,26 @@ STAGING_PORT="${PAPERCUSP_STAGING_PORT:-$(printf '%s' "$HEALTH_URL" | sed -n 's#
 MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
+
+# Request-only hono-host startup applies pending migrations before binding :3170.
+# A migration can therefore keep the port unbound for several minutes even
+# though the coordinated restart succeeded. Keep the readiness wait generous
+# enough for that expected boot work, but validate it as a finite positive
+# integer so a bad timer environment cannot create an accidental endless loop.
+normalize_staging_readiness_timeout_sec() {
+  local requested="${1:-}"
+  case "$requested" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  requested=$((10#$requested))
+  [ "$requested" -gt 0 ] || return 1
+  printf '%s\n' "$requested"
+}
+
+READINESS_TIMEOUT_SEC="$(normalize_staging_readiness_timeout_sec "${PAPERCUSP_STAGING_SYNC_READINESS_TIMEOUT_SEC:-300}")" || {
+  log "FATAL: invalid PAPERCUSP_STAGING_SYNC_READINESS_TIMEOUT_SEC; expected a positive integer number of seconds"
+  exit 1
+}
 
 # EI-19457080109574347 (2026-08-22 recurrence): the shared apps/operator/.env.local
 # deliberately carries an off-loopback bind for other operator roles. A staging ExecStart
@@ -499,13 +525,17 @@ fi
 log "coordinated dev:restart accepted: ${restart_result:0:500}"
 
 last_health_sha=""
-for i in $(seq 1 30); do
+readiness_started_at="$(date +%s)"
+readiness_elapsed_sec=0
+while [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ]; do
   last_health_sha="$(staging_health_source_sha || true)"
   if health_sha_matches_target "$last_health_sha" "$target"; then
     log "✅ :3170 healthy on exact staging source ${last_health_sha}"
     exit 0
   fi
+  readiness_elapsed_sec=$(( $(date +%s) - readiness_started_at ))
+  [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ] || break
   sleep 2
 done
-log "⚠ :3170 did not report target source ${target:0:10} within ~60s after restart (last=${last_health_sha:-unavailable}) — check the operator journal"
+log "⚠ :3170 did not report target source ${target:0:10} within ${READINESS_TIMEOUT_SEC}s after restart (last=${last_health_sha:-unavailable}) — check the operator journal"
 exit 1

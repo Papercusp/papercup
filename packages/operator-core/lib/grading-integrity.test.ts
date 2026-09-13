@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Rubric } from './rubrics';
 import type { ScorecardRow } from './scorecards';
+import type { TaskRow } from './task-manager/types';
 import {
   dispatchPendingGradingAudits,
   GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
@@ -22,6 +23,7 @@ type GetRubric = NonNullable<DispatchPendingGradingAuditsDeps['getRubric']>;
 type Launch = NonNullable<DispatchPendingGradingAuditsDeps['launch']>;
 type GetTask = NonNullable<DispatchPendingGradingAuditsDeps['getTask']>;
 type ConfirmReservation = NonNullable<DispatchPendingGradingAuditsDeps['confirmReservation']>;
+type ListTasks = NonNullable<DispatchPendingGradingAuditsDeps['listTasks']>;
 type LaunchResult = Awaited<ReturnType<Launch>>;
 
 // Keep the mock result shape explicit without using `as never` at a mock call;
@@ -76,6 +78,7 @@ function deps() {
   );
   const release = vi.fn(async () => true);
   const confirmReservation = vi.fn<ConfirmReservation>().mockResolvedValue(true);
+  const listTasks = vi.fn<ListTasks>().mockResolvedValue([]);
   const getTask = vi.fn<GetTask>().mockResolvedValue({ state: 'running' } as Awaited<ReturnType<GetTask>>);
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
   return {
@@ -86,6 +89,7 @@ function deps() {
     reserve,
     confirmReservation,
     release,
+    listTasks,
     getTask,
     listWorkspaceWideLoopStanddownOwners,
   };
@@ -321,6 +325,56 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({ idempotencyKey: 'grading-audit:EI-audit-1' }),
       ctx,
     );
+  });
+
+  it('dedupes against a live same-label auditor after its reservation epoch expires', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-live-auditor')]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-old-auditor',
+        state: 'running',
+        detail: { label: 'grading-audit:EI-live-auditor' },
+        logPath: '/tmp/old-auditor.log',
+      } as TaskRow,
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-live-auditor'], ctx }, d);
+
+    expect(result.receipts).toEqual([
+      {
+        issueId: 'EI-live-auditor',
+        rubricRef: 'standard-rubric',
+        state: 'deduped',
+        idempotencyKey: 'grading-audit:EI-live-auditor',
+        launch: {
+          deduped: true,
+          opened: 0,
+          failed: 0,
+          mode: 'live-task-guard',
+          tasks: [
+            {
+              taskId: 'task-old-auditor',
+              logPath: '/tmp/old-auditor.log',
+              label: 'grading-audit:EI-live-auditor',
+            },
+          ],
+        },
+        reason:
+          "existing live grading auditor task 'task-old-auditor' owns grading-audit:EI-live-auditor; duplicate launch suppressed",
+      },
+    ]);
+    expect(d.listTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      states: ['pending', 'running'],
+      labelPrefix: 'grading-audit:EI-live-auditor',
+      limit: 10,
+    });
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(d.release).toHaveBeenCalledWith('EI-live-auditor', 'grading-audit:EI-live-auditor', {
+      workspaceId: 'ws-test',
+    });
   });
 
   it('gives concurrent auditors scorecard-scoped scratch isolation for the MCP recovery fallback', async () => {
