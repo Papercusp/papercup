@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -7,6 +8,7 @@ import {
   buildPureLaneShardArgs,
   resolvePureLaneShardCount,
   runPureLaneShards,
+  runVitestProcess,
 } from '../../../scripts/run-vitest-pure-lane.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -75,5 +77,46 @@ describe('operator-core test-lane admission', () => {
     expect(maxActive).toBe(1);
     expect(calls.map((args) => args.at(-1))).toEqual(['--shard=1/2', '--shard=2/2']);
     expect(code).toBe(134);
+  });
+
+  it('runs the real shard child inside the canonical governed execution lifetime', async () => {
+    const child = new EventEmitter() as EventEmitter & { pid: number };
+    child.pid = 4242;
+    const attached: number[] = [];
+    const spawned: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
+    let governedOptions: Record<string, unknown> | null = null;
+    const admittedEnv = {
+      PAPERCUSP_WORKSPACE: 'workspace-test',
+      PAPERCUSP_ADMISSION_CONTEXT: '{"receiptId":"receipt-1"}',
+    };
+
+    const result = runVitestProcess(['run', '--shard=1/2'], {
+      env: { PAPERCUSP_WORKSPACE: 'workspace-test', VITEST_MAX_WORKERS: '2' },
+      spawnProcess: ((command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        spawned.push({ command, args, env: options.env });
+        queueMicrotask(() => child.emit('close', 0, null));
+        return child;
+      }) as never,
+      createSampler: (() => ({
+        attach: (pid: number) => attached.push(pid),
+        stop: () => ({ cpuWeight: 0.5, memoryBytes: 1024, diskBytes: 0, fileDescriptors: 4 }),
+      })) as never,
+      runGovernedTestProcess: (async (options: Record<string, unknown>, run: Function) => {
+        governedOptions = options;
+        return run({ receiptId: 'receipt-1' }, admittedEnv, { inherited: false });
+      }) as never,
+    });
+
+    await expect(result).resolves.toBe(0);
+    expect(governedOptions).toMatchObject({
+      namespace: 'vitest-pure-lane-shard',
+      payloadRef: 'test:lane-pure',
+      workspaceId: 'workspace-test',
+    });
+    expect(governedOptions).toHaveProperty('settle');
+    expect(attached).toEqual([4242]);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].args).toEqual(['run', '--shard=1/2']);
+    expect(spawned[0].env.PAPERCUSP_ADMISSION_CONTEXT).toContain('receipt-1');
   });
 });
