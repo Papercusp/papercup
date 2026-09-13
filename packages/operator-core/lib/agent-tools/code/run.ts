@@ -223,6 +223,7 @@ export default defineTool({
           '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs. ' +
           "Literal shell backslashes need the same JS escaping: use String.raw for the script or double each backslash in a JS string, e.g. `find /tmp \\\\( -name '*.unlikely-no-match' \\\\)`; a single `\\(` becomes `(` before bash runs, breaking grouped predicates. " +
           "Shell parameter expansion needs the same template-layer escape: inside a JavaScript template literal, write `\\${f##*/}` (or avoid the expansion) so the JavaScript compiler does not treat the shell `${f##*/}` as its own template expression; otherwise code:run returns `compile_error` before bash is dispatched. " +
+          'Regex literals containing path slashes are another string layer: an extra backslash before `/` can close the literal early and yield `compile_error: Invalid regular expression flags`; prefer `String.includes(...)` or `new RegExp("...")` when composing scripts through another string layer. ' +
           'Generated data needs the same JS layer: do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal. ' +
           'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument).',
       ),
