@@ -22,7 +22,9 @@
  * worth it: the failure projection is exhaustively unit-tested, and the glue
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
-import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -41,10 +43,12 @@ import runTool, {
   detachedTestTimeoutHint,
   discoverKnownHiveCheckoutRoots,
   groupDirectVitestRoutes,
+  launchManagedTestProcess,
   normalizeTestFilePaths,
   parseRouterTerminalCompletion,
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
+  readManagedTestProcessResourceSnapshot,
   readTestProcessResourceSnapshot,
   runTestFilesCore,
   runWithTestProcessDeadline,
@@ -539,6 +543,96 @@ async function pidsTaggedWithRun(runId: string): Promise<number[]> {
 }
 
 describe('testing:run (integration)', () => {
+  it('launches the foreground router in a managed sibling scope and terminates that exact scope', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4242,
+      kill: vi.fn(() => true),
+    }) as unknown as ChildProcess;
+    const managedSpawnFn = vi.fn(async () => ({
+      child,
+      taskId: 'testtask1234',
+      scopeUnit: 'pc-testtask1234.scope',
+      confined: true,
+    }));
+    const killScopeUnitFn = vi.fn(async (scopeUnit: string) => ({
+      ok: true as const,
+      scopeUnit,
+      action: 'kill',
+    }));
+    const killProcessGroupFn = vi.fn();
+
+    const running = await launchManagedTestProcess(
+      {
+        command: process.execPath,
+        args: ['scripts/test-files.mjs', GREEN_TARGET],
+        cwd: REPO_ROOT,
+        env: { PAPERCUSP_TEST_RUN_GROUP: 'restart-survival-run' },
+        timeoutMs: 60_000,
+        runGroup: 'restart-survival-run',
+        workspaceId: 'papercusp-workspace',
+      },
+      { managedSpawnFn, killScopeUnitFn, killProcessGroupFn },
+    );
+
+    expect(managedSpawnFn).toHaveBeenCalledWith(
+      process.execPath,
+      ['scripts/test-files.mjs', GREEN_TARGET],
+      expect.objectContaining({
+        class: 'test-run',
+        harnessSlug: null,
+        launchedBy: 'testing:run:restart-survival-run',
+        runtimeMaxSec: 65,
+        detail: { runGroup: 'restart-survival-run', foreground: true },
+      }),
+      expect.objectContaining({
+        workspaceId: 'papercusp-workspace',
+        spawnOptions: expect.objectContaining({ cwd: REPO_ROOT, detached: true }),
+      }),
+    );
+
+    running.terminate();
+    running.terminate();
+    await vi.waitFor(() => expect(killScopeUnitFn).toHaveBeenCalledTimes(1));
+    expect(killScopeUnitFn).toHaveBeenCalledWith('pc-testtask1234.scope', {
+      signal: 'SIGTERM',
+      escalateAfterMs: 5_000,
+    });
+    // The launcher pid is the systemd-run client, not the payload. A confined
+    // termination must never mistake that client process group for the tree.
+    expect(killProcessGroupFn).not.toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('accounts confined foreground demand from the whole task cgroup rather than the launcher pid', async () => {
+    const scopeCgroupPath =
+      '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-test.slice/papercusp-test-run.slice/pc-testtask1234.scope';
+    const root = `/sys/fs/cgroup${scopeCgroupPath}`;
+    const files = new Map<string, string>([
+      [`${root}/cpu.stat`, 'usage_usec 123456\n'],
+      [`${root}/memory.current`, '2048\n'],
+      [`${root}/memory.peak`, '4096\n'],
+      [`${root}/pids.current`, '2\n'],
+      [`${root}/pids.events`, 'max 0\n'],
+      [`${root}/cgroup.procs`, '111\n222\n'],
+    ]);
+    const snapshot = await readManagedTestProcessResourceSnapshot(
+      {
+        child: { pid: 4242 } as ChildProcess,
+        scopeCgroupPath,
+      },
+      {
+        fs: {
+          readFile: (path) => files.get(path) ?? null,
+          readDir: () => [],
+          isDir: (path) => path === root,
+        },
+        readFileDescriptors: async (pid) => (pid === 111 ? 5 : 7),
+      },
+    );
+
+    expect(snapshot).toEqual({ cpuMicros: 123456, rssBytes: 4096, fileDescriptors: 12 });
+  });
+
   it('applies the shared tmpdir guard before creating its report directory', () => {
     const source = readFileSync(new URL('../run.ts', import.meta.url), 'utf8');
     const coreStart = source.indexOf('export async function runTestFilesCore');
@@ -1026,14 +1120,8 @@ describe('testing:run (integration)', () => {
       join(root, 'packages', 'integration', 'package.json'),
       JSON.stringify({ name: '@example/integration' }),
     );
-    await writeFile(
-      join(root, 'packages', 'integration', 'vitest.integration.config.ts'),
-      'export default {}.\n',
-    );
-    const files = [
-      'packages/unit/src/unit.test.ts',
-      'packages/integration/src/integration.integration.test.ts',
-    ];
+    await writeFile(join(root, 'packages', 'integration', 'vitest.integration.config.ts'), 'export default {}.\n');
+    const files = ['packages/unit/src/unit.test.ts', 'packages/integration/src/integration.integration.test.ts'];
     const request = buildDetachedMixedTestRunRequest({ groups: [{ root, files }] });
     const artifacts = request.detachedReportArtifacts ?? [];
     expect(artifacts).toHaveLength(2);

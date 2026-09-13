@@ -223,12 +223,6 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
         return h.signingRows;
       } }) }) }) },
     }),
-    // scheduler:get_next deliberately uses its own small admin pool so ordinary
-    // MCP reads cannot starve claims. This dispatcher matrix tests only that the
-    // transport does not open the org-app workspace transaction; keep the
-    // scheduler's dedicated pool on the same empty SQL double instead of letting
-    // this unit test escape to a live database whose schema/data are unrelated.
-    getLongLivedAdminPool: () => h.fakeSql,
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
       if (h.workspaceAcquireError) {
@@ -259,6 +253,18 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       h.txEvents.push('commit');
       return out;
     },
+  };
+});
+// scheduler:get_next deliberately uses its own small admin pool so ordinary
+// MCP reads cannot starve claims. It imports that accessor from the local pool
+// module (not @papercusp/db-org), so pin the exact import seam to this test's
+// empty SQL double. Otherwise this unit test escapes to the live scheduler DB
+// and its result depends on whatever schema/data happen to be deployed.
+vi.mock('../../long-lived-admin-pool', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    getLongLivedAdminPool: () => h.fakeSql,
   };
 });
 // EI-19301511582594101: observe replay-receipt persistence without a live PG.

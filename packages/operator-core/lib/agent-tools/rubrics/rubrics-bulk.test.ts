@@ -22,14 +22,18 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }))
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // rubricCompleteness is mocked shape-only here (WI-4287: ratify surfaces it per result);
 // its real logic is pinned in lib/rubrics-loss-guards.test.ts.
-vi.mock('../../rubrics', () => ({
-  META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
-  getRubric: vi.fn(),
-  getRubricPlanRevision: vi.fn(),
-  readRubricPlanRevision: vi.fn(),
-  ratifyRubric: vi.fn(),
-  rubricCompleteness: vi.fn(() => ({ criteriaWithoutReplication: [], methodRefMissing: false, complete: true })),
-}));
+vi.mock('../../rubrics', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
+    getRubric: vi.fn(),
+    getRubricPlanRevision: vi.fn(),
+    readRubricPlanRevision: vi.fn(),
+    ratifyRubric: vi.fn(),
+    rubricCompleteness: vi.fn(() => ({ criteriaWithoutReplication: [], methodRefMissing: false, complete: true })),
+  };
+});
 vi.mock('../../scorecards', () => ({
   listScorecards: vi.fn(),
   settledGradingAuditIsCurrent: (row: {

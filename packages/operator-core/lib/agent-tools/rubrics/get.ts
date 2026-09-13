@@ -125,7 +125,18 @@ export default defineTool({
             args.revision === undefined ? await getRubric(lookupRef) : await getRubric(lookupRef, args.revision);
           if (rubric) {
             if (rubric.kind === 'acceptance') {
-              const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
+              // Keep every rubric-store read on this handler's injected seam.
+              // The shared vetting helper otherwise closes over its production
+              // defaults, which makes projected/unit dispatch escape the caller's
+              // workspace and test doubles even though getRubric above did not.
+              const vetting = await getAcceptanceRubricVettingStatus(rubric, {
+                listScorecards,
+                getRubric,
+                getRubricPlanRevision: async (rubricId) => {
+                  const read = await readRubricPlanRevision(rubricId);
+                  return read.ok ? read.revision : null;
+                },
+              });
               return { ok: true as const, rubricRef, rubric, vetting };
             }
             return { ok: true as const, rubricRef, rubric };
