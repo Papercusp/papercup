@@ -29,6 +29,7 @@ import { stripJsComments } from './strip-js-comments';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
 const MONACO_RUNTIME = resolve(HERE, 'monaco-runtime.ts');
+const SETUP_SCRIPT = resolve(REPO_ROOT, 'apps/operator/scripts/setup-monaco-runtime.sh');
 
 /** The side-effect import that points the loader at the local mirror. */
 const RUNTIME_IMPORT = /@\/app\/_components\/monaco-runtime/;
@@ -113,6 +114,27 @@ describe('monaco cdn (cdn-egress-fixes-2026-08-02 P-001)', () => {
 
     expect(operatorPkg.scripts?.postinstall).toContain('setup-monaco-runtime.sh');
     expect(vitePkg.scripts?.prebuild).toContain('setup-monaco-runtime.sh');
+  });
+
+  it('reconciles the complete generated public root before its early-exit path', async () => {
+    const script = await readFile(SETUP_SCRIPT, 'utf8');
+
+    // The mirror owns the whole public/monaco root, not only the current vs
+    // directory. This prevents an older nested mirror from being copied into
+    // dist after the stamp makes the refresh a no-op.
+    expect(script).toContain('ROOT="public/monaco"');
+    expect(script).toContain('find "$ROOT" -mindepth 1 -maxdepth 1');
+    expect(script).toContain('! -path "$DEST"');
+    expect(script).toContain('! -path "$STAMP"');
+    expect(script).toContain('-exec rm -rf -- {} +');
+
+    const reconcileCall = script.indexOf('\nprune_owned_root\n');
+    const versionRead = script.indexOf('VERSION=');
+    const earlyExit = script.indexOf('monaco-runtime: already current');
+    expect(reconcileCall).toBeGreaterThanOrEqual(0);
+    expect(versionRead).toBeGreaterThanOrEqual(0);
+    expect(reconcileCall).toBeGreaterThan(versionRead);
+    expect(earlyExit).toBeGreaterThan(reconcileCall);
   });
 
   it('side-effect imports are not tree-shakeable in this tree', async () => {
