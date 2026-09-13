@@ -243,7 +243,7 @@ describe('P-305 guest lifecycle contract', () => {
       updateImageReference: UPDATE_REFERENCE,
       sentinelToken: SENTINEL,
     });
-    expect(script).toContain('skopeo inspect --policy /etc/containers/policy.json');
+    expect(script).toContain('skopeo inspect --tls-verify=false');
     expect(script).toContain('/tmp/p305-wrong-key.pub');
     expect(script).toContain('wrong-signing-key-was-accepted');
     expect(script).toContain('workspace-user-can-read-runtime');
@@ -260,6 +260,24 @@ describe('P-305 guest lifecycle contract', () => {
     expect(script).not.toContain('rm -rf');
     expect(script).toContain(`expected_sentinel_sha='${createHash('sha256').update(SENTINEL, 'utf8').digest('hex')}'`);
     expect(script).toContain(`${P305_LIFECYCLE_MARKER} phase=%s`);
+  });
+
+  it('uses an image-transfer operation, not metadata inspection, for the wrong-key control', () => {
+    const script = buildP305PhaseProbeScript({
+      phase: 'initial',
+      expectedVersion: BASE.expectedInitialVersion,
+      updateImageReference: UPDATE_REFERENCE,
+      sentinelToken: SENTINEL,
+    });
+    const switchScript = buildP305SwitchScript(UPDATE_REFERENCE);
+
+    expect(script).not.toContain('skopeo inspect --policy');
+    expect(script).toContain('skopeo copy --policy /tmp/p305-wrong-policy.json --src-tls-verify=false');
+    expect(script).toContain('"dir:$wrong_copy_dir"');
+    expect(script).toContain('cryptographic signature verification failed');
+    expect(script).toContain('wrong-key-control-wrote-image');
+    expect(switchScript).not.toContain('skopeo inspect --policy');
+    expect(switchScript).toContain('bootc switch --enforce-container-sigpolicy');
   });
 
   it('preserves typed bounded host-prepare diagnostics before refusing the phase', () => {
