@@ -25,6 +25,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 /** The subset of presence input that forms the durable brief. */
@@ -381,9 +382,10 @@ export async function clearSessionBriefReleasedForFleet(
  */
 export async function getSessionBrief(
   query: { ownerId?: string | null; nativeSessionId?: string | null },
+  db?: Sql,
 ): Promise<SessionBriefRecord | null> {
   try {
-    const sql = getOrgPg().sql;
+    const sql = db ?? getOrgPg().sql;
     if (query.ownerId) {
       const rows = await sql`
         SELECT * FROM harness_shared.session_briefs WHERE owner_id = ${query.ownerId} LIMIT 1

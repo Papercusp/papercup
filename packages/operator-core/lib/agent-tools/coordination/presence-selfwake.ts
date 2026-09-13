@@ -51,6 +51,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { COORD_INBOX_WAKE_PREFIX, classifyDormantSchedule } from './inbox-wake';
 import type { LoopStatus } from '../../harness/routines/loop';
 
@@ -172,10 +173,10 @@ export function isStrandedMember(input: {
  * Best-effort by contract: a caller that cannot reach PG gets an EMPTY map, and
  * every consumer must treat a missing entry as UNKNOWN, never as `'none'`.
  */
-export async function fetchSelfWake(ownerIds: string[]): Promise<Map<string, SelfWakeSignals>> {
+export async function fetchSelfWake(ownerIds: string[], db?: Sql): Promise<Map<string, SelfWakeSignals>> {
   const out = new Map<string, SelfWakeSignals>();
   if (ownerIds.length === 0) return out;
-  const { sql } = getOrgPg();
+  const sql = db ?? getOrgPg().sql;
 
   const [loops, awaits] = await Promise.all([
     sql<{ target_owner_id: string }[]>`

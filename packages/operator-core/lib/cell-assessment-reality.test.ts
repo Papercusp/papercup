@@ -1200,9 +1200,13 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
         spec.callerRelativity.kind === 'parameter' ? 'packages/operator-core/lib/cell-registrations.ts' : undefined,
       );
       for (const { label, path } of assessmentPaths(spec)) {
-        const r = pathExists(payload, path);
+        // Match production assessmentFrom: a child path below an explicitly
+        // null optional leg is measured absence, not resolver/schema drift.
+        // A genuinely missing key still has neither `exists` nor a null
+        // terminator and therefore fails this reality check.
+        const r = pathExists(payload, path, { reportNullTermination: true });
         expect(
-          r.exists,
+          r.exists || r.nullTerminatedAt !== undefined,
           `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload (missing at ` +
             `"${r.missingAt}"). assessmentFrom DOWNGRADES the whole assessment to \`unavailable\` when any ` +
             `declared evidence path does not arrive, so this cell would stop answering — silently, and on the ` +

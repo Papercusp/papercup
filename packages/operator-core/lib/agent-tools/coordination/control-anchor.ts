@@ -11,6 +11,8 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { withBoundedTimeout } from '../../bounded-timeout';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { getModes } from '../../modes/store';
 import { getLoopStatus, type LoopStatus } from '../../harness/routines/loop';
 import { latestFleetMembership } from '../../fleet-membership-store';
@@ -43,6 +45,9 @@ export const CONTROL_ANCHOR_MAX_TOKENS = 384;
 export const CONTROL_TRANSITION_MAX_TOKENS = 384;
 const MAX_SCOPE_ITEMS = 12;
 const MAX_ID_CHARS = 120;
+const CONTROL_ANCHOR_REFRESH_TIMEOUT_MS = 20_000;
+const CONTROL_ANCHOR_REFRESH_STATEMENT_TIMEOUT_MS = 8_000;
+const CONTROL_ANCHOR_REFRESH_LOCK_TIMEOUT_MS = 4_000;
 
 export interface ControlAnchorState {
   modes: string[];
@@ -756,7 +761,7 @@ export async function buildControlAnchorState(
     /** Test/transaction seam; undefined reads the newest persisted launch receipt. */
     explicitStack?: readonly string[] | null;
     /** WI-7302: DI seam so the wake-source leg unit-tests without PG. */
-    fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
+    fetchSelfWakeFn?: (ids: string[], sql?: Sql) => Promise<Map<string, SelfWakeSignals>>;
   } = {},
 ): Promise<ControlAnchorState> {
   const sql = opts.sql ?? getOrgPg().sql;
@@ -790,7 +795,7 @@ export async function buildControlAnchorState(
     opts.loop === undefined ? getLoopStatus(ownerId, { sql }) : Promise.resolve(opts.loop),
   );
   const membershipP = guard(latestFleetMembership(workspaceId, ownerId, sql));
-  const briefP = guard(getSessionBrief({ ownerId }));
+  const briefP = guard(getSessionBrief({ ownerId }, sql));
   // Fail closed: an unreadable authority leg must not emit a fresh anchor that
   // silently omits a predecessor's stand-down order. The enclosing orient or
   // mutation refresh can retry; it may never manufacture authority from absence.
@@ -849,7 +854,7 @@ export async function buildControlAnchorState(
     // (UNKNOWN), because a degraded query must never be able to tell a healthy
     // session that nothing will ever wake it.
   const selfWakeP = guard(
-    (opts.fetchSelfWakeFn ?? fetchSelfWake)([ownerId]).catch(
+    (opts.fetchSelfWakeFn ?? fetchSelfWake)([ownerId], sql).catch(
       () => new Map<string, SelfWakeSignals>(),
     ),
   );
@@ -992,46 +997,71 @@ export async function refreshControlAnchorAfterMutation(input: {
   ownerDirected?: boolean;
   sql?: Sql;
 }): Promise<ControlAnchor | null> {
-  try {
-    const sql = input.sql ?? getOrgPg().sql;
-    return await sql.begin(async (tx) => {
-      const transaction = tx as unknown as Sql;
-      const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql: transaction });
-      const identityMoved = input.source === 'mode:set' || input.source === 'fleet:membership';
-      const nextState = identityMoved && state.activation
-        ? {
-            ...state,
-            activation: requestActivation(state.activation, {
-              specificationRevision: state.activation.desired.specificationRevision,
-              stateRevision: sessionIdentityStateRevision(state),
-            }),
-          }
-        : state;
-      const persisted = await persistControlAnchor({
+  const persist = async (transaction: Sql): Promise<ControlAnchor> => {
+    const state = await buildControlAnchorState(input.ownerId, input.workspaceId, { sql: transaction });
+    const identityMoved = input.source === 'mode:set' || input.source === 'fleet:membership';
+    const nextState = identityMoved && state.activation
+      ? {
+          ...state,
+          activation: requestActivation(state.activation, {
+            specificationRevision: state.activation.desired.specificationRevision,
+            stateRevision: sessionIdentityStateRevision(state),
+          }),
+        }
+      : state;
+    const persisted = await persistControlAnchor({
+      ownerId: input.ownerId,
+      workspaceId: input.workspaceId,
+      state: nextState,
+      transition: {
+        origin: input.origin,
+        actorId: input.actorId,
+        source: input.source,
+        ownerDirected: Boolean(input.ownerDirected),
+      },
+    }, transaction);
+    if (identityMoved && persisted.state.activation?.status === 'desired') {
+      const recorded = await recordCurrentSessionIdentityActivation({
         ownerId: input.ownerId,
         workspaceId: input.workspaceId,
-        state: nextState,
-        transition: {
-          origin: input.origin,
-          actorId: input.actorId,
-          source: input.source,
-          ownerDirected: Boolean(input.ownerDirected),
+        generation: persisted.generation,
+        phase: 'desired',
+        source: 'control',
+        revision: persisted.state.activation.desired,
+        sql: transaction,
+      });
+      if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
+    }
+    return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
+  };
+
+  try {
+    const suppliedSql = input.sql;
+    // A caller may already be inside its own bounded transaction (notably fleet
+    // membership/leadership writes). TransactionSql exposes no `begin`; reuse it
+    // so the projection remains atomic with the canonical mutation. The outer
+    // transaction owns the timeout in that case.
+    if (suppliedSql && typeof (suppliedSql as unknown as { begin?: unknown }).begin !== 'function') {
+      return await persist(suppliedSql);
+    }
+
+    const bounded = await withBoundedTimeout(
+      (signal) => boundedOrgTxn(
+        (transaction) => persist(transaction as unknown as Sql),
+        {
+          ...(suppliedSql ? { client: suppliedSql } : {}),
+          statementTimeoutMs: CONTROL_ANCHOR_REFRESH_STATEMENT_TIMEOUT_MS,
+          lockTimeoutMs: CONTROL_ANCHOR_REFRESH_LOCK_TIMEOUT_MS,
+          signal,
         },
-      }, transaction);
-      if (identityMoved && persisted.state.activation?.status === 'desired') {
-        const recorded = await recordCurrentSessionIdentityActivation({
-          ownerId: input.ownerId,
-          workspaceId: input.workspaceId,
-          generation: persisted.generation,
-          phase: 'desired',
-          source: 'control',
-          revision: persisted.state.activation.desired,
-          sql: transaction,
-        });
-        if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
-      }
-      return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
-    });
+      ),
+      {
+        timeoutMs: CONTROL_ANCHOR_REFRESH_TIMEOUT_MS,
+        fallback: null,
+        label: 'control-anchor:refresh',
+      },
+    );
+    return bounded.value;
   } catch {
     return null;
   }
