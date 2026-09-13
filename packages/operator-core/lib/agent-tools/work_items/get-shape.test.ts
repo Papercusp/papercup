@@ -164,6 +164,33 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     }
   });
 
+  it('preserves checkpoint subject identity through clipping and checksOnly shaping', () => {
+    const checkpointSubjectFingerprint = {
+      status: 'mismatch',
+      current: { version: 1, sha256: 'a'.repeat(64) },
+      stored: { version: 1, sha256: 'b'.repeat(64) },
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const normal = shapeWorkItemsGet(
+        envelope([row({ checkpoint: 'C'.repeat(40_000), checkpointSubjectFingerprint })]),
+        tier,
+      ) as Envelope;
+      expect(normal.results[0].checkpointSubjectFingerprint).toEqual(checkpointSubjectFingerprint);
+      expect(String(normal.results[0].checkpoint).length).toBeLessThan(40_000);
+
+      const checksOnly = shapeWorkItemsGet(
+        {
+          ok: true,
+          __checksOnly: true,
+          results: [{ ok: true, id: 'WI-checks-only', checkpointSubjectFingerprint }],
+          counts: { ok: 1, failed: 0 },
+        },
+        tier,
+      ) as Envelope;
+      expect(checksOnly.results[0].checkpointSubjectFingerprint).toEqual(checkpointSubjectFingerprint);
+    }
+  });
+
   it('bounds normal checkpoint identity claims without dropping the ledger qualifiers', () => {
     const checkpointChecks = {
       count: 1,

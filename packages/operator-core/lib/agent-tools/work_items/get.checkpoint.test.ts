@@ -70,7 +70,12 @@ vi.mock('./deployment-position', () => ({
 
 import get from './get';
 import { shapeWorkItemsGet } from './get-shape';
-import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks, shortCarryHash } from '../../carry-note';
+import {
+  CARRY_NOTE_MAX_CHECKS,
+  withCarryNoteChecks,
+  shortCarryHash,
+  computeWorkItemSubjectFingerprint,
+} from '../../carry-note';
 
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -228,6 +233,49 @@ beforeEach(() => {
 });
 
 describe('work_items:get — checkpoint field', () => {
+  it('reports current, mismatch, and unknown subject identity for normal and checksOnly reads', async () => {
+    const item = {
+      id: 'WI-subject-read',
+      harness: 'papercusp',
+      kind: 'bug',
+      title: 'subject title',
+      summary: 'subject summary',
+      state: 'open',
+    };
+    const current = computeWorkItemSubjectFingerprint(item);
+    getWorkItem.mockResolvedValue(item);
+    getWorkItemCheckpointWithMeta.mockResolvedValue({
+      checkpoint: 'checkpoint body',
+      updatedAtMs: 123,
+      subjectFingerprint: current,
+    });
+
+    const currentRead = await one({ id: item.id });
+    expect(currentRead.checkpointSubjectFingerprint).toEqual({
+      status: 'current',
+      current,
+      stored: current,
+    });
+
+    const changed = computeWorkItemSubjectFingerprint({ ...item, title: 'changed title' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({
+      checkpoint: 'checkpoint body',
+      updatedAtMs: 123,
+      subjectFingerprint: changed,
+    });
+    const mismatchRead = await one({ id: item.id });
+    expect(mismatchRead.checkpointSubjectFingerprint).toEqual({
+      status: 'mismatch',
+      current,
+      stored: changed,
+    });
+
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'legacy checkpoint', updatedAtMs: 123 });
+    const unknownRead = await one({ id: item.id, checksOnly: true });
+    expect(unknownRead.checkpointSubjectFingerprint).toEqual({ status: 'unknown', current });
+    expect(unknownRead).not.toHaveProperty('checkpoint');
+  });
+
   it('checksOnly reads only the stored row identities and skips the full enrichment ladder', async () => {
     getWorkItem.mockResolvedValue({
       id: 'WI-checks-only',

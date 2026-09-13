@@ -32,6 +32,10 @@ import {
   sanitizeCarryRowId,
   CARRY_ROW_ID_MAX,
   appendCarryJournal,
+  computeWorkItemSubjectFingerprint,
+  normalizeWorkItemSubjectFingerprint,
+  compareWorkItemSubjectFingerprint,
+  WORK_ITEM_SUBJECT_FINGERPRINT_VERSION,
   CARRY_JOURNAL_MAX_ENTRIES,
   CARRY_JOURNAL_NOTE_MAX_CHARS,
   CARRY_JOURNAL_TOTAL_MAX_CHARS,
@@ -46,6 +50,53 @@ import {
   type CheckEntry,
   type CarryArgRepair,
 } from './carry-note';
+
+describe('work-item subject fingerprints — checkpoint identity metadata', () => {
+  const subject = {
+    id: 'WI-identity',
+    harness: 'papercusp',
+    kind: 'bug',
+    title: 'original title',
+    summary: 'original summary',
+    state: 'open',
+  };
+
+  it('creates stable metadata from the ordered subject fields and binds it to journal entries', () => {
+    const fingerprint = computeWorkItemSubjectFingerprint(subject);
+    expect(fingerprint).toEqual({
+      version: WORK_ITEM_SUBJECT_FINGERPRINT_VERSION,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(computeWorkItemSubjectFingerprint({ ...subject })).toEqual(fingerprint);
+    expect(computeWorkItemSubjectFingerprint({ ...subject, title: 'rewritten title' }).sha256)
+      .not.toBe(fingerprint.sha256);
+
+    const journal = appendCarryJournal([], 'checkpoint body', 123, subject);
+    expect(journal[0]?.subjectFingerprint).toEqual(fingerprint);
+  });
+
+  it('normalizes current metadata and distinguishes current, changed, and legacy identities', () => {
+    const fingerprint = computeWorkItemSubjectFingerprint(subject);
+    expect(normalizeWorkItemSubjectFingerprint({
+      version: fingerprint.version,
+      sha256: fingerprint.sha256.toUpperCase(),
+    })).toEqual(fingerprint);
+    expect(normalizeWorkItemSubjectFingerprint({ version: 0, sha256: fingerprint.sha256 })).toBeUndefined();
+    expect(normalizeWorkItemSubjectFingerprint({ version: fingerprint.version, sha256: 'legacy' })).toBeUndefined();
+
+    expect(compareWorkItemSubjectFingerprint(subject, fingerprint)).toMatchObject({
+      status: 'current',
+      current: fingerprint,
+      stored: fingerprint,
+    });
+    expect(compareWorkItemSubjectFingerprint({ ...subject, summary: 'new summary' }, fingerprint).status)
+      .toBe('mismatch');
+    expect(compareWorkItemSubjectFingerprint(subject, undefined)).toMatchObject({
+      status: 'unknown',
+      current: fingerprint,
+    });
+  });
+});
 
 describe('scope constructors — the convergence axis', () => {
   it('are stable, role-discriminated keys', () => {

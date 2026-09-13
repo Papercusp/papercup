@@ -27,7 +27,12 @@ vi.mock('./workspace-registry', async () => {
 const { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheckpoint, getWorkItemCheckpointWithMeta, attestWorkItemCheckpointUnchanged } = await import(
   './work-item-checkpoint'
 );
-const { workItemScope, shortCarryHash, CARRY_NOTE_ATTESTATION_MAX_CHAIN } = await import('./carry-note');
+const {
+  workItemScope,
+  shortCarryHash,
+  computeWorkItemSubjectFingerprint,
+  CARRY_NOTE_ATTESTATION_MAX_CHAIN,
+} = await import('./carry-note');
 const { readHeldWorkItems, renderCarryBriefText } = await import('./carry-brief');
 const { readLeaderCheckpointProgress } = await import('./agent-tools/fleet/leader-brief-progress');
 
@@ -114,6 +119,37 @@ async function rowCount(): Promise<number> {
 }
 
 describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote semantics', () => {
+  it('persists the authoritative subject fingerprint on each journal entry and returns the newest one', async () => {
+    const ref = { harness: HARNESS, workItemId: 'WI-subject-fingerprint' };
+    const subject = {
+      id: ref.workItemId,
+      harness: HARNESS,
+      kind: 'bug',
+      title: 'original subject',
+      summary: 'the first active lane',
+      state: 'open',
+    };
+    const first = computeWorkItemSubjectFingerprint(subject);
+
+    await setWorkItemCheckpointWithPrior(ref, 'first checkpoint', { workItem: subject });
+    const storedFirst = await getWorkItemCheckpointWithMeta(ref);
+    expect(storedFirst.subjectFingerprint).toEqual(first);
+    const journalFirst = await db.sql<Array<{ subject_fingerprint: unknown }>>`
+      SELECT journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint
+        FROM harness_shared.carry_notes
+       WHERE workspace_id = 'default' AND scope = ${workItemScope(HARNESS, ref.workItemId)}`;
+    expect(journalFirst[0]?.subject_fingerprint).toEqual(first);
+
+    await new Promise((resolve) => setTimeout(resolve, 3));
+    const changed = { ...subject, title: 'rewritten subject' };
+    const second = computeWorkItemSubjectFingerprint(changed);
+    await setWorkItemCheckpointWithPrior(ref, 'second checkpoint', { workItem: changed });
+
+    const storedSecond = await getWorkItemCheckpointWithMeta(ref);
+    expect(storedSecond.subjectFingerprint).toEqual(second);
+    expect(storedSecond.subjectFingerprint).not.toEqual(first);
+  });
+
   it('tracks the latest authored update across append, refresh, metadata changes and stale span data', async () => {
     const { renderCarryNote, withCarryNoteChecks } = await import('./carry-note');
     const { readWorkItemResume } = await import('./agent-tools/work_items/resume');
