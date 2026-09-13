@@ -83,7 +83,7 @@ async function requireControllerRegistryReference(repository, expectedDigest) {
   return { manifestUrl, digest: observedDigest };
 }
 
-async function waitForForwardedRegistry(session, updateImageReference) {
+async function waitForForwardedRegistry(session, updateImageReference, tunnel) {
   const quotedReference = JSON.stringify(`docker://${updateImageReference}`);
   let lastError = 'not-attempted';
   for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -94,6 +94,12 @@ async function waitForForwardedRegistry(session, updateImageReference) {
       return;
     } catch (error) {
       lastError = error.message;
+      const tunnelStatus = tunnel.status();
+      if (tunnelStatus.exitCode !== undefined) {
+        fail(`IAP reverse tunnel exited while waiting for the guest registry probe (exit ${tunnelStatus.exitCode})`, {
+          stderr: tunnelStatus.stderr,
+        });
+      }
       await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
   }
@@ -103,7 +109,7 @@ async function waitForForwardedRegistry(session, updateImageReference) {
 async function withRegistryTunnel(session, updateImageReference, action) {
   const tunnel = await session.startReverseTunnel({ remotePort: REGISTRY_PORT });
   try {
-    await waitForForwardedRegistry(session, updateImageReference);
+    await waitForForwardedRegistry(session, updateImageReference, tunnel);
     return await action();
   } finally {
     await tunnel.stop();
@@ -184,8 +190,13 @@ async function lifecycle(input) {
       bootBudgetMs: BOOT_BUDGET_MS,
     });
 
-    const initialStdout = await withRegistryTunnel(session, request.updateImageReference, () =>
-      session.runRootScript(
+    // Keep one remote-forward listener across the initial probe and the signed switch. Closing
+    // and immediately reopening the same guest port races sshd's cancellation of the first
+    // listener: the replacement SSH can exit 255 after startReverseTunnel's startup window,
+    // leaving the reachability loop to report a misleading registry error. The initial probe
+    // already proves this exact tunnel can serve the digest, so reuse it for the switch.
+    const initialPhase = await withRegistryTunnel(session, request.updateImageReference, async () => {
+      const initialStdout = await session.runRootScript(
         buildP305PhaseProbeScript({
           phase: 'initial',
           expectedVersion: request.expectedInitialVersion,
@@ -193,15 +204,14 @@ async function lifecycle(input) {
           sentinelToken,
         }),
         { timeoutMs: PROBE_BUDGET_MS },
-      ),
-    );
-    phases.push(parseP305PhaseMarker(initialStdout, 'initial'));
-
-    await withRegistryTunnel(session, request.updateImageReference, () =>
-      session.runRootScript(buildP305SwitchScript(request.updateImageReference), {
+      );
+      const observedInitialPhase = parseP305PhaseMarker(initialStdout, 'initial');
+      await session.runRootScript(buildP305SwitchScript(request.updateImageReference), {
         timeoutMs: SWITCH_BUDGET_MS,
-      }),
-    );
+      });
+      return observedInitialPhase;
+    });
+    phases.push(initialPhase);
     reboots.push({ transition: 'signed-switch', ...(await session.rebootAndWait({ budgetMs: BOOT_BUDGET_MS })) });
 
     const updatedStdout = await session.runRootScript(

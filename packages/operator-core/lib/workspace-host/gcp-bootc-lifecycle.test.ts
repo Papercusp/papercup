@@ -385,4 +385,26 @@ describe('P-305 guest lifecycle contract', () => {
     expect(source).toContain('const hostPrepareDiagnostics = parseP305HostPrepareDiagnostics(details.stderr)');
     expect(source).toContain('...(hostPrepareDiagnostics ? { hostPrepareDiagnostics } : {})');
   });
+
+  it('reuses one reverse tunnel for the initial probe and signed switch, and surfaces a late tunnel exit', () => {
+    const source = readFileSync(RUNNER_SOURCE, 'utf8');
+    expect(source.match(/withRegistryTunnel\(session, request\.updateImageReference/g)).toHaveLength(1);
+
+    const tunnelStart = source.indexOf(
+      'const initialPhase = await withRegistryTunnel(session, request.updateImageReference, async () => {',
+    );
+    const tunnelEnd = source.indexOf("reboots.push({ transition: 'signed-switch'", tunnelStart);
+    const tunneledLifecycle = source.slice(tunnelStart, tunnelEnd);
+    expect(tunnelStart).toBeGreaterThanOrEqual(0);
+    expect(tunnelEnd).toBeGreaterThan(tunnelStart);
+    expect(tunneledLifecycle).toContain("phase: 'initial'");
+    expect(tunneledLifecycle).toContain('buildP305SwitchScript(request.updateImageReference)');
+    expect(tunneledLifecycle.indexOf("phase: 'initial'")).toBeLessThan(
+      tunneledLifecycle.indexOf('buildP305SwitchScript(request.updateImageReference)'),
+    );
+
+    expect(source).toContain('const tunnelStatus = tunnel.status()');
+    expect(source).toContain('if (tunnelStatus.exitCode !== undefined)');
+    expect(source).toContain('IAP reverse tunnel exited while waiting for the guest registry probe');
+  });
 });
