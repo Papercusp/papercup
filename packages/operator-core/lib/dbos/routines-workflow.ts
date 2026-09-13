@@ -38,7 +38,7 @@ import {
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
-import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
+import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
@@ -75,6 +75,7 @@ import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
 import '../harness/routines/configure-per-workspace';
 import { operatorApiBase } from '../operator-api-base';
+import { dbosStarted } from './bootstrap';
 
 // 6-field crontab (seconds). Default: every 30s, matching the legacy ticker.
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
@@ -418,6 +419,100 @@ export function routineFireTimeoutMs(targetRole: string): number {
     return ROUTINE_FIRE_TIMEOUT_MS;
   }
   return configured;
+}
+
+const QUEUE_DEDUP_DUPLICATED_CODE = 28;
+
+/** True when DBOS rejected a start because its deduplication ID is already active. */
+export function isRoutineFireDedupConflict(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { dbosErrorCode?: number }).dbosErrorCode === QUEUE_DEDUP_DUPLICATED_CODE
+  );
+}
+
+/** The persisted routine fields needed to replay the exact routine-fire payload. */
+export type RoutineFireRow = Pick<
+  RoutineRow,
+  | 'id'
+  | 'workspaceId'
+  | 'installSlug'
+  | 'name'
+  | 'targetRole'
+  | 'triggerConfig'
+  | 'payloadTemplate'
+  | 'rescheduleIntervalSec'
+  | 'targetOwnerId'
+>;
+
+export type RoutineFireEnqueueResult = {
+  ok: boolean;
+  status: 'enqueued' | 'deduplicated' | 'unavailable';
+  routineId: string;
+  deduplicationId: string;
+  queueName: string;
+  timeoutMs: number;
+  reason?: 'dbos-not-started';
+};
+
+/**
+ * Enqueue one routine fire using the same queue, timeout, payload, and stable dedup key
+ * as the scheduled tick. This deliberately does not mutate the routine row or advance
+ * its schedule: it is the on-demand execution lever, while the routine workflow's live
+ * active fence still decides whether a captured recurring fire may perform side effects.
+ */
+export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<RoutineFireEnqueueResult> {
+  const deduplicationId = `routine:${routine.id}`;
+  const queueName = queueForRoutine(routine.targetRole, routine.installSlug);
+  const timeoutMs = routineFireTimeoutMs(routine.targetRole);
+  if (!dbosStarted()) {
+    return {
+      ok: false,
+      status: 'unavailable',
+      reason: 'dbos-not-started',
+      routineId: routine.id,
+      deduplicationId,
+      queueName,
+      timeoutMs,
+    };
+  }
+
+  try {
+    await DBOS.startWorkflow(routineFireWorkflow, {
+      queueName,
+      timeoutMS: timeoutMs,
+      enqueueOptions: { deduplicationID: deduplicationId },
+    }) (
+      routine.id,
+      routine.workspaceId,
+      routine.installSlug,
+      routine.targetRole,
+      routine.triggerConfig,
+      routine.payloadTemplate,
+      routine.name,
+      routine.rescheduleIntervalSec,
+      routine.targetOwnerId,
+    );
+    return {
+      ok: true,
+      status: 'enqueued',
+      routineId: routine.id,
+      deduplicationId,
+      queueName,
+      timeoutMs,
+    };
+  } catch (error) {
+    if (!isRoutineFireDedupConflict(error)) throw error;
+    return {
+      ok: true,
+      status: 'deduplicated',
+      routineId: routine.id,
+      deduplicationId,
+      queueName,
+      timeoutMs,
+    };
+  }
 }
 
 type BlenderSweepCoverageResult = {

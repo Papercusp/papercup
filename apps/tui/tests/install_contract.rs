@@ -1,5 +1,9 @@
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(unix)]
+use tempfile::tempdir;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -52,7 +56,118 @@ fn installer_help_is_side_effect_free_and_names_the_generation_manifest() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("pui-install.json"));
     assert!(stdout.contains("never stops a process or zellij session"));
+    assert!(stdout.contains("guidance-only"));
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn installer_verifies_artifacts_before_downgrading_guidance_only_doctor_findings() {
+    let script =
+        std::fs::read_to_string(repo_root().join("apps/tui/scripts/install-update.sh")).unwrap();
+    let verify = script
+        .find("python3 \"$MANIFEST_WRITER\" verify")
+        .expect("installer must verify the written manifest and artifact hashes");
+    let doctor = script
+        .find("DOCTOR_OUTPUT=\"")
+        .expect("installer must capture the doctor result before classifying it");
+    assert!(
+        verify < doctor,
+        "manifest/hash verification must precede guidance-only doctor handling"
+    );
+    assert!(script.contains("PUI local install: OK"));
+    assert!(script.contains("installed successfully; pui doctor reported guidance-only findings"));
+    assert!(script.contains("pui doctor did not confirm the installed local artifacts"));
+    assert!(script.contains("exit \"$DOCTOR_STATUS\""));
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, body: &str) {
+    std::fs::write(path, body).unwrap();
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn installer_keeps_guidance_only_doctor_failure_nonfatal_after_hash_verification() {
+    let root = repo_root();
+    let scratch = tempdir().unwrap();
+    let fake_bin = scratch.path().join("fake-bin");
+    let cargo_home = scratch.path().join("cargo-home");
+    let target = scratch.path().join("target");
+    let companion = scratch.path().join("pui-companion.wasm");
+    let manifest = scratch.path().join("pui-install.json");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+
+    write_executable(
+        &fake_bin.join("cargo"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  build)
+    mkdir -p "$FAKE_TARGET/wasm32-wasip1/release"
+    printf '%s' 'companion' > "$FAKE_TARGET/wasm32-wasip1/release/pui_companion.wasm"
+    ;;
+  metadata)
+    printf '{"target_directory":"%s"}\n' "$FAKE_TARGET"
+    ;;
+  install)
+    mkdir -p "$CARGO_HOME/bin"
+    cat > "$CARGO_HOME/bin/pui" <<'PUI'
+#!/bin/sh
+printf '%s\n' 'PUI local install: OK' 'zellij panes: STALE (1)'
+exit 1
+PUI
+    chmod 755 "$CARGO_HOME/bin/pui"
+    ;;
+  *)
+    echo "unexpected fake cargo invocation: $*" >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+    write_executable(
+        &fake_bin.join("git"),
+        r#"#!/bin/sh
+set -eu
+case "$3" in
+  rev-parse) printf '%s\n' 'fake-source-sha' ;;
+  status) exit 0 ;;
+  *) echo "unexpected fake git invocation: $*" >&2; exit 1 ;;
+esac
+"#,
+    );
+    let original_path = std::env::var("PATH").unwrap();
+    let path = format!("{}:{original_path}", fake_bin.display());
+
+    let output = Command::new("bash")
+        .arg(root.join("apps/tui/scripts/install-update.sh"))
+        .env("CARGO_HOME", &cargo_home)
+        .env("FAKE_TARGET", &target)
+        .env("PUI_COMPANION_WASM", &companion)
+        .env("PUI_INSTALL_MANIFEST", &manifest)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "guidance-only doctor failure must not fail a verified install (status {:?}):\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("pui install manifest OK"));
+    assert!(stdout.contains("PUI local install: OK"));
+    assert!(stdout.contains("zellij panes: STALE (1)"));
+    assert!(stderr.contains("installed successfully; pui doctor reported guidance-only findings"));
+    assert!(
+        manifest.is_file(),
+        "successful install must leave its manifest"
+    );
 }
 
 #[test]

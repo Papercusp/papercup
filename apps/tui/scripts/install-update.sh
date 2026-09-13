@@ -19,6 +19,8 @@ Build and install one matched pui generation:
 
 The installer never stops a process or zellij session. It finishes by running
 `pui doctor`, which reports stale panes and prints a narrowly-scoped relaunch.
+The manifest and artifact hashes are verified before doctor runs; guidance-only
+doctor findings do not fail an otherwise verified installation.
 EOF
   exit 0
 fi
@@ -83,9 +85,38 @@ python3 "$MANIFEST_WRITER" write \
   --companion "$WASM_PATH" \
   --source-root "$ROOT"
 
+# Verify the files that were just installed before running the broader doctor.
+# This is the install success boundary: a stale pane or an unreachable operator
+# is guidance after a successful install, while a manifest/hash mismatch is a
+# real install failure and must still make this script fail under `set -e`.
+python3 "$MANIFEST_WRITER" verify \
+  --manifest "$MANIFEST_PATH" \
+  --binary "$BINARY_PATH" \
+  --companion "$WASM_PATH"
+
 echo "→ installed pui generation ${SOURCE_SHA:0:12}"
 echo "  binary:    $BINARY_PATH"
 echo "  companion: $WASM_PATH"
 echo "  manifest:  $MANIFEST_PATH"
 echo "→ verifying with pui doctor (guidance only; no process/session is killed)…"
-"$BINARY_PATH" doctor
+set +e
+DOCTOR_OUTPUT="$("$BINARY_PATH" doctor 2>&1)"
+DOCTOR_STATUS=$?
+set -e
+printf '%s\n' "$DOCTOR_OUTPUT"
+
+# `pui doctor` covers more than the install itself: it also checks existing
+# long-lived panes, stable sessions, and the selected operator. Keep those
+# repairs visible, but only downgrade its exit status after the local artifact
+# section positively confirmed the installed generation. If that section is
+# absent or not OK, preserve the failure instead of claiming success.
+if [[ "$DOCTOR_OUTPUT" != *"PUI local install: OK"* ]]; then
+  echo "pui doctor did not confirm the installed local artifacts" >&2
+  if (( DOCTOR_STATUS == 0 )); then
+    exit 1
+  fi
+  exit "$DOCTOR_STATUS"
+fi
+if (( DOCTOR_STATUS != 0 )); then
+  echo "⚠ installed successfully; pui doctor reported guidance-only findings (see repair lines above)" >&2
+fi
