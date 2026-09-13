@@ -26,9 +26,7 @@ export function puiWorkbenchCommand(): {
 export function launchPuiWorkbench({ spawnImpl, cwd, env, }?: {
     spawnImpl?: typeof spawnSync | undefined;
     cwd?: string | undefined;
-    env?: {
-        [key: string]: string | undefined;
-    } | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
 }): number;
 /**
  * Does `--role=<role>` launch on the SU tier (full engineer playbook + superuser
@@ -2768,9 +2766,7 @@ export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchI
  * re-add the complete route through gatewayAutoEnv/gatewayPinEnv or bootstrap-su.
  * Direct credentials are route selectors too: the explicit envelope re-adds
  * only the credential source selected for this child. */
-export function sanitizeInheritedEnv(env: any): {
-    [key: string]: string | undefined;
-};
+export function sanitizeInheritedEnv(env: any): NodeJS.ProcessEnv;
 export function applyCodexDiagnosticEnv(env: any, agent: any): any;
 /**
  * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC hook

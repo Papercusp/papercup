@@ -24,6 +24,9 @@ import './boot-integrity-first';
 // booted every time without the store, so runtime `flags:set` kill-switches
 // were silently invisible to background routines). See boot-flag-store.ts.
 import './boot-flag-store';
+// THIRD: reject a persistent main-port holder before the expensive Hono,
+// bootstrap, native-addon, and cluster import graph evaluates.
+import './hono-host-port-preflight';
 import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';

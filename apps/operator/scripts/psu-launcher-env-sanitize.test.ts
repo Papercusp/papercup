@@ -91,4 +91,18 @@ describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
     expect(clean.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
     expect(clean.HOME).toBe('/home/dev');
   });
+
+  it('strips every inherited recovery marker before an ordinary launch or resume', () => {
+    const clean = sanitizeInheritedEnv({
+      PAPERCUSP_RECOVERY_MODE: '1',
+      PAPERCUSP_RECOVERY_GRANT_ID: 'stale-grant',
+      PAPERCUSP_RECOVERY_CAPABILITY: 'diagnostic-command',
+      PAPERCUSP_RECOVERY_DEADLINE_MS: '9999999999999',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp',
+      HOME: '/home/dev',
+    });
+    expect(Object.keys(clean).filter((key) => key.startsWith('PAPERCUSP_RECOVERY_'))).toEqual([]);
+    expect(clean.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
+    expect(clean.HOME).toBe('/home/dev');
+  });
 });

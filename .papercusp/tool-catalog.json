@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 881,
+  "count": 882,
   "tools": [
     {
       "name": "ablation:report",
@@ -26896,6 +26896,37 @@
         "when": "You need the set of agent roles configured in the workspace (architect, worker, validator, …) before spawning or dispatching.",
         "notWhen": "For agents currently RUNNING, use `agents:list`. roles:list is the static configuration; agents:list is the live processes.",
         "chaining": "Pair with `roles:get` for one role's definition."
+      }
+    },
+    {
+      "name": "routines:fire",
+      "http": {
+        "path": "/api/agent-tools/routines/fire",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Enqueue one live scheduled routine immediately without changing its cron, active flag, or next_fire_at. Reads the routine from the current workspace, uses the routine target to select the same DBOS queue and timeout as the scheduler, and reports enqueued, deduplicated, or DBOS-unavailable explicitly.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You need to run a routine once now to verify or recover it without retuning its schedule.",
+        "notWhen": "To change cadence or pause/resume a routine, use routines:set. To inspect routine configuration, use routines:list.",
+        "chaining": "routines:list → routines:fire { name, installSlug } → inspect DBOS/routine health."
       }
     },
     {

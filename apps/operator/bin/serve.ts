@@ -46,7 +46,6 @@ import "./boot-flag-store";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import {
-  createServer as createNetServer,
   connect as netConnect,
 } from "node:net";
 import { dirname, join } from "node:path";
@@ -80,6 +79,9 @@ import {
   assertVmReleaseRuntimePolicy,
   assertVmReleaseRuntimePort,
 } from "@papercusp/operator-core/lib/vm-release-runtime-policy";
+import { portAvailable } from "@papercusp/operator-core/lib/port-availability";
+
+export { portAvailable } from "@papercusp/operator-core/lib/port-availability";
 
 // WI-5778 (P-422): install as the very first statement below the imports —
 // before ANYTHING else in this file has a chance to console.log/warn/error —
@@ -666,16 +668,6 @@ export function readRememberedPort(): number | null {
     /* missing / corrupt → no memory */
   }
   return null;
-}
-
-/** True when `port` can be bound on `host` right now (probe bind + close). */
-export function portAvailable(port: number, host: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = createNetServer();
-    probe.unref();
-    probe.once("error", () => resolve(false));
-    probe.listen(port, host, () => probe.close(() => resolve(true)));
-  });
 }
 
 /**

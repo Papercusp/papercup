@@ -13895,11 +13895,16 @@ async function launchHostHandoff(handoff) {
 }
 
 function psuClientVersion() {
-  return String(
-    process.env.PAPERCUSP_BUILD_ID ||
-      process.env.npm_package_version ||
-      "unknown",
-  );
+  if (process.env.PAPERCUSP_BUILD_ID) return String(process.env.PAPERCUSP_BUILD_ID);
+  try {
+    const manifest = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+    );
+    if (typeof manifest.version === "string" && manifest.version) return manifest.version;
+  } catch {
+    // A source-less packaged launcher can still identify the protocol as unknown.
+  }
+  return "unknown";
 }
 
 async function recoveryFlow(args) {
