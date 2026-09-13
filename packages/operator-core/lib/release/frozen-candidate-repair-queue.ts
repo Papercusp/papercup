@@ -1021,7 +1021,7 @@ export interface FrozenRepairQueueDiagnostic {
     active: boolean;
   } | null;
   /** Durable R6 work visible to `release:repair-queue { op:'get' }`; null means no decision is in flight. */
-  admissionPrecheck: FrozenRepairAdmissionPrecheck | null;
+  admissionPrecheck?: FrozenRepairAdmissionPrecheck | null;
   decision: FrozenRepairQueueDecision['kind'];
   /**
    * Provenance for a no-suite repair status. `suiteRan:false` is the critical
