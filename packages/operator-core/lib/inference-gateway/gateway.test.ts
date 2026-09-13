@@ -12,6 +12,8 @@ import {
   classifyProxyHandlerError,
   effectivePriorityLabel,
   MODEL_DOWNGRADED_HEADER,
+  RETRIES_EXHAUSTED_HEADER,
+  ROUTED_ACCOUNT_HEADER,
   normalizeGatewayRequestBody,
   resolveGatewayModel,
   PRIORITY_HEADER,
@@ -3994,6 +3996,30 @@ test('[stall-autowake P-002] an all-throttled shed to an IDENTIFIED bee records 
   assert.equal(stalls.stalls[0].accountId, 'test-acct', 'tagged with the account that was out of budget');
   assert.ok(stalls.stalls[0].soonestResetAt > Date.now(), 'carries the soonest-reset (recovery) time for the waker');
   assert.equal(((await (await ask('/stats')).json()) as { stallsRecorded: number }).stallsRecorded, 1);
+});
+
+test('EI-23122976439142799: Claude all-throttled early shed is terminal-shaped, so native clients surface it instead of retrying silently', async () => {
+  let upstreamCalls = 0;
+  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
+  await boot(
+    (_req, res) => {
+      upstreamCalls += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    {},
+    gov,
+  );
+  gov.penalize({ resetAt: Date.now() + 600_000 });
+
+  const res = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 429, 'a whole-pool wall still returns the gateway rate-limit response');
+  assert.equal(res.headers.get('x-should-retry'), 'false', 'the terminal synthetic shed must suppress native SDK retries');
+  assert.equal(res.headers.get(RETRIES_EXHAUSTED_HEADER), '0', 'no upstream attempt ran before the early shed');
+  assert.ok(res.headers.get('retry-after'), 'the pool recovery hint remains available to an explicit retry/waker');
+  assert.equal(res.headers.get(ROUTED_ACCOUNT_HEADER), 'test-acct');
+  assert.equal(upstreamCalls, 0, 'the pre-admission early shed never reaches upstream');
+  await res.text();
 });
 
 test('[stall-autowake P-002] an UN-identified bee (no x-papercusp-owner) records NO stall (not wake-able)', async () => {

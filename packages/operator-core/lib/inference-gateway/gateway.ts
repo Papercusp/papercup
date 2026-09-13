@@ -4824,7 +4824,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
             },
             gateway: true,
           },
-          { 'retry-after': String(retryAfterSec), [ROUTED_ACCOUNT_HEADER]: active.accountId },
+          {
+            ...shapeTerminalThrottle({
+              // No upstream attempt ran: this is the pre-admission terminal rung.
+              attempts: 0,
+              retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+              retryAfter: {
+                resetAt: soonestPaused,
+                fallbackSec: retryAfterSec,
+                capS: BEE_RETRY_AFTER_CAP_S,
+              },
+              suppressClientRetry: true,
+            }).headers,
+            [ROUTED_ACCOUNT_HEADER]: active.accountId,
+          },
         );
         return;
       }
