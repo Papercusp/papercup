@@ -59,7 +59,7 @@
  */
 
 import { z } from 'zod';
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, type Dirent } from 'node:fs';
@@ -96,6 +96,8 @@ import {
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { managedSpawn, type ManagedSpawnResult } from '../../task-manager/managed-spawn';
+import { killScopeUnit, type ScopeControlOutcome } from '../../task-manager/control';
 import {
   admissionContextFromEnvironment,
   governedExecutionLeaseTtlForTimeout,
@@ -1426,6 +1428,133 @@ export interface TestProcessDeadlineContext {
   remainingTimeoutMs(): number;
 }
 
+type ManagedTestSpawn = Pick<ManagedSpawnResult, 'child' | 'taskId' | 'scopeUnit' | 'confined'>;
+
+export interface ManagedTestProcess {
+  child: ChildProcess;
+  taskId: string;
+  scopeUnit: string | null;
+  confined: boolean;
+  /** Idempotent whole-tree termination. Confined runs address their exact scope;
+   *  fail-soft/unconfined runs retain the legacy negative-PGID cleanup. */
+  terminate(): void;
+}
+
+export interface ManagedTestProcessDeps {
+  managedSpawnFn?: (
+    command: string,
+    args: readonly string[],
+    spec: Parameters<typeof managedSpawn>[2],
+    opts?: Parameters<typeof managedSpawn>[3],
+  ) => Promise<ManagedTestSpawn>;
+  killScopeUnitFn?: (
+    scopeUnit: string,
+    opts?: Parameters<typeof killScopeUnit>[1],
+  ) => Promise<ScopeControlOutcome>;
+  killProcessGroupFn?: (pid: number, signal: NodeJS.Signals) => void;
+}
+
+/**
+ * Launch one foreground router outside the operator service's cgroup.
+ *
+ * `detached:true` alone creates a process group but leaves the whole group in
+ * `papercusp-staging-api.service`; a sanctioned staging restart therefore kills
+ * it. `managedSpawn` moves the payload into a named sibling transient scope and
+ * keeps the existing piped stdio. The scope also owns a systemd deadline, so a
+ * parent restart cannot erase the only timeout and leave a test tree immortal.
+ */
+export async function launchManagedTestProcess(
+  opts: {
+    command: string;
+    args: string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    runGroup: string;
+    workspaceId: string;
+  },
+  deps: ManagedTestProcessDeps = {},
+): Promise<ManagedTestProcess> {
+  const spawnManaged = deps.managedSpawnFn ?? managedSpawn;
+  const killOwnedScope = deps.killScopeUnitFn ?? killScopeUnit;
+  const killProcessGroup = deps.killProcessGroupFn ?? ((pid, signal) => process.kill(-pid, signal));
+  const launched = await spawnManaged(
+    opts.command,
+    opts.args,
+    {
+      class: 'test-run',
+      title: `testing:run foreground ${opts.runGroup}`,
+      argv: [opts.command, ...opts.args],
+      cwd: opts.cwd,
+      launchedBy: `testing:run:${opts.runGroup}`,
+      // The in-process timer owns the ordinary verdict. This slightly wider
+      // kernel deadline is the restart-safe backstop and still bounds the task
+      // when the operator (and therefore its timer) disappears mid-run.
+      runtimeMaxSec: Math.max(
+        1,
+        Math.ceil((opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000),
+      ),
+      detail: { runGroup: opts.runGroup, foreground: true },
+    },
+    {
+      workspaceId: opts.workspaceId,
+      spawnOptions: {
+        cwd: opts.cwd,
+        env: opts.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Preserve the unconfined fallback's whole-process-group identity.
+        // Under confinement the scope is the stronger whole-tree handle.
+        detached: true,
+      },
+    },
+  );
+
+  let terminationStarted = false;
+  const terminateProcessGroup = (): void => {
+    const pid = launched.child.pid;
+    if (!pid) return;
+    const signal = (next: NodeJS.Signals): void => {
+      try {
+        killProcessGroup(pid, next);
+      } catch {
+        // Group already gone, or negative-PGID signalling is unsupported. At
+        // least signal the router handle so cleanup never silently no-ops.
+        try {
+          launched.child.kill(next);
+        } catch {
+          /* already gone */
+        }
+      }
+    };
+    signal('SIGTERM');
+    setTimeout(() => signal('SIGKILL'), FOREGROUND_TERMINATION_GRACE_MS).unref();
+  };
+
+  return {
+    ...launched,
+    terminate(): void {
+      if (terminationStarted) return;
+      terminationStarted = true;
+      if (!launched.confined || !launched.scopeUnit) {
+        terminateProcessGroup();
+        return;
+      }
+      // The `ChildProcess` is the systemd-run client, while the payload lives
+      // in the sibling scope. Address the scope itself; signalling only the
+      // client can orphan the still-running router and Vitest descendants.
+      void killOwnedScope(launched.scopeUnit, {
+        signal: 'SIGTERM',
+        escalateAfterMs: FOREGROUND_TERMINATION_GRACE_MS,
+      }).then(
+        (outcome) => {
+          if (!outcome.ok && outcome.error !== 'already_gone') terminateProcessGroup();
+        },
+        () => terminateProcessGroup(),
+      );
+    },
+  };
+}
+
 /**
  * Bound the admission phase of a governed test process.
  *
@@ -1547,7 +1676,7 @@ function runTestProcess(
       aborted: true,
       output: 'caller aborted while waiting for governed test-process admission',
     }),
-    run: ({ signal: childSignal, admissionSignal, markAdmissionComplete }) =>
+    run: ({ signal: childSignal, admissionSignal, markAdmissionComplete, remainingTimeoutMs }) =>
       runGovernedOperation(
         {
           workspaceId: activeWorkspaceId(),
@@ -1620,88 +1749,84 @@ function runTestProcess(
                 () => resolve({ ...outcome, actualDemand: plannedDemand }),
               );
             };
-            let child: ChildProcess;
-            try {
-              child = spawn(command, [...commandArgs, ...args], {
-                cwd,
-                env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
-                stdio: ['ignore', 'pipe', 'pipe'],
-                detached: true,
-              });
-            } catch (error) {
-              spawnError = error instanceof Error ? error.message : String(error);
-              resolve({
-                code: null,
-                signal: null,
-                timedOut: false,
-                aborted: false,
-                spawnError,
-                output: `[spawn-error] ${spawnError}`,
-              });
-              return;
-            }
-            sampler.attach(child.pid);
-            const killGroup = (signal: NodeJS.Signals) => {
-              if (!child.pid) return;
-              try {
-                process.kill(-child.pid, signal);
-              } catch {
-                // Group already gone, or (non-POSIX) negative-pid kill unsupported — fall back
-                // to at least killing the router itself so we never silently no-op.
-                try {
-                  child.kill(signal);
-                } catch {
-                  /* already gone */
+            const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
+            void launchManagedTestProcess({
+              command,
+              args: [...commandArgs, ...args],
+              cwd,
+              env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
+              timeoutMs: launchTimeoutMs,
+              runGroup,
+              workspaceId: activeWorkspaceId(),
+            }).then(
+              (running) => {
+                const child = running.child;
+                sampler.attach(child.pid);
+                onAbort = () => {
+                  if (settled) return;
+                  aborted = true;
+                  // code:run owns the signal passed to inner dispatches. Timeout and abort
+                  // both terminate the exact task scope (or the fallback process group), so
+                  // the router and every Vitest descendant share one cleanup contract.
+                  running.terminate();
+                };
+                if (childSignal.aborted) {
+                  onAbort();
+                } else {
+                  childSignal.addEventListener('abort', onAbort, { once: true });
+                  const remaining = remainingTimeoutMs();
+                  if (remaining <= 0) {
+                    timedOut = true;
+                    running.terminate();
+                  } else {
+                    timer = setTimeout(() => {
+                      timedOut = true;
+                      running.terminate();
+                    }, remaining);
+                  }
                 }
-              }
-            };
-            const killGroupWithFallback = () => {
-              killGroup('SIGTERM');
-              setTimeout(() => killGroup('SIGKILL'), FOREGROUND_TERMINATION_GRACE_MS).unref();
-            };
-            timer = setTimeout(() => {
-              timedOut = true;
-              killGroupWithFallback();
-            }, childTimeoutMs);
-            onAbort = () => {
-              if (settled) return;
-              aborted = true;
-              // code:run owns the signal passed to inner dispatches. If its worker deadline
-              // fires while this router is blocked in spawnSync-backed Vitest, the router must
-              // terminate the same process group as its own timeout path; otherwise the inner
-              // suite survives after the outer wrapper has returned (EI-20949515346526475).
-              killGroupWithFallback();
-            };
-            if (childSignal.aborted) onAbort();
-            else childSignal.addEventListener('abort', onAbort, { once: true });
-            // Cap retained diagnostics — the router's own output is a fallback for the
-            // error paths, never the success path's payload.
-            const append = (channel: 'stdout' | 'stderr') => (b: Buffer) => {
-              outputBytes += b.byteLength;
-              outputCapture.append(channel, b);
-            };
-            child.stdout?.on('data', append('stdout'));
-            child.stderr?.on('data', append('stderr'));
-            child.on('error', (e) => {
-              spawnError = e.message;
-              outputCapture.append('stderr', `\n[spawn-error] ${e.message}\n`);
-              finish({
-                code: null,
-                signal: null,
-                timedOut,
-                aborted,
-                spawnError,
-                output: outputCapture.finish(),
-              });
-            });
-            child.on('close', (code, closeSignal) =>
-              finish({
-                code,
-                signal: closeSignal ?? null,
-                timedOut,
-                aborted,
-                output: outputCapture.finish(),
-              }),
+                // Cap retained diagnostics — the router's own output is a fallback for the
+                // error paths, never the success path's payload.
+                const append = (channel: 'stdout' | 'stderr') => (b: Buffer) => {
+                  outputBytes += b.byteLength;
+                  outputCapture.append(channel, b);
+                };
+                child.stdout?.on('data', append('stdout'));
+                child.stderr?.on('data', append('stderr'));
+                child.on('error', (e) => {
+                  spawnError = e.message;
+                  outputCapture.append('stderr', `\n[spawn-error] ${e.message}\n`);
+                  finish({
+                    code: null,
+                    signal: null,
+                    timedOut,
+                    aborted,
+                    spawnError,
+                    output: outputCapture.finish(),
+                  });
+                });
+                child.on('close', (code, closeSignal) =>
+                  finish({
+                    code,
+                    signal: closeSignal ?? null,
+                    timedOut,
+                    aborted,
+                    output: outputCapture.finish(),
+                  }),
+                );
+              },
+              (error) => {
+                spawnError = error instanceof Error ? error.message : String(error);
+                outputCapture.append('stderr', `\n[spawn-error] ${spawnError}\n`);
+                finish({
+                  code: null,
+                  signal: null,
+                  timedOut: false,
+                  aborted: childSignal.aborted,
+                  spawnError,
+                  output: outputCapture.finish(),
+                });
+              },
             );
           });
         },
