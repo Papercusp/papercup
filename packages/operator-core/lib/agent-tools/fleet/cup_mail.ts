@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_READ_ROLES } from '../coordination/roles';
 import { readInboxWindow, readOutboxWindow } from '../coordination/messages';
 
 const DEFAULT_LIMIT = 50;
@@ -31,7 +31,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     owner_id: z
       .string()
