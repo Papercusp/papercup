@@ -81,7 +81,7 @@ The attestation pins the rubric plan row's `version` at emit time. ANY later `ru
 
 ## Grading-time checks (D-011) — what the eventual grader inherits
 
-The NON-implementer who later grades the acceptance rubric meets the structured checks the vetting pushed for. A `tests` check's files are RUN via the testing router at emit time — one run per tests-check criterion, sequential, under one shared clamped budget; never judged from stale ledger rows. A pass-vocabulary rating (`pass`/`healthy`/`green`/`good`/`yes`/`exemplary`/`exceptional`) over a failing run REFUSES the emit naming the failing tests; an unresolvable path (`check_path_unresolved`), a route error, or an over-budget run refuses with a teaching error — never a silent pass. An honest fail-rating over a failing run is STAMPED (`observation.checkRuns`) and files normally. A bespoke scale word outside the pass map degrades to stamp-only — conservative, never wrongly refused. The unchanged-evidence dedupe fires BEFORE any run, so a declined re-emit never burns a suite.
+The NON-implementer who later grades the acceptance rubric meets the structured checks the vetting pushed for. A `tests` check's files are RUN via the testing router at emit time — one batched run over the union of unique files across rated `tests`-check criteria, with per-file attribution, under one shared clamped budget; never judged from stale ledger rows. A pass-vocabulary rating (`pass`/`healthy`/`green`/`good`/`yes`/`exemplary`/`exceptional`) over a failing run REFUSES the emit naming the failing tests; an unresolvable path (`check_path_unresolved`), a route error, or an over-budget run refuses with a teaching error — never a silent pass. An honest fail-rating over a failing run is STAMPED (`observation.checkRuns`) and files normally. A bespoke scale word outside the pass map degrades to stamp-only — conservative, never wrongly refused. The unchanged-evidence dedupe fires BEFORE any run, so a declined re-emit never burns a suite.
 
 ## The vetting/grading separation is NOT a deadlock — the escape is a second INDEPENDENT critic
 
@@ -143,4 +143,4 @@ Two corollaries worth applying at bind time:
 
 ### Budget note for a multi-check rubric
 
-The per-criterion runs are sequential under ONE shared clamped budget, so a rubric with several `tests` checks can exhaust it and refuse the emit on timeout. That refusal is load-dependent and INTERMITTENT: retrying is valid **for the timeout refusal only**, and never for `check_contradicted` or an unresolved path — those are verdicts, not noise.
+The unique-file batch runs under ONE shared clamped budget, with results attributed back to each criterion, so a rubric with several `tests` checks can exhaust it and refuse the emit on timeout. That refusal is load-dependent and INTERMITTENT: retrying is valid **for the timeout refusal only**, and never for `check_contradicted` or an unresolved path — those are verdicts, not noise.

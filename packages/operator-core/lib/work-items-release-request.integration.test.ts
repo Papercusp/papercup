@@ -123,6 +123,7 @@ beforeAll(async () => {
     '387-event-wake-delivery-source.sql',
     '533-add-event-awaits-payload-filter.sql',
     '541-predicate-watches.sql',
+    '572-event-await-nodes-threshold-tree.sql',
     '599-event-announcement-generation.sql',
     '602-work-item-follow-blockers.sql',
     '632-event-key-fire-latch.sql',

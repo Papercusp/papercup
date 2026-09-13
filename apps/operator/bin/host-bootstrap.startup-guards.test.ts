@@ -202,9 +202,27 @@ describe('background admission recovery loads the live kernel resolver before ro
 });
 
 describe('request-only hosts apply migrations before opening HTTP', () => {
+  it('single-flights the listener and HTTP callers through one boot-migration preflight', () => {
+    const requestOnly = bootSrc.indexOf(
+      'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
+    );
+    const dedupe = bootSrc.indexOf('return dedupeInFlight(', requestOnly);
+    const store = bootSrc.indexOf('BOOTSTRAP_STATE.requestMigrationGateFlights', dedupe);
+    const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()', store);
+
+    expect(requestOnly).toBeGreaterThan(-1);
+    expect(dedupe).toBeGreaterThan(requestOnly);
+    expect(store).toBeGreaterThan(dedupe);
+    expect(apply).toBeGreaterThan(store);
+    expect(bootSrc).toContain('requestMigrationGateFlights: Map<string, Promise<void>>');
+    expect(bootSrc).toContain('requestMigrationGateFlights: new Map()');
+    expect(bootSrc.match(/const migrationResult = await applyPendingMigrationsAtBoot\(\)/g))
+      .toHaveLength(2); // one request-only single-flight body + one background-owner body
+  });
+
   it('runs the coordinated boot preflight and marks the request gate only after a clean result', () => {
     const requestOnly = bootSrc.indexOf(
-      'if (!backgroundWorkersEnabled()) {\n    const { applyPendingMigrationsAtBoot }',
+      'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
     );
     const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()', requestOnly);
     const failure = bootSrc.indexOf('request-only migration preflight failed', apply);
