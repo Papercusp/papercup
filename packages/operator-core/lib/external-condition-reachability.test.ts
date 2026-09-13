@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { classifyExternalConditionReachability, readEventConditionReachability } from './external-condition-reachability';
+import type { ComposedNodeRow } from './events/await/compose-store';
 
 const NOW = '2026-08-27T12:00:00.000Z';
 
@@ -89,5 +90,55 @@ describe('external condition reachability', () => {
       }),
     });
     expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration' });
+  });
+
+  it('recognizes an active composed-root anchor without cataloguing synthetic keys', async () => {
+    const loadComposedRoot = vi.fn(async (rootId: number): Promise<ComposedNodeRow | null> => ({
+      id: rootId,
+      rootId,
+      parentId: null,
+      subscriberId: 'su-composed',
+      requiredCount: 1,
+      firedCount: 0,
+      firedAt: null,
+      spec: { any: [{ event: 'gate:green' }] },
+      wakeHandle: null,
+      note: null,
+      expiresTs: '2026-08-27T13:00:00.000Z',
+      timeoutBehavior: 'wake',
+      cancelledAt: null,
+    }));
+    const loadComposedRootAnchor = vi.fn(async (rootId: number) => ({
+      awaitId: rootId + 1000,
+      subscriberId: 'su-composed',
+      wakeHandle: null,
+    }));
+    const inspect = async () => ({ announcements: [], waiters: [], deliveries: [], fireLatch: null });
+
+    const reachability = await readEventConditionReachability('composed-root:395', {
+      now: new Date(NOW),
+      inspect,
+      loadComposedRoot,
+      loadComposedRootAnchor,
+    });
+
+    expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'live-resolver', authoritative: true });
+    expect(loadComposedRoot).toHaveBeenCalledWith(395);
+    expect(loadComposedRootAnchor).toHaveBeenCalledWith(395);
+  });
+
+  it('does not treat an arbitrary composed-root key as reachable', async () => {
+    const loadComposedRoot = vi.fn(async (): Promise<ComposedNodeRow | null> => null);
+    const loadComposedRootAnchor = vi.fn(async () => null);
+    const reachability = await readEventConditionReachability('composed-root:395', {
+      now: new Date(NOW),
+      inspect: async () => ({ announcements: [], waiters: [], deliveries: [], fireLatch: null }),
+      loadComposedRoot,
+      loadComposedRootAnchor,
+    });
+
+    expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration', authoritative: false });
+    expect(loadComposedRoot).toHaveBeenCalledWith(395);
+    expect(loadComposedRootAnchor).not.toHaveBeenCalled();
   });
 });

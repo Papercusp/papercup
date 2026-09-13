@@ -270,7 +270,7 @@
           "POST"
         ]
       },
-      "description": "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Optionally pass `model:'gpt-reserve'` to measure Luna's base-model-inference reserve bucket instead of the default Sol/generic bucket. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
+      "description": "Probe upstream capacity for the selected account pool (read-only by default). Pass `apply:true` to write the observed projection and converge gateway exclusions. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Optionally pass `model:'gpt-reserve'` to measure Luna's base-model-inference reserve bucket instead of the default Sol/generic bucket. Sends one minimal request per selected account; a 429 confirms a wall. Returns { ok, provider, probed, serving, rows[] }.",
       "capabilities": [
         "harness:write"
       ],

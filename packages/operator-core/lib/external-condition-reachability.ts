@@ -1,4 +1,5 @@
 import { EVENT_CATALOG, keyMatchesCatalog } from './events/await/catalog';
+import { findRootAnchor, loadNode } from './events/await/compose-store';
 import { inspectEventKey } from './events/await/store';
 
 export type ExternalConditionReachabilityVerdict = 'reachable' | 'impossible' | 'unknown';
@@ -24,6 +25,43 @@ export interface ExternalConditionReachabilityInput {
   liveResolver?: boolean;
   /** Only producer announcements count. Cancelling a consumer await says nothing about the producer. */
   registration?: 'live' | 'cancelled' | 'expired' | 'missing' | 'unmeasured';
+}
+
+type ComposedRootLoader = typeof loadNode;
+type ComposedRootAnchorLoader = typeof findRootAnchor;
+
+function composedRootId(eventKey: string): number | null {
+  const match = /^composed-root:([1-9][0-9]*)$/.exec(eventKey);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
+/**
+ * The `composed-root:<id>` key is a delivery-shim key, not an event-catalog family.
+ * Its producer is the live root node, and the anchor is the delivery path that makes
+ * a root trip wakeable. Keep this exact-key check narrow so arbitrary synthetic keys
+ * do not become a false reachability proof.
+ */
+async function hasActiveComposedRootAnchor(
+  eventKey: string,
+  loadRoot: ComposedRootLoader,
+  loadAnchor: ComposedRootAnchorLoader,
+): Promise<boolean> {
+  const rootId = composedRootId(eventKey);
+  if (rootId == null) return false;
+  const root = await loadRoot(rootId);
+  if (
+    !root ||
+    root.id !== rootId ||
+    root.rootId !== rootId ||
+    root.parentId !== null ||
+    root.firedAt !== null ||
+    root.cancelledAt !== null
+  ) {
+    return false;
+  }
+  return (await loadAnchor(rootId)) !== null;
 }
 
 /**
@@ -106,10 +144,17 @@ function latestAnnouncementState(
 /** Resolve one event/gate key from the existing event ledger and emitter catalog. */
 export async function readEventConditionReachability(
   eventKey: string,
-  opts: { inspect?: typeof inspectEventKey; now?: Date } = {},
+  opts: {
+    inspect?: typeof inspectEventKey;
+    now?: Date;
+    loadComposedRoot?: ComposedRootLoader;
+    loadComposedRootAnchor?: ComposedRootAnchorLoader;
+  } = {},
 ): Promise<ExternalConditionReachability> {
   const now = opts.now ?? new Date();
   const inspect = opts.inspect ?? inspectEventKey;
+  const loadComposedRoot = opts.loadComposedRoot ?? loadNode;
+  const loadComposedRootAnchor = opts.loadComposedRootAnchor ?? findRootAnchor;
   try {
     const snapshot = await inspect(eventKey);
     // An announcement is a causal generation boundary. The per-key fire latch
@@ -120,10 +165,15 @@ export async function readEventConditionReachability(
     const firedAt = currentAnnouncement
       ? currentAnnouncement.firedAt
       : snapshot.fireLatch?.lastFiredAt ?? null;
+    const composedRootReachable = await hasActiveComposedRootAnchor(
+      eventKey,
+      loadComposedRoot,
+      loadComposedRootAnchor,
+    );
     return classifyExternalConditionReachability(
       {
         firedAt,
-        liveResolver: keyMatchesCatalog(eventKey, EVENT_CATALOG),
+        liveResolver: keyMatchesCatalog(eventKey, EVENT_CATALOG) || composedRootReachable,
         registration: latestAnnouncementState(snapshot.announcements, now.getTime()),
       },
       now.toISOString(),
