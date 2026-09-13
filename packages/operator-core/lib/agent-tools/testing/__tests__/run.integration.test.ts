@@ -16,16 +16,13 @@
  * real run can establish is the seam, so that is all this file spends its
  * minutes on.
  *
- * NOTE ON THE MISSING RED-RUN CASE: asserting a real FAILING run would need a
- * deliberately-failing test file inside the repo, which the normal suite would
- * then collect — a committed red that would hold the fleet's green gate. Not
- * worth it: the failure projection is exhaustively unit-tested, and the glue
- * path is identical for pass and fail (same spawn, same report, same distil).
+ * The real RED-run case uses a checked-in, env-gated fixture. Do not recreate the old
+ * runtime-written `lib/__testing-run-sidecar-*.test.ts` shape: a concurrent pure-lane census
+ * could enroll that temporary path, then fail collection after this suite removed it.
  */
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -130,6 +127,9 @@ async function body(p: ReturnType<typeof call>): Promise<RunResult> {
 /** A small, stable, PG-free unit suite in this package — a real green target. */
 const GREEN_TARGET = 'packages/operator-core/lib/testing-flakiness.test.ts';
 const OPERATOR_CORE_RELATIVE_GREEN_TARGET = 'lib/testing-flakiness.test.ts';
+const FAILING_ASSERTION_TARGET =
+  'packages/operator-core/lib/agent-tools/testing/__tests__/run-failure-fixture.test.ts';
+const FAILING_ASSERTION_TARGET_VAR = 'PAPERCUSP_TESTING_RUN_ASSERTION_FIXTURE';
 
 /**
  * A real in-repo suite that collects tests and executes NONE of them unless its env var is set
@@ -870,29 +870,17 @@ describe('testing:run (integration)', () => {
   });
 
   it('returns structured actual/expected values for a real failing assertion', async () => {
-    const relativeFixture = `packages/operator-core/lib/__testing-run-sidecar-${randomUUID()}.test.ts`;
-    // testing:run receives repo-root-relative paths. Resolve from the same
-    // canonical root under both package-local and repository-root Vitest runs.
-    const absoluteFixture = join(REPO_ROOT, relativeFixture);
-    await writeFile(
-      absoluteFixture,
-      [
-        "import { expect, it } from 'vitest';",
-        "it('preserves the assertion values', () => {",
-        "  expect({ service_select: false, other: 'actual' }).toEqual({ service_select: true, other: 'expected' });",
-        '});',
-        '',
-      ].join('\n'),
-    );
+    const prior = process.env[FAILING_ASSERTION_TARGET_VAR];
+    process.env[FAILING_ASSERTION_TARGET_VAR] = '1';
     try {
-      const out = await body(call({ files: [relativeFixture] }));
+      const out = await body(call({ files: [FAILING_ASSERTION_TARGET] }));
 
       expect(out.ok).toBe(false);
       expect(out.failed).toBe(1);
       expect(out.failures).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            file: relativeFixture,
+            file: FAILING_ASSERTION_TARGET,
             test: 'preserves the assertion values',
             actual: expect.stringContaining('service_select'),
             expected: expect.stringContaining('service_select'),
@@ -900,7 +888,8 @@ describe('testing:run (integration)', () => {
         ]),
       );
     } finally {
-      await rm(absoluteFixture, { force: true });
+      if (prior === undefined) delete process.env[FAILING_ASSERTION_TARGET_VAR];
+      else process.env[FAILING_ASSERTION_TARGET_VAR] = prior;
     }
   }, 180_000);
 
