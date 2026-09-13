@@ -679,7 +679,7 @@ describe('release:repair-queue', () => {
       expect(runner).toHaveBeenCalledWith({ commit: NEW_HEAD, files: ['lib/red.test.ts'] });
       const settled = await settledPrecheckQueue();
       expect(settled.admissionPrecheck).toMatchObject({ status: 'passed', builtCommit: NEW_HEAD });
-      expect(settled.dispatchReservation).toBeUndefined();
+      expect((settled as { dispatchReservation?: unknown }).dispatchReservation).toBeUndefined();
       expect(dryRuns()).toEqual([true]); // the detached leg never publishes
       mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const published = body(
