@@ -269,6 +269,42 @@ describe('testing:runs evidence identity', () => {
     expect(data.runs).toEqual([expect.objectContaining({ root: null })]);
     expect(selectedSql).toContain('p.execution_details');
   });
+
+  it('normalizes a JSONB string before parsing and projects its validated root', async () => {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      if (!call.strings.some((part) => part.includes('WITH filtered'))) return call;
+      return Promise.resolve([{
+        id: '17692434', workspace_id: 'workspace-a', harness_slug: 'harness-a',
+        execution_details: JSON.stringify({
+          schemaVersion: 1,
+          root: '/checkouts/papercusp',
+          filePath: 'same.test.ts',
+          runGroupId: null,
+          workspaceId: 'workspace-a',
+          harnessSlug: 'harness-a',
+          testNamePattern: null,
+          passed: 1,
+          failed: 0,
+          skipped: 0,
+          collectionFailed: false,
+          mutationPhase: null,
+        }),
+        file_path: 'same.test.ts', status: 'pass', framework: 'vitest',
+        started_at: '2026-09-08T09:43:05Z', finished_at: '2026-09-08T09:43:06Z',
+        duration_ms: '1000', output_tail: null, run_group_id: null, source: 'local',
+        branch: 'staging', commit_sha: 'abc123', loop_lag_p95_ms: null, rss_mb: null,
+        worktree_dirty: false, is_scratch_config: false, total: '1',
+      }]);
+    });
+
+    const result = await runsTool.handler({ filePath: 'same.test.ts', limit: 1 } as never, {} as never) as {
+      data?: { runs?: Array<{ root: string | null }> };
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    expect(data.runs).toEqual([expect.objectContaining({ root: '/checkouts/papercusp' })]);
+  });
 });
 
 describe('testing:runs exact ID selection', () => {

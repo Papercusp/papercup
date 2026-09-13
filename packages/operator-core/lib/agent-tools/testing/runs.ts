@@ -162,6 +162,19 @@ export function defaultRollupSource(
   return source ?? (rollup ? 'ci' : null);
 }
 
+/** JSONB may arrive as its parsed object or as serialized JSON, depending on
+ * the postgres client/facade serving the read. Normalize before applying the
+ * strict versioned parser; malformed strings remain untrusted and map to no
+ * root rather than throwing or inventing checkout identity. */
+function parseStoredExecutionDetails(value: unknown) {
+  if (typeof value !== 'string') return parseTestRunExecutionDetails(value);
+  try {
+    return parseTestRunExecutionDetails(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Keep testing:runs' row identity intact when a model-facing payload is
  * bounded. The generic payload projection can omit workspaceId/harnessSlug or
@@ -586,7 +599,7 @@ export default defineTool({
           id: Number(r.id),
           workspaceId: r.workspace_id,
           harnessSlug: r.harness_slug,
-          root: parseTestRunExecutionDetails(r.execution_details)?.root ?? null,
+          root: parseStoredExecutionDetails(r.execution_details)?.root ?? null,
           filePath: r.file_path,
           status: r.status,
           framework: r.framework,
