@@ -1061,6 +1061,10 @@ import './scorecards/freshness';
 import './scorecards/evaluate';
 import './scorecards/emit';
 import './scorecards/retract';
+// scorecards:repair — the callable immediate recovery path for pending
+// grading-integrity audits; delegates to the same bounded dispatcher used by
+// scorecards:emit and the acceptance-grading sweep.
+import './scorecards/repair';
 
 // Directed-pair pilot P-007 — production runtime over the existing work-item,
 // scorecard and usage ledgers. Assignment is a dry-run by default and arm B is

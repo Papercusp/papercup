@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   emitUnblockedOnEdgeRemoved,
+  emitWorkItemClaimableEvent,
   emitWorkItemSettledEvents,
   isSettledWorkItem,
   liveAssigneeProbe,
@@ -794,6 +795,38 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
       'released',
       { emit },
     );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
+  it('EI-22773307703217310: drops observation-lane rows from both the emit and registration latch', async () => {
+    const emit = typedEmit();
+    const item = wi({
+      id: 'EI-OBS-CLAIMABLE',
+      state: 'open',
+      assignee: null,
+      payload: { lane: 'observation' },
+    });
+    const getItem = vi.fn(async () => item);
+
+    emitWorkItemClaimableEvent(item, 'released', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).not.toHaveBeenCalled();
+
+    await expect(liveWorkItemClaimableEventPayload(item.id, item.harness ?? undefined, { getItem })).resolves.toBeNull();
+    expect(duplicateAdmissionCheck).not.toHaveBeenCalled();
+  });
+
+  it('keeps a non-observation lane claimable', async () => {
+    const emit = typedEmit();
+    const item = wi({
+      id: 'WI-OBS-NOT',
+      state: 'open',
+      assignee: null,
+      payload: { lane: 'improvement' },
+    });
+
+    emitWorkItemClaimableEvent(item, 'released', { emit });
     await new Promise((r) => setTimeout(r, 0));
     expect(emit).toHaveBeenCalledOnce();
   });

@@ -29,6 +29,7 @@ import { TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
 import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } from './work-item-blocking';
+import { isObservationLaneItem } from './fleet/placement-gather';
 import {
   CLAIM_STATES_ALLOWLIST,
   getWorkItem,
@@ -233,7 +234,9 @@ export function emitWorkItemClaimableEvent(
   reason: 'created' | 'released' | 'unblocked' | 'requeued',
   deps: Pick<SettledEventsDeps, 'emit' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck'> = {},
 ): void {
-  if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return;
+  // D-005: observation-lane rows are captured reflections, not work-queue material. Keep
+  // the broad wake on the same floor as scheduler:get_next and fleet placement.
+  if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isObservationLaneItem(wi.payload)) return;
   const emit = deps.emit ?? emitAwaitedEvent;
   const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
   const payload = workItemClaimableEventPayload(wi, reason);
@@ -336,7 +339,7 @@ export async function liveWorkItemClaimableEventPayload(
 ): Promise<Record<string, unknown> | null> {
   const getItem = deps.getItem ?? getWorkItem;
   const wi = await getItem(id, harness);
-  if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return null;
+  if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isObservationLaneItem(wi.payload)) return null;
   const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
   try {
     if (!(await checkAdmission(wi.id))) return null;

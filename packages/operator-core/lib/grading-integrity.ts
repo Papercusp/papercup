@@ -1172,7 +1172,7 @@ export async function dispatchPendingGradingAudits(
  * rules or creating a second launch surface.
  */
 export async function reconcilePendingGradingAudits(
-  input: Omit<DispatchPendingGradingAuditsInput, 'targetIds'>,
+  input: DispatchPendingGradingAuditsInput,
   deps: DispatchPendingGradingAuditsDeps = {},
 ): Promise<PendingGradingAuditDispatchResult> {
   return dispatchPendingGradingAudits(input, deps);
