@@ -154,6 +154,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('code:run returns `compile_error` before bash is dispatched');
   });
 
+  it('documents regex path-slash escaping and safer alternatives', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('Invalid regular expression flags');
+    expect(scriptDescription).toContain('String.includes(...)');
+    expect(scriptDescription).toContain('new RegExp("...")');
+  });
+
   it('documents runtime concatenation for JSON data in nested shell commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
