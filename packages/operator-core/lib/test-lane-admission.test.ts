@@ -86,6 +86,7 @@ describe('operator-core test-lane admission', () => {
     const child = new EventEmitter() as EventEmitter & { pid: number };
     child.pid = 4242;
     const attached: number[] = [];
+    const lifecycle: string[] = [];
     const spawned: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
     let governedOptions: Record<string, unknown> | null = null;
     const admittedEnv = {
@@ -95,6 +96,7 @@ describe('operator-core test-lane admission', () => {
 
     const result = runVitestProcess(['run', '--shard=1/2'], {
       env: { PAPERCUSP_WORKSPACE: 'workspace-test', VITEST_MAX_WORKERS: '2' },
+      stderr: { write: (chunk) => { lifecycle.push(String(chunk)); return true; } },
       spawnProcess: ((command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
         spawned.push({ command, args, env: options.env });
         queueMicrotask(() => child.emit('close', 0, null));
@@ -106,7 +108,9 @@ describe('operator-core test-lane admission', () => {
       })) as never,
       runGovernedTestProcess: (async (options: Record<string, unknown>, run: Function) => {
         governedOptions = options;
-        return run({ receiptId: 'receipt-1' }, admittedEnv, { inherited: false });
+        const outcome = await run({ receiptId: 'receipt-1' }, admittedEnv, { inherited: false });
+        lifecycle.push('governor-returned');
+        return outcome;
       }) as never,
     });
 
@@ -121,5 +125,10 @@ describe('operator-core test-lane admission', () => {
     expect(spawned).toHaveLength(1);
     expect(spawned[0].args).toEqual(['run', '--shard=1/2']);
     expect(spawned[0].env.PAPERCUSP_ADMISSION_CONTEXT).toContain('receipt-1');
+    expect(lifecycle).toEqual([
+      'VITEST_PURE_LANE_CHILD state=closed exitStatus=0 signal=none\n',
+      'governor-returned',
+      'VITEST_PURE_LANE_GOVERNOR state=settled exitStatus=0 signal=none\n',
+    ]);
   });
 });
