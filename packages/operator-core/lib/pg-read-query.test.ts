@@ -27,6 +27,7 @@ import {
   buildAgentFactsSupersessionAdvisory,
   buildEventFireWindowAdvisory,
   buildEpochUnitAdvisory,
+  buildDbosWorkflowStatusSchemaHint,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
   buildToolRoutingAdvisory,
@@ -2915,6 +2916,53 @@ describe('buildEpochUnitAdvisory (EI-20261119579595975 — seconds divided as mi
       `SELECT invoked_at FROM ${TOOL_INVOCATIONS} ` +
       "WHERE note = 'to_timestamp(1786547705.088/1000.0)' -- to_timestamp(1786547705.088/1000.0)";
     expect(buildEpochUnitAdvisory(sql)).toBeNull();
+  });
+});
+
+describe('buildDbosWorkflowStatusSchemaHint (EI-23095186684817118)', () => {
+  const WORKFLOW_STATUS = 'dbos.workflow_status';
+
+  it('explains the epoch-ms comparison after a bigint/timestamptz operator error', () => {
+    const hint = buildDbosWorkflowStatusSchemaHint(
+      `SELECT count(*) FROM ${WORKFLOW_STATUS} WHERE created_at > now()`,
+      {
+        code: '42883',
+        message: 'operator does not exist: bigint > timestamp with time zone',
+      },
+    );
+
+    expect(hint).toContain('BIGINT epoch milliseconds');
+    expect(hint).toContain('(extract(epoch from now()) * 1000)::bigint');
+    expect(hint).toContain('updated_at_epoch_ms');
+  });
+
+  it('corrects guessed DBOS timestamp and workflow-name columns', () => {
+    const timestampHint = buildDbosWorkflowStatusSchemaHint(
+      `SELECT updated_at_epoch_ms FROM ${WORKFLOW_STATUS}`,
+      { code: '42703', message: 'column "updated_at_epoch_ms" does not exist' },
+    );
+    const nameHint = buildDbosWorkflowStatusSchemaHint(
+      `SELECT workflow_name FROM ${WORKFLOW_STATUS}`,
+      { code: '42703', message: 'column "workflow_name" does not exist' },
+    );
+
+    expect(timestampHint).toContain('updated_at`');
+    expect(nameHint).toContain('`name`, not `workflow_name`');
+  });
+
+  it('stays silent for unrelated relations and errors', () => {
+    expect(
+      buildDbosWorkflowStatusSchemaHint(
+        'SELECT updated_at_epoch_ms FROM harness_shared.work_items',
+        { code: '42703', message: 'column "updated_at_epoch_ms" does not exist' },
+      ),
+    ).toBeNull();
+    expect(
+      buildDbosWorkflowStatusSchemaHint(
+        `SELECT priority FROM ${WORKFLOW_STATUS}`,
+        { code: '42703', message: 'column "priority" does not exist' },
+      ),
+    ).toBeNull();
   });
 });
 

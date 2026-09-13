@@ -2853,6 +2853,44 @@ export function buildEpochUnitAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * Explain the DBOS workflow-status schema when a forensic query fails on its
+ * timestamp shape or on a guessed timestamp/name column (EI-23095186684817118).
+ *
+ * `dbos.workflow_status` is an external DBOS relation rather than one of the
+ * harness tables covered by the generic schema redirects. Its created_at and
+ * updated_at fields are BIGINT epoch milliseconds, and the workflow label is
+ * `name`; without this targeted correction, `knownColumns` tells a caller what
+ * exists but not how to form the next valid predicate.
+ */
+export function buildDbosWorkflowStatusSchemaHint(
+  rawSql: string,
+  info: { code?: string; message: string; detail?: string },
+): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((table) => table.toLowerCase() === 'dbos.workflow_status')) return null;
+
+  const errorText = `${info.message} ${info.detail ?? ''}`;
+  const epochTypeMismatch =
+    info.code === '42883' &&
+    /operator\s+does\s+not\s+exist:\s*bigint\s*[<>=!]+\s*timestamp\b/i.test(errorText);
+  const missingColumn = info.code === '42703' ? parseMissingColumnName(errorText) : null;
+  const guessedTimestampColumn =
+    missingColumn === 'created_at_epoch_ms' || missingColumn === 'updated_at_epoch_ms';
+  const guessedWorkflowName = missingColumn === 'workflow_name';
+
+  if (!epochTypeMismatch && !guessedTimestampColumn && !guessedWorkflowName) return null;
+
+  return (
+    '`dbos.workflow_status.created_at` and `.updated_at` are BIGINT epoch milliseconds, not ' +
+    'timestamptz; compare them with `(extract(epoch from now()) * 1000)::bigint` (or render ' +
+    'an existing epoch value with `to_timestamp(updated_at / 1000.0)`). ' +
+    '`updated_at_epoch_ms` and `created_at_epoch_ms` are not columns; the workflow label column ' +
+    'is `name`, not `workflow_name`. Use `describe: "dbos.workflow_status"` before adding ' +
+    'another guessed field.'
+  );
+}
+
+/**
  * Flag an unbounded substring search over the large tool-invocation JSONB
  * columns (EI-21663090256112441).
  *
