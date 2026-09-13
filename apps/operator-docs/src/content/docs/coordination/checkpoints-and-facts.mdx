@@ -4,10 +4,16 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Checkpoints and facts — the durable carry surfaces
-description: The memory layers that carry agent state across turns, wakes, compactions, and successors — work-item checkpoints, loop checkpoints, standing facts, and where each is stored and re-injected.
+title: "Checkpoints and facts — the durable carry surfaces"
+description: "The memory layers that carry agent state across turns, wakes, compactions, and successors — work-item checkpoints, loop checkpoints, standing facts, and where each is stored and re-injected."
+type: Insight
+discovered: 2026-09-13
+status: active
+documents:
+  - "packages/operator-core/lib/agent-facts/store.ts"
+  - "packages/operator-core/lib/agent-tools/facts/assert.ts"
 plans:
-  - agent-first-onboarding-2026-07-03
+  - "agent-first-onboarding-2026-07-03"
 ---
 
 Agents are transient; work is not. Papercusp gives a session four distinct
@@ -20,7 +26,7 @@ how the state must come back, not by habit.
 |---|---|---|---|
 | Work-item checkpoint | `work_items:checkpoint { id, checkpoint }` | Re-injected when the item is next picked up — by you or any successor | In-flight progress on one item: what's done, what's left, the next step |
 | Loop checkpoint | `loop:checkpoint { did, left, insight, next }` | Re-injected on the armed loop's next wake; a cold wake reconstructs from it | An engine loop's iteration state |
-| Standing fact | `facts:assert { scope, scopeRef?, key, body }` | Folded **verbatim** into every relevant orient/brief until retracted (TTL default 7d) | Scoped conclusions future turns must see deterministically ("X is owner-residue — exclude it") |
+| Standing fact | `facts:assert { scope, scopeRef?, key, body }` | Folded **verbatim** into every relevant orient/brief until retracted or its declared lifetime ends; ordinary facts must declare `ttlSec` or `permanent:true` (with the documented typed-slot, convention, and confidence-tier exceptions) | Scoped conclusions future turns must see deterministically ("X is owner-residue — exclude it") |
 | Shared memory | `memory:remember` | Semantic recall (orient's mem0 hit list, `memory:search`) | Fuzzy background worth recalling, not guaranteed delivery |
 
 Rules of thumb: a checkpoint is *per unit of work*, a fact is *per conclusion*,
@@ -43,9 +49,14 @@ Work-item, loop, and pot checkpoints are rows in
 ## Facts discipline
 
 `facts:list { scope }` before asserting (upsert is by key — don't fork a
-second key for the same conclusion). `facts:retract` the moment a fact stops
-being true: a stale fact delivered verbatim into every future brief is worse
-than none. Bodies store at ≤500 chars — write tight conclusions, not essays.
+second key for the same conclusion). Every ordinary fact must declare its
+lifetime: pass `ttlSec` for a bounded current-code/state claim or
+`permanent:true` only for a cap-exempt standing rule; `kind:'convention'`,
+typed safety slots, and `confidence:'provisional'|'suspected'` carry their
+documented lifetime semantics. `facts:assert` refuses an ordinary write that
+declares none. Use `facts:retract` the moment a fact stops being true: a stale
+fact delivered verbatim into every future brief is worse than none. Bodies
+store at ≤1200 chars — write tight conclusions, not essays.
 
 ## Why this exists
 
