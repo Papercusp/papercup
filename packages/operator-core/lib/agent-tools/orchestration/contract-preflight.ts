@@ -58,6 +58,7 @@ export function currentCallerRecipeCatalog(
       tools: [
         'capability:pty_open',
         'capability:pty_write_stdin',
+        'capability:pty_resize',
         'capability:pty_read_screen',
         'capability:pty_kill',
       ],

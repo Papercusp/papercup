@@ -23,6 +23,7 @@ const EXPECTED: Array<{ name: string; capability: string }> = [
   { name: 'capability:bash_kill', capability: 'capability:bash' },
   { name: 'capability:pty_open', capability: 'capability:bash' },
   { name: 'capability:pty_write_stdin', capability: 'capability:bash' },
+  { name: 'capability:pty_resize', capability: 'capability:bash' },
   { name: 'capability:pty_read_screen', capability: 'capability:bash' },
   { name: 'capability:pty_kill', capability: 'capability:bash' },
   { name: 'capability:read', capability: 'capability:fs-read' },

@@ -14,6 +14,7 @@ import {
   getPtyByTaskId,
   getScreenSerialization,
   killPty,
+  resizePty,
   spawnGovernedPty,
   writePty,
   type PtyHandle,
@@ -26,7 +27,7 @@ import {
   syncEnrolmentScopePath,
 } from '../../task-manager/enroll-sync';
 import { getTask } from '../../task-manager/store';
-import type { TaskRow } from '../../task-manager/types';
+import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { resolveCapabilityBaseDir } from './base-dir';
@@ -132,11 +133,30 @@ async function attachTask(taskId: string, ctx: PtyToolContext): Promise<
 
   const handle = getPtyByTaskId(taskId, caller.accessScope);
   if (!handle || handle.id !== task.detail.ptyHandleId) {
+    if (isTerminalState(task.state)) {
+      return {
+        ok: false,
+        result: errorResult('pty_session_ended', {
+          task_id: taskId,
+          state: task.state,
+          exit_code: task.exitCode,
+          exit_reason: task.exitReason,
+          reattachment: 'not_applicable',
+          replacement_started: false,
+          advice: 'The PTY has ended. Inspect the terminal outcome above; open a new PTY only if more interactive work is required.',
+        }),
+      };
+    }
     return {
       ok: false,
       result: errorResult('pty_session_unavailable', {
         task_id: taskId,
-        advice: 'The authorized ledger row exists, but its process-local PTY handle is no longer available.',
+        state: task.state,
+        reattachment: 'unrecoverable',
+        restart_required: true,
+        replacement_started: false,
+        advice:
+          'The authorized ledger row is still live, but its process-local PTY handle was lost (for example by an operator restart). This session cannot be reattached; open a new capability:pty_open session. No replacement was started automatically.',
       }),
     };
   }
@@ -154,12 +174,12 @@ const commonTool = {
 export const ptyOpenTool = defineTool({
   name: 'capability:pty_open',
   description:
-    'Open a persistent interactive PTY session in the project directory. Returns only a durable task_id; use the PTY follow-up tools to write, read the bounded screen state, or kill it.',
+    'Open a persistent interactive PTY session in the project directory. Returns only a durable task_id; use the PTY follow-up tools to write, resize, read the bounded screen state, or kill it.',
   guidance: {
     when: 'Run an interactive shell, REPL, debugger, or TUI that needs stdin and repeated screen reads.',
     notWhen: 'Use capability:bash for a non-interactive command or a background job whose append-only output is sufficient.',
     chaining:
-      'capability:pty_open { command } → capability:pty_write_stdin { task_id, data } → capability:pty_read_screen { task_id } → capability:pty_kill { task_id }.',
+      'capability:pty_open { command } → capability:pty_write_stdin { task_id, data } / capability:pty_resize { task_id, cols, rows } → capability:pty_read_screen { task_id } → capability:pty_kill { task_id }.',
     seeAlso: ['capability:bash (non-interactive shell execution)'],
   },
   ...commonTool,
@@ -328,6 +348,45 @@ export const ptyWriteStdinTool = defineTool({
   },
 });
 
+export const ptyResizeTool = defineTool({
+  name: 'capability:pty_resize',
+  description:
+    'Resize a running interactive PTY by its durable task_id. Updates both the child terminal and the bounded headless screen geometry without ending or replacing the session.',
+  guidance: {
+    when: 'A shell, debugger, or TUI opened by capability:pty_open needs a different terminal width or height.',
+    notWhen: 'Do not pass a process id or raw PTY id. A terminal session that ended or lost its server-side handle cannot be revived by resizing it.',
+    chaining: 'capability:pty_resize { task_id, cols, rows } → capability:pty_read_screen { task_id }.',
+    seeAlso: ['capability:pty_open', 'capability:pty_read_screen'],
+  },
+  ...commonTool,
+  args: z.object({
+    task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
+    cols: z.number().int().min(2).max(400).describe('New terminal width in columns.'),
+    rows: z.number().int().min(1).max(200).describe('New terminal height in rows.'),
+  }),
+  async handler(args, ctx: PtyToolContext) {
+    const attached = await attachTask(args.task_id, ctx);
+    if (!attached.ok) return attached.result;
+    const { handle, caller } = attached.attachment;
+    if (!resizePty(handle.id, args.cols, args.rows, caller.accessScope)) {
+      return errorResult('pty_session_unavailable', { task_id: args.task_id });
+    }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            task_id: args.task_id,
+            cols: args.cols,
+            rows: args.rows,
+          }),
+        },
+      ],
+    };
+  },
+});
+
 export const ptyReadScreenTool = defineTool({
   name: 'capability:pty_read_screen',
   description:
@@ -335,8 +394,9 @@ export const ptyReadScreenTool = defineTool({
   guidance: {
     when: 'Inspect the current screen of a session opened by capability:pty_open, including TUIs that redraw in place.',
     notWhen: 'Use capability:bash_output for append-only output from a capability:bash background job.',
-    chaining: 'Write more input with capability:pty_write_stdin or stop the session with capability:pty_kill.',
-    seeAlso: ['capability:pty_write_stdin', 'capability:pty_kill'],
+    chaining:
+      'Write more input with capability:pty_write_stdin, change geometry with capability:pty_resize, or stop the session with capability:pty_kill.',
+    seeAlso: ['capability:pty_write_stdin', 'capability:pty_resize', 'capability:pty_kill'],
   },
   ...commonTool,
   args: z.object({

@@ -2492,6 +2492,7 @@ const CLAUDE_QUOTA_LIMIT_BANNER_PATTERNS = [
   /weekly limit/i,
   /5-hour limit/i,
   /usage limit/i,
+  /you'?ve reached your fable(?:\s+\d+(?:\.\d+)?)?\s+limit\b/i,
   /\blimit\b[^\n]{0,60}\breset(?:s|ting)?\b/i,
 ];
 

@@ -698,6 +698,8 @@ export async function dispatchPendingGradingAudits(
     let terminalFallbacks = 0;
     let attempts = 0;
     let reservationHeld = false;
+    let reservationReservedAt = 'reservation-unknown';
+    let launchBackend: 'claude' | 'codex' = 'claude';
     let routingFallback: string | undefined;
     let receipt: PendingGradingAuditDispatchReceipt | null = null;
     const releaseReservation = async (backoff?: GradingAuditDispatchBackoff) => {
@@ -741,6 +743,77 @@ export async function dispatchPendingGradingAudits(
           }
         : {}),
     });
+    const terminateTask = deps.killTask ?? killTask;
+    const readTask = deps.getTask ?? getTask;
+    const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+    const detectTerminalFailure = (
+      logPath: string | null,
+      maxRechecks = deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
+      allowGatewayErrorWithoutFooter = true,
+    ) =>
+      detectAcceptanceGraderTerminalFailure(logPath, {
+        readLogTail,
+        ...(deps.sleep ? { sleep: deps.sleep } : {}),
+        delayMs: deps.terminalLogRecheckDelayMs ?? GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS,
+        maxRechecks,
+        allowStandaloneWeeklyLimit: true,
+        allowInferenceGatewayError: true,
+        // This controlled brief contains only the scorecard identity and
+        // fingerprint, never a quoted gateway screen. A headless Claude
+        // turn can stop on that exact screen before rendering its footer;
+        // treating it as terminal is what lets the Codex fallback run.
+        allowGatewayErrorWithoutFooter,
+        allowLauncherQuotaDrop: true,
+        // EI-22978598482930667: a launch REFUSED by the walled-pool preflight
+        // is terminal for this mission. Without this it classified as nothing,
+        // so the refusal was receipted as a successful launch and the card sat
+        // on a held reservation until the TTL expired.
+        allowLauncherWalledPoolRefusal: true,
+        detectStartupStall: false,
+      });
+    /**
+     * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
+     * capacity returns, and the recovery instant is knowable — from the account
+     * ledger's reset terms, or from the horizon the launcher itself printed in
+     * this very log. Record it so the reservation release ALSO suppresses the
+     * next sweep tick. Only `model_quota_exhausted` earns a suppression: a
+     * gateway 5xx or a startup stall is a transient this must not sit out.
+     */
+    const quotaBackoffFor = async (
+      failure: { code: GradingAuditRecoveryCode; evidence: string },
+      failedLogPath: string | null,
+    ): Promise<GradingAuditDispatchBackoff | undefined> => {
+      if (failure.code !== 'model_quota_exhausted') return undefined;
+      let logTail = '';
+      if (failedLogPath) {
+        try {
+          logTail = await readLogTail(failedLogPath);
+        } catch {
+          // The evidence string alone still carries the horizon when the
+          // launcher refused; an unreadable log must not block the backoff.
+        }
+      }
+      return resolveGradingAuditQuotaBackoff({
+        code: failure.code,
+        evidence: failure.evidence,
+        logTail,
+        ...(deps.now ? { nowMs: deps.now() } : {}),
+        ...(deps.readProviderResets ? { readProviderResets: deps.readProviderResets } : {}),
+      });
+    };
+    const recoveryKeyFor = (taskId: string, failureCode: GradingAuditRecoveryCode): string => {
+      const retryIdentity = createHash('sha256')
+        // The reservation timestamp is the bounded retry generation. A
+        // later 15-minute reservation epoch must not dedupe its one allowed
+        // recovery to the previous epoch's already-terminal fallback task.
+        .update(
+          `${reservationReservedAt}\0` +
+            `${currentIdempotencyKey}\0${taskId}\0${failureCode}\0${GRADING_AUDIT_FALLBACK.agent}`,
+        )
+        .digest('hex')
+        .slice(0, 16);
+      return `${idempotencyKey}:recovery:${retryIdentity}`;
+    };
     try {
       const reservation = await reserve(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
@@ -764,6 +837,7 @@ export async function dispatchPendingGradingAudits(
         });
         continue;
       }
+      reservationReservedAt = reservation.reservation?.reservedAt ?? reservationReservedAt;
       reservationHeld = true;
       if (!(await confirmOwnedPendingReservation())) {
         receipts.push(receipt!);
@@ -783,7 +857,65 @@ export async function dispatchPendingGradingAudits(
         labelPrefix: idempotencyKey,
         limit: 10,
       });
-      if (liveTasks.length > 0) {
+      const viableLiveTasks = [] as typeof liveTasks;
+      for (const task of liveTasks) {
+        const taskLogPath = task.logPath ?? null;
+        // EI-23148617450190529: a headless CLI can return to its interactive
+        // prompt after a delayed gateway/quota failure while its PTY and task
+        // ledger row stay live. The old guard treated process liveness as mission
+        // liveness and deduped forever. This is an OLD task on a later sweep, so
+        // one current log read is sufficient; the launch path below retains its
+        // bounded startup rechecks for a newly-created task.
+        let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = null;
+        if (taskLogPath) {
+          try {
+            // A delayed live-task check requires Claude's completed-turn footer.
+            // Unlike the launch transaction, this log may now contain tool output
+            // derived from the scorecard, so the error headline alone is no longer
+            // safe evidence that the auditor itself failed.
+            terminalFailure = await detectTerminalFailure(taskLogPath, 0, false);
+          } catch {
+            // An unreadable task log cannot prove the mission terminal. Preserve
+            // the existing fail-open dedupe until a later sweep can read it.
+          }
+        }
+        if (!terminalFailure) {
+          viableLiveTasks.push(task);
+          continue;
+        }
+        const killed = await terminateTask(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        if (
+          !killed.ok &&
+          killed.error !== 'not_live' &&
+          killed.error !== 'task_not_found' &&
+          killed.error !== 'already_gone'
+        ) {
+          await releaseReservation(await quotaBackoffFor(terminalFailure, taskLogPath));
+          receipt = {
+            issueId,
+            rubricRef: card.rubricRef,
+            state: 'failed',
+            idempotencyKey: currentIdempotencyKey,
+            reason:
+              `live grading auditor '${task.taskId}' ended on ${terminalFailure.code}, but its failed mission ` +
+              `could not be retired: ${killed.error}`,
+            ...recoveryFields(),
+          };
+          break;
+        }
+        retiredTaskIds.push(task.taskId);
+        terminalCodes.push(terminalFailure.code);
+        if (terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+          terminalFallbacks += 1;
+          launchBackend = GRADING_AUDIT_FALLBACK.agent;
+          currentIdempotencyKey = recoveryKeyFor(task.taskId, terminalFailure.code);
+        }
+      }
+      if (receipt) {
+        receipts.push(receipt);
+        continue;
+      }
+      if (viableLiveTasks.length > 0) {
         await releaseReservation();
         receipt = {
           issueId,
@@ -795,16 +927,17 @@ export async function dispatchPendingGradingAudits(
             opened: 0,
             failed: 0,
             mode: 'live-task-guard',
-            tasks: liveTasks.map((task) => ({
+            tasks: viableLiveTasks.map((task) => ({
               taskId: task.taskId,
               logPath: task.logPath ?? null,
               label: typeof task.detail?.label === 'string' ? task.detail.label : idempotencyKey,
             })),
           },
           reason:
-            liveTasks.length === 1
-              ? `existing live grading auditor task '${liveTasks[0]?.taskId ?? 'unknown'}' owns ${idempotencyKey}; duplicate launch suppressed`
-              : `${liveTasks.length} existing live grading auditor tasks own ${idempotencyKey}; duplicate launch suppressed`,
+            viableLiveTasks.length === 1
+              ? `existing live grading auditor task '${viableLiveTasks[0]?.taskId ?? 'unknown'}' owns ${idempotencyKey}; duplicate launch suppressed`
+              : `${viableLiveTasks.length} existing live grading auditor tasks own ${idempotencyKey}; duplicate launch suppressed`,
+          ...recoveryFields(),
         };
         receipts.push(receipt);
         continue;
@@ -824,44 +957,11 @@ export async function dispatchPendingGradingAudits(
           state: routed.state,
           conversationId: routed.conversationId,
           ...(routed.reason ? { reason: routed.reason } : {}),
+          ...recoveryFields(),
         });
         continue;
       }
       routingFallback = routed.reason;
-      const terminateTask = deps.killTask ?? killTask;
-      const readTask = deps.getTask ?? getTask;
-      const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
-      /**
-       * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
-       * capacity returns, and the recovery instant is knowable — from the account
-       * ledger's reset terms, or from the horizon the launcher itself printed in
-       * this very log. Record it so the reservation release ALSO suppresses the
-       * next sweep tick. Only `model_quota_exhausted` earns a suppression: a
-       * gateway 5xx or a startup stall is a transient this must not sit out.
-       */
-      const quotaBackoffFor = async (
-        failure: { code: GradingAuditRecoveryCode; evidence: string },
-        failedLogPath: string | null,
-      ): Promise<GradingAuditDispatchBackoff | undefined> => {
-        if (failure.code !== 'model_quota_exhausted') return undefined;
-        let logTail = '';
-        if (failedLogPath) {
-          try {
-            logTail = await readLogTail(failedLogPath);
-          } catch {
-            // The evidence string alone still carries the horizon when the
-            // launcher refused; an unreadable log must not block the backoff.
-          }
-        }
-        return resolveGradingAuditQuotaBackoff({
-          code: failure.code,
-          evidence: failure.evidence,
-          logTail,
-          ...(deps.now ? { nowMs: deps.now() } : {}),
-          ...(deps.readProviderResets ? { readProviderResets: deps.readProviderResets } : {}),
-        });
-      };
-      let launchBackend: 'claude' | 'codex' = 'claude';
 
       for (let attempt = 0; attempt <= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS; attempt += 1) {
         attempts = attempt + 1;
@@ -906,26 +1006,7 @@ export async function dispatchPendingGradingAudits(
         const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
         const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
         let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = logPath
-          ? await detectAcceptanceGraderTerminalFailure(logPath, {
-              readLogTail,
-              ...(deps.sleep ? { sleep: deps.sleep } : {}),
-              delayMs: deps.terminalLogRecheckDelayMs ?? GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS,
-              maxRechecks: deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
-              allowStandaloneWeeklyLimit: true,
-              allowInferenceGatewayError: true,
-              // This controlled brief contains only the scorecard identity and
-              // fingerprint, never a quoted gateway screen. A headless Claude
-              // turn can stop on that exact screen before rendering its footer;
-              // treating it as terminal is what lets the Codex fallback run.
-              allowGatewayErrorWithoutFooter: true,
-              allowLauncherQuotaDrop: true,
-              // EI-22978598482930667: a launch REFUSED by the walled-pool preflight
-              // is terminal for this mission. Without this it classified as nothing,
-              // so the refusal was receipted as a successful launch and the card sat
-              // on a held reservation until the TTL expired.
-              allowLauncherWalledPoolRefusal: true,
-              detectStartupStall: false,
-            })
+          ? await detectTerminalFailure(logPath)
           : null;
 
         // A stable launch receipt can outlive the task it represented. Log
@@ -1005,17 +1086,7 @@ export async function dispatchPendingGradingAudits(
           }
           terminalFallbacks += 1;
           launchBackend = GRADING_AUDIT_FALLBACK.agent;
-          const retryIdentity = createHash('sha256')
-            // The reservation timestamp is the bounded retry generation. A
-            // later 15-minute reservation epoch must not dedupe its one allowed
-            // recovery to the previous epoch's already-terminal fallback task.
-            .update(
-              `${reservation.reservation?.reservedAt ?? 'reservation-unknown'}\0` +
-                `${currentIdempotencyKey}\0${taskId}\0${terminalFailure.code}\0${launchBackend}`,
-            )
-            .digest('hex')
-            .slice(0, 16);
-          currentIdempotencyKey = `${idempotencyKey}:recovery:${retryIdentity}`;
+          currentIdempotencyKey = recoveryKeyFor(taskId, terminalFailure.code);
           continue;
         }
 

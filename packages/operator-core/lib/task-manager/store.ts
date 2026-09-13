@@ -19,6 +19,7 @@ import type { Sql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
+import { emitTaskTerminalEvent, type TaskTerminalEventEmitter } from './task-terminal-events';
 import {
   TASK_STATES,
   isTerminalState,
@@ -319,6 +320,11 @@ export interface CloseTaskInput {
   terminalProvenance?: TaskTerminalProvenance | null;
 }
 
+export interface CloseTaskEffects {
+  /** Test seam; production uses the awaited-event bridge. */
+  emitTerminal?: TaskTerminalEventEmitter;
+}
+
 function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | null): number | null {
   if (terminal.execMainStatus == null) return fallback;
   // systemd exposes wait(2) si_code: CLD_EXITED=1; CLD_KILLED=2;
@@ -395,7 +401,12 @@ function classifyTerminalClose(
  * strand verdict resolves to whichever landed first instead of overwriting a real
  * exit code with a guess.
  */
-export async function closeTask(taskId: string, input: CloseTaskInput, inject?: Sql): Promise<boolean> {
+export async function closeTask(
+  taskId: string,
+  input: CloseTaskInput,
+  inject?: Sql,
+  effects: CloseTaskEffects = {},
+): Promise<boolean> {
   const sql = sqlOf(inject);
   const existing = input.terminalProvenance ? await getTask(taskId, inject) : null;
   if (input.terminalProvenance && !existing) return false;
@@ -408,7 +419,13 @@ export async function closeTask(taskId: string, input: CloseTaskInput, inject?: 
   assertState(classified.state);
   if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
   const terminalJson = classified.terminalProvenance ? JSON.stringify(classified.terminalProvenance) : null;
-  const rows = await sql`
+  const rows = await sql<Array<{
+    task_id: string;
+    workspace_id: string;
+    harness_slug: string | null;
+    class: string;
+    launched_by: string;
+  }>>`
     UPDATE harness_shared.task_ledger
        SET state = ${classified.state},
            exit_code = ${classified.exitCode ?? null},
@@ -434,9 +451,21 @@ export async function closeTask(taskId: string, input: CloseTaskInput, inject?: 
            updated_at = now()
      WHERE task_id = ${taskId}
        AND ended_at IS NULL
-    RETURNING task_id
+    RETURNING task_id, workspace_id, harness_slug, class, launched_by
   `;
-  return rows.length > 0;
+  const closed = rows[0];
+  if (!closed) return false;
+  (effects.emitTerminal ?? emitTaskTerminalEvent)({
+    taskId: closed.task_id,
+    workspaceId: closed.workspace_id,
+    harnessSlug: closed.harness_slug,
+    taskClass: closed.class,
+    launchedBy: closed.launched_by,
+    state: classified.state,
+    exitCode: classified.exitCode ?? null,
+    exitReason: classified.exitReason ?? null,
+  });
+  return true;
 }
 
 /** Bulk liveness + metrics refresh, one statement for the whole scan. */

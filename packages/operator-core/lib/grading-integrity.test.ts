@@ -377,6 +377,72 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('retires a ledger-live auditor with a delayed terminal log and launches the bounded Codex fallback', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-live-terminal-auditor')]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-live-terminal-auditor',
+        state: 'running',
+        detail: { label: 'grading-audit:EI-live-terminal-auditor' },
+        logPath: '/tmp/live-terminal-auditor.log',
+      } as unknown as TaskRow,
+    ]);
+    d.launch.mockResolvedValue(
+      launchResult({
+        deduped: false,
+        launch: { tasks: [{ taskId: 'task-live-terminal-recovery', logPath: '/tmp/recovery.log' }] },
+      }),
+    );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const readLogTail = vi.fn((path: string) =>
+      path.includes('live-terminal-auditor')
+        ? 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n' +
+          '✻ Brewed for 10m 2s · done 7:45 AM\n❯'
+        : 'healthy fallback boot',
+    );
+
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail,
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(killTask).toHaveBeenCalledWith('task-live-terminal-auditor', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.route).toHaveBeenCalledTimes(1);
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(d.launch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: 'codex',
+        account: 'auto',
+        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        idempotencyKey: expect.stringMatching(
+          /^grading-audit:EI-live-terminal-auditor:recovery:[a-f0-9]{16}$/,
+        ),
+      }),
+      ctx,
+    );
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId: 'EI-live-terminal-auditor',
+        state: 'launched',
+        terminalRecovery: expect.objectContaining({
+          retiredTaskIds: ['task-live-terminal-auditor'],
+          attempts: 1,
+          codes: ['inference_gateway_error'],
+        }),
+      }),
+    ]);
+  });
+
   it('gives concurrent auditors scorecard-scoped scratch isolation for the MCP recovery fallback', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-audit-a'), card('EI-audit-b')]);

@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { getTask, listTasks, reopenStrandedTask } from './store';
+import { closeTask, getTask, listTasks, reopenStrandedTask } from './store';
 
 function fakeSql(row: Record<string, unknown>): Sql {
   return (async () => [row]) as unknown as Sql;
@@ -82,6 +82,41 @@ describe('reopenStrandedTask', () => {
     expect(query).toContain("state = 'stranded'");
     expect(query).toContain('ended_at IS NOT NULL');
     expect(calls[0]!.args).toContain('stranded-task');
+  });
+});
+
+describe('closeTask terminal event', () => {
+  it('emits the exact first terminal transition and never emits for an idempotent replay', async () => {
+    const emitTerminal = vi.fn();
+    const row = {
+      task_id: 'task-terminal-1',
+      workspace_id: 'workspace-1',
+      harness_slug: 'papercusp',
+      class: 'pty',
+      launched_by: 'su-a',
+    };
+    const firstSql = (async () => [row]) as unknown as Sql;
+    const replaySql = (async () => []) as unknown as Sql;
+
+    await expect(
+      closeTask('task-terminal-1', { state: 'exited', exitCode: 0 }, firstSql, { emitTerminal }),
+    ).resolves.toBe(true);
+    expect(emitTerminal).toHaveBeenCalledOnce();
+    expect(emitTerminal).toHaveBeenCalledWith({
+      taskId: 'task-terminal-1',
+      workspaceId: 'workspace-1',
+      harnessSlug: 'papercusp',
+      taskClass: 'pty',
+      launchedBy: 'su-a',
+      state: 'exited',
+      exitCode: 0,
+      exitReason: null,
+    });
+
+    await expect(
+      closeTask('task-terminal-1', { state: 'exited', exitCode: 0 }, replaySql, { emitTerminal }),
+    ).resolves.toBe(false);
+    expect(emitTerminal).toHaveBeenCalledTimes(1);
   });
 });
 

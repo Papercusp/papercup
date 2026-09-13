@@ -29314,9 +29314,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Track or update the concrete steps you are executing in this chat. Use init/append/start/done/drop/block/unblock/edit, link/unlink for typed work-item edges, promote to mint a work-item plus its `for` edge, and view to read the full list.",
+        "when": "Track or update the concrete steps you are executing in this chat. Use init/append/start/done/drop/block/unblock/reopen/edit/reorder, link/unlink for typed work-item edges, promote to mint a work-item plus its `for` edge, and view to read the full list.",
         "notWhen": "Do not use this to create fleet/work coordination items; use work_items:* or plans:* for durable shared work. This list is per chat session.",
-        "chaining": "init or append → start → done; block requires blocker_ref. A task has at most one checkpoint-sync `for` edge and any number of informational `relates` edges. Completion never propagates across an edge. Omit op only for unambiguous init/append/block/view shapes."
+        "chaining": "init or append → start → done; block requires blocker_ref; reorder requires position. Pass expected_updated_at for optimistic owner-style edits. A task has at most one checkpoint-sync `for` edge and any number of informational `relates` edges. Completion never propagates across an edge. Omit op only for unambiguous init/append/block/view shapes."
       }
     },
     {

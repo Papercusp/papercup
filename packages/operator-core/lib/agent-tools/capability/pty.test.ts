@@ -5,7 +5,8 @@ const mocks = vi.hoisted(() => {
     task: Record<string, unknown> | null;
     handle: Record<string, any> | null;
     writes: string[];
-  } = { task: null, handle: null, writes: [] };
+    resizes: Array<{ cols: number; rows: number }>;
+  } = { task: null, handle: null, writes: [], resizes: [] };
 
   const beginSyncEnrolment = vi.fn(() => ({
     taskId: 'mptysession001',
@@ -55,6 +56,13 @@ const mocks = vi.hoisted(() => {
     return true;
   });
   const getScreenSerialization = vi.fn(async () => '\u001b[2JREADY>');
+  const resizePty = vi.fn((_id: string, cols: number, rows: number) => {
+    if (!state.handle) return false;
+    state.handle.headless.cols = cols;
+    state.handle.headless.rows = rows;
+    state.resizes.push({ cols, rows });
+    return true;
+  });
   const killPty = vi.fn(() => true);
 
   return {
@@ -66,6 +74,7 @@ const mocks = vi.hoisted(() => {
     spawnPty,
     getPtyByTaskId,
     writePty,
+    resizePty,
     getScreenSerialization,
     killPty,
     getTask: vi.fn(async () => state.task),
@@ -85,6 +94,7 @@ vi.mock('../../pty-bridge', () => ({
   spawnGovernedPty: (opts: unknown) => mocks.spawnPty(opts),
   getPtyByTaskId: mocks.getPtyByTaskId,
   writePty: mocks.writePty,
+  resizePty: mocks.resizePty,
   getScreenSerialization: mocks.getScreenSerialization,
   killPty: mocks.killPty,
 }));
@@ -109,6 +119,7 @@ import {
   ptyKillTool,
   ptyOpenTool,
   ptyReadScreenTool,
+  ptyResizeTool,
   ptyWriteStdinTool,
 } from './pty';
 
@@ -132,6 +143,7 @@ beforeEach(() => {
   mocks.state.task = null;
   mocks.state.handle = null;
   mocks.state.writes = [];
+  mocks.state.resizes = [];
   vi.clearAllMocks();
   mocks.beginSyncEnrolment.mockImplementation(() => ({
     taskId: 'mptysession001',
@@ -189,7 +201,7 @@ describe('interactive PTY capability family', () => {
     );
   });
 
-  it('re-authorizes write, screen-read, and kill by task id under the current caller', async () => {
+  it('re-authorizes write, resize, screen-read, and kill by task id under the current caller', async () => {
     await ptyOpenTool.handler({ command: 'bash' }, ctx());
 
     const write = await ptyWriteStdinTool.handler(
@@ -198,6 +210,24 @@ describe('interactive PTY capability family', () => {
     );
     expect(parseText(write)).toMatchObject({ ok: true, task_id: 'mptysession001', bytes_written: 8 });
     expect(mocks.state.writes).toEqual(['echo ok\n']);
+
+    const resized = await ptyResizeTool.handler(
+      { task_id: 'mptysession001', cols: 111, rows: 37 },
+      ctx(),
+    );
+    expect(parseText(resized)).toEqual({
+      ok: true,
+      task_id: 'mptysession001',
+      cols: 111,
+      rows: 37,
+    });
+    expect(mocks.state.resizes).toEqual([{ cols: 111, rows: 37 }]);
+    expect(mocks.resizePty).toHaveBeenCalledWith(
+      'pty-local-1',
+      111,
+      37,
+      expect.objectContaining({ principalId: 'su-a' }),
+    );
 
     const read = (await ptyReadScreenTool.handler(
       { task_id: 'mptysession001' },
@@ -209,8 +239,8 @@ describe('interactive PTY capability family', () => {
         task_id: 'mptysession001',
         mimeType: 'application/x-papercusp-pty-screen+ansi',
         encoding: 'utf-8',
-        cols: 80,
-        rows: 24,
+        cols: 111,
+        rows: 37,
         data: '\u001b[2JREADY>',
       },
     ]);
@@ -221,7 +251,7 @@ describe('interactive PTY capability family', () => {
       'pty-local-1',
       expect.objectContaining({ principalId: 'su-a' }),
     );
-    expect(mocks.getTask).toHaveBeenCalledTimes(3);
+    expect(mocks.getTask).toHaveBeenCalledTimes(4);
   });
 
   it('reattaches after a client carry-respawn and makes screen-read retries idempotent', async () => {
@@ -265,6 +295,39 @@ describe('interactive PTY capability family', () => {
     expect(parseText(malformed)).toEqual({ ok: false, reason: 'unknown_task_id', task_id: 'mptysession001' });
     expect(mocks.writePty).not.toHaveBeenCalled();
     expect(mocks.killPty).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes an ended PTY from an unrecoverable lost live handle without starting a replacement', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    mocks.state.handle = null;
+
+    const lost = await ptyReadScreenTool.handler({ task_id: 'mptysession001' }, ctx('su-a'));
+    expect(parseText(lost)).toMatchObject({
+      ok: false,
+      reason: 'pty_session_unavailable',
+      state: 'running',
+      reattachment: 'unrecoverable',
+      restart_required: true,
+      replacement_started: false,
+    });
+    expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
+
+    mocks.state.task = {
+      ...mocks.state.task,
+      state: 'exited',
+      exitCode: 0,
+      exitReason: null,
+    };
+    const ended = await ptyReadScreenTool.handler({ task_id: 'mptysession001' }, ctx('su-a'));
+    expect(parseText(ended)).toMatchObject({
+      ok: false,
+      reason: 'pty_session_ended',
+      state: 'exited',
+      exit_code: 0,
+      reattachment: 'not_applicable',
+      replacement_started: false,
+    });
+    expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed before spawn when cgroup confinement is unavailable', async () => {

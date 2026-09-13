@@ -418,6 +418,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'plans:runs polling',
   },
   {
+    family: 'task-terminal',
+    keyTemplate: 'task:terminal:<taskId>',
+    params: [{ name: 'taskId', required: true, describe: 'durable task-ledger id' }],
+    describe:
+      'A managed task entered its first authoritative terminal ledger state. Payload distinguishes exited, killed, timed_out, stranded, and ended_unobserved and carries the observed exit tuple.',
+    emitter:
+      'task-manager terminal bridge (packages/operator-core/lib/task-manager/task-terminal-events.ts)',
+    exists: true,
+    replacesPoll: 'polling processes:list or capability output tools for managed task completion',
+  },
+  {
     family: 'external-trigger',
     keyTemplate: 'ext:<source>:<event>',
     params: [

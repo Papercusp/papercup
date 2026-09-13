@@ -60,6 +60,7 @@ describe('buildKey', () => {
     expect(buildKey('work-item-settled', { id: 'WI-1234' })).toBe('work-item:settled:WI-1234');
     expect(buildKey('lock', { ticket: 'abc' })).toBe('lock:grant:abc');
     expect(buildKey('plan-item', { slug: 'my-plan', id: 'P-014' })).toBe('plan-item:done:my-plan:P-014');
+    expect(buildKey('task-terminal', { taskId: 'tsk-123' })).toBe('task:terminal:tsk-123');
     expect(buildKey('external-trigger', { source: 'gmail', event: 'message.received' })).toBe(
       'ext:gmail:message.received',
     );
@@ -71,6 +72,7 @@ describe('buildKey', () => {
     expect(() => buildKey('work-item', {})).toThrow(/requires param 'id'/);
     expect(() => buildKey('work-item-settled', {})).toThrow(/requires param 'id'/);
     expect(() => buildKey('service-up', {})).toThrow(/requires param 'name'/);
+    expect(() => buildKey('task-terminal', {})).toThrow(/requires param 'taskId'/);
     // a two-required-param family still names the SECOND missing param, not just the first
     expect(() => buildKey('plan-item', { slug: 'release-plan' })).toThrow(/requires param 'id'/);
   });

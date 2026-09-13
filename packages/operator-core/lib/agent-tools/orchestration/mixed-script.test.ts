@@ -184,6 +184,13 @@ describe('P-012 server-side mixed capability scripts', () => {
         record('capability:pty_write_stdin', () => json({ ok: true, task_id: ptyTaskId, written: 9 })),
       ),
       fixtureTool(
+        'capability:pty_resize',
+        'write',
+        record('capability:pty_resize', () =>
+          json({ ok: true, task_id: ptyTaskId, cols: 100, rows: 30 }),
+        ),
+      ),
+      fixtureTool(
         'capability:pty_read_screen',
         'read',
         record('capability:pty_read_screen', () => ({
@@ -228,6 +235,7 @@ describe('P-012 server-side mixed capability scripts', () => {
             const backgroundRead = await tools.capability.bashOutput({ task_id: background.task_id });
             const pty = await tools.capability.ptyOpen({ command: 'bash' });
             await tools.capability.ptyWriteStdin({ task_id: pty.task_id, data: 'PTY_READY' });
+            await tools.capability.ptyResize({ task_id: pty.task_id, cols: 100, rows: 30 });
             const screen = await tools.capability.ptyReadScreen({ task_id: pty.task_id });
             await tools.capability.ptyKill({ task_id: pty.task_id });
             await tools.capability.bashKill({ task_id: background.task_id });
@@ -274,7 +282,7 @@ describe('P-012 server-side mixed capability scripts', () => {
       metrics: {
         backend: 'server',
         executionMode: 'server',
-        toolCalls: 8,
+        toolCalls: 9,
         childFailureCount: 0,
       },
     });
@@ -290,6 +298,7 @@ describe('P-012 server-side mixed capability scripts', () => {
       'capability:bash_output',
       'capability:pty_open',
       'capability:pty_write_stdin',
+      'capability:pty_resize',
       'capability:pty_read_screen',
       'capability:pty_kill',
       'capability:bash_kill',
@@ -301,10 +310,15 @@ describe('P-012 server-side mixed capability scripts', () => {
     expect(dispatched.find(({ name }) => name === 'capability:pty_write_stdin')?.args).toMatchObject({
       task_id: ptyTaskId,
     });
+    expect(dispatched.find(({ name }) => name === 'capability:pty_resize')?.args).toEqual({
+      task_id: ptyTaskId,
+      cols: 100,
+      rows: 30,
+    });
     expect(dispatched.find(({ name }) => name === 'capability:pty_kill')?.args).toEqual({
       task_id: ptyTaskId,
     });
-    expect(handlerContexts).toHaveLength(7);
+    expect(handlerContexts).toHaveLength(8);
     for (const handlerCtx of handlerContexts) {
       // Every capability fixture is transaction-free by default. Even though
       // the caller context carries a tx, generic dispatch hides it behind the
