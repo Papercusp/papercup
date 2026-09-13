@@ -62,6 +62,9 @@ const claimHoldReleaseSchema = z
 
 type ClaimHoldReleaseInput = z.infer<typeof claimHoldReleaseSchema>;
 
+const CLAIM_HOLD_RELEASE_CONSTRAINT =
+  'claimHold:true requires claimHoldRelease { condition, trigger, owner? }; durable parks must declare a typed re-evaluation contract (including per-item overrides and batch defaults)';
+
 /** Resolve, rather than trust, the release condition's live event status. A fired
  * latch is already satisfied; an unregistered/unmeasured key is blocked, never
  * guessed unreachable from age or prose. */
@@ -412,12 +415,12 @@ export default defineTool({
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: entry.path,
-            message:
-              'claimHold:true requires claimHoldRelease { condition, trigger, owner? }; durable parks must declare a typed re-evaluation contract',
+            message: CLAIM_HOLD_RELEASE_CONSTRAINT,
           });
         }
       }
-    }),
+    })
+    .meta({ 'x-papercusp-call-constraint': CLAIM_HOLD_RELEASE_CONSTRAINT }),
   // The `returns` prose above INTERPRETS this result; the structural shape comes
   // from here (guidance-output-schema-live-guard). Shared, not hand-rolled: the
   // handler returns `bulkContent(env)` straight from `runBulk`, so the envelope
