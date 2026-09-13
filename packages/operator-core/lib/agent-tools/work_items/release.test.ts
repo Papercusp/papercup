@@ -76,8 +76,15 @@ vi.mock('./release-force-guard', () => ({
   notifyForceRelease: vi.fn(async () => {}),
 }));
 
-import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
+import {
+  releaseWorkItem,
+  setWorkItemClaimHold,
+  getWorkItem,
+  commentWorkItem,
+  type WorkItem,
+} from '../../work-items';
 import { assessForceRelease, notifyForceRelease, recordForceReleaseAudit } from './release-force-guard';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 const releaseM = vi.mocked(releaseWorkItem);
 const holdM = vi.mocked(setWorkItemClaimHold);
 const getM = vi.mocked(getWorkItem);
@@ -89,6 +96,41 @@ const checkpointM = checkpointStore.getWorkItemCheckpointWithMeta;
 const tool = (await import('./release')).default;
 const LONG_REASON = 'r'.repeat(501);
 const CLAMPED_REASON = LONG_REASON.slice(0, 500);
+
+/** A complete issue-family row for typed release/get fixtures. */
+const workItemFixture = (overrides: Partial<WorkItem> & Pick<WorkItem, 'id'>): WorkItem => ({
+  id: overrides.id,
+  kind: 'bug',
+  family: 'issue',
+  harness: 'h',
+  title: 'fixture',
+  summary: '',
+  state: 'open',
+  assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
+  assignedBy: null,
+  createdBy: null,
+  severity: null,
+  goalId: null,
+  parent: null,
+  payload: null,
+  origin: 'local',
+  auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
+  rank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  priority: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  ...overrides,
+});
 // vitest 4 infers a vi.fn mock's Parameters from its initial implementation —
 // a zero-arg arrow made `.mock.calls[N]` the empty tuple `[]`, so indexing
 // `[1]` below (line 262) failed to typecheck (TS2493) even though the real
@@ -591,9 +633,8 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
   });
 
   it('returns the post-write workItem snapshot after clearing a prior hold', async () => {
-    releaseM.mockResolvedValue({
+    mockResolvedTyped(releaseM, workItemFixture({
       id: 'WI-1',
-      assignee: null,
       harness: 'h1',
       payload: {
         _claimHold: true,
@@ -601,8 +642,8 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
         claim_hold_release: { condition: 'gate opens', trigger: 'gate:open' },
         other: 'kept',
       },
-    } as never);
-    getM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h1', payload: { other: 'kept' } } as never);
+    }));
+    mockResolvedTyped(getM, workItemFixture({ id: 'WI-1', harness: 'h1', payload: { other: 'kept' } }));
 
     const b = await body({ id: 'WI-1', claimHold: false });
 
