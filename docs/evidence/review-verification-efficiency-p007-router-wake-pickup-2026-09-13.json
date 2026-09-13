@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-007 existing-router selection, wake, pickup, and subject preservation",
+  "framework": "operational",
+  "command": [
+    "ptool",
+    "conversations:get",
+    "--url=http://localhost:3170/api/mcp",
+    "--workspace=papercusp-workspace",
+    "id=conv-mtz4gglz-0000-7d09bbec12464e529869cae854b48252"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-13T06:50:55.387Z",
+  "finishedAt": "2026-09-13T06:50:56.571Z",
+  "summary": "The current-build conversation ledger resolves the existing acceptance-grading router event as one answered consult: one wake was used, the selected independent responder authored the accepted answer, and the exact plan/rubric subject remained unchanged through closure.",
+  "assertions": [
+    {
+      "id": "existing-router-closed-answered",
+      "passed": true,
+      "evidence": "conversations:get returned consult.state=closed_answered and conversation.state=resolved for conv-mtz4gglz-0000-7d09bbec12464e529869cae854b48252."
+    },
+    {
+      "id": "single-wake-used",
+      "passed": true,
+      "evidence": "The persisted consult row reports wakes_used=1; the operational proof is the authoritative conversation lifecycle, not an author-attested wake count."
+    },
+    {
+      "id": "independent-responder-picked-up",
+      "passed": true,
+      "evidence": "The persisted responder_id is su-c86de2dd-45a1-4e86-8b17-c07c4a096f7f, distinct from implementer/requester su-97fccf61-e827-47ed-b670-751d6675a8a9; post 203497 and accepted post 203498 were authored by that responder."
+    },
+    {
+      "id": "subject-preserved",
+      "passed": true,
+      "evidence": "The conversation title and accepted answer both retain plan use-existing-router-for-review-requests-2026-09-08 and rubric acceptance-use-existing-router-for-review-requests-2026-09-08; no replacement subject appears."
+    },
+    {
+      "id": "accepted-answer-durable",
+      "passed": true,
+      "evidence": "conversation.accepted_post_id=203498 and the accepted_answer records independent scorecard EI-23108393550825487, providing a durable pickup/outcome anchor beyond queued delivery."
+    }
+  ],
+  "sourceRefs": {
+    "conversationId": "conv-mtz4gglz-0000-7d09bbec12464e529869cae854b48252",
+    "acceptedPostId": 203498,
+    "acceptedScorecardId": "EI-23108393550825487",
+    "verifiedVia": "conversations:get on current-build :3170"
+  }
+}
