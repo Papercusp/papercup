@@ -60,6 +60,11 @@ const loadHarnessRegistryM = vi.hoisted(() => vi.fn(async () => ({ projects: reg
 const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
 const liveLockedPathsM = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const getFlagM = vi.hoisted(() => vi.fn(async () => true));
+// Keep the timeout tests focused on the scheduler claim watchdog. These preflight reads were
+// added after the original regression and otherwise fall through to the live org pool, where a
+// fake-timer test can sit on a connection acquisition instead of reaching the claim timeout.
+const fetchContextPressureM = vi.hoisted(() => vi.fn(async () => new Map()));
+const readGoalHolderAuthorityM = vi.hoisted(() => vi.fn(async () => null));
 const reconcileFleetScopeClaimsM = vi.hoisted(() => vi.fn());
 const readFleetPauseStateM = vi.hoisted(() => vi.fn());
 const diagnoseFleetScopeIssueFloorMissM = vi.hoisted(() => vi.fn(async () => null));
@@ -138,6 +143,14 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getFlag: getFlagM,
+}));
+vi.mock('../coordination/context-pressure', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  fetchContextPressure: fetchContextPressureM,
+}));
+vi.mock('../../goals/holder-authority', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readGoalHolderAuthority: readGoalHolderAuthorityM,
 }));
 vi.mock('../../memory/claim-port', () => ({
   buildClaimRecallBlock: buildClaimRecallBlockM,
@@ -251,6 +264,8 @@ beforeEach(() => {
   diagnoseFleetScopeIssueFloorMissM.mockResolvedValue(null);
   diagnoseFleetScopePlanTerminalityM.mockResolvedValue(null);
   getFlagM.mockResolvedValue(true);
+  fetchContextPressureM.mockResolvedValue(new Map());
+  readGoalHolderAuthorityM.mockResolvedValue(null);
   liveLockedPathsM.mockImplementation(async () => []);
   getPresenceM.mockResolvedValue(null);
   writePresenceM.mockResolvedValue(undefined);

@@ -28,7 +28,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveMessageRef } from '../messages';
 import { projectAuthoredFields } from '../message-fields';
-import { COORD_ROLES } from '../roles';
+import { COORD_READ_ROLES } from '../roles';
 
 // Keep the complete envelope available as MCP structuredContent for programmatic
 // callers (ptool / MCP clients). The human-facing text projection still passes
@@ -59,7 +59,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     msg_id: z.string().min(1).describe('The coord message id to fetch in full (as seen on a coord:inbox/coord:feed entry, or returned by coord:send).'),
   }),

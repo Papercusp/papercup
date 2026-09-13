@@ -6685,7 +6685,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "At turn start; whenever you suspect another agent contacted you.",
@@ -6794,7 +6795,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Inspect the ⟦post-compaction-recovery⟧ marker already delivered in the carry context. If it is complete and its controlGeneration matches the latest ⟦CTRL:…⟧ generation, recovery already arrived: do not call coord:orient; declare your actual lane with coord:declare-intent { intent, current_plan_slug, items }. Call coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, generation-mismatched, or you deliberately need live data excluded from the injected block.",
@@ -6904,7 +6906,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "A coord:inbox / coord:feed entry rendered with `body_truncated:true` (or you were told \"see coord msg <id>\") and you need its exact full text — one cheap lookup by msg_id instead of a since_ts poll; a fresh coord:inbox call with payloadTier:\"full\" also restores raw entry content, but reads a window.",

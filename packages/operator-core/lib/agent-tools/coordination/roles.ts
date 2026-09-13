@@ -89,6 +89,13 @@ export const COORD_ROLES = [
 const EVIDENCE_JUDGE_ROLE = ['judge'] as const;
 
 /**
+ * Coordination read surfaces — general coordination readers plus the
+ * evidence-only acceptance judge. Keep judge out of COORD_ROLES so the
+ * read-only judge lane does not inherit coordination writers/placement tools.
+ */
+export const COORD_READ_ROLES = [...COORD_ROLES, ...EVIDENCE_JUDGE_ROLE] as const;
+
+/**
  * Reply/ack channel roles — general coordination roles plus the evidence-only
  * acceptance judge. A judge may answer the peer that woke it, but does not gain
  * the rest of coord:* merely by being able to use these reply surfaces.

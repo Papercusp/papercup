@@ -37,7 +37,7 @@ import type { CellReadEnv } from '../../../cell-read';
 import type { CellReader } from '../../../cell-registry';
 import { resolvePresenceFleet } from '../presence-fleet';
 import { resolveSelfRef } from '../self-marker';
-import { COORD_ROLES } from '../roles';
+import { COORD_READ_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
@@ -2944,7 +2944,7 @@ export default defineTool({
   // across its sequential folds pins a pool slot and can deadlock the
   // bootstrap behind the same pool pressure it is meant to diagnose.
   skipWorkspaceTx: true,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     harness: z
       .string()

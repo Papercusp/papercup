@@ -13,12 +13,31 @@
 import { describe, test, expect } from 'vitest';
 import {
   COORD_REPLY_ROLES,
+  COORD_READ_ROLES,
   COORD_ROLES,
   QUEEN_PLACEMENT_ROLES,
   WORK_ITEM_LIFECYCLE_ROLES,
 } from './roles';
 
 describe('COORD_ROLES', () => {
+  test('acceptance judge can consume coordination reads without becoming a general coordinator', async () => {
+    const [{ default: inbox }, { default: read }, { default: orient }] = await Promise.all([
+      import('./tools/inbox.js'),
+      import('./tools/read.js'),
+      import('./tools/orient.js'),
+    ]);
+
+    for (const [name, tool] of [
+      ['coord:inbox', inbox],
+      ['coord:read', read],
+      ['coord:orient', orient],
+    ] as const) {
+      expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
+    }
+    expect(COORD_READ_ROLES).toContain('judge');
+    expect(COORD_ROLES).not.toContain('judge');
+  });
+
   test('bee is a coord role (P-001 — improvements:capture + work_items:* resolve for a bee URL)', () => {
     expect(COORD_ROLES).toContain('cup');
   });
