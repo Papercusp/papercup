@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const mocks = vi.hoisted(() => {
   const state: {
@@ -236,6 +237,7 @@ describe('interactive PTY capability family', () => {
       content: Array<Record<string, unknown>>;
       _meta: { pty: Record<string, unknown> };
     };
+    expect(CallToolResultSchema.safeParse(read).success).toBe(true);
     expect(read.content).toEqual([
       {
         type: 'resource',
