@@ -12,6 +12,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -328,7 +329,15 @@ function readClaimedGrant(grantId, opts = {}) {
   const pending = grantPath(paths, grantId, "grants");
   const consumed = grantPath(paths, grantId, "consumed");
   try {
-    renameSync(pending, consumed);
+    const st = lstatSync(pending);
+    if (!st.isFile() || st.isSymbolicLink()) return { ok: false, reason: "unsafe-grant-file" };
+    if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
+      return { ok: false, reason: "unsafe-grant-owner" };
+    }
+    // link(2) is the no-replace consume claim: unlike rename(2), it cannot
+    // overwrite an existing consumed receipt and accidentally re-enable reuse.
+    linkSync(pending, consumed);
+    unlinkSync(pending);
   } catch (error) {
     if (error?.code === "ENOENT") {
       return { ok: false, reason: existsSync(consumed) ? "already-consumed" : "not-found" };
@@ -372,12 +381,16 @@ const RECOVERY_IDENTITY_KEYS = new Set([
 ]);
 
 export function sanitizeRecoveryEnvironment(env = process.env) {
+  const safeKeys = new Set([
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+    "TERM", "COLORTERM", "TMPDIR", "TMP", "TEMP", "TZ",
+  ]);
   const out = {};
   for (const [key, value] of Object.entries(env)) {
     if (key.startsWith("PAPERCUSP_RECOVERY_")) continue;
     if (RECOVERY_IDENTITY_KEYS.has(key)) continue;
     if (SECRET_ENV_RE.test(key)) continue;
-    out[key] = value;
+    if (safeKeys.has(key) || key.startsWith("LC_")) out[key] = value;
   }
   return out;
 }
