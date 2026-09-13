@@ -23,6 +23,7 @@ import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import workItemsGet from '../work_items/get';
+import workItemsRelease from '../work_items/release';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
@@ -34,6 +35,7 @@ import scorecardEvaluate from '../scorecards/evaluate';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
 import {
   ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT,
+  ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT,
   ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
   ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES,
   ROOT_CAUSE_VERIFICATION_V2_REQUIRED_FIELDS,
@@ -572,7 +574,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
-  it('publishes the validator-owned successful-close predicate and contrast rule on shorthand and bulk paths', async () => {
+  it('publishes the validator-owned successful-close predicate and structured contrast rule on shorthand and bulk paths', async () => {
     const result = await callHandler({ query: 'work_items:complete', limit: 1 });
     const compact = result.hits.find((hit) => hit.tool === 'work_items:complete')?.argSchema;
 
@@ -583,6 +585,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('successful bug/capability-gap close');
     expect(compact).toContain('hypothesis!=alternativeHypothesis');
     expect(compact).toContain(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT);
+    expect(compact).toContain(ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT);
     expect(compact).toContain('assumptions?');
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
 
@@ -601,10 +604,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       evidenceRefs: ['test:find.test.ts#completion-contract'],
     };
     expect(RootCauseVerificationSchema.safeParse(evidence).success).toBe(true);
-    // The example teaches a reliable form, not a new literal-only parser.
+    // Free text names the procedure; the typed predictions carry the outcomes.
     expect(RootCauseVerificationSchema.safeParse({
       ...evidence,
-      distinguishingTest: 'If the cache is stale, fresh reads succeed; if the writer is wrong, fresh reads fail',
+      distinguishingTest: 'Inspect the fresh read and compare it with the persisted writer value.',
     }).success).toBe(true);
     expect(RootCauseVerificationSchema.safeParse({
       ...evidence,
@@ -612,16 +615,25 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     }).success).toBe(false);
     const sameObservable = RootCauseVerificationSchema.safeParse({
       ...evidence,
-      distinguishingTest: 'if H1 then fresh reads fail; if H2 then fresh reads fail',
+      predictedObservations: {
+        hypothesis: 'fresh reads fail',
+        alternativeHypothesis: 'fresh reads fail',
+      },
     });
     expect(sameObservable.success).toBe(false);
     if (!sameObservable.success) {
-      expect(sameObservable.error.issues[0]?.message).toContain(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT);
+      expect(sameObservable.error.issues[0]?.message).toContain(ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT);
     }
+    // Exact live P-008 counterexample: the procedure does not duplicate the typed predictions.
     expect(RootCauseVerificationSchema.safeParse({
       ...evidence,
-      distinguishingTest: 'tests pass after the fix',
-    }).success).toBe(false);
+      distinguishingTest:
+        'Inspect the code that writes ServingTruth and the unit map, then compare its stated host semantics with both actual systemd units.',
+      predictedObservations: {
+        hypothesis: 'the writer claims current/staging semantics but maps the release unit',
+        alternativeHypothesis: 'the writer defines production serving and exposes staging separately',
+      },
+    }).success).toBe(true);
   });
 
   it('bounds a verbose nested-fields segment so nesting stays readable (EI-21490971340666010)', () => {
@@ -696,6 +708,22 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     // No search-only mode/query alias or permissive unknown-key behavior.
     expect(sessionsRead.args.safeParse({ session: 'sess', mode: 'verbatim' }).success).toBe(false);
     expect(compact).not.toContain('mode?:');
+  });
+
+  it('publishes work_items:release claimHold contract from the runtime validator', async () => {
+    const result = await callHandler({ query: 'work_items:release', limit: 1 });
+    const compact = result.hits.find((hit) => hit.tool === 'work_items:release')?.argSchema;
+    const missingContract = workItemsRelease.args.safeParse({ id: 'WI-1', claimHold: true });
+    expect(missingContract.success).toBe(false);
+    expect(compact).toContain('constraint:$ (');
+    for (const issue of missingContract.success ? [] : missingContract.error.issues) {
+      expect(compact).toContain(issue.message);
+    }
+    expect(workItemsRelease.args.safeParse({
+      id: 'WI-1',
+      claimHold: true,
+      claimHoldRelease: { condition: 'deployment finishes', trigger: 'deploy:ready:staging' },
+    }).success).toBe(true);
   });
 
   it('keeps nested descriptions when a block fits the budget', () => {
