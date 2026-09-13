@@ -937,6 +937,14 @@ describe('detectUntrackedShellBackgrounding (EI-21810817545133564)', () => {
     expect(detectUntrackedShellBackgrounding('(( (8#$mode & 8#040) == 8#040 ))')).toBeNull();
     expect(detectUntrackedShellBackgrounding('if (( (8#$mode & 8#040) == 8#040 )); then echo ok; fi')).toBeNull();
     expect(detectUntrackedShellBackgrounding('printf "%d" $((8 & 4))')).toBeNull();
+    const artifactCertification = [
+      'mapfile -t roots < <(find /tmp -maxdepth 1 -type d)',
+      'for root in "${roots[@]}"; do',
+      '  mode=$(stat -c "%a" "$root")',
+      '  if (( (8#$mode & 8#040) == 8#040 )); then printf "%s\\n" "$root"; fi',
+      'done',
+    ].join('\n');
+    expect(detectUntrackedShellBackgrounding(artifactCertification)).toBeNull();
     expect(detectUntrackedShellBackgrounding('((8 & 4)) & echo detached')).toMatchObject({
       operator: '&',
       backgroundCount: 1,
