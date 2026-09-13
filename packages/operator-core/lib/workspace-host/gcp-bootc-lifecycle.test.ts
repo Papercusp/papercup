@@ -21,6 +21,7 @@ import {
   // @ts-expect-error -- side-effect-free .mjs command contract, deliberately untyped.
 } from '../../bin/gcp-bootc-lifecycle-args.mjs';
 import {
+  assertIapReverseTunnelRunning,
   buildIapReverseTunnelArgs,
   buildIapScpArgs,
   buildIapSshArgs,
@@ -233,6 +234,13 @@ describe('private IAP argv', () => {
     expect(source.match(/import \{ spawn \} from 'node:child_process';/g)).toHaveLength(1);
     expect(source.indexOf(spawnImport)).toBeLessThan(source.indexOf(tunnelSpawn));
   });
+
+  it('turns a late reverse-tunnel exit into the tunnel-specific failure', () => {
+    expect(() => assertIapReverseTunnelRunning({ exitCode: undefined, stderr: '' })).not.toThrow();
+    expect(() =>
+      assertIapReverseTunnelRunning({ exitCode: 255, stderr: 'remote port forwarding failed for listen port 5096' }),
+    ).toThrow(/IAP reverse tunnel exited while it was required \(exit 255\)/);
+  });
 });
 
 describe('P-305 guest lifecycle contract', () => {
@@ -403,8 +411,6 @@ describe('P-305 guest lifecycle contract', () => {
       tunneledLifecycle.indexOf('buildP305SwitchScript(request.updateImageReference)'),
     );
 
-    expect(source).toContain('const tunnelStatus = tunnel.status()');
-    expect(source).toContain('if (tunnelStatus.exitCode !== undefined)');
-    expect(source).toContain('IAP reverse tunnel exited while waiting for the guest registry probe');
+    expect(source).toContain('assertIapReverseTunnelRunning(tunnel.status())');
   });
 });

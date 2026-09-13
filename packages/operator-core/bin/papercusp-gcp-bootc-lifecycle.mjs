@@ -22,7 +22,11 @@ import {
   parseP305HostPrepareDiagnostics,
   parseP305PhaseMarker,
 } from './gcp-bootc-lifecycle-args.mjs';
-import { assertCleanRoomIapReachable, openPrivateVmSession } from './gcp-private-vm-session.mjs';
+import {
+  assertCleanRoomIapReachable,
+  assertIapReverseTunnelRunning,
+  openPrivateVmSession,
+} from './gcp-private-vm-session.mjs';
 
 const REGISTRY_PORT = 5096;
 const BOOT_BUDGET_MS = 15 * 60 * 1000;
@@ -94,12 +98,7 @@ async function waitForForwardedRegistry(session, updateImageReference, tunnel) {
       return;
     } catch (error) {
       lastError = error.message;
-      const tunnelStatus = tunnel.status();
-      if (tunnelStatus.exitCode !== undefined) {
-        fail(`IAP reverse tunnel exited while waiting for the guest registry probe (exit ${tunnelStatus.exitCode})`, {
-          stderr: tunnelStatus.stderr,
-        });
-      }
+      assertIapReverseTunnelRunning(tunnel.status());
       await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
   }
