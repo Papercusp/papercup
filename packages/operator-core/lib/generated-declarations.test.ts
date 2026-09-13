@@ -135,6 +135,14 @@ describe('generated .d.mts declarations', () => {
     expect(migrations, 'const literal types collapsed').toMatch(
       /ENFORCED_FROM(?:\s*:\s*\d+|\s*=\s*\d+)/,
     );
+
+    // EI-23158211753028699: defaulting an unannotated JS option to `undefined`
+    // made declaration emit infer `operatorUrl?: undefined`, even though the
+    // implementation accepts an explicit URL and multiple TS callers pass one.
+    const psuLauncher = readDeclaration('apps/operator/scripts/psu-launcher.d.mts');
+    expect(psuLauncher, 'ensureCodexHomeViaOperator.operatorUrl narrowed to undefined again').toMatch(
+      /ensureCodexHomeViaOperator[\s\S]*?operatorUrl\?:\s*string\s*\|\s*undefined;/,
+    );
   });
 
   // WI-6396 converted these four from HAND-WRITTEN declarations. The hand-written

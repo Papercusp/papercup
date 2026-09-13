@@ -3485,7 +3485,7 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
 export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
     requireGatewayProvider?: boolean | undefined;
     fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: undefined;
+    operatorUrl?: string | undefined;
     env?: NodeJS.ProcessEnv | undefined;
     probe?: typeof probeOmpOperatorMcp | undefined;
     token?: null | undefined;

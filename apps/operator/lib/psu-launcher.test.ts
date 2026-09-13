@@ -14,7 +14,7 @@ import {
   realpathSync,
   readlinkSync,
 } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { PSU_REQUEST_TIMEOUT_MS } from "./mcp-proxy/budgets.mjs";
@@ -162,6 +162,7 @@ import {
   tryRematerializeFromArchive,
   isClaudeConfigDirLaunchReady,
   ensureInteractiveConfigViaOperator,
+  ensureCodexHomeViaOperator,
   ompLspArgs,
   roleLaunchArgs,
   suLaunchArgs,
@@ -14198,6 +14199,61 @@ describe("EI-12938: psu --resume ensures a launch-ready claude config dir", () =
         }),
       ).resolves.toBeNull();
     });
+  });
+});
+
+describe("EI-23153687450001394: Codex home repair heals a stale runtime port", () => {
+  it("resolves PAPERCUSP_HONO_PORT before POSTing the Codex repair", async () => {
+    // Keep the on-disk conventional home unique even when several test
+    // processes start in the same millisecond on the shared workstation.
+    const advSessionId = Date.now() * 1_000 + (process.pid % 1_000);
+    const codexHome = join(
+      homedir(),
+      ".papercusp",
+      "su-codex-homes",
+      `session-${advSessionId}`,
+    );
+    mkdirSync(codexHome, { recursive: true });
+    const probed: string[] = [];
+    const calls: Array<{ url: string; opts: any }> = [];
+    try {
+      const result = await ensureCodexHomeViaOperator(
+        "su-codex-stale-port",
+        codexHome,
+        advSessionId,
+        {
+          env: { PAPERCUSP_HONO_PORT: "3271" },
+          probe: async (candidate: string) => {
+            probed.push(candidate);
+            return candidate === "http://127.0.0.1:3070/api/mcp";
+          },
+          onRecovery: () => {},
+          fetchImpl: async (url: string, opts: any) => {
+            calls.push({ url, opts });
+            return { json: async () => ({ ok: true, repaired: false }) };
+          },
+          token: "tok-1",
+        },
+      );
+
+      expect(result).toEqual({ ok: true, repaired: false });
+      expect(probed).toEqual([
+        "http://127.0.0.1:3271/api/mcp",
+        "http://127.0.0.1:3070/api/mcp",
+      ]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe(
+        "http://127.0.0.1:3070/api/adv/sessions/ensure-codex-home",
+      );
+      expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
+      expect(JSON.parse(calls[0].opts.body)).toEqual({
+        owner: "su-codex-stale-port",
+        advSessionId,
+        requireGatewayProvider: false,
+      });
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+    }
   });
 });
 

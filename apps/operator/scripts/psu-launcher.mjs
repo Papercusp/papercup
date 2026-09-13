@@ -4288,8 +4288,9 @@ function runtimeOmpOperatorBase(operatorUrl, env) {
 }
 
 /**
- * Resolve the operator origin for native OMP's per-session mcp.json. This is
- * the launcher-side counterpart to orchestrator spawn-mcp's async resolver:
+ * Resolve the operator origin for native OMP's per-session mcp.json and
+ * resume-time config-repair requests. This is the launcher-side counterpart to
+ * orchestrator spawn-mcp's async resolver:
  * probe the runtime-selected local route, then recover on canonical :3070
  * when a copied PAPERCUSP_HONO_PORT is stale. A live non-green port remains
  * authoritative, so staging :3170 never silently falls through to green.
@@ -12886,7 +12887,13 @@ export async function ensureCodexHomeViaOperator(
   {
     requireGatewayProvider = false,
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    // A resume can inherit a stale PAPERCUSP_HONO_PORT from the judge/runtime.
+    // Resolve the runtime route only when repair is actually needed; explicit
+    // callers may still pin a URL for tests or a deliberate control-plane hop.
+    operatorUrl = /** @type {string | undefined} */ (undefined),
+    env = process.env,
+    probe = probeOmpOperatorMcp,
+    onRecovery,
     token = null,
     timeoutMs = 10_000,
   } = {},
@@ -12903,9 +12910,16 @@ export async function ensureCodexHomeViaOperator(
     return null;
   if (isCodexHomeLaunchReady(codexHome, owner)) return null; // healthy + same owner — no call, no write
   try {
+    const resolvedOperatorUrl =
+      operatorUrl ??
+      (await resolveOmpOperatorUrl(undefined, {
+        env: env ?? process.env,
+        probe,
+        onRecovery,
+      }));
     const tok = token ?? readToken();
     const res = await fetchImpl(
-      operatorUrl + "/api/adv/sessions/ensure-codex-home",
+      resolvedOperatorUrl + "/api/adv/sessions/ensure-codex-home",
       {
         method: "POST",
         signal: AbortSignal.timeout(timeoutMs),
