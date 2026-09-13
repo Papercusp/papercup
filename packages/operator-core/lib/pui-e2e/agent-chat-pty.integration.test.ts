@@ -1433,6 +1433,37 @@ beforeEach(async () => {
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
+  test('cleanup reports its own failure without replacing an earlier semantic failure', async () => {
+    const primary = new Error('same-native identity mismatch');
+    const paneCleanup = new Error('pane cleanup failed');
+    const operatorCleanup = new Error('operator cleanup failed');
+    const reports: Array<Record<string, unknown>> = [];
+    const pane = vi.fn(async () => { throw paneCleanup; });
+    const operator = vi.fn(async () => { throw operatorCleanup; });
+
+    await preservePrimaryFailureDuringCleanup(
+      { error: primary },
+      [
+        { label: 'pui-pane', run: pane },
+        { label: 'operator-process', run: operator },
+      ],
+      (report) => reports.push(report),
+    );
+
+    expect(pane).toHaveBeenCalledOnce();
+    expect(operator).toHaveBeenCalledOnce();
+    expect(reports).toEqual([{
+      primary: 'Error: same-native identity mismatch',
+      cleanupFailures: [
+        { label: 'pui-pane', error: 'Error: pane cleanup failed' },
+        { label: 'operator-process', error: 'Error: operator cleanup failed' },
+      ],
+    }]);
+    await expect(preservePrimaryFailureDuringCleanup(null, [
+      { label: 'operator-process', run: async () => { throw operatorCleanup; } },
+    ])).rejects.toBe(operatorCleanup);
+  });
+
   test('teardown retains a close failure and still disposes every tracked engine', async () => {
     const failure = new Error('native close failed');
     const first = {
@@ -1870,6 +1901,33 @@ async function startOperatorProcess(port = 0) {
     }, { timeout: 120_000, interval: 100 });
   } catch (error) { await stop().catch(() => {}); throw error; }
   return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
+}
+
+function cleanupErrorText(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+async function preservePrimaryFailureDuringCleanup(
+  primaryFailure: { error: unknown } | null,
+  cleanups: ReadonlyArray<{ label: string; run: () => Promise<void> }>,
+  report: (details: Record<string, unknown>) => void = (details) => {
+    console.info('PUI_OPERATOR_PROCESS_CLEANUP_AFTER_PRIMARY_FAILURE', JSON.stringify(details));
+  },
+): Promise<void> {
+  const cleanupFailures: Array<{ label: string; error: unknown }> = [];
+  for (const cleanup of cleanups) {
+    try { await cleanup.run(); }
+    catch (error) { cleanupFailures.push({ label: cleanup.label, error }); }
+  }
+  if (cleanupFailures.length === 0) return;
+  if (!primaryFailure) {
+    if (cleanupFailures.length === 1) throw cleanupFailures[0].error;
+    throw new AggregateError(cleanupFailures.map(({ error }) => error), 'PUI operator fixture cleanup failed');
+  }
+  report({
+    primary: cleanupErrorText(primaryFailure.error),
+    cleanupFailures: cleanupFailures.map(({ label, error }) => ({ label, error: cleanupErrorText(error) })),
+  });
 }
 
 /**
@@ -3106,6 +3164,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     await putViewState('Plans');
     const second = await startOperatorProcess(first.port);
     const resumedPane = new PuiPane(bin, second.port, home);
+    let primaryFailure: { error: unknown } | null = null;
     try {
       expect(second.pid).not.toBe(first.pid);
       expect(second.instanceId).not.toBe(first.instanceId);
@@ -3190,6 +3249,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }),
       );
     } catch (error) {
+      primaryFailure = { error };
       console.info(
         'PUI_OPERATOR_PROCESS_FAILURE',
         JSON.stringify({
@@ -3205,8 +3265,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       );
       throw error;
     } finally {
-      await resumedPane.stop();
-      await second.stop();
+      await preservePrimaryFailureDuringCleanup(primaryFailure, [
+        { label: 'pui-pane', run: () => resumedPane.stop() },
+        { label: 'operator-process', run: () => second.stop() },
+      ]);
     }
     expect(second.shutdownStages).toContain('os-hard-exit-ready');
   }, 600_000);
