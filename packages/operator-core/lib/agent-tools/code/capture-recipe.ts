@@ -35,6 +35,8 @@ import {
   deriveRecipeAuthority,
   recipeAuthorityContextFromDescriptor,
 } from '../../recipe-authority';
+import type { EmbedderMode } from '@papercusp/memory';
+import type { ProseProfileSelection } from '../../search/prose-vector-dims';
 
 /** Stable kebab slug from a title (the recipe PRIMARY KEY). Matches the
  *  plans:apply-plan-block toKebab so recipe ids look like every other slug. */
@@ -146,8 +148,12 @@ export function deriveTitleDescription(
 export interface CaptureRecipeDeps {
   /** PG handle (caller passes getOrgPg().sql — RLS-bypass; the store filters by workspace). */
   sql: import('postgres').Sql;
-  /** Resolve the embedding for `title\ndescription` (384-dim) or null when unavailable. */
-  embed: (text: string) => Promise<number[] | null>;
+  /** Resolve the embedding plus its exact prose-space identity. */
+  embed: (text: string) => Promise<{
+    vector: number[];
+    mode: EmbedderMode;
+    profile: ProseProfileSelection;
+  } | null>;
   /** harness → home-hive slug (the sharing boundary), or null. */
   resolveHive: (workspaceId: string, harness: string) => Promise<string | null>;
   log?: (msg: string) => void;
@@ -273,7 +279,8 @@ export async function captureRecipe(
     });
 
     // Compute the embedding ONCE and reuse it for both dedup + the upsert.
-    const embedding = await deps.embed(`${title}\n${description}`).catch(() => null);
+    const embedded = await deps.embed(`${title}\n${description}`).catch(() => null);
+    const embedding = embedded?.vector ?? null;
 
     // P-014: exact normalized structure reuses the established active candidate.
     // This indexed lookup rides the P-013 run ledger; failure remains soft so a
@@ -303,6 +310,8 @@ export async function captureRecipe(
           description,
           toolsUsed,
           embedding,
+          embeddingMode: embedded?.mode ?? null,
+          embeddingProfile: embedded?.profile ?? null,
           excludeId: exactRecipe?.id ?? id,
           limit: 5,
           recommendationContext: recipeAuthorityContextFromDescriptor(sourceAuthority, {
@@ -345,6 +354,8 @@ export async function captureRecipe(
         toolsUsed,
         tags: input.tags,
         embedding,
+        embeddingMode: embedded?.mode ?? null,
+        embeddingProfile: embedded?.profile ?? null,
         createdBy: input.ownerId,
         potSlug,
       });

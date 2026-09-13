@@ -3,7 +3,7 @@
  * real Postgres (pgvector), get-feedback-relevance-consults-2026-08-16.
  *
  * Fixture geometry (same trick as relevance-router.integration.test.ts):
- * 384-d unit vectors from a single direction angle, v(θ) = [cos θ, sin θ, 0, …],
+ * 768-d unit vectors from a single direction angle, v(θ) = [cos θ, sin θ, 0, …],
  * so cosine similarity between the stored interest v(0) and a turn v(θ) is
  * exactly cos θ and every floor decision is analytically checkable.
  *
@@ -22,6 +22,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres, { type Sql } from 'postgres';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import {
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from '../../search/prose-vector-dims';
 import {
   claimDueInterestWatches,
   computeSweepWindow,
@@ -39,10 +44,11 @@ const WS = 'ws-interest';
 const ME = 'agent-me';
 const NOW = new Date('2026-08-16T12:00:00Z');
 const SEC = 1000;
+const GEMMA_QUERY_PROFILE = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
 
-/** 384-d unit vector at angle θ in the (0,1) plane. */
+/** 768-d unit vector at angle θ in the (0,1) plane. */
 const vecAt = (theta: number): number[] => {
-  const v = new Array<number>(384).fill(0);
+  const v = new Array<number>(768).fill(0);
   v[0] = Math.cos(theta);
   v[1] = Math.sin(theta);
   return v;
@@ -55,25 +61,41 @@ async function insertTurn(
   owner: string,
   theta: number | null, // null = NOT yet embedded (the async-backfill state)
   ingestedAgoMs: number,
-  over: { verdict?: string | null; ws?: string; text?: string } = {},
+  over: {
+    verdict?: string | null;
+    ws?: string;
+    text?: string;
+    mode?: string | null;
+    profile?: string | null;
+  } = {},
 ): Promise<{ session_id: string; turn_idx: number }> {
   turnSeq += 1;
   const sessionId = `sess-${owner}`;
   await rootSql`
     INSERT INTO harness_shared.session_turns
-      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text, ingested_at, text_embedding, turn_origin_verdict)
+      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text,
+       ingested_at, text_embedding, text_embedding_mode, text_embedding_profile, turn_origin_verdict)
     VALUES (${over.ws ?? 'default'}, 'claude', ${sessionId}, ${turnSeq},
             ${new Date(NOW.getTime() - ingestedAgoMs).toISOString()}::timestamptz,
             ${owner}, 'assistant', ${over.text ?? `turn ${turnSeq} of ${owner}`},
             ${new Date(NOW.getTime() - ingestedAgoMs).toISOString()}::timestamptz,
             ${theta === null ? null : JSON.stringify(vecAt(theta))}::vector,
+            ${over.mode === undefined ? (theta === null ? null : 'gemma') : over.mode},
+            ${over.profile === undefined ? (theta === null ? null : EMBEDDER_DIM_SPECS.gemma.profileId) : over.profile},
             ${over.verdict ?? null})`;
   return { session_id: sessionId, turn_idx: turnSeq };
 }
 
 /** Register a watch whose watermark sits 60s+LAG before NOW (so turns ingested
  *  in the last minute are candidates), floored at cos-similarity `floor`. */
-async function mkWatch(over: { floor?: number; once?: boolean; ownerId?: string; theta?: number } = {}): Promise<InterestWatchRow> {
+async function mkWatch(over: {
+  floor?: number;
+  once?: boolean;
+  ownerId?: string;
+  theta?: number;
+  mode?: string;
+  profile?: ProseProfileSelection;
+} = {}): Promise<InterestWatchRow> {
   const id = randomUUID();
   return registerInterestWatch(rootSql, {
     id,
@@ -82,6 +104,8 @@ async function mkWatch(over: { floor?: number; once?: boolean; ownerId?: string;
     eventKey: `interest:${id}`,
     interest: 'test interest',
     embedding: vecAt(over.theta ?? 0),
+    embeddingMode: over.mode ?? 'gemma',
+    embeddingProfile: over.profile ?? GEMMA_QUERY_PROFILE,
     simFloor: over.floor ?? 0.55,
     once: over.once ?? false,
     now: new Date(NOW.getTime() - 60 * SEC),
@@ -137,7 +161,9 @@ beforeAll(async () => {
       speaker text NOT NULL,
       text text NOT NULL,
       ingested_at timestamptz NOT NULL DEFAULT now(),
-      text_embedding vector(384),
+      text_embedding vector(768),
+      text_embedding_mode text,
+      text_embedding_profile text,
       turn_origin_verdict text,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
     )`);
@@ -149,7 +175,9 @@ beforeAll(async () => {
       harness_slug text,
       event_key text NOT NULL,
       interest text NOT NULL,
-      embedding vector(384),
+      embedding vector(768),
+      embedding_mode text,
+      embedding_profile text,
       sim_floor double precision NOT NULL,
       interval_sec integer NOT NULL DEFAULT 120,
       once boolean NOT NULL DEFAULT false,
@@ -290,7 +318,9 @@ describe('sweepInterestWatch', () => {
     // The backfill lands T1's embedding (matching too).
     await rootSql`
       UPDATE harness_shared.session_turns
-         SET text_embedding = ${JSON.stringify(vecAt(0.15))}::vector
+         SET text_embedding = ${JSON.stringify(vecAt(0.15))}::vector,
+             text_embedding_mode = 'gemma',
+             text_embedding_profile = ${EMBEDDER_DIM_SPECS.gemma.profileId}
        WHERE session_id = ${t1.session_id} AND turn_idx = ${t1.turn_idx}`;
 
     // Sweep 2: window now runs to claimNow - lag → BOTH turns fire, once.
@@ -333,6 +363,29 @@ describe('sweepInterestWatch', () => {
     expect(matches).toHaveLength(INTEREST_MATCHES_PER_SWEEP);
     // Best-first ordering.
     for (let i = 1; i < matches.length; i++) expect(matches[i - 1].sim).toBeGreaterThanOrEqual(matches[i].sim);
+  });
+
+  it('rejects same-mode foreign exact profiles but accepts legacy NULL only for the mode current profile', async () => {
+    const strict = await mkWatch();
+    await insertTurn('peer-foreign-profile', 0.05, 30 * SEC, {
+      mode: 'gemma',
+      profile: EMBEDDER_DIM_SPECS.openai.profileId,
+    });
+    const first = recordingDeps();
+    expect((await sweepInterestWatch(strict, first.deps)).fired).toBe(false);
+    expect(first.emits).toHaveLength(0);
+
+    const legacy = await mkWatch();
+    await insertTurn('peer-legacy-current', 0.05, 25 * SEC, {
+      mode: 'gemma',
+      profile: null,
+    });
+    const second = recordingDeps();
+    const result = await sweepInterestWatch(legacy, second.deps);
+    expect(result.fired).toBe(true);
+    const owners = (second.emits[0].payload as { matches: Array<{ owner: string }> }).matches.map((m) => m.owner);
+    expect(owners).toContain('peer-legacy-current');
+    expect(owners).not.toContain('peer-foreign-profile');
   });
 
   it('once:true deactivates after the first fire', async () => {

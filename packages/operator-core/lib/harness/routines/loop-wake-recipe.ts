@@ -18,6 +18,11 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { deriveRecipeAuthority } from '../../recipe-authority';
+import {
+  proseProfilePredicateSql,
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from '../../search/prose-vector-dims';
 
 /** Absolute cosine floor a hit must clear to be worth a wake line — below it
  *  the "match" is topical noise that trains agents to ignore the splice. */
@@ -69,8 +74,11 @@ export function renderWakeRecipeLine(hit: WakeRecipeHit): string {
 
 export interface FindTopRecipeDeps {
   sql?: Sql;
-  /** Test seam; `null` = no embedder available (skip), undefined = build the real one. */
-  embedder?: ((text: string) => Promise<number[]>) | null;
+  /** Test seam; `null` = no compatible embedder, undefined = resolve the real one. */
+  queryEmbedder?: {
+    embed: (text: string) => Promise<number[]>;
+    profile: ProseProfileSelection;
+  } | null;
   timeoutMs?: number;
 }
 
@@ -105,14 +113,18 @@ export async function findTopRecipeForWake(
   const timeoutMs = deps.timeoutMs ?? LOOP_WAKE_RECIPE_TIMEOUT_MS;
 
   const lookup = async (): Promise<WakeRecipeHit | null> => {
-    const embedder =
-      deps.embedder !== undefined
-        ? deps.embedder
-        : await (await import('../../agent-tools/search/embedder'))
-            .buildQueryEmbedder()
-            .catch(() => null);
-    if (!embedder) return null;
-    const vec = await embedder(q);
+    let queryEmbedder = deps.queryEmbedder;
+    if (queryEmbedder === undefined) {
+      const resolved = await (await import('../../agent-tools/search/embedder'))
+        .buildQueryEmbedderResolved()
+        .catch(() => null);
+      const profile = resolved
+        ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+        : null;
+      queryEmbedder = resolved && profile ? { embed: resolved.embed, profile } : null;
+    }
+    if (!queryEmbedder) return null;
+    const vec = await queryEmbedder.embed(q);
     if (!Array.isArray(vec) || vec.length === 0) return null;
     const qVec = `[${vec.join(',')}]`;
     const sql = deps.sql ?? getOrgPg().sql;
@@ -121,6 +133,7 @@ export async function findTopRecipeForWake(
         FROM harness_shared.code_recipes
        WHERE status = 'active'
          AND embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(sql, queryEmbedder.profile, 'embedding_profile', 'embedding_mode')}
          AND COALESCE(array_length(tools_used, 1), 0) >= 2
     ORDER BY embedding <=> ${qVec}::vector
        LIMIT ${CANDIDATE_LIMIT}

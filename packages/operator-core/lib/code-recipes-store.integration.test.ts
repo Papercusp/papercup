@@ -13,7 +13,7 @@
  * Part of code-recipes-2026-06-21 Phase 1 (P-002, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -28,7 +28,9 @@ import {
   sweepRecipes,
 } from './code-recipes-store';
 import { pinPackageInput } from '@papercusp/orchestrator/blueprint';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { blueprintPackageProvisioners } from './blueprint/compile-packages';
+import { resolveProseProfileSelection } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const here = dirname(fileURLToPath(import.meta.url));
@@ -44,9 +46,21 @@ const contractMigration = join(
   'sql',
   '897-code-recipe-contract.sql',
 );
+const profileMigrationArmed = join(
+  here, '..', '..', '..', 'libs', 'papercusp', 'libs', 'db', 'sql',
+  '1154-prose-embedding-profile-identity.sql',
+);
+const profileMigration = existsSync(profileMigrationArmed)
+  ? profileMigrationArmed
+  : `${profileMigrationArmed}.DRAFT`;
 
 /** A throwaway 768-dim embedding (the store only round-trips presence, not value). */
 const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 768 }, () => seed);
+const profiledEmbedding = (embedding: number[]) => ({
+  embedding,
+  embeddingMode: 'gemma' as const,
+  embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!,
+});
 
 describe('code_recipes store (real PG)', () => {
   let db: OrgTestDb;
@@ -56,6 +70,7 @@ describe('code_recipes store (real PG)', () => {
     // Migration 897 is armed. Re-apply its idempotent DDL in this isolated
     // database so store coverage remains bound to the production migration.
     await db.adminSql.unsafe(readFileSync(contractMigration, 'utf8')).simple();
+    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
   }, 120_000);
 
   afterAll(async () => {
@@ -108,7 +123,7 @@ describe('code_recipes store (real PG)', () => {
       script: '// triage\nreturn await tools.work_items.list({});',
       authorRole: 'cup',
       toolsUsed: ['work_items:list'],
-      embedding: fakeEmbedding(),
+      ...profiledEmbedding(fakeEmbedding()),
       tags: ['triage'],
       createdBy: 'owner-1',
     });
@@ -120,6 +135,17 @@ describe('code_recipes store (real PG)', () => {
     expect(row.lastRunAt).toBeNull();
     expect(row.status).toBe('active');
     expect(row.hasEmbedding).toBe(true);
+    const [storedIdentity] = await db.adminSql<Array<{
+      embedding_mode: string | null;
+      embedding_profile: string | null;
+    }>>`
+      SELECT embedding_mode, embedding_profile
+        FROM harness_shared.code_recipes
+       WHERE id = 'triage-stale-items'`;
+    expect(storedIdentity).toEqual({
+      embedding_mode: 'gemma',
+      embedding_profile: EMBEDDER_DIM_SPECS.gemma.profileId,
+    });
     expect(row.createdBy).toBe('owner-1');
     expect(Number.isNaN(Date.parse(row.createdAt))).toBe(false);
 
@@ -280,7 +306,7 @@ describe('code_recipes store (real PG)', () => {
       title: 'Emb',
       description: 'has embedding',
       script: 'return 1;',
-      embedding: fakeEmbedding(0.2),
+      ...profiledEmbedding(fakeEmbedding(0.2)),
     });
     // re-upsert with embedding omitted (embedder unavailable) — must not wipe it
     const after = await upsertRecipe(db.adminSql, {

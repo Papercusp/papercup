@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const M = vi.hoisted(() => ({
   getOrgPg: vi.fn(),
   routeConsult: vi.fn(),
-  buildQueryEmbedder: vi.fn(),
+  buildQueryEmbedderResolved: vi.fn(),
   resolveSessionStates: vi.fn(),
   planStartConsult: vi.fn(),
   fetchTurnExcerpts: vi.fn(),
@@ -19,7 +19,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: M.getOrgPg,
 }));
 vi.mock('../../consult/relevance-router', () => ({ routeConsult: M.routeConsult }));
-vi.mock('../search/embedder', () => ({ buildQueryEmbedder: M.buildQueryEmbedder }));
+vi.mock('../search/embedder', () => ({ buildQueryEmbedderResolved: M.buildQueryEmbedderResolved }));
 vi.mock('../coordination/liveness-oracle', () => ({ resolveSessionStates: M.resolveSessionStates }));
 vi.mock('../../consult/plan-start-consult', () => ({
   planStartConsult: M.planStartConsult,
@@ -39,7 +39,21 @@ beforeEach(() => {
   vi.clearAllMocks();
   const sql = vi.fn();
   M.getOrgPg.mockReturnValue({ sql });
-  M.buildQueryEmbedder.mockResolvedValue('embedder');
+  M.buildQueryEmbedderResolved.mockResolvedValue({
+    mode: 'gemma',
+    dims: 768,
+    profile: {
+      profileId: 'gemma-embeddinggemma-300m-768@v1',
+      model: 'onnx-community/embeddinggemma-300m-ONNX',
+      revision: 'v1',
+      targetDims: 768,
+      normalization: 'l2',
+      distanceMetric: 'cosine',
+      queryRecipe: 'gemma-query-v1',
+      documentRecipe: 'gemma-document-v1',
+    },
+    embed: 'embedder',
+  });
   M.resolveSessionStates.mockResolvedValue(
     new Map([['peer-live', { ownerId: 'peer-live', sessionState: 'live' }]]),
   );
@@ -81,7 +95,7 @@ describe('previewPlanStartConsult', () => {
       outcome: 'proceed_with_excerpts',
       excerpts: [{ ownerId: 'peer-dead', excerpt: 'prior attempt' }],
     });
-    expect(M.buildQueryEmbedder).toHaveBeenCalledTimes(1);
+    expect(M.buildQueryEmbedderResolved).toHaveBeenCalledTimes(1);
     expect(M.planStartConsult).toHaveBeenCalledWith(params, expect.any(Object));
     expect(M.routeConsult).toHaveBeenCalledWith(
       {
@@ -103,7 +117,7 @@ describe('previewPlanStartConsult', () => {
   });
 
   it('reports an unavailable advisory outcome when production wiring cannot initialize', async () => {
-    M.buildQueryEmbedder.mockRejectedValue(new Error('embedder unavailable'));
+    M.buildQueryEmbedderResolved.mockRejectedValue(new Error('embedder unavailable'));
 
     const result = await previewPlanStartConsult(params);
 

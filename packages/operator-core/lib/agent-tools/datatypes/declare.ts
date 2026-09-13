@@ -48,7 +48,8 @@ import {
   datatypeDisplaySchema,
   isBuiltinDatatypeId,
 } from '../../datatype-display';
-import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 
 export default defineTool({
   name: 'meta:define-datatype',
@@ -193,9 +194,12 @@ export default defineTool({
     // The title+description embedding — the cosine dedup leg AND the stored vector.
     // Failure-tolerant (mirrors recipes:search): no embedder configured / a transient
     // error ⇒ null ⇒ the lexical (title_tsv) dedup leg carries it, exactly as before.
-    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
-    const embedding = embedder
-      ? await embedder(`${args.title ?? args.name}\n${args.description}`).catch(() => null)
+    const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    const embeddingProfile = resolved
+      ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+      : null;
+    const embedding = resolved && embeddingProfile
+      ? await resolved.embed(`${args.title ?? args.name}\n${args.description}`).catch(() => null)
       : null;
 
     // The dedup gate (D-010), for a genuinely NEW id only — re-declaring the same id is an
@@ -233,6 +237,7 @@ export default defineTool({
         title: args.title ?? args.name,
         description: args.description,
         embedding,
+        embeddingProfile,
         excludeId: id,
         limit: 3,
       }).catch(() => []);
@@ -257,6 +262,8 @@ export default defineTool({
       // the title+description vector (cosine dedup); null when no embedder — upsert COALESCEs
       // so a re-declare without an embedder keeps any previously-computed vector.
       embedding,
+      embeddingMode: embedding && resolved ? resolved.mode : null,
+      embeddingProfile: embedding ? embeddingProfile : null,
       createdBy: ident.ownerId,
     });
 

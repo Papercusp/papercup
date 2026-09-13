@@ -18,7 +18,8 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { recipeCandidates } from '../../code-recipes-candidates';
-import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 // tool-call-batching-wrappers-2026-06-21 P-004 / D-016 — the deterministic co-occurrence scoring leg.
 import { buildRecipeCooccurrenceDep } from '../../recipe-cooccurrence-leg';
 
@@ -64,7 +65,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    const embeddingProfile = resolved
+      ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+      : null;
+    const embedder = resolved && embeddingProfile ? resolved.embed : null;
     // tool-call-batching-wrappers P-004 / D-016 — fold in the deterministic co-occurrence
     // leg: mean pairwise confidence of a recipe's tool-set, from dev:tool_cooccurrence.
     // (workspace-scoped telemetry — recipes are global, but this signal is per-workspace.)

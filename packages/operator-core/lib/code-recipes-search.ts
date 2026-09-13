@@ -27,6 +27,7 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import type { EmbedderMode } from '@papercusp/memory';
 import './search/configure-search-defaults';
 import { runHybridSearch, type SearchSource, type SearchSourceParams, type Listing } from '@papercusp/search';
 import {
@@ -35,6 +36,12 @@ import {
   type RecipeAuthorityProof,
   type RecipeAuthorityRefs,
 } from './recipe-authority';
+import { stampEmbedderMode } from './search/embedder-mode-registry';
+import {
+  proseProfilePredicateSql,
+  resolveProseProfileIdSelection,
+  type ProseProfileSelection,
+} from './search/prose-vector-dims';
 
 /**
  * EI-9312: bound the ACTUAL per-query embed call, not just the embedder's
@@ -89,13 +96,17 @@ export const codeRecipesSource: SearchSource = {
       },
     }));
   },
-  async embedding({ sql, limit, qVec }): Promise<Listing> {
+  async embedding({ sql, limit, qVec, embeddingProfile }): Promise<Listing> {
+    const selection = embeddingProfile
+      ? resolveProseProfileIdSelection(embeddingProfile.profileId, embeddingProfile.legacyMode)
+      : null;
     const rows = (await sql`
       SELECT id, title, description, run_count, tools_used,
              1 - (embedding <=> ${qVec}::vector) AS sim
         FROM harness_shared.code_recipes
        WHERE status = 'active'
          AND embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(sql as postgres.Sql, selection, 'embedding_profile', 'embedding_mode')}
     ORDER BY embedding <=> ${qVec}::vector
        LIMIT ${limit}
     `) as unknown as Array<{ id: string; title: string; description: string; run_count: number | string; tools_used: string[] | null; sim: number }>;
@@ -139,6 +150,10 @@ export interface SearchSimilarRecipesInput {
   toolsUsed: string[];
   /** Pre-computed title+description embedding (768-dim), or null when unavailable. */
   embedding: number[] | null;
+  /** Exact provenance of a pre-computed embedding. Required when `embedding`
+   * is present so the one-shot engine embedder can carry its identity. */
+  embeddingMode?: EmbedderMode | null;
+  embeddingProfile?: ProseProfileSelection | null;
   /** Exclude this recipe id (the just-upserted recipe must not match itself). */
   excludeId?: string;
   /** Top-N to return (default 5). */
@@ -184,10 +199,14 @@ export async function searchSimilarRecipes(
   // runHybridSearch reuses it (no second embed of the same text) — the cosine
   // leg still runs even when no live embedder was wired, as long as the caller
   // computed the vector once for the upsert.
-  const embedder =
-    input.embedding && input.embedding.length > 0
-      ? async () => input.embedding as number[]
-      : (deps.embedder ?? null);
+  let embedder = deps.embedder ?? null;
+  if (input.embedding && input.embedding.length > 0) {
+    if (!input.embeddingMode || !input.embeddingProfile) {
+      throw new Error('searchSimilarRecipes: a pre-computed embedding requires exact mode and profile provenance');
+    }
+    embedder = async () => input.embedding as number[];
+    stampEmbedderMode(embedder, input.embeddingMode, input.embeddingProfile.profileId);
+  }
 
   // Over-fetch so the exclude + structural re-rank + HARD entity filter have
   // headroom before top-N. Still bounded: recommendation reads never inspect

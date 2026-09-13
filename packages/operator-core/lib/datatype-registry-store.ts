@@ -21,6 +21,11 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import type { EmbedderMode } from '@papercusp/memory';
+import {
+  proseProfilePredicateSql,
+  type ProseProfileSelection,
+} from './search/prose-vector-dims';
 import { parseDatatypeDisplay, type DatatypeDisplaySpec } from './datatype-display';
 
 /** The two-tier datatype model (D-002) + the projection flavor (D-008). */
@@ -167,8 +172,10 @@ export interface UpsertDatatypeInput {
   selfImprovement?: Record<string, unknown> | null;
   published?: boolean;
   tags?: string[];
-  /** title+description embedding (384-dim). null when the embedder was unavailable. */
+  /** title+description embedding (shared prose width). null when unavailable. */
   embedding?: number[] | null;
+  embeddingMode?: EmbedderMode | null;
+  embeddingProfile?: ProseProfileSelection | null;
   createdBy?: string | null;
 }
 
@@ -256,11 +263,14 @@ export async function upsertDatatype(
 ): Promise<DatatypeRow> {
   const embeddingLiteral =
     input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
+  if (embeddingLiteral && (!input.embeddingMode || !input.embeddingProfile)) {
+    throw new Error('upsertDatatype: a stored embedding requires exact mode and profile provenance');
+  }
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.datatype_registry
       (id, workspace_id, pot_slug, title, description, tier, work_item_kind,
        payload_schema, display, authoritative_writer, self_improvement, published, tags,
-       embedding, created_by, updated_at)
+       embedding, embedding_mode, embedding_profile, created_by, updated_at)
     VALUES (
       ${input.id}, ${input.workspaceId}, ${input.potSlug ?? null}, ${input.title},
       ${input.description}, ${input.tier}, ${input.workItemKind ?? null},
@@ -269,7 +279,8 @@ export async function upsertDatatype(
       ${input.authoritativeWriter ?? 'papercusp'},
       ${input.selfImprovement ? JSON.stringify(input.selfImprovement) : null}::text::jsonb,
       ${input.published ?? false}, ${input.tags ?? []},
-      ${embeddingLiteral}::vector, ${input.createdBy ?? null}, now()
+      ${embeddingLiteral}::vector, ${input.embeddingMode ?? null},
+      ${input.embeddingProfile?.profileId ?? null}, ${input.createdBy ?? null}, now()
     )
     ON CONFLICT (workspace_id, id) DO UPDATE SET
       pot_slug            = EXCLUDED.pot_slug,
@@ -285,6 +296,10 @@ export async function upsertDatatype(
       tags                 = EXCLUDED.tags,
       -- keep the existing embedding when this write carries none (no embedder)
       embedding            = COALESCE(EXCLUDED.embedding, harness_shared.datatype_registry.embedding),
+      embedding_mode       = CASE WHEN EXCLUDED.embedding IS NULL
+        THEN harness_shared.datatype_registry.embedding_mode ELSE EXCLUDED.embedding_mode END,
+      embedding_profile    = CASE WHEN EXCLUDED.embedding IS NULL
+        THEN harness_shared.datatype_registry.embedding_profile ELSE EXCLUDED.embedding_profile END,
       updated_at           = now()
     RETURNING ${SELECT_COLS(sql)}`;
   return mapRow(rows[0]);
@@ -398,7 +413,14 @@ export interface SimilarDatatype {
 export async function findSimilarDatatypes(
   sql: postgres.Sql,
   workspaceId: string,
-  q: { title: string; description?: string; embedding?: number[] | null; excludeId?: string; limit?: number },
+  q: {
+    title: string;
+    description?: string;
+    embedding?: number[] | null;
+    embeddingProfile?: ProseProfileSelection | null;
+    excludeId?: string;
+    limit?: number;
+  },
 ): Promise<SimilarDatatype[]> {
   // OR semantics (any shared keyword is a dedup candidate, ranked by ts_rank) — NOT
   // websearch_to_tsquery, which ANDs the words and would miss near-duplicates that
@@ -413,6 +435,9 @@ export async function findSimilarDatatypes(
   const lim = Math.max(1, Math.min(20, q.limit ?? 5));
   const embeddingLiteral =
     q.embedding && q.embedding.length > 0 ? `[${q.embedding.join(',')}]` : null;
+  if (embeddingLiteral && !q.embeddingProfile) {
+    throw new Error('findSimilarDatatypes: a query embedding requires exact profile provenance');
+  }
   const exclude = q.excludeId ? sql`AND id <> ${q.excludeId}` : sql``;
   // ts_rank for the lexical leg; when an embedding is present, fuse (1 - cosine distance)
   // in 60/40 favour of the vector — the same two-leg shape code_recipes dedup uses.
@@ -422,7 +447,9 @@ export async function findSimilarDatatypes(
         embeddingLiteral
           ? sql`GREATEST(
                   ts_rank(title_tsv, to_tsquery('english', ${orQuery})),
-                  CASE WHEN embedding IS NULL THEN 0
+                  CASE WHEN embedding IS NULL
+                          OR NOT (${proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')})
+                       THEN 0
                        ELSE 0.4 * ts_rank(title_tsv, to_tsquery('english', ${orQuery}))
                             + 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END
                 )`
@@ -432,7 +459,9 @@ export async function findSimilarDatatypes(
      WHERE workspace_id = ${workspaceId} AND status = 'active' ${exclude}
        AND (
          title_tsv @@ to_tsquery('english', ${orQuery})
-         ${embeddingLiteral ? sql`OR embedding IS NOT NULL` : sql``}
+         ${embeddingLiteral
+           ? sql`OR (embedding IS NOT NULL AND ${proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')})`
+           : sql``}
        )
      ORDER BY score DESC
      LIMIT ${lim}`;

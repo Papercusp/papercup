@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   getFeedbackCore: vi.fn(),
   reconcileInterestEventAwaits: vi.fn(),
-  buildQueryEmbedder: vi.fn(async () => null),
+  buildQueryEmbedderResolved: vi.fn(async () => null),
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
   routeConsult: vi.fn(),
   resolveSessionStates: vi.fn(),
@@ -24,7 +24,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 vi.mock('../../consult/get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore }));
 vi.mock('../../consult/relevance-router', () => ({ routeConsult: h.routeConsult }));
 vi.mock('../search/embedder', () => ({
-  buildQueryEmbedder: h.buildQueryEmbedder,
+  buildQueryEmbedderResolved: h.buildQueryEmbedderResolved,
   interactiveEmbedAcquireBudgetMs: h.interactiveEmbedAcquireBudgetMs,
 }));
 vi.mock('../coordination/liveness-oracle', () => ({ resolveSessionStates: h.resolveSessionStates }));
@@ -72,7 +72,7 @@ beforeEach(() => {
   h.routeConsult.mockReset();
   h.resolveSessionStates.mockReset();
   h.reconcileInterestEventAwaits.mockReset().mockResolvedValue(handle);
-  h.buildQueryEmbedder.mockClear();
+  h.buildQueryEmbedderResolved.mockClear();
   h.interactiveEmbedAcquireBudgetMs.mockClear();
   h.makeConsultReviver.mockClear();
 });
@@ -82,7 +82,7 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     h.getFeedbackCore.mockResolvedValue(routed('hard-blocked'));
     const out = await call('hard-blocked');
     expect(h.interactiveEmbedAcquireBudgetMs).toHaveBeenCalledTimes(1);
-    expect(h.buildQueryEmbedder).toHaveBeenCalledWith({ acquireBudgetMs: 4000 });
+    expect(h.buildQueryEmbedderResolved).toHaveBeenCalledWith({ acquireBudgetMs: 4000 });
     expect(h.reconcileInterestEventAwaits).toHaveBeenCalledWith({
       ownerId: 'requester-1',
       eventKeys: ['consult:reply:consult-1'],

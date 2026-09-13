@@ -16,6 +16,8 @@
  * and WORKSPACE ISOLATION (a datatype in ws-A is invisible from ws-B).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   upsertDatatype,
@@ -27,8 +29,16 @@ import {
   listRegisteredDatatypeNames,
 } from './datatype-registry-store';
 import { PROSE_VECTOR_DIMS } from './search/prose-vector-dims';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const profileMigrationArmed = fileURLToPath(
+  new URL('../../../libs/papercusp/libs/db/sql/1154-prose-embedding-profile-identity.sql', import.meta.url),
+);
+const profileMigration = existsSync(profileMigrationArmed)
+  ? profileMigrationArmed
+  : `${profileMigrationArmed}.DRAFT`;
 
 /**
  * A throwaway embedding (only presence/cosine is exercised, not a real vector).
@@ -44,12 +54,18 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
  * not see this copy, because the copy lived in a test.
  */
 const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: PROSE_VECTOR_DIMS }, () => seed);
+const profiledEmbedding = (embedding: number[]) => ({
+  embedding,
+  embeddingMode: 'gemma' as const,
+  embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!,
+});
 
 describe('datatype_registry store (real PG)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
     // createOrgTestDb applies the FULL migration set (incl. 421/425 and the D-007
     // pot-rename 506/523), so datatype_registry already exists in its post-rename
     // (pot_slug) shape — a broken 421 would fail the fixture setup itself, so the
@@ -75,7 +91,7 @@ describe('datatype_registry store (real PG)', () => {
       payloadSchema: { type: 'object', properties: { market: { type: 'string' }, edge: { type: 'number' } } },
       display: { widget: 'record', params: { fields: [{ name: 'market', datatype: 'string', required: true }] }, summary: '{{market}}' },
       selfImprovement: { improvements: ['miscalibrated'], scorecard: 'brier', gym: ['no-stale-data'] },
-      embedding: fakeEmbedding(),
+      ...profiledEmbedding(fakeEmbedding()),
       tags: ['oddsmith'],
       createdBy: 'owner-1',
     });
@@ -84,6 +100,17 @@ describe('datatype_registry store (real PG)', () => {
     expect(row.workItemKind).toBe('bet');
     expect(row.authoritativeWriter).toBe('papercusp');
     expect(row.hasEmbedding).toBe(true);
+    const [storedIdentity] = await db.adminSql<Array<{
+      embedding_mode: string | null;
+      embedding_profile: string | null;
+    }>>`
+      SELECT embedding_mode, embedding_profile
+        FROM harness_shared.datatype_registry
+       WHERE workspace_id = ${ws} AND id = 'bet'`;
+    expect(storedIdentity).toEqual({
+      embedding_mode: 'gemma',
+      embedding_profile: EMBEDDER_DIM_SPECS.gemma.profileId,
+    });
     expect(row.payloadSchema).toMatchObject({ type: 'object' });
     expect(row.display).toMatchObject({ widget: 'record', summary: '{{market}}' });
     expect(row.selfImprovement).toMatchObject({ scorecard: 'brier' });
@@ -100,7 +127,7 @@ describe('datatype_registry store (real PG)', () => {
     const ws = 'ws-dt-update';
     await upsertDatatype(db.adminSql, {
       id: 'wager', workspaceId: ws, title: 'Wager', description: 'first', tier: 'generic-kind',
-      embedding: fakeEmbedding(0.2), createdBy: 'a',
+      ...profiledEmbedding(fakeEmbedding(0.2)), createdBy: 'a',
     });
     const updated = await upsertDatatype(db.adminSql, {
       id: 'wager', workspaceId: ws, title: 'Wager', description: 'an intent: proposed stake/price/size',
@@ -144,6 +171,36 @@ describe('datatype_registry store (real PG)', () => {
     // an unrelated query returns nothing
     const none = await findSimilarDatatypes(db.adminSql, ws, { title: 'kubernetes ingress controller' });
     expect(none.find((h) => h.id === 'calibration-record')).toBeUndefined();
+  });
+
+  it('semantic neighbours require exact profile identity; current-mode legacy rows remain compatible', async () => {
+    const ws = 'ws-dt-profile';
+    await upsertDatatype(db.adminSql, {
+      id: 'semantic-profile-control',
+      workspaceId: ws,
+      title: 'Profile anchor',
+      description: 'vector-only candidate',
+      tier: 'generic-kind',
+      ...profiledEmbedding(fakeEmbedding(0.25)),
+    });
+    await db.adminSql`
+      UPDATE harness_shared.datatype_registry
+         SET embedding_profile = ${EMBEDDER_DIM_SPECS.openai.profileId}
+       WHERE workspace_id = ${ws} AND id = 'semantic-profile-control'`;
+    const query = {
+      title: 'unrelated-token-zqxj',
+      embedding: fakeEmbedding(0.25),
+      embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!,
+    };
+    expect((await findSimilarDatatypes(db.adminSql, ws, query)).map((row) => row.id))
+      .not.toContain('semantic-profile-control');
+
+    await db.adminSql`
+      UPDATE harness_shared.datatype_registry
+         SET embedding_mode = 'gemma', embedding_profile = NULL
+       WHERE workspace_id = ${ws} AND id = 'semantic-profile-control'`;
+    expect((await findSimilarDatatypes(db.adminSql, ws, query)).map((row) => row.id))
+      .toContain('semantic-profile-control');
   });
 
   it('is WORKSPACE-ISOLATED — a datatype declared in ws-A is invisible from ws-B', async () => {

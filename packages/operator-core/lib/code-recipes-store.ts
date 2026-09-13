@@ -22,8 +22,10 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import type { EmbedderMode } from '@papercusp/memory';
 import type { NormalizedExecutionTrace } from './orchestration-trace';
 import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from './recipe-contract';
+import type { ProseProfileSelection } from './search/prose-vector-dims';
 
 export interface CodeRecipeRow {
   id: string;
@@ -80,6 +82,10 @@ export interface UpsertCodeRecipeInput {
   toolsUsed?: string[];
   /** title+description embedding (768-dim). null when the embedder was unavailable. */
   embedding?: number[] | null;
+  /** Required whenever embedding is non-null: readable mode projection plus
+   * the exact versioned space identity stored beside the vector. */
+  embeddingMode?: EmbedderMode | null;
+  embeddingProfile?: ProseProfileSelection | null;
   tags?: string[];
   /** The coord ownerId that authored the recipe (first-write attribution). */
   createdBy?: string | null;
@@ -218,18 +224,22 @@ export async function upsertRecipe(sql: postgres.Sql, input: UpsertCodeRecipeInp
   }
   // pgvector wants the textual `[1,2,3]` form; null leaves/keeps it unset.
   const embeddingLiteral = input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
+  if (embeddingLiteral && (!input.embeddingMode || !input.embeddingProfile)) {
+    throw new Error('upsertRecipe: a stored embedding requires exact mode and profile provenance');
+  }
   const bindingSchemaJson = input.bindingSchema == null ? null : JSON.stringify(input.bindingSchema);
   const capabilityManifestJson = input.capabilityManifest == null ? null : JSON.stringify(input.capabilityManifest);
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.code_recipes
       (id, title, description, script, binding_schema, capability_manifest, pot_slug, author_role,
-       tools_used, tags, embedding, created_by, updated_at)
+       tools_used, tags, embedding, embedding_mode, embedding_profile, created_by, updated_at)
     VALUES (
       ${input.id}, ${input.title},
       ${input.description}, ${input.script}, ${bindingSchemaJson}::jsonb, ${capabilityManifestJson}::jsonb,
       ${input.potSlug}, ${input.authorRole ?? null},
       ${input.toolsUsed ?? []}, ${input.tags ?? []},
-      ${embeddingLiteral}::vector, ${input.createdBy ?? null}, now()
+      ${embeddingLiteral}::vector, ${input.embeddingMode ?? null},
+      ${input.embeddingProfile?.profileId ?? null}, ${input.createdBy ?? null}, now()
     )
     ON CONFLICT (id) DO UPDATE SET
       title       = EXCLUDED.title,
@@ -248,6 +258,10 @@ export async function upsertRecipe(sql: postgres.Sql, input: UpsertCodeRecipeInp
       tags        = EXCLUDED.tags,
       -- keep the existing embedding when this write carries none (no embedder)
       embedding   = COALESCE(EXCLUDED.embedding, harness_shared.code_recipes.embedding),
+      embedding_mode = CASE WHEN EXCLUDED.embedding IS NULL
+        THEN harness_shared.code_recipes.embedding_mode ELSE EXCLUDED.embedding_mode END,
+      embedding_profile = CASE WHEN EXCLUDED.embedding IS NULL
+        THEN harness_shared.code_recipes.embedding_profile ELSE EXCLUDED.embedding_profile END,
       updated_at  = now()
     WHERE ${input.createOnly !== true}
     RETURNING ${SELECT_COLS(sql)}`;

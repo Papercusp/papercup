@@ -252,7 +252,8 @@ export async function syncTurnChunks(
                          turn_sha = EXCLUDED.turn_sha,
                          updated_at = now(),
                          embedding = NULL,
-                         embedding_mode = NULL`,
+                         embedding_mode = NULL,
+                         embedding_profile = NULL`,
           params,
         );
         stats.chunks += chunks.length;

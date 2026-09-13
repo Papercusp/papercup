@@ -14,7 +14,8 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchSimilarRecipes } from '../../code-recipes-search';
-import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { stripCallerOperatorScope } from '../_harness-scope';
@@ -69,7 +70,11 @@ export default defineTool({
   async handler(args, ctx) {
     // Bound the acquisition — .catch handles a rejection but NOT a cold-pipeline
     // HANG (the EI-9143 ~5% 60s-timeout class); on timeout → null → BM25 (WI-3922).
-    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    const embeddingProfile = resolved
+      ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+      : null;
+    const embedder = resolved && embeddingProfile ? resolved.embed : null;
     // The query carries no separate description / tool-set — feed it as the title
     // and let the lexical + cosine legs do the work (toolsUsed empty ⇒ the
     // structural leg contributes 0, so ranking is purely text similarity here).

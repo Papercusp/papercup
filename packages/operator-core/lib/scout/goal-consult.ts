@@ -188,7 +188,8 @@ async function runGoalFeedbackProd(
   const [
     { getFeedbackCore },
     { routeConsult },
-    { buildQueryEmbedder },
+    { buildQueryEmbedderResolved },
+    { resolveProseProfileSelection },
     { resolveSessionStates },
     conversations,
     { notifyAgents },
@@ -196,17 +197,23 @@ async function runGoalFeedbackProd(
     import('../consult/get-feedback-core'),
     import('../consult/relevance-router'),
     import('../agent-tools/search/embedder'),
+    import('../search/prose-vector-dims'),
     import('../agent-tools/coordination/liveness-oracle'),
     import('../agent-tools/coordination/conversations'),
     import('../agent-tools/coordination/notify-agents'),
   ]);
-  const embed = await buildQueryEmbedder();
+  const resolved = await buildQueryEmbedderResolved();
+  const embeddingProfile = resolved
+    ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+    : null;
   return getFeedbackCore(request, {
     getSql: () => getOrgPg().sql,
     route: (params) =>
       routeConsult(params, {
         getSql: () => getOrgPg().sql,
-        embed,
+        embed: resolved?.embed ?? null,
+        embeddingProfile,
+        embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
         getLiveness: async (ownerIds) => {
           const verdicts = await resolveSessionStates(
             ownerIds.map((ownerId) => ({ ownerId })),

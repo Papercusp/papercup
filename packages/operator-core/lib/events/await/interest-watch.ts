@@ -51,6 +51,11 @@
  */
 import type { Sql } from 'postgres';
 import { withIterativeScan } from '../../agent-tools/search/hnsw-iterative-scan';
+import {
+  proseProfilePredicateSql,
+  resolveProseProfileIdSelection,
+  type ProseProfileSelection,
+} from '../../search/prose-vector-dims';
 
 /** Cosine floor a peer turn must clear (per-row; this is the default).
  *  Deliberately ABOVE the router's DEFAULT_SIM_FLOOR (0.4): a consult answer is
@@ -85,6 +90,9 @@ export interface InterestWatchRow {
    *  raw so the sweep can pass it back as a parameter (`::vector`) without a
    *  per-sweep sub-select. Null only if the row predates the pgvector leg. */
   embeddingText: string | null;
+  /** Exact space carried by `embeddingText`. Null for legacy/unknown rows,
+   * which fail closed in the sweeper instead of comparing by width or mode. */
+  embeddingProfile: ProseProfileSelection | null;
   simFloor: number;
   intervalSec: number;
   once: boolean;
@@ -133,6 +141,9 @@ function mapRow(r: any): InterestWatchRow {
     eventKey: r.event_key,
     interest: r.interest,
     embeddingText: r.embedding == null ? null : String(r.embedding),
+    embeddingProfile: r.embedding_profile == null
+      ? null
+      : resolveProseProfileIdSelection(String(r.embedding_profile), r.embedding_mode ?? null),
     simFloor: Number(r.sim_floor),
     intervalSec: Number(r.interval_sec),
     once: Boolean(r.once),
@@ -196,6 +207,8 @@ export async function registerInterestWatch(
     eventKey: string;
     interest: string;
     embedding: number[];
+    embeddingMode: string;
+    embeddingProfile: ProseProfileSelection;
     simFloor?: number;
     intervalSec?: number;
     once?: boolean;
@@ -206,10 +219,11 @@ export async function registerInterestWatch(
   const rows = await sql`
     INSERT INTO harness_shared.interest_watches
       (id, workspace_id, owner_id, harness_slug, event_key, interest, embedding,
-       sim_floor, interval_sec, once, watermark)
+       embedding_mode, embedding_profile, sim_floor, interval_sec, once, watermark)
     VALUES
       (${input.id}, ${input.workspaceId}, ${input.ownerId}, ${input.harnessSlug ?? null},
        ${input.eventKey}, ${input.interest}, ${JSON.stringify(input.embedding)}::vector,
+       ${input.embeddingMode}, ${input.embeddingProfile.profileId},
        ${input.simFloor ?? INTEREST_DEFAULT_SIM_FLOOR},
        ${input.intervalSec ?? INTEREST_DEFAULT_INTERVAL_SEC}, ${input.once ?? false},
        -- An interest watches the FUTURE: only turns ingested after registration
@@ -366,8 +380,8 @@ export async function sweepInterestWatch(
     //    (WI-37603) — same guard the router uses.
     const from = new Date(window.fromMs).toISOString();
     const to = new Date(window.toMs).toISOString();
-    if (!row.embeddingText) {
-      throw new Error('interest watch row has no stored embedding (pgvector leg missing?) — cannot match');
+    if (!row.embeddingText || !row.embeddingProfile) {
+      throw new Error('interest watch row has no exact stored embedding profile — cannot match');
     }
     const qVec = row.embeddingText;
     const matches = (await withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
@@ -380,6 +394,7 @@ export async function sweepInterestWatch(
          AND ingested_at > ${from}::timestamptz
          AND ingested_at <= ${to}::timestamptz
          AND text_embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(s as unknown as Sql, row.embeddingProfile, 'text_embedding_profile', 'text_embedding_mode')}
          AND owner IS NOT NULL
          AND owner <> ${row.ownerId}
          AND (turn_origin_verdict IS NULL OR turn_origin_verdict <> 'machine-surface')

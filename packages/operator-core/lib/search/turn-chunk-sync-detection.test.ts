@@ -194,4 +194,14 @@ describe('turn-chunk-sync detection + marking (migration 1117)', () => {
     expect(stats.errors).toBe(1);
     expect(stats.turns).toBe(0);
   });
+
+  it('invalidates exact embedding profile together with vector and mode on a rewritten chunk', async () => {
+    const { sql, calls } = fakeSql([{ ...TURN, text: longText }]);
+    const stats = await syncTurnChunks(sql, { batch: 10 });
+    expect(stats.errors).toBe(0);
+    const insert = calls.find((c) => isInsertChunks(c.query));
+    expect(insert?.query).toMatch(/embedding\s*=\s*NULL/i);
+    expect(insert?.query).toMatch(/embedding_mode\s*=\s*NULL/i);
+    expect(insert?.query).toMatch(/embedding_profile\s*=\s*NULL/i);
+  });
 });

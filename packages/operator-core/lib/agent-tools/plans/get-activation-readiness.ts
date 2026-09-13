@@ -27,24 +27,31 @@ export async function previewPlanStartConsult(params: {
     const [
       { getOrgPg },
       { routeConsult },
-      { buildQueryEmbedder },
+      { buildQueryEmbedderResolved },
+      { resolveProseProfileSelection },
       { resolveSessionStates },
       consult,
     ] = await Promise.all([
       import('@papercusp/db-org'),
       import('../../consult/relevance-router'),
       import('../search/embedder'),
+      import('../../search/prose-vector-dims'),
       import('../coordination/liveness-oracle'),
       import('../../consult/plan-start-consult'),
     ]);
-    const embed = await buildQueryEmbedder();
+    const resolved = await buildQueryEmbedderResolved();
+    const embeddingProfile = resolved
+      ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+      : null;
     return await consult.planStartConsult(
       params,
       {
         route: (routeParams) =>
           routeConsult(routeParams, {
             getSql: () => getOrgPg().sql,
-            embed,
+            embed: resolved?.embed ?? null,
+            embeddingProfile,
+            embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
             getLiveness: async (ownerIds) => {
               const verdicts = await resolveSessionStates(
                 ownerIds.map((ownerId) => ({ ownerId })),

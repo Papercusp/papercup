@@ -821,16 +821,20 @@ async function prodDiscoverGrader(
   rubric: NonNullable<Awaited<ReturnType<typeof getAcceptanceRubricForPlan>>>,
   ctx: LaunchCtx,
 ): Promise<GraderDiscoveryResult> {
-  const [{ getOrgPg }, { routeConsult }, { buildQueryEmbedder }, { resolveSessionStates }, { selectAcceptanceGrader }] =
+  const [{ getOrgPg }, { routeConsult }, { buildQueryEmbedderResolved }, { resolveProseProfileSelection }, { resolveSessionStates }, { selectAcceptanceGrader }] =
     await Promise.all([
       import('@papercusp/db-org'),
       import('./consult/relevance-router'),
       import('./agent-tools/search/embedder'),
+      import('./search/prose-vector-dims'),
       import('./agent-tools/coordination/liveness-oracle'),
       import('./consult/acceptance-grader-select'),
     ]);
   const { lineagePartyKeys } = await import('./acceptance-author-identity');
-  const embed = await buildQueryEmbedder();
+  const resolved = await buildQueryEmbedderResolved();
+  const embeddingProfile = resolved
+    ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+    : null;
   const r = rubric as unknown as {
     rubricId: string;
     revision?: number | null;
@@ -883,7 +887,9 @@ async function prodDiscoverGrader(
       route: (params) =>
         routeConsult(params, {
           getSql: () => getOrgPg().sql,
-          embed,
+          embed: resolved?.embed ?? null,
+          embeddingProfile,
+          embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
           getLiveness: async (ownerIds) => {
             const verdicts = await resolveSessionStates(
               ownerIds.map((ownerId) => ({ ownerId })),

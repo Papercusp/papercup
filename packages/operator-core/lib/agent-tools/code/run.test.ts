@@ -64,7 +64,7 @@ vi.mock('../../endpoint-route/routes/transport/role-principal-caps', async (impo
   synthesizeDispatchPrincipal: synthesizeDispatchPrincipalMock,
 }));
 vi.mock('../search/embedder', () => ({
-  buildQueryEmbedder: async () => null,
+  buildQueryEmbedderResolved: async () => null,
   interactiveEmbedAcquireBudgetMs: () => 4000,
 }));
 vi.mock('../../hive-federation', async (importOriginal) => ({

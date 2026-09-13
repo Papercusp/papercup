@@ -6,6 +6,8 @@
  * dead embedder or slow DB yields null, never an error or a stalled fire).
  */
 import { describe, expect, it } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 import {
   extractWakeRecipeQuery,
   findTopRecipeForWake,
@@ -66,16 +68,46 @@ describe('renderWakeRecipeLine', () => {
 
 /** A tagged-template sql stub returning canned recipe rows. */
 function stubSql(rows: Array<Record<string, unknown>>) {
-  return (async () => rows) as never;
+  const sql = (async () => rows) as unknown as {
+    (strings: TemplateStringsArray, ...values: unknown[]): Promise<Array<Record<string, unknown>>>;
+    unsafe: (text: string) => string;
+  };
+  sql.unsafe = (text: string) => text;
+  return sql as never;
 }
 
 const okEmbedder = async () => [0.1, 0.2, 0.3];
+const queryEmbedder = (embed: (text: string) => Promise<number[]>) => ({
+  embed,
+  profile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!,
+});
 
 describe('findTopRecipeForWake', () => {
+  it('includes the exact stored-profile predicate in the recipe cosine query', async () => {
+    const identifiers: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      return [{ id: 'r-profile', title: 'Profiled', script: 'return 1;', run_count: 2, sim: 0.9 }];
+    }) as unknown as {
+      (strings: TemplateStringsArray, ...values: unknown[]): Array<Record<string, unknown>>;
+      unsafe: (text: string) => string;
+    };
+    sql.unsafe = (text: string) => {
+      identifiers.push(text);
+      return text;
+    };
+    const hit = await findTopRecipeForWake('do the thing', {
+      sql: sql as never,
+      queryEmbedder: queryEmbedder(okEmbedder),
+    });
+    expect(hit?.id).toBe('r-profile');
+    expect(identifiers).toContain('embedding_profile');
+    expect(identifiers).toContain('embedding_mode');
+  });
+
   it('returns the top hit when the ABSOLUTE cosine clears the floor', async () => {
     const hit = await findTopRecipeForWake('do the thing', {
       sql: stubSql([{ id: 'r1', title: 'Do the thing', run_count: 3, sim: 0.82 }]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toEqual({ id: 'r1', title: 'Do the thing', runCount: 3, sim: 0.82 });
   });
@@ -83,40 +115,40 @@ describe('findTopRecipeForWake', () => {
   it('returns null when the top hit sits below the floor (topical noise)', async () => {
     const hit = await findTopRecipeForWake('do the thing', {
       sql: stubSql([{ id: 'r1', title: 'Unrelated', run_count: 3, sim: LOOP_WAKE_RECIPE_SIM_FLOOR - 0.01 }]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toBeNull();
   });
 
   it('returns null with no matching recipe rows', async () => {
     expect(
-      await findTopRecipeForWake('do the thing', { sql: stubSql([]), embedder: okEmbedder }),
+      await findTopRecipeForWake('do the thing', { sql: stubSql([]), queryEmbedder: queryEmbedder(okEmbedder) }),
     ).toBeNull();
   });
 
   it('returns null when no embedder is available (quota exhausted / model missing)', async () => {
-    expect(await findTopRecipeForWake('do the thing', { sql: stubSql([]), embedder: null })).toBeNull();
+    expect(await findTopRecipeForWake('do the thing', { sql: stubSql([]), queryEmbedder: null })).toBeNull();
   });
 
   it('returns null for a blank query without touching the seams', async () => {
     const sql = (async () => {
       throw new Error('must not be called');
     }) as never;
-    expect(await findTopRecipeForWake('   ', { sql, embedder: okEmbedder })).toBeNull();
+    expect(await findTopRecipeForWake('   ', { sql, queryEmbedder: queryEmbedder(okEmbedder) })).toBeNull();
   });
 
   it('fails soft to null when the DB read throws', async () => {
     const sql = (async () => {
       throw new Error('pg down');
     }) as never;
-    expect(await findTopRecipeForWake('q', { sql, embedder: okEmbedder })).toBeNull();
+    expect(await findTopRecipeForWake('q', { sql, queryEmbedder: queryEmbedder(okEmbedder) })).toBeNull();
   });
 
   it('yields null when the lookup outlives the time budget (the fire path must not stall)', async () => {
     const never = () => new Promise<number[]>(() => {});
     const hit = await findTopRecipeForWake('q', {
       sql: stubSql([]),
-      embedder: never,
+      queryEmbedder: queryEmbedder(never),
       timeoutMs: 30,
     });
     expect(hit).toBeNull();
@@ -125,7 +157,7 @@ describe('findTopRecipeForWake', () => {
   it('coerces a string run_count/sim (bigint/numeric wire types)', async () => {
     const hit = await findTopRecipeForWake('q', {
       sql: stubSql([{ id: 'r2', title: 'T', run_count: '11', sim: '0.71' }]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toEqual({ id: 'r2', title: 'T', runCount: 11, sim: 0.71 });
   });
@@ -141,7 +173,7 @@ describe('findTopRecipeForWake', () => {
         { id: 'r-opaque', title: 'Opaque one', script: unresolvedScript, run_count: 1, sim: 0.9 },
         { id: 'r-clean', title: 'Clean one', script: 'return await tools.docs.search({ query: "x" });', run_count: 4, sim: 0.75 },
       ]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toEqual({ id: 'r-clean', title: 'Clean one', runCount: 4, sim: 0.75 });
   });
@@ -153,7 +185,7 @@ describe('findTopRecipeForWake', () => {
         { id: 'r-opaque-1', title: 'Opaque one', script: unresolvedScript, run_count: 1, sim: 0.9 },
         { id: 'r-opaque-2', title: 'Opaque two', script: unresolvedScript, run_count: 2, sim: 0.8 },
       ]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toBeNull();
   });
@@ -178,7 +210,7 @@ describe('findTopRecipeForWake', () => {
           sim: 0.74,
         },
       ]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toEqual({ id: 'r-safe', title: 'Read verification state', runCount: 4, sim: 0.74 });
   });
@@ -197,7 +229,7 @@ describe('findTopRecipeForWake', () => {
           sim: 0.74,
         },
       ]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toEqual({
       id: 'r-unbound',
@@ -215,7 +247,7 @@ describe('findTopRecipeForWake', () => {
         sql: stubSql([
           { id: 'r-bound', title: 'Claim item', script: boundScript, run_count: 1, sim: 0.88 },
         ]),
-        embedder: okEmbedder,
+        queryEmbedder: queryEmbedder(okEmbedder),
       }),
     ).toBeNull();
   });
@@ -233,7 +265,7 @@ describe('findTopRecipeForWake', () => {
           sim: LOOP_WAKE_RECIPE_SIM_FLOOR - 0.01,
         },
       ]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toBeNull();
   });
@@ -241,7 +273,7 @@ describe('findTopRecipeForWake', () => {
   it('treats a missing/null script as resolvable (fail-open on the legacy shape, not fail-closed)', async () => {
     const hit = await findTopRecipeForWake('do the thing', {
       sql: stubSql([{ id: 'r-no-script', title: 'No script column', run_count: 2, sim: 0.7 }]),
-      embedder: okEmbedder,
+      queryEmbedder: queryEmbedder(okEmbedder),
     });
     expect(hit).toEqual({ id: 'r-no-script', title: 'No script column', runCount: 2, sim: 0.7 });
   });

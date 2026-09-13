@@ -21,6 +21,10 @@
  */
 import type { Sql } from 'postgres';
 import { DEFAULT_ARCHIVE_FLOOR } from './get-feedback-core';
+import {
+  proseProfilePredicateSql,
+  type ProseProfileSelection,
+} from '../search/prose-vector-dims';
 
 /** Cap on the surfaced one-liner — the fold is a hint, not the thread. */
 export const PEERS_KNOW_ANSWER_CAP = 280;
@@ -69,14 +73,17 @@ interface PeersKnowRow {
  */
 export async function peersKnowLookup(
   sql: Sql,
-  embed: ((text: string) => Promise<number[]>) | null,
+  query: {
+    embed: (text: string) => Promise<number[]>;
+    profile: ProseProfileSelection;
+  } | null,
   params: { workspaceId: string; intent: string; floor?: number },
 ): Promise<PeersKnowHit | null> {
   const intent = params.intent.trim();
-  if (!embed || intent.length < PEERS_KNOW_MIN_INTENT_CHARS) return null;
+  if (!query || intent.length < PEERS_KNOW_MIN_INTENT_CHARS) return null;
   const floor = params.floor ?? DEFAULT_ARCHIVE_FLOOR;
   try {
-    const vec = await embed(intent).catch(() => null);
+    const vec = await query.embed(intent).catch(() => null);
     if (!vec || vec.length === 0) return null;
     const qVec = JSON.stringify(vec);
     // Same corpus + exclusions as the archive-first serve (get-feedback-core):
@@ -90,6 +97,7 @@ export async function peersKnowLookup(
        WHERE workspace_id = ${params.workspaceId}
          AND state = 'closed_answered'
          AND query_embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(sql, query.profile, 'query_embedding_profile', 'query_embedding_mode')}
          AND (outcome->>'source' IS DISTINCT FROM 'archive')
     ORDER BY query_embedding <=> ${qVec}::vector
        LIMIT 1

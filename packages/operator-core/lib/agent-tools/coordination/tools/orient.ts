@@ -3611,15 +3611,23 @@ export default defineTool({
       // any failure resolves null, and the module itself never throws.
       async (intent: string) => {
         try {
-          const [{ peersKnowLookup }, { buildQueryEmbedder }, { getOrgPg }] = await Promise.all([
+          const [{ peersKnowLookup }, { buildQueryEmbedderResolved }, { resolveProseProfileSelection }, { getOrgPg }] = await Promise.all([
             import('../../../consult/peers-know'),
             import('../../search/embedder'),
+            import('../../../search/prose-vector-dims'),
             import('@papercusp/db-org'),
           ]);
           const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? activeWorkspaceId();
           if (!ws) return null;
-          const embed = await buildQueryEmbedder({ acquireBudgetMs: 1_500 });
-          return await peersKnowLookup(getOrgPg().sql, embed, { workspaceId: ws, intent });
+          const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 1_500 });
+          const profile = resolved
+            ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+            : null;
+          return await peersKnowLookup(
+            getOrgPg().sql,
+            resolved && profile ? { embed: resolved.embed, profile } : null,
+            { workspaceId: ws, intent },
+          );
         } catch {
           return null;
         }

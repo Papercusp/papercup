@@ -13,6 +13,8 @@
  * Part of code-recipes-2026-06-21 Phase 2 (P-004, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import { runHybridSearch } from '@papercusp/search';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -20,8 +22,16 @@ import { upsertRecipe } from './code-recipes-store';
 import { codeRecipesSource, searchSimilarRecipes } from './code-recipes-search';
 import { stampEmbedderMode } from './search/embedder-mode-registry';
 import { EMBEDDING_FLOOR_GEMMA } from './search/prose-min-score';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const profileMigrationArmed = fileURLToPath(
+  new URL('../../../libs/papercusp/libs/db/sql/1154-prose-embedding-profile-identity.sql', import.meta.url),
+);
+const profileMigration = existsSync(profileMigrationArmed)
+  ? profileMigrationArmed
+  : `${profileMigrationArmed}.DRAFT`;
 
 /**
  * A deterministic 768-dim unit-ish embedding seeded by a scalar so two recipes
@@ -31,12 +41,18 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 const seededEmbedding = (seed: number): number[] => Array.from({ length: 768 }, (_, i) => Math.sin(seed + i * 0.01));
 const basisEmbedding = (index: number): number[] =>
   Array.from({ length: 768 }, (_, i) => (i === index ? 1 : 0));
+const profiledEmbedding = (embedding: number[]) => ({
+  embedding,
+  embeddingMode: 'gemma' as const,
+  embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!,
+});
 
 describe('code_recipes hybrid search (real PG)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
   }, 120_000);
 
   afterAll(async () => {
@@ -54,7 +70,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'list open work-items then mark stale ones blocked',
       script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
-      embedding: seededEmbedding(1),
+      ...profiledEmbedding(seededEmbedding(1)),
     });
     // A decoy on a totally different topic + tool-set.
     await upsertRecipe(db.adminSql, {
@@ -64,7 +80,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'post a coord message when a release ships',
       script: 's',
       toolsUsed: ['coord:send'],
-      embedding: seededEmbedding(50),
+      ...profiledEmbedding(seededEmbedding(50)),
     });
     // A weak lexical neighbor (shares "work-items" but a different action + tools).
     await upsertRecipe(db.adminSql, {
@@ -74,14 +90,14 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'tally how many work-items are open',
       script: 's',
       toolsUsed: ['work_items:list'],
-      embedding: seededEmbedding(40),
+      ...profiledEmbedding(seededEmbedding(40)),
     });
 
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Triage stale work-items',
       description: 'find stale work-items and block them',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
-      embedding: seededEmbedding(1),
+      ...profiledEmbedding(seededEmbedding(1)),
       limit: 5,
     });
 
@@ -102,11 +118,11 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'A reusable script with a deliberately orthogonal vector',
       script: 's',
       toolsUsed: [],
-      embedding: basisEmbedding(0),
+      ...profiledEmbedding(basisEmbedding(0)),
     });
 
     const embedder = async () => basisEmbedding(1);
-    stampEmbedderMode(embedder, 'gemma');
+    stampEmbedderMode(embedder, 'gemma', EMBEDDER_DIM_SPECS.gemma.profileId);
     const result = await runHybridSearch([codeRecipesSource], {
       sql: db.adminSql,
       query: 'quasar zyxw',
@@ -123,6 +139,52 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
     expect(result.legs.semantic.floored).toBeGreaterThan(0);
     expect(result.results.some((row) => row.source_id === 'gemma-floor-regression-zircon')).toBe(false);
+  });
+
+  it('filters by exact profile even when mode and width match, while accepting current-mode legacy rows', async () => {
+    const id = 'recipe-profile-identity-control';
+    await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id,
+      title: 'Exact profile identity control',
+      description: 'semantic-only control row',
+      script: 'return 1;',
+      toolsUsed: ['state:read', 'facts:list'],
+      ...profiledEmbedding(basisEmbedding(0)),
+    });
+    const embedder = async () => basisEmbedding(0);
+    stampEmbedderMode(embedder, 'gemma', EMBEDDER_DIM_SPECS.gemma.profileId);
+
+    await db.adminSql`
+      UPDATE harness_shared.code_recipes
+         SET embedding_mode = 'gemma',
+             embedding_profile = ${EMBEDDER_DIM_SPECS.openai.profileId}
+       WHERE id = ${id}`;
+    const mismatch = await runHybridSearch([codeRecipesSource], {
+      sql: db.adminSql,
+      query: 'semantic-only-zqxj',
+      workspaceId: '',
+      scopeFilter: null,
+      limit: 10,
+      mode: 'embeddings',
+      embedder,
+    });
+    expect(mismatch.results.some((row) => row.source_id === id)).toBe(false);
+
+    await db.adminSql`
+      UPDATE harness_shared.code_recipes
+         SET embedding_profile = NULL
+       WHERE id = ${id}`;
+    const legacy = await runHybridSearch([codeRecipesSource], {
+      sql: db.adminSql,
+      query: 'semantic-only-zqxj',
+      workspaceId: '',
+      scopeFilter: null,
+      limit: 10,
+      mode: 'embeddings',
+      embedder,
+    });
+    expect(legacy.results.some((row) => row.source_id === id)).toBe(true);
   });
 
   it('keeps a recipe name discoverable when the intent query contains extra terms', async () => {
@@ -160,7 +222,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'sweep things',
       script: 's',
       toolsUsed: ['plans:set-status', 'plans:add-item'],
-      embedding: seededEmbedding(5),
+      ...profiledEmbedding(seededEmbedding(5)),
     });
     // Lexically matches the query words but a disjoint tool-set.
     await upsertRecipe(db.adminSql, {
@@ -170,14 +232,14 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'manage plan items',
       script: 's',
       toolsUsed: ['coord:send'],
-      embedding: seededEmbedding(60),
+      ...profiledEmbedding(seededEmbedding(60)),
     });
 
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Manage a plan and its items',
       description: 'manage plan items',
       toolsUsed: ['plans:set-status', 'plans:add-item'],
-      embedding: seededEmbedding(5),
+      ...profiledEmbedding(seededEmbedding(5)),
       limit: 5,
     });
 
@@ -198,7 +260,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'a recipe',
       script: 's',
       toolsUsed: ['coord:send'],
-      embedding: seededEmbedding(7),
+      ...profiledEmbedding(seededEmbedding(7)),
     });
     await upsertRecipe(db.adminSql, {
       potSlug: null,
@@ -207,13 +269,13 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'a recipe',
       script: 's',
       toolsUsed: ['coord:send'],
-      embedding: seededEmbedding(7),
+      ...profiledEmbedding(seededEmbedding(7)),
     });
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Self recipe',
       description: 'a recipe',
       toolsUsed: ['coord:send'],
-      embedding: seededEmbedding(7),
+      ...profiledEmbedding(seededEmbedding(7)),
       excludeId: 'self',
       limit: 5,
     });
@@ -230,7 +292,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'inspect the current checkpoint monitor state',
       script: 'return 1;',
       toolsUsed: [],
-      embedding: seededEmbedding(73),
+      ...profiledEmbedding(seededEmbedding(73)),
     });
 
     const baseSql = db.adminSql as unknown as (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
@@ -255,7 +317,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       title: 'Merged during checkpoint monitor search',
       description: 'inspect the current checkpoint monitor state',
       toolsUsed: [],
-      embedding: seededEmbedding(73),
+      ...profiledEmbedding(seededEmbedding(73)),
       limit: 10,
     });
 
@@ -272,7 +334,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'deploy it',
       script: 's',
       toolsUsed: ['deploy:harness'],
-      embedding: seededEmbedding(9),
+      ...profiledEmbedding(seededEmbedding(9)),
     });
     await upsertRecipe(db.adminSql, {
       potSlug: null,
@@ -281,13 +343,13 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'deploy it',
       script: 's',
       toolsUsed: ['deploy:harness'],
-      embedding: seededEmbedding(9),
+      ...profiledEmbedding(seededEmbedding(9)),
     });
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Deploy the service',
       description: 'deploy it',
       toolsUsed: ['deploy:harness'],
-      embedding: seededEmbedding(9),
+      ...profiledEmbedding(seededEmbedding(9)),
       limit: 5,
     });
     expect(results.find((r) => r.id === 'in-alpha')).toBeDefined();
@@ -304,13 +366,13 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'a thorough description here',
       script: 's',
       toolsUsed: ['coord:send'],
-      embedding: seededEmbedding(11),
+      ...profiledEmbedding(seededEmbedding(11)),
     });
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Fielded recipe title',
       description: 'a thorough description here',
       toolsUsed: ['coord:send'],
-      embedding: seededEmbedding(11),
+      ...profiledEmbedding(seededEmbedding(11)),
       limit: 5,
     });
     const hit = results.find((r) => r.id === 'fielded');
@@ -330,7 +392,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'load the exact work item for this lane',
       script: `return await tools.workItems.get({ id: 'WI-4655', harness: 'papercusp' });`,
       toolsUsed: ['work_items:get'],
-      embedding: seededEmbedding(31),
+      ...profiledEmbedding(seededEmbedding(31)),
     });
     await upsertRecipe(db.adminSql, {
       potSlug: null,
@@ -339,14 +401,14 @@ describe('code_recipes hybrid search (real PG)', () => {
       description: 'load the exact work item for this lane',
       script: `return await tools.workItems.get({ id: 'WI-other', harness: 'papercusp' });`,
       toolsUsed: ['work_items:get'],
-      embedding: seededEmbedding(31),
+      ...profiledEmbedding(seededEmbedding(31)),
     });
 
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Read exact authority-bound item',
       description: 'load the exact work item for this lane',
       toolsUsed: ['work_items:get'],
-      embedding: seededEmbedding(31),
+      ...profiledEmbedding(seededEmbedding(31)),
       recommendationContext: { harness: 'papercusp', items: ['WI-4655'] },
       limit: 10,
     });
@@ -374,14 +436,14 @@ describe('code_recipes hybrid search (real PG)', () => {
         since_ts: '2026-07-10T16:05:00.000Z',
       });`,
       toolsUsed: ['coord:inbox'],
-      embedding: seededEmbedding(41),
+      ...profiledEmbedding(seededEmbedding(41)),
     });
 
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Retry wake leader inbox',
       description: 'check the leader reply after a scheduler wake',
       toolsUsed: ['coord:inbox'],
-      embedding: seededEmbedding(41),
+      ...profiledEmbedding(seededEmbedding(41)),
       recommendationContext: { harness: 'papercusp' },
       limit: 10,
     });
@@ -402,14 +464,14 @@ describe('code_recipes hybrid search (real PG)', () => {
         next: 'historical wake action',
       });`,
       toolsUsed: ['loop:checkpoint'],
-      embedding: seededEmbedding(51),
+      ...profiledEmbedding(seededEmbedding(51)),
     });
 
     const results = await searchSimilarRecipes(db.adminSql, {
       title: 'Persist historical fleet wake note',
       description: 'save the previous leader tick as the current loop checkpoint',
       toolsUsed: ['loop:checkpoint'],
-      embedding: seededEmbedding(51),
+      ...profiledEmbedding(seededEmbedding(51)),
       recommendationContext: { fleet: 'current-fleet', harness: 'papercusp' },
       limit: 10,
     });

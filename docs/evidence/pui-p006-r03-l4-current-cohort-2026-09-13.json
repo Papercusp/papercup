@@ -127,25 +127,30 @@
       },
       {
         "id": 4278,
+        "status": "stale",
+        "reason": "Superseded by current source/test cohort binding 4358."
+      },
+      {
+        "id": 4358,
         "status": "current",
-        "testRunId": 17843015,
-        "bindingFingerprint": "2b63ab91d5edb41c3c80312f802b898df3e82843151c8b1c2ff9290857a9fc60"
+        "testRunId": 17855932,
+        "bindingFingerprint": "18f8b910345128a2102e698b94f03c89671659ad6cc225f2b3dff5eab322d9ca"
       }
     ],
     "cleanTest": {
-      "id": 4277,
-      "testRunId": 17843015,
+      "id": 4357,
+      "testRunId": 17855932,
       "status": "current",
-      "bindingFingerprint": "d82dab469eadea1af5731d981315b254ab37941a2e601b295126ec16feff3bf7"
+      "bindingFingerprint": "970d17339e9b2702dd4764a14c6782b3172b44fff8ee591aa895d0c0682f3099"
     },
     "serverMeasuredFingerprints": {
-      "source": "sha256-file-set-v1:32441a292b3eab7a99b46215670a30178a2e6c50629b84ace4339042cb978e1c",
-      "test": "sha256-file-set-v1:e97f2f096ffe8f463abede6938995636cef49e6ea1e9a12a0af61edf14ab64c0"
+      "source": "sha256-file-set-v1:040f0e554d03c3d9d481b0a4990bec240d08d86ab206e01286aad9561c3c93ef",
+      "test": "sha256-file-set-v1:dfb367103233d898c66b7764669222b90eff3e1d86915d3eaffb0c94525b28e1"
     },
     "adequacy": {
       "selection": [
         "docs/evidence/pui-p006-r03-l4-current-cohort-2026-09-13.json#carry-preservation-mutant",
-        "docs/evidence/pui-p006-r03-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17843015"
+        "docs/evidence/pui-p006-r03-l4-current-cohort-2026-09-13.json#post-probe-clean-test-run-17855932"
       ],
       "verdict": "pass",
       "requiredProofFloor": "l4",
@@ -157,7 +162,8 @@
         "plan-class-risk-floor": "pass",
         "oracle-independence": "pass",
         "correct-layer": "pass"
-      }
+      },
+      "scopeCaveat": "This is a test-adequacy verdict for the exact OMP references, not the spec's required cross-engine parity verdict."
     }
   }
 }

@@ -57,6 +57,7 @@ import {
   INTEREST_MAX_SIM_FLOOR,
   INTEREST_DEFAULT_INTERVAL_SEC,
 } from '../../events/await/interest-watch';
+import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the one-shot wake default is now
@@ -273,14 +274,17 @@ export default defineTool({
       const interestOnce = args.once ?? false;
       // Embed ONCE — dynamically imported because the embedder's transitive
       // graph opens PG at import time (same reason get-feedback.ts lazy-loads it).
-      const { buildQueryEmbedder } = await import('../search/embedder');
-      const embed = await buildQueryEmbedder();
-      if (!embed) {
+      const { buildQueryEmbedderResolved } = await import('../search/embedder');
+      const resolved = await buildQueryEmbedderResolved();
+      const embeddingProfile = resolved
+        ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+        : null;
+      if (!resolved || !embeddingProfile) {
         throw new Error(
-          'watch:create — no embedder is available on this host, so this interest could never be matched. Refusing to register (honest degrade) rather than registering a watch that silently never fires.',
+          'watch:create — no profile-compatible prose embedder is available on this host, so this interest could never be matched. Refusing to register (honest degrade) rather than registering a watch that silently never fires.',
         );
       }
-      const vec = await embed(args.pattern).catch(() => null);
+      const vec = await resolved.embed(args.pattern).catch(() => null);
       if (!vec || vec.length === 0) {
         throw new Error('watch:create — embedding the interest text failed; retry, or check the embedding sidecar.');
       }
@@ -333,6 +337,8 @@ export default defineTool({
         eventKey,
         interest: args.pattern,
         embedding: vec,
+        embeddingMode: resolved.mode,
+        embeddingProfile,
         simFloor,
         ...(args.interval_sec != null ? { intervalSec: args.interval_sec } : {}),
         once: interestOnce,

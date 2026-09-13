@@ -51,6 +51,8 @@ function routed(cands: RoutingCandidate[], degraded = false): RouteResult {
       ...(degraded ? { degraded: 'embed-unavailable' as const } : {}),
     },
     queryVec: degraded ? null : [0.1],
+    queryProfile: null,
+    queryMode: null,
   };
 }
 

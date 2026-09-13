@@ -12,7 +12,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const rootMock = vi.hoisted(() => ({ fn: vi.fn(() => '/home/u/.papercusp') }));
 vi.mock('../papercusp-root', () => ({ papercuspRoot: rootMock.fn }));
 
-const composeMock = vi.hoisted(() => ({ fn: vi.fn(() => 'RESOLVER') }));
+const composeMock = vi.hoisted(() => {
+  const resolver = vi.fn((_id: string): string | null => null);
+  return { fn: vi.fn(() => resolver), resolver };
+});
 vi.mock('@papercusp/blueprint-distribution', () => ({ makeComposedResolveExtends: composeMock.fn }));
 
 import {
@@ -38,7 +41,7 @@ describe('INSTALLED_BLUEPRINTS_DIR', () => {
 describe('operatorResolveExtends', () => {
   it('composes a resolver with the installed dir and no local dirs by default', () => {
     const out = operatorResolveExtends();
-    expect(out).toBe('RESOLVER');
+    expect(out).toBe(composeMock.resolver);
     expect(composeMock.fn).toHaveBeenCalledWith({
       localDirs: [],
       installedDir: '/home/u/.papercusp/blueprints',

@@ -22,7 +22,12 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
+import {
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from '../search/prose-vector-dims';
 import {
   getFeedbackCore,
   HARD_BLOCKED_EXPIRY_MS,
@@ -57,6 +62,10 @@ const MIGRATION_834 = fileURLToPath(
 const MIGRATION_837 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/837-consult-query-embedding.sql', import.meta.url),
 );
+const MIGRATION_847 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/847-widen-consult-interest-vecs-to-768.sql', import.meta.url),
+);
+const GEMMA_QUERY_PROFILE = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
 
 let rootSql: Sql;
 
@@ -87,6 +96,12 @@ beforeAll(async () => {
   // (query_embedding column + hnsw index behind its extension guard).
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe(readFileSync(MIGRATION_837, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_847, 'utf8'));
+  await rootSql.unsafe(`
+    ALTER TABLE harness_shared.consult_state
+      ADD COLUMN query_embedding_mode text,
+      ADD COLUMN query_embedding_profile text
+  `);
   // Migration 844 (cascade_cursor + cascade_digest) — .sql once armed, .DRAFT
   // while iterating, so the suite is valid on both sides of the arming mv.
   const MIGRATION_844_ARMED = fileURLToPath(
@@ -161,6 +176,8 @@ const routeOf = (
     fallback?: 'lexical';
     all?: RoutingCandidate[];
     queryVec?: number[] | null;
+    queryProfile?: ProseProfileSelection | null;
+    queryMode?: string | null;
   } = {},
 ): RouteResult => ({
   verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
@@ -169,6 +186,12 @@ const routeOf = (
   // Default null: existing scenarios exercise the pre-P-006 paths (no archive
   // leg); archive tests pass an explicit vector.
   queryVec: opts.queryVec ?? null,
+  queryProfile: opts.queryProfile === undefined
+    ? (opts.queryVec ? GEMMA_QUERY_PROFILE : null)
+    : opts.queryProfile,
+  queryMode: opts.queryMode === undefined
+    ? (opts.queryVec ? 'gemma' : null)
+    : opts.queryMode,
 });
 
 let convSeq = 0;
@@ -1140,11 +1163,11 @@ describe('getFeedbackCore — recursion lineage (P-005)', () => {
 // closed_answered row in the workspace, so shared-workspace seeds would
 // couple the tests to execution order.
 
-/** 384-d unit vector at angle θ in the (0,1) plane — cosine sim between two
+/** 768-d unit vector at angle θ in the (0,1) plane — cosine sim between two
  * vecAt angles is exactly cos(θ₁−θ₂), so archive similarity is controllable
  * (same idiom as relevance-router.integration.test.ts). */
 function vecAt(theta: number): number[] {
-  const v: number[] = new Array(384).fill(0);
+  const v: number[] = new Array(768).fill(0);
   v[0] = Math.cos(theta);
   v[1] = Math.sin(theta);
   return v;
@@ -1158,6 +1181,8 @@ async function seedClosedConsult(opts: {
   responder?: string | null;
   question?: string;
   outcome?: Record<string, unknown>;
+  mode?: string | null;
+  profile?: string | null;
 }): Promise<void> {
   // sql.json, NOT JSON.stringify + ::jsonb: this fixture connection runs
   // prepare:true, under which the hand-stringified idiom double-encodes into a
@@ -1166,12 +1191,14 @@ async function seedClosedConsult(opts: {
   await rootSql`
     INSERT INTO harness_shared.consult_state
       (workspace_id, conversation_id, requester_id, responder_id, state, question,
-       routing, outcome, closed_at, query_embedding)
+       routing, outcome, closed_at, query_embedding, query_embedding_mode, query_embedding_profile)
     VALUES
       (${opts.ws}, ${opts.conv}, 'req-past', ${opts.responder ?? 'resp-arch'},
        'closed_answered', ${opts.question ?? 'an earlier, similar question'},
        '{}'::jsonb, ${rootSql.json((opts.outcome ?? { answer: 'archived answer', confidence: 'high' }) as never)},
-       ${NOW.toISOString()}::timestamptz, ${JSON.stringify(opts.vec)}::vector)
+       ${NOW.toISOString()}::timestamptz, ${JSON.stringify(opts.vec)}::vector,
+       ${opts.mode === undefined ? 'gemma' : opts.mode},
+       ${opts.profile === undefined ? EMBEDDER_DIM_SPECS.gemma.profileId : opts.profile})
   `;
 }
 
@@ -1212,6 +1239,8 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(row.wakes_used).toBe(0);
     expect(row.outcome).toMatchObject({ source: 'archive', source_conversation_id: 'arch-src-1' });
     expect(row.has_query_embedding).toBe(true);
+    expect(row.query_embedding_mode).toBe('gemma');
+    expect(row.query_embedding_profile).toBe(EMBEDDER_DIM_SPECS.gemma.profileId);
 
     // WI-1713046 — the row must not misreport ITSELF, independently of whether
     // the answer it served was the right one.
@@ -1237,6 +1266,54 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(new Date(row.closed_at as string).getTime()).toBeGreaterThanOrEqual(
       new Date(row.created_at as string).getTime(),
     );
+  });
+
+  it('rejects an exact foreign profile even when mode and dimensions look compatible', async () => {
+    const ws = 'ws-arch-profile-mismatch';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-foreign-profile',
+      vec: vecAt(0),
+      mode: 'gemma',
+      profile: EMBEDDER_DIM_SPECS.openai.profileId,
+    });
+    const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
+  it('accepts a legacy NULL profile only through that mode current declared profile', async () => {
+    const ws = 'ws-arch-legacy-current-profile';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-legacy-gemma',
+      vec: vecAt(0),
+      mode: 'gemma',
+      profile: null,
+    });
+    const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
+    expect(r.verdict).toBe('served_from_archive');
+    expect(r.archive?.source_conversation_id).toBe('arch-legacy-gemma');
+    expect(reached).toHaveLength(0);
+  });
+
+  it('fails closed when a vector arrives without exact query provenance', async () => {
+    const ws = 'ws-arch-query-profile-missing';
+    await seedClosedConsult({ ws, conv: 'arch-would-match', vec: vecAt(0) });
+    const route = routeOf([cand('cand-live')], {
+      queryVec: qv,
+      queryProfile: null,
+      queryMode: null,
+    });
+    const { deps, reached } = makeDeps(route);
+    const r = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws }, deps));
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+    expect((await stateRow(r.conversation_id, ws)).has_query_embedding).toBe(false);
   });
 
   it('CONTROL: the self-description assertions are FALSIFIABLE — the pre-fix row shape is caught', async () => {
@@ -1967,6 +2044,10 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
 // reason the archive-first serve above is tested here.
 describe('peersKnowLookup — the orient peers-know fold reads the settled archive, read-only', () => {
   const fakeEmbed = (vec: number[]) => async (_text: string) => vec;
+  const query = (
+    vec: number[],
+    profile: ProseProfileSelection = GEMMA_QUERY_PROFILE,
+  ) => ({ embed: fakeEmbed(vec), profile });
 
   it('an above-floor closed_answered row surfaces: one-liner answer + provenance + sim; nothing is written', async () => {
     const ws = 'ws-pk-hit';
@@ -1978,7 +2059,7 @@ describe('peersKnowLookup — the orient peers-know fold reads the settled archi
       outcome: { answer: '  bump   hnsw.ef_search\n(the scan stops early otherwise)  ', confidence: 'high' },
     });
     const before = await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state WHERE workspace_id = ${ws}`;
-    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+    const hit = await peersKnowLookup(rootSql, query(vecAt(0)), {
       workspaceId: ws,
       intent: 'why does my hnsw vector scan under-return rows?',
     });
@@ -1997,7 +2078,7 @@ describe('peersKnowLookup — the orient peers-know fold reads the settled archi
   it('a below-floor (dissimilar) row is a null — precision-biased, no noise hit', async () => {
     const ws = 'ws-pk-miss';
     await seedClosedConsult({ ws, conv: 'pk-orth', vec: vecAt(Math.PI / 2) }); // sim 0
-    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+    const hit = await peersKnowLookup(rootSql, query(vecAt(0)), {
       workspaceId: ws,
       intent: 'a question about something entirely unrelated',
     });
@@ -2012,7 +2093,7 @@ describe('peersKnowLookup — the orient peers-know fold reads the settled archi
       vec: vecAt(0),
       outcome: { source: 'archive', answer: 'copied answer' },
     });
-    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+    const hit = await peersKnowLookup(rootSql, query(vecAt(0)), {
       workspaceId: ws,
       intent: 'the same question the archive copy carries',
     });
@@ -2022,7 +2103,7 @@ describe('peersKnowLookup — the orient peers-know fold reads the settled archi
   it('an outcome with no string answer is a null — a garbled hit is worse than none', async () => {
     const ws = 'ws-pk-noanswer';
     await seedClosedConsult({ ws, conv: 'pk-bare', vec: vecAt(0), outcome: { confidence: 'high' } });
-    const hit = await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), {
+    const hit = await peersKnowLookup(rootSql, query(vecAt(0)), {
       workspaceId: ws,
       intent: 'a question whose settled row lost its answer text',
     });
@@ -2033,13 +2114,41 @@ describe('peersKnowLookup — the orient peers-know fold reads the settled archi
     const ws = 'ws-pk-degrade';
     await seedClosedConsult({ ws, conv: 'pk-deg', vec: vecAt(0) });
     expect(await peersKnowLookup(rootSql, null, { workspaceId: ws, intent: 'long enough intent text here' })).toBeNull();
-    expect(await peersKnowLookup(rootSql, fakeEmbed(vecAt(0)), { workspaceId: ws, intent: 'short' })).toBeNull();
+    expect(await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: ws, intent: 'short' })).toBeNull();
     // An embedder that rejects degrades too (the .catch leg).
     const throwingEmbed = async (_text: string): Promise<number[]> => {
       throw new Error('embed backend down');
     };
     expect(
-      await peersKnowLookup(rootSql, throwingEmbed, { workspaceId: ws, intent: 'long enough intent text here' }),
+      await peersKnowLookup(rootSql, { embed: throwingEmbed, profile: GEMMA_QUERY_PROFILE }, { workspaceId: ws, intent: 'long enough intent text here' }),
     ).toBeNull();
+  });
+
+  it('uses the same exact-profile and legacy-current compatibility rule as archive serving', async () => {
+    const mismatchWs = 'ws-pk-profile-mismatch';
+    await seedClosedConsult({
+      ws: mismatchWs,
+      conv: 'pk-foreign-profile',
+      vec: vecAt(0),
+      mode: 'gemma',
+      profile: EMBEDDER_DIM_SPECS.openai.profileId,
+    });
+    expect(await peersKnowLookup(rootSql, query(vecAt(0)), {
+      workspaceId: mismatchWs,
+      intent: 'profile identity must match this settled answer',
+    })).toBeNull();
+
+    const legacyWs = 'ws-pk-legacy-current';
+    await seedClosedConsult({
+      ws: legacyWs,
+      conv: 'pk-legacy-current',
+      vec: vecAt(0),
+      mode: 'gemma',
+      profile: null,
+    });
+    expect((await peersKnowLookup(rootSql, query(vecAt(0)), {
+      workspaceId: legacyWs,
+      intent: 'legacy mode maps only to its current profile',
+    }))?.ref).toBe('pk-legacy-current');
   });
 });

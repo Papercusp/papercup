@@ -17,14 +17,30 @@
  * Part of code-recipes-2026-06-21 Phase 3 (P-013, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import type postgres from 'postgres';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { upsertRecipe, recordRecipeRun } from './code-recipes-store';
 import { recipeCandidates } from './code-recipes-candidates';
+import { PROSE_VECTOR_DIMS, resolveProseProfileSelection } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const profileMigrationArmed = fileURLToPath(
+  new URL('../../../libs/papercusp/libs/db/sql/1154-prose-embedding-profile-identity.sql', import.meta.url),
+);
+const profileMigration = existsSync(profileMigrationArmed)
+  ? profileMigrationArmed
+  : `${profileMigrationArmed}.DRAFT`;
 
-const seededEmbedding = (seed: number): number[] => Array.from({ length: 384 }, (_, i) => Math.sin(seed + i * 0.01));
+const seededEmbedding = (seed: number): number[] =>
+  Array.from({ length: PROSE_VECTOR_DIMS }, (_, i) => Math.sin(seed + i * 0.01));
+const profiledEmbedding = (embedding: number[]) => ({
+  embedding,
+  embeddingMode: 'gemma' as const,
+  embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!,
+});
 
 /** Record N runs for a recipe across the given distinct agent owners (round-robin). */
 async function seedRuns(
@@ -52,6 +68,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
   }, 120_000);
 
   afterAll(async () => {
@@ -70,7 +87,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'list open work-items, then mark the stale ones blocked',
       script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state', 'work_items:comment'],
-      embedding: seededEmbedding(1),
+      ...profiledEmbedding(seededEmbedding(1)),
     });
     await seedRuns(db.adminSql, 'triage-and-block-stale', ws, hive, {
       runs: 12,
@@ -85,7 +102,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'just call plans list',
       script: 's',
       toolsUsed: ['plans:list'],
-      embedding: seededEmbedding(20),
+      ...profiledEmbedding(seededEmbedding(20)),
     });
     await seedRuns(db.adminSql, 'just-list-plans', ws, hive, {
       runs: 30, // hot, but a 1-tool wrapper → still excluded
@@ -100,7 +117,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'deploy the harness then post to coord',
       script: 's',
       toolsUsed: ['deploy:harness', 'coord:send'],
-      embedding: seededEmbedding(40),
+      ...profiledEmbedding(seededEmbedding(40)),
     });
     await seedRuns(db.adminSql, 'deploy-and-announce', ws, hive, {
       runs: 3,
@@ -116,7 +133,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
         description: 'read the feedback queue and produce a digest',
         script: 's',
         toolsUsed: ['feedback:list', 'feedback:digest'],
-        embedding: seededEmbedding(7),
+        ...profiledEmbedding(seededEmbedding(7)),
       });
       await seedRuns(db.adminSql, id, ws, hive, {
         runs: 4,
@@ -164,7 +181,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'a multi-tool recipe run only once',
       script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
-      embedding: seededEmbedding(3),
+      ...profiledEmbedding(seededEmbedding(3)),
     });
     await seedRuns(db.adminSql, 'rarely-run', ws, hive, { runs: 1, agents: ['agent-a'] });
 
@@ -181,7 +198,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'two-tool recipe in alpha',
       script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
-      embedding: seededEmbedding(15),
+      ...profiledEmbedding(seededEmbedding(15)),
     });
     await upsertRecipe(db.adminSql, {
       potSlug: null,
@@ -190,7 +207,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'two-tool recipe in beta',
       script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
-      embedding: seededEmbedding(16),
+      ...profiledEmbedding(seededEmbedding(16)),
     });
     await seedRuns(db.adminSql, 'alpha-only', ws, 'alpha', { runs: 4, agents: ['a', 'b'] });
     await seedRuns(db.adminSql, 'beta-only', ws, 'beta', { runs: 4, agents: ['a', 'b'] });
@@ -210,7 +227,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'reliable',
       script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
-      embedding: seededEmbedding(31),
+      ...profiledEmbedding(seededEmbedding(31)),
     });
     await upsertRecipe(db.adminSql, {
       potSlug: null,
@@ -219,7 +236,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'unreliable',
       script: 's',
       toolsUsed: ['plans:set-status', 'plans:add-item'],
-      embedding: seededEmbedding(32),
+      ...profiledEmbedding(seededEmbedding(32)),
     });
     // Equal run_count + distinct agents; differ ONLY on success-rate.
     await seedRuns(db.adminSql, 'stable-recipe', ws, hive, { runs: 8, agents: ['a', 'b', 'c'], successes: 8 });
@@ -246,7 +263,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       description: 'three tools, run once by one agent',
       script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state', 'work_items:comment'],
-      embedding: seededEmbedding(77),
+      ...profiledEmbedding(seededEmbedding(77)),
     });
     await seedRuns(db.adminSql, 'one-off-three-tool', ws, hive, { runs: 1, agents: ['solo'] });
 

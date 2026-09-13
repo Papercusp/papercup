@@ -50,6 +50,8 @@ function routed(qualified: RoutingCandidate[], pool?: RoutingCandidate[]): Route
       computedAt: '2026-08-16T00:00:00.000Z',
     },
     queryVec: [0.1],
+    queryProfile: null,
+    queryMode: null,
   };
 }
 

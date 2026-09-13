@@ -94,7 +94,7 @@ export function availableHiveBlueprintIds(): string[] {
   for (const { id, file } of availableBlueprintSources()) {
     try {
       const { blueprint } = loadBlueprintFromFile(file, resolve);
-      if ((blueprint.kind === 'hive' || blueprint.kind === 'pot') && !blueprintRetirement(blueprint)) out.push(id);
+      if (blueprint.kind === 'pot' && !blueprintRetirement(blueprint)) out.push(id);
     } catch {
       /* skip an unreadable, unparseable, or unresolvable blueprint */
     }
