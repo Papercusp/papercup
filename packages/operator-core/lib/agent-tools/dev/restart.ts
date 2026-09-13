@@ -80,7 +80,7 @@ import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { workspaceTxnOptionsForExclusiveWait } from '../locks/resource-acquire-wait';
-import { probeServiceStart } from './systemd-service-probe';
+import { probeServiceStart, type ServiceStartInfo } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
 import {
@@ -113,6 +113,14 @@ const DEFAULT_DRAIN_SEC = 120;
  */
 const GATEWAY_RESTART_PID_WAIT_MS = 20_000;
 const GATEWAY_RESTART_PID_POLL_MS = 250;
+/**
+ * Staging restarts are detached too, but unlike the :3070 target they do not
+ * kill this tool's own HTTP transport. Observe the systemd/listener transition
+ * before claiming success so a rejected detached command cannot return the
+ * historical false-green `ok:true, restarted:true` (EI-21580132226178416).
+ */
+const STAGING_RESTART_OBSERVE_MS = 10_000;
+const STAGING_RESTART_POLL_MS = 250;
 type ExecFileP = (
   command: string,
   args: string[],
@@ -491,6 +499,18 @@ export type GatewayListenerReadiness = {
   detail: string;
 };
 
+export type StagingRestartReadiness = {
+  ready: boolean;
+  observed: boolean;
+  outcome: 'ready' | 'starting' | 'failed' | 'not-observed';
+  pidChanged: boolean;
+  observedPid: number | null;
+  activeState: string | null;
+  result: string | null;
+  listener: GatewayListenerReadiness | null;
+  waitedMs: number;
+};
+
 const gatewayPort = () => Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788;
 const gatewayHealthUrl = () => `http://127.0.0.1:${gatewayPort()}/healthz`;
 
@@ -551,6 +571,141 @@ async function probeGatewayListenerOwnership(pid: number): Promise<GatewayListen
       detail: `could not verify ownership of :${port}: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+async function probeStagingListenerOwnership(pid: number): Promise<GatewayListenerReadiness> {
+  const port = RESTART_TARGET_PORTS.staging!;
+  try {
+    const result = await listListeningSockets({ port, limit: 32 });
+    const sockets = result.sockets;
+    const observedPids = [
+      ...new Set(
+        sockets.flatMap((socket) => (socket.pids.length > 0 ? socket.pids : socket.pid == null ? [] : [socket.pid])),
+      ),
+    ];
+    const ownerVisible = sockets.some((socket) => socket.ownerVisible);
+    const ownedByPid = sockets.some(
+      (socket) => socket.ownerVisible && (socket.pids.includes(pid) || socket.pid === pid),
+    );
+    return {
+      port,
+      checked: true,
+      ownedByPid,
+      ownerVisible,
+      observedPids,
+      detail: ownedByPid
+        ? `listener on :${port} is owned by new MainPID ${pid}`
+        : sockets.length === 0
+          ? `no listener was observed on :${port}`
+          : !ownerVisible
+            ? `:${port} is listening, but its owning PID is not visible to this process`
+            : `:${port} is owned by PID(s) ${observedPids.join(', ') || 'unknown'}, not new MainPID ${pid}`,
+    };
+  } catch (error) {
+    return {
+      port,
+      checked: true,
+      ownedByPid: false,
+      ownerVisible: false,
+      observedPids: [],
+      detail: `could not verify ownership of :${port}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Observe the detached staging restart itself, not merely the fact that a shell
+ * was spawned. A fresh MainPID owning :3170 is ready; an `activating` state is
+ * an observed-but-still-starting execution; a unit that stays failed/unseen for
+ * the bounded window is a failed restart and must not be reported as success.
+ */
+export async function waitForStagingRestartReadiness(
+  before: ServiceStartInfo,
+): Promise<StagingRestartReadiness> {
+  const startedAt = Date.now();
+  const deadline = startedAt + STAGING_RESTART_OBSERVE_MS;
+  const previousPidKnown = isLiveMainPid(before.mainPid);
+  let current: ServiceStartInfo | null = null;
+  let listener: GatewayListenerReadiness | null = null;
+
+  while (Date.now() <= deadline) {
+    try {
+      current = await probeServiceStart(RESTART_TARGET_UNITS.staging);
+    } catch {
+      current = null;
+    }
+    const currentPid = current?.mainPid;
+    const pidChanged = isLiveMainPid(currentPid) && (!previousPidKnown || currentPid !== before.mainPid);
+    if (pidChanged) {
+      listener = await probeStagingListenerOwnership(currentPid);
+      if (listener.ownedByPid) {
+        return {
+          ready: true,
+          observed: true,
+          outcome: 'ready',
+          pidChanged: true,
+          observedPid: currentPid,
+          activeState: current?.activeState ?? null,
+          result: current?.result ?? null,
+          listener,
+          waitedMs: Date.now() - startedAt,
+        };
+      }
+      return {
+        ready: false,
+        observed: true,
+        outcome: 'starting',
+        pidChanged: true,
+        observedPid: currentPid,
+        activeState: current?.activeState ?? null,
+        result: current?.result ?? null,
+        listener,
+        waitedMs: Date.now() - startedAt,
+      };
+    }
+    if (current?.activeState === 'activating' && before.activeState !== 'activating') {
+      return {
+        ready: false,
+        observed: true,
+        outcome: 'starting',
+        pidChanged: false,
+        observedPid: null,
+        activeState: 'activating',
+        result: current.result ?? null,
+        listener: null,
+        waitedMs: Date.now() - startedAt,
+      };
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(STAGING_RESTART_POLL_MS, remainingMs)));
+  }
+
+  const failed = current?.activeState === 'failed';
+  return {
+    ready: false,
+    observed: false,
+    outcome: failed ? 'failed' : 'not-observed',
+    pidChanged: false,
+    observedPid: isLiveMainPid(current?.mainPid) ? current.mainPid : null,
+    activeState: current?.activeState ?? null,
+    result: current?.result ?? null,
+    listener,
+    waitedMs: Date.now() - startedAt,
+  };
+}
+
+export type StagingRestartReadinessReader = (
+  before: ServiceStartInfo,
+) => Promise<StagingRestartReadiness>;
+const defaultStagingRestartReadinessReader: StagingRestartReadinessReader = waitForStagingRestartReadiness;
+let stagingRestartReadinessReader = defaultStagingRestartReadinessReader;
+
+/** Test seam: confirmed restart tests must never wait on or inspect real systemd. */
+export function configureStagingRestartReadinessReaderForTests(
+  reader: StagingRestartReadinessReader = defaultStagingRestartReadinessReader,
+): void {
+  stagingRestartReadinessReader = reader;
 }
 
 /**
@@ -1440,12 +1595,15 @@ export default defineTool({
         // Detached + delayed so this response returns before the service dies.
         // systemd latches a unit after it exceeds StartLimitBurst. A plain
         // `restart` is then rejected with "Start request repeated too quickly"
-        // until `reset-failed` clears that manager state. We already have the
-        // service probe in hand, so recover this specific state in the same
-        // detached shell immediately before restarting. Keep the reset
-        // conditional: reset-failed clears useful failure metadata and should
-        // not be part of ordinary restarts.
-        const resetFailedBeforeRestart = before.ok && before.result === 'start-limit-hit';
+        // until `reset-failed` clears that manager state. Some user-manager
+        // versions retain only Result=exit-code after that refusal, so
+        // Result=start-limit-hit is sufficient but not necessary: a known
+        // failed unit with no MainPID is also reset before the requested
+        // restart. Ordinary active restarts keep their useful metadata.
+        const resetFailedBeforeRestart =
+          before.ok &&
+          before.mainPid === 0 &&
+          (before.result === 'start-limit-hit' || before.activeState === 'failed');
         const scheduledRestartCmd = resetFailedBeforeRestart
           ? `systemctl --user reset-failed ${cfg.unit} && ${restartCmd}`
           : restartCmd;
@@ -1462,6 +1620,7 @@ export default defineTool({
         restartScheduled = true;
         const gatewayReadiness =
           target === 'gateway' ? await waitForGatewayRestartReadiness(before.mainPid ?? null) : null;
+        const stagingReadiness = target === 'staging' ? await stagingRestartReadinessReader(before) : null;
         if (gatewayReadiness && !gatewayReadiness.ready) {
           return json({
             ok: false,
@@ -1489,6 +1648,31 @@ export default defineTool({
                 : ` A new live MainPID was not observed (last observed: ${gatewayReadiness.observedPid ?? 'none'}).`),
           });
         }
+        if (stagingReadiness && !stagingReadiness.ready) {
+          const starting = stagingReadiness.outcome === 'starting';
+          return json({
+            ok: starting,
+            target,
+            drained: true,
+            restarted: false,
+            restartScheduled: true,
+            restartObserved: stagingReadiness.observed,
+            fence_seq: fence.seq,
+            restartedFromPid: before.mainPid ?? null,
+            enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+            audited: true,
+            systemdDaemonReloaded: true,
+            ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+            ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
+            stagingReadiness,
+            verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
+            note: starting
+              ? `Staging restart execution was observed, but :3170 is still starting; restarted remains false until the new MainPID owns the listener.`
+              : `Staging restart was scheduled, but no successful systemd/listener transition was observed within the bounded wait. The unit ended ${
+                  stagingReadiness.activeState ?? 'unknown'
+                } with Result=${stagingReadiness.result ?? 'unknown'}; do not claim it restarted.`,
+          });
+        }
         return json({
           ok: true,
           target,
@@ -1514,6 +1698,7 @@ export default defineTool({
               }
             : {}),
           ...(gatewayReadiness ? { gatewayReadiness } : {}),
+          ...(stagingReadiness ? { stagingReadiness } : {}),
           verifyWith: gatewayReadiness
             ? `GET ${gatewayHealthUrl()} after a NEW MainPID (observed ${gatewayReadiness.observedPid}; bounded wait ~${
                 GATEWAY_RESTART_PID_WAIT_MS / 1000
@@ -1523,6 +1708,12 @@ export default defineTool({
             ? `Gateway restart completed: MainPID changed to ${gatewayReadiness.observedPid}; ${gatewayHealthUrl()} responded ${
                 gatewayReadiness.health?.detail ?? 'successfully'
               } after ${gatewayReadiness.waitedMs}ms.`
+            : stagingReadiness
+              ? `Staging restart completed: MainPID changed to ${stagingReadiness.observedPid} and owns :${
+                  stagingReadiness.listener?.port ?? RESTART_TARGET_PORTS.staging
+                } after ${stagingReadiness.waitedMs}ms.${
+                  resetFailedBeforeRestart ? ' reset-failed cleared the prior failed/start-limited unit first.' : ''
+                }`
             : `Restart scheduled (~1s)${
                 resetFailedBeforeRestart
                   ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`

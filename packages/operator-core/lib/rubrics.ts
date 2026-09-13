@@ -93,6 +93,12 @@ import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
 import { getPlanRevisionSnapshot, recordPlanRevision } from './agent-tools/plans/revisions';
+import {
+  applyPlanRevisionSnapshotRepair,
+  readPlanRevisionRepairTarget,
+  type PlanRevisionRepairScope,
+  type PlanRevisionSnapshotRepairSpec,
+} from './agent-tools/plans/revisions-repair';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
@@ -575,19 +581,43 @@ interface ParsedRubricRevisionSnapshot {
   schemaVersion?: number;
 }
 
+export type RubricRevisionSnapshotKind = 'enriched' | 'legacy-structured' | 'markdown-only' | 'malformed';
+
+export interface RubricRevisionSnapshotInspection {
+  kind: RubricRevisionSnapshotKind;
+  templateData?: unknown;
+  /** Hash captured by the enriched writer; absent on legacy snapshots. */
+  criteriaHash?: string | null;
+  schemaVersion?: number;
+}
+
 /**
- * Parse the enriched revision envelope, while retaining compatibility with the
- * original raw-template-data snapshots. The latter can still be read, but their
- * criteriaHash necessarily follows the current hash algorithm because no
- * write-time hash was persisted.
+ * Classify the persisted snapshot without interpreting its rubric fields.
+ * `markdown-only` is the only legacy form eligible for the conservative repair;
+ * a malformed structured section and a raw structured legacy payload remain
+ * fail-closed because their historical data cannot be proven from the current row.
  */
-function parseRubricRevisionSnapshot(snapshot: string): ParsedRubricRevisionSnapshot | null {
+export function inspectRubricRevisionSnapshot(snapshot: string): RubricRevisionSnapshotInspection {
   const marker = snapshot.lastIndexOf(RUBRIC_REVISION_SNAPSHOT_HEADING);
-  if (marker < 0) return null;
+  if (marker < 0) {
+    // A few earliest backfills stored the raw JSON document as the entire
+    // snapshot rather than placing it under the structured section. It is
+    // already a legacy structured form (and may contain historical data), not
+    // markdown that can safely be replaced with today's template_data.
+    const trimmed = snapshot.trimStart();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return { kind: 'legacy-structured', templateData: JSON.parse(trimmed) };
+      } catch {
+        return { kind: 'malformed' };
+      }
+    }
+    return { kind: 'markdown-only' };
+  }
   const fenced = snapshot
     .slice(marker + RUBRIC_REVISION_SNAPSHOT_HEADING.length)
     .match(/~~~json\s*\n([\s\S]*?)\n~~~/);
-  if (!fenced) return null;
+  if (!fenced) return { kind: 'malformed' };
   try {
     const parsed: unknown = JSON.parse(fenced[1]);
     if (
@@ -603,16 +633,39 @@ function parseRubricRevisionSnapshot(snapshot: string): ParsedRubricRevisionSnap
         criteriaHash?: unknown;
       };
       return {
+        kind: 'enriched',
         schemaVersion: envelope.schemaVersion,
         templateData: envelope.templateData,
         criteriaHash: typeof envelope.criteriaHash === 'string' ? envelope.criteriaHash : null,
       };
     }
-    // Legacy revisions stored template_data directly under the fence.
-    return { templateData: parsed };
+    return { kind: 'legacy-structured', templateData: parsed };
   } catch {
-    return null;
+    return { kind: 'malformed' };
   }
+}
+
+/**
+ * Parse the enriched revision envelope, while retaining compatibility with the
+ * original raw-template-data snapshots. The latter can still be read, but their
+ * criteriaHash necessarily follows the current hash algorithm because no
+ * write-time hash was persisted.
+ */
+function parseRubricRevisionSnapshot(snapshot: string): ParsedRubricRevisionSnapshot | null {
+  const inspected = inspectRubricRevisionSnapshot(snapshot);
+  if (inspected.kind === 'enriched' || inspected.kind === 'legacy-structured') {
+    return {
+      ...(inspected.schemaVersion !== undefined ? { schemaVersion: inspected.schemaVersion } : {}),
+      templateData: inspected.templateData,
+      ...(inspected.criteriaHash !== undefined ? { criteriaHash: inspected.criteriaHash } : {}),
+    };
+  }
+  return null;
+}
+
+/** True when a revision contains no structured rubric snapshot at all. */
+export function isMarkdownOnlyRubricRevisionSnapshot(snapshot: string): boolean {
+  return inspectRubricRevisionSnapshot(snapshot).kind === 'markdown-only';
 }
 
 /**
@@ -2361,7 +2414,11 @@ export function preserveRubricPlanBody(
  * `recordPlanRevision` never throws, so this can never fail the rubric write (it runs
  * post-commit, and withPlanLock awaits it).
  */
-function rubricRevisionSnapshot(writtenBody: string, templateData: unknown, criteriaHash: string | null): string {
+export function formatRubricRevisionSnapshot(
+  writtenBody: string,
+  templateData: unknown,
+  criteriaHash: string | null,
+): string {
   if (templateData === null || templateData === undefined) return writtenBody;
   const serialized = JSON.stringify(
     {
@@ -2377,6 +2434,192 @@ function rubricRevisionSnapshot(writtenBody: string, templateData: unknown, crit
   return (
     writtenBody + separator + '## Structured rubric data (`template_data`)\n\n' + '~~~json\n' + serialized + '\n~~~\n'
   );
+}
+
+export type LegacyRubricRevisionRepairStatus =
+  | 'repairable'
+  | 'already_repaired'
+  | 'not_eligible'
+  | 'not_found'
+  | 'dry_run'
+  | 'repaired'
+  | 'cas_lost'
+  | 'error';
+
+export interface LegacyRubricRevisionRepairResult {
+  rubricId: string;
+  status: LegacyRubricRevisionRepairStatus;
+  revisionsInspected: number;
+  revisionsToRepair: number;
+  revisionsRepaired: number;
+  currentRevision?: number;
+  reason?: string;
+}
+
+export interface PreparedLegacyRubricRevisionRepair {
+  result: LegacyRubricRevisionRepairResult;
+  spec?: PlanRevisionSnapshotRepairSpec;
+}
+
+function legacyRubricRepairResult(
+  rubricId: string,
+  status: LegacyRubricRevisionRepairStatus,
+  revisionsInspected: number,
+  revisionsToRepair: number,
+  reason?: string,
+  currentRevision?: number,
+): LegacyRubricRevisionRepairResult {
+  return {
+    rubricId,
+    status,
+    revisionsInspected,
+    revisionsToRepair,
+    revisionsRepaired: 0,
+    ...(currentRevision !== undefined ? { currentRevision } : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
+/**
+ * Classify one exact rubric revision chain for the conservative legacy repair.
+ * A chain is eligible only when the live row is still a first-party standard
+ * rubric whose structured data matches the bundled source, and every revision
+ * has the exact current markdown body and its matching stored body hash. Any
+ * divergent row blocks the whole chain; current template_data is never used to
+ * reconstruct a historical revision in that case.
+ */
+export async function inspectLegacyRubricRevisionRepair(
+  rubricId: string,
+  scope: Omit<PlanRevisionRepairScope, 'planSlug'>,
+): Promise<PreparedLegacyRubricRevisionRepair> {
+  const planScope: PlanRevisionRepairScope = { ...scope, planSlug: rubricId };
+  const target = await readPlanRevisionRepairTarget(planScope);
+  if (!target) {
+    return { result: legacyRubricRepairResult(rubricId, 'not_found', 0, 0, 'rubric plan row not found') };
+  }
+
+  const { plan, revisions } = target;
+  const inspected = revisions.length;
+  const currentRevision = Number.isFinite(plan.version) ? plan.version : undefined;
+  const reject = (reason: string): PreparedLegacyRubricRevisionRepair => ({
+    result: legacyRubricRepairResult(rubricId, 'not_eligible', inspected, 0, reason, currentRevision),
+  });
+
+  if (plan.owner !== FIRST_PARTY_RUBRIC_SEED_OWNER) return reject('rubric plan is not first-party seeded');
+  if (plan.template !== RUBRIC_TEMPLATE_NAME) return reject('rubric plan does not use the rubric template');
+  if (plan.templateSlug !== null) return reject('rubric plan is a template instance, not a rubric definition');
+  if (plan.archived) return reject('rubric plan is archived');
+
+  const parsed = rubricTemplateDataSchema.safeParse(plan.templateData);
+  if (!parsed.success) return reject('current first-party rubric template_data is malformed');
+  if (rubricKindOf(parsed.data) !== 'standard') return reject('acceptance rubrics are outside this repair');
+  if (parsed.data.classRef) return reject('delegated-class rubrics are outside this repair');
+
+  const bundled = listLocalRubrics().find(
+    (candidate) => candidate.rubricId === rubricId && candidate.source === 'first-party',
+  );
+  if (!bundled) return reject('matching first-party bundled rubric source is unavailable');
+
+  const liveBundleHash = computeSeedContentHash(parsed.data);
+  const bundledHash = computeSeedContentHash(bundled);
+  if (liveBundleHash !== bundledHash) return reject('current rubric differs from the first-party bundle');
+  const recordedSeedHash = parsed.data.seedContentHash;
+  if (recordedSeedHash && recordedSeedHash !== liveBundleHash) {
+    return reject('current rubric seed content hash does not match its stored fields');
+  }
+
+  if (revisions.length === 0) return reject('rubric has no recorded revisions');
+  const currentBodyHash = hashPlanContent(plan.content);
+  if (plan.contentHash !== currentBodyHash) return reject('current rubric body hash is inconsistent');
+  const divergent = revisions.find(
+    (revision) =>
+      revision.authorId !== FIRST_PARTY_RUBRIC_SEED_OWNER ||
+      revision.authorKind !== 'agent' ||
+      revision.contentHash !== plan.contentHash ||
+      hashPlanContent(revision.contentSnapshot) !== plan.contentHash ||
+      revision.contentSnapshot !== plan.content,
+  );
+  if (divergent) {
+    return reject(`revision chain is not first-party exact-current-body history (seq ${divergent.seq})`);
+  }
+
+  const legacyRows = revisions.filter((revision) => isMarkdownOnlyRubricRevisionSnapshot(revision.contentSnapshot));
+  if (legacyRows.length === 0) {
+    return {
+      result: legacyRubricRepairResult(rubricId, 'already_repaired', inspected, 0, undefined, currentRevision),
+    };
+  }
+
+  const rubricRow: RubricPlanRow = {
+    plan_slug: rubricId,
+    workspace_id: plan.workspaceId,
+    harness_slug: plan.harnessSlug,
+    title: null,
+    status: 'active',
+    created: null,
+    updated: null,
+    updated_at: new Date(0).toISOString(),
+    version: plan.version,
+    owner: plan.owner,
+    archived: plan.archived,
+    template_data: parsed.data,
+  };
+  const currentRubric = planRowToRubric(rubricRow);
+  if (!currentRubric?.criteriaHash) return reject('current rubric criteria hash could not be computed');
+  const replacementContentSnapshot = formatRubricRevisionSnapshot(
+    plan.content,
+    parsed.data,
+    currentRubric.criteriaHash,
+  );
+  const spec: PlanRevisionSnapshotRepairSpec = {
+    scope: planScope,
+    expectedPlan: {
+      version: plan.version,
+      contentHash: plan.contentHash,
+      content: plan.content,
+      owner: plan.owner,
+      template: plan.template,
+      templateSlug: plan.templateSlug,
+      archived: plan.archived,
+    },
+    expectedRevisionIds: revisions.map((revision) => revision.id),
+    replacements: legacyRows.map((revision) => ({
+      id: revision.id,
+      seq: revision.seq,
+      expectedContentSnapshot: revision.contentSnapshot,
+      replacementContentSnapshot,
+    })),
+  };
+  return {
+    result: legacyRubricRepairResult(rubricId, 'repairable', inspected, legacyRows.length, undefined, currentRevision),
+    spec,
+  };
+}
+
+/** Inspect, optionally dry-run, and atomically repair one legacy rubric chain. */
+export async function repairLegacyRubricRevisionSnapshots(
+  rubricId: string,
+  scope: Omit<PlanRevisionRepairScope, 'planSlug'>,
+  opts: { dryRun?: boolean } = {},
+): Promise<LegacyRubricRevisionRepairResult> {
+  const prepared = await inspectLegacyRubricRevisionRepair(rubricId, scope);
+  if (!prepared.spec) return prepared.result;
+  if (opts.dryRun !== false) return { ...prepared.result, status: 'dry_run' };
+
+  const applied = await applyPlanRevisionSnapshotRepair(prepared.spec);
+  if (applied.status === 'repaired') {
+    return {
+      ...prepared.result,
+      status: 'repaired',
+      revisionsRepaired: applied.revisionsRepaired,
+    };
+  }
+  return {
+    ...prepared.result,
+    status: applied.status,
+    revisionsRepaired: applied.revisionsRepaired,
+    ...('reason' in applied && applied.reason ? { reason: applied.reason } : {}),
+  };
 }
 
 /** Compute the same current-read hash without triggering first-party seeding. */
@@ -2437,7 +2680,7 @@ function rubricRevisionAfterWrite(
       // withPlanLock supplies the value committed by this exact transaction.
       // The fallback keeps auditability best-effort for older callers/tests that
       // invoke this helper without the third hook argument.
-      content: rubricRevisionSnapshot(
+      content: formatRubricRevisionSnapshot(
         writtenBody,
         snapshotTemplateData,
         criteriaHash,
@@ -3878,7 +4121,7 @@ async function amendAcceptanceBarRubric(
           planSlug: input.rubricId,
           harnessSlug: rubricScope.harnessSlug,
           workspaceId: rubricScope.workspaceId,
-          content: rubricRevisionSnapshot(txResult.rubricBody, txResult.templateData, criteriaHash),
+          content: formatRubricRevisionSnapshot(txResult.rubricBody, txResult.templateData, criteriaHash),
           rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
           identity,
         })

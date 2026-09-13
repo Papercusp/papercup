@@ -210,10 +210,12 @@ const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
 const {
   configureBgHostRestartFreshnessReaderForTests,
+  configureStagingRestartReadinessReaderForTests,
   configureSystemdDaemonReloaderForTests,
   evaluateBgHostRestartFreshness,
   restartVerificationHint,
   SYSTEMD_USER_DAEMON_RELOAD,
+  waitForStagingRestartReadiness,
 } = restartModule;
 
 type Out = { content: { text: string }[] };
@@ -236,6 +238,24 @@ const freshnessM = vi.fn(
   }),
 );
 const systemdDaemonReloadM = vi.fn(async (): Promise<void> => undefined);
+const stagingReadinessM = vi.fn(async (before: { mainPid?: number }) => ({
+  ready: true,
+  observed: true,
+  outcome: 'ready' as const,
+  pidChanged: true,
+  observedPid: (before.mainPid ?? 0) + 1,
+  activeState: 'active',
+  result: 'success',
+  listener: {
+    port: 3170,
+    checked: true,
+    ownedByPid: true,
+    ownerVisible: true,
+    observedPids: [(before.mainPid ?? 0) + 1],
+    detail: 'listener belongs to replacement',
+  },
+  waitedMs: 5,
+}));
 /** Drive guardResource's mock as `(spec, run) => run(fence)` — a thin,
  *  explicitly-typed stand-in for the real drain+fence primitive (which has
  *  its own coverage elsewhere) so `run` never infers to `never` through the
@@ -262,6 +282,7 @@ beforeEach(() => {
     newestSourcePath: null,
   });
   configureBgHostRestartFreshnessReaderForTests(freshnessM);
+  configureStagingRestartReadinessReaderForTests(stagingReadinessM);
   configureSystemdDaemonReloaderForTests(systemdDaemonReloadM);
   releaseM.mockResolvedValue({
     released: 1,
@@ -1319,6 +1340,99 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(shell).toContain(`${reset} && ${restart}`);
     expect(shell.indexOf(reset)).toBeLessThan(shell.indexOf(restart));
     expect(b.note).toMatch(/start-limit|reset-failed/i);
+  });
+
+  it('also clears a failed MainPID=0 unit when systemd retains Result=exit-code', async () => {
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-EXIT-CODE-LATCH',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
+    guardM.mockImplementation(runGuard(fenceOk(10)) as never);
+    probeM.mockResolvedValue({
+      ok: true,
+      mainPid: 0,
+      activeState: 'failed',
+      result: 'exit-code',
+    } as never);
+
+    const b = body(await call({ confirm: true, target: 'staging' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'staging',
+      restarted: true,
+      resetFailedBeforeRestart: true,
+      stagingReadiness: { ready: true, observed: true, outcome: 'ready' },
+    });
+    expect(spawnM.mock.calls[0]?.[1]?.[1] as string).toContain(
+      'systemctl --user reset-failed papercusp-staging-api.service && systemctl --user restart papercusp-staging-api.service',
+    );
+  });
+
+  it('does not report restarted when the detached staging command is not observed succeeding', async () => {
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-NOT-OBSERVED',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
+    guardM.mockImplementation(runGuard(fenceOk(10)) as never);
+    probeM.mockResolvedValue({ ok: true, mainPid: 0, activeState: 'failed', result: 'exit-code' } as never);
+    stagingReadinessM.mockResolvedValueOnce({
+      ready: false,
+      observed: false,
+      outcome: 'failed',
+      pidChanged: false,
+      observedPid: null,
+      activeState: 'failed',
+      result: 'exit-code',
+      listener: null,
+      waitedMs: 10_000,
+    });
+
+    const b = body(await call({ confirm: true, target: 'staging' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      restarted: false,
+      restartScheduled: true,
+      restartObserved: false,
+      stagingReadiness: { outcome: 'failed' },
+    });
+    expect(b.note).toMatch(/do not claim it restarted/i);
+  });
+
+  it('observes the real staging transition through new-PID listener ownership', async () => {
+    probeM.mockResolvedValueOnce({ ok: true, mainPid: 5252, activeState: 'active', result: 'success' } as never);
+    listeningSocketsM.mockResolvedValue({
+      ...gatewayListenerResult(5252),
+      sockets: gatewayListenerResult(5252).sockets.map((socket: { port: number }) => ({ ...socket, port: 3170 })),
+    } as never);
+
+    const readiness = await waitForStagingRestartReadiness({
+      ok: true,
+      mainPid: 0,
+      activeState: 'failed',
+      result: 'exit-code',
+    });
+
+    expect(readiness).toMatchObject({
+      ready: true,
+      observed: true,
+      outcome: 'ready',
+      pidChanged: true,
+      observedPid: 5252,
+      listener: { port: 3170, ownedByPid: true },
+    });
   });
 
   it('coalesces when the marker is held AND systemd confirms a genuine recent restart — no drain, no restart, no spawn', async () => {

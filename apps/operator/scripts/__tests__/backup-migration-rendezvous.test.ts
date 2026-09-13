@@ -38,7 +38,9 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
     expect(execFileSync('bash', ['-n', SCRIPT], { encoding: 'utf8' })).toBe('');
     const stripped = stripCommentLines(source);
     expect(stripped).toContain("readonly BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'");
+    expect(stripped).toContain("readonly BACKUP_MIGRATION_ADVISORY_DATABASE='papercusp'");
     expect(stripped).toContain('coproc BACKUP_MIGRATION_LOCK_PSQL');
+    expect(stripped).toContain('-d "$BACKUP_MIGRATION_ADVISORY_DATABASE"');
     expect(stripped).toContain("'SET lock_timeout = 0;'");
     expect(stripped).toContain("'SET statement_timeout = 0;'");
     expect(stripped).toContain("pg_advisory_lock(hashtext('$BACKUP_MIGRATION_ADVISORY_LOCK_KEY'))");
@@ -80,6 +82,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
         '#!/usr/bin/env bash\n' +
           'set -eu\n' +
           `state=${JSON.stringify(state)}\n` +
+          'printf "%s\\n" "$@" >"$state.args"\n' +
           ': >"$state.started"\n' +
           'while IFS= read -r line; do\n' +
           '  case "$line" in\n' +
@@ -96,6 +99,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
         `PATH=${JSON.stringify(dir)}:$PATH`,
         `HOST_BACKUP_APPLICATION_NAME=pcbackup`,
         `BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'`,
+        `BACKUP_MIGRATION_ADVISORY_DATABASE=papercusp`,
         `BACKUP_MIGRATION_LOCK_READY='papercusp_backup_migration_lock_acquired'`,
         `BACKUP_MIGRATION_LOCK_PID=''`,
         `BACKUP_MIGRATION_LOCK_IN_FD=''`,
@@ -112,6 +116,10 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
       ].join('\n');
 
       execFileSync('bash', ['-c', harness], { encoding: 'utf8' });
+      const args = readFileSync(state + '.args', 'utf8').trim().split('\n');
+      const databaseArg = args.indexOf('-d');
+      expect(databaseArg).toBeGreaterThanOrEqual(0);
+      expect(args[databaseArg + 1]).toBe('papercusp');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

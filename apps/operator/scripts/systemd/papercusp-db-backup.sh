@@ -98,6 +98,13 @@ export PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
 # dump lifecycle; otherwise a long pg_dump can acquire AccessShareLock while a
 # migration is already retrying its DDL and exhaust all five short attempts.
 readonly BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'
+# PostgreSQL advisory locks are DATABASE-scoped. Migration appliers connect to
+# the Papercusp database; using psql's historical `postgres` catalog default
+# here lets both sides hold the same numeric key simultaneously, then collide
+# later on relation locks. The dedicated rendezvous session must use the same
+# database as the migrations it excludes. Catalog/reaper queries above remain
+# on `postgres` intentionally and are independent of this lock session.
+readonly BACKUP_MIGRATION_ADVISORY_DATABASE='papercusp'
 readonly BACKUP_MIGRATION_LOCK_READY='papercusp_backup_migration_lock_acquired'
 BACKUP_MIGRATION_LOCK_PID=''
 BACKUP_MIGRATION_LOCK_IN_FD=''
@@ -326,7 +333,7 @@ acquire_migration_rendezvous() {
   coproc BACKUP_MIGRATION_LOCK_PSQL {
     exec sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
       psql -X -q -v ON_ERROR_STOP=1 -At \
-      -h /var/run/postgresql -d postgres
+      -h /var/run/postgresql -d "$BACKUP_MIGRATION_ADVISORY_DATABASE"
   }
   # `sudo` can fail before Bash publishes the named-coproc descriptors (for
   # example when the database service is down). Read these with nounset-safe

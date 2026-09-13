@@ -288,17 +288,23 @@ export default defineTool({
             const [
               { getOrgPg },
               { routeConsult },
-              { buildQueryEmbedder },
+              { buildQueryEmbedderResolved },
+              { resolveProseProfileSelection },
               { resolveSessionStates },
               consult,
             ] = await Promise.all([
               import('@papercusp/db-org'),
               import('@papercusp/operator-core/lib/consult/relevance-router'),
               import('@papercusp/operator-core/lib/agent-tools/search/embedder'),
+              import('@papercusp/operator-core/lib/search/prose-vector-dims'),
               import('@papercusp/operator-core/lib/agent-tools/coordination/liveness-oracle'),
               import('@papercusp/operator-core/lib/consult/plan-start-consult'),
             ]);
-            const embed = await buildQueryEmbedder();
+            const resolved = await buildQueryEmbedderResolved();
+            const embed = resolved?.embed ?? null;
+            const embeddingProfile = resolved
+              ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+              : null;
             const outcome = await consult.goalKickoffConsult(
               {
                 workspaceId,
@@ -312,6 +318,8 @@ export default defineTool({
                   routeConsult(params, {
                     getSql: () => getOrgPg().sql,
                     embed,
+                    embeddingProfile,
+                    embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
                     getLiveness: async (ownerIds) => {
                       const verdicts = await resolveSessionStates(
                         ownerIds.map((ownerId) => ({ ownerId })),
