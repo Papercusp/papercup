@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { maybeEmptyMappingHint, EMPTY_MAPPING_METADATA_KEY } from '../../empty-mapping-hint';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
@@ -15,7 +16,12 @@ import {
   AGENT_ROLES,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
-import { DEFAULT_SCRIPT_TIMEOUT_MS, type FieldMiss, type ToolResult } from '@papercusp/tooldef';
+import {
+  CODE_RUN_REPLAY_PROOF_META_KEY,
+  DEFAULT_SCRIPT_TIMEOUT_MS,
+  type FieldMiss,
+  type ToolResult,
+} from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
@@ -40,8 +46,14 @@ import type {
 } from '../../recipe-contract';
 import { ORCHESTRATION_RECURSION_EXCLUSIONS } from '../orchestration/contract-preflight';
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
+import { canonicalJson } from '../../authority/authority-rpc-envelope';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
+
+/** SHA-256 of the complete, validated outer code:run argument body. */
+export function codeRunRequestHash(args: unknown): string {
+  return createHash('sha256').update(canonicalJson(args), 'utf8').digest('hex');
+}
 
 const CODE_RUN_CAPTURE_MODE = Symbol('papercusp.code-run.capture-mode');
 const CODE_RUN_CONTRACT = Symbol('papercusp.code-run.contract');
@@ -256,6 +268,10 @@ export default defineTool({
     // leg of this response budget; it must not be followed by an unbounded trace/capture tail.
     const responseDeadlineAtMs = runStartedAtMs + FOREGROUND_TIMEOUT_CEILING_MS;
     const script = args.script;
+    // The proof is about this exact validated request body. Compute it at the
+    // server boundary; neither the script nor a caller-supplied result field
+    // can choose the hash.
+    const requestHash = codeRunRequestHash(args);
 
     // EI-21570021207351896 / EI-21569537333182760: keep the requested and the EFFECTIVE budget as
     // separate values. The clamp below is unchanged — what was missing is that nothing downstream
@@ -371,6 +387,7 @@ export default defineTool({
       // opaque transport-level request_timeout after the script's own budget was never reached.
       timeoutMs: requestedTimeoutMs !== undefined ? effectiveTimeoutMs : undefined,
       wrapDispatch: bindCurrentCallerDispatch,
+      requestHash,
       ...(contract ? { inputs: contract.inputs } : {}),
     });
 
@@ -539,7 +556,12 @@ export default defineTool({
     // D-019/P-027: media is an MCP content-item variant, not part of P-006's JSON envelope.
     // Keep it out of the serialized text payload (which would duplicate the base64 and charge
     // context twice); append only the orchestrator's validated final blocks below.
-    const { media, callRecords: traceOnlyCallRecords, ...resultForPayload } = result;
+    const {
+      media,
+      callRecords: traceOnlyCallRecords,
+      replayProof,
+      ...resultForPayload
+    } = result;
     void traceOnlyCallRecords;
     const shownResult = shapeCodeRunSummary(
       shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(resultForPayload))),
@@ -637,8 +659,15 @@ export default defineTool({
     }
     ctx.metadata?.(invocationMetadata);
 
+    const existingMeta = (result as OrchestrationRunResult & { _meta?: Record<string, unknown> })._meta;
+    const responseMeta = {
+      ...(existingMeta ?? {}),
+      ...(replayProof ? { [CODE_RUN_REPLAY_PROOF_META_KEY]: replayProof } : {}),
+    };
+
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(payload) }, ...(media ?? [])],
+      ...(Object.keys(responseMeta).length > 0 ? { _meta: responseMeta } : {}),
     } as unknown as ToolResult;
   },
 });
