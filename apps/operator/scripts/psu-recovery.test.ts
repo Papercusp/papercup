@@ -9,6 +9,7 @@ import {
   RECOVERY_CAPABILITY_DIAGNOSTIC,
   type RecoveryExecutionSpec,
   executeExactRecoveryCommand,
+  hasRecoveryCliFlag,
   issueRecoveryGrant,
   readRecoveryAudit,
   reconcileRecoveryAudit,
@@ -17,6 +18,7 @@ import {
   renderRecoveryBanner,
   runRecoveryGrant,
   sanitizeRecoveryEnvironment,
+  validateRecoveryCliArgv,
 } from './psu-recovery.mjs';
 
 const homes: string[] = [];
@@ -49,6 +51,17 @@ function grantInput() {
 const identity = { uid: 1000, username: 'avi', hostname: 'workstation' };
 
 describe('psu bounded local recovery grant', () => {
+  it('keeps recovery a closed pre-passthrough CLI namespace', () => {
+    expect(hasRecoveryCliFlag(['--recovery-authorize', '--', 'true'])).toBe(true);
+    expect(hasRecoveryCliFlag(['--agent=claude', '--', '--recovery-authorize'])).toBe(false);
+    expect(() => validateRecoveryCliArgv([
+      '--recovery-authorize', '--recovery-reason=repair', '--connect=remote', '--', 'true',
+    ])).toThrow(/non-recovery argument/);
+    expect(() => validateRecoveryCliArgv([
+      '--recovery-authorize', '--recovery-reason', 'repair', '--recovery-ttl=60', '--', 'true',
+    ])).not.toThrow();
+  });
+
   it('requires a real terminal and refuses inherited agent identity before authorization', () => {
     expect(recoveryAuthorizationEligibility({
       env: {}, stdinIsTTY: true, stdoutIsTTY: true, ancestorCmdlines: ['/usr/bin/bash'],
@@ -224,7 +237,7 @@ describe('psu bounded local recovery grant', () => {
     const marker = join(h, 'descendant-survived');
     const child = [
       "const { spawn } = require('node:child_process');",
-      `spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'bad'), 350)`) }], { stdio: 'ignore' });`,
+      `spawn(process.execPath, ['-e', ${JSON.stringify(`process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'bad'), 350); setInterval(() => {}, 1000)`) }], { stdio: 'ignore' });`,
       "setInterval(() => {}, 1000);",
     ].join('\n');
     const result = await executeExactRecoveryCommand({
