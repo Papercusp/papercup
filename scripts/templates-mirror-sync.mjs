@@ -46,6 +46,47 @@ import { spawnSync } from "node:child_process";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const MIRROR_REMOTE = "github.com/Papercusp/templates";
+const MIRROR_OWNER = "Papercusp";
+const MIRROR_REPO = "templates";
+
+/**
+ * Parse a canonical GitHub HTTPS or SSH remote into its repository identity.
+ *
+ * Git accepts both `https://github.com/Owner/repo.git` and the scp-shaped
+ * `git@github.com:Owner/repo.git` form. Comparing the parsed owner/repo keeps
+ * the push guard fail-closed for every other host or repository without
+ * rejecting equivalent transport forms.
+ *
+ * @param {string} remote
+ * @returns {{ owner: string, repo: string } | null}
+ */
+export function parseGithubRemote(remote) {
+  const owner = "([A-Za-z0-9][A-Za-z0-9_.-]{0,38})";
+  const repo = "([A-Za-z0-9][A-Za-z0-9_.-]{0,99}?)";
+  const https = new RegExp(`^https://github\\.com/${owner}/${repo}(?:\\.git)?/?$`);
+  const ssh = new RegExp(`^(?:git@github\\.com:|ssh://git@github\\.com/)${owner}/${repo}(?:\\.git)?/?$`);
+  const match = https.exec(remote.trim()) ?? ssh.exec(remote.trim());
+  if (!match) return null;
+  const [, parsedOwner, parsedRepo] = match;
+  return parsedOwner && parsedRepo ? { owner: parsedOwner, repo: parsedRepo } : null;
+}
+
+/**
+ * Compare the parsed GitHub identity, rather than the spelling of its remote.
+ * GitHub repository names are case-insensitive, while the parser remains
+ * deliberately strict about host and URL shape.
+ *
+ * @param {string} remote
+ * @returns {boolean}
+ */
+export function isMirrorRemote(remote) {
+  const parsed = parseGithubRemote(remote);
+  return Boolean(
+    parsed &&
+      parsed.owner.toLowerCase() === MIRROR_OWNER.toLowerCase() &&
+      parsed.repo.toLowerCase() === MIRROR_REPO.toLowerCase(),
+  );
+}
 
 // Source-shippable packages vendored into the mirror (zero runtime deps,
 // `main: ./src/index.ts`) so builders outside papercup can file:-link them.
@@ -336,7 +377,7 @@ async function main(argv) {
 
   const origin = git("remote", "get-url", "origin");
   if (failed) return 2;
-  if (!origin.includes(MIRROR_REMOTE)) {
+  if (!isMirrorRemote(origin)) {
     console.error(
       `refusing to push: origin '${origin}' is not ${MIRROR_REMOTE}`,
     );

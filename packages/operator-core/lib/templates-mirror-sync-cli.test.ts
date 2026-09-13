@@ -32,6 +32,8 @@ import {
   buildActual,
   computeDrift,
   driftTotal,
+  isMirrorRemote,
+  parseGithubRemote,
 } from '../../../scripts/templates-mirror-sync.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../../../scripts/templates-mirror-sync.mjs', import.meta.url));
@@ -242,6 +244,27 @@ describe('CLI contract', () => {
     });
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/unknown args/);
+  });
+});
+
+describe('mirror origin guard', () => {
+  it('accepts equivalent HTTPS and SSH origins for the official mirror', () => {
+    expect(isMirrorRemote('https://github.com/Papercusp/templates')).toBe(true);
+    expect(isMirrorRemote('https://github.com/Papercusp/templates.git')).toBe(true);
+    expect(isMirrorRemote('git@github.com:Papercusp/templates.git')).toBe(true);
+    expect(isMirrorRemote('ssh://git@github.com/Papercusp/templates.git')).toBe(true);
+    expect(parseGithubRemote('git@github.com:Papercusp/templates.git')).toEqual({
+      owner: 'Papercusp',
+      repo: 'templates',
+    });
+  });
+
+  it('remains fail-closed for other GitHub repositories and hosts', () => {
+    expect(isMirrorRemote('https://github.com/Papercusp/other.git')).toBe(false);
+    expect(isMirrorRemote('git@github.com:OtherOrg/templates.git')).toBe(false);
+    expect(isMirrorRemote('https://github.com.evil.example/Papercusp/templates.git')).toBe(false);
+    expect(isMirrorRemote('git@gitlab.com:Papercusp/templates.git')).toBe(false);
+    expect(parseGithubRemote('https://github.com/Papercusp/templates/tree/main')).toBeNull();
   });
 });
 

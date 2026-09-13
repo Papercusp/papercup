@@ -38,7 +38,7 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshTestDb } from '@papercusp/test-config';
+import { createFreshTestDb } from '@papercusp/test-config/pg';
 // eslint-disable-next-line import/no-relative-packages -- run the real boot-path migration runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 // EI-18698602043482898: mirror the canonical getOrgPg()/getHarnessPg() client
