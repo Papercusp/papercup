@@ -451,6 +451,23 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
 });
 
 describe('release:cut — status (read-only)', () => {
+  it('accepts version/channel context carried by release-cut status callers', async () => {
+    const statusArgs = { op: 'status', version: '0.0.19', channel: 'stable' };
+    expect(tool.args.safeParse(statusArgs).success).toBe(true);
+
+    statusM.mockReturnValue({
+      state: 'idle',
+      running: false,
+      exitCode: null,
+      logTail: null,
+      logPath: '/tmp/papercup-release-cut.log',
+      donePath: '/tmp/papercup-release-cut.done',
+    });
+    const b = body(await tool.handler(statusArgs as never, { role: 'cup' } as never));
+    expect(b).toMatchObject({ ok: true, op: 'status', state: 'idle' });
+    expect(statusM).toHaveBeenCalledWith({ platform: undefined });
+  });
+
   it('reports an in-flight cut without launching', async () => {
     const running: CutStatus = {
       state: 'running',

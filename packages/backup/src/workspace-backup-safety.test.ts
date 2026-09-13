@@ -507,6 +507,68 @@ describe('restoreToClone — slug/path + dir creation + failure event (Gap 4)', 
     expect(failed).toBeTruthy();
     expect((failed![1] as { error?: string }).error).toMatch(/kopia boom/);
   });
+
+  it('missing Kopia content marks the matching receipt failed', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    vi.spyOn(wb as any, 'kopia').mockRejectedValue(
+      new Error('kopia snapshot restore snapMissing failed: content snapMissing not found: object not found'),
+    );
+
+    await expect(wb.restoreToClone({ kopiaSnapshotId: 'snapMissing' })).rejects.toThrow(/not found/);
+
+    expect(calls.some(({ text, values }) =>
+      /UPDATE harness_shared\.backup_snapshots/.test(text)
+      && /status = 'failed'/.test(text)
+      && values.includes('snapMissing'))).toBe(true);
+  });
+
+  it('transient restore errors do not poison the receipt', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    vi.spyOn(wb as any, 'kopia').mockRejectedValue(new Error('permission denied writing restore target'));
+
+    await expect(wb.restoreToClone({ kopiaSnapshotId: 'snapTransient' })).rejects.toThrow(/permission denied/);
+
+    expect(calls.some(({ text }) => /UPDATE harness_shared\.backup_snapshots/.test(text))).toBe(false);
+  });
+
+  it('unrelated object-not-found errors do not poison the receipt', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    vi.spyOn(wb as any, 'kopia').mockRejectedValue(new Error('object not found while writing restore target'));
+
+    await expect(wb.restoreToClone({ kopiaSnapshotId: 'snapUnrelated' })).rejects.toThrow(/object not found/);
+
+    expect(calls.some(({ text }) => /UPDATE harness_shared\.backup_snapshots/.test(text))).toBe(false);
+  });
 });
 
 // -------------------------------------------------------------------------

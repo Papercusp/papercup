@@ -536,6 +536,12 @@ export default defineTool({
     z.object({
       op: z.literal('status'),
       platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).optional().describe('Poll ONE leg (WI-4233) instead of the legacy whole-cut unit.'),
+      // Keep the status poll compatible with release-cut callers that carry the
+      // version/channel context through every operation. Status remains host-wide
+      // (and therefore does not use these values to select a unit), but rejecting
+      // them contradicts the tool's published union-level accepted-args contract.
+      version: z.string().min(1).optional().describe('Optional release version carried as caller context; status is host-wide.'),
+      channel: z.enum(['stable', 'beta', 'alpha']).optional().describe('Optional release channel carried as caller context; status is host-wide.'),
     }),
     z.object({
       op: z.literal('handoff'),

@@ -135,6 +135,7 @@ const buildCompactionRecoveryMock = vi.hoisted(() =>
     coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
   })),
 );
+const acknowledgeControlTransitionMock = vi.hoisted(() => vi.fn(async () => true));
 const readGovernorStateSnapshotMock = vi.hoisted(() => vi.fn(async () => null as unknown));
 const recordOrientDisclosuresMock = vi.hoisted(() => vi.fn(async () => 'unchanged' as const));
 
@@ -165,6 +166,10 @@ vi.mock('../pipeline-health', async (importOriginal) => ({
 vi.mock('../compaction-recovery', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../compaction-recovery')>()),
   buildCompactionRecovery: buildCompactionRecoveryMock,
+}));
+vi.mock('../control-anchor', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../control-anchor')>()),
+  acknowledgeControlTransition: acknowledgeControlTransitionMock,
 }));
 vi.mock('../../../resource-governor/state-snapshot', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../resource-governor/state-snapshot')>()),
@@ -259,6 +264,8 @@ beforeEach(() => {
   getFleetMock.mockResolvedValue(null);
   listFleetsLedByMock.mockClear();
   listFleetsLedByMock.mockResolvedValue([]);
+  acknowledgeControlTransitionMock.mockClear();
+  acknowledgeControlTransitionMock.mockResolvedValue(true);
 });
 
 describe('coord:orient args', () => {
@@ -349,6 +356,7 @@ describe('coord:orient args', () => {
     const ownerId = 'su-orient-handler-test';
     const recovery = {
       selfRecall: "sessions:search { session: 'self' }",
+      control: { generation: 5 },
       coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
     };
 
@@ -414,6 +422,7 @@ describe('coord:orient args', () => {
         'ws-test',
         expect.any(Object),
       );
+      expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith(ownerId, 'ws-test', 5);
 
       await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
       const result = (await resultPromise) as { data: Record<string, unknown> };

@@ -1622,6 +1622,12 @@ function resolveDbDumpOk(
   return typeof hookPayload?.ok === 'boolean' ? hookPayload.ok : null;
 }
 
+function isMissingKopiaSnapshotObject(error: unknown, kopiaSnapshotId: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const escapedId = kopiaSnapshotId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:content|snapshot|object)\\s*:?[ \\t]+${escapedId}[^\\n]{0,200}\\bnot found\\b`, 'i').test(message);
+}
+
 /**
  * Make an op id / timestamp safe + bounded for use inside a `.broken-*` /
  * `.rolled-back-*` directory name. Non-`[A-Za-z0-9._-]` chars (path separators,

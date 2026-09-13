@@ -231,6 +231,101 @@ describe('testing:runs evidence identity', () => {
   });
 });
 
+describe('testing:runs exact ID selection', () => {
+  const sqlCalls: Array<{ strings: string[]; values: unknown[] }> = [];
+  const exactIds = [17692431, 17692432];
+
+  beforeEach(() => {
+    sqlCalls.length = 0;
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      sqlCalls.push(call);
+      if (call.strings.some((part) => part.includes('WITH filtered'))) {
+        return Promise.resolve([
+          {
+            id: String(exactIds[0]),
+            workspace_id: null,
+            harness_slug: null,
+            file_path: 'packages/example/retry.test.ts',
+            status: 'fail',
+            framework: 'vitest',
+            started_at: '2026-09-08T09:43:05Z',
+            finished_at: '2026-09-08T09:43:06Z',
+            duration_ms: '1000',
+            output_tail: 'first attempt',
+            run_group_id: 'run-a',
+            source: 'ci',
+            branch: 'staging',
+            commit_sha: 'abc123',
+            loop_lag_p95_ms: null,
+            rss_mb: null,
+            worktree_dirty: false,
+            is_scratch_config: false,
+            total: '2',
+          },
+          {
+            id: String(exactIds[1]),
+            workspace_id: null,
+            harness_slug: null,
+            file_path: 'packages/example/retry.test.ts',
+            status: 'pass',
+            framework: 'vitest',
+            started_at: '2026-09-08T09:44:05Z',
+            finished_at: '2026-09-08T09:44:06Z',
+            duration_ms: '1000',
+            output_tail: null,
+            run_group_id: 'run-b',
+            source: 'ci',
+            branch: 'staging',
+            commit_sha: 'abc123',
+            loop_lag_p95_ms: null,
+            rss_mb: null,
+            worktree_dirty: false,
+            is_scratch_config: false,
+            total: '2',
+          },
+        ]);
+      }
+      return call;
+    });
+  });
+
+  it('accepts bounded exact IDs and keeps every selected receipt by default', async () => {
+    expect(runsTool.args.safeParse({ testRunIds: exactIds }).success).toBe(true);
+    expect(runsTool.args.safeParse({ testRunIds: [] }).success).toBe(false);
+    expect(runsTool.args.safeParse({ testRunIds: [0] }).success).toBe(false);
+    expect(runsTool.args.safeParse({ testRunIds: Array.from({ length: 101 }, (_, i) => i + 1) }).success).toBe(false);
+
+    const result = (await runsTool.handler({ testRunIds: exactIds } as never, {} as never)) as {
+      data?: Record<string, unknown>;
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    const queryText = renderSqlFragment(sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered'))) ?? { strings: [], values: [] });
+
+    expect(queryText).toContain('id = ANY(');
+    expect(queryText).toContain('SELECT * FROM filtered');
+    expect(queryText).not.toContain('SELECT DISTINCT ON (file_path)');
+    expect(JSON.stringify(sqlCalls)).toContain(JSON.stringify(exactIds));
+    expect(sqlCalls[sqlCalls.length - 1]?.values).toContain(2);
+    expect(data).toMatchObject({
+      count: 2,
+      total: 2,
+      latestPerFile: false,
+      runs: [
+        { id: exactIds[0], filePath: 'packages/example/retry.test.ts', status: 'fail' },
+        { id: exactIds[1], filePath: 'packages/example/retry.test.ts', status: 'pass' },
+      ],
+    });
+  });
+
+  it('allows an explicit latest-per-file collapse for selected IDs', async () => {
+    await runsTool.handler({ testRunIds: exactIds, latestPerFile: true } as never, {} as never);
+    const queryText = renderSqlFragment(sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered'))) ?? { strings: [], values: [] });
+    expect(queryText).toContain('SELECT DISTINCT ON (file_path)');
+  });
+});
+
 describe('testing:runs empty results', () => {
   beforeEach(() => {
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {

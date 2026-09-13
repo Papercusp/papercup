@@ -3942,6 +3942,27 @@ export default defineTool({
       taskToolSchemaPack,
       result: result as object,
     });
+    // EI-22549932772057219: the post-compaction control anchor is prepared/read
+    // before this handler starts composing the response, but it must not be
+    // acknowledged until the complete orient payload has assembled successfully.
+    // Otherwise a render failure (or a later handler fold that prevents the
+    // response from being delivered) advances the watermark and makes the next
+    // loop wake inject the same stale generation as if it were new. Keep the
+    // acknowledgement fail-soft: if its write fails, the pending generation is
+    // intentionally retried on the next turn.
+    if (
+      args.afterCompaction === true &&
+      ownerId &&
+      recovery?.control &&
+      Number.isSafeInteger(recovery.control.generation)
+    ) {
+      try {
+        const { acknowledgeControlTransition } = await import('../control-anchor');
+        await acknowledgeControlTransition(ownerId, orientWorkspaceId, recovery.control.generation);
+      } catch {
+        /* preserve the assembled orient; the generation remains pending */
+      }
+    }
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never

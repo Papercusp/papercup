@@ -357,7 +357,9 @@ export default defineTool({
     limit?: number;
   }) {
     const { sql } = getOrgPg();
-    const limit = args.limit ?? DEFAULT_LIMIT;
+    // Exact-ID lookups are evidence receipt reads: do not silently return only
+    // the ordinary listing default when a caller names up to 100 receipts.
+    const limit = args.limit ?? args.testRunIds?.length ?? DEFAULT_LIMIT;
     const pathLike = args.filePath ? toPathPattern(args.filePath) : null;
     const shaLike = args.commitSha ? toShaPattern(args.commitSha) : null;
     const testRunIds = args.testRunIds ?? null;
