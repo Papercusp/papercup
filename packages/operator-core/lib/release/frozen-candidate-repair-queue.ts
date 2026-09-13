@@ -419,6 +419,8 @@ export interface FrozenRepairAdmissionPrecheck {
   candidate: string;
   repairHead: string;
   builtCommit: string;
+  /** Immutable content identity; unlike builtCommit, it excludes provenance-only message changes. */
+  builtTree?: string;
   files: string[];
   actor: string;
   startedAtMs: number;
@@ -1279,6 +1281,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     !nonBlank(row.candidate) ||
     !nonBlank(row.repairHead) ||
     !nonBlank(row.builtCommit) ||
+    (row.builtTree !== undefined && !nonBlank(row.builtTree)) ||
     !nonBlank(row.actor) ||
     !Array.isArray(row.files) ||
     !row.files.every(nonBlank) ||
@@ -1302,6 +1305,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     candidate: row.candidate as string,
     repairHead: row.repairHead as string,
     builtCommit: row.builtCommit as string,
+    ...(nonBlank(row.builtTree) ? { builtTree: row.builtTree } : {}),
     files: [...(row.files as string[])],
     actor: row.actor as string,
     startedAtMs: row.startedAtMs as number,
