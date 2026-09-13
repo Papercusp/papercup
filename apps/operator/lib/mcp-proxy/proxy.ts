@@ -779,6 +779,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // The bounded grading preflight is also side-effect-free and safe to replay.
   "scorecards:evaluate",
   "plans:get",
+  "plans:get-specs",
   "plans:list",
   "plans:items",
   "plans:search",

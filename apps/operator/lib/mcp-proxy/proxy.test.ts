@@ -721,6 +721,29 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
     ).toBe("readonly");
   });
 
+  it("EI-23074896897999125: classifies plans:get-specs as replay-safe", () => {
+    for (const name of [
+      "plans:get-specs",
+      "mcp__papercusp-su__plans_get-specs",
+    ]) {
+      const body = Buffer.from(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: { slug: "example-plan" } },
+        }),
+      );
+
+      expect(
+        prepareForward("POST", {}, body, {
+          keyingEnabled: true,
+          genKey: () => "00000000-0000-4000-8000-000000000000",
+        }).klass,
+      ).toBe("readonly");
+    }
+  });
+
   it("never lists a known-mutating tool", () => {
     const writers = [
       "capability:bash",
