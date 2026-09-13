@@ -80,8 +80,11 @@ export interface SpecEvidenceForAdequacy {
 
 function hasTestAttemptReference(row: SpecEvidenceForAdequacy): boolean {
   const execution = row.details.testExecution as { schemaVersion?: unknown; originRunId?: unknown } | undefined;
-  return execution?.schemaVersion === 1 && typeof execution.originRunId === 'string'
-    && row.evidenceRef.startsWith(`test-run-group:${execution.originRunId}:`);
+  return (
+    execution?.schemaVersion === 1 &&
+    typeof execution.originRunId === 'string' &&
+    row.evidenceRef.startsWith(`test-run-group:${execution.originRunId}:`)
+  );
 }
 
 /**
@@ -133,36 +136,63 @@ export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: r
  */
 export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: readonly T[]): T[] {
   const object = (value: unknown): Record<string, unknown> | null =>
-    value !== null && typeof value === 'object' && !Array.isArray(value)
-      ? value as Record<string, unknown> : null;
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   const identity = (row: T) => {
     const execution = object(row.details.testExecution);
     const binding = object(execution?.binding);
     const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
-    if (!execution || !hasTestAttemptReference(row) || !binding || !measurement.success
-      || binding.specId !== row.specId || binding.specRevision !== row.specRevision
-      || measurement.data.testPaths?.length !== 1
-      || binding.testPath !== measurement.data.testPaths[0]
-      || !['unit', 'integration', 'e2e'].includes(String(binding.testLayer))) return null;
+    if (
+      !execution ||
+      !hasTestAttemptReference(row) ||
+      !binding ||
+      !measurement.success ||
+      binding.specId !== row.specId ||
+      binding.specRevision !== row.specRevision ||
+      measurement.data.testPaths?.length !== 1 ||
+      binding.testPath !== measurement.data.testPaths[0] ||
+      !['unit', 'integration', 'e2e'].includes(String(binding.testLayer))
+    )
+      return null;
     const strings = (value: unknown): string[] | null =>
-      Array.isArray(value) && value.every(v => typeof v === 'string' && v.length > 0)
-        ? [...new Set(value as string[])].sort() : null;
+      Array.isArray(value) && value.every((v) => typeof v === 'string' && v.length > 0)
+        ? [...new Set(value as string[])].sort()
+        : null;
     const sources = strings(binding.sourcePaths);
-    if (!sources || JSON.stringify(sources) !== JSON.stringify([...new Set(measurement.data.sourcePaths)].sort())) return null;
+    if (!sources || JSON.stringify(sources) !== JSON.stringify([...new Set(measurement.data.sourcePaths)].sort()))
+      return null;
     const details = detailsOf(row);
     if (details.contractMetadataIssues?.length || details.testLayer !== binding.testLayer) return null;
     const scenarios = binding.scenarioIds === undefined ? [] : strings(binding.scenarioIds);
     const pairs = binding.causalPairId === undefined ? [] : [binding.causalPairId];
-    if (!scenarios || JSON.stringify(scenarios) !== JSON.stringify(details.scenarioIds ?? [])
-      || JSON.stringify(pairs) !== JSON.stringify(details.causalPairIds ?? [])) return null;
+    if (
+      !scenarios ||
+      JSON.stringify(scenarios) !== JSON.stringify(details.scenarioIds ?? []) ||
+      JSON.stringify(pairs) !== JSON.stringify(details.causalPairIds ?? [])
+    )
+      return null;
     const counterexample = object(binding.counterexample);
-    if (binding.counterexample !== undefined && (!counterexample
-      || typeof counterexample.test !== 'string' || typeof counterexample.messageIncludes !== 'string')) return null;
-    const registrationKey = JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.specFingerprint,
-      row.evidenceKind, measurement.data.rootHarnessSlug ?? null, binding.testPath, binding.testLayer,
-      scenarios, pairs,
+    if (
+      binding.counterexample !== undefined &&
+      (!counterexample || typeof counterexample.test !== 'string' || typeof counterexample.messageIncludes !== 'string')
+    )
+      return null;
+    const registrationKey = JSON.stringify([
+      row.workItemId,
+      row.planSlug,
+      row.specId,
+      row.specRevision,
+      row.specFingerprint,
+      row.evidenceKind,
+      measurement.data.rootHarnessSlug ?? null,
+      binding.testPath,
+      binding.testLayer,
+      scenarios,
+      pairs,
       counterexample ? [counterexample.test, counterexample.messageIncludes] : null,
-      row.fingerprints.fixtureFingerprint, row.fingerprints.rubricFingerprint, row.fingerprints.environmentFingerprint]);
+      row.fingerprints.fixtureFingerprint,
+      row.fingerprints.rubricFingerprint,
+      row.fingerprints.environmentFingerprint,
+    ]);
     // Plane review and the executed filter are recorded at finish/review, not at
     // prepare. They distinguish attempts, but cannot change registration order.
     const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane ?? null;
@@ -174,30 +204,46 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
   const anchors = new Map<string, { id: number; scope: NonNullable<ReturnType<typeof identity>> }>();
   for (const row of rows) {
     const scope = identity(row);
-    if (!scope || scope.execution.phase !== 'pending' || row.testRunId !== null
-      || !Number.isSafeInteger(row.id) || row.id! <= 0) continue;
+    if (
+      !scope ||
+      scope.execution.phase !== 'pending' ||
+      row.testRunId !== null ||
+      !Number.isSafeInteger(row.id) ||
+      row.id! <= 0
+    )
+      continue;
     const key = logicalKey(row);
     const previous = anchors.get(key);
     if (!previous || row.id! < previous.id) anchors.set(key, { id: row.id!, scope });
   }
   const latest = latestLogicalEvidence(rows);
-  const candidates = latest.map(row => {
+  const candidates = latest.map((row) => {
     const scope = identity(row);
     const anchor = anchors.get(logicalKey(row));
     // An annotation cannot change the registered proof's identity or source scope.
-    return scope && anchor && scope.registrationKey === anchor.scope.registrationKey
-      && JSON.stringify(scope.sources) === JSON.stringify(anchor.scope.sources)
-      ? { row, scope, order: anchor.id } : null;
+    return scope &&
+      anchor &&
+      scope.registrationKey === anchor.scope.registrationKey &&
+      JSON.stringify(scope.sources) === JSON.stringify(anchor.scope.sources)
+      ? { row, scope, order: anchor.id }
+      : null;
   });
   const superseded = new Set<T>();
   for (const candidate of candidates) {
     if (!candidate) continue;
-    if (candidates.some(newer => newer && newer.order > candidate.order
-      && newer.scope.key === candidate.scope.key
-      && (candidate.scope.plane === null || candidate.scope.plane === newer.scope.plane)
-      && candidate.scope.sources.every(path => newer.scope.sources.includes(path)))) superseded.add(candidate.row);
+    if (
+      candidates.some(
+        (newer) =>
+          newer &&
+          newer.order > candidate.order &&
+          newer.scope.key === candidate.scope.key &&
+          (candidate.scope.plane === null || candidate.scope.plane === newer.scope.plane) &&
+          candidate.scope.sources.every((path) => newer.scope.sources.includes(path)),
+      )
+    )
+      superseded.add(candidate.row);
   }
-  return latest.filter(row => !superseded.has(row));
+  return latest.filter((row) => !superseded.has(row));
 }
 
 export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
@@ -707,9 +753,10 @@ function rerunRecipeFor(
   // Preserve an explicit caller selector even when the in-memory evidence rows
   // are empty for this clause (for example, an uncovered or legacy binding).
   // Omitting it would widen the persisted recipe into an unfiltered replay.
-  const replayEvidenceRefs = selectedEvidenceRefs.length > 0
-    ? selectedEvidenceRefs
-    : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
+  const replayEvidenceRefs =
+    selectedEvidenceRefs.length > 0
+      ? selectedEvidenceRefs
+      : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
   const currentByKey = new Map((current ?? []).map((row) => [evidenceCurrentInputKey(row), row]));
   const currentForEvidence = (row: SpecEvidenceForAdequacy): EvidenceCurrentInput | undefined => {
     const scopedCurrentKey = evidenceCurrentInputKey({
@@ -821,15 +868,35 @@ export function crossGenerationAuditProbeArgs(rerunRecipe: SpecTestAdequacyRerun
   // evidence also needs a probe that a sweep-launched auditor can execute when
   // its MCP surface is one green generation behind the staging emitter. Keep
   // that inline probe on the long-standing public subset while preserving the
-  // exact selection/currentness contract in rerunRecipe itself.
+  // exact selection/currentness contract in rerunRecipe itself. `evidenceRefs`
+  // and the four scoped currentness keys were added after the legacy subset, so
+  // keep them only in the exact recipe instead of making an older live schema
+  // reject every criterion's otherwise-runnable audit probe.
   const {
     evaluatorBuild: _evaluatorBuild,
     specRevision: _specRevision,
     specFingerprint: _specFingerprint,
     replaySnapshot: _replaySnapshot,
+    evidenceRefs: _evidenceRefs,
+    current,
     ...crossGenerationArgs
   } = rerunRecipe.args;
-  return crossGenerationArgs;
+  return {
+    ...crossGenerationArgs,
+    ...(current !== undefined
+      ? {
+          current: current.map(
+            ({
+              planSlug: _planSlug,
+              specId: _specId,
+              specRevision: _currentSpecRevision,
+              specFingerprint: _currentSpecFingerprint,
+              ...fingerprint
+            }) => fingerprint,
+          ),
+        }
+      : {}),
+  };
 }
 
 function appendRatingRerunProbes(
@@ -883,12 +950,18 @@ export function evaluateSpecTestAdequacy(input: {
   // visible as unknown instead of silently disappearing from the graded population. The
   // historical current-cohort behavior is retained only for internally/server-classified
   // evidence when no caller comparison input was supplied.
-  const evidence = input.current !== undefined ? exactEvidence : currentEvidence.length > 0
-    ? exactEvidence.filter(row => currentEvidence.includes(row)
-      // An active registered attempt whose freshness is unknown/stale cannot disappear
-      // merely because another test in this clause is current and passing.
-      || hasTestAttemptReference(row))
-    : exactEvidence;
+  const evidence =
+    input.current !== undefined
+      ? exactEvidence
+      : currentEvidence.length > 0
+        ? exactEvidence.filter(
+            (row) =>
+              currentEvidence.includes(row) ||
+              // An active registered attempt whose freshness is unknown/stale cannot disappear
+              // merely because another test in this clause is current and passing.
+              hasTestAttemptReference(row),
+          )
+        : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 
   const lineageAssessments = evidence.map((row) => ({ row, assessment: classifySpecEvidenceLineage(row) }));
@@ -966,8 +1039,7 @@ export function evaluateSpecTestAdequacy(input: {
   // only an attestation exists. Branch the template on which basis is actually present.
   const boundMutationOrCounterexample = evidence.filter((row) => {
     return (
-      (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-      isSuccessfulExecutableEvidence(row)
+      (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') && isSuccessfulExecutableEvidence(row)
     );
   });
   const exactMutationOrCounterexample = exactEvidence.filter(
@@ -998,13 +1070,13 @@ export function evaluateSpecTestAdequacy(input: {
               'Bind a successful ledger-backed mutation or counterexample result; falsifiable=true metadata alone is insufficient.',
           }
         : booleanRating(evidence, (d) => d.falsifiable, {
-          pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
-          fail: `Bound metadata explicitly reports falsifiable=false for ${clauseIdentity(clause)}.`,
-          unknown:
-            exactMutationOrCounterexample.length > 0
-              ? `A mutation or counterexample binding exists in the exact clause population, but no current-cohort binding demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`
-              : `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
-        });
+            pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
+            fail: `Bound metadata explicitly reports falsifiable=false for ${clauseIdentity(clause)}.`,
+            unknown:
+              exactMutationOrCounterexample.length > 0
+                ? `A mutation or counterexample binding exists in the exact clause population, but no current-cohort binding demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`
+                : `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
+          });
 
   let layerRating: AdequacyRatingEntry;
   if (clause.requiredTestLayers.length === 0) {
@@ -1154,11 +1226,15 @@ export function evaluateSpecTestAdequacy(input: {
       SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
     );
   });
-  const incompleteMeasuredExecution = executable.filter(row => {
+  const incompleteMeasuredExecution = executable.filter((row) => {
     if (!row.details.testExecution) return false;
     const d = detailsOf(row);
-    return d.collected !== true || d.skipped !== false || d.executed !== true
-      || !SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '');
+    return (
+      d.collected !== true ||
+      d.skipped !== false ||
+      d.executed !== true ||
+      !SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+    );
   });
   const executionRating: AdequacyRatingEntry = explicitBadExecution
     ? {
@@ -1194,31 +1270,31 @@ export function evaluateSpecTestAdequacy(input: {
               incompleteMeasuredExecution,
             ),
           }
-      : successfulExecution
-        ? {
-            rating: 'pass',
-            evidence: evidenceWithBindings(
-              `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
-              executable.filter((row) => {
-                const d = detailsOf(row);
-                return (
-                  d.collected === true &&
-                  d.skipped === false &&
-                  d.executed === true &&
-                  SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-                );
-              }),
-            ),
-          }
-        : {
-            rating: executable.length ? 'unknown' : 'fail',
-            evidence: executable.length
-              ? evidenceWithBindings(
-                  `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
-                  executable,
-                )
-              : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
-          };
+        : successfulExecution
+          ? {
+              rating: 'pass',
+              evidence: evidenceWithBindings(
+                `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
+                executable.filter((row) => {
+                  const d = detailsOf(row);
+                  return (
+                    d.collected === true &&
+                    d.skipped === false &&
+                    d.executed === true &&
+                    SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+                  );
+                }),
+              ),
+            }
+          : {
+              rating: executable.length ? 'unknown' : 'fail',
+              evidence: executable.length
+                ? evidenceWithBindings(
+                    `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
+                    executable,
+                  )
+                : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
+            };
 
   let causalPairRating: AdequacyRatingEntry | null = null;
   if (clause.falsifier?.causalPairing === 'one-to-one') {

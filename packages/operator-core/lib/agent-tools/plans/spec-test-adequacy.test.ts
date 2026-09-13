@@ -115,32 +115,69 @@ function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvid
   };
 }
 
-function attempt(n: number, patch: {
-  outcome?: string; sources?: string[]; layer?: string; plane?: string;
-  scenarios?: string[]; pair?: string; filter?: string; phase?: string;
-} = {}): SpecEvidenceForAdequacy[] {
-  const binding = { specId: clause().specId, specRevision: 1, testPath: 'test/reconnect.test.ts',
-    sourcePaths: patch.sources ?? ['src/reconnect.ts'], testLayer: patch.layer ?? 'integration',
+function attempt(
+  n: number,
+  patch: {
+    outcome?: string;
+    sources?: string[];
+    layer?: string;
+    plane?: string;
+    scenarios?: string[];
+    pair?: string;
+    filter?: string;
+    phase?: string;
+  } = {},
+): SpecEvidenceForAdequacy[] {
+  const binding = {
+    specId: clause().specId,
+    specRevision: 1,
+    testPath: 'test/reconnect.test.ts',
+    sourcePaths: patch.sources ?? ['src/reconnect.ts'],
+    testLayer: patch.layer ?? 'integration',
     ...(patch.scenarios ? { scenarioIds: patch.scenarios } : {}),
-    ...(patch.pair ? { causalPairId: patch.pair } : {}) };
-  const base = evidence({ evidenceKind: 'test', evidenceRef: `test-run-group:attempt-${n}:0`,
-    coverageEvidenceRef: null, testRunId: null });
-  const adequacy = { ...(base.details.adequacy as object), testLayer: binding.testLayer,
+    ...(patch.pair ? { causalPairId: patch.pair } : {}),
+  };
+  const base = evidence({
+    evidenceKind: 'test',
+    evidenceRef: `test-run-group:attempt-${n}:0`,
+    coverageEvidenceRef: null,
+    testRunId: null,
+  });
+  const adequacy = {
+    ...(base.details.adequacy as object),
+    testLayer: binding.testLayer,
     ...(patch.scenarios ? { scenarioIds: patch.scenarios } : {}),
-    ...(patch.pair ? { causalPairIds: [patch.pair] } : {}) };
+    ...(patch.pair ? { causalPairIds: [patch.pair] } : {}),
+  };
   const details = {
-    currentMeasurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: binding.sourcePaths,
-      testPaths: [binding.testPath] },
+    currentMeasurement: {
+      schemaVersion: 1,
+      kind: 'repo-files',
+      sourcePaths: binding.sourcePaths,
+      testPaths: [binding.testPath],
+    },
     testExecution: { schemaVersion: 1, phase: 'pending', originRunId: `attempt-${n}`, runId: `attempt-${n}`, binding },
     adequacy: { ...adequacy, outcome: 'pending', collected: false, executed: false },
   };
   const pending = { ...base, id: n * 10, createdAt: `2026-09-09T00:${String(n).padStart(2, '0')}:00Z`, details };
-  return [pending, { ...pending, id: n * 10 + 1, testRunId: n, details: {
-    ...details, ...(patch.plane ? { evidencePlane: patch.plane } : {}),
-    testExecution: { ...details.testExecution, phase: patch.phase ?? 'settled',
-      ...(patch.filter ? { testNamePattern: patch.filter } : {}) },
-    adequacy: { ...adequacy, outcome: patch.outcome ?? 'pass', collected: true, executed: true },
-  } }];
+  return [
+    pending,
+    {
+      ...pending,
+      id: n * 10 + 1,
+      testRunId: n,
+      details: {
+        ...details,
+        ...(patch.plane ? { evidencePlane: patch.plane } : {}),
+        testExecution: {
+          ...details.testExecution,
+          phase: patch.phase ?? 'settled',
+          ...(patch.filter ? { testNamePattern: patch.filter } : {}),
+        },
+        adequacy: { ...adequacy, outcome: patch.outcome ?? 'pass', collected: true, executed: true },
+      },
+    },
+  ];
 }
 
 describe('active registered test attempts (EI-22773954051523742)', () => {
@@ -152,43 +189,66 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
     expect(latestLogicalEvidence(rows)).toEqual([old[1], fresh[1]]);
     expect(activeSpecEvidence(rows)).toEqual([fresh[1]]);
     expect(JSON.stringify(rows)).toBe(unchanged);
-    expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: [...rows, negativeEvidence()],
-      classRef: 'plan-class-feature-ship' }).verdict).toBe('pass');
+    expect(
+      evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: [...rows, negativeEvidence()],
+        classRef: 'plan-class-feature-ship',
+      }).verdict,
+    ).toBe('pass');
   });
 
-  it.each(['failed', 'unknown', 'pending'])('never selects a past pass over a newer %s', outcome => {
+  it.each(['failed', 'unknown', 'pending'])('never selects a past pass over a newer %s', (outcome) => {
     const old = attempt(1);
     const fresh = attempt(2, { outcome });
     if (outcome === 'pending') fresh.pop();
     const rows = [...old, ...fresh];
     expect(activeSpecEvidence(rows)).toEqual([fresh.at(-1)]);
-    const result = evaluateSpecTestAdequacy({ clause: clause(), evidence: [...rows, negativeEvidence()],
-      classRef: 'plan-class-feature-ship' });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [...rows, negativeEvidence()],
+      classRef: 'plan-class-feature-ship',
+    });
     expect(result.wouldBlock).toContain('execution-integrity');
   });
 
-  it.each(['unknown', 'stale'] as const)('does not hide %s freshness behind another current passing proof', state => {
+  it.each(['unknown', 'stale'] as const)('does not hide %s freshness behind another current passing proof', (state) => {
     const fresh = attempt(2);
-    fresh[1]!.currentness = { ...fresh[1]!.currentness, overall: state,
-      provenance: 'not-supplied', unknownReasons: state === 'unknown' ? ['server-measurement-unavailable'] : [],
-      staleReasons: state === 'stale' ? ['source-fingerprint-changed'] : [] };
-    const result = evaluateSpecTestAdequacy({ clause: clause(),
+    fresh[1]!.currentness = {
+      ...fresh[1]!.currentness,
+      overall: state,
+      provenance: 'not-supplied',
+      unknownReasons: state === 'unknown' ? ['server-measurement-unavailable'] : [],
+      staleReasons: state === 'stale' ? ['source-fingerprint-changed'] : [],
+    };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
       evidence: [...attempt(1), ...fresh, negativeEvidence()],
-      classRef: 'plan-class-feature-ship' });
+      classRef: 'plan-class-feature-ship',
+    });
     expect(result.evidenceRefs).toContain(fresh[1]!.evidenceRef);
     expect(result.wouldBlock).toContain('freshness');
   });
 
   it.each([
-    { sources: ['src/other.ts'] }, { sources: ['src/one.ts'] },
-    { layer: 'unit' }, { plane: 'live' }, { scenarios: ['scenario-a'] },
-    { pair: 'cause-a' }, { filter: 'one selected test' },
-  ])('keeps distinct obligations or narrower measured scope: %j', patch => {
+    { sources: ['src/other.ts'] },
+    { sources: ['src/one.ts'] },
+    { layer: 'unit' },
+    { plane: 'live' },
+    { scenarios: ['scenario-a'] },
+    { pair: 'cause-a' },
+    { filter: 'one selected test' },
+  ])('keeps distinct obligations or narrower measured scope: %j', (patch) => {
     const old = attempt(1, { sources: ['src/reconnect.ts', 'src/one.ts'], outcome: 'failed' });
     const fresh = attempt(2, patch);
     expect(activeSpecEvidence([...old, ...fresh])).toEqual([old[1], fresh[1]]);
-    expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: [...old, ...fresh, negativeEvidence()],
-      classRef: 'plan-class-feature-ship' }).wouldBlock).toContain('execution-integrity');
+    expect(
+      evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: [...old, ...fresh, negativeEvidence()],
+        classRef: 'plan-class-feature-ship',
+      }).wouldBlock,
+    ).toContain('execution-integrity');
   });
 
   it('cannot reverse attempt order by annotating or future-dating old evidence', () => {
@@ -210,19 +270,34 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
     const old = attempt(1, { outcome: 'failed' });
     const fresh = attempt(2);
     expect(activeSpecEvidence([old[1]!, ...fresh])).toEqual([old[1], fresh[1]]);
-    const altered = { ...fresh[1]!, details: { ...fresh[1]!.details,
-      adequacy: { ...(fresh[1]!.details.adequacy as object), scenarioIds: ['unregistered'] } } };
+    const altered = {
+      ...fresh[1]!,
+      details: {
+        ...fresh[1]!.details,
+        adequacy: { ...(fresh[1]!.details.adequacy as object), scenarioIds: ['unregistered'] },
+      },
+    };
     expect(activeSpecEvidence([...old, fresh[0]!, altered])).toEqual([old[1], altered]);
   });
 
   it('keeps changed root, fixture, counterexample and separate work-item proof distinct', () => {
     const old = attempt(1, { outcome: 'failed' });
     for (const mutate of [
-      (row: SpecEvidenceForAdequacy) => { row.workItemId = 'WI-102'; },
-      (row: SpecEvidenceForAdequacy) => { row.evidenceKind = 'counterexample'; },
-      (row: SpecEvidenceForAdequacy) => { row.fingerprints = { ...row.fingerprints, fixtureFingerprint: 'different' }; },
-      (row: SpecEvidenceForAdequacy) => { row.details.currentMeasurement = {
-        ...(row.details.currentMeasurement as object), rootHarnessSlug: 'another-root' }; },
+      (row: SpecEvidenceForAdequacy) => {
+        row.workItemId = 'WI-102';
+      },
+      (row: SpecEvidenceForAdequacy) => {
+        row.evidenceKind = 'counterexample';
+      },
+      (row: SpecEvidenceForAdequacy) => {
+        row.fingerprints = { ...row.fingerprints, fixtureFingerprint: 'different' };
+      },
+      (row: SpecEvidenceForAdequacy) => {
+        row.details.currentMeasurement = {
+          ...(row.details.currentMeasurement as object),
+          rootHarnessSlug: 'another-root',
+        };
+      },
     ]) {
       const fresh = structuredClone(attempt(2));
       fresh.forEach(mutate);
@@ -232,11 +307,17 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
 
   it('does not classify stale manual negative-control history as a registered attempt from copied metadata', () => {
     const rows = attempt(2);
-    const historical = { ...rows[1]!, evidenceKind: 'counterexample' as const,
+    const historical = {
+      ...rows[1]!,
+      evidenceKind: 'counterexample' as const,
       evidenceRef: 'manual-negative-controls:old',
-      currentness: { ...rows[1]!.currentness, overall: 'stale' as const, staleReasons: ['source-stale'] } };
-    const result = evaluateSpecTestAdequacy({ clause: clause(),
-      evidence: [...rows, historical, negativeEvidence()], classRef: 'plan-class-feature-ship' });
+      currentness: { ...rows[1]!.currentness, overall: 'stale' as const, staleReasons: ['source-stale'] },
+    };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [...rows, historical, negativeEvidence()],
+      classRef: 'plan-class-feature-ship',
+    });
     expect(result.verdict).toBe('pass');
     expect(result.evidenceRefs).not.toContain(historical.evidenceRef);
     expect(historical.currentness.overall).toBe('stale');
@@ -955,9 +1036,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       classRef: 'plan-class-feature-ship',
     });
 
-    expect(result.evidenceRefs).toEqual([
-      currentTest.evidenceRef,
-    ]);
+    expect(result.evidenceRefs).toEqual([currentTest.evidenceRef]);
     expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
     expect(result.ratings['fixture-calibration'].evidence).toContain('2 exact fixture binding(s) are outside');
     expect(result.ratings.falsifiability.evidence).not.toContain('no mutation or counterexample binding is bound');
@@ -1369,6 +1448,10 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
   it('keeps each inline grading-audit probe runnable across evaluator generations', () => {
     const current: EvidenceCurrentInput[] = [
       {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
         evidenceKind: 'coverage-census',
         evidenceRef: 'surface:reconnect',
         ...evidence().fingerprints,
@@ -1387,12 +1470,13 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     )?.[1];
     expect(inline).toBeDefined();
     const args = JSON.parse(inline!) as Record<string, unknown>;
+    const inlineCurrent = args.current as Array<Record<string, unknown>> | undefined;
     const recipe = result.scorecardDraft.rerunRecipe;
 
     expect(evaluatorArgsSchema.safeParse(args).success).toBe(true);
     expect(args).toEqual(crossGenerationAuditProbeArgs(recipe));
     expect(Object.keys(args).sort()).toEqual(
-      ['classRef', 'current', 'evidenceRefs', 'harness', 'includeDraft', 'limit', 'slug', 'specIds', 'workItemIds'].sort(),
+      ['classRef', 'current', 'harness', 'includeDraft', 'limit', 'slug', 'specIds', 'workItemIds'].sort(),
     );
     expect(args).toMatchObject({
       harness: 'papercusp',
@@ -1400,11 +1484,22 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       classRef: 'plan-class-bugfix',
       specIds: ['SPEC-003-01'],
       workItemIds: ['WI-101'],
-      evidenceRefs: ['surface:reconnect'],
-      current,
+      current: [
+        {
+          evidenceKind: 'coverage-census',
+          evidenceRef: 'surface:reconnect',
+          ...evidence().fingerprints,
+        },
+      ],
       includeDraft: true,
       limit: 25,
     });
+    expect(args).not.toHaveProperty('evidenceRefs');
+    expect(inlineCurrent).not.toEqual(current);
+    expect(inlineCurrent?.[0]).not.toHaveProperty('planSlug');
+    expect(inlineCurrent?.[0]).not.toHaveProperty('specId');
+    expect(inlineCurrent?.[0]).not.toHaveProperty('specRevision');
+    expect(inlineCurrent?.[0]).not.toHaveProperty('specFingerprint');
     expect(args).not.toHaveProperty('evaluatorBuild');
     expect(args).not.toHaveProperty('specRevision');
     expect(args).not.toHaveProperty('specFingerprint');
@@ -1415,6 +1510,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(recipe.args).toMatchObject({
       evaluatorBuild: getBuildInfo(),
       evidenceRefs: ['surface:reconnect'],
+      current,
       specRevision: 1,
       specFingerprint: 'sha256:spec-v1',
       replaySnapshot: true,
