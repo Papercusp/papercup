@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "papercusp-evidence-v1",
+  "title": "P-006 installed-PUI engine parity — current Claude / Codex / OMP cohort",
+  "recordedAt": "2026-09-13T07:12:00Z",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItem": "WI-10000428",
+  "scope": {
+    "subject": "The installed PUI binary drives the same two production-host journeys independently through Claude, Codex and OMP.",
+    "platform": "local Linux",
+    "notCovered": [
+      "Deployed-main or :3070 shipment; current-build/staging is the P-006 acceptance plane.",
+      "Public publication under P-015; that item remains explicitly owner-gated.",
+      "An operating-system matrix beyond the local Linux host."
+    ]
+  },
+  "currentCohort": {
+    "measurement": {
+      "schemaVersion": 1,
+      "kind": "repo-files",
+      "sourcePaths": [
+        "packages/operator-core/lib/su-session-claude-adapter.ts",
+        "packages/operator-core/lib/su-session-claude-engine.ts",
+        "packages/operator-core/lib/su-session-codex-adapter.ts",
+        "packages/operator-core/lib/su-session-host.ts",
+        "packages/operator-core/lib/su-session-omp-adapter.ts",
+        "packages/operator-core/lib/su-session-resume.ts",
+        "packages/operator-core/lib/su-session-rpc-engine.ts"
+      ],
+      "testPaths": [
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+        "packages/operator-core/lib/pui-e2e/operator-process.mts"
+      ]
+    },
+    "serverMeasuredFingerprints": {
+      "source": "sha256-file-set-v1:040f0e554d03c3d9d481b0a4990bec240d08d86ab206e01286aad9561c3c93ef",
+      "test": "sha256-file-set-v1:dfb367103233d898c66b7764669222b90eff3e1d86915d3eaffb0c94525b28e1"
+    },
+    "currentness": "All six engine/journey test bindings and both OMP mutation bindings were read back current with serverMeasurement.status=measured."
+  },
+  "specs": {
+    "AUTO-BAR-R-03-P-006@6": {
+      "behavior": "Each supported engine preserves configured SU runtime capabilities through a resumed PUI session.",
+      "journey": "restores the same native conversation after the operator OS process exits",
+      "engines": {
+        "claude": {
+          "testRunId": 17861173,
+          "bindingId": 4383,
+          "outcome": "pass",
+          "modelRequested": "sonnet",
+          "modelObserved": "claude-sonnet-5",
+          "accountRoute": "default",
+          "observed": [
+            "AUTO mode",
+            "singleton plan",
+            "native Bash approval card and verified file effect",
+            "same agent-chat and native-session identity",
+            "hard operator-process exit",
+            "runtime generation 0 to 1",
+            "warm carry",
+            "exact resumed reply"
+          ]
+        },
+        "codex": {
+          "testRunId": 17854933,
+          "bindingId": 4349,
+          "outcome": "pass",
+          "modelObserved": "gpt-5.6-sol",
+          "accountRoute": "auto",
+          "observed": [
+            "AUTO mode",
+            "singleton plan",
+            "native approval and exact tool effect",
+            "identity-preserving hard-process restart",
+            "warm carry",
+            "exact history and resumed reply"
+          ]
+        },
+        "omp": {
+          "testRunId": 17855932,
+          "bindingId": 4357,
+          "outcome": "pass",
+          "accountRoute": "auto",
+          "modelPin": "omitted by plan Decision D-013",
+          "observed": [
+            "real OMP thread",
+            "hard operator-process exit",
+            "same identity",
+            "runtime generation 0 to 1",
+            "warm carry",
+            "exact resumed reply"
+          ]
+        }
+      },
+      "mutation": {
+        "bindingId": 4358,
+        "testRunId": 17855932,
+        "artifact": "docs/evidence/pui-p006-r03-l4-current-cohort-2026-09-13.json#carry-preservation-mutant",
+        "verdict": "caught",
+        "decisiveFailure": "The direct resumed-descriptor oracle expected carry=warm and received carry=cold."
+      },
+      "adequacy": {
+        "verdict": "pass",
+        "wouldBlock": []
+      }
+    },
+    "AUTO-BAR-R-10-P-006@6": {
+      "behavior": "The installed first-message journey succeeds independently on Claude, Codex and OMP.",
+      "journey": "greeting, real file tool, interrupt and continued reply stay in one first-party session",
+      "engines": {
+        "claude": {
+          "testRunId": 17859514,
+          "bindingId": 4384,
+          "outcome": "pass",
+          "modelRequested": "sonnet",
+          "modelObserved": "claude-sonnet-5",
+          "accountRoute": "default",
+          "observed": [
+            "real Read start and completion with matching turnId and callId",
+            "incremental streaming",
+            "interrupt before completion",
+            "continued reply",
+            "history replay",
+            "native resume"
+          ]
+        },
+        "codex": {
+          "testRunId": 17854977,
+          "bindingId": 4350,
+          "outcome": "pass",
+          "modelObserved": "gpt-5.6-sol",
+          "accountRoute": "auto",
+          "observed": [
+            "filesystem-grounded Read",
+            "incremental streaming",
+            "interrupt before completion",
+            "continued reply",
+            "history replay",
+            "native resume"
+          ]
+        },
+        "omp": {
+          "testRunId": 17858135,
+          "bindingId": 4359,
+          "outcome": "pass",
+          "accountRoute": "auto",
+          "modelPin": "omitted by plan Decision D-013",
+          "observed": [
+            "filesystem-grounded tool result",
+            "same-turn correlation",
+            "incremental streaming",
+            "interrupt and continued reply",
+            "history replay",
+            "native resume"
+          ]
+        }
+      },
+      "mutation": {
+        "bindingId": 4360,
+        "testRunId": 17858135,
+        "artifact": "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json#tool-turn-correlation-mutant",
+        "verdict": "caught",
+        "decisiveFailure": "The same-turn tool-result oracle expected the owner turnId and received mutant-turn."
+      },
+      "adequacy": {
+        "verdict": "pass",
+        "wouldBlock": []
+      }
+    }
+  },
+  "bindingReadback": {
+    "claude": [4383, 4384],
+    "codex": [4349, 4350],
+    "omp": [4357, 4359],
+    "mutations": [4358, 4360],
+    "currentness": {
+      "current": 8,
+      "stale": 0,
+      "unknown": 0
+    }
+  },
+  "adequacyEvaluation": {
+    "selection": "The eight current binding references listed above, excluding historical stale and unknown rows.",
+    "classRef": "plan-class-feature-ship",
+    "verdicts": {
+      "pass": 2,
+      "fail": 0,
+      "unknown": 0
+    },
+    "wouldBlock": []
+  },
+  "historicalRecord": {
+    "artifact": "docs/evidence/pui-p006-engine-parity-2026-09-11.json",
+    "disposition": "Preserved unchanged as the earlier failure/unevidenced snapshot; this current artifact supersedes its status conclusions without erasing them."
+  }
+}
