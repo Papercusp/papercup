@@ -615,6 +615,43 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(
       resolveTestChildLauncher({ ...base, env: { PATH: '/usr/bin' }, systemdRunPath: null, setsidPath: null }),
     ).toEqual({ launcher: 'direct', ownsProcessGroup: false, spawnCommand: 'npx', spawnArgs: base.args });
+
+    // EI-23142789976346343: testing:run already owns a bounded systemd scope.
+    // A nested `systemd-run --scope` escapes that cgroup, so the outer timeout
+    // reports terminal while Vitest grandchildren continue running. Both
+    // markers are required: either one alone can appear on an unrelated direct
+    // test-file invocation and must not disable the normal sibling-scope path.
+    expect(
+      resolveTestChildLauncher({
+        ...base,
+        env: {
+          PATH: '/usr/bin',
+          XDG_RUNTIME_DIR: '/run/user/1000',
+          PAPERCUSP_TEST_RUN_GROUP: 'run-123',
+          PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1700000060000',
+        },
+        systemdRunPath: '/usr/bin/systemd-run',
+        setsidPath: '/usr/bin/setsid',
+      }),
+    ).toEqual({
+      launcher: 'setsid',
+      ownsProcessGroup: true,
+      spawnCommand: '/usr/bin/setsid',
+      spawnArgs: ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+    });
+    for (const managedMarker of [
+      { PAPERCUSP_TEST_RUN_GROUP: 'run-123' },
+      { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1700000060000' },
+    ]) {
+      expect(
+        resolveTestChildLauncher({
+          ...base,
+          env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000', ...managedMarker },
+          systemdRunPath: '/usr/bin/systemd-run',
+          setsidPath: '/usr/bin/setsid',
+        }),
+      ).toMatchObject({ launcher: 'systemd-run' });
+    }
   });
 
   it('falls back to setsid --wait when the child env cannot reach a user bus', async () => {

@@ -1976,7 +1976,24 @@ export function userBusReachable(env = process.env) {
  * `setsid --wait` process-group boundary instead of manufacturing a silent red.
  */
 export function resolveTestChildLauncher({ command, args, env, systemdRunPath, setsidPath }) {
-  const systemd = systemdRunPath && userBusReachable(env ?? process.env) ? systemdRunPath : null;
+  const childEnv = env ?? process.env;
+  // `testing:run` already places this router in a bounded managed task scope and
+  // stamps both values below into the payload. Starting another user scope here
+  // moves Vitest OUT of that owned cgroup: the outer deadline then kills only
+  // the router while the nested `run-u*.scope` keeps its workers alive. The
+  // collision-free run-group marker alone is not enough (a direct caller may set
+  // it for reporter attribution), and an inherited task deadline alone is not
+  // enough (an arbitrary parent task may still need this router's isolation).
+  // Together they prove that the outer testing runner already owns bounded
+  // lifetime. Keep the child in that cgroup and use setsid solely for the local
+  // process-group watchdog.
+  const outerTestingRunOwnsLifetime = Boolean(
+    childEnv.PAPERCUSP_TEST_RUN_GROUP && childEnv.PAPERCUSP_TASK_DEADLINE_EPOCH_MS,
+  );
+  const systemd =
+    !outerTestingRunOwnsLifetime && systemdRunPath && userBusReachable(childEnv)
+      ? systemdRunPath
+      : null;
   const ownsProcessGroup = Boolean(systemd || setsidPath);
   const spawnCommand = systemd ?? setsidPath ?? command;
   const spawnArgs = systemd
