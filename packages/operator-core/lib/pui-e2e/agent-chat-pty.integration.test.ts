@@ -53,10 +53,7 @@ const scriptedEngine = vi.hoisted(() => ({
     { tag: 'ALPHA', input: { command: 'echo PUI-APPROVAL-ALPHA' } as Record<string, unknown> },
     { tag: 'BETA', input: { command: 'echo PUI-APPROVAL-BETA' } as Record<string, unknown> },
   ],
-  approvalVerdicts: [] as Array<{
-    tag: string;
-    verdict: { behavior: string; updatedInput?: Record<string, unknown>; message?: string };
-  }>,
+  approvalVerdicts: [] as Array<{ tag: string; verdict: { behavior: string; updatedInput?: Record<string, unknown>; message?: string } }>,
   // Appended ONLY when a verdict actually authorises the call, carrying the
   // arguments as authorised — so "the denied action executed" and "allow
   // executed something broader" are both directly observable.
@@ -98,25 +95,19 @@ const scriptedEngine = vi.hoisted(() => ({
 const maintenance = vi.hoisted(() => ({ jobs: [] as Array<{ stop(): Promise<void> }> }));
 vi.mock('../session-end-lease-release-hook', async (original) => {
   const actual = await original<typeof import('../session-end-lease-release-hook')>();
-  return {
-    ...actual,
-    scheduleSessionEndLeaseRelease(...args: Parameters<typeof actual.scheduleSessionEndLeaseRelease>) {
-      const job = actual.scheduleSessionEndLeaseRelease(...args);
-      maintenance.jobs.push(job);
-      return job;
-    },
-  };
+  return { ...actual, scheduleSessionEndLeaseRelease(...args: Parameters<typeof actual.scheduleSessionEndLeaseRelease>) {
+    const job = actual.scheduleSessionEndLeaseRelease(...args);
+    maintenance.jobs.push(job);
+    return job;
+  } };
 });
 vi.mock('../session-archive-hook', async (original) => {
   const actual = await original<typeof import('../session-archive-hook')>();
-  return {
-    ...actual,
-    async scheduleArchiveForAdvSession(...args: Parameters<typeof actual.scheduleArchiveForAdvSession>) {
-      const job = await actual.scheduleArchiveForAdvSession(...args);
-      if (job) maintenance.jobs.push(job);
-      return job;
-    },
-  };
+  return { ...actual, async scheduleArchiveForAdvSession(...args: Parameters<typeof actual.scheduleArchiveForAdvSession>) {
+    const job = await actual.scheduleArchiveForAdvSession(...args);
+    if (job) maintenance.jobs.push(job);
+    return job;
+  } };
 });
 
 vi.mock('../su-session-claude-engine', async (original) => {
@@ -127,12 +118,8 @@ vi.mock('../su-session-claude-engine', async (original) => {
       if (scriptedEngine.real) {
         // Observe the production host; never supply a query, attach an adapter,
         // or send an owner turn from the fixture in the live-provider journey.
-        const engine = actual.startClaudeSuEngine(
-          args[0],
-          args[1],
-          args[2],
-          process.env.PUI_REAL_APPROVAL === '1' ? { ...args[3], toolApproval: 'prompt' } : args[3],
-        );
+        const engine = actual.startClaudeSuEngine(args[0], args[1], args[2],
+          process.env.PUI_REAL_APPROVAL === '1' ? { ...args[3], toolApproval: 'prompt' } : args[3]);
         scriptedEngine.engines.push(engine);
         void (async () => {
           for await (const { event } of engine.adapter.host.subscribe()) {
@@ -144,8 +131,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
       const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options: sdkOptions }) => {
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
-        const result = () =>
-          output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+        const result = () => output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
         void (async () => {
           for await (const message of prompt) {
             if (!message.session_id) throw new Error('The PUI engine must stamp a native session ID on every input');
@@ -154,26 +140,15 @@ vi.mock('../su-session-claude-engine', async (original) => {
             output.write({ type: 'system', subtype: 'init', session_id: nativeId, cwd: args[0].cwd });
             output.write(message); // The engine's exact native receipt.
             if (scriptedEngine.mode === 'stall') {
-              output.write({
-                type: 'assistant',
-                session_id: nativeId,
-                message: {
-                  content: [
-                    { type: 'text', text: 'PUI tool is still running' },
-                    { type: 'tool_use', id: 'pui-pending-tool', name: 'Bash', input: { command: 'sleep 30' } },
-                  ],
-                },
-              });
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'text', text: 'PUI tool is still running' },
+                { type: 'tool_use', id: 'pui-pending-tool', name: 'Bash', input: { command: 'sleep 30' } },
+              ] } });
               continue;
             }
             if (scriptedEngine.mode === 'failure') {
-              output.write({
-                type: 'result',
-                subtype: 'error_during_execution',
-                session_id: nativeId,
-                is_error: true,
-                errors: ['PUI-E2E engine failed visibly'],
-              });
+              output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId,
+                is_error: true, errors: ['PUI-E2E engine failed visibly'] });
               continue;
             }
             if (scriptedEngine.mode === 'approval') {
@@ -183,19 +158,17 @@ vi.mock('../su-session-claude-engine', async (original) => {
               // Approve/Decline card (native-cards.ts:56-62). Both requests are
               // fired together so both cards are open at once, which is the only
               // arrangement in which isolation is observable.
-              void Promise.all(
-                scriptedEngine.approvalRequests.map(({ tag, input }) =>
-                  // Each request carries its OWN `toolUseID`/`requestId` (both
-                  // required members of the permission context). Distinct ids per
-                  // request are what let the two open cards be told apart — the
-                  // isolation this case exists to observe.
-                  Promise.resolve(
-                    sdkOptions.canUseTool?.('Bash', input, {
-                      signal: new AbortController().signal,
-                      toolUseID: tag,
-                      requestId: `${tag}-request`,
-                    }),
-                  ).then((verdict) => {
+              void Promise.all(scriptedEngine.approvalRequests.map(({ tag, input }) =>
+                // Each request carries its OWN `toolUseID`/`requestId` (both
+                // required members of the permission context). Distinct ids per
+                // request are what let the two open cards be told apart — the
+                // isolation this case exists to observe.
+                Promise.resolve(sdkOptions.canUseTool?.('Bash', input, {
+                  signal: new AbortController().signal,
+                  toolUseID: tag,
+                  requestId: `${tag}-request`,
+                }))
+                  .then((verdict) => {
                     const settled = verdict ?? { behavior: 'no-permission-callback' };
                     scriptedEngine.approvalVerdicts.push({ tag, verdict: settled });
                     // The call runs ONLY on an authorising verdict, and runs the
@@ -205,18 +178,13 @@ vi.mock('../su-session-claude-engine', async (original) => {
                     if (settled.behavior === 'allow') {
                       scriptedEngine.approvalExecuted.push({ tag, input: settled.updatedInput ?? {} });
                     }
-                  }),
-                ),
-              )
+                  })))
                 .then(() => {
-                  output.write({
-                    type: 'assistant',
-                    session_id: nativeId,
-                    message: { content: [{ type: 'text', text: scriptedEngine.successText }] },
-                  });
+                  output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                    { type: 'text', text: scriptedEngine.successText },
+                  ] } });
                   result();
-                })
-                .catch((error: Error) => output.destroy(error));
+                }).catch((error: Error) => output.destroy(error));
               continue;
             }
             if (scriptedEngine.mode === 'stream') {
@@ -225,28 +193,20 @@ vi.mock('../su-session-claude-engine', async (original) => {
               // content_block_delta/text_delta). The turn stays in flight across
               // several chunks so a test can edit the composer DURING it, which
               // is the situation AUTO-BAR-R-05 is about.
-              output.write({
-                type: 'stream_event',
-                session_id: nativeId,
-                event: { type: 'message_start', message: { role: 'assistant', id: 'pui-stream-msg' } },
-              });
+              output.write({ type: 'stream_event', session_id: nativeId,
+                event: { type: 'message_start', message: { role: 'assistant', id: 'pui-stream-msg' } } });
               void (async () => {
                 for (const chunk of scriptedEngine.streamChunks) {
                   await new Promise((resolve) => setTimeout(resolve, scriptedEngine.streamDelayMs));
-                  output.write({
-                    type: 'stream_event',
-                    session_id: nativeId,
-                    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: chunk } },
-                  });
+                  output.write({ type: 'stream_event', session_id: nativeId,
+                    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: chunk } } });
                 }
                 // The canonical block must agree with what was streamed, or the
                 // adapter's reconciliation (:538) would be papering over a
                 // difference this clause exists to detect.
-                output.write({
-                  type: 'assistant',
-                  session_id: nativeId,
-                  message: { content: [{ type: 'text', text: scriptedEngine.streamChunks.join('') }] },
-                });
+                output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                  { type: 'text', text: scriptedEngine.streamChunks.join('') },
+                ] } });
                 result();
               })().catch((error: Error) => output.destroy(error));
               continue;
@@ -255,37 +215,19 @@ vi.mock('../su-session-claude-engine', async (original) => {
               // A file-editing tool call. The PUI resolves this into the in-PUI
               // scrollable change card (PUBLIC_RELEASE_UX.md:375) that
               // PUI-TOOLS-DIFF is about, straight from these arguments.
-              output.write({
-                type: 'assistant',
-                session_id: nativeId,
-                message: {
-                  content: [
-                    {
-                      type: 'tool_use',
-                      id: 'pui-e2e-edit',
-                      name: 'Edit',
-                      input: {
-                        file_path: scriptedEngine.editPath,
-                        old_string: scriptedEngine.editOld,
-                        new_string: scriptedEngine.editNew,
-                      },
-                    },
-                  ],
-                },
-              });
-              output.write({
-                type: 'user',
-                session_id: nativeId,
-                message: {
-                  role: 'user',
-                  content: [{ type: 'tool_result', tool_use_id: 'pui-e2e-edit', content: 'edit applied' }],
-                },
-              });
-              output.write({
-                type: 'assistant',
-                session_id: nativeId,
-                message: { content: [{ type: 'text', text: scriptedEngine.successText }] },
-              });
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'tool_use', id: 'pui-e2e-edit', name: 'Edit', input: {
+                  file_path: scriptedEngine.editPath,
+                  old_string: scriptedEngine.editOld,
+                  new_string: scriptedEngine.editNew,
+                } },
+              ] } });
+              output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'pui-e2e-edit', content: 'edit applied' },
+              ] } });
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'text', text: scriptedEngine.successText },
+              ] } });
               result();
               continue;
             }
@@ -309,97 +251,51 @@ vi.mock('../su-session-claude-engine', async (original) => {
               // the permission callback (observable as a `card` event). Driving
               // the callback means this case exercises the production card code
               // end to end rather than a fixture re-implementation of it.
-              const questions = [
-                {
-                  question: scriptedEngine.questionPrompt,
-                  options: scriptedEngine.questionOptions.map((label) => ({ label })),
-                  multiSelect: false, // -> presentation.kind 'radio' (true would give 'checkbox')
-                },
-              ];
-              output.write({
-                type: 'assistant',
-                session_id: nativeId,
-                message: {
-                  content: [
-                    {
-                      type: 'tool_use',
-                      id: scriptedEngine.questionCallId,
-                      name: 'AskUserQuestion',
-                      input: { questions },
-                    },
-                  ],
-                },
-              });
+              const questions = [{
+                question: scriptedEngine.questionPrompt,
+                options: scriptedEngine.questionOptions.map((label) => ({ label })),
+                multiSelect: false, // -> presentation.kind 'radio' (true would give 'checkbox')
+              }];
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'tool_use', id: scriptedEngine.questionCallId, name: 'AskUserQuestion', input: { questions } },
+              ] } });
               // `signal`, `toolUseID` and `requestId` are the required members
               // of the permission context; handleClaude reads nothing else on
               // the AskUserQuestion path. `toolUseID` is deliberately the SAME
               // id as the tool_use emitted just above — that is how the real
               // provider correlates the two halves, so the fixture must too.
               const controller = new AbortController();
-              void Promise.resolve(
-                sdkOptions.canUseTool?.(
-                  'AskUserQuestion',
-                  { questions },
-                  {
-                    signal: controller.signal,
-                    toolUseID: scriptedEngine.questionCallId,
-                    requestId: `${scriptedEngine.questionCallId}-request`,
-                  },
-                ),
-              )
+              void Promise.resolve(sdkOptions.canUseTool?.('AskUserQuestion', { questions }, {
+                signal: controller.signal,
+                toolUseID: scriptedEngine.questionCallId,
+                requestId: `${scriptedEngine.questionCallId}-request`,
+              }))
                 .then((verdict) => {
                   scriptedEngine.questionVerdicts.push(verdict ?? { behavior: 'no-permission-callback' });
-                  const answers =
-                    verdict && 'updatedInput' in verdict
-                      ? ((verdict.updatedInput as { answers?: Record<string, string> } | undefined)?.answers ?? {})
-                      : {};
+                  const answers = verdict && 'updatedInput' in verdict
+                    ? (verdict.updatedInput as { answers?: Record<string, string> } | undefined)?.answers ?? {} : {};
                   // Only now does the turn finish: the owner's answer is what
                   // un-parks it, which is the half a test cannot see from the
                   // card events alone.
-                  output.write({
-                    type: 'user',
-                    session_id: nativeId,
-                    message: {
-                      role: 'user',
-                      content: [
-                        {
-                          type: 'tool_result',
-                          tool_use_id: scriptedEngine.questionCallId,
-                          content: JSON.stringify(answers),
-                        },
-                      ],
-                    },
-                  });
-                  output.write({
-                    type: 'assistant',
-                    session_id: nativeId,
-                    message: { content: [{ type: 'text', text: scriptedEngine.successText }] },
-                  });
+                  output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+                    { type: 'tool_result', tool_use_id: scriptedEngine.questionCallId, content: JSON.stringify(answers) },
+                  ] } });
+                  output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                    { type: 'text', text: scriptedEngine.successText },
+                  ] } });
                   result();
-                })
-                .catch((error: Error) => output.destroy(error));
+                }).catch((error: Error) => output.destroy(error));
               continue;
             }
-            output.write({
-              type: 'assistant',
-              session_id: nativeId,
-              message: {
-                content: [{ type: 'tool_use', id: 'pui-e2e-tool', name: 'Read', input: { file_path: 'README.md' } }],
-              },
-            });
-            output.write({
-              type: 'user',
-              session_id: nativeId,
-              message: {
-                role: 'user',
-                content: [{ type: 'tool_result', tool_use_id: 'pui-e2e-tool', content: 'scripted engine tool result' }],
-              },
-            });
-            output.write({
-              type: 'assistant',
-              session_id: nativeId,
-              message: { content: [{ type: 'text', text: scriptedEngine.successText }] },
-            });
+            output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+              { type: 'tool_use', id: 'pui-e2e-tool', name: 'Read', input: { file_path: 'README.md' } },
+            ] } });
+            output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+              { type: 'tool_result', tool_use_id: 'pui-e2e-tool', content: 'scripted engine tool result' },
+            ] } });
+            output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+              { type: 'text', text: scriptedEngine.successText },
+            ] } });
             result();
           }
         })().catch((error: Error) => output.destroy(error));
@@ -411,19 +307,10 @@ vi.mock('../su-session-claude-engine', async (original) => {
               output.end();
               throw new Error('PUI-E2E engine exited during initialization');
             }
-            return {
-              commands: [],
-              agents: [],
-              models: [],
-              account: {},
-              output_style: 'default',
-              available_output_styles: [],
-            };
+            return { commands: [], agents: [], models: [], account: {}, output_style: 'default', available_output_styles: [] };
           },
           mcpServerStatus: async () => [{ name: 'papercusp-su', status: 'connected' as const }],
-          interrupt: async () => {
-            result();
-          },
+          interrupt: async () => { result(); },
           close: () => output.end(),
         };
       };
@@ -449,21 +336,16 @@ const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 
 vi.mock('../su-session-rpc-engine', async (original) => {
   const actual = await original<typeof import('../su-session-rpc-engine')>();
-  return {
-    ...actual,
-    startSuRpcEngine(...args: Parameters<typeof actual.startSuRpcEngine>) {
-      const engine = actual.startSuRpcEngine(
-        args[0],
-        args[1],
-        scriptedEngine.real && process.env.PUI_REAL_APPROVAL === '1' ? { ...args[2], toolApproval: 'prompt' } : args[2],
-      );
-      scriptedEngine.engines.push(engine);
-      void (async () => {
-        for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
-      })();
-      return engine;
-    },
-  };
+  return { ...actual, startSuRpcEngine(...args: Parameters<typeof actual.startSuRpcEngine>) {
+    const engine = actual.startSuRpcEngine(args[0], args[1],
+      scriptedEngine.real && process.env.PUI_REAL_APPROVAL === '1'
+        ? { ...args[2], toolApproval: 'prompt' } : args[2]);
+    scriptedEngine.engines.push(engine);
+    void (async () => {
+      for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
+    })();
+    return engine;
+  } };
 });
 const HARNESS = 'papercusp';
 const WORKSPACE = 'pui-agent-chat-e2e';
@@ -479,10 +361,8 @@ const namedQueryRequests: string[] = [];
 const namedQueryReplies: Array<{ name: string; status: number }> = [];
 const pipelineCellRequests: string[] = [];
 const PIPELINE_CELLS = new Set([
-  'gate.greenCheckpoint.verdict',
-  'gate.greenCheckpoint.candidate',
-  'git.mainBehindStaging',
-  'deploy.3070.sha',
+  'gate.greenCheckpoint.verdict', 'gate.greenCheckpoint.candidate',
+  'git.mainBehindStaging', 'deploy.3070.sha',
 ]);
 let timingInspector: InspectorSession | undefined;
 let timingInterval: ReturnType<typeof setInterval> | undefined;
@@ -493,12 +373,10 @@ function traceTiming(kind: string, fields: Record<string, unknown> = {}): void {
   }
 }
 function profileCommand(method: string): Promise<unknown> {
-  return new Promise((resolve, reject) =>
-    timingInspector!.post(method, (error, result) => {
-      if (error) reject(error);
-      else resolve(result);
-    }),
-  );
+  return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
+    if (error) reject(error);
+    else resolve(result);
+  }));
 }
 
 async function startTimingProfile(): Promise<void> {
@@ -531,11 +409,8 @@ async function startTimingProfile(): Promise<void> {
           pool: diagnostics.acquireSnapshot('org-admin'),
           results: diagnostics.pgResultDiagnosticSnapshot('org-admin').results,
         });
-      })()
-        .catch((error: { code?: string }) => traceTiming('database-error', { code: error.code }))
-        .finally(() => {
-          timingScan = undefined;
-        });
+      })().catch((error: { code?: string }) => traceTiming('database-error', { code: error.code }))
+        .finally(() => { timingScan = undefined; });
     }
   }, 25);
 }
@@ -544,14 +419,12 @@ afterAll(async () => {
   if (!timingInspector) return;
   if (timingInterval) clearInterval(timingInterval);
   await timingScan;
-  const { profile } = (await profileCommand('Profiler.stop')) as { profile: unknown };
+  const { profile } = await profileCommand('Profiler.stop') as { profile: unknown };
   traceTiming('profile-stop');
   timingInspector.disconnect();
   mkdirSync(process.env.PUI_TIMING_DIR!, { recursive: true });
-  writeFileSync(
-    path.join(process.env.PUI_TIMING_DIR!, `worker-${process.pid}.json`),
-    JSON.stringify({ trace: timingTrace, profile }),
-  );
+  writeFileSync(path.join(process.env.PUI_TIMING_DIR!, `worker-${process.pid}.json`),
+    JSON.stringify({ trace: timingTrace, profile }));
 });
 
 function cargoTargetDir(): string | null {
@@ -687,12 +560,8 @@ class PuiPane {
       nativeFrames: nativeFrameDiagnostics,
       engines: scriptedEngine.engines.map((engine) => {
         const descriptor = engine.adapter.host.descriptor();
-        return {
-          pid: engine.pid(),
-          identity: descriptor.identity,
-          lifecycle: descriptor.lifecycle,
-          diagnostics: engine.adapter.host.recent
-            .map(({ event }) => event)
+        return { pid: engine.pid(), identity: descriptor.identity, lifecycle: descriptor.lifecycle,
+          diagnostics: engine.adapter.host.recent.map(({ event }) => event)
             .filter((event) => event.type === 'error' || event.type === 'lifecycle' || event.type === 'command_result')
             .slice(-20),
         };
@@ -727,11 +596,7 @@ class PuiPane {
     }
     throw new Error(
       `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen:\n` + this.screen(),
-      {
-        cause: new Error(
-          `Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`,
-        ),
-      },
+      { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
     );
   }
 
@@ -754,39 +619,26 @@ class PuiPane {
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
     throw new Error(
-      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} to LEAVE the rendered screen:\n` +
-        this.screen(),
-      {
-        cause: new Error(
-          `Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`,
-        ),
-      },
+      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} to LEAVE the rendered screen:\n` + this.screen(),
+      { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
     );
   }
 
   async waitForReply(needle: string | RegExp): Promise<void> {
     try {
-      await vi.waitFor(
-        () => {
-          // Match the rendered assistant bubble itself. History can scroll the
-          // echoed owner request away (especially after a long interrupted reply),
-          // and a context-dependent answer need not occur in the request at all.
-          expect(screenHasAssistantReply(this.screen(), needle)).toBe(true);
-        },
-        { timeout: 120_000, interval: 100 },
-      );
+      await vi.waitFor(() => {
+        // Match the rendered assistant bubble itself. History can scroll the
+        // echoed owner request away (especially after a long interrupted reply),
+        // and a context-dependent answer need not occur in the request at all.
+        expect(screenHasAssistantReply(this.screen(), needle)).toBe(true);
+      }, { timeout: 120_000, interval: 100 });
     } catch (cause) {
-      const engineState = scriptedEngine.engines.map((engine) => ({
-        pid: engine.pid(),
+      const engineState = scriptedEngine.engines.map((engine) => ({ pid: engine.pid(),
         lifecycle: engine.adapter.host.descriptor().lifecycle,
-        diagnostics: engine.adapter.host.recent
-          .map(({ event }) => event)
+        diagnostics: engine.adapter.host.recent.map(({ event }) => event)
           .filter((event) => event.type === 'error' || event.type === 'lifecycle'),
       }));
-      throw new Error(
-        `Correlated reply was not rendered:\n${this.screen()}\nProduction traffic: ${JSON.stringify(sessionTraffic)}\nEngine state: ${JSON.stringify(engineState)}`,
-        { cause },
-      );
+      throw new Error(`Correlated reply was not rendered:\n${this.screen()}\nProduction traffic: ${JSON.stringify(sessionTraffic)}\nEngine state: ${JSON.stringify(engineState)}`, { cause });
     }
     await this.waitFor('Message — Enter send', { timeoutMs: 120_000 });
   }
@@ -864,23 +716,14 @@ async function close(server: ServerType | undefined): Promise<void> {
 
 async function putViewState(tab: string): Promise<void> {
   const { putViewState: put } = await import('../tui-workbench-store');
-  await put(OWNER, {
-    tab,
-    harness: HARNESS,
-    operator_dock_open: false,
-    ...(scriptedEngine.real && process.env.PUI_REAL_PLAN === '1' ? { plan_filter: [REAL_PLAN] } : {}),
-  });
+  await put(OWNER, { tab, harness: HARNESS, operator_dock_open: false,
+    ...(scriptedEngine.real && process.env.PUI_REAL_PLAN === '1' ? { plan_filter: [REAL_PLAN] } : {}) });
 }
 
 type PersistedChat = {
   id: string;
   role: string;
-  transcript: Array<{
-    role: string;
-    content: string;
-    error?: boolean;
-    su_command?: { command: SuSessionCommand; outcome?: unknown };
-  }>;
+  transcript: Array<{ role: string; content: string; error?: boolean; su_command?: { command: SuSessionCommand; outcome?: unknown } }>;
 };
 
 async function persistedChats(db: OrgTestDb): Promise<PersistedChat[]> {
@@ -907,14 +750,7 @@ type SeedAgentChat = {
   updatedAt?: number;
 };
 
-/**
- * Seed a real Agent Chat row in this fixture's migrated Postgres database.
- *
- * The PTY cases intentionally enter through the production list/detail/search
- * routes after this write. Keeping the seed at the store boundary makes absent
- * provider measurements, immutable continuation lineage, and cross-session
- * isolation observable without replacing any product transport or reducer.
- */
+/** Seed a real Agent Chat row in this fixture's migrated Postgres database. */
 async function seedAgentChat(input: SeedAgentChat): Promise<void> {
   const now = input.updatedAt ?? Date.now();
   await db.adminSql`
@@ -980,31 +816,20 @@ function withoutCommandReceipts(response: Response): Response {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let pending = '';
-  return new Response(
-    response.body.pipeThrough(
-      new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
-          pending += decoder.decode(chunk, { stream: true });
-          let end: number;
-          while ((end = pending.indexOf('\n\n')) >= 0) {
-            const frame = pending.slice(0, end);
-            pending = pending.slice(end + 2);
-            const data = frame
-              .split('\n')
-              .filter((line) => line.startsWith('data:'))
-              .map((line) => line.slice(5).trimStart())
-              .join('\n');
-            if (data && JSON.parse(data).type === 'command_result') continue;
-            controller.enqueue(encoder.encode(frame + '\n\n'));
-          }
-        },
-        flush(controller) {
-          if (pending) controller.enqueue(encoder.encode(pending));
-        },
-      }),
-    ),
-    { status: response.status, headers: response.headers },
-  );
+  return new Response(response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true });
+      let end: number;
+      while ((end = pending.indexOf('\n\n')) >= 0) {
+        const frame = pending.slice(0, end);
+        pending = pending.slice(end + 2);
+        const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
+        if (data && JSON.parse(data).type === 'command_result') continue;
+        controller.enqueue(encoder.encode(frame + '\n\n'));
+      }
+    },
+    flush(controller) { if (pending) controller.enqueue(encoder.encode(pending)); },
+  })), { status: response.status, headers: response.headers });
 }
 
 async function openAgentChat(pane: PuiPane): Promise<void> {
@@ -1071,45 +896,31 @@ async function openComposer(pane: PuiPane): Promise<void> {
 
 async function waitForSavedTurn(content: string): Promise<PersistedChat> {
   try {
-    return await waitForPersistedChat(
-      db,
-      (candidate) => {
-        if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === content)) return true;
-        if (!scriptedEngine.real) return false;
-        const refusedLaunch = sessionTraffic.find(
-          (entry) => entry.path === '/api/adv/sessions/launch-su' && Number(entry.status) >= 400,
-        );
-        if (refusedLaunch)
-          throw new Error(`Native launch refused: ${String(refusedLaunch.error ?? refusedLaunch.status)}`);
-        // A resumed conversation deliberately retains its stopped predecessor in
-        // the evidence list. Only the current native process can refuse this turn.
-        const active = scriptedEngine.engines.at(-1);
-        if (active?.adapter.host.snapshot().terminal) {
-          const diagnostics = active.adapter.host.recent
-            .map(({ event }) => event)
-            .filter((event) => event.type === 'error' || event.type === 'lifecycle')
-            .slice(-5);
-          throw new Error(`Native engine stopped before the owner turn was saved: ${JSON.stringify(diagnostics)}`);
-        }
-        return false;
-      },
-      scriptedEngine.real ? 120_000 : 15_000,
-    );
+    return await waitForPersistedChat(db, (candidate) => {
+      if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === content)) return true;
+      if (!scriptedEngine.real) return false;
+      const refusedLaunch = sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su' && Number(entry.status) >= 400);
+      if (refusedLaunch) throw new Error(`Native launch refused: ${String(refusedLaunch.error ?? refusedLaunch.status)}`);
+      // A resumed conversation deliberately retains its stopped predecessor in
+      // the evidence list. Only the current native process can refuse this turn.
+      const active = scriptedEngine.engines.at(-1);
+      if (active?.adapter.host.snapshot().terminal) {
+        const diagnostics = active.adapter.host.recent.map(({ event }) => event)
+          .filter((event) => event.type === 'error' || event.type === 'lifecycle').slice(-5);
+        throw new Error(`Native engine stopped before the owner turn was saved: ${JSON.stringify(diagnostics)}`);
+      }
+      return false;
+    }, scriptedEngine.real ? 120_000 : 15_000);
   } catch (error) {
     const active = scriptedEngine.engines.at(-1)?.adapter.host;
-    throw new Error(
-      `Agent Chat turn was not saved: ${JSON.stringify({
-        traffic: sessionTraffic,
-        commandTypes: commandPosts.map((command) => command.type),
-        lifecycle: active?.descriptor().lifecycle,
-        terminal: active?.snapshot().terminal,
-        recent: active?.recent
-          .map(({ event }) => event)
-          .filter((event) => event.type === 'error' || event.type === 'lifecycle')
-          .slice(-5),
-      })}`,
-      { cause: error },
-    );
+    throw new Error(`Agent Chat turn was not saved: ${JSON.stringify({
+      traffic: sessionTraffic,
+      commandTypes: commandPosts.map((command) => command.type),
+      lifecycle: active?.descriptor().lifecycle,
+      terminal: active?.snapshot().terminal,
+      recent: active?.recent.map(({ event }) => event)
+        .filter((event) => event.type === 'error' || event.type === 'lifecycle').slice(-5),
+    })}`, { cause: error });
   }
 }
 
@@ -1123,56 +934,41 @@ async function waitForCorrelatedReply(
   const chat = await waitForSavedTurn(prompt);
   const command = chat.transcript.find((turn) => turn.content === prompt)?.su_command?.command;
   if (command?.type !== 'owner_turn') throw new Error('Greeting/follow-up lacks a durable owner-turn receipt');
-  await vi.waitFor(
-    () =>
-      expect(events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: 'transcript',
-            phase: 'completed',
-            role: 'assistant',
-            channel: 'text',
-            content: typeof reply === 'string' ? reply : expect.stringMatching(reply),
-            turnId: command.turnId,
-            session: command.target,
-          }),
-        ]),
-      ),
-    { timeout: 120_000, interval: 100 },
-  );
+  await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: 'transcript', phase: 'completed', role: 'assistant', channel: 'text',
+      content: typeof reply === 'string' ? reply : expect.stringMatching(reply),
+      turnId: command.turnId, session: command.target,
+    }),
+  ])), { timeout: 120_000, interval: 100 });
   return chat;
 }
 
 async function finishTeardown(steps: Array<() => void | Promise<void>>): Promise<void> {
   const errors: unknown[] = [];
   for (const step of steps) {
-    try {
-      await step();
-    } catch (error) {
-      errors.push(error);
-    }
+    try { await step(); } catch (error) { errors.push(error); }
   }
   if (errors.length) throw new AggregateError(errors, 'PUI fixture teardown failed');
 }
 
 async function stopEngines(): Promise<void> {
-  await finishTeardown(
-    scriptedEngine.engines.splice(0).flatMap((engine) => {
-      // The protocol peer has no native CLI lifecycle hook. Remove only its
-      // bootstrap presence in this isolated DB before the real close/reaper runs.
-      const owner = engine.adapter.host.descriptor().identity.ownerId;
-      return [
-        async () => {
-          if (!scriptedEngine.real) {
-            await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
-          }
-        },
-        () => engine.close(),
-        () => engine.adapter.dispose(),
-      ];
-    }),
-  );
+  await finishTeardown(scriptedEngine.engines.splice(0).flatMap((engine) => {
+    // The protocol peer has no native CLI lifecycle hook. Remove only its
+    // bootstrap presence in this isolated DB before the real close/reaper runs.
+    const owner = engine.adapter.host.descriptor().identity.ownerId;
+    return [
+      async () => {
+        if (!scriptedEngine.real) {
+          await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
+        }
+      },
+      () => engine.close(),
+      () => engine.adapter.dispose(),
+    ];
+  }));
 }
+
 
 beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -1185,30 +981,21 @@ beforeAll(async () => {
   const routedAccount = scriptedEngine.real && process.env.PUI_REAL_ACCOUNT === 'auto';
   const catalogPath = process.env.PUI_NATIVE_ACCOUNT_CATALOG;
   if (routedAccount && !catalogPath) {
-    throw new Error(
-      'Native routed-account acceptance requires PUI_NATIVE_ACCOUNT_CATALOG with accounts:list id/provider metadata',
-    );
+    throw new Error('Native routed-account acceptance requires PUI_NATIVE_ACCOUNT_CATALOG with accounts:list id/provider metadata');
   }
   const catalogBytes = routedAccount ? readFileSync(catalogPath!, 'utf8') : undefined;
-  const catalog = catalogBytes ? (JSON.parse(catalogBytes) as { accounts?: unknown }) : undefined;
-  const accountMetadata = catalog
-    ? (() => {
-        if (!Array.isArray(catalog.accounts)) throw new Error('Native account catalogue must contain accounts');
-        return catalog.accounts.map((entry: unknown) => {
-          const row = entry as Record<string, unknown> | null;
-          if (
-            !row ||
-            typeof row.id !== 'string' ||
-            !/^[A-Za-z0-9._-]+$/.test(row.id) ||
-            !['claude', 'codex'].includes(String(row.provider))
-          )
-            throw new Error('Invalid native account metadata');
-          // The isolated operator needs only the catalogue for route validation.
-          // Credentials and all upstream selection remain in the real gateway.
-          return { id: row.id, provider: row.provider, credentialRef: '', addedAt: 0, boundTo: [] };
-        });
-      })()
-    : [];
+  const catalog = catalogBytes ? JSON.parse(catalogBytes) as { accounts?: unknown } : undefined;
+  const accountMetadata = catalog ? (() => {
+    if (!Array.isArray(catalog.accounts)) throw new Error('Native account catalogue must contain accounts');
+    return catalog.accounts.map((entry: unknown) => {
+      const row = entry as Record<string, unknown> | null;
+      if (!row || typeof row.id !== 'string' || !/^[A-Za-z0-9._-]+$/.test(row.id)
+        || !['claude', 'codex'].includes(String(row.provider))) throw new Error('Invalid native account metadata');
+      // The isolated operator needs only the catalogue for route validation.
+      // Credentials and all upstream selection remain in the real gateway.
+      return { id: row.id, provider: row.provider, credentialRef: '', addedAt: 0, boundTo: [] };
+    });
+  })() : [];
   const { createOrgTestDb } = await import('../../test/_org-test-db');
   db = await createOrgTestDb();
   if (routedAccount) {
@@ -1216,14 +1003,10 @@ beforeAll(async () => {
       INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
       VALUES (${WORKSPACE}, ${JSON.stringify({ accounts: accountMetadata })}::jsonb, ${Date.now()})
       ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
-    console.info(
-      'PUI_ACCOUNT_CATALOG_DIAGNOSTIC',
-      JSON.stringify({
-        source: catalogPath,
-        sha256: createHash('sha256').update(catalogBytes!).digest('hex'),
-        accounts: accountMetadata.map(({ id, provider }) => ({ id, provider })),
-      }),
-    );
+    console.info('PUI_ACCOUNT_CATALOG_DIAGNOSTIC', JSON.stringify({
+      source: catalogPath, sha256: createHash('sha256').update(catalogBytes!).digest('hex'),
+      accounts: accountMetadata.map(({ id, provider }) => ({ id, provider })),
+    }));
   }
   const keys = [
     'HARNESS_DATABASE_URL',
@@ -1263,16 +1046,11 @@ beforeAll(async () => {
   });
   // The org fixture reuses numeric ids. Resolve the actual writers' roots
   // before any bootstrap so they cannot replace a real user's native home.
-  const { codexHomeForSessionKey, sessionClaudeConfigDir } =
-    await import('@papercusp/orchestrator/session-launch-dirs');
+  const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
   const { ompAgentHomeForSessionKey } = await import('../session-transcript-resolvers');
   const { launchContextDir } = await import('../su-launch-context');
-  for (const nativeHome of [
-    codexHomeForSessionKey('isolation-check'),
-    sessionClaudeConfigDir('isolation-check'),
-    ompAgentHomeForSessionKey('isolation-check'),
-    launchContextDir(),
-  ]) {
+  for (const nativeHome of [codexHomeForSessionKey('isolation-check'),
+    sessionClaudeConfigDir('isolation-check'), ompAgentHomeForSessionKey('isolation-check'), launchContextDir()]) {
     expect(path.relative(home, nativeHome).startsWith('..'), `native home escaped fixture: ${nativeHome}`).toBe(false);
   }
 
@@ -1316,17 +1094,8 @@ beforeAll(async () => {
     const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
     const current = await readAgentConfig();
     const backend = scriptedEngine.backend === 'claude' ? 'claude-code' : scriptedEngine.backend;
-    await writeAgentConfig({
-      ...current,
-      tiers: [
-        {
-          name: 'acceptance',
-          spec: process.env.PUI_REAL_MODEL,
-          backend: backend as 'claude-code' | 'codex' | 'omp',
-          when: `installed ${scriptedEngine.backend} acceptance`,
-        },
-      ],
-    });
+    await writeAgentConfig({ ...current, tiers: [{ name: 'acceptance', spec: process.env.PUI_REAL_MODEL,
+      backend: backend as 'claude-code' | 'codex' | 'omp', when: `installed ${scriptedEngine.backend} acceptance` }] });
     expect(await readAgentConfig()).toMatchObject({
       tiers: [{ name: 'acceptance', spec: process.env.PUI_REAL_MODEL, backend }],
     });
@@ -1346,16 +1115,9 @@ beforeAll(async () => {
         const [after] = await db.adminSql`
           SELECT resume_claim_key IS NOT NULL AS reserved, ended_at IS NOT NULL AS ended
             FROM harness_shared.adv_sessions WHERE id = ${before.id}`;
-        console.info(
-          'PUI_RESUME_ACTIVITY_DIAGNOSTIC',
-          JSON.stringify({
-            advSessionId: before.id,
-            ownerId,
-            changed,
-            before,
-            after,
-          }),
-        );
+        console.info('PUI_RESUME_ACTIVITY_DIAGNOSTIC', JSON.stringify({
+          advSessionId: before.id, ownerId, changed, before, after,
+        }));
       }
       return changed;
     });
@@ -1369,13 +1131,9 @@ beforeAll(async () => {
         };
         const configuredServers = Object.entries(mcpConfig.mcpServers ?? {}).map(([name, server]) => {
           const url = server.url ? new URL(server.url) : null;
-          return {
-            name,
-            origin: url?.origin,
-            pathname: url?.pathname,
+          return { name, origin: url?.origin, pathname: url?.pathname,
             queryKeys: url ? [...url.searchParams.keys()] : [],
-            ownerMatches: url?.searchParams.get('client') === options.ownerId,
-          };
+            ownerMatches: url?.searchParams.get('client') === options.ownerId };
         });
         if (process.env.PUI_TRACE_PROVIDER === '1') {
           // A transparent fixture-only hop records request/response boundaries;
@@ -1391,140 +1149,66 @@ beforeAll(async () => {
         const readNativeLogs = () => {
           const logDir = path.resolve(options.env.PI_CODING_AGENT_DIR!, '..', 'logs');
           if (!existsSync(logDir)) return [];
-          return readdirSync(logDir)
-            .filter((name) => name.endsWith('.log'))
-            .flatMap((name) =>
-              readFileSync(path.join(logDir, name), 'utf8')
-                .split('\n')
-                .filter(Boolean)
-                .flatMap((line) => {
-                  try {
-                    const entry = JSON.parse(line) as Record<string, unknown>;
-                    if (!/mcp|provider|stream|request|timeout|error|warn/i.test(String(entry.message) + entry.level))
-                      return [];
-                    const selected = Object.fromEntries(
-                      [
-                        'timestamp',
-                        'level',
-                        'pid',
-                        'message',
-                        'error',
-                        'name',
-                        'path',
-                        'provider',
-                        'model',
-                        'status',
-                        'durationMs',
-                      ].map((key) => [key, entry[key]]),
-                    );
-                    return [{ file: name, entry: redactSensitiveText(JSON.stringify(selected)).slice(0, 1_000) }];
-                  } catch {
-                    return [];
-                  }
-                })
-                .slice(-30),
-            );
+          return readdirSync(logDir).filter((name) => name.endsWith('.log')).flatMap((name) =>
+            readFileSync(path.join(logDir, name), 'utf8').split('\n').filter(Boolean).flatMap((line) => {
+              try {
+                const entry = JSON.parse(line) as Record<string, unknown>;
+                if (!/mcp|provider|stream|request|timeout|error|warn/i.test(String(entry.message) + entry.level)) return [];
+                const selected = Object.fromEntries(['timestamp', 'level', 'pid', 'message', 'error',
+                  'name', 'path', 'provider', 'model', 'status', 'durationMs'].map((key) => [key, entry[key]]));
+                return [{ file: name, entry: redactSensitiveText(JSON.stringify(selected)).slice(0, 1_000) }];
+              } catch { return []; }
+            }).slice(-30));
         };
-        const peer = await startPeer({
-          ...options,
-          onMessage(frame) {
-            if (nativeFrameDiagnostics.length < 50) {
-              nativeFrameDiagnostics.push({
-                type: frame.type,
-                command: frame.command,
-                method: frame.method,
-                keys: Object.keys(frame),
-                at: new Date().toISOString(),
-                messageRole: (frame.message as { role?: string })?.role,
-                assistantEvent: (frame.assistantMessageEvent as { type?: string })?.type,
-              });
-            }
-            options.onMessage(frame);
-          },
-        });
+        const peer = await startPeer({ ...options, onMessage(frame) {
+          if (nativeFrameDiagnostics.length < 50) {
+            nativeFrameDiagnostics.push({ type: frame.type, command: frame.command,
+              method: frame.method, keys: Object.keys(frame), at: new Date().toISOString(),
+              messageRole: (frame.message as { role?: string })?.role,
+              assistantEvent: (frame.assistantMessageEvent as { type?: string })?.type });
+          }
+          options.onMessage(frame);
+        } });
         readOmpDiagnosticState = async () => {
-          const state: Record<string, unknown> = await peer
-            .request({ type: 'get_state' }, 5_000)
+          const state: Record<string, unknown> = await peer.request({ type: 'get_state' }, 5_000)
             .catch((error: Error) => ({ stateReadError: error.message }));
-          return {
-            ...Object.fromEntries(
-              [
-                'sessionId',
-                'sessionFile',
-                'isStreaming',
-                'isCompacting',
-                'messageCount',
-                'queuedMessageCount',
-                'contextUsage',
-                'stateReadError',
-              ].map((key) => [key, state[key]]),
-            ),
-            nativeLogs: readNativeLogs(),
-            nativeProviderEvents,
-          };
+          return { ...Object.fromEntries(['sessionId', 'sessionFile', 'isStreaming', 'isCompacting',
+            'messageCount', 'queuedMessageCount', 'contextUsage', 'stateReadError'].map((key) => [key, state[key]])),
+          nativeLogs: readNativeLogs(), nativeProviderEvents };
         };
-        return {
-          ...peer,
-          async request(...args: Parameters<typeof peer.request>) {
-            const command = args[0].type;
-            const recordControl = (phase: string) => {
-              if (command === 'prompt' || command === 'abort') {
-                nativeFrameDiagnostics.push({ type: 'rpc_control', command, phase, at: new Date().toISOString() });
-              }
-            };
-            recordControl('sent');
-            const result = await peer.request(...args).then(
-              (result) => {
-                recordControl('acknowledged');
-                return result;
-              },
-              (error) => {
-                recordControl('failed');
-                throw error;
-              },
-            );
-            if (args[0].type === 'get_state') {
-              const prompt = Array.isArray(result.systemPrompt) ? result.systemPrompt : [result.systemPrompt];
-              console.info(
-                'PUI_OMP_STATE_DIAGNOSTIC',
-                JSON.stringify({
-                  pid: peer.pid(),
-                  agentHome: options.env.PI_CODING_AGENT_DIR,
-                  configDir: options.env.PI_CONFIG_DIR,
-                  keys: Object.keys(result),
-                  configuredServers,
-                  isStreaming: result.isStreaming,
-                  messageCount: result.messageCount,
-                  nativeLogs: readNativeLogs(),
-                  model: {
-                    id: (result.model as { id?: string })?.id,
-                    provider: (result.model as { provider?: string })?.provider,
-                    isOAuth: (result.model as { isOAuth?: boolean })?.isOAuth,
-                  },
-                  promptType: typeof result.systemPrompt,
-                  promptParts: prompt.map((part) => {
-                    const text: string =
-                      typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '';
-                    return {
-                      type: typeof part,
-                      keys: typeof part === 'object' && part ? Object.keys(part) : [],
-                      headings: text.match(/^#{1,3} .+$/gm)?.filter((heading) => heading.includes('MCP')),
-                      connectedServers: text
-                        .split(/^## MCP Server Instructions\r?$/m)
-                        .slice(1)
-                        .flatMap((section) => section.split(/^#{1,2} /m, 1)[0].match(/^### [^\r\n]+/gm) ?? []),
-                      routes: text
-                        .match(/xd:\/\/[^`\s]+/g)
-                        ?.filter((route) => /papercusp[-_]su/i.test(route))
-                        .slice(0, 8),
-                    };
-                  }),
-                }),
-              );
+        return { ...peer, async request(...args: Parameters<typeof peer.request>) {
+          const command = args[0].type;
+          const recordControl = (phase: string) => {
+            if (command === 'prompt' || command === 'abort') {
+              nativeFrameDiagnostics.push({ type: 'rpc_control', command, phase, at: new Date().toISOString() });
             }
-            return result;
-          },
-        };
+          };
+          recordControl('sent');
+          const result = await peer.request(...args).then((result) => {
+            recordControl('acknowledged'); return result;
+          }, (error) => { recordControl('failed'); throw error; });
+          if (args[0].type === 'get_state') {
+            const prompt = Array.isArray(result.systemPrompt) ? result.systemPrompt : [result.systemPrompt];
+            console.info('PUI_OMP_STATE_DIAGNOSTIC', JSON.stringify({
+              pid: peer.pid(), agentHome: options.env.PI_CODING_AGENT_DIR,
+              configDir: options.env.PI_CONFIG_DIR, keys: Object.keys(result),
+              configuredServers, isStreaming: result.isStreaming, messageCount: result.messageCount,
+              nativeLogs: readNativeLogs(),
+              model: { id: (result.model as { id?: string })?.id,
+                provider: (result.model as { provider?: string })?.provider,
+                isOAuth: (result.model as { isOAuth?: boolean })?.isOAuth }, promptType: typeof result.systemPrompt,
+              promptParts: prompt.map((part) => {
+                const text: string = typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '';
+                return { type: typeof part, keys: typeof part === 'object' && part ? Object.keys(part) : [],
+                  headings: text.match(/^#{1,3} .+$/gm)?.filter((heading) => heading.includes('MCP')),
+                  connectedServers: text.split(/^## MCP Server Instructions\r?$/m).slice(1)
+                    .flatMap((section) => section.split(/^#{1,2} /m, 1)[0].match(/^### [^\r\n]+/gm) ?? []),
+                  routes: text.match(/xd:\/\/[^`\s]+/g)?.filter((route) => /papercusp[-_]su/i.test(route)).slice(0, 8) };
+              }),
+            }));
+          }
+          return result;
+        } };
       });
     }
   }
@@ -1535,70 +1219,39 @@ beforeAll(async () => {
     fetch: async (request, env) => {
       const requestUrl = new URL(request.url);
       const pathname = requestUrl.pathname;
-      if (
-        process.env.PUI_TRACE_PROVIDER === '1' &&
-        pathname.startsWith('/api/pui-provider-debug/') &&
-        nativeProviderOrigin
-      ) {
+      if (process.env.PUI_TRACE_PROVIDER === '1' && pathname.startsWith('/api/pui-provider-debug/') && nativeProviderOrigin) {
         const suffix = pathname.slice('/api/pui-provider-debug'.length) + requestUrl.search;
         const headers = new Headers(request.headers);
         headers.delete('host');
         const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer();
         const payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
         const systemBlocks = Array.isArray(payload.system) ? payload.system : [];
-        nativeProviderEvents.push({
-          phase: 'request',
-          path: pathname,
-          at: new Date().toISOString(),
-          priority: headers.get('x-papercusp-priority'),
-          owner: headers.get('x-papercusp-owner'),
-          account: headers.get('x-papercusp-account'),
-          model: payload.model,
+        nativeProviderEvents.push({ phase: 'request', path: pathname, at: new Date().toISOString(),
+          priority: headers.get('x-papercusp-priority'), owner: headers.get('x-papercusp-owner'),
+          account: headers.get('x-papercusp-account'), model: payload.model,
           systemBlockCount: systemBlocks.length,
-          systemPrefixKinds: systemBlocks
-            .slice(0, 3)
-            .map((block: { text?: string }) =>
-              block.text?.startsWith('x-anthropic-billing-header:')
-                ? 'billing'
-                : block.text?.includes("You are Claude Code, Anthropic's official CLI for Claude.")
-                  ? 'claude-code'
-                  : 'other',
-            ),
+          systemPrefixKinds: systemBlocks.slice(0, 3).map((block: { text?: string }) =>
+            block.text?.startsWith('x-anthropic-billing-header:') ? 'billing'
+              : block.text?.includes("You are Claude Code, Anthropic's official CLI for Claude.") ? 'claude-code' : 'other'),
         });
         try {
           const response = await fetch(`${nativeProviderOrigin}${suffix}`, {
-            method: request.method,
-            headers,
-            body,
-            signal: nativeProviderRequestSignal(request.signal),
+            method: request.method, headers, body, signal: nativeProviderRequestSignal(request.signal),
           });
-          nativeProviderEvents.push({
-            phase: 'headers',
-            status: response.status,
-            contentType: response.headers.get('content-type'),
-            retryAfter: response.headers.get('retry-after'),
+          nativeProviderEvents.push({ phase: 'headers', status: response.status,
+            contentType: response.headers.get('content-type'), retryAfter: response.headers.get('retry-after'),
             at: new Date().toISOString(),
-            errorBody: response.ok ? undefined : redactSensitiveText(await response.clone().text()).slice(0, 1_500),
-          });
+            errorBody: response.ok ? undefined : redactSensitiveText(await response.clone().text()).slice(0, 1_500) });
           return response;
         } catch (error) {
-          nativeProviderEvents.push({
-            phase: 'error',
-            message: redactSensitiveText(String(error)),
-            at: new Date().toISOString(),
-          });
+          nativeProviderEvents.push({ phase: 'error', message: redactSensitiveText(String(error)), at: new Date().toISOString() });
           throw error;
         }
       }
       if (pathname === '/api/mcp' && request.method === 'POST' && process.env.PUI_DELAY_MCP_INITIALIZE_MS) {
-        const rpc = (await request
-          .clone()
-          .json()
-          .catch(() => ({}))) as { method?: string };
-        if (rpc.method === 'initialize')
-          await new Promise((resolve) =>
-            setTimeout(resolve, Math.min(5_000, Math.max(0, Number(process.env.PUI_DELAY_MCP_INITIALIZE_MS) || 0))),
-          );
+        const rpc = await request.clone().json().catch(() => ({})) as { method?: string };
+        if (rpc.method === 'initialize') await new Promise((resolve) => setTimeout(resolve,
+          Math.min(5_000, Math.max(0, Number(process.env.PUI_DELAY_MCP_INITIALIZE_MS) || 0))));
       }
       const requestStarted = performance.now();
       const traceFields = { path: pathname, query: requestUrl.searchParams.get('name') };
@@ -1607,7 +1260,7 @@ beforeAll(async () => {
         namedQueryRequests.push(traceFields.query);
       }
       if (request.method === 'POST' && pathname === '/api/agent-mcp/run-tool') {
-        const input = (await request.clone().json()) as { name?: string; args?: { cell?: string } };
+        const input = await request.clone().json() as { name?: string; args?: { cell?: string } };
         if (input.name === 'state:read' && input.args?.cell && PIPELINE_CELLS.has(input.args.cell)) {
           pipelineCellRequests.push(input.args.cell);
         }
@@ -1615,7 +1268,7 @@ beforeAll(async () => {
       const isLaunch = pathname === '/api/adv/sessions/launch-su';
       const launchInput = isLaunch ? await request.clone().json() : null;
       const isCommand = request.method === 'POST' && pathname.endsWith('/su-session/commands');
-      if (isCommand) commandPosts.push((await request.clone().json()) as SuSessionCommand);
+      if (isCommand) commandPosts.push(await request.clone().json() as SuSessionCommand);
       if (isLaunch && transportFault === 'startup-disconnect') {
         transportFault = 'none';
         return Response.json({ error: 'PUI-E2E startup connection interrupted' }, { status: 503 });
@@ -1626,18 +1279,12 @@ beforeAll(async () => {
       try {
         response = await app.fetch(request, env);
       } catch (error) {
-        console.info(
-          'PUI_REQUEST_FAILURE',
-          JSON.stringify({ path: pathname, message: error instanceof Error ? error.message : String(error) }),
-        );
+        console.info('PUI_REQUEST_FAILURE', JSON.stringify({ path: pathname,
+          message: error instanceof Error ? error.message : String(error) }));
         throw error;
       }
       if (pathname.endsWith('/card-response')) cardReplies.push({ path: pathname, status: response.status });
-      traceTiming('request-end', {
-        ...traceFields,
-        elapsedMs: performance.now() - requestStarted,
-        status: response.status,
-      });
+      traceTiming('request-end', { ...traceFields, elapsedMs: performance.now() - requestStarted, status: response.status });
       if (pathname === '/api/zero-harness/rest-query' && traceFields.query) {
         namedQueryReplies.push({ name: traceFields.query, status: response.status });
       }
@@ -1650,21 +1297,9 @@ beforeAll(async () => {
         } else if (transportFault === 'lost-ack') {
           response = new Response('PUI-E2E acknowledgement connection lost', { status: 502 });
         } else if (transportFault === 'wrong-command-ack') {
-          response = Response.json(
-            { ...body, accepted: { ...body.accepted, commandId: 'unrelated-command' } },
-            { status: response.status },
-          );
+          response = Response.json({ ...body, accepted: { ...body.accepted, commandId: 'unrelated-command' } }, { status: response.status });
         } else if (transportFault === 'wrong-session-ack') {
-          response = Response.json(
-            {
-              ...body,
-              accepted: {
-                ...body.accepted,
-                session: { ...body.accepted.session, nativeSessionId: 'unrelated-native-session' },
-              },
-            },
-            { status: response.status },
-          );
+          response = Response.json({ ...body, accepted: { ...body.accepted, session: { ...body.accepted.session, nativeSessionId: 'unrelated-native-session' } } }, { status: response.status });
         }
       }
       if (pathname.endsWith('/su-session/events') && transportFault.endsWith('-ack')) {
@@ -1680,37 +1315,27 @@ beforeAll(async () => {
           path: pathname,
           status: response.status,
           count: 1,
-          ...(isLaunch
-            ? {
-                streamed: streamedLaunch,
-                agent: launchInput?.agent,
-                model: launchInput?.model,
-                account: launchInput?.account,
-                mode: launchInput?.mode,
-                carry: launchInput?.carry,
-                planSlug: launchInput?.plan_slug,
-                deferSpawn: launchInput?.defer_spawn,
-                attachedEngine: launchInput?.attached_engine === true,
-                transport: result?.transport,
-                headless: launchInput?.headless === true,
-                deferred: result?.deferred === true,
-                advSessionId: result?.advSessionId,
-                nativeSessionPresent: Boolean(result?.nativeSession),
-                ...(result?.error
-                  ? {
-                      errorCode: result.code,
-                      error: (typeof result.error === 'string' ? result.error : JSON.stringify(result.error)).slice(
-                        0,
-                        500,
-                      ),
-                    }
-                  : {}),
-              }
-            : {}),
+          ...(isLaunch ? {
+            streamed: streamedLaunch,
+            agent: launchInput?.agent,
+            model: launchInput?.model,
+            account: launchInput?.account,
+            mode: launchInput?.mode,
+            carry: launchInput?.carry,
+            planSlug: launchInput?.plan_slug,
+            deferSpawn: launchInput?.defer_spawn,
+            attachedEngine: launchInput?.attached_engine === true,
+            transport: result?.transport,
+            headless: launchInput?.headless === true,
+            deferred: result?.deferred === true,
+            advSessionId: result?.advSessionId,
+            nativeSessionPresent: Boolean(result?.nativeSession),
+            ...(result?.error ? { errorCode: result.code,
+              error: (typeof result.error === 'string' ? result.error : JSON.stringify(result.error)).slice(0, 500) } : {}),
+          } : {}),
         };
-        const existing = sessionTraffic.find(
-          (entry) => entry.method === observation.method && entry.path === pathname && entry.status === response.status,
-        );
+        const existing = sessionTraffic.find((entry) =>
+          entry.method === observation.method && entry.path === pathname && entry.status === response.status);
         if (existing) existing.count = Number(existing.count) + 1;
         else if (sessionTraffic.length < 30) sessionTraffic.push(observation);
         if (streamedLaunch) {
@@ -1729,20 +1354,12 @@ beforeAll(async () => {
                 deferred: body.deferred === true,
                 advSessionId: body.advSessionId,
                 nativeSessionPresent: Boolean(body.nativeSession),
-                ...(body.error
-                  ? {
-                      errorCode: body.code,
-                      error: (typeof body.error === 'string' ? body.error : JSON.stringify(body.error)).slice(0, 500),
-                    }
-                  : {}),
+                ...(body.error ? { errorCode: body.code,
+                  error: (typeof body.error === 'string' ? body.error : JSON.stringify(body.error)).slice(0, 500) } : {}),
               });
             }
-          })().catch((error: unknown) =>
-            console.info(
-              'PUI_LAUNCH_STREAM_OBSERVATION_FAILURE',
-              error instanceof Error ? error.message : String(error),
-            ),
-          );
+          })().catch((error: unknown) => console.info('PUI_LAUNCH_STREAM_OBSERVATION_FAILURE',
+            error instanceof Error ? error.message : String(error)));
         }
       }
       return response;
@@ -1770,24 +1387,11 @@ afterAll(async () => {
   await finishTeardown([
     stopEngines,
     () => close(operatorServer),
-    async () => {
-      const { drainDetached } = await import('../detached-imports');
-      await drainDetached();
-    },
-    async () => {
-      await finishTeardown(maintenance.jobs.splice(0).map((job) => () => job.stop()));
-    },
-    async () => {
-      const { stopInvalidationListener } = await import('../sync-sse');
-      await stopInvalidationListener();
-    },
-    async () => {
-      const dbOrg = await import('@papercusp/db-org');
-      await dbOrg._resetForTests();
-    },
-    async () => {
-      await db?.cleanup();
-    },
+    async () => { const { drainDetached } = await import('../detached-imports'); await drainDetached(); },
+    async () => { await finishTeardown(maintenance.jobs.splice(0).map((job) => () => job.stop())); },
+    async () => { const { stopInvalidationListener } = await import('../sync-sse'); await stopInvalidationListener(); },
+    async () => { const dbOrg = await import('@papercusp/db-org'); await dbOrg._resetForTests(); },
+    async () => { await db?.cleanup(); },
     () => {
       for (const [key, value] of Object.entries(previousEnv ?? {})) {
         if (value === undefined) delete process.env[key];
@@ -1837,14 +1441,8 @@ beforeEach(async () => {
   if (scriptedEngine.real) {
     const error = console.error.bind(console);
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-      if (
-        scriptedEngine.backend === 'omp' &&
-        args.length === 1 &&
-        typeof args[0] === 'string' &&
-        /^psu: CONFIG ERROR — modelRoles\.default \(openrouter\/stealth\/ox-alpha\) is a RETIRED upstream model that 404s; rewriting this session's copy to [^\s]+\. Fix your global ~\/\.omp\/agent\/config\.yml\.$/.test(
-          args[0],
-        )
-      ) {
+      if (scriptedEngine.backend === 'omp' && args.length === 1 && typeof args[0] === 'string'
+        && /^psu: CONFIG ERROR — modelRoles\.default \(openrouter\/stealth\/ox-alpha\) is a RETIRED upstream model that 404s; rewriting this session's copy to [^\s]+\. Fix your global ~\/\.omp\/agent\/config\.yml\.$/.test(args[0])) {
         // EI-21919040934117285: the real machine has this obsolete default.
         // Exercise its existing session-only repair and preserve the warning
         // in acceptance evidence. Never rewrite the user's global config.
@@ -1862,20 +1460,13 @@ beforeEach(async () => {
         expect(['base', 'enriched', 'timeout']).toContain(detail.outcome);
         initializeWarnings.push(detail);
         console.info('PUI_MCP_INITIALIZE_DIAGNOSTIC', JSON.stringify(detail));
-      } else if (
-        args.length === 1 &&
-        args[0] ===
-          '[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010).'
-      ) {
+      } else if (args.length === 1 && args[0] === '[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010).') {
         // A fresh isolated DB can take the documented optional-enrichment
         // fallback. Preserve the exact diagnostic; hard memory/SU errors and
         // every other warning still fail this test (EI-22628413686876169).
         optionalMemoryWarnings.push(String(args[0]));
         console.info('PUI_OPTIONAL_MEMORY_DIAGNOSTIC', args[0]);
-      } else if (
-        args.length === 1 &&
-        args[0] === '[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback'
-      ) {
+      } else if (args.length === 1 && args[0] === '[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback') {
         // detectIntentPivot deliberately returns the lexical method within
         // this budget. Its unit suite exercises that fallback. Retain this
         // exact advisory diagnostic in native acceptance; unexpected warnings
@@ -1902,8 +1493,6 @@ beforeEach(async () => {
 /**
  * P-008 session/context/command clauses. Each case uses the installed/current
  * pui binary, a real PTY, the production Hono operator, and migrated Postgres.
- * The only substituted boundary is the external model protocol already owned
- * by this file's scripted engine fixture.
  */
 describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context (spec clauses)', () => {
   // PUI-USAGE — "Unavailable context or cost information is displayed as
@@ -1940,13 +1529,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       const frame = pane.screen();
       expect(frame).not.toContain('cost $0.0000');
       expect(frame).not.toContain('usage in 0 / out 0');
-      const [stored] = await db.adminSql<
-        Array<{
-          total_input_tokens: number;
-          total_output_tokens: number;
-          total_cost_usd_cents: number;
-        }>
-      >`
+      const [stored] = await db.adminSql<Array<{
+        total_input_tokens: number;
+        total_output_tokens: number;
+        total_cost_usd_cents: number;
+      }>>`
         SELECT total_input_tokens, total_output_tokens, total_cost_usd_cents
           FROM harness_shared.agent_chats_consolidated
          WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${chatId}`;
@@ -1955,16 +1542,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
         total_output_tokens: 0,
         total_cost_usd_cents: 0,
       });
-      console.info(
-        'PUI_USAGE_ACCEPTANCE',
-        JSON.stringify({
-          binary: bin,
-          binarySha256,
-          chatId,
-          stored,
-          frame,
-        }),
-      );
+      console.info('PUI_USAGE_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, chatId, stored, frame,
+      }));
     } catch (error) {
       console.info('PUI_USAGE_FAILURE', JSON.stringify({ chatId, ...pane.failureEvidence() }));
       throw error;
@@ -1980,12 +1560,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const paneCleanup = new Error('pane cleanup failed');
     const operatorCleanup = new Error('operator cleanup failed');
     const reports: Array<Record<string, unknown>> = [];
-    const pane = vi.fn(async () => {
-      throw paneCleanup;
-    });
-    const operator = vi.fn(async () => {
-      throw operatorCleanup;
-    });
+    const pane = vi.fn(async () => { throw paneCleanup; });
+    const operator = vi.fn(async () => { throw operatorCleanup; });
 
     await preservePrimaryFailureDuringCleanup(
       { error: primary },
@@ -1998,33 +1574,22 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
 
     expect(pane).toHaveBeenCalledOnce();
     expect(operator).toHaveBeenCalledOnce();
-    expect(reports).toEqual([
-      {
-        primary: 'Error: same-native identity mismatch',
-        cleanupFailures: [
-          { label: 'pui-pane', error: 'Error: pane cleanup failed' },
-          { label: 'operator-process', error: 'Error: operator cleanup failed' },
-        ],
-      },
-    ]);
-    await expect(
-      preservePrimaryFailureDuringCleanup(null, [
-        {
-          label: 'operator-process',
-          run: async () => {
-            throw operatorCleanup;
-          },
-        },
-      ]),
-    ).rejects.toBe(operatorCleanup);
+    expect(reports).toEqual([{
+      primary: 'Error: same-native identity mismatch',
+      cleanupFailures: [
+        { label: 'pui-pane', error: 'Error: pane cleanup failed' },
+        { label: 'operator-process', error: 'Error: operator cleanup failed' },
+      ],
+    }]);
+    await expect(preservePrimaryFailureDuringCleanup(null, [
+      { label: 'operator-process', run: async () => { throw operatorCleanup; } },
+    ])).rejects.toBe(operatorCleanup);
   });
 
   test('teardown retains a close failure and still disposes every tracked engine', async () => {
     const failure = new Error('native close failed');
     const first = {
-      close: vi.fn(async () => {
-        throw failure;
-      }),
+      close: vi.fn(async () => { throw failure; }),
       adapter: { host: { descriptor: () => ({ identity: { ownerId: 'pui-cleanup-failure' } }) }, dispose: vi.fn() },
     };
     const second = {
@@ -2045,8 +1610,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     try {
       await openComposer(pane);
       const prompt = `saved reconnect ${randomUUID()}`;
-      pane.write(prompt);
-      pane.enter();
+      pane.write(prompt); pane.enter();
       // Seeding includes asynchronous session launch. Start the persistence
       // oracle only after the real UI observes its completed turn, as the
       // composer journey below does; its short DB deadline is not a startup
@@ -2058,9 +1622,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       } catch (cause) {
         throw new Error(`Reconnect seed turn did not persist on the rendered screen:\n${pane.screen()}`, { cause });
       }
-    } finally {
-      await pane.stop();
-    }
+    } finally { await pane.stop(); }
     await stopEngines();
     await putViewState('Plans');
     transportFault = 'startup-disconnect';
@@ -2081,18 +1643,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await reopened.waitFor('choose session to reconnect');
       expect(commandPosts.filter((command) => command.type === 'owner_turn')).toHaveLength(1);
       expect(await persistedChats(db)).toEqual(expect.arrayContaining([expect.objectContaining({ id: saved!.id })]));
-      console.info(
-        'PUI_RECONNECT_REFUSAL_ACCEPTANCE',
-        JSON.stringify({
-          binarySha256,
-          chatId: saved!.id,
-          screen: reopened.screen(),
-          commands: commandPosts.map((command) => command.type),
-        }),
-      );
-    } finally {
-      await reopened.stop();
-    }
+      console.info('PUI_RECONNECT_REFUSAL_ACCEPTANCE', JSON.stringify({ binarySha256, chatId: saved!.id,
+        screen: reopened.screen(), commands: commandPosts.map((command) => command.type) }));
+    } finally { await reopened.stop(); }
   });
 
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
@@ -2114,17 +1667,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(commandPosts).toHaveLength(1);
       expect(commandPosts[0]).toMatchObject({ type: 'owner_turn', content: prompt });
       expect(commandReplies).toEqual([{ status: 202, replayed: false }]);
-      expect(sessionTraffic).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            path: '/api/adv/sessions/launch-su',
-            status: 200,
-            attachedEngine: true,
-            transport: 'structured',
-            nativeSessionPresent: true,
-          }),
-        ]),
-      );
+      expect(sessionTraffic).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: '/api/adv/sessions/launch-su', status: 200,
+          attachedEngine: true, transport: 'structured', nativeSessionPresent: true }),
+      ]));
       // The test peer never opens a native terminal. PUI requested only the
       // attached-engine path and the protocol peer received the exact draft.
       expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toHaveLength(1);
@@ -2139,30 +1685,17 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         await reopened.waitFor(scriptedEngine.successText);
         expect(reopened.screen().split('PUI exact Unicode draft')).toHaveLength(2);
         expect(reopened.screen().split(scriptedEngine.successText)).toHaveLength(2);
-      } finally {
-        await reopened.stop();
-      }
+      } finally { await reopened.stop(); }
       expect(namedQueryRequests).not.toContain('network.board');
       expect(pipelineCellRequests).toEqual([]);
-      console.info(
-        'PUI_COMPOSER_ACCEPTANCE',
-        JSON.stringify({
-          binary: bin,
-          binarySha256,
-          chatId: chat.id,
-          exactText: scriptedEngine.requests[0],
-          traffic: sessionTraffic,
-        }),
-      );
-    } finally {
-      await pane.stop().catch(() => {});
-    }
+      console.info('PUI_COMPOSER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256,
+        chatId: chat.id, exactText: scriptedEngine.requests[0], traffic: sessionTraffic }));
+    } finally { await pane.stop().catch(() => {}); }
   });
 
   test('Network loads on navigation, manual refresh, and saved-view restoration', async () => {
     const pane = new PuiPane(bin, operatorPort, home);
-    const networkReads = () =>
-      namedQueryReplies.filter((reply) => reply.name === 'network.board' && reply.status === 200).length;
+    const networkReads = () => namedQueryReplies.filter((reply) => reply.name === 'network.board' && reply.status === 200).length;
     try {
       await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
       expect(namedQueryRequests).not.toContain('network.board');
@@ -2172,25 +1705,19 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       const beforeRefresh = networkReads();
       pane.write('g');
       await vi.waitFor(() => expect(networkReads()).toBeGreaterThan(beforeRefresh), { timeout: 30_000 });
-    } finally {
-      await pane.stop();
-    }
+    } finally { await pane.stop(); }
     await putViewState('Network');
     const beforeRestore = networkReads();
     const restored = new PuiPane(bin, operatorPort, home);
     try {
       await restored.waitFor('Network', { timeoutMs: 40_000 });
       await vi.waitFor(() => expect(networkReads()).toBeGreaterThan(beforeRestore), { timeout: 30_000 });
-    } finally {
-      await restored.stop();
-    }
+    } finally { await restored.stop(); }
   });
 
   test('delayed readiness sends the first draft once and accepts a follow-up after completion', async () => {
     let releaseInitialization!: () => void;
-    scriptedEngine.initialization = new Promise<void>((resolve) => {
-      releaseInitialization = resolve;
-    });
+    scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
     const prompt = '  PUI delayed startup draft λ  ';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
@@ -2253,9 +1780,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitFor(scriptedEngine.successText);
       await pane.waitFor('Message — Enter send');
       expect(scriptedEngine.requests).toEqual([prompt, followup]);
-    } finally {
-      await pane.stop();
-    }
+    } finally { await pane.stop(); }
   });
 
   test('interrupted startup retains the draft and retries without creating another chat', async () => {
@@ -2277,9 +1802,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect((await waitForSavedTurn(prompt)).id).toBe(chats[0].id);
       expect(await persistedChats(db)).toHaveLength(1);
       expect(scriptedEngine.requests).toEqual([prompt]);
-    } finally {
-      await pane.stop();
-    }
+    } finally { await pane.stop(); }
   });
 
   test('engine startup exit releases input while preserving the exact unsent draft', async () => {
@@ -2294,22 +1817,17 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // Draft retention alone is insufficient: the failure cause must survive
       // both live delivery and a terminal snapshot followed by stream replay.
       // Generic readiness copy loses the cause and cannot satisfy this guard.
-      await vi.waitFor(
-        () => {
-          expect(pane.screen()).toMatch(
-            /PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/,
-          );
-        },
-        { timeout: 30_000, interval: 100 },
-      );
+      await vi.waitFor(() => {
+        expect(pane.screen()).toMatch(
+          /PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/,
+        );
+      }, { timeout: 30_000, interval: 100 });
       expect(pane.screen()).toContain(`> ${prompt}`);
       expect(pane.screen()).not.toContain('Sending — awaiting acceptance');
       expect(scriptedEngine.requests).toHaveLength(0);
       expect(commandPosts).toHaveLength(0);
       expect((await persistedChats(db))[0].transcript).toHaveLength(0);
-    } finally {
-      await pane.stop();
-    }
+    } finally { await pane.stop(); }
   });
 
   test('host refusal retains an editable draft and a ready retry commits it once', async () => {
@@ -2329,14 +1847,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 30_000 });
       expect(scriptedEngine.requests).toEqual([prompt]);
       expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
-    } finally {
-      await pane.stop();
-    }
+    } finally { await pane.stop(); }
   });
 
   test.each(['lost-ack', 'wrong-command-ack', 'wrong-session-ack'] as const)(
-    '%s keeps the draft and retries the exact persisted command without a second execution',
-    async (fault) => {
+    '%s keeps the draft and retries the exact persisted command without a second execution', async (fault) => {
       transportFault = fault;
       const prompt = `  PUI ${fault} λ  `;
       const pane = new PuiPane(bin, operatorPort, home);
@@ -2359,9 +1874,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(commandReplies[1]).toEqual({ status: 202, replayed: true });
         expect(scriptedEngine.requests).toEqual([prompt]);
         expect((await persistedChats(db))[0].transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
-      } finally {
-        await pane.stop();
-      }
+      } finally { await pane.stop(); }
     },
   );
 
@@ -2407,23 +1920,18 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
 });
 
 function installedManifest(): Record<string, unknown> {
-  const manifestPath =
-    process.env.PUI_INSTALL_MANIFEST ?? path.join(process.env.HOME!, '.papercusp', 'pui-install.json');
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  expect(path.resolve(manifest.binaryPath)).toBe(path.resolve(bin));
-  expect(manifest.binarySha256).toBe(binarySha256);
-  expect(createHash('sha256').update(readFileSync(manifest.companionPath)).digest('hex')).toBe(
-    manifest.companionSha256,
-  );
-  return manifest;
+    const manifestPath = process.env.PUI_INSTALL_MANIFEST
+      ?? path.join(process.env.HOME!, '.papercusp', 'pui-install.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    expect(path.resolve(manifest.binaryPath)).toBe(path.resolve(bin));
+    expect(manifest.binarySha256).toBe(binarySha256);
+    expect(createHash('sha256').update(readFileSync(manifest.companionPath)).digest('hex'))
+      .toBe(manifest.companionSha256);
+    return manifest;
 }
 function pendingNativeCards(events: SuSessionEvent[] = scriptedEngine.events) {
-  const closed = new Set(
-    events.flatMap((event) => (event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : [])),
-  );
-  return events.flatMap((event) =>
-    event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : [],
-  );
+  const closed = new Set(events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
+  return events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
 }
 
 async function startOperatorProcess(port = 0) {
@@ -2447,108 +1955,55 @@ async function startOperatorProcess(port = 0) {
   let shutdownFailure: string | undefined;
   let output = '';
   const child = fork(path.join(__dirname, 'operator-process.mts'), [], {
-    cwd: REPO_ROOT,
-    execArgv: ['--import', 'tsx'],
+    cwd: REPO_ROOT, execArgv: ['--import', 'tsx'],
     env: { ...process.env, PUI_OPERATOR_FIXTURE_WORKSPACE: WORKSPACE, PUI_OPERATOR_FIXTURE_PORT: String(port) },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
-  child.on('error', (error) => {
-    startupError = error;
+  child.on('error', (error) => { startupError = error; });
+  for (const stream of [child.stdout, child.stderr]) stream?.on('data', (bytes: Buffer) => {
+    output = (output + redactSensitiveText(bytes.toString())).slice(-32_000);
   });
-  for (const stream of [child.stdout, child.stderr])
-    stream?.on('data', (bytes: Buffer) => {
-      output = (output + redactSensitiveText(bytes.toString())).slice(-32_000);
-    });
   const exit = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
-  child.on(
-    'message',
-    (message: {
-      type: string;
-      descriptor?: SuSessionDescriptor;
-      event?: SuSessionEvent;
-      events?: SuSessionEvent[];
-      pid: number;
-      instanceId: string;
-      port: number;
-      level: string;
-      args: unknown[];
-      path: string;
-      status: number;
-      method?: string;
-      requestedAt?: string;
-      respondedAt?: string;
-      error?: string;
-      model?: string;
-      account?: string;
-      mode?: string;
-      carry?: string;
-      planSlug?: string;
-      before?: unknown[];
-      after?: unknown[];
-      body?: unknown;
-      stage?: string;
-      workers?: unknown;
-    }) => {
-      if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
-      if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
-        console.info(
-          'PUI_OPERATOR_PROCESS_STAGE',
-          JSON.stringify({
-            type: message.type,
-            stage: message.stage,
-            pid: message.pid,
-            instanceId: message.instanceId,
-            workers: message.workers,
-            at: new Date().toISOString(),
-          }),
-        );
-        if (message.stage) shutdownStages.push(message.stage);
-      }
-      if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);
-      if (message.type === 'host') events.push(...(message.events ?? []));
-      if (message.type === 'event' && message.event) events.push(message.event);
-      if (message.type === 'diagnostic') diagnostics.push({ level: message.level, args: message.args });
-      if (message.type === 'stopped') stopped = true;
-      if (message.type === 'shutdown-failed') shutdownFailure = message.error ?? 'unknown shutdown failure';
-      if (message.type === 'response')
-        responses.push({
-          path: message.path,
-          status: message.status,
-          model: message.model,
-          account: message.account,
-          mode: message.mode,
-          carry: message.carry,
-          planSlug: message.planSlug,
-        });
-      if (message.type === 'readiness')
-        readiness.push({
-          path: message.path,
-          method: message.method,
-          requestedAt: message.requestedAt,
-          respondedAt: message.respondedAt,
-          status: message.status,
-          before: message.before,
-          after: message.after,
-          body: message.body,
-        });
-    },
-  );
+  child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
+    events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
+    path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string; error?: string;
+    model?: string; account?: string; mode?: string; carry?: string; planSlug?: string;
+    before?: unknown[]; after?: unknown[]; body?: unknown; stage?: string; workers?: unknown }) => {
+    if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
+    if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
+      console.info('PUI_OPERATOR_PROCESS_STAGE', JSON.stringify({ type: message.type, stage: message.stage,
+        pid: message.pid, instanceId: message.instanceId, workers: message.workers, at: new Date().toISOString() }));
+      if (message.stage) shutdownStages.push(message.stage);
+    }
+    if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);
+    if (message.type === 'host') events.push(...message.events ?? []);
+    if (message.type === 'event' && message.event) events.push(message.event);
+    if (message.type === 'diagnostic') diagnostics.push({ level: message.level, args: message.args });
+    if (message.type === 'stopped') stopped = true;
+    if (message.type === 'shutdown-failed') shutdownFailure = message.error ?? 'unknown shutdown failure';
+    if (message.type === 'response') responses.push({
+      path: message.path,
+      status: message.status,
+      model: message.model,
+      account: message.account,
+      mode: message.mode,
+      carry: message.carry,
+      planSlug: message.planSlug,
+    });
+    if (message.type === 'readiness') readiness.push({ path: message.path, method: message.method,
+      requestedAt: message.requestedAt, respondedAt: message.respondedAt, status: message.status,
+      before: message.before, after: message.after, body: message.body });
+  });
   const stop = async ({ endSessions = true }: { endSessions?: boolean } = {}) => {
     if (child.connected) child.send({ type: endSessions ? 'stop' : 'restart' });
     let timer: ReturnType<typeof setTimeout>;
     try {
-      const result = await Promise.race([
-        exit,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error(`Operator fixture did not exit: ${output}`)), 60_000);
-        }),
-      ]);
-      console.info(
-        'PUI_OPERATOR_PROCESS_EXIT',
-        JSON.stringify({ pid: child.pid, instanceId: ready?.instanceId, ...result }),
-      );
+      const result = await Promise.race([exit, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Operator fixture did not exit: ${output}`)), 60_000);
+      })]);
+      console.info('PUI_OPERATOR_PROCESS_EXIT', JSON.stringify({ pid: child.pid, instanceId: ready?.instanceId, ...result }));
       expect(shutdownFailure, output).toBeUndefined();
       expect(stopped, output).toBe(true);
       expect(result, output).toEqual({ code: null, signal: 'SIGKILL' });
@@ -2561,30 +2016,13 @@ async function startOperatorProcess(port = 0) {
     }
   };
   try {
-    await vi.waitFor(
-      () => {
-        if (startupError) throw startupError;
-        if (child.exitCode !== null || child.signalCode !== null)
-          throw new Error(`Operator fixture exited before ready: ${output}`);
-        expect(ready, output).toBeDefined();
-      },
-      { timeout: 120_000, interval: 100 },
-    );
-  } catch (error) {
-    await stop().catch(() => {});
-    throw error;
-  }
-  return {
-    ...ready!,
-    events,
-    descriptors,
-    diagnostics,
-    responses,
-    readiness,
-    shutdownStages,
-    stop,
-    output: () => output,
-  };
+    await vi.waitFor(() => {
+      if (startupError) throw startupError;
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Operator fixture exited before ready: ${output}`);
+      expect(ready, output).toBeDefined();
+    }, { timeout: 120_000, interval: 100 });
+  } catch (error) { await stop().catch(() => {}); throw error; }
+  return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
 }
 
 function cleanupErrorText(error: unknown): string {
@@ -2600,19 +2038,13 @@ async function preservePrimaryFailureDuringCleanup(
 ): Promise<void> {
   const cleanupFailures: Array<{ label: string; error: unknown }> = [];
   for (const cleanup of cleanups) {
-    try {
-      await cleanup.run();
-    } catch (error) {
-      cleanupFailures.push({ label: cleanup.label, error });
-    }
+    try { await cleanup.run(); }
+    catch (error) { cleanupFailures.push({ label: cleanup.label, error }); }
   }
   if (cleanupFailures.length === 0) return;
   if (!primaryFailure) {
     if (cleanupFailures.length === 1) throw cleanupFailures[0].error;
-    throw new AggregateError(
-      cleanupFailures.map(({ error }) => error),
-      'PUI operator fixture cleanup failed',
-    );
+    throw new AggregateError(cleanupFailures.map(({ error }) => error), 'PUI operator fixture cleanup failed');
   }
   report({
     primary: cleanupErrorText(primaryFailure.error),
@@ -3708,7 +3140,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // the command execute successfully while measuring no approval path at
     // all. Use a unique file beside (not inside) the checkout so every backend
     // must honor the explicit approval before the exact effect can occur.
-    const approvalFixturePath = path.join(path.dirname(REPO_ROOT), `.pui-approval-fixture-${randomUUID()}.txt`);
+    const approvalFixturePath = path.join(
+      path.dirname(REPO_ROOT),
+      `.pui-approval-fixture-${randomUUID()}.txt`,
+    );
     // Ask for the ordinary outcome in ordinary language. Security-attestation
     // rhetoric and instructions not to inspect the task correctly make a real
     // provider stop and ask what is actually being tested, which exercises
@@ -3730,8 +3165,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         pane.write(approvalRequest);
         pane.enter();
         const approvalChat = await waitForSavedTurn(approvalRequest);
-        const approvalCommand = approvalChat.transcript.find((turn) => turn.content === approvalRequest)?.su_command
-          ?.command;
+        const approvalCommand = approvalChat.transcript.find((turn) =>
+          turn.content === approvalRequest)?.su_command?.command;
         if (approvalCommand?.type !== 'owner_turn') {
           throw new Error('Approval probe lacks a durable owner-turn receipt');
         }
@@ -3752,8 +3187,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await pane.waitFor(approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt);
         await pane.waitFor(approvalLabel);
         frames.approval = pane.screen();
-        const childCardReplies = () =>
-          first.responses.filter(({ path: responsePath }) => responsePath.endsWith('/card-response'));
+        const childCardReplies = () => first.responses.filter(({ path: responsePath }) =>
+          responsePath.endsWith('/card-response'));
         const repliesBeforeApproval = childCardReplies().length;
         pane.write(String(approvalIndex + 1));
         await vi.waitFor(() => expect(childCardReplies()).toHaveLength(repliesBeforeApproval + 1), {
@@ -3761,30 +3196,27 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           interval: 100,
         });
         expect(childCardReplies().at(-1)).toMatchObject({ status: 200 });
-        await vi.waitFor(
-          () => {
-            approvalStart = first.events.find(
-              (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
-                event.type === 'tool' &&
-                event.phase === 'started' &&
-                JSON.stringify(event.input).includes(approvalFixturePath),
-            );
-            expect(approvalStart, 'the approved native command must be visible as a tool start').toMatchObject({
-              turnId: approvalCommand.turnId,
-              session: approvalCommand.target,
-            });
-            approvalEnd = first.events.find(
-              (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
-                event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId,
-            );
-            expect(approvalEnd, 'the approved native command must finish successfully').toMatchObject({
-              isError: false,
-              turnId: approvalCommand.turnId,
-              session: approvalCommand.target,
-            });
-          },
-          { timeout: 120_000, interval: 100 },
-        );
+        await vi.waitFor(() => {
+          approvalStart = first.events.find(
+            (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
+              event.type === 'tool' &&
+              event.phase === 'started' &&
+              JSON.stringify(event.input).includes(approvalFixturePath),
+          );
+          expect(approvalStart, 'the approved native command must be visible as a tool start').toMatchObject({
+            turnId: approvalCommand.turnId,
+            session: approvalCommand.target,
+          });
+          approvalEnd = first.events.find(
+            (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> =>
+              event.type === 'tool' && event.phase === 'completed' && event.callId === approvalStart?.callId,
+          );
+          expect(approvalEnd, 'the approved native command must finish successfully').toMatchObject({
+            isError: false,
+            turnId: approvalCommand.turnId,
+            session: approvalCommand.target,
+          });
+        }, { timeout: 120_000, interval: 100 });
         expect(readFileSync(approvalFixturePath, 'utf8')).toBe(approvalResult + '\n');
         expect(first.events).toEqual(
           expect.arrayContaining([
@@ -3801,19 +3233,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // in `waiting-for-owner` but deliberately does not render `· ready ·`;
         // wait on the producer-of-record lifecycle before sending the separate
         // greeting used by the restart/resume clause.
-        await vi.waitFor(
-          () => {
-            expect(
-              first.events.some(
-                (event) =>
-                  event.type === 'lifecycle' &&
-                  event.state === 'waiting-for-owner' &&
-                  event.sequence > (approvalEnd?.sequence ?? -1),
-              ),
-            ).toBe(true);
-          },
-          { timeout: 120_000, interval: 100 },
-        );
+        await vi.waitFor(() => {
+          expect(first.events.some((event) =>
+            event.type === 'lifecycle' &&
+            event.state === 'waiting-for-owner' &&
+            event.sequence > (approvalEnd?.sequence ?? -1),
+          )).toBe(true);
+        }, { timeout: 120_000, interval: 100 });
         frames.approved = pane.screen();
       }
       pane.write(greeting);
