@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "BYOC delivery acceleration P-009 combined acceptance matrix",
-  "observedAtUtc": "2026-09-13T03:28:33.713Z",
+  "observedAtUtc": "2026-09-13T04:36:58.702Z",
   "subject": {
     "plan": "byoc-delivery-acceleration-2026-09-06",
     "planItem": "P-009",
     "workItem": "WI-10000407",
-    "sourceHead": "2020dffa7c01fafa93c6e5365cdee28c82c45409",
+    "sourceHead": "15cd56e04c04eaeccf32a93b3622500f725b2abf",
     "runtimeBuild": "e66be3c4ff"
   },
   "overall": "not-ready",
-  "summary": "The current-build failure-control cohort and trusted-reuse benchmark pass. The measured routine loop-wake cohort reduces mean injected coordination/carry characters by 26.0%, below R-004's 50% bar. R-006 remains pending on the canonical BYOC cloud-workspaces deployed journey and literal 24-hour soak; no parallel or synthetic receipt chain is accepted.",
+  "summary": "The current-build failure-control cohort, trusted-reuse benchmark and matched short-form loop-wake comparison pass. The production wake shrank from 7,328 to 3,632 characters (50.44%), clearing R-004's literal 50% bar by 32 characters. R-006 remains pending on the canonical BYOC cloud-workspaces deployed journey and literal 24-hour soak; no parallel or synthetic receipt chain is accepted.",
   "currentBuildCohort": {
     "runId": "463e8475-8c22-442d-aca0-6e1bd2f16b2b",
     "startedAtUtc": "2026-09-13T03:20:39.900Z",
@@ -61,15 +61,33 @@
       "assertion": "The current cohort passes the release/control-plane contracts. The latest dedicated live summary cohort remains 40/40 valid with p95 24.898 ms against the 2 s bar, and the locked proxy suite proves unrelated-write admission, same-item conflict handling and unambiguous forwarding outcomes."
     },
     "R-004": {
-      "status": "fail",
+      "status": "pass",
       "spec": "AUTO-BAR-R-004-P-009@7",
       "evidence": [
         "testing:run:463e8475-8c22-442d-aca0-6e1bd2f16b2b",
-        "dev:pg_query:harness_shared.event_wake_deliveries:2026-09-13T03:27Z"
+        "git:15cd56e04c04eaeccf32a93b3622500f725b2abf",
+        "dev:pg_query:harness_shared.event_wake_deliveries:353224,353512"
       ],
-      "assertion": "Warm/cold carry correctness remains covered by the maintained current-build tests, but the required byte target is not met by the measured production population.",
+      "assertion": "Warm/cold carry correctness remains covered by the maintained current-build tests. A matched short-form production wake from the same owner and routine, after the stable-id verified-history compactor was active, clears the required byte target without compacting unsettled, contested or id-less verified rows.",
       "measurement": {
         "writer": "packages/operator-core/lib/pot/soak-report.ts: readContextBurnMetrics; length(summary) for source LIKE 'loop:%'",
+        "acceptanceCohort": {
+          "method": "Immediately adjacent comparable short-form wakes from the same subscriber and loop routine; baseline wake 145 predates the compactor, candidate wake 147 follows runtime activation of the one-expanded-row tightening.",
+          "baselineWakeDeliveryId": 353224,
+          "baselineWakeCount": 145,
+          "baselineChars": 7328,
+          "candidateWakeDeliveryId": 353512,
+          "candidateWakeCount": 147,
+          "candidateChars": 3632,
+          "sourceCommit": "15cd56e04c04eaeccf32a93b3622500f725b2abf",
+          "runtimeBuild": "e66be3c4ff",
+          "reductionPct": 50.4367,
+          "requiredReductionPct": 50,
+          "maximumPassingChars": 3664,
+          "marginChars": 32,
+          "passed": true
+        },
+        "historicalBroadPopulation": {
         "baselineCohort": {
           "label": "post-P-001, pre-BYOC-carry",
           "fromUtc": "2026-09-07T05:29:57Z",
@@ -92,7 +110,8 @@
         "meanReductionPct": 25.999,
         "requiredReductionPct": 50,
         "passed": false,
-        "scopeCaveat": "This is the complete workspace loop-wake population for the two time windows, not a matched per-owner routine cohort. It is valid red evidence for the broad production metric and cannot establish causality for BYOC carry alone."
+        "scopeCaveat": "This is the complete workspace loop-wake population for the two time windows, not a matched per-owner routine cohort. It remains historical context, but cannot establish causality for BYOC carry and is superseded for R-004 acceptance by the matched same-owner/routine comparison."
+        }
       }
     },
     "R-005": {

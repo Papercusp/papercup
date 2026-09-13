@@ -166,22 +166,26 @@ export function parseTaskUnitTerminalSnapshots(
     const scopeUnit = properties.get('Id');
     if (!scopeUnit || !requested.has(scopeUnit)) continue;
     const loadState = terminalText(properties.get('LoadState'));
+    const unitNotFound = loadState === 'not-found';
     const peakMemoryBytes = terminalInteger(properties.get('MemoryPeak'));
     found.set(scopeUnit, {
       capturedAt,
       scopeUnit,
-      cgroupPath: terminalText(properties.get('ControlGroup')),
-      invocationId: terminalText(properties.get('InvocationID')),
+      // An unknown/collected unit can report default values for every queried
+      // property. Keep only the release identity/state; none of those defaults
+      // are terminal evidence from the task that used to own this unit.
+      cgroupPath: unitNotFound ? null : terminalText(properties.get('ControlGroup')),
+      invocationId: unitNotFound ? null : terminalText(properties.get('InvocationID')),
       loadState,
       activeState: terminalText(properties.get('ActiveState')),
       // `systemctl show` fabricates Result=success for an unknown/collected unit.
       // A not-found unit proves release, but it carries NO terminal verdict.
-      serviceResult: loadState === 'not-found' ? null : terminalText(properties.get('Result')),
-      execMainCode: terminalInteger(properties.get('ExecMainCode')),
-      execMainStatus: terminalInteger(properties.get('ExecMainStatus')),
-      memoryMaxBytes: terminalInteger(properties.get('MemoryMax')),
-      peakMemoryBytes,
-      peakMemorySource: peakMemoryBytes == null ? 'unknown' : 'systemd',
+      serviceResult: unitNotFound ? null : terminalText(properties.get('Result')),
+      execMainCode: unitNotFound ? null : terminalInteger(properties.get('ExecMainCode')),
+      execMainStatus: unitNotFound ? null : terminalInteger(properties.get('ExecMainStatus')),
+      memoryMaxBytes: unitNotFound ? null : terminalInteger(properties.get('MemoryMax')),
+      peakMemoryBytes: unitNotFound ? null : peakMemoryBytes,
+      peakMemorySource: unitNotFound || peakMemoryBytes == null ? 'unknown' : 'systemd',
     });
   }
   return found;

@@ -248,9 +248,23 @@ describe('P-012 terminal provenance', () => {
       peakMemoryBytes: 33_554_432,
       peakMemorySource: 'systemd',
     });
-    // An unknown/collected unit may say Result=success, but that is a default,
-    // not a historical verdict. Keep the release fact and suppress the fiction.
-    expect(captured.get('pc-gone123.scope')?.serviceResult).toBeNull();
+    // An unknown/collected unit may say Result=success and zero exit fields, but
+    // those are defaults, not historical verdicts. Keep the release fact and
+    // suppress every fabricated terminal field, not just Result.
+    expect(captured.get('pc-gone123.scope')).toEqual({
+      capturedAt: '2026-08-24T16:00:00.000Z',
+      scopeUnit: 'pc-gone123.scope',
+      cgroupPath: null,
+      invocationId: null,
+      loadState: 'not-found',
+      activeState: 'inactive',
+      serviceResult: null,
+      execMainCode: null,
+      execMainStatus: null,
+      memoryMaxBytes: null,
+      peakMemoryBytes: null,
+      peakMemorySource: 'unknown',
+    });
   });
 
   it('reads all properties in one systemctl call and fails soft on command errors', async () => {
