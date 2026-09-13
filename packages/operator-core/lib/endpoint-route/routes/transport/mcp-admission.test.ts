@@ -20,6 +20,7 @@ import {
   isBoundedDevTelemetryArgs,
   isBoundedCoordPresenceArgs,
   isBoundedCoordRosterArgs,
+  isBoundedEventsStatusArgs,
 } from './mcp-admission';
 
 afterEach(() => resetMcpAdmissionForTests());
@@ -249,6 +250,73 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
     expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'events:status'],
+    ['underscore', 'events_status'],
+    ['mcp-advertised', 'mcp__papercusp_su__events_status'],
+  ])('does NOT shed an exact events status await read under critical pressure: %s', (_label, name) => {
+    const args = { await_id: 178337 };
+    expect(isBoundedEventsStatusArgs(args)).toBe(true);
+    const body = toolsCall(24, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'events:status'],
+    ['underscore', 'events_status'],
+    ['mcp-advertised', 'mcp__papercusp_su__events_status'],
+  ])('does NOT shed an exact events status event read under critical pressure: %s', (_label, name) => {
+    const args = { event: 'work-item:done:EI-23109903341283549', after_generation: 7 };
+    expect(isBoundedEventsStatusArgs(args)).toBe(true);
+    const body = toolsCall(25, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('recognizes an exact events status read through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 26,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__events_status',
+          args: { event: 'work-item:done:EI-23109903341283549' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad, metered, mixed, and malformed events status reads sheddable', () => {
+    for (const args of [
+      {},
+      { meter: false },
+      { meter: true, await_id: 178337 },
+      { await_id: 0 },
+      { await_id: 1.5 },
+      { await_id: '178337' },
+      { await_id: 178337, event: 'work-item:done:EI-1' },
+      { await_id: 178337, after_generation: 7 },
+      { after_generation: 7 },
+      { event: '' },
+      { event: '   ' },
+      { event: 'x'.repeat(201) },
+      { event: 'work-item:done:EI-1', after_generation: -1 },
+      { event: 'work-item:done:EI-1', after_generation: 1.5 },
+      { event: 'work-item:done:EI-1', unexpected: true },
+    ]) {
+      expect(isBoundedEventsStatusArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(27, 'events:status', args))).toEqual({
+        sheddable: true,
+        id: 27,
+      });
+    }
   });
 
   it.each([
@@ -929,12 +997,46 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(JSON.parse(await req.text()).params.name).toBe('loop:status');
   });
 
+  it.each([
+    ['await id', { await_id: 178337 }],
+    ['exact event', { event: 'work-item:done:EI-23109903341283549', after_generation: 7 }],
+  ])('admits bounded events:status %s under critical pressure', async (_label, args) => {
+    const req = post(toolsCall(28, 'events:status', args));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('events:status');
+  });
+
+  it('admits deferred bounded events:status under critical pressure', async () => {
+    const req = post(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 29,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__events_status',
+          args: { await_id: 178337 },
+        },
+      },
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+
   it('still sheds a loop status read with an unknown argument under critical pressure', async () => {
     const shed = await evaluateAdmission(
       post(toolsCall(23, 'loop:status', { unknown: true })),
       'critical',
       true,
     );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('still sheds a broad events:status read under critical pressure', async () => {
+    const shed = await evaluateAdmission(post(toolsCall(30, 'events:status', {})), 'critical', true);
     expect(shed).not.toBeNull();
     expect((await shed!.json()).error.data).toMatchObject({
       retryable: true,
