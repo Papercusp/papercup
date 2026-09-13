@@ -201,6 +201,20 @@ describe('marker projection round-trip', () => {
 });
 
 describe('P-019 hook/module HUNK parity — the ledger writer and the replay reader agree on what an edit IS', () => {
+  const CODEX_UPDATE_PATCH = [
+    '*** Begin Patch',
+    '*** Update File: /r/lib/codex.ts',
+    '@@',
+    '-old',
+    '+new',
+    '*** End Patch',
+  ].join('\n');
+  const CODEX_ADD_PATCH = [
+    '*** Begin Patch',
+    '*** Add File: /r/lib/added.ts',
+    '+added',
+    '*** End Patch',
+  ].join('\n');
   const HUNK_CORPUS: Array<[string, unknown]> = [
     ['Edit', { file_path: '/r/lib/a.ts', old_string: 'o', new_string: 'n' }],
     ['Edit', { file_path: '/r/lib/a.ts', old_string: 'o', new_string: 'n', replace_all: true }],
@@ -210,6 +224,9 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
     ['mcp__papercusp-su__capability_write', { file_path: 'lib/a.ts', content: 'w' }],
     ['mcp__papercusp-su__capability_multi_edit', { file_path: 'lib/a.ts', edits: [{ old_string: 'x', new_string: 'y' }] }],
     ['write_file', { path: 'lib/a.ts', content: 'codex' }],
+    ['edit_file', { path: 'lib/a.ts', old_string: 'o', new_string: 'n' }],
+    ['apply_patch', CODEX_UPDATE_PATCH],
+    ['apply_patch', { input: CODEX_ADD_PATCH }],
     ['apply_patch', 'diff --git a/x b/x'],
     ['apply_patch', { patch: '...' }],
     ['Edit', { file_path: '/r/lib/a.ts' }],
@@ -396,6 +413,21 @@ describe('editedPathsFrom covers the payload shapes the matcher admits', () => {
     expect(
       editedPathsFrom({ tool_input: { edits: [{ file_path: 'a.ts' }, { file_path: 'b.ts' }] } }),
     ).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('reads Codex apply_patch paths from raw and wrapped patch input', () => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: /r/a.ts',
+      '@@',
+      '-old',
+      '+new',
+      '*** Add File: /r/b.ts',
+      '+new',
+      '*** End Patch',
+    ].join('\n');
+    expect(editedPathsFrom({ tool_name: 'apply_patch', tool_input: patch })).toEqual(['/r/a.ts', '/r/b.ts']);
+    expect(editedPathsFrom({ tool_name: 'apply_patch', tool_input: { input: patch } })).toEqual(['/r/a.ts', '/r/b.ts']);
   });
 
   it('returns nothing for a malformed payload instead of throwing', () => {

@@ -11,7 +11,7 @@
  *
  * THIS MODULE is the pure core + the two PG verbs:
  *   - `hunksFromToolCall`  — the hook-side extraction (Edit / Write / MultiEdit / the
- *                            capability_* twins / Codex write_file) → one hunk per edit.
+ *                            capability_* twins / Codex write_file / apply_patch) → one hunk per edit.
  *   - `boundHunk`          — the size cap: an oversize hunk is recorded as attribution only
  *                            (sha + bytes) and can never be replayed hunk-exactly.
  *   - `recordFrozenRepairEdit` / `readFrozenRepairEditLedger` — the PG write/read, keyed by
@@ -123,16 +123,131 @@ function asString(v: unknown): string | null {
  *            MultiEdit { file_path, edits:[{ old_string, new_string, replace_all? }] }
  *   MCP      mcp__*__capability_edit / capability_write / capability_multi_edit — same fields
  *   Codex    write_file { path, content }
- *   Codex    apply_patch — a patch TEXT, not a hunk pair: not extracted (returns []); the
- *            Codex route records nothing and admits whole-blob with reason, explicitly.
+ *   Codex    apply_patch — Add/Update patch operations become replayable hunks; unsupported
+ *            Delete/Move or malformed patches return [] so attribution never becomes partial.
  * Never throws: a malformed payload yields [] (the hook fails open).
  */
+type CodexPatchUpdateHunk = { old: string; new: string; changed: boolean };
+
+/** Find Codex's raw patch text, whether the client sends it directly or wraps it. */
+function codexPatchText(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return null;
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    if (typeof nested === 'string' && nested.includes('*** Begin Patch')) return nested;
+  }
+  return null;
+}
+
+/**
+ * Convert Codex's line-oriented patch into the ledger's replayable edit/write hunks.
+ *
+ * This parser is intentionally stricter than the PreToolUse path reader: one malformed or
+ * unsupported operation rejects the WHOLE patch, because recording only an earlier hunk would
+ * make a later admission falsely appear hunk-exact. Delete and Move are not replayable by
+ * the current ledger schema and therefore fail open.
+ */
+function hunksFromCodexApplyPatch(toolInput: unknown): FrozenRepairEditExtract[] {
+  const text = codexPatchText(toolInput);
+  if (text === null) return [];
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  while (lines.at(-1) === '') lines.pop();
+  if (lines.length < 2 || lines[0] !== '*** Begin Patch' || lines.at(-1) !== '*** End Patch') return [];
+
+  type CurrentOperation =
+    | { kind: 'add'; path: string; body: string[] }
+    | { kind: 'update'; path: string; hunks: CodexPatchUpdateHunk[] };
+  const output: FrozenRepairEditExtract[] = [];
+  const seenPaths = new Set<string>();
+  let current: CurrentOperation | null = null;
+  let active: { old: string[]; new: string[]; changed: boolean; hasLine: boolean } | null = null;
+  let editIndex = 0;
+
+  const finishActive = (): boolean => {
+    if (!active) return true;
+    if (!current || current.kind !== 'update' || !active.hasLine || !active.changed) return false;
+    const old = active.old.join('');
+    const next = active.new.join('');
+    if (!old || old === next) return false;
+    current.hunks.push({ old, new: next, changed: true });
+    active = null;
+    return true;
+  };
+
+  const finishCurrent = (): boolean => {
+    if (!current) return true;
+    if (current.kind === 'add') {
+      output.push({
+        path: current.path,
+        hunk: { kind: 'write', body: current.body.join('') },
+        editIndex: editIndex++,
+      });
+      current = null;
+      return true;
+    }
+    if (!finishActive() || current.hunks.length === 0) return false;
+    for (const hunk of current.hunks) {
+      output.push({
+        path: current.path,
+        hunk: { kind: 'edit', old: hunk.old, new: hunk.new, replaceAll: false },
+        editIndex: editIndex++,
+      });
+    }
+    current = null;
+    return true;
+  };
+
+  for (let index = 1; index < lines.length - 1; index += 1) {
+    const line = lines[index]!;
+    const operation = /^\*\*\* (Add|Update) File: (.+)$/.exec(line);
+    if (operation) {
+      if (!finishCurrent()) return [];
+      const path = operation[2]!.trim();
+      const key = normalizeRepoPath(path);
+      if (!key || seenPaths.has(key)) return [];
+      seenPaths.add(key);
+      current = operation[1] === 'Add' ? { kind: 'add', path, body: [] } : { kind: 'update', path, hunks: [] };
+      active = null;
+      continue;
+    }
+    if (/^\*\*\* (?:Delete File:|Move to:)/.test(line) || /^\*\*\* /.test(line)) return [];
+    if (!current) return [];
+
+    if (current.kind === 'add') {
+      if (!line.startsWith('+')) return [];
+      current.body.push(line.slice(1) + '\n');
+      continue;
+    }
+    if (line.startsWith('@@')) {
+      if (!finishActive()) return [];
+      active = { old: [], new: [], changed: false, hasLine: false };
+      continue;
+    }
+    if (!active || ![' ', '+', '-'].includes(line[0] ?? '')) return [];
+    const content = line.slice(1) + '\n';
+    active.hasLine = true;
+    if (line.startsWith(' ')) {
+      active.old.push(content);
+      active.new.push(content);
+    } else if (line.startsWith('-')) {
+      active.old.push(content);
+      active.changed = true;
+    } else {
+      active.new.push(content);
+      active.changed = true;
+    }
+  }
+  if (!finishCurrent() || output.length === 0) return [];
+  return output;
+}
+
 export function hunksFromToolCall(toolName: string, toolInput: unknown): FrozenRepairEditExtract[] {
+  const name = String(toolName ?? '').toLowerCase();
+  if (name === 'apply_patch') return hunksFromCodexApplyPatch(toolInput);
   if (!toolInput || typeof toolInput !== 'object') return [];
   const input = toolInput as Record<string, unknown>;
-  const name = String(toolName ?? '').toLowerCase();
   const isMulti = /multi_?edit/.test(name);
-  const isEdit = !isMulti && /(^|_)edit$/.test(name);
+  const isEdit = !isMulti && /(^|_)edit(?:_file)?$/.test(name);
   const isWrite = /(^|_)write(_file)?$/.test(name);
   const filePath = asString(input.file_path) ?? asString(input.path);
   if (!filePath) return [];

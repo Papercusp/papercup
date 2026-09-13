@@ -46,9 +46,54 @@ describe('hunksFromToolCall — the hook-side extraction (P-019, D-008 layer 1)'
     expect(out.map((h) => h.editIndex)).toEqual([0, 2]);
     expect(out[1]?.hunk).toEqual({ kind: 'edit', old: 'c', new: 'd', replaceAll: true });
   });
-  it('yields nothing for a Codex apply_patch (patch text, not a hunk pair) or a malformed payload — the hook fails open', () => {
+  it('parses Codex apply_patch Add/Update operations, including wrapped input and multiple hunks', () => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: /repo/lib/a.ts',
+      '@@',
+      '-old',
+      '+new',
+      '@@',
+      '-second old',
+      '+second new',
+      '*** Add File: /repo/lib/new.ts',
+      '+new file',
+      '*** End Patch',
+    ].join('\n');
+    expect(hunksFromToolCall('apply_patch', patch)).toEqual([
+      { path: '/repo/lib/a.ts', hunk: { kind: 'edit', old: 'old\n', new: 'new\n', replaceAll: false }, editIndex: 0 },
+      { path: '/repo/lib/a.ts', hunk: { kind: 'edit', old: 'second old\n', new: 'second new\n', replaceAll: false }, editIndex: 1 },
+      { path: '/repo/lib/new.ts', hunk: { kind: 'write', body: 'new file\n' }, editIndex: 2 },
+    ]);
+    expect(hunksFromToolCall('apply_patch', { input: patch })).toEqual(hunksFromToolCall('apply_patch', patch));
+  });
+  it('rejects malformed, unsupported, duplicate-target, and empty-update patches as a whole', () => {
     expect(hunksFromToolCall('apply_patch', 'diff --git a b')).toEqual([]);
     expect(hunksFromToolCall('apply_patch', { patch: '...' })).toEqual([]);
+    expect(hunksFromToolCall('apply_patch', [
+      '*** Begin Patch',
+      '*** Delete File: /repo/lib/a.ts',
+      '*** End Patch',
+    ].join('\n'))).toEqual([]);
+    expect(hunksFromToolCall('apply_patch', [
+      '*** Begin Patch',
+      '*** Update File: /repo/lib/a.ts',
+      '@@',
+      ' context only',
+      '*** End Patch',
+    ].join('\n'))).toEqual([]);
+    expect(hunksFromToolCall('apply_patch', [
+      '*** Begin Patch',
+      '*** Update File: /repo/lib/a.ts',
+      '@@',
+      '-old',
+      '+new',
+      '*** Update File: ./repo/lib/a.ts',
+      '@@',
+      '-other',
+      '+change',
+      '*** End Patch',
+    ].join('\n'))).toEqual([]);
     expect(hunksFromToolCall('Edit', { file_path: 'x' })).toEqual([]);
     expect(hunksFromToolCall('Read', { file_path: 'x' })).toEqual([]);
     expect(hunksFromToolCall('Edit', null)).toEqual([]);

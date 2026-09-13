@@ -289,7 +289,8 @@ def release_confirmed(inner, expected_paths):
     return inner.get('ok') is True
 
 
-NATIVE_EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit'}
+CLAUDE_NATIVE_EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit'}
+CODEX_NATIVE_EDIT_TOOLS = {'apply_patch', 'write_file', 'edit_file'}
 
 
 def native_edit_result_succeeded(response):
@@ -343,8 +344,12 @@ def native_edit_result_succeeded(response):
 
 
 def native_edit_proof(tool, response, paths):
-    """Build positive proof for one Claude native edit, or None."""
-    if tool not in NATIVE_EDIT_TOOLS:
+    """Build positive proof for one successful Claude or Codex native edit."""
+    if tool in CLAUDE_NATIVE_EDIT_TOOLS:
+        source = 'claude'
+    elif tool in CODEX_NATIVE_EDIT_TOOLS:
+        source = 'codex'
+    else:
         return None
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
         return None
@@ -352,7 +357,7 @@ def native_edit_proof(tool, response, paths):
         return None
     return {
         'success': True,
-        'source': 'claude',
+        'source': source,
         'tool': tool,
         'paths': list(paths),
     }
