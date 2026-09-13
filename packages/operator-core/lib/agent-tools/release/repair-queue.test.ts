@@ -22,6 +22,7 @@ const queue = {
     candidate: 'a'.repeat(40),
     repairHead: 'c'.repeat(40),
     builtCommit: 'd'.repeat(40),
+    builtTree: 'f'.repeat(40),
     files: ['lib/red.test.ts'],
     actor: 'su-test',
     startedAtMs: 1,
@@ -47,6 +48,7 @@ const queue = {
   },
 };
 const NEW_HEAD = 'd'.repeat(40);
+const ALT_HEAD = 'e'.repeat(40);
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   readState: vi.fn(),
@@ -55,6 +57,7 @@ const mocks = vi.hoisted(() => ({
   alive: vi.fn(),
   audit: vi.fn(),
   admit: vi.fn(),
+  admissionGit: vi.fn(),
   retract: vi.fn(),
   containment: vi.fn(),
   presence: vi.fn(),
@@ -97,6 +100,7 @@ vi.mock('../../release/judged-sha-containment', () => ({
 }));
 vi.mock('../../release/repair-head-admission', () => ({
   admitPathsOntoRepairHead: mocks.admit,
+  realAdmissionGit: mocks.admissionGit,
   retractAdmission: mocks.retract,
 }));
 vi.mock('../../release/hunk-exact-admission', () => ({
@@ -151,10 +155,10 @@ const manifest = {
 const queueWithManifest = { ...queue, manifest };
 
 /** What the P-001 primitive returns for a clean single-path admission onto the fixture queue. */
-const admissionOf = (published: boolean, paths = ['lib/red.test.ts']) => ({
+const admissionOf = (published: boolean, paths = ['lib/red.test.ts'], commit = NEW_HEAD) => ({
   ok: true as const,
-  commit: NEW_HEAD,
-  tree: 't'.repeat(40),
+  commit,
+  tree: 'f'.repeat(40),
   diff: paths,
   unchanged: [] as string[],
   lineageRef: `refs/papercusp/frozen/${'a'.repeat(40)}`,
@@ -164,7 +168,7 @@ const admissionOf = (published: boolean, paths = ['lib/red.test.ts']) => ({
     actor: 'su-test',
     source: { ref: 'staging', sha: 'e'.repeat(40) },
     fromRepairHead: 'c'.repeat(40),
-    toRepairHead: NEW_HEAD,
+    toRepairHead: commit,
     paths,
     unchanged: [] as string[],
     blobs: Object.fromEntries(paths.map((p) => [p, 'f'.repeat(40)])),
@@ -197,6 +201,7 @@ beforeEach(() => {
   }));
   mocks.presence.mockResolvedValue(undefined);
   mocks.retract.mockReturnValue(true);
+  mocks.admissionGit.mockReturnValue({ status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' });
   mocks.ledger.mockResolvedValue([]);
   mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
   mocks.hunkExact.mockReturnValue(hunkExactOf());
@@ -729,6 +734,33 @@ describe('release:repair-queue', () => {
       );
       expect(published).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
       expect(dryRuns()).toEqual([true, true, false]);
+    });
+
+    it('reuses a passed legacy pre-check when provenance changes the commit id but not its tree', async () => {
+      const { builtTree: _builtTree, ...legacyPrecheck } = queue.admissionPrecheck;
+      mocks.admit.mockImplementation((input: { dryRun: boolean; paths: string[] }) =>
+        admissionOf(!input.dryRun, input.paths, ALT_HEAD),
+      );
+      mocks.readState.mockResolvedValue({
+        status: 'value',
+        queue: { ...queue, admissionPrecheck: legacyPrecheck },
+      });
+
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        admitted: true,
+        verdict: 'admitted',
+        movedRepairHead: { from: queue.repairHead, to: ALT_HEAD },
+      });
+      expect(dryRuns()).toEqual([true, false]);
+      expect(mocks.precheckFactory).not.toHaveBeenCalled();
+      expect(mocks.admissionGit).toHaveBeenCalledWith(['rev-parse', '--verify', `${NEW_HEAD}^{tree}`], {
+        cwd: '/repo',
+      });
     });
 
     it('a stored red measurement refuses on the follow-up and the detached leg never publishes', async () => {
