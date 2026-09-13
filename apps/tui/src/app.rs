@@ -1544,6 +1544,48 @@ pub struct SessionRename {
     pub title: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextTaskEditorKind {
+    Add,
+    Edit,
+    Block,
+}
+
+impl ContextTaskEditorKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Add => "Add task",
+            Self::Edit => "Edit task",
+            Self::Block => "Block task on",
+        }
+    }
+
+    fn max_len(self) -> usize {
+        match self {
+            Self::Add | Self::Edit => 4_000,
+            Self::Block => 2_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextTaskEditor {
+    pub kind: ContextTaskEditorKind,
+    pub task_id: Option<String>,
+    pub input: String,
+    pub expected_updated_at: Option<String>,
+}
+
+impl ContextTaskEditor {
+    fn push_text(&mut self, text: &str) {
+        let remaining = self
+            .kind
+            .max_len()
+            .saturating_sub(self.input.chars().count());
+        self.input.extend(text.chars().take(remaining));
+    }
+}
+
 /// The bounded post-launch refresh schedule for the Sessions destination
 /// (`App::on_tick`). Ticks arrive every 250ms, so `GAPS` refetches at ~2s,
 /// ~8s, ~20s and ~40s after the PSU pane opened, then stops.
@@ -1912,6 +1954,8 @@ pub struct App {
     pub context_projection_target_explicit: bool,
     pub context_projection: Option<ConversationContextProjection>,
     pub context_task_sel: usize,
+    pub context_task_editor: Option<ContextTaskEditor>,
+    pub context_task_pending: bool,
     /// Two-level pane nav for the in-app Plans master-detail surface (owner ask
     /// 2026-06-16): which pane is focused (plans list ↔ work items), whether
     /// we've drilled in (↑/↓ move WITHIN vs switch panes), and the work-items
@@ -2591,6 +2635,8 @@ impl App {
             context_projection_target_explicit: false,
             context_projection: None,
             context_task_sel: 0,
+            context_task_editor: None,
+            context_task_pending: false,
             plans_focus: PlansFocus::List,
             plans_entered: false,
             plan_items_sel: 0,
@@ -4670,6 +4716,8 @@ impl App {
                 self.context_projection_target = next;
                 self.context_projection = None;
                 self.context_task_sel = 0;
+                self.context_task_editor = None;
+                self.context_task_pending = false;
             }
         }
         // The Fleet tab navigates the (plans-filtered, D-009) roster too —
@@ -7777,7 +7825,13 @@ impl App {
     /// Keymap for the refitted Context pane. Task mutations return a typed
     /// Action and never touch task state locally; P-010 owns the route that
     /// applies the mutation and returns a fresh canonical projection.
-    fn context_key(&mut self, code: KeyCode) -> Action {
+    fn context_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        if self.context_task_editor.is_some() {
+            return self.context_task_editor_key(code, mods);
+        }
+        if self.context_task_pending {
+            return Action::Render;
+        }
         match code {
             KeyCode::Char('g') => Action::FetchContextProjection,
             KeyCode::Char('j') | KeyCode::Down => {
@@ -7801,11 +7855,26 @@ impl App {
             KeyCode::Char('x') | KeyCode::Enter => {
                 self.context_task_action(crate::agent_chats::AgentChatTaskAction::Check)
             }
+            KeyCode::Char('a') => self.begin_context_task_editor(ContextTaskEditorKind::Add),
+            KeyCode::Char('e') => self.begin_context_task_editor(ContextTaskEditorKind::Edit),
+            KeyCode::Char('s') => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::Start)
+            }
             KeyCode::Char('d') => {
                 self.context_task_action(crate::agent_chats::AgentChatTaskAction::Drop)
             }
+            KeyCode::Char('b') => self.begin_context_task_editor(ContextTaskEditorKind::Block),
             KeyCode::Char('u') => {
                 self.context_task_action(crate::agent_chats::AgentChatTaskAction::ClearBlocker)
+            }
+            KeyCode::Char('r') => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::Reopen)
+            }
+            KeyCode::Char('K') => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::MoveUp)
+            }
+            KeyCode::Char('J') => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::MoveDown)
             }
             KeyCode::Char('P') => {
                 self.context_task_action(crate::agent_chats::AgentChatTaskAction::Promote)
@@ -7814,8 +7883,134 @@ impl App {
         }
     }
 
-    fn context_task_action(&self, action: crate::agent_chats::AgentChatTaskAction) -> Action {
-        let Some(target) = &self.context_projection_target else {
+    fn context_task_write_available(&self) -> bool {
+        self.context_projection_target
+            .as_ref()
+            .is_some_and(|target| target.source_kind == "agent_chat")
+            && self
+                .context_projection
+                .as_ref()
+                .is_some_and(|projection| projection.capabilities.task_write)
+    }
+
+    fn selected_context_task(&self) -> Option<(String, String, String)> {
+        let projection = self.context_projection.as_ref()?;
+        match projection.tasks().get(self.context_task_sel).copied()? {
+            ConversationContextFrame::Task {
+                task_id,
+                content,
+                updated_at,
+                ..
+            } => Some((task_id.clone(), content.clone(), updated_at.clone())),
+            _ => None,
+        }
+    }
+
+    fn begin_context_task_editor(&mut self, kind: ContextTaskEditorKind) -> Action {
+        if !self.context_task_write_available() {
+            return Action::None;
+        }
+        let (task_id, input, expected_updated_at) = match kind {
+            ContextTaskEditorKind::Add => (None, String::new(), None),
+            ContextTaskEditorKind::Edit => {
+                let Some((task_id, content, updated_at)) = self.selected_context_task() else {
+                    return Action::None;
+                };
+                (Some(task_id), content, Some(updated_at))
+            }
+            ContextTaskEditorKind::Block => {
+                let Some((task_id, _, updated_at)) = self.selected_context_task() else {
+                    return Action::None;
+                };
+                (Some(task_id), String::new(), Some(updated_at))
+            }
+        };
+        self.context_task_pending = false;
+        self.last_error = None;
+        self.context_task_editor = Some(ContextTaskEditor {
+            kind,
+            task_id,
+            input,
+            expected_updated_at,
+        });
+        Action::Render
+    }
+
+    fn context_task_editor_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+            return Action::Quit;
+        }
+        if self.context_task_pending {
+            return Action::Render;
+        }
+        match code {
+            KeyCode::Esc => {
+                self.context_task_editor = None;
+                self.last_error = None;
+                Action::Render
+            }
+            KeyCode::Enter => {
+                let Some(editor) = self.context_task_editor.clone() else {
+                    return Action::Render;
+                };
+                let input = editor.input.trim().to_string();
+                if input.is_empty() {
+                    self.last_error = Some(format!(
+                        "{} requires non-blank text; press Esc to cancel",
+                        editor.kind.label()
+                    ));
+                    return Action::Render;
+                }
+                let action = match editor.kind {
+                    ContextTaskEditorKind::Add => crate::agent_chats::AgentChatTaskAction::Add,
+                    ContextTaskEditorKind::Edit => crate::agent_chats::AgentChatTaskAction::Edit,
+                    ContextTaskEditorKind::Block => crate::agent_chats::AgentChatTaskAction::Block,
+                };
+                self.context_task_mutation(
+                    action,
+                    editor.task_id,
+                    matches!(
+                        editor.kind,
+                        ContextTaskEditorKind::Add | ContextTaskEditorKind::Edit
+                    )
+                    .then_some(input.clone()),
+                    matches!(editor.kind, ContextTaskEditorKind::Block).then_some(input),
+                    editor.expected_updated_at,
+                )
+            }
+            KeyCode::Backspace => {
+                if let Some(editor) = self.context_task_editor.as_mut() {
+                    editor.input.pop();
+                }
+                Action::Render
+            }
+            KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
+                if let Some(editor) = self.context_task_editor.as_mut() {
+                    editor.input.clear();
+                }
+                Action::Render
+            }
+            KeyCode::Char(ch)
+                if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) =>
+            {
+                if let Some(editor) = self.context_task_editor.as_mut() {
+                    editor.push_text(&ch.to_string());
+                }
+                Action::Render
+            }
+            _ => Action::Render,
+        }
+    }
+
+    fn context_task_mutation(
+        &mut self,
+        action: crate::agent_chats::AgentChatTaskAction,
+        task_id: Option<String>,
+        content: Option<String>,
+        blocker_ref: Option<String>,
+        expected_updated_at: Option<String>,
+    ) -> Action {
+        let Some(target) = self.context_projection_target.clone() else {
             return Action::None;
         };
         let Some(projection) = &self.context_projection else {
@@ -7824,11 +8019,8 @@ impl App {
         if !projection.capabilities.task_write || target.source_kind != "agent_chat" {
             return Action::None;
         }
-        let Some(ConversationContextFrame::Task { task_id, .. }) =
-            projection.tasks().get(self.context_task_sel).copied()
-        else {
-            return Action::None;
-        };
+        self.context_task_pending = true;
+        self.last_error = None;
         Action::MutateAgentChatTask {
             harness: target
                 .harness
@@ -7837,12 +8029,21 @@ impl App {
             chat_id: target.session_id.clone(),
             mutation: crate::agent_chats::AgentChatTaskMutation {
                 action,
-                task_id: Some(task_id.clone()),
-                content: None,
+                task_id,
+                content,
                 active_form: None,
+                blocker_ref,
+                expected_updated_at,
                 explanation: None,
             },
         }
+    }
+
+    fn context_task_action(&mut self, action: crate::agent_chats::AgentChatTaskAction) -> Action {
+        let Some((task_id, _, updated_at)) = self.selected_context_task() else {
+            return Action::None;
+        };
+        self.context_task_mutation(action, Some(task_id), None, None, Some(updated_at))
     }
 
     /// Open P-028's dependency-depth scheduling view for the plan under the
@@ -8459,7 +8660,12 @@ impl App {
                 // Text-entry overlays consume the paste as DATA. Newlines are
                 // flattened in the palette because its command/argument editor
                 // is one line; they are never replayed as Enter keypresses.
-                if let Some(answer) = self.inbox_answer.as_mut() {
+                if let Some(editor) = self.context_task_editor.as_mut() {
+                    if !self.context_task_pending {
+                        editor.push_text(&text.replace(['\r', '\n'], " "));
+                    }
+                    Action::Render
+                } else if let Some(answer) = self.inbox_answer.as_mut() {
                     answer.input.push_str(&text.replace(['\r', '\n'], " "));
                     Action::Render
                 } else if self.palette_open {
@@ -9891,6 +10097,29 @@ impl App {
                 }
                 Action::Render
             }
+            Event::AgentChatTaskMutationFinished { target, result } => {
+                if self.context_projection_target.as_ref() == Some(&target) {
+                    self.context_task_pending = false;
+                    match result {
+                        Ok(projection) => {
+                            self.context_projection = Some(projection);
+                            let len = self
+                                .context_projection
+                                .as_ref()
+                                .map(|projection| projection.tasks().len())
+                                .unwrap_or(0);
+                            self.context_task_sel =
+                                self.context_task_sel.min(len.saturating_sub(1));
+                            self.context_task_editor = None;
+                            self.last_error = None;
+                        }
+                        Err(error) => {
+                            self.last_error = Some(format!("context task: {error}"));
+                        }
+                    }
+                }
+                Action::Render
+            }
             Event::ChatDone => {
                 self.finish_chat_turn();
                 Action::Render
@@ -10416,7 +10645,7 @@ impl App {
         // The pinned Context pane owns the whole keymap — j/k move the task
         // highlight, mutation keys act through the bridge, and g refreshes.
         if self.tab == Tab::PlansBoard {
-            return self.context_key(code);
+            return self.context_key(code, mods);
         }
         // The pinned agent-context panes (dock 4-pane split): j/k scroll,
         // N opens the notifications history, everything else is swallowed
@@ -23177,10 +23406,13 @@ mod tests {
                     task_id: Some("second".into()),
                     content: None,
                     active_form: None,
+                    blocker_ref: None,
+                    expected_updated_at: Some("now".into()),
                     explanation: None,
                 },
             }
         );
+        app.context_task_pending = false;
 
         app.context_projection
             .as_mut()
@@ -23188,6 +23420,77 @@ mod tests {
             .capabilities
             .task_write = false;
         assert_eq!(app.update(ev(KeyCode::Enter)), Action::None);
+    }
+
+    #[test]
+    fn context_task_editor_keeps_the_exact_draft_across_a_rejected_edit() {
+        use crate::models::{
+            ConversationContextCapabilities, ConversationContextFrame,
+            ConversationContextProjection, ConversationContextProjectionTarget,
+            ConversationContextSession,
+        };
+
+        let mut app = App::new();
+        app.tab = Tab::PlansBoard;
+        let target = ConversationContextProjectionTarget::new(
+            "agent_chat",
+            "chat-1",
+            Some("papercusp".into()),
+        );
+        app.context_projection_target = Some(target.clone());
+        app.context_projection = Some(ConversationContextProjection {
+            schema_version: "conversation-context-v1".into(),
+            session: ConversationContextSession {
+                source_kind: "agent_chat".into(),
+                session_id: "chat-1".into(),
+                harness: Some("papercusp".into()),
+                role: Some("sentinel".into()),
+                linked_work_item_id: None,
+                capability_tier: "owned-loop".into(),
+            },
+            capabilities: ConversationContextCapabilities {
+                live_frames: true,
+                task_write: true,
+                approval_write: true,
+            },
+            frames: vec![ConversationContextFrame::Task {
+                id: "task:first".into(),
+                task_id: "first".into(),
+                content: "Original".into(),
+                active_form: "Doing original".into(),
+                status: "pending".into(),
+                blocker_ref: None,
+                explanation: None,
+                position: 0,
+                updated_at: "revision-1".into(),
+                links: vec![],
+            }],
+        });
+
+        assert_eq!(app.update(ev(KeyCode::Char('e'))), Action::Render);
+        for _ in 0.."Original".len() {
+            app.update(ev(KeyCode::Backspace));
+        }
+        app.update(Event::Paste("Owner's exact revision".into()));
+        let action = app.update(ev(KeyCode::Enter));
+        assert!(matches!(action, Action::MutateAgentChatTask { .. }));
+        assert!(app.context_task_pending);
+        app.update(Event::AgentChatTaskMutationFinished {
+            target,
+            result: Err("task_revision_conflict".into()),
+        });
+        assert!(!app.context_task_pending);
+        assert_eq!(
+            app.context_task_editor
+                .as_ref()
+                .map(|editor| editor.input.as_str()),
+            Some("Owner's exact revision")
+        );
+        assert!(app
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("task_revision_conflict"));
     }
 
     #[test]

@@ -37,9 +37,14 @@ pub struct AgentChatApprovalDecision {
 pub enum AgentChatTaskAction {
     Add,
     Edit,
+    Start,
     Check,
     Drop,
+    Block,
     ClearBlocker,
+    Reopen,
+    MoveUp,
+    MoveDown,
     Promote,
 }
 
@@ -53,6 +58,10 @@ pub struct AgentChatTaskMutation {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_form: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_updated_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
 }
@@ -485,6 +494,8 @@ mod tests {
             task_id: Some("task-1".to_string()),
             content: None,
             active_form: None,
+            blocker_ref: None,
+            expected_updated_at: Some("2026-08-26T00:00:00.000Z".to_string()),
             explanation: Some("Cleared by operator".to_string()),
         })
         .unwrap();
@@ -493,6 +504,7 @@ mod tests {
             json!({
                 "action": "clear_blocker",
                 "taskId": "task-1",
+                "expectedUpdatedAt": "2026-08-26T00:00:00.000Z",
                 "explanation": "Cleared by operator"
             })
         );

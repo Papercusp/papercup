@@ -27,12 +27,15 @@ const body = (out: Out) => JSON.parse(out.content[0]!.text);
 function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   const emit = vi.fn();
   const tx = vi.fn();
-  const promise = tool.handler(args as never, {
+  const promise = tool.handler(
+    args as never,
+    {
     workspaceId: 'ws-ctx',
     tx,
     emit,
     ...ctx,
-  } as never) as Promise<Out>;
+    } as never,
+  ) as Promise<Out>;
   return { emit, tx, promise };
 }
 
@@ -53,13 +56,16 @@ describe('tasks:ops handler', () => {
     });
     const out = body(await promise);
 
-    expect(applyM).toHaveBeenCalledWith(tx, expect.objectContaining({
+    expect(applyM).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
       workspaceId: 'ws-ctx',
       sessionId: 'su-session-1',
       taskId: 'task-a',
       blockerRef: 'wi:WI-9',
       explanation: 'Waiting on the ledger',
-    }));
+      }),
+    );
     expect(out).toEqual({
       ok: true,
       sessionId: 'su-session-1',
@@ -82,7 +88,8 @@ describe('tasks:ops handler', () => {
       tasks: [],
       links: [{ workItemId: 'WI-9', workItemHarness: 'papercusp', relation: 'for' }],
     });
-    const out = body(await call({
+    const out = body(
+      await call({
       op: 'link',
       task_id: 'task-a',
       work_item_id: 'WI-9',
@@ -91,9 +98,12 @@ describe('tasks:ops handler', () => {
       work_item_kind: 'change',
       work_item_title: 'Promoted title',
       work_item_summary: 'Promoted summary',
-    }).promise);
+      }).promise,
+    );
 
-    expect(applyM).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+    expect(applyM).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
       taskId: 'task-a',
       workItemId: 'WI-9',
       workItemHarness: 'papercusp',
@@ -102,24 +112,53 @@ describe('tasks:ops handler', () => {
       workItemTitle: 'Promoted title',
       workItemSummary: 'Promoted summary',
       bridge: expect.any(Object),
-    }));
-    expect(out.links).toEqual([
-      { workItemId: 'WI-9', workItemHarness: 'papercusp', relation: 'for' },
-    ]);
+      }),
+    );
+    expect(out.links).toEqual([{ workItemId: 'WI-9', workItemHarness: 'papercusp', relation: 'for' }]);
+  });
+
+  it('maps reorder and optimistic revision fields to the canonical store', async () => {
+    applyM.mockResolvedValue({
+      op: 'reorder',
+      changedTaskId: 'task-a',
+      tasks: [],
+      links: [],
+    });
+    await call({
+      op: 'reorder',
+      task_id: 'task-a',
+      position: 2,
+      expected_updated_at: '2026-09-13T12:00:00.000Z',
+    }).promise;
+    expect(applyM).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        op: 'reorder',
+        taskId: 'task-a',
+        position: 2,
+        expectedUpdatedAt: '2026-09-13T12:00:00.000Z',
+      }),
+    );
   });
 
   it('uses the owned-loop chat run id, but not a generic per-call run id', async () => {
     applyM.mockResolvedValue({ op: 'view', changedTaskId: null, tasks: [], links: [] });
 
     await call({}, { runId: 'chat-77', spawnId: 'agent-loop-chat-77' }).promise;
-    expect(applyM).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+    expect(applyM).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
       sessionId: 'chat-77',
-    }));
+      }),
+    );
 
     await call({}, { runId: 'ephemeral-call-8', spawnId: 'ordinary-spawn' }).promise;
-    expect(applyM).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+    expect(applyM).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
       sessionId: 'su-session-1',
-    }));
+      }),
+    );
   });
 
   it('does not emit for view and returns precise validation failures', async () => {

@@ -117,6 +117,7 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
                 status,
                 blocker_ref,
                 explanation,
+                links,
                 ..
             } = frame
             {
@@ -152,8 +153,51 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
                         Theme::dim(),
                     )));
                 }
+                if !links.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("      evidence ", Theme::dim()),
+                        Span::styled(
+                            links
+                                .iter()
+                                .map(|link| {
+                                    let relation = match link.relation {
+                                        crate::models::ConversationTaskLinkRelation::For => "for",
+                                        crate::models::ConversationTaskLinkRelation::Relates => {
+                                            "relates"
+                                        }
+                                    };
+                                    format!("{} ({relation})", link.work_item_id)
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" · "),
+                            Theme::info(),
+                        ),
+                    ]));
+                }
             }
         }
+    }
+
+    if let Some(editor) = &app.context_task_editor {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} > ", editor.kind.label()), Theme::header()),
+            Span::styled(editor.input.clone(), Theme::selected()),
+        ]));
+        lines.push(Line::from(Span::styled(
+            if app.context_task_pending {
+                "  saving… exact draft retained until the canonical projection returns"
+            } else {
+                "  Enter save · Esc cancel · Ctrl-U clear"
+            },
+            Theme::dim(),
+        )));
+    }
+    if let Some(error) = app.last_error.as_deref() {
+        lines.push(Line::from(Span::styled(
+            format!("\n{error}"),
+            Theme::warn(),
+        )));
     }
 
     let approvals = projection
@@ -201,7 +245,7 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(body);
     let tier = app
@@ -238,14 +282,23 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
         .as_ref()
         .is_some_and(|projection| projection.capabilities.task_write);
     let footer = if writable {
-        " ↑/↓ task · Enter/x check · d drop · u clear blocker · Shift-P promote · g refresh "
+        vec![
+            Line::from(Span::styled(
+                " a/e add/edit · s/x start/done · b/u block/unblock · r reopen ",
+                Theme::dim(),
+            )),
+            Line::from(Span::styled(
+                " K/J move · d drop · Shift-P promote · g refresh ",
+                Theme::dim(),
+            )),
+        ]
     } else {
-        " g refresh · unavailable sections stay absent "
+        vec![Line::from(Span::styled(
+            " g refresh · unavailable sections stay absent ",
+            Theme::dim(),
+        ))]
     };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, Theme::dim()))),
-        outer[2],
-    );
+    f.render_widget(Paragraph::new(footer), outer[2]);
 }
 
 #[cfg(test)]
@@ -254,6 +307,7 @@ mod tests {
     use crate::models::{
         ConversationContextBadge, ConversationContextCapabilities, ConversationContextEntry,
         ConversationContextProjectionTarget, ConversationContextSession,
+        ConversationTaskLinkRelation, ConversationTaskWorkItemLink,
     };
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -334,7 +388,11 @@ mod tests {
                     explanation: None,
                     position: 0,
                     updated_at: "now".into(),
-                    links: vec![],
+                    links: vec![ConversationTaskWorkItemLink {
+                        work_item_id: "WI-9".into(),
+                        work_item_harness: Some("papercusp".into()),
+                        relation: ConversationTaskLinkRelation::For,
+                    }],
                 },
             ],
         }
@@ -351,7 +409,26 @@ mod tests {
         assert!(output.contains("Fleet"));
         assert!(output.contains("2 members  ● ◐"));
         assert!(output.contains("Shipping the pane"));
+        assert!(output.contains("evidence WI-9 (for)"));
         assert!(output.contains("task write"));
+        assert!(output.contains("a/e add/edit"));
+        assert!(output.contains("K/J move"));
+    }
+
+    #[test]
+    fn renders_the_pending_editor_and_retryable_error_with_the_exact_draft() {
+        let mut app = App::new();
+        app.context_projection = Some(projection(true));
+        app.context_task_editor = Some(crate::app::ContextTaskEditor {
+            kind: crate::app::ContextTaskEditorKind::Edit,
+            task_id: Some("t1".into()),
+            input: "Owner's exact revision".into(),
+            expected_updated_at: Some("now".into()),
+        });
+        app.last_error = Some("context task: task_revision_conflict".into());
+        let output = render(&app);
+        assert!(output.contains("Edit task > Owner's exact revision"));
+        assert!(output.contains("task_revision_conflict"));
     }
 
     #[test]

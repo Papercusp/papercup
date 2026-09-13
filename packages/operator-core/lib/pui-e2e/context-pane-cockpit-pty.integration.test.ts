@@ -10,9 +10,11 @@
  *  - projection fetch over `/api/zero-harness/rest-query?name=conversations.contextProjection`
  *  - claim → burn-down flip across fixture stages (refreshed with `g`)
  *  - typed block ref rendered ("blocked on WI-…") + server-side auto-unblock
- *  - task ops (`x` check · `d` drop · `Shift-P` promote · `u` clear blocker)
+ *  - owner task editor + lifecycle (`a/e` add/edit · `s/x` start/done ·
+ *    `b/u` block/unblock · `r` reopen · `K/J` reorder · `d` drop)
  *    → POST /api/harness/<h>/agent-chats/<chat>/tasks with {action, taskId},
  *    and the mutation response's canonical projection applied to the render
+ *  - revision-conflict and network refusals retain the exact editor draft for retry
  *  - promote → the response projection carries the created work-item's
  *    `for`-edge link (links[] contract; the pane renders the task's blocker
  *    transition — link chips themselves are not part of the pane render)
@@ -104,6 +106,8 @@ type TaskFixture = {
   activeForm: string;
   status: string;
   blockerRef?: string | null;
+  explanation?: string | null;
+  updatedAt?: string;
   links?: Array<{ workItemId: string; workItemHarness?: string; relation: 'for' | 'relates' }>;
 };
 
@@ -116,9 +120,9 @@ function taskFrame(t: TaskFixture, position: number) {
     activeForm: t.activeForm,
     status: t.status,
     blockerRef: t.blockerRef ?? null,
-    explanation: null,
+    explanation: t.explanation ?? null,
     position,
-    updatedAt: '2026-08-26T22:00:00Z',
+    updatedAt: t.updatedAt ?? '2026-08-26T22:00:00Z',
     links: t.links ?? [],
   };
 }
@@ -204,6 +208,7 @@ class FakeOperator {
   runToolResponses = new Map<string, unknown>();
   queries: RecordedQuery[] = [];
   taskOps: RecordedTaskOp[] = [];
+  taskOpFailures: Array<{ status: number; code: string; message: string }> = [];
   requests: RecordedRequest[] = [];
   private sockets = new Set<Socket>();
 
@@ -285,6 +290,11 @@ class FakeOperator {
             /* keep {} */
           }
           this.taskOps.push({ path: url.pathname, body });
+          const failure = this.taskOpFailures.shift();
+          if (failure) {
+            send({ error: { code: failure.code, message: failure.message } }, failure.status);
+            return;
+          }
           send({
             ok: true,
             action: body.action ?? 'check',
@@ -327,6 +337,16 @@ class FakeOperator {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error(`timed out waiting for run-tool request ${name}`);
+  }
+
+  async waitForTaskAction(action: string, after = 0, timeoutMs = 15_000): Promise<RecordedTaskOp> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const request = this.taskOps.slice(after).find((candidate) => candidate.body.action === action);
+      if (request) return request;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`timed out waiting for task action ${action}`);
   }
 }
 
@@ -374,6 +394,18 @@ class PuiPane {
     }
     throw new Error(
       `timed out (${timeoutMs}ms) waiting for ${JSON.stringify(needle)} on the rendered screen:\n${this.screen()}`,
+    );
+  }
+
+  async waitForAbsent(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? 20_000;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!this.contains(needle)) return;
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    throw new Error(
+      `timed out (${timeoutMs}ms) waiting for ${JSON.stringify(needle)} to leave the rendered screen:\n${this.screen()}`,
     );
   }
 
@@ -826,6 +858,7 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
       await sleep(200);
       pane.write('P');
       await pane.waitFor('blocked on WI-7777');
+      await pane.waitFor('evidence WI-7777 (for)');
       const promoteOp = operator.taskOps.at(-1)!;
       expect(promoteOp).toMatchObject({ body: { action: 'promote', taskId: 't4' } });
       // The canonical projection the operator returned for the promote carries
@@ -864,6 +897,202 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
       pane.kill();
     }
   }, 180_000);
+
+  test('PUI-TASK owner journey: edit retry, agent update, add/status/block/reopen/reorder/drop persist across reload and session scope', async () => {
+    operator.taskOps = [];
+    operator.taskOpFailures = [];
+    const secondChat = 'chat-e2e-second';
+    const base = (tasks: TaskFixture[], sessionId = CHAT_ID) =>
+      makeProjection({
+        sourceKind: 'agent_chat',
+        sessionId,
+        tier: 'owned-loop',
+        taskWrite: true,
+        burnDown: `${tasks.filter((task) => !['completed', 'dropped'].includes(task.status)).length}/${tasks.length} open`,
+        claim: { value: 'su-e2e · claimed', state: 'live' },
+        tasks,
+      });
+    const t1 = {
+      id: 'owner-1',
+      content: 'Owner task',
+      activeForm: 'Working owner task',
+      status: 'pending',
+      updatedAt: 'revision-1',
+    };
+    const t2 = {
+      id: 'owner-2',
+      content: 'Second task',
+      activeForm: 'Working second task',
+      status: 'pending',
+      updatedAt: 'revision-1',
+    };
+    let tasks: TaskFixture[] = [t1, t2];
+    operator.projections.set(CHAT_ID, base(tasks));
+
+    const pane = new PuiPane(bin, ['context-pane', 'agent_chat', CHAT_ID, HARNESS], paneEnv(operator.port, tempHome));
+    try {
+      await pane.waitFor('Owner task', { timeoutMs: 30_000 });
+      await pane.waitFor('a/e add/edit');
+
+      // Conflict: the editor retains the exact owner draft and the same revision
+      // token is sent again on retry. Nothing is optimistically changed locally.
+      pane.write('e');
+      await pane.waitFor('Edit task > Owner task');
+      pane.write('\x15');
+      pane.write('Owner revised task');
+      operator.taskOpFailures.push({
+        status: 409,
+        code: 'task_revision_conflict',
+        message: 'agent updated the task first',
+      });
+      const conflictStart = operator.taskOps.length;
+      pane.write('\r');
+      const conflict = await operator.waitForTaskAction('edit', conflictStart);
+      expect(conflict.body).toMatchObject({
+        taskId: 'owner-1',
+        content: 'Owner revised task',
+        expectedUpdatedAt: 'revision-1',
+      });
+      await pane.waitFor('Owner revised task');
+      await pane.waitFor('context task:');
+
+      tasks = [{ ...t1, content: 'Owner revised task', activeForm: 'Working owner revised task', updatedAt: 'revision-2' }, t2];
+      operator.mutationProjection = base(tasks);
+      const retryStart = operator.taskOps.length;
+      pane.write('\r');
+      await operator.waitForTaskAction('edit', retryStart);
+      await pane.waitForAbsent('Edit task >');
+      await pane.waitFor('Owner revised task');
+
+      // A model-side update arrives through the same projection and preserves
+      // the owner-authored id; the next owner mutation targets that exact id.
+      tasks = [{ ...tasks[0], status: 'in_progress', activeForm: 'Agent updating owner revised task', updatedAt: 'revision-3' }, t2];
+      operator.projections.set(CHAT_ID, base(tasks));
+      pane.write('g');
+      await pane.waitFor('Agent updating owner revised task');
+
+      // Network refusal exercises the same retained-draft retry path separately
+      // from the revision conflict above.
+      pane.write('e');
+      pane.write('\x15');
+      pane.write('Owner final task text');
+      operator.taskOpFailures.push({ status: 503, code: 'unavailable', message: 'network refusal' });
+      const refusalStart = operator.taskOps.length;
+      pane.write('\r');
+      await operator.waitForTaskAction('edit', refusalStart);
+      await pane.waitFor('Owner final task text');
+      tasks = [{ ...tasks[0], content: 'Owner final task text', activeForm: 'Working owner final task text', status: 'pending', updatedAt: 'revision-4' }, t2];
+      operator.mutationProjection = base(tasks);
+      const networkRetryStart = operator.taskOps.length;
+      pane.write('\r');
+      await operator.waitForTaskAction('edit', networkRetryStart);
+      await pane.waitForAbsent('Edit task >');
+      await pane.waitFor('Owner final task text');
+
+      // Status → block → unblock → complete → reopen all address owner-1.
+      tasks = [{ ...tasks[0], status: 'in_progress', explanation: 'Started by owner', updatedAt: 'revision-5' }, t2];
+      operator.mutationProjection = base(tasks);
+      let start = operator.taskOps.length;
+      pane.write('s');
+      expect((await operator.waitForTaskAction('start', start)).body.taskId).toBe('owner-1');
+      await pane.waitFor('Started by owner');
+
+      pane.write('b');
+      await pane.waitFor('Block task on >');
+      pane.write('waiting for owner review');
+      tasks = [{ ...tasks[0], status: 'blocked', blockerRef: 'waiting for owner review', updatedAt: 'revision-6' }, t2];
+      operator.mutationProjection = base(tasks);
+      start = operator.taskOps.length;
+      pane.write('\r');
+      expect(await operator.waitForTaskAction('block', start)).toMatchObject({
+        body: { taskId: 'owner-1', blockerRef: 'waiting for owner review' },
+      });
+      await pane.waitFor('blocked on waiting for owner review');
+
+      tasks = [{ ...tasks[0], status: 'pending', blockerRef: null, explanation: 'Unblocked by owner', updatedAt: 'revision-7' }, t2];
+      operator.mutationProjection = base(tasks);
+      start = operator.taskOps.length;
+      pane.write('u');
+      await operator.waitForTaskAction('clear_blocker', start);
+      await pane.waitFor('Unblocked by owner');
+
+      tasks = [{ ...tasks[0], status: 'completed', explanation: 'Completed by owner', updatedAt: 'revision-8' }, t2];
+      operator.mutationProjection = base(tasks);
+      start = operator.taskOps.length;
+      pane.write('x');
+      await operator.waitForTaskAction('check', start);
+      await pane.waitFor('Completed by owner');
+
+      tasks = [{ ...tasks[0], status: 'pending', explanation: 'Reopened by owner', updatedAt: 'revision-9' }, t2];
+      operator.mutationProjection = base(tasks);
+      start = operator.taskOps.length;
+      pane.write('r');
+      await operator.waitForTaskAction('reopen', start);
+      await pane.waitFor('Reopened by owner');
+
+      // Reorder owner-1 below owner-2, then add and drop using the resulting
+      // selected canonical row. The final projection is retained for reload.
+      tasks = [{ ...t2 }, { ...tasks[0], explanation: 'Moved by owner' }];
+      operator.mutationProjection = base(tasks);
+      start = operator.taskOps.length;
+      pane.write('J');
+      await operator.waitForTaskAction('move_down', start);
+      await pane.waitFor('Moved by owner');
+
+      pane.write('a');
+      pane.write('Added entirely in PUI');
+      tasks = [...tasks, {
+        id: 'owner-3',
+        content: 'Added entirely in PUI',
+        activeForm: 'Added entirely in PUI',
+        status: 'pending',
+        updatedAt: 'revision-10',
+      }];
+      operator.mutationProjection = base(tasks);
+      start = operator.taskOps.length;
+      pane.write('\r');
+      const added = await operator.waitForTaskAction('add', start);
+      expect(added.body).toMatchObject({ content: 'Added entirely in PUI' });
+      await pane.waitFor('Tasks (3)');
+
+      tasks = [{ ...tasks[0], status: 'dropped', updatedAt: 'revision-11' }, tasks[1], tasks[2]];
+      operator.mutationProjection = base(tasks);
+      start = operator.taskOps.length;
+      pane.write('d');
+      await operator.waitForTaskAction('drop', start);
+      operator.projections.set(CHAT_ID, base(tasks));
+      pane.write('g');
+      await pane.waitFor('Tasks (3)');
+      expect(pane.screen().indexOf('Second task')).toBeLessThan(pane.screen().indexOf('Owner final task text'));
+    } finally {
+      pane.kill();
+    }
+
+    // A fresh process reloads the same ordered identities, while a different
+    // exact session id sees only its own canonical task list.
+    const reloaded = new PuiPane(bin, ['context-pane', 'agent_chat', CHAT_ID, HARNESS], paneEnv(operator.port, tempHome));
+    try {
+      await reloaded.waitFor('Added entirely in PUI', { timeoutMs: 30_000 });
+      expect(reloaded.screen().indexOf('Second task')).toBeLessThan(reloaded.screen().indexOf('Owner final task text'));
+    } finally {
+      reloaded.kill();
+    }
+
+    operator.projections.set(secondChat, base([{
+      id: 'other-1',
+      content: 'Second session only',
+      activeForm: 'Working second session only',
+      status: 'pending',
+      updatedAt: 'other-revision-1',
+    }], secondChat));
+    const switched = new PuiPane(bin, ['context-pane', 'agent_chat', secondChat, HARNESS], paneEnv(operator.port, tempHome));
+    try {
+      await switched.waitFor('Second session only', { timeoutMs: 30_000 });
+      expect(switched.contains('Owner final task text')).toBe(false);
+    } finally {
+      switched.kill();
+    }
+  }, 240_000);
 
   test('codex target is read-only: degraded footer, and task keys emit no wire ops', async () => {
     operator.queries = [];

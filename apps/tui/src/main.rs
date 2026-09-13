@@ -5699,32 +5699,20 @@ async fn mutate_agent_chat_task_send(
     mutation: agent_chats::AgentChatTaskMutation,
     tx: UnboundedSender<Event>,
 ) {
-    let client = match OperatorClient::from_discovery().await {
-        Ok(client) => client,
-        Err(error) => {
-            let _ = tx.send(Event::Error(format!("context task: {error}")));
-            return;
-        }
+    let target = models::ConversationContextProjectionTarget::new(
+        "agent_chat",
+        chat_id.clone(),
+        Some(harness.clone()),
+    );
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .mutate_agent_chat_task(&harness, &chat_id, &mutation)
+            .await
+            .map(|response| response.projection)
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
     };
-    match client
-        .mutate_agent_chat_task(&harness, &chat_id, &mutation)
-        .await
-    {
-        Ok(response) => {
-            let target = models::ConversationContextProjectionTarget::new(
-                "agent_chat",
-                chat_id,
-                Some(harness),
-            );
-            let _ = tx.send(Event::ConversationContextProjectionLoaded {
-                target,
-                projection: Some(response.projection),
-            });
-        }
-        Err(error) => {
-            let _ = tx.send(Event::Error(format!("context task: {error}")));
-        }
-    }
+    let _ = tx.send(Event::AgentChatTaskMutationFinished { target, result });
 }
 
 async fn converse_send(

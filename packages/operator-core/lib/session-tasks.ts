@@ -8,18 +8,9 @@
  * guarantee that at most one task is in_progress.
  */
 import type { Sql, TransactionSql } from 'postgres';
-import {
-  SessionTaskBlockerRefValidationError,
-  validateSessionTaskBlockerRef,
-} from './session-task-blocker-ref';
+import { SessionTaskBlockerRefValidationError, validateSessionTaskBlockerRef } from './session-task-blocker-ref';
 
-export const SESSION_TASK_STATUSES = [
-  'pending',
-  'in_progress',
-  'blocked',
-  'completed',
-  'dropped',
-] as const;
+export const SESSION_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'dropped'] as const;
 
 export const SESSION_TASK_OPS = [
   'init',
@@ -28,6 +19,8 @@ export const SESSION_TASK_OPS = [
   'drop',
   'block',
   'unblock',
+  'reopen',
+  'reorder',
   'edit',
   'append',
   'link',
@@ -76,6 +69,8 @@ export interface SessionTaskOpArgs {
   content?: string;
   activeForm?: string;
   blockerRef?: string;
+  expectedUpdatedAt?: string;
+  position?: number;
   explanation?: string;
   workItemId?: string;
   workItemHarness?: string;
@@ -91,11 +86,7 @@ export interface SessionTaskBridge {
     task: SessionTask,
     request: { kind?: string; title?: string; summary?: string; harness?: string },
   ) => Promise<SessionTaskWorkItemLink>;
-  syncProgress?: (
-    link: SessionTaskWorkItemLink,
-    task: SessionTask,
-    op: SessionTaskOp,
-  ) => Promise<void>;
+  syncProgress?: (link: SessionTaskWorkItemLink, task: SessionTask, op: SessionTaskOp) => Promise<void>;
 }
 
 export interface SessionTaskStoreArgs extends SessionTaskOpArgs {
@@ -189,6 +180,8 @@ const MUTATION_FIELDS = [
   'content',
   'activeForm',
   'blockerRef',
+  'expectedUpdatedAt',
+  'position',
   'explanation',
   'workItemId',
   'workItemHarness',
@@ -204,14 +197,9 @@ function assertAllowedFields(
   allowed: readonly (keyof SessionTaskOpArgs)[],
 ): void {
   const allowedSet = new Set<keyof SessionTaskOpArgs>(allowed);
-  const unexpected = MUTATION_FIELDS.filter(
-    (field) => args[field] !== undefined && !allowedSet.has(field),
-  );
+  const unexpected = MUTATION_FIELDS.filter((field) => args[field] !== undefined && !allowedSet.has(field));
   if (unexpected.length > 0) {
-    fail(
-      op + '_fields_unexpected',
-      'tasks:ops — op=' + op + ' does not accept: ' + unexpected.join(', ') + '.',
-    );
+    fail(op + '_fields_unexpected', 'tasks:ops — op=' + op + ' does not accept: ' + unexpected.join(', ') + '.');
   }
 }
 
@@ -247,9 +235,7 @@ function normalizeRelation(value: SessionTaskLinkRelation | undefined): SessionT
 }
 
 function linkMatches(a: SessionTaskWorkItemLink, b: SessionTaskWorkItemLink): boolean {
-  return a.workItemId === b.workItemId
-    && a.workItemHarness === b.workItemHarness
-    && a.relation === b.relation;
+  return a.workItemId === b.workItemId && a.workItemHarness === b.workItemHarness && a.relation === b.relation;
 }
 
 /** Infer only unambiguous shapes. A lone task id cannot reveal a transition. */
@@ -283,15 +269,24 @@ function taskById(tasks: SessionTask[], id: string): SessionTask {
   return task;
 }
 
+function assertExpectedRevision(task: SessionTask, expectedUpdatedAt: string | undefined): void {
+  if (expectedUpdatedAt === undefined) return;
+  const expected = present(expectedUpdatedAt, 'expected_updated_at', 100);
+  if (expected !== task.updatedAt) {
+    fail(
+      'task_revision_conflict',
+      `tasks:ops — task '${task.id}' changed after this editor opened (expected ${expected}, current ${task.updatedAt}). Refresh or retry from the preserved draft.`,
+    );
+  }
+}
+
 function validateSeed(seed: SessionTaskSeed, position: number, now: string, idFactory: () => string): SessionTask {
   const status = seed.status ?? 'pending';
   if (!(SESSION_TASK_STATUSES as readonly string[]).includes(status)) {
     fail('status_invalid', 'tasks:ops — invalid task status `' + String(status) + '`.');
   }
   const content = present(seed.content, 'content', 4_000);
-  const activeForm = seed.activeForm === undefined
-    ? content
-    : present(seed.activeForm, 'activeForm', 500);
+  const activeForm = seed.activeForm === undefined ? content : present(seed.activeForm, 'activeForm', 500);
   const blockerRef = optionalText(seed.blockerRef, 'blocker_ref', 2_000);
   if (status === 'blocked' && !blockerRef) {
     fail('blocker_ref_required', 'tasks:ops — an initialized blocked task requires `blocker_ref`.');
@@ -363,9 +358,7 @@ export function reduceSessionTasks(
   if (op === 'append') {
     assertAllowedFields(args, op, ['content', 'activeForm', 'explanation']);
     const content = present(args.content, 'content', 4_000);
-    const activeForm = args.activeForm === undefined
-      ? content
-      : present(args.activeForm, 'activeForm', 500);
+    const activeForm = args.activeForm === undefined ? content : present(args.activeForm, 'activeForm', 500);
     const id = options.idFactory();
     const task: SessionTask = {
       id,
@@ -388,9 +381,7 @@ export function reduceSessionTasks(
   const targetIndex = tasks.findIndex((task) => task.id === taskId);
 
   if (op === 'link') {
-    assertAllowedFields(args, op, [
-      'taskId', 'workItemId', 'workItemHarness', 'relation', 'explanation',
-    ]);
+    assertAllowedFields(args, op, ['taskId', 'workItemId', 'workItemHarness', 'relation', 'explanation']);
     const nextLink: SessionTaskWorkItemLink = {
       workItemId: present(args.workItemId, 'work_item_id', 240),
       workItemHarness: optionalText(args.workItemHarness, 'work_item_harness', 240),
@@ -415,16 +406,17 @@ export function reduceSessionTasks(
   }
 
   if (op === 'unlink') {
-    assertAllowedFields(args, op, [
-      'taskId', 'workItemId', 'workItemHarness', 'relation', 'explanation',
-    ]);
+    assertAllowedFields(args, op, ['taskId', 'workItemId', 'workItemHarness', 'relation', 'explanation']);
     const workItemId = present(args.workItemId, 'work_item_id', 240);
     const workItemHarness = optionalText(args.workItemHarness, 'work_item_harness', 240);
-    const nextLinks = target.links.filter((link) => !(
-      link.workItemId === workItemId
-      && link.workItemHarness === workItemHarness
-      && (args.relation === undefined || link.relation === normalizeRelation(args.relation))
-    ));
+    const nextLinks = target.links.filter(
+      (link) =>
+        !(
+          link.workItemId === workItemId &&
+          link.workItemHarness === workItemHarness &&
+          (args.relation === undefined || link.relation === normalizeRelation(args.relation))
+        ),
+    );
     if (nextLinks.length === target.links.length) {
       fail('link_not_found', `tasks:ops — task '${taskId}' has no matching work-item link.`);
     }
@@ -442,11 +434,10 @@ export function reduceSessionTasks(
   }
 
   if (op === 'edit') {
-    assertAllowedFields(args, op, ['taskId', 'content', 'activeForm', 'explanation']);
+    assertAllowedFields(args, op, ['taskId', 'content', 'activeForm', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
     const content = present(args.content, 'content', 4_000);
-    const activeForm = args.activeForm === undefined
-      ? content
-      : present(args.activeForm, 'activeForm', 500);
+    const activeForm = args.activeForm === undefined ? content : present(args.activeForm, 'activeForm', 500);
     tasks[targetIndex] = {
       ...target,
       content,
@@ -458,13 +449,12 @@ export function reduceSessionTasks(
   }
 
   if (op === 'start') {
-    assertAllowedFields(args, op, ['taskId', 'activeForm', 'explanation']);
+    assertAllowedFields(args, op, ['taskId', 'activeForm', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
     if (target.status === 'completed' || target.status === 'dropped') {
       fail('task_terminal', 'tasks:ops — cannot start terminal task `' + taskId + '` (' + target.status + ').');
     }
-    const activeForm = args.activeForm === undefined
-      ? target.activeForm
-      : present(args.activeForm, 'activeForm', 500);
+    const activeForm = args.activeForm === undefined ? target.activeForm : present(args.activeForm, 'activeForm', 500);
     const next = tasks.map((task) => {
       if (task.id === taskId) {
         return {
@@ -485,7 +475,8 @@ export function reduceSessionTasks(
   }
 
   if (op === 'done') {
-    assertAllowedFields(args, op, ['taskId', 'explanation']);
+    assertAllowedFields(args, op, ['taskId', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
     if (target.status === 'dropped') {
       fail('task_dropped', 'tasks:ops — dropped task `' + taskId + '` cannot be completed.');
     }
@@ -500,7 +491,8 @@ export function reduceSessionTasks(
   }
 
   if (op === 'drop') {
-    assertAllowedFields(args, op, ['taskId', 'explanation']);
+    assertAllowedFields(args, op, ['taskId', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
     tasks[targetIndex] = {
       ...target,
       status: 'dropped',
@@ -512,7 +504,8 @@ export function reduceSessionTasks(
   }
 
   if (op === 'block') {
-    assertAllowedFields(args, op, ['taskId', 'blockerRef', 'explanation']);
+    assertAllowedFields(args, op, ['taskId', 'blockerRef', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
     if (target.status === 'completed' || target.status === 'dropped') {
       fail('task_terminal', 'tasks:ops — cannot block terminal task `' + taskId + '` (' + target.status + ').');
     }
@@ -528,7 +521,8 @@ export function reduceSessionTasks(
   }
 
   if (op === 'unblock') {
-    assertAllowedFields(args, op, ['taskId', 'explanation']);
+    assertAllowedFields(args, op, ['taskId', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
     if (target.status !== 'blocked') {
       fail(
         'task_not_blocked',
@@ -543,6 +537,44 @@ export function reduceSessionTasks(
       updatedAt: now,
     };
     return { op, changedTaskId: taskId, tasks, links: flattenLinks(tasks) };
+  }
+
+  if (op === 'reopen') {
+    assertAllowedFields(args, op, ['taskId', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
+    if (target.status !== 'completed' && target.status !== 'dropped') {
+      fail(
+        'task_not_terminal',
+        `tasks:ops — task '${taskId}' is ${target.status}, not completed or dropped; reopen would be a no-op.`,
+      );
+    }
+    tasks[targetIndex] = {
+      ...target,
+      status: 'pending',
+      blockerRef: null,
+      explanation,
+      updatedAt: now,
+    };
+    return { op, changedTaskId: taskId, tasks, links: flattenLinks(tasks) };
+  }
+
+  if (op === 'reorder') {
+    assertAllowedFields(args, op, ['taskId', 'position', 'expectedUpdatedAt', 'explanation']);
+    assertExpectedRevision(target, args.expectedUpdatedAt);
+    if (!Number.isSafeInteger(args.position) || args.position! < 0 || args.position! >= tasks.length) {
+      fail(
+        'position_invalid',
+        `tasks:ops — position must be an integer from 0 through ${Math.max(0, tasks.length - 1)}.`,
+      );
+    }
+    const destination = args.position!;
+    const reordered = tasks.slice();
+    reordered.splice(targetIndex, 1);
+    reordered.splice(destination, 0, target);
+    const next = reordered.map((task, position) =>
+      task.position === position ? task : { ...task, position, explanation, updatedAt: now },
+    );
+    return { op, changedTaskId: taskId, tasks: next, links: flattenLinks(next) };
   }
 
   return fail('op_invalid', 'tasks:ops — unsupported op `' + String(op) + '`.');
@@ -597,15 +629,20 @@ function seedNewTasks(
   return next.map((task) => {
     const prior = priorById.get(task.id);
     const preserved = prior ? prior.links.map((link) => ({ ...link })) : task.links;
-    const links = preserved.length === 0 && !prior && seed
-      ? [{ ...seed, relation: 'for' as const }]
-      : preserved;
+    const links = preserved.length === 0 && !prior && seed ? [{ ...seed, relation: 'for' as const }] : preserved;
     return { ...task, links };
   });
 }
 
 const CHECKPOINT_PROGRESS_OPS: readonly SessionTaskOp[] = [
-  'start', 'done', 'drop', 'block', 'unblock', 'edit',
+  'start',
+  'done',
+  'drop',
+  'block',
+  'unblock',
+  'reopen',
+  'reorder',
+  'edit',
 ];
 
 /**
@@ -646,10 +683,17 @@ export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArg
   let reduced: SessionTaskResult;
   if (op === 'promote') {
     assertAllowedFields(args, op, [
-      'taskId', 'workItemKind', 'workItemTitle', 'workItemSummary', 'workItemHarness', 'explanation',
+      'taskId',
+      'workItemKind',
+      'workItemTitle',
+      'workItemSummary',
+      'workItemHarness',
+      'expectedUpdatedAt',
+      'explanation',
     ]);
     const taskId = present(args.taskId, 'task_id', 160);
     const task = taskById(current, taskId);
+    assertExpectedRevision(task, args.expectedUpdatedAt);
     const existing = task.links.find((link) => link.relation === 'for');
     if (existing) {
       return { op, changedTaskId: taskId, tasks: current, links: flattenLinks(current) };
@@ -663,20 +707,28 @@ export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArg
       summary: optionalText(args.workItemSummary, 'work_item_summary', 20_000) ?? undefined,
       harness: optionalText(args.workItemHarness, 'work_item_harness', 240) ?? undefined,
     });
-    const linked = reduceSessionTasks(current, {
+    const linked = reduceSessionTasks(
+      current,
+      {
       op: 'link',
       taskId,
       workItemId: promoted.workItemId,
       workItemHarness: promoted.workItemHarness ?? undefined,
       relation: 'for',
       explanation: args.explanation,
-    }, { now, idFactory: args.idFactory });
+      },
+      { now, idFactory: args.idFactory },
+    );
     reduced = { ...linked, op: 'promote' };
   } else {
-    reduced = reduceSessionTasks(current, { ...args, op }, {
+    reduced = reduceSessionTasks(
+      current,
+      { ...args, op },
+      {
       now,
       idFactory: args.idFactory,
-    });
+      },
+    );
   }
 
   if (op === 'init' || op === 'append') {
@@ -707,11 +759,7 @@ export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArg
     }
   }
 
-  if (
-    reduced.changedTaskId
-    && args.bridge?.syncProgress
-    && CHECKPOINT_PROGRESS_OPS.includes(op)
-  ) {
+  if (reduced.changedTaskId && args.bridge?.syncProgress && CHECKPOINT_PROGRESS_OPS.includes(op)) {
     const task = reduced.tasks.find((candidate) => candidate.id === reduced.changedTaskId);
     const syncTarget = task?.links.find((link) => link.relation === 'for');
     if (task && syncTarget) {

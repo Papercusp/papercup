@@ -7,6 +7,7 @@ import {
   type ConversationContextProjection,
 } from '../../../conversation-context-projection';
 import {
+  acquireSessionTaskLock,
   applySessionTaskOp,
   SessionTaskValidationError,
   type SessionTask,
@@ -19,9 +20,14 @@ import { createSessionTaskLedgerBridge } from '../../../agent-tools/tasks/runtim
 export const AGENT_CHAT_TASK_ACTIONS = [
   'add',
   'edit',
+  'start',
   'check',
   'drop',
+  'block',
   'clear_blocker',
+  'reopen',
+  'move_up',
+  'move_down',
   'promote',
 ] as const;
 
@@ -36,6 +42,8 @@ export interface AgentChatTaskMutationInput {
   taskId?: string;
   content?: string;
   activeForm?: string;
+  blockerRef?: string;
+  expectedUpdatedAt?: string;
   explanation?: string;
 }
 
@@ -48,6 +56,7 @@ interface AgentChatTaskMutationDeps {
   }) => Promise<ConversationContextProjection | null>;
   withWorkspace: <T>(workspaceId: string, run: (sql: any) => Promise<T>) => Promise<T>;
   applyOp: typeof applySessionTaskOp;
+  acquireLock: typeof acquireSessionTaskLock;
   createLedgerBridge: (args: {
     workspaceId: string;
     sessionId: string;
@@ -62,6 +71,7 @@ const DEFAULT_DEPS: AgentChatTaskMutationDeps = {
   readProjection: readConversationContextProjection,
   withWorkspace,
   applyOp: applySessionTaskOp,
+  acquireLock: acquireSessionTaskLock,
   createLedgerBridge: createSessionTaskLedgerBridge,
   idFactory: () => `task-${randomUUID()}`,
 };
@@ -111,23 +121,21 @@ function parseMutationBody(
   const parsed: Omit<AgentChatTaskMutationInput, 'workspaceId' | 'harness' | 'sessionId' | 'actorId'> = {
     action: action as AgentChatTaskAction,
     explanation: optionalText(raw.explanation, 'explanation', 2_000),
+    expectedUpdatedAt: optionalText(raw.expectedUpdatedAt, 'expectedUpdatedAt', 100),
   };
   if (action === 'add' || action === 'edit') {
     parsed.content = requiredText(raw.content, 'content', 4_000);
     parsed.activeForm = optionalText(raw.activeForm, 'activeForm', 500);
   }
   if (action !== 'add') parsed.taskId = requiredText(raw.taskId, 'taskId', 160);
+  if (action === 'block') parsed.blockerRef = requiredText(raw.blockerRef, 'blockerRef', 2_000);
   return parsed;
 }
 
 function taskById(tasks: SessionTask[], taskId: string): SessionTask {
   const task = tasks.find((candidate) => candidate.id === taskId);
   if (!task) {
-    throw new AgentChatTaskMutationError(
-      'task_not_found',
-      `Task \`${taskId}\` does not exist in this session.`,
-      404,
-    );
+    throw new AgentChatTaskMutationError('task_not_found', `Task \`${taskId}\` does not exist in this session.`, 404);
   }
   return task;
 }
@@ -138,12 +146,27 @@ function isTypedBlocker(ref: string): boolean {
 
 function canonicalOpFor(action: AgentChatTaskAction): SessionTaskOp {
   switch (action) {
-    case 'add': return 'append';
-    case 'edit': return 'edit';
-    case 'check': return 'done';
-    case 'drop': return 'drop';
-    case 'clear_blocker': return 'unblock';
-    case 'promote': return 'promote';
+    case 'add':
+      return 'append';
+    case 'edit':
+      return 'edit';
+    case 'start':
+      return 'start';
+    case 'check':
+      return 'done';
+    case 'drop':
+      return 'drop';
+    case 'block':
+      return 'block';
+    case 'clear_blocker':
+      return 'unblock';
+    case 'reopen':
+      return 'reopen';
+    case 'move_up':
+    case 'move_down':
+      return 'reorder';
+    case 'promote':
+      return 'promote';
   }
 }
 
@@ -182,7 +205,9 @@ export async function mutateAgentChatTask(
       defaultHarness: input.harness,
       sql,
     });
-    if (input.action === 'clear_blocker') {
+    let position: number | undefined;
+    if (input.action === 'clear_blocker' || input.action === 'move_up' || input.action === 'move_down') {
+      await deps.acquireLock(sql, input.workspaceId, input.sessionId);
       const current = await deps.applyOp(sql, {
         workspaceId: input.workspaceId,
         sessionId: input.sessionId,
@@ -190,6 +215,7 @@ export async function mutateAgentChatTask(
         idFactory: deps.idFactory,
       });
       const task = taskById(current.tasks, input.taskId!);
+      if (input.action === 'clear_blocker') {
       if (!task.blockerRef) {
         throw new AgentChatTaskMutationError('task_not_blocked', 'The task has no blocker to clear.', 409);
       }
@@ -200,6 +226,16 @@ export async function mutateAgentChatTask(
           409,
         );
       }
+      } else {
+        position = task.position + (input.action === 'move_up' ? -1 : 1);
+        if (position < 0 || position >= current.tasks.length) {
+          throw new AgentChatTaskMutationError(
+            'task_reorder_boundary',
+            `Task is already at the ${input.action === 'move_up' ? 'top' : 'bottom'} of the list.`,
+            409,
+          );
+        }
+      }
     }
 
     return deps.applyOp(sql, {
@@ -209,6 +245,9 @@ export async function mutateAgentChatTask(
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.content ? { content: input.content } : {}),
       ...(input.activeForm ? { activeForm: input.activeForm } : {}),
+      ...(input.blockerRef ? { blockerRef: input.blockerRef } : {}),
+      ...(input.expectedUpdatedAt ? { expectedUpdatedAt: input.expectedUpdatedAt } : {}),
+      ...(position !== undefined ? { position } : {}),
       ...(input.explanation ? { explanation: input.explanation } : {}),
       bridge,
       idFactory: deps.idFactory,
@@ -273,7 +312,14 @@ export const taskOpsRoute = defineTool({
       if (error instanceof AgentChatTaskMutationError || error instanceof SessionTaskValidationError) {
         return Response.json(
           { error: { code: error.code, message: error.message } },
-          { status: error instanceof AgentChatTaskMutationError ? error.status : 400 },
+          {
+            status:
+              error instanceof AgentChatTaskMutationError
+                ? error.status
+                : error.code === 'task_revision_conflict'
+                  ? 409
+                  : 400,
+          },
         );
       }
       throw error;

@@ -498,6 +498,13 @@ pub enum Event {
         target: crate::models::ConversationContextProjectionTarget,
         projection: Option<crate::models::ConversationContextProjection>,
     },
+    /// Result of an owner task mutation. Failures remain typed here instead of
+    /// collapsing into the generic error event so the Context editor can keep
+    /// its exact draft and become retryable.
+    AgentChatTaskMutationFinished {
+        target: crate::models::ConversationContextProjectionTarget,
+        result: Result<crate::models::ConversationContextProjection, String>,
+    },
     // --- Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a) ---
     /// One per-run state-channel snapshot from `/api/operator/state-snapshot` —
     /// the union of open `chat:ask_choice` cards for a run. The reducer folds it

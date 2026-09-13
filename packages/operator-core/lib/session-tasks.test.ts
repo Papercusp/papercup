@@ -108,7 +108,8 @@ describe('reduceSessionTasks', () => {
     ]);
 
     expectCode(
-      () => reduce([], {
+      () =>
+        reduce([], {
         op: 'init',
         tasks: [
           { content: 'One', status: 'in_progress' },
@@ -215,6 +216,56 @@ describe('reduceSessionTasks', () => {
     expect(out.tasks[1]).toEqual(current[1]);
   });
 
+  it('rejects a stale owner revision without changing any task bytes', () => {
+    const current = [task({ updatedAt: NEXT })];
+    const snapshot = structuredClone(current);
+
+    expectCode(
+      () =>
+        reduce(current, {
+          op: 'edit',
+          taskId: 'task-a',
+          content: 'Stale overwrite',
+          expectedUpdatedAt: NOW,
+        }),
+      'task_revision_conflict',
+    );
+    expect(current).toEqual(snapshot);
+  });
+
+  it('reopens terminal tasks and reorders the canonical list with contiguous positions', () => {
+    const reopened = reduce(
+      [
+        task({ id: 'task-a', status: 'completed' }),
+        task({ id: 'task-b', position: 1 }),
+        task({ id: 'task-c', position: 2 }),
+      ],
+      {
+        op: 'reopen',
+        taskId: 'task-a',
+        expectedUpdatedAt: NOW,
+      },
+    );
+    expect(reopened.tasks[0]).toMatchObject({
+      id: 'task-a',
+      status: 'pending',
+      updatedAt: NEXT,
+    });
+
+    const reordered = reduce(reopened.tasks, {
+      op: 'reorder',
+      taskId: 'task-c',
+      position: 0,
+      expectedUpdatedAt: NOW,
+    });
+    expect(reordered.tasks.map(({ id, position }) => ({ id, position }))).toEqual([
+      { id: 'task-c', position: 0 },
+      { id: 'task-a', position: 1 },
+      { id: 'task-b', position: 2 },
+    ]);
+    expect(reordered.tasks.every((row) => row.updatedAt === NEXT)).toBe(true);
+  });
+
   it('supports one checkpoint-sync for edge plus unbounded informational edges', () => {
     const first = reduce([task()], {
       op: 'link',
@@ -236,12 +287,16 @@ describe('reduceSessionTasks', () => {
     ]);
     expect(related.links).toEqual(related.tasks[0]!.links);
 
-    expectCode(() => reduce(related.tasks, {
+    expectCode(
+      () =>
+        reduce(related.tasks, {
       op: 'link',
       taskId: 'task-a',
       workItemId: 'WI-3',
       relation: 'for',
-    }), 'for_link_exists');
+        }),
+      'for_link_exists',
+    );
 
     const unlinked = reduce(related.tasks, {
       op: 'unlink',
@@ -249,54 +304,41 @@ describe('reduceSessionTasks', () => {
       workItemId: 'WI-2',
       workItemHarness: 'papercusp',
     });
-    expect(unlinked.tasks[0]!.links).toEqual([
-      { workItemId: 'WI-1', workItemHarness: 'papercusp', relation: 'for' },
-    ]);
+    expect(unlinked.tasks[0]!.links).toEqual([{ workItemId: 'WI-1', workItemHarness: 'papercusp', relation: 'for' }]);
   });
 
   it('returns precise validation codes for invalid transitions and fields', () => {
-    expectCode(
-      () => reduce([task({ status: 'completed' })], { op: 'start', taskId: 'task-a' }),
-      'task_terminal',
-    );
-    expectCode(
-      () => reduce([task()], { op: 'unblock', taskId: 'task-a' }),
-      'task_not_blocked',
-    );
-    expectCode(
-      () => reduce([task()], { op: 'block', taskId: 'task-a' }),
-      'blocker_ref_required',
-    );
+    expectCode(() => reduce([task({ status: 'completed' })], { op: 'start', taskId: 'task-a' }), 'task_terminal');
+    expectCode(() => reduce([task()], { op: 'unblock', taskId: 'task-a' }), 'task_not_blocked');
+    expectCode(() => reduce([task()], { op: 'block', taskId: 'task-a' }), 'blocker_ref_required');
     expectCode(
       () => reduce([task()], { op: 'block', taskId: 'task-a', blockerRef: 'event:' }),
       'blocker_ref_target_required',
     );
     expectCode(
-      () => reduce([], {
+      () =>
+        reduce([], {
         op: 'init',
         tasks: [{ content: 'Blocked', status: 'blocked', blockerRef: 'plan:P-4' }],
       }),
       'blocker_ref_plan_invalid',
     );
-    expectCode(
-      () => reduce([task()], { op: 'view', explanation: 'not allowed' }),
-      'view_fields_unexpected',
-    );
-    expectCode(
-      () => reduce([task()], { op: 'done', taskId: 'missing' }),
-      'task_not_found',
-    );
+    expectCode(() => reduce([task()], { op: 'view', explanation: 'not allowed' }), 'view_fields_unexpected');
+    expectCode(() => reduce([task()], { op: 'done', taskId: 'missing' }), 'task_not_found');
     expectCode(
       () => reduce([task()], { op: 'done', taskId: 'task-a', content: 'silently ignored before' }),
       'done_fields_unexpected',
     );
     expectCode(
-      () => reduce([task()], {
+      () =>
+        reduce([task()], {
         taskId: 'task-a',
         blockerRef: 'wi:WI-1',
         content: 'ambiguous extra field',
       }),
       'block_fields_unexpected',
     );
+    expectCode(() => reduce([task()], { op: 'reopen', taskId: 'task-a' }), 'task_not_terminal');
+    expectCode(() => reduce([task()], { op: 'reorder', taskId: 'task-a', position: 2 }), 'position_invalid');
   });
 });
