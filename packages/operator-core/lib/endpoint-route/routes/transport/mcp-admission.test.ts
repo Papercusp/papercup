@@ -69,6 +69,49 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    'coord:whoami',
+    'coord_whoami',
+    'mcp__papercusp-su__coord_whoami',
+    'mcp__papercusp_su__coord_whoami',
+  ])('does NOT shed no-args coord:whoami under critical pressure: %s', async (name) => {
+    const body = toolsCall(14, name, {});
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+    expect(await evaluateAdmission(post(body), 'critical', true)).toBeNull();
+  });
+
+  it('admits omitted coord:whoami arguments but keeps non-empty arguments sheddable', () => {
+    const omitted = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: { name: 'coord:whoami' },
+    });
+    expect(classifyMcpBody(omitted)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(omitted)).toBe('diagnostic');
+
+    for (const args of [{ ownerId: 'su-target' }, { unexpected: true }, null]) {
+      const body = toolsCall(16, 'coord:whoami', args as Record<string, unknown>);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 16 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('admits no-args coord:whoami through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 17,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp_su__coord_whoami', args: {} },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
     'tools:find',
     'tools_find',
     'mcp__papercusp-su__tools_find',

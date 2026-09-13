@@ -178,6 +178,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'dev:service_health',
     'dev:pg_query',
     'dev:dogfood_substrate_status',
+    'coord:whoami',
     'locks:queue',
     'tools:find',
     'work_items:get',
@@ -205,6 +206,7 @@ const CRITICAL_LOOP_ARM_MAX_INTERVAL_SEC = 15 * 60;
 const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
+const COORD_WHOAMI_NAME = normalizeMcpName('coord:whoami');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
@@ -939,6 +941,16 @@ export function isBoundedCoordSendArgs(args: unknown): boolean {
   );
 }
 
+/**
+ * `coord:whoami` is the identity probe needed to diagnose coordination
+ * failures, but its critical-pressure exception must remain strictly no-args.
+ * MCP permits omitting `arguments` for an empty object schema; an explicit
+ * empty object is equivalent. Any supplied field stays on the retryable path.
+ */
+function isBoundedCoordWhoamiArgs(args: unknown): boolean {
+  return args === undefined || (isRecord(args) && Object.keys(args).length === 0);
+}
+
 function isBoundedWorkItemComment(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -1249,6 +1261,7 @@ function isBoundedJudgeGradingAuditEmitArgs(args: unknown, requestUrl?: string):
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, requestUrl?: string): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
+  if (normalized === COORD_WHOAMI_NAME) return isBoundedCoordWhoamiArgs(args);
   if (normalized === COORD_SEND_NAME) return isBoundedCoordSendArgs(args);
   if (normalized === WORK_ITEMS_COMMENT_NAME) return isBoundedWorkItemsCommentArgs(args);
   if (normalized === LOCKS_QUEUE_NAME) return isBoundedLocksQueueArgs(args);
