@@ -282,8 +282,21 @@ export async function readAgentObligationAgenda(input: {
           },
     };
 
-    const reportGeneration = agentObligationSourceGeneration(
-      report.value
+    // A report read and a goal read may straddle a stop transition. The
+    // canonical lifecycle governs whether a recurring reporting duty applies;
+    // an older due receipt must not reactivate that duty after the stop.
+    const scopedGoal =
+      !goalOutcome.degraded && !portfolio.degraded && portfolio.value?.goal.id === goalId
+        ? portfolio.value.goal
+        : null;
+    const inactiveGoal =
+      scopedGoal?.status === 'paused' || scopedGoal?.status === 'achieved' || scopedGoal?.status === 'killed';
+    const lifecycleUnknown = !scopedGoal || (!inactiveGoal && scopedGoal.status !== 'active');
+    const lifecycleFailure = 'canonical goal identity or lifecycle is unavailable for owner reporting';
+    if (lifecycleUnknown) degradedSources.push(lifecycleFailure);
+    const reportGeneration = agentObligationSourceGeneration({
+      goalStatus: scopedGoal?.status ?? 'unknown',
+      report: report.value
         ? {
             lastReportAt: report.value.lastReportAt,
             floorMin: report.value.floorMin,
@@ -291,14 +304,25 @@ export async function readAgentObligationAgenda(input: {
             obligation: report.value.obligation,
           }
         : null,
-    );
+    });
     ownerReport = {
       workspaceId: input.workspaceId,
       ownerId: input.ownerId,
       goalId,
       observedAt,
       sourceGeneration: reportGeneration,
-      read: report.degraded
+      read: inactiveGoal
+        ? { status: 'known', value: null }
+        : lifecycleUnknown
+          ? {
+              status: 'unknown',
+              failure: {
+                code: 'canonical-owner-report-lifecycle-unresolved',
+                detail: lifecycleFailure,
+                retry: 'refresh the exact goal portfolio before treating reporting as applicable',
+              },
+            }
+          : report.degraded
         ? {
             status: 'unknown',
             failure: {

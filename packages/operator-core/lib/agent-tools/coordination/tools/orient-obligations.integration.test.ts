@@ -84,6 +84,51 @@ async function readOrientation() {
 }
 
 describe('GOAL-holder complete agenda recovery through coord:orient', () => {
+  it.each(['paused', 'achieved', 'killed'])(
+    'does not deliver a pre-stop reporting receipt after the canonical goal becomes %s',
+    async (status) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dueAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+      const readAgenda = obligationReader.readAgentObligationAgenda;
+      vi.spyOn(obligationReader, 'readAgentObligationAgenda')
+        .mockImplementation((input) => readAgenda({ ...input, now: dueAt }));
+      const priorReport = await ownerReportHistory.readGoalOwnerReportObligation(fx.admin, {
+        workspaceId: WS, ownerId: OWNER, goalId: GOAL,
+      }, dueAt.getTime());
+      expect(priorReport?.obligation).toBe('overdue');
+      // Capture a real due receipt and reproduce the torn read: reporting
+      // retains this pre-stop generation while the portfolio observes the stop.
+      vi.spyOn(ownerReportHistory, 'readGoalOwnerReportObligation').mockResolvedValue(priorReport);
+      const before = await readOrientation();
+      expect(before.obligations.evaluations.find((entry) => entry.ruleId === 'goal-owner-report')?.status).toBe('due');
+      await fx.admin`
+        UPDATE harness_shared.goals SET status = ${status}
+        WHERE workspace_id = ${WS} AND id = ${GOAL}
+      `;
+      try {
+        const after = await readOrientation();
+        expect(after.goalPortfolio?.goal.status).toBe(status);
+        const report = after.obligations.evaluations.find((entry) => entry.ruleId === 'goal-owner-report');
+        const placement = after.obligations.evaluations.find((entry) => entry.ruleId === 'goal-plan-placement');
+        expect(report?.status).toBe('not-applicable');
+        expect(report?.action).toBeUndefined();
+        expect(placement?.status).toBe('not-applicable');
+        expect(placement?.changeSignal).toBeUndefined();
+        expect(after.obligations.primary.filter((entry) => entry.scope.goalId === GOAL)).toEqual([]);
+        const rows = await fx.admin`
+          SELECT status FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}
+        `;
+        expect(rows[0]?.status).toBe(status);
+      } finally {
+        // Only the disposable fixture goal is restored for sibling tests.
+        await fx.admin`
+          UPDATE harness_shared.goals SET status = 'active'
+          WHERE workspace_id = ${WS} AND id = ${GOAL}
+        `;
+      }
+    }, 90_000,
+  );
+
   it('keeps an omitted real agenda unseen until a full warm delivery and re-delivers after a cold boundary', async () => {
     // The newly enabled holder is initially inside the reporting grace period.
     // Advance the reader's supported clock, retaining its real PostgreSQL data

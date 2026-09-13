@@ -2597,6 +2597,7 @@ export async function launchDetachedCheckpoint(
   ) => Promise<{ cancelled: number }> = cancelStaleCheckpointAwaits,
   recordDisplacement: (logPath: string, info: CheckpointDisplacementInfo) => void = recordCheckpointDisplacement,
   readProcessAuthority: CheckpointProcessAuthorityReader = readCheckpointProcessAuthorityCheap,
+  recordGateFireFn: typeof recordGateFire = recordGateFire,
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
   const subjectRoot = opts.integrationRoot ?? root;
@@ -2892,7 +2893,7 @@ export async function launchDetachedCheckpoint(
         // NON-recording) run writes no outcome row, so it gets no anchor either — anchoring
         // it would inflate `unaccounted` by construction.
         if (verdictTarget) {
-          void recordGateFire(verdictTarget, { route: 'detached', root: subjectRoot, unit, gateFireId });
+          void recordGateFireFn(verdictTarget, { route: 'detached', root: subjectRoot, unit, gateFireId });
         }
         resolve({ ...base, launched: true });
         return;

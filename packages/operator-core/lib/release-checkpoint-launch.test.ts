@@ -574,9 +574,19 @@ function launchDetachedCheckpoint(
     Parameters<typeof launchDetachedCheckpointImpl>[4]?,
     Parameters<typeof launchDetachedCheckpointImpl>[5]?,
     Parameters<typeof launchDetachedCheckpointImpl>[6]?,
+    Parameters<typeof launchDetachedCheckpointImpl>[7]?,
   ]
 ): ReturnType<typeof launchDetachedCheckpointImpl> {
-  const [opts, spawnFn, execFn, readLogHead, cancelStaleAwaits, recordDisplacement, readProcessAuthority] = args;
+  const [
+    opts,
+    spawnFn,
+    execFn,
+    readLogHead,
+    cancelStaleAwaits,
+    recordDisplacement,
+    readProcessAuthority,
+    recordGateFire,
+  ] = args;
   return launchDetachedCheckpointImpl(
     opts,
     spawnFn,
@@ -585,6 +595,7 @@ function launchDetachedCheckpoint(
     cancelStaleAwaits,
     recordDisplacement,
     readProcessAuthority ?? noPreLockAuthority,
+    recordGateFire ?? (async () => {}),
   );
 }
 
@@ -600,6 +611,32 @@ describe('launchDetachedCheckpoint', () => {
     expect(spawnFn).toHaveBeenCalledWith(
       'systemd-run',
       expect.arrayContaining([`--unit=${checkpointUnitForRoot('/tree')}`]),
+    );
+  });
+
+  it('uses the injected gate-fire writer without opening a database connection', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const recordGateFire = vi.fn(async () => {});
+    const target = { workspaceId: 'test-workspace', installSlug: 'test-install' };
+    const p = launchDetachedCheckpoint(
+      { root: '/tree', target },
+      spawnFn,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recordGateFire,
+    );
+
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(r.launched).toBe(true);
+    expect(recordGateFire).toHaveBeenCalledWith(
+      target,
+      expect.objectContaining({ route: 'detached', root: '/tree', unit: checkpointUnitForRoot('/tree') }),
     );
   });
 

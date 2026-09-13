@@ -11,7 +11,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 
-const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => undefined));
+const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
+const refreshLiveSessionsBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
 const resolveSearchFilters = vi.hoisted(() => vi.fn(async () => ({
   filters: { owners: ['su-read-pg', 'su-read-pg-predecessor'] },
   selfSession: { sourceKind: 'codex', sessionId: 'successor' },
@@ -22,13 +23,19 @@ vi.mock('./_shared', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   sessionSearchEnabled: vi.fn(async () => true),
   refreshTargetSessionBeforeRead,
+  refreshLiveSessionsBeforeRead,
 }));
-vi.mock('../search/filters', () => ({ resolveSearchFilters }));
+vi.mock('../search/filters', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resolveSearchFilters,
+}));
 vi.mock('../../session-archive-read', () => ({ readArchivedSessionTurns }));
 
 await import('./read');
+await import('./search');
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
+const projectedSearch = lookupByMcpName('sessions:search')!;
 
 const WORKSPACE = 'ws-sessions-read-pg';
 const OWNER = 'su-read-pg';
@@ -71,6 +78,7 @@ beforeAll(async () => {
       harness_slug text,
       cwd text,
       speaker text NOT NULL,
+      turn_origin_verdict text,
       text text NOT NULL,
       ingested_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
@@ -146,6 +154,38 @@ describe('sessions:read private-PG substring and scoped windows', () => {
     ]);
     expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(sql, 'codex', 'successor');
     expect(readArchivedSessionTurns).not.toHaveBeenCalled();
+  });
+
+  it('executes the exact readMore args emitted by sessions:search', async () => {
+    const searchResult = await dispatchProjectedTool(
+      projectedSearch,
+      'sessions:search',
+      { query: 'successor middle', mode: 'verbatim', session: 'successor', context: 0, limit: 1 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: WORKSPACE, uiClientId: OWNER, isSuperuser: true,
+        runId: 'sessions-search-readmore-contract', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: sql,
+      },
+      {},
+    );
+    expect(searchResult.ok, JSON.stringify(searchResult)).toBe(true);
+    const searchText = searchResult.result?.content?.[0];
+    expect(searchText?.type).toBe('text');
+    const searchBody = JSON.parse((searchText as { text: string }).text) as {
+      results: Array<{ readMore?: { tool: string; args: Record<string, unknown> } }>;
+    };
+    const readMore = searchBody.results[0]?.readMore;
+    expect(readMore).toEqual({
+      tool: 'sessions:read',
+      args: { ref: 'session_turn:codex:successor:1', context: 10 },
+    });
+
+    const readResult = await read(readMore!.args);
+    expect(readResult.turns.map((turn) => turn.turn_idx)).toEqual([0, 1, 2]);
+    expect(readResult.turns[1]?.text).toBe('successor middle');
   });
 
   it('honors a named head/range and canonical ref context with real SQL bounds', async () => {

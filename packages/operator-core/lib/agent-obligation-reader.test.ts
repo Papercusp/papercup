@@ -102,6 +102,47 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
 }
 
 describe('shared agent obligation reader', () => {
+  it.each(['paused', 'achieved', 'killed'])('does not deliver stale reporting work for a %s goal', async (status) => {
+    const stopped = portfolio();
+    stopped.goal.status = status;
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      planSlugs: [],
+      deps: deps({ goalPortfolio: vi.fn(async () => stopped) }),
+    });
+    expect(read.agenda.primary).toEqual([]);
+    expect(read.agenda.evaluations.find((entry) => entry.family === 'owner-report')?.status).toBe('not-applicable');
+    expect(projectAgentTurnStartObligationBrief(read.agenda).projection.text).toBe('');
+  });
+
+  it.each([null, 'unrecognized'])('does not turn lifecycle %s into a reporting duty', async (status) => {
+    const unknown = portfolio();
+    unknown.goal.status = status;
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW, planSlugs: [],
+      deps: deps({ goalPortfolio: vi.fn(async () => unknown) }),
+    });
+    expect(read.agenda.evaluations.find((entry) => entry.family === 'owner-report')).toMatchObject({
+      status: 'unknown', action: { kind: 'inspect' },
+    });
+  });
+
+  it('keeps a mismatched portfolio unknown in the consumed reporting agenda', async () => {
+    const wrong = portfolio();
+    wrong.goal.id = 'other-goal';
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW, planSlugs: [],
+      deps: deps({ goalPortfolio: vi.fn(async () => wrong) }),
+    });
+    expect(read.agenda.evaluations.find((entry) => entry.family === 'owner-report')).toMatchObject({
+      status: 'unknown', action: { kind: 'inspect' },
+    });
+    expect(read.degradedSources).not.toEqual([]);
+    expect(projectAgentTurnStartObligationBrief(read.agenda).projection.text).not.toContain('[DUE]');
+  });
+
   it('assembles all applicable canonical providers into one agenda', async () => {
     const read = await readAgentObligationAgenda({
       workspaceId: 'ws',

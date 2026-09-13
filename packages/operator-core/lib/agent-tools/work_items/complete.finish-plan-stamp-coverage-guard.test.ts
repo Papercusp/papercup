@@ -26,13 +26,25 @@
  *
  * These pin that the SYNCHRONOUS leg carries the same guards as the fallback.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const contentionMocks = vi.hoisted(() => ({
+  acquireWithContentionRetry: vi.fn(),
+}));
+vi.mock('../locks/contention-retry', () => ({
+  acquireWithContentionRetry: (...args: unknown[]) => contentionMocks.acquireWithContentionRetry(...args),
+}));
 
 import { synchronizeFinishWork } from './complete';
 
 const STAMP = { plan_slug: 'some-plan-2026-08-13', item_id: 'P-004', harness_slug: 'papercusp' };
 
 const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' } as never;
+
+beforeEach(() => {
+  contentionMocks.acquireWithContentionRetry.mockReset();
+  contentionMocks.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => run());
+});
 
 /** One reaction dispatch as `synchronizeFinishWork` issues it. */
 type FiredReaction = { fire: string; args: Record<string, unknown> };
@@ -154,5 +166,40 @@ describe('synchronizeFinishWork plan-item reflection carries the coverage guard'
     });
     expect(retry).toMatchObject({ complete: true, checkpointCleared: true, planItem: 'done' });
     expect(clearCheckpoint).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a transient PostgreSQL statement timeout during checkpoint cleanup', async () => {
+    const timeout = Object.assign(new Error('operator write exceeded its time budget'), {
+      name: 'OrgTxnTimeoutError',
+      pgCode: '57014',
+    });
+    const clearCheckpoint = vi
+      .fn<(_ref: unknown, _checkpoint: string | null) => Promise<void>>()
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce(undefined);
+    const fire = vi.fn(async (_opts: FiredReaction) => ({ ok: true as const }));
+    const readPlanItemStatus = vi.fn(async () => 'done');
+    contentionMocks.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => {
+      try {
+        return await run();
+      } catch (error) {
+        expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '57014' });
+        return run();
+      }
+    });
+
+    const receipt = await synchronizeFinishWork(
+      {
+        id: 'EI-23078501622912469',
+        workItem: { state: 'done', harness: 'papercusp', payload: { plan_item: STAMP } },
+        completionEvidenceStored: true,
+        ctx,
+      },
+      { fire: fire as never, clearCheckpoint: clearCheckpoint as never, readPlanItemStatus },
+    );
+
+    expect(receipt).toMatchObject({ complete: true, checkpointCleared: true, planItem: 'done' });
+    expect(clearCheckpoint).toHaveBeenCalledTimes(2);
+    expect(contentionMocks.acquireWithContentionRetry).toHaveBeenCalledOnce();
   });
 });
