@@ -221,7 +221,11 @@ export interface LeaderBriefFleetMetricsDeps {
   build(
     resolution: FleetMetricScopeResolution,
     items: readonly WorkItem[],
-    opts: { issueOccurrences: IssueOccurrenceCounts; sourceCapExhausted: boolean; assignee?: string },
+    opts: {
+      issueOccurrences: IssueOccurrenceCounts | PromiseLike<IssueOccurrenceCounts>;
+      sourceCapExhausted: boolean;
+      assignee?: string;
+    },
   ): Promise<FleetMetricsResult>;
 }
 
@@ -270,6 +274,17 @@ export async function readLeaderBriefFleetMetrics(
     });
   }
   try {
+    const itemsPromise = Promise.resolve(
+      deps.listItems({
+        harness: input.harness,
+        includeObservations: true,
+        limit: WORK_ITEMS_MAX_LIMIT,
+      }),
+    );
+    // A failed item read must remain observed even when scope resolution fails
+    // first; the metric leg is best-effort and must not create an unhandled
+    // rejection while it is being abandoned.
+    void itemsPromise.catch(() => undefined);
     const resolution = await deps.resolveScope({
       workspaceId: input.workspaceId,
       harness: input.harness,
@@ -277,16 +292,15 @@ export async function readLeaderBriefFleetMetrics(
       flowMode: 'current-spec',
     });
     if (!resolution.ok) return parseFleetMetricsResult(resolution);
-    const items = await deps.listItems({
-      harness: input.harness,
-      includeObservations: true,
-      limit: WORK_ITEMS_MAX_LIMIT,
-    });
-    const issueOccurrences = await deps.readOccurrences({
+    const issueOccurrences = deps.readOccurrences({
       workspaceId: input.workspaceId,
       harnessSlug: input.harness,
       since: resolution.scope.window.startAt,
     });
+    // The builder consumes this promise after it has started its floor read, so
+    // the two independent aggregate queries can overlap.
+    void issueOccurrences.catch(() => undefined);
+    const items = await itemsPromise;
     return await deps.build(resolution, items, {
       issueOccurrences,
       sourceCapExhausted: items.length >= WORK_ITEMS_MAX_LIMIT,

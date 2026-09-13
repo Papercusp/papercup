@@ -202,11 +202,78 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       harnessSlug: 'papercusp',
       since: '2026-08-21T00:00:00.000Z',
     });
-    expect(build).toHaveBeenCalledWith(resolution, items, {
-      issueOccurrences: expect.objectContaining({ rawOccurrences: 2 }),
-      sourceCapExhausted: false,
-      assignee: 'su-leader',
+    expect(build).toHaveBeenCalledWith(
+      resolution,
+      items,
+      expect.objectContaining({ sourceCapExhausted: false, assignee: 'su-leader' }),
+    );
+  });
+
+  it('starts scope and item reads together, then passes a pending occurrence census to the builder', async () => {
+    const resolution = {
+      ok: true,
+      scope: { window: { startAt: '2026-08-21T00:00:00.000Z' } },
+    } as never;
+    const items = [{ id: 'WI-1' }] as never;
+    const unavailable = {
+      ok: false,
+      schemaVersion: 'fleet-metrics-v1',
+      error: 'fleet_metrics_unavailable',
+      reason: 'fixture result',
+      recoverVia: 'fixture:recover',
+      requested: {
+        fleet: 'fleet-a',
+        harness: 'papercusp',
+        flowMode: 'current-spec',
+        window: 'fleet-lifetime',
+      },
+    } as const;
+    let scopeStarted = false;
+    let itemsStarted = false;
+    let releaseScope: (() => void) | undefined;
+    let releaseItems: (() => void) | undefined;
+    const resolveScope = vi.fn(async () => {
+      scopeStarted = true;
+      await new Promise<void>((resolve) => {
+        releaseScope = resolve;
+      });
+      return resolution;
     });
+    const listItems = vi.fn(async () => {
+      itemsStarted = true;
+      await new Promise<void>((resolve) => {
+        releaseItems = resolve;
+      });
+      return items;
+    });
+    const occurrencePromise = new Promise<never>(() => {});
+    const readOccurrences = vi.fn(() => occurrencePromise);
+    const build = vi.fn(async (_resolution, _items, opts) => {
+      expect(opts.issueOccurrences).toBe(occurrencePromise);
+      return unavailable;
+    });
+
+    const resultPromise = readLeaderBriefFleetMetrics(
+      { workspaceId: 'ws', fleet: 'fleet-a', harness: 'papercusp' },
+      { resolveScope, listItems, readOccurrences, build },
+    );
+    await Promise.resolve();
+    const startedTogether = scopeStarted && itemsStarted;
+    releaseScope?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    const occurrenceStartedBeforeItemsReleased = readOccurrences.mock.calls.length === 1;
+    releaseItems?.();
+
+    await expect(resultPromise).resolves.toEqual(unavailable);
+    expect(startedTogether).toBe(true);
+    expect(occurrenceStartedBeforeItemsReleased).toBe(true);
+    expect(readOccurrences).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      since: '2026-08-21T00:00:00.000Z',
+    });
+    expect(build).toHaveBeenCalledTimes(1);
   });
 
   it('returns a typed unavailable envelope when the canonical leg fails', async () => {
