@@ -914,6 +914,11 @@ interface ShellWaitObservation {
   hasArgument: boolean;
 }
 
+interface ShellWaitSummary {
+  hasWait: boolean;
+  hasBareWait: boolean;
+}
+
 const SHELL_WAIT_PREFIXES = new Set(['builtin', 'command']);
 const SHELL_COMMAND_KEYWORDS = new Set(['!', 'do', 'elif', 'else', 'if', 'then', 'until', 'while', '{']);
 
@@ -981,6 +986,266 @@ function shellOperatorExcerpt(command: string, index: number): string {
   const prefix = start > 0 ? '…' : '';
   const suffix = end < command.length ? '…' : '';
   return `${prefix}${command.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
+}
+
+/**
+ * Mask quoted strings and comments while preserving indexes. This is only used
+ * to find shell function declarations and trap registrations; the original
+ * source is retained for inspecting the cleanup body afterward.
+ */
+function maskShellQuotesAndComments(command: string): string {
+  const chars = command.split('');
+    let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let inComment = false;
+
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = command[i]!;
+    if (inComment) {
+      if (ch === '\n') inComment = false;
+      else chars[i] = ' ';
+      continue;
+    }
+    if (quote) {
+      if (ch === '\n') {
+        // Keep line boundaries so command-list matching remains index-stable.
+        escaped = false;
+        continue;
+      }
+      chars[i] = ' ';
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\' && quote === '"') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      chars[i] = ' ';
+      quote = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(command[i - 1]!))) {
+      chars[i] = ' ';
+      inComment = true;
+    }
+  }
+  return chars.join('');
+}
+
+function findMatchingShellBrace(source: string, openingIndex: number): number | null {
+  let depth = 1;
+  for (let i = openingIndex + 1; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}' && --depth === 0) return i;
+  }
+  return null;
+}
+
+/**
+ * Inspect a shell fragment for command-position `wait` builtins. This mirrors
+ * the detector's conservative token rules, but deliberately ignores `&` and
+ * records only wait shape; it is used for EXIT cleanup bodies whose source
+ * position can precede the background child they join.
+ */
+function summarizeShellWaits(source: string): ShellWaitSummary {
+  const waits: ShellWaitObservation[] = [];
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let token = '';
+  let tokenStart = -1;
+  let commandPosition = true;
+  let redirectTarget = false;
+  let currentWait: ShellWaitObservation | null = null;
+
+  const flushToken = (): void => {
+    if (!token) return;
+    const value = token;
+    const start = tokenStart;
+    const wasRedirectTarget = redirectTarget;
+    token = '';
+    tokenStart = -1;
+    redirectTarget = false;
+
+    if (wasRedirectTarget) return;
+    if (currentWait) currentWait.hasArgument = true;
+    if (!commandPosition) return;
+    if (value === 'wait') {
+      currentWait = { index: start, hasArgument: false };
+      waits.push(currentWait);
+      commandPosition = false;
+      return;
+    }
+    if (SHELL_WAIT_PREFIXES.has(value) || SHELL_COMMAND_KEYWORDS.has(value) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) {
+      commandPosition = true;
+    } else {
+      commandPosition = false;
+    }
+  };
+
+  const separator = (): void => {
+    flushToken();
+    currentWait = null;
+    commandPosition = true;
+    redirectTarget = false;
+  };
+
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i]!;
+    if (escaped) {
+      token += ch;
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      token += ch;
+      if (ch === '\\' && quote === '"') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      if (tokenStart < 0) tokenStart = i;
+      token += ch;
+      quote = ch;
+      continue;
+    }
+    if (ch === '\\') {
+      if (tokenStart < 0) tokenStart = i;
+      token += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(source[i - 1]!))) {
+      flushToken();
+      while (i + 1 < source.length && source[i + 1] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === '&' && source[i + 1] === '&') {
+      separator();
+      i += 1;
+      continue;
+    }
+    if (ch === '&' || ch === '|' || ch === ';' || ch === '\n') {
+      separator();
+      if (ch === '|' && source[i + 1] === '|') i += 1;
+      continue;
+    }
+    if (ch === '>' || ch === '<') {
+      flushToken();
+      redirectTarget = true;
+      continue;
+    }
+    if (ch === '(' || ch === '{') {
+      flushToken();
+      currentWait = null;
+      commandPosition = true;
+      redirectTarget = false;
+      continue;
+    }
+    if (ch === ')' || ch === '}') {
+      flushToken();
+      currentWait = null;
+      commandPosition = false;
+      redirectTarget = false;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flushToken();
+      continue;
+    }
+    if (tokenStart < 0) tokenStart = i;
+    token += ch;
+  }
+  flushToken();
+
+  return {
+    hasWait: waits.length > 0,
+    hasBareWait: waits.some((wait) => !wait.hasArgument),
+  };
+}
+
+/**
+ * Find a wait registered for the shell's EXIT cleanup, even when its function
+ * definition or quoted trap handler appears before the background operator.
+ * Only a trap explicitly targeting EXIT qualifies; arbitrary quoted prose and
+ * non-EXIT traps remain invisible to this exception.
+ */
+function summarizeExitCleanupWaits(command: string): ShellWaitSummary {
+  const source = maskShellHeredocBodies(command);
+  const masked = maskShellQuotesAndComments(source);
+  const functions = new Map<string, ShellWaitSummary>();
+  const functionPattern =
+    /(?:^|[;{}\n])\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?|([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\))\s*\{/g;
+
+  for (const match of masked.matchAll(functionPattern)) {
+    const name = match[1] ?? match[2];
+    if (!name || match.index == null) continue;
+    const openingIndex = match.index + match[0].lastIndexOf('{');
+    const closingIndex = findMatchingShellBrace(masked, openingIndex);
+    if (closingIndex == null) continue;
+    functions.set(name, summarizeShellWaits(source.slice(openingIndex + 1, closingIndex)));
+  }
+
+  const trapPrefix = String.raw`(?:^|[;|&{}\n()])\s*(?:(?:then|do|else|elif|if|while|until|!|command|builtin)\s+)*trap\s+(?:--\s+)?`;
+  const events: Array<{ index: number; summary: ShellWaitSummary }> = [];
+  const empty: ShellWaitSummary = { hasWait: false, hasBareWait: false };
+  const isShellLevel = (index: number): boolean => {
+    let quote: "'" | '"' | null = null;
+    let escaped = false;
+    for (let cursor = 0; cursor < index; cursor += 1) {
+      const ch = source[cursor]!;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (quote) {
+        if (quote === '"' && ch === '\\') escaped = true;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === "'" || ch === '"') quote = ch;
+    }
+    return quote === null;
+  };
+  const namedTrapPattern = new RegExp(`${trapPrefix}([A-Za-z_][A-Za-z0-9_]*)\\s+EXIT\\b`, 'g');
+  for (const match of masked.matchAll(namedTrapPattern)) {
+    const name = match[1];
+    events.push({ index: match.index ?? 0, summary: name ? functions.get(name) ?? empty : empty });
+  }
+
+  const singleQuotedTrapPattern = new RegExp(`${trapPrefix}'([^']*)'\\s+EXIT\\b`, 'g');
+  for (const match of source.matchAll(singleQuotedTrapPattern)) {
+    if (!isShellLevel(match.index ?? 0)) continue;
+    events.push({ index: match.index ?? 0, summary: summarizeShellWaits(match[1] ?? '') });
+  }
+  const doubleQuotedTrapPattern = new RegExp(`${trapPrefix}"((?:\\\\.|[^"\\\\])*)"\\s+EXIT\\b`, 'g');
+  for (const match of source.matchAll(doubleQuotedTrapPattern)) {
+    if (!isShellLevel(match.index ?? 0)) continue;
+    events.push({ index: match.index ?? 0, summary: summarizeShellWaits(match[1] ?? '') });
+  }
+
+  // `trap - EXIT` and `trap '' EXIT` clear a previously installed handler.
+  const clearTrapPattern = new RegExp(`${trapPrefix}(?:-|''|"")\\s+EXIT\\b`, 'g');
+  for (const match of source.matchAll(clearTrapPattern)) {
+    if (!isShellLevel(match.index ?? 0)) continue;
+    events.push({ index: match.index ?? 0, summary: empty });
+  }
+  events.sort((a, b) => a.index - b.index);
+  return events.length > 0 ? events[events.length - 1]!.summary : empty;
 }
 
 /**
@@ -1157,8 +1422,11 @@ export function detectUntrackedShellBackgrounding(command: string): UntrackedShe
   if (asyncIndexes.length === 0) return null;
   const lastAsyncIndex = asyncIndexes[asyncIndexes.length - 1]!;
   const waitsAfterLastAsync = waits.filter((wait) => wait.index > lastAsyncIndex);
+  const exitCleanupWaits = summarizeExitCleanupWaits(command);
   const joined =
-    asyncIndexes.length === 1 ? waitsAfterLastAsync.length > 0 : waitsAfterLastAsync.some((wait) => !wait.hasArgument);
+    asyncIndexes.length === 1
+      ? waitsAfterLastAsync.length > 0 || exitCleanupWaits.hasWait
+      : waitsAfterLastAsync.some((wait) => !wait.hasArgument) || exitCleanupWaits.hasBareWait;
   if (joined) return null;
 
   const operatorIndex =
