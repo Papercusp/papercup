@@ -697,7 +697,7 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(result?.summary).toContain(
       "/mnt/data low-inodes breaches the standing critical write headroom floor",
     );
-    expect(result?.summary).toContain("bounded fleet-log GC scanned 4 file(s)");
+    expect(result?.summary).toContain("bounded disk GC: fleet logs scanned 4 file(s)");
     expect(result?.summary).toContain("with 1 error(s)");
     expect(result?.summary).toContain("floor is 2.0 GiB and 2.00% bytes");
     expect(result?.summary).toContain("5.00% inodes");
@@ -811,9 +811,63 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
 
     expect(result?.ok).toBe(false);
     expect(result?.summary).toContain(
-      "bounded fleet-log GC failed safely (gc unavailable)",
+      "bounded disk GC: fleet-log cleanup failed safely (gc unavailable)",
     );
     expect(sampleCount).toBe(2);
+  });
+
+  it("reuses bounded producer-aware Cargo reclaim when that restores the critical filesystem", async () => {
+    const gib = 1024 ** 3;
+    const low = [
+      {
+        path: "/tmp",
+        totalBytes: 1_000 * gib,
+        freeBytes: 1 * gib,
+        freePct: 0.001,
+        totalInodes: 1_000_000,
+        freeInodes: 500_000,
+        freeInodesPct: 0.5,
+      },
+    ];
+    const recovered = [{ ...low[0], freeBytes: 30 * gib, freePct: 0.03 }];
+    const samples = [low, recovered];
+    let fleetGcCount = 0;
+    let cargoGcCount = 0;
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-headroom-cargo-recovered-run",
+      undefined,
+      undefined,
+      async () => samples.shift() ?? recovered,
+      undefined,
+      undefined,
+      async () => {
+        fleetGcCount++;
+        return gcResult(0);
+      },
+      async () => {
+        cargoGcCount++;
+        return {
+          scanned: 1,
+          reclaimed: 1,
+          bytesReclaimed: 29 * gib,
+          skipped: [],
+        };
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain("automatic headroom recovery succeeded");
+    expect(result?.summary).toContain(
+      "Cargo scanned 1 artifact(s), reclaimed 1, freed 29.00 GiB",
+    );
+    expect(fleetGcCount).toBe(1);
+    expect(cargoGcCount).toBe(1);
+    expect(samples).toHaveLength(0);
   });
 });
 
