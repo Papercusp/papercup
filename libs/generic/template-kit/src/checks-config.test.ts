@@ -32,7 +32,11 @@ const valid = {
     invalidOutput: { itemId: 42, candidates: [] },
     agentBlueprint: "blueprints/purchase-agent/blueprint.yaml",
   },
-  boot: { mode: "attach", discoveryFile: "~/.quartermaster/operator.json" },
+  boot: {
+    mode: "attach",
+    discoveryFile: "~/.quartermaster/operator.json",
+    discoveryHomeEnv: "QUARTERMASTER_HOME",
+  },
   nativeDesktop: {
     cargoManifest: "apps/desktop/src-tauri/Cargo.toml",
     cargoLock: "apps/desktop/src-tauri/Cargo.lock",
@@ -134,6 +138,20 @@ describe("validateChecksConfig", () => {
     });
     expect(errors).toContain(
       "boot.pgDataDir: must be a non-empty string when present",
+    );
+  });
+
+  it("rejects boot.discoveryHomeEnv when present but empty", () => {
+    const errors = validateChecksConfig({
+      app: { name: "x" },
+      boot: {
+        mode: "attach",
+        discoveryFile: "~/.x/operator.json",
+        discoveryHomeEnv: "",
+      },
+    });
+    expect(errors).toContain(
+      "boot.discoveryHomeEnv: must be a non-empty string when present",
     );
   });
 

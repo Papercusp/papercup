@@ -63,6 +63,8 @@ export interface ChecksBootSection {
   mode: "spawn" | "attach";
   /** The operator.json analog ("~/…" ok). */
   discoveryFile: string;
+  /** Optional env var whose configured value supplies the base home for "~/" boot paths. */
+  discoveryHomeEnv?: string;
   /** Default "/api/health". */
   healthPath?: string;
   /** Optional "app builds" leg, spawn mode only. */
@@ -455,6 +457,13 @@ export function validateChecksConfig(value: unknown): string[] {
         errors.push("boot.mode: must be 'spawn' or 'attach'");
       if (!isNonEmptyString(value.boot.discoveryFile))
         errors.push("boot.discoveryFile: required non-empty string");
+      if (
+        value.boot.discoveryHomeEnv !== undefined &&
+        !isNonEmptyString(value.boot.discoveryHomeEnv)
+      )
+        errors.push(
+          "boot.discoveryHomeEnv: must be a non-empty string when present",
+        );
       if (value.boot.mode === "spawn" && !isStringArray(value.boot.command))
         errors.push("boot.command: required (list of strings) in spawn mode");
       if (

@@ -2903,6 +2903,36 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
+  it('flag ON: allows an issue-family work_items:checkpoint WRITE for a concrete sibling-hive harness', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'work_items:checkpoint',
+      {
+        id: 'EI-self-owned-checkpoint',
+        checkpoint: 'transport reaches the handler ownership guard',
+        harness: 'hiveB-home',
+      },
+      hiveScoped(),
+    );
+
+    // The PG-free fixture may return the handler's normal unresolved-item result;
+    // the transport assertion is that this EI write is not stopped by the hive
+    // clamp before the handler can apply its authoritative not_holder check.
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['a feature-family WI- checkpoint', { id: 'WI-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: 'hiveB-home' }],
+    ['a feature-family F- checkpoint', { id: 'F-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: 'hiveB-home' }],
+    ['the global `all` harness', { id: 'EI-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: 'all' }],
+    ['the wildcard `*` harness', { id: 'EI-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: '*' }],
+  ])('flag ON: still rejects work_items:checkpoint %s', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('work_items:checkpoint', args, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
   it.each([
     ['a broad canonical routine read', { installSlug: PLATFORM_POT_SLUG }],
     ['another canonical routine', { installSlug: PLATFORM_POT_SLUG, name: 'green-checkpoint' }],
@@ -4233,6 +4263,36 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
       { name: 'loop:checkpoint', args },
       hiveScoped(),
     );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows a nested issue-family work_items:checkpoint WRITE for a concrete sibling-hive harness', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'work_items:checkpoint',
+        args: {
+          id: 'EI-nested-self-owned-checkpoint',
+          checkpoint: 'nested transport reaches the handler ownership guard',
+          harness: 'hiveB-home',
+        },
+      },
+      hiveScoped(),
+    );
+
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['a feature-family WI- checkpoint', { id: 'WI-nested-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: 'hiveB-home' }],
+    ['a feature-family F- checkpoint', { id: 'F-nested-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: 'hiveB-home' }],
+    ['the global `all` harness', { id: 'EI-nested-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: 'all' }],
+    ['the wildcard `*` harness', { id: 'EI-nested-cross-hive-checkpoint', checkpoint: 'must stay scoped', harness: '*' }],
+  ])('flag ON: nested still rejects work_items:checkpoint %s', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('tools:invoke', { name: 'work_items:checkpoint', args }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
   });

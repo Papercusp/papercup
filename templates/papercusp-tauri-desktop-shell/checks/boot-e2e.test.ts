@@ -12,6 +12,7 @@
  *   boot: {
  *     mode: "spawn" | "attach"
  *     discoveryFile: string       // the operator.json analog ("~/…" ok)
+ *     discoveryHomeEnv?: string   // env var selecting the base home for "~/" boot paths
  *     healthPath?: string         // default "/api/health"
  *     buildCommand?: string[]     // optional "app builds" leg (spawn mode)
  *     command?: string[]          // REQUIRED in spawn mode: boots the sidecar
@@ -46,7 +47,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // ── config preamble (identical across the portable checks) ──────────────────
-const untilde = (p: string): string => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+const untilde = (p: string, home = homedir()): string => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
 const configPath = process.env.TEMPLATE_CHECKS_CONFIG;
 const config: Record<string, any> | null = configPath
   ? JSON.parse(readFileSync(resolve(untilde(configPath)), "utf8"))
@@ -60,6 +61,7 @@ const inApp = (p: string): string => (isAbsolute(untilde(p)) ? untilde(p) : join
 interface BootSection {
   mode: "spawn" | "attach";
   discoveryFile: string;
+  discoveryHomeEnv?: string;
   healthPath?: string;
   buildCommand?: string[];
   command?: string[];
@@ -115,6 +117,16 @@ function readDiscovery(path: string): Discovery | null {
   } catch {
     return null; // torn read mid-write — treat as not-yet-ready
   }
+}
+
+function bootPath(path: string): string {
+  const envName = section?.discoveryHomeEnv;
+  if (!envName) return untilde(path);
+  // A config-provided empty override deliberately falls back to the normal
+  // home; otherwise attach mode inherits the test process environment.
+  const configuredHome = section?.env?.[envName];
+  const home = configuredHome !== undefined ? configuredHome : process.env[envName];
+  return untilde(path, home || homedir());
 }
 
 async function healthStatus(disc: Discovery, healthPath: string): Promise<number | null> {
@@ -186,7 +198,7 @@ describe.skipIf(!nativeDesktop)("native-desktop-preflight", () => {
 
 describe.skipIf(!section)("boot-e2e", () => {
   const healthPath = section?.healthPath ?? "/api/health";
-  const discoveryFile = () => untilde(section!.discoveryFile);
+  const discoveryFile = () => bootPath(section!.discoveryFile);
 
   it.skipIf(section?.mode !== "attach")("attach: discovery file present, pid alive, health 200", async () => {
     const disc = readDiscovery(discoveryFile());
@@ -214,10 +226,11 @@ describe.skipIf(!section)("boot-e2e", () => {
       // readyTimeoutMs (up to 4min) before failing with a generic, misleading
       // "sidecar never became healthy" message (EI-22125738148136740).
       if (section!.pgDataDir) {
-        const lockingPid = pgDataDirLockedBy(section!.pgDataDir);
+        const pgDataDir = bootPath(section!.pgDataDir);
+        const lockingPid = pgDataDirLockedBy(pgDataDir);
         expect(
           lockingPid,
-          `embedded PG data dir ${untilde(section!.pgDataDir)} is already locked by a LIVE ` +
+          `embedded PG data dir ${pgDataDir} is already locked by a LIVE ` +
             `process (pid ${lockingPid}) — a different instance/deployment is running on this ` +
             `machine and holds it. Spawning a second instance against the same data dir cannot ` +
             `succeed. Use boot.mode:"attach" against that instance, or point boot.pgDataDir / the ` +
