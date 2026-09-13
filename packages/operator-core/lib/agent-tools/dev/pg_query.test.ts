@@ -870,6 +870,46 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(String(payloadOf(res as never).hint)).toContain('type-compatible');
   });
 
+  // EI-22725188331129683: `harness_escalations.escalation` is TEXT in the
+  // live schema. The generic PostgreSQL 42883 hint says only "explicit type
+  // casts"; this regression keeps the exact failed shape actionable.
+  it('adds an operand-specific JSONB cast hint when a JSON operator receives TEXT', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('operator does not exist: text ->> unknown'), {
+        code: '42883',
+        hint: 'No operator matches the given name and argument types. You might need to add explicit type casts.',
+      }),
+    );
+    const sql =
+      "SELECT escalation->>'kind' AS kind FROM harness_shared.harness_escalations " +
+      "WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' LIMIT 1";
+    const res = await pgQueryTool.handler({ sql } as never, {} as never);
+    const payload = payloadOf(res as never);
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payload).toMatchObject({
+      code: '42883',
+      hint: expect.stringContaining("(escalation::jsonb)->>'key'"),
+    });
+    expect(String(payload.hint)).toContain('text');
+    expect(String(payload.hint)).toContain('non-JSON');
+    expect(String(payload.hint)).not.toContain('No operator matches');
+  });
+
+  it('does not attach the JSON cast correction to an unrelated 42883 operator error', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('operator does not exist: integer = text'), {
+        code: '42883',
+        hint: 'No operator matches the given name and argument types.',
+      }),
+    );
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT 1 FROM harness_shared.harness_escalations WHERE mtime_ms = \'one\'' } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never).hint).toBe('No operator matches the given name and argument types.');
+  });
+
   it('does not attach the oversized-bound hint to another repetition error shape', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('invalid regular expression: invalid repetition count(s)'), { code: '2201B' }),

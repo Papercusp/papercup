@@ -42,6 +42,7 @@ import {
   describeReferencedTableColumns,
   describeRelation,
   listRelations,
+  stripSqlLiteralsAndComments,
   PG_READ_QUERY_DEFAULT_MAX_ROWS,
   PG_READ_QUERY_HARD_MAX_ROWS,
   PgReadQueryTimeoutError,
@@ -210,6 +211,53 @@ function unionColumnCountHint(
     'each SELECT list (including `NULL` placeholders and function expressions), then add or remove ' +
     'the extra expression—or add a matching placeholder—so every branch has the same arity; keep ' +
     'corresponding positions type-compatible.'
+  );
+}
+
+/**
+ * EI-22725188331129683: PostgreSQL reports only its generic "explicit type
+ * casts" hint when a JSON operator is applied to a TEXT column. That hint does
+ * not identify the expression to cast, so a fresh caller commonly retries the
+ * same query. Restrict this correction to the measured 42883 shape and an
+ * operator that is actually present in the SQL; unrelated operator errors must
+ * retain PostgreSQL's own diagnostic.
+ */
+function jsonOperatorTypeHint(
+  sql: string,
+  info: { code?: string; message: string; detail?: string },
+): string | undefined {
+  if (info.code !== '42883') return undefined;
+  const errorText = `${info.message} ${info.detail ?? ''}`;
+  const operatorMatch = /operator\s+does\s+not\s+exist:\s*text\s+(#>>|#>|->>|->|\?\||\?&|\?)\s+\S+/i.exec(errorText);
+  if (!operatorMatch) return undefined;
+
+  const operator = operatorMatch[1];
+  const strippedSql = stripSqlLiteralsAndComments(sql);
+  const escapedOperator = operator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!new RegExp(escapedOperator).test(strippedSql)) return undefined;
+
+  // Capture the common qualified identifier form so the correction contains
+  // a copyable expression from the caller's own query. If the SQL is more
+  // complex, retain a neutral placeholder rather than guessing its shape.
+  const operandMatch = new RegExp(
+    `((?:[A-Za-z_][A-Za-z0-9_$]*\\s*\\.\\s*)?[A-Za-z_][A-Za-z0-9_$]*(?:\\s*::\\s*(?:jsonb?|text))?)\\s*${escapedOperator}`,
+    'i',
+  ).exec(strippedSql);
+  const operand = operandMatch?.[1]?.replace(/\\s+/g, '') ?? 'text_expression';
+  const accessor =
+    operator === '->>' || operator === '->'
+      ? `${operator}'key'`
+      : operator === '#>>' || operator === '#>'
+        ? `${operator}'{key}'`
+        : `${operator} 'key'`;
+  const example = `(${operand}::jsonb)${accessor}`;
+
+  return (
+    `PostgreSQL JSON operator \`${operator}\` requires a json/jsonb left operand, but ` +
+    `this error reports \`text\` on the left. Cast the text expression before ` +
+    `applying the operator, for example \`${example}\`. ` +
+    'If the text can contain non-JSON values, guard the cast with `IS JSON`/`CASE` ' +
+    'or use a typed JSONB column so a corrected query does not trade 42883 for 22P02.'
   );
 }
 
@@ -704,6 +752,11 @@ export default defineTool({
       if (regexRepetitionHint && !payload.hint) payload.hint = regexRepetitionHint;
       const unionColumnCountCorrection = unionColumnCountHint(sql, info);
       if (unionColumnCountCorrection && !payload.hint) payload.hint = unionColumnCountCorrection;
+      const jsonOperatorCorrection = jsonOperatorTypeHint(sql, info);
+      // PostgreSQL's 42883 hint is always the generic cast suggestion for this
+      // shape; replace it with the operand-specific correction so the caller
+      // gets a usable next query in the first response.
+      if (jsonOperatorCorrection) payload.hint = jsonOperatorCorrection;
       // The SAME sql-derived advisories the success payload composes, in the
       // same order — a query's SHAPE is no less true for having failed to run.
       // Placed AFTER the precise correction (PG's own hint names the column)
