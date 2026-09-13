@@ -208,7 +208,9 @@ export default defineTool({
           'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
           "A shell-command STRING passed to `tools.capability.bash({ command })` needs JS escaping too: write " +
           "`tr '\\\\0' ' ' </proc/self/cmdline` " +
-          '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs.',
+          '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs. ' +
+          'Generated data needs the same JS layer: do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal. ' +
+          'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument).',
       ),
     title: z
       .string()

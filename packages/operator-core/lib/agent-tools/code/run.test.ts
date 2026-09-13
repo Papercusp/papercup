@@ -132,6 +132,17 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
   });
 
+  it('documents runtime concatenation for JSON data in nested shell commands', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal');
+    expect(scriptDescription).toContain('cause `compile_error` before bash is dispatched');
+    expect(scriptDescription).toContain('keep the serialized value in a script variable and concatenate it into the command at runtime');
+    expect(scriptDescription).toContain('quoted stdin, a heredoc, or an argument');
+  });
+
   it('documents that scripts are plain JavaScript rather than TypeScript', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
