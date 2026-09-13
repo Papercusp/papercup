@@ -122,4 +122,18 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
       }
     }
   });
+
+  it('records P-002 start-once response yield as implemented without opening the cutover gate', () => {
+    const shell = managedCapabilityDisposition('shell-ssh-interpreters');
+    const jobs = managedCapabilityDisposition('jobs-output-stop-pty');
+    const remainingGapIds = [...shell.gaps, ...jobs.gaps].map((gap) => gap.id);
+
+    expect(remainingGapIds).not.toContain('shell-start-once-response-yield');
+    expect(remainingGapIds).not.toContain('job-response-deadline-continuity');
+    expect(shell.reuseSites.flatMap((site) => site.anchors)).toContain('waitForJobResponse');
+    expect(jobs.boundary).toContain('start-once response yield');
+    expect(shell.cutoverReady).toBe(false);
+    expect(jobs.cutoverReady).toBe(false);
+    expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+  });
 });
