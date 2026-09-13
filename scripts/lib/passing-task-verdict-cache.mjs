@@ -874,12 +874,14 @@ export function passingTaskVerdictSharedInputProvenance({ root, trackedScan }) {
 }
 
 /**
- * Resolve the complete content proof for one affected-test task.
+ * Resolve the semantic and execution content proofs for one affected-test task.
  *
  * Kept here, beside the hash it feeds, so the production cache and its repair-chain
  * recurrence tests exercise one policy. Integration tasks remain deliberately
  * non-reusable; repo-wide guards bind every tracked path; ordinary tasks bind their
- * workspace plus its transitive local dependency closure and shared gate inputs.
+ * workspace plus its transitive local dependency closure semantically, while the shared
+ * runner/config inputs are exposed separately as execution provenance. The legacy aggregate
+ * fields remain as compatibility aliases for callers that have not migrated yet.
  */
 export function passingTaskVerdictDependencyProvenance({
   root,
@@ -930,23 +932,6 @@ export function passingTaskVerdictDependencyProvenance({
   }
 
   const wholeTree = repoWideTaskKeys.has(taskKey);
-  if (!wholeTree && sharedInputProvenance && !sharedInputProvenance.ok) {
-    return sharedInputProvenance;
-  }
-  const sharedInputFiles = sharedInputProvenance?.ok
-    ? new Set(sharedInputProvenance.files)
-    : null;
-  const files = wholeTree
-    ? trackedScan.files
-    : trackedScan.files.filter(
-        (file) =>
-          (sharedInputFiles
-            ? sharedInputFiles.has(file)
-            : !file.includes("/") ||
-              file.startsWith("scripts/") ||
-              file.startsWith("libs/test-config/")) ||
-          sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
-      );
   const unavailable = trackedScan.unscannedPresent.filter(
     (submodule) =>
       wholeTree ||
@@ -954,12 +939,67 @@ export function passingTaskVerdictDependencyProvenance({
         (dir) => pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir),
       ),
   );
-  return hashDependencyFileSet({
+  const semanticFiles = wholeTree
+    ? trackedScan.files
+    : trackedScan.files.filter((file) =>
+        sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
+      );
+  if (!wholeTree && sharedInputProvenance && !sharedInputProvenance.ok) {
+    return sharedInputProvenance;
+  }
+
+  const sharedInputFiles = sharedInputProvenance?.ok
+    ? new Set(sharedInputProvenance.files)
+    : null;
+  // Keep the old fallback for direct callers that do not have the derived shared-input scan yet.
+  // The production affected-tests path always supplies sharedInputProvenance, but preserving this
+  // fallback keeps older recurrence fixtures fail-closed and source-compatible during migration.
+  const executionFiles = wholeTree
+    ? []
+    : trackedScan.files.filter(
+        (file) =>
+          sharedInputFiles
+            ? sharedInputFiles.has(file)
+            : !file.includes("/") ||
+              file.startsWith("scripts/") ||
+              file.startsWith("libs/test-config/"),
+      );
+  const semantic = hashDependencyFileSet({
     root,
-    files,
+    files: semanticFiles,
     unavailable,
     digestCache,
   });
+  if (!semantic.ok) return semantic;
+
+  const execution =
+    executionFiles.length === 0
+      ? null
+      : hashDependencyFileSet({
+          root,
+          files: executionFiles,
+          digestCache,
+        });
+  if (execution && !execution.ok) return execution;
+
+  // Preserve the former aggregate shape for callers that have not adopted the split. New cache
+  // identity code must use `semantic`, so execution-only runner changes no longer invalidate it.
+  const legacy = hashDependencyFileSet({
+    root,
+    files: [...semanticFiles, ...executionFiles],
+    unavailable,
+    digestCache,
+  });
+  if (!legacy.ok) return legacy;
+  return {
+    ok: true,
+    semantic,
+    execution,
+    hash: legacy.hash,
+    listHash: legacy.listHash,
+    fileCount: legacy.fileCount,
+    files: legacy.files,
+  };
 }
 
 /** A clean first pass is the only evidence strong enough to suppress a later task. */

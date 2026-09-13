@@ -13906,20 +13906,35 @@ async function recoveryFlow(args) {
   if (!args.recoveryAuthorize && !args.recoveryGrant) return false;
   if (args.recoveryAuthorize && args.recoveryGrant)
     throw new Error("--recovery-authorize and --recovery-grant are mutually exclusive");
+  if (
+    args.resume ||
+    args.fork ||
+    args.brain ||
+    args.agent ||
+    args.role ||
+    args.workspace ||
+    args.harness ||
+    args.plan ||
+    args.fleet ||
+    args.auto != null ||
+    args.mode
+  ) {
+    throw new Error("native recovery flags cannot be combined with an agent launch, resume, fleet, plan, or mode");
+  }
   const terminalId = resolveOwnedTtyPath();
   if (!terminalId)
     throw new Error("native recovery requires a real local terminal");
+  const eligibility = recoveryAuthorizationEligibility({
+    env: process.env,
+    ancestorCmdlines: readRecoveryAncestorCmdlines(),
+  });
+  if (!eligibility.ok) {
+    throw new Error(
+      `native recovery refused (${eligibility.reason}); use a direct local owner terminal, never an agent session`,
+    );
+  }
 
   if (args.recoveryAuthorize) {
-    const eligibility = recoveryAuthorizationEligibility({
-      env: process.env,
-      ancestorCmdlines: readRecoveryAncestorCmdlines(),
-    });
-    if (!eligibility.ok) {
-      throw new Error(
-        `native recovery authorization refused (${eligibility.reason}); authorize only from a direct local owner terminal, never from an agent session`,
-      );
-    }
     if (!args.recoveryReason?.trim())
       throw new Error("--recovery-authorize requires --recovery-reason=<why>");
     if (!Array.isArray(args.passthrough) || args.passthrough.length === 0)
@@ -14014,8 +14029,16 @@ async function reconcileRecoveryAuditSoft() {
 }
 
 async function main() {
+  // Recovery is the no-control-plane path. Detect its dedicated flags before
+  // even the connection front controller: a remote-profile lookup or transport
+  // bootstrap must not become an accidental prerequisite during an outage.
+  const rawArgv = process.argv.slice(2);
+  if (rawArgv.some((cell) => cell === "--recovery-authorize" || cell.startsWith("--recovery-grant="))) {
+    const recoveryArgs = parseArgs(rawArgv);
+    if (await recoveryFlow(recoveryArgs)) return;
+  }
   const connection = await runPsuConnectionFrontController(
-    process.argv.slice(2),
+    rawArgv,
   );
   if (connection.handled) {
     process.exitCode = connection.exitCode ?? 0;

@@ -49,6 +49,7 @@ async function search(query: string) {
   return JSON.parse(response.content[0].text) as {
     ecosystem: string;
     results: Array<{ id: string }>;
+    authoritative: boolean;
   };
 }
 
@@ -87,6 +88,13 @@ describe('design-phase plugin registry search', () => {
     const result = await search('Seller dock');
 
     expect(result.results).toEqual([]);
+    expect(result.authoritative).toBe(true);
+  });
+
+  it('does not mark an unsupported ecosystem empty result as authoritative', async () => {
+    const response = await plugin.tools.search_registry({ ecosystem: 'unknown', query: 'button' });
+
+    expect(JSON.parse(response.content[0].text)).toEqual({ ecosystem: 'unknown', results: [] });
   });
 
   it('publishes the shared controlled theme switcher for light/dark/system shells', async () => {

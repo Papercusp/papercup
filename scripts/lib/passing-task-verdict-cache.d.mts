@@ -100,6 +100,10 @@ export type DependencyClosureProof =
       files: string[];
     }
   | { ok: false; reason: string };
+export type ResolvedDependencyClosureProof = Extract<
+  DependencyClosureProof,
+  { ok: true }
+>;
 
 export function hashDependencyFileSet(args: {
   root: string;
@@ -114,6 +118,20 @@ export function passingTaskVerdictSharedInputProvenance(args: {
   root: string;
   trackedScan: { files: string[]; unscannedPresent: string[] };
 }): SharedInputProvenance;
+export type TaskVerdictDependencyProvenance =
+  | {
+      ok: true;
+      /** Workspace/dependency inputs that describe what the task semantically tests. */
+      semantic: ResolvedDependencyClosureProof;
+      /** Shared runner/config inputs that describe how the task executes. */
+      execution: ResolvedDependencyClosureProof | null;
+      /** Legacy aggregate fields; new cache identity code must use `semantic`. */
+      hash: string;
+      listHash: string;
+      fileCount: number;
+      files: string[];
+    }
+  | { ok: false; reason: string };
 export function passingTaskVerdictDependencyProvenance(args: {
   root: string;
   taskKey: string;
@@ -124,7 +142,7 @@ export function passingTaskVerdictDependencyProvenance(args: {
   repoWideTaskKeys: Set<string>;
   sharedInputProvenance?: SharedInputProvenance | null;
   digestCache?: Map<string, unknown>;
-}): DependencyClosureProof;
+}): TaskVerdictDependencyProvenance;
 export function shouldStorePassingTaskVerdict(args: {
   enabled: boolean;
   cacheStatus?: string;

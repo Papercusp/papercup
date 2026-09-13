@@ -209,6 +209,7 @@ import agentMcp_consoleResolve from './agent-mcp/console-resolve';
 import agentMcp_consoleRecord from './agent-mcp/console-record';
 import agentMcp_bootstrapSu from './agent-mcp/bootstrap-su';
 import agentMcp_bootstrapSuPersonaRefresh from './agent-mcp/bootstrap-su-persona-refresh';
+import agentMcp_recoveryAuditReconcile from './agent-mcp/recovery-audit-reconcile';
 import agentMcp_bootstrapRole from './agent-mcp/bootstrap-role';
 import agentMcp_sessionRecoveryBrief from './agent-mcp/session-recovery-brief';
 import agentMcp_turnStartMemory from './agent-mcp/turn-start-memory';
@@ -529,6 +530,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_consoleRecord as AnyRoute),
   ...flatten(agentMcp_bootstrapSu as AnyRoute[]),
   ...flatten(agentMcp_bootstrapSuPersonaRefresh as AnyRoute[]),
+  ...flatten(agentMcp_recoveryAuditReconcile as AnyRoute),
   ...flatten(agentMcp_bootstrapRole as AnyRoute[]),
   ...flatten(agentMcp_sessionRecoveryBrief as AnyRoute[]),
   ...flatten(agentMcp_turnStartMemory as AnyRoute[]),
