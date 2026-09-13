@@ -155,7 +155,7 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     const statements: string[] = [];
     h.sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       statements.push(strings.join(' '));
-      return (originalSql as unknown as (...args: unknown[]) => unknown)(strings, ...values);
+      return Reflect.apply(originalSql, undefined, [strings, ...values]);
     }) as unknown as postgres.Sql;
     try {
       const rubric = await rubrics.getRubric('direct-id-fast-path');
