@@ -55,6 +55,7 @@ export default defineTool({
     seeAlso: [
       'rubrics:list (scan summary rows to find an id)',
       'rubrics:search (keyword lookup)',
+      'rubrics:repair (preview a narrowly eligible first-party legacy revision chain)',
       'rubrics:trend (how this rubric\'s criteria trend over time)',
     ],
   },
@@ -179,6 +180,7 @@ export default defineTool({
               rubricRef,
               error:
                 `rubric revision ${args.revision} exists, but its immutable snapshot could not be projected.` +
+                ' If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true.' +
                 vintageHint +
                 freshCodeHint,
             };

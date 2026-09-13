@@ -109,7 +109,28 @@ export class PlanRevisionUnavailableError extends Error {
 // `withPlanLock` runs revision hooks after its transaction commits. Keep the
 // revision sequence allocation serialized independently of that plan lock so
 // concurrent post-commit hooks cannot both observe the same MAX(seq)+1.
-const PLAN_REVISION_ADVISORY_LOCK_NAMESPACE = 'plan_revisions';
+export const PLAN_REVISION_ADVISORY_LOCK_NAMESPACE = 'plan_revisions';
+
+/**
+ * Take the revision-spine advisory lock shared by post-commit revision writers
+ * and maintenance repairs. Callers that also mutate a plan must acquire the
+ * plan lock first, then this lock, matching the strict in-transaction writer
+ * order and avoiding a lock cycle with normal plan writes.
+ */
+export async function acquirePlanRevisionAdvisoryLock(
+  tx: PlanRevisionSql,
+  workspaceId: string,
+  harnessSlug: string,
+  planSlug: string,
+): Promise<void> {
+  const revisionLockKey = `${workspaceId}:${harnessSlug}:${planSlug}`;
+  await tx`
+    SELECT pg_advisory_xact_lock(
+      hashtext(${PLAN_REVISION_ADVISORY_LOCK_NAMESPACE}),
+      hashtext(${revisionLockKey})
+    )
+  `;
+}
 
 /** SQL client accepted by both the workspace wrapper and its bound transaction. */
 export type PlanRevisionSql = Sql | TransactionSql;
@@ -145,13 +166,7 @@ export async function recordPlanRevisionInTransaction(
     // The enclosing plan lock serializes ordinary plan writers, while this
     // separate lock also coordinates with post-commit best-effort writers for
     // the same revision spine.
-    const revisionLockKey = `${args.workspaceId}:${args.harnessSlug}:${args.planSlug}`;
-    await tx`
-      SELECT pg_advisory_xact_lock(
-        hashtext(${PLAN_REVISION_ADVISORY_LOCK_NAMESPACE}),
-        hashtext(${revisionLockKey})
-      )
-    `;
+    await acquirePlanRevisionAdvisoryLock(tx, args.workspaceId, args.harnessSlug, args.planSlug);
     const rows = await tx<{ seq: number }[]>`
       INSERT INTO harness_shared.plan_revisions (
         workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
@@ -223,13 +238,7 @@ export async function recordPlanRevision(
       // advisory lock has already been released here. A distinct namespace
       // keeps this tiny audit allocation serialized without coupling it to
       // ordinary plan writers or risking a lock cycle.
-      const revisionLockKey = `${workspaceId}:${harnessSlug}:${args.planSlug}`;
-      await tx`
-        SELECT pg_advisory_xact_lock(
-          hashtext(${PLAN_REVISION_ADVISORY_LOCK_NAMESPACE}),
-          hashtext(${revisionLockKey})
-        )
-      `;
+      await acquirePlanRevisionAdvisoryLock(tx, workspaceId, harnessSlug, args.planSlug);
       // INSERT … SELECT against the same table: the aggregate
       // sub-select always yields exactly one row (COALESCE(MAX,0)+1 is
       // 1 when the plan has no prior revisions), so exactly one row is

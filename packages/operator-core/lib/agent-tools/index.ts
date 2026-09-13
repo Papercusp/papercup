@@ -1029,6 +1029,9 @@ import './rubrics/list';
 import './rubrics/get';
 import './rubrics/search';
 import './rubrics/propose';
+// Conservative repair for first-party legacy revision snapshots whose exact
+// current-body identity is proven before the immutable rows are rewritten.
+import './rubrics/repair';
 // rubrics:amend — the small-edit path: patch ONE criterion field / methodRef without
 // the whole-document propose replace (rubric-system-improvements-2026-07-12 P-003).
 import './rubrics/amend';
