@@ -158,7 +158,9 @@ export function resetMcpAdmissionForTests(): void {
  * read; broad history remains shed. `rubrics:get` is admitted only for one rubric (the full
  * criteria body is required by a judge); multi-rubric reads remain shed. A judge's
  * `scorecards:emit` is admitted only for one terminal grading-integrity audit of one scorecard;
- * ordinary scorecard writes remain shed. The three read-only judge audit probes
+ * ordinary scorecard writes remain shed. A judge's complete `scorecards:evaluate` payload is
+ * admitted only when its ratings/instrument shape is bounded; ordinary complete evaluations
+ * remain shed. The three read-only judge audit probes
  * (`plans:evaluate-spec-test-adequacy`, `gates:degenerate-check`, and
  * `plans:get-spec-evidence`) are admitted only for the judge role and bounded argument shapes;
  * their ordinary callers remain shed. `work_items:checkpoint` is admitted only for a single
@@ -166,8 +168,10 @@ export function resetMcpAdmissionForTests(): void {
  * pressure condition; bulk checkpoint batches remain shed. `scorecards:get` is admitted only
  * for one bounded issue-id evidence read. `improvements:capture` is admitted only for the
  * tool-failure shorthand, whose nested metadata is bounded and is the required recovery record
- * for a shed tool call; ordinary captures remain shed. `dev:telemetry` requires an explicit
- * small result page so its aggregate query cannot become an unbounded pressure escape hatch.
+ * for a shed tool call; ordinary captures remain shed. `events:status` is admitted only for
+ * one exact await id or event-key inspection; broad active-await lists and the fleet-wide meter
+ * remain shed. `dev:telemetry` requires an explicit small result page so its aggregate query
+ * cannot become an unbounded pressure escape hatch.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -187,11 +191,13 @@ const CRITICAL_DEV_TELEMETRY_MAX_STRING_CHARS = 120;
 const DEV_TELEMETRY_TRANSPORTS = new Set(['http', 'mcp', 'ipc', 'in_process', 'unknown']);
 const SCHEDULER_GET_NEXT_NAME = normalizeMcpName('scheduler:get_next');
 const LOOP_STATUS_NAME = normalizeMcpName('loop:status');
+const EVENTS_STATUS_NAME = normalizeMcpName('events:status');
 const CRITICAL_SCHEDULER_MAX_HARNESS_CHARS = 200;
 const CRITICAL_SCHEDULER_MAX_HELD_PATH_CHARS = 512;
 const CRITICAL_SCHEDULER_MAX_HELD_PATHS = 500;
 const CRITICAL_SCHEDULER_STATES = new Set(['open', 'failing']);
 const CRITICAL_LOOP_STATUS_MAX_STRING_CHARS = 120;
+const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
@@ -206,6 +212,9 @@ const DEGENERATE_CHECK_NAME = normalizeMcpName('gates:degenerate-check');
 const GET_SPEC_EVIDENCE_NAME = normalizeMcpName('plans:get-spec-evidence');
 const CRITICAL_SCORECARDS_LIST_MAX_ROWS = 25;
 const CRITICAL_SCORECARDS_GET_ISSUE_ID_MAX = 120;
+const CRITICAL_SCORECARDS_EVALUATE_MAX_RATINGS = 64;
+const CRITICAL_SCORECARDS_EVALUATE_MAX_SNAPSHOTS = 64;
+const CRITICAL_SCORECARDS_EVALUATE_MAX_ARGUMENT_CHARS = 64_000;
 const CRITICAL_TOOL_FAILURE_MESSAGE_MAX = 4_000;
 const CRITICAL_TOOL_FAILURE_DIRECT_EVIDENCE_MAX = 2_000;
 const CRITICAL_JUDGE_AUDIT_MAX_ROWS = 25;
@@ -700,6 +709,48 @@ function isBoundedLoopStatusArgs(args: unknown): boolean {
 }
 
 /**
+ * `events:status` is a recovery read, but its unfiltered form renders every active
+ * await, recent delivery, composed tree, and subscription for the caller. Keep the
+ * critical-pressure reserve to one exact await registration or one exact event-key
+ * inspection. The fleet-wide meter is deliberately excluded because it performs an
+ * aggregate read unrelated to the caller's exact recovery target.
+ */
+export function isBoundedEventsStatusArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['meter', 'await_id', 'event', 'after_generation']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (args.meter !== undefined && typeof args.meter !== 'boolean') return false;
+  if (args.meter === true) return false;
+
+  const hasAwaitId = args.await_id !== undefined;
+  const hasEvent = args.event !== undefined;
+  if (hasAwaitId === hasEvent) return false;
+
+  if (hasAwaitId) {
+    const awaitId = args.await_id;
+    return (
+      typeof awaitId === 'number' &&
+      Number.isSafeInteger(awaitId) &&
+      awaitId > 0 &&
+      args.after_generation === undefined
+    );
+  }
+
+  if (
+    typeof args.event !== 'string' ||
+    args.event.trim().length === 0 ||
+    args.event.length > CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS
+  ) {
+    return false;
+  }
+  const afterGeneration = args.after_generation;
+  return (
+    afterGeneration === undefined ||
+    (typeof afterGeneration === 'number' && Number.isSafeInteger(afterGeneration) && afterGeneration >= 0)
+  );
+}
+
+/**
  * A single checkpoint is the smallest durable recovery write: it preserves the
  * successor state needed to resume after the pressure condition clears. Keep the
  * exemption to one identified item so a bulk checkpoint request cannot turn the
@@ -761,9 +812,9 @@ export function isBoundedScorecardsListArgs(args: unknown): boolean {
 /**
  * `scorecards:evaluate` is a read-only grading preflight, but its optional
  * ratings/instrument payloads can be arbitrarily large and make the evaluator
- * do the full validation path. Reserve only the skeleton form used to discover
- * criterion keys (an empty ratings map is equivalent in the handler); the
- * complete evaluation remains sheddable until pressure clears.
+ * do the full validation path. Reserve the skeleton form used to discover
+ * criterion keys, plus the separately bounded complete form for a judge's
+ * grading-integrity pass; ordinary complete evaluations remain sheddable.
  */
 export function isBoundedScorecardsEvaluateArgs(args: unknown): boolean {
   if (!isRecord(args)) return false;
@@ -785,6 +836,80 @@ export function isBoundedScorecardsEvaluateArgs(args: unknown): boolean {
     return false;
   }
   if (args.ratings !== undefined && (!isRecord(args.ratings) || Object.keys(args.ratings).length !== 0)) {
+    return false;
+  }
+  return true;
+}
+
+function isBoundedScorecardText(value: unknown, max: number, min = 1): value is string {
+  return typeof value === 'string' && value.trim().length >= min && value.length <= max;
+}
+
+/**
+ * A judge's second `scorecards:evaluate` call validates the complete ratings
+ * payload before the terminal grading-integrity emit. Keep that read on the
+ * critical-pressure reserve, but only for the signed judge-role routing hint
+ * and a field-bounded payload. The admission gate cannot resolve the principal
+ * yet; the downstream signed-role verifier remains authoritative.
+ */
+export function isBoundedJudgeScorecardsEvaluateArgs(args: unknown, requestUrl?: string): boolean {
+  if (!isJudgeRoleRequest(requestUrl) || !isRecord(args)) return false;
+  let encoded: string | undefined;
+  try {
+    encoded = JSON.stringify(args);
+  } catch {
+    return false;
+  }
+  if (!encoded || encoded.length > CRITICAL_SCORECARDS_EVALUATE_MAX_ARGUMENT_CHARS) return false;
+
+  const allowed = new Set(['rubricRef', 'sourceHive', 'ratings', 'instrumentSnapshots', 'testedSha']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!isBoundedScorecardText(args.rubricRef, 120)) return false;
+  if (args.sourceHive !== undefined && !isBoundedScorecardText(args.sourceHive, 120)) return false;
+
+  if (!isRecord(args.ratings)) return false;
+  const ratingKeys = Object.keys(args.ratings);
+  if (ratingKeys.length < 1 || ratingKeys.length > CRITICAL_SCORECARDS_EVALUATE_MAX_RATINGS) return false;
+  for (const key of ratingKeys) {
+    if (!isBoundedScorecardText(key, 200)) return false;
+    const rating = args.ratings[key];
+    if (!isRecord(rating)) return false;
+    const ratingFields = new Set(['rating', 'evidence', 'suggestion', 'remediation', 'disregard']);
+    if (Object.keys(rating).some((field) => !ratingFields.has(field))) return false;
+    if (!isBoundedScorecardText(rating.rating, 120) || !isBoundedScorecardText(rating.evidence, 4_000)) {
+      return false;
+    }
+    if (rating.suggestion !== undefined && !isBoundedScorecardText(rating.suggestion, 2_000)) return false;
+    if (rating.remediation !== undefined && !isBoundedScorecardText(rating.remediation, 300, 2)) return false;
+    if (rating.disregard !== undefined && !isBoundedScorecardText(rating.disregard, 600, 10)) return false;
+  }
+
+  if (args.instrumentSnapshots !== undefined) {
+    if (!isRecord(args.instrumentSnapshots)) return false;
+    const snapshotKeys = Object.keys(args.instrumentSnapshots);
+    if (snapshotKeys.length > CRITICAL_SCORECARDS_EVALUATE_MAX_SNAPSHOTS) return false;
+    for (const key of snapshotKeys) {
+      if (!isBoundedScorecardText(key, 200)) return false;
+      const snapshot = args.instrumentSnapshots[key];
+      if (!isRecord(snapshot)) return false;
+      const snapshotFields = new Set(['verdict', 'measuredAt', 'window', 'value', 'evidenceRef', 'provenance']);
+      if (Object.keys(snapshot).some((field) => !snapshotFields.has(field))) return false;
+      if (!['pass', 'fail', 'unknown'].includes(snapshot.verdict as string)) return false;
+      if (!isBoundedScorecardText(snapshot.measuredAt, 120)) return false;
+      if (snapshot.evidenceRef !== undefined && !isBoundedScorecardText(snapshot.evidenceRef, 500)) return false;
+      if (
+        snapshot.provenance !== undefined &&
+        !['self-reported', 'platform-computed'].includes(snapshot.provenance as string)
+      ) {
+        return false;
+      }
+    }
+  }
+
+  if (
+    args.testedSha !== undefined &&
+    (typeof args.testedSha !== 'string' || !/^[0-9a-f]{7,64}$/i.test(args.testedSha))
+  ) {
     return false;
   }
   return true;
@@ -943,10 +1068,13 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
+  if (normalized === EVENTS_STATUS_NAME) return isBoundedEventsStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
-  if (normalized === SCORECARDS_EVALUATE_NAME) return isBoundedScorecardsEvaluateArgs(args);
+  if (normalized === SCORECARDS_EVALUATE_NAME) {
+    return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestUrl);
+  }
   if (normalized === SCORECARDS_GET_NAME) return isBoundedScorecardsGetArgs(args);
   if (normalized === SCORECARDS_EMIT_NAME) return isBoundedJudgeGradingAuditEmitArgs(args, requestUrl);
   if (normalized === RUBRICS_GET_NAME) return isBoundedRubricsGetArgs(args);
