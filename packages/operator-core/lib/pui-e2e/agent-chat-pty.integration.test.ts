@@ -785,6 +785,13 @@ async function openAgentChat(pane: PuiPane): Promise<void> {
   // The footer exists on every loaded tab. `o` is the global Agent Chat
   // action; leave an automatically restored composer before invoking it.
   await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+  if (scriptedEngine.real && process.env.PUI_REAL_PLAN === '1') {
+    // View-state restoration is asynchronous and any owner key deliberately
+    // cancels a still-pending restore. The Plans header proves the seeded
+    // state (including its singleton plan_filter) reached the reducer before
+    // this fixture sends Escape/o and asks PUI for launch options.
+    await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+  }
   pane.escape();
   pane.write('o');
   await pane.waitFor('┌ Agent Chat');
