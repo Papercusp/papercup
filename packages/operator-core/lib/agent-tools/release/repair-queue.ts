@@ -531,7 +531,7 @@ export default defineTool({
   guidance: {
     when: 'After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.',
     notWhen:
-      'Workspace-global: omit harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
+      'Workspace-global: never pass harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
       '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
     returns:
