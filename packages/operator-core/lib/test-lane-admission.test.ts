@@ -37,12 +37,12 @@ describe('operator-core test-lane admission', () => {
     expect(statSync(PC_HEAVY).mode & 0o111).not.toBe(0);
   });
 
-  it('derives sequential shard count from the live file census and worker cap', () => {
-    expect(resolvePureLaneShardCount({ VITEST_MAX_WORKERS: '2' }, 3606)).toBe(3);
+  it('bounds each Vitest coordinator by file census independently of its worker cap', () => {
+    expect(resolvePureLaneShardCount({ VITEST_MAX_WORKERS: '2' }, 3606)).toBe(5);
     expect(resolvePureLaneShardCount({ VITEST_MAX_FORKS: '1' }, 3606)).toBe(5);
-    expect(resolvePureLaneShardCount({ VITEST_MAX_WORKERS: '8' }, 3606)).toBe(1);
-    expect(resolvePureLaneShardCount({}, 3606)).toBe(1);
-    expect(resolvePureLaneShardCount({ VITEST_MAX_WORKERS: '2' }, 7200)).toBe(5);
+    expect(resolvePureLaneShardCount({ VITEST_MAX_WORKERS: '8' }, 3606)).toBe(5);
+    expect(resolvePureLaneShardCount({}, 3606)).toBe(5);
+    expect(resolvePureLaneShardCount({ VITEST_MAX_WORKERS: '2' }, 7200)).toBe(10);
   });
 
   it('preserves caller flags while owning the final Vitest shard selector', () => {
@@ -75,7 +75,9 @@ describe('operator-core test-lane admission', () => {
     });
 
     expect(maxActive).toBe(1);
-    expect(calls.map((args) => args.at(-1))).toEqual(['--shard=1/2', '--shard=2/2']);
+    expect(calls.map((args) => args.at(-1))).toEqual([
+      '--shard=1/5', '--shard=2/5', '--shard=3/5', '--shard=4/5', '--shard=5/5',
+    ]);
     expect(code).toBe(134);
   });
 
