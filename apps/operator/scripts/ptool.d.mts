@@ -226,17 +226,21 @@ export function mergeConvenienceArgs(args: Record<string, unknown>, { workspace,
  */
 export function mergeDispatchProjection(args: any, projection: any): any;
 /**
- * A replay is safe only when the server explicitly marks the listed tool as
- * read-only.  Do not infer this from a familiar name or from the call's
- * arguments: a tool may read and write state even when its name sounds like a
- * query.  The MCP ToolAnnotations field is advisory for clients, but it is the
- * narrow capability signal ptool needs before reconnecting after an ambiguous
- * post-connect transport failure.
- *
- * @param {ToolCatalogEntry | null | undefined} tool
- * @returns {boolean}
+ * Canonical JSON matching the server's codeRunRequestHash implementation:
+ * object keys sort recursively, array order is retained, undefined object
+ * values are dropped, and undefined array slots become null. Pure.
  */
-export function isReadOnlyTool(tool: ToolCatalogEntry | null | undefined): boolean;
+export function canonicalJson(value: any): any;
+/** SHA-256 of the exact code:run argument object sent in `params.arguments`. */
+export function codeRunRequestHash(args: any): string;
+/**
+ * Validate server-owned code:run replay evidence against the exact MCP body.
+ * Catalog annotations, tool names, script text, and caller-authored argument
+ * fields are deliberately not accepted as replay authority.
+ */
+export function isValidCodeRunReplayProof(proof: any, params: any): boolean;
+/** Alias that reads naturally at the replay decision point. */
+export function isCodeRunReplayAuthorized(params: any, proof: any): boolean;
 /**
  * Repair JSON text whose string values contain literal control characters.
  * A tool can return JSON in an MCP text content block, and printing that text
@@ -451,13 +455,25 @@ export function formatOperatorConnectFailure(operatorUrl: any, error: any): stri
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, readOnly?: boolean}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown}} [options]
  */
-export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, readOnly, }?: {
+export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, replayProof, }?: {
     reconnect?: () => Promise<any>;
     maxAttempts?: number;
     timeoutMs?: number;
-    readOnly?: boolean;
+    replayProof?: unknown;
+}): Promise<{
+    client: any;
+    result: any;
+}>;
+/**
+ * Explicitly replay one exact code:run body after an unknown transport result.
+ * This is intentionally separate from normal recovery so catalog annotations
+ * and generic per-call retry budgets cannot opt a request into replay.
+ */
+export function retryCodeRunWithProof(client: any, params: any, replayProof: any, { reconnect, timeoutMs, maxAttempts, }?: {
+    timeoutMs?: number | undefined;
+    maxAttempts?: number | undefined;
 }): Promise<{
     client: any;
     result: any;
@@ -619,6 +635,10 @@ export function stdoutDeliveryError(): Error | null;
 export function printResult(result: unknown, { raw, deliveryProbe, env }?: unknown): Promise<number>;
 export const OPERATOR_URL_PROVENANCE_ENV: "PAPERCUSP_OPERATOR_URL_PROVENANCE";
 export const LAUNCHER_OPERATOR_URL_PROVENANCE: "psu-launcher";
+/** Server-owned proof metadata emitted by a completed, settled-read code:run. */
+export const CODE_RUN_REPLAY_PROOF_META_KEY: "codeRunReplayProof";
+export const CODE_RUN_REPLAY_PROOF_SCHEMA_VERSION: 1;
+export const CODE_RUN_TOOL_NAME: "code:run";
 /**
  * A result-door truncation only tells ptool that the operator's reply is not
  * machine-readable. The tool call may already have executed, which is
@@ -667,7 +687,18 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS: 60000;
  * immediate retry can overlap the original handler before its receipt exists.
  */
 export const PTOOL_POST_CONNECT_RETRIES: 0;
-export const PTOOL_READ_ONLY_POST_CONNECT_RETRIES: 1;
+/**
+ * Explicitly replay one exact code:run body after an unknown transport result.
+ * This is intentionally separate from normal recovery so catalog annotations
+ * and generic per-call retry budgets cannot opt a request into replay.
+ */
+export function replayCodeRunWithProof(client: any, params: any, replayProof: any, { reconnect, timeoutMs, maxAttempts, }?: {
+    timeoutMs?: number | undefined;
+    maxAttempts?: number | undefined;
+}): Promise<{
+    client: any;
+    result: any;
+}>;
 export const PTOOL_USAGE: "ptool \u2014 call any Papercusp defineTool endpoint from the terminal.\n\n  ptool                         interactive: pick service \u2192 endpoint \u2192 args\n  ptool <group:verb>            skip the pickers, prompt for that tool's args\n  ptool <group:verb> --json - <<'EOF'  read JSON args from stdin (safe)\n  {\"copy\": \"it's fine now\"}\n  EOF\n  ptool <group:verb> --json-file payload.json   read JSON args from a file (safe)\n  ptool <group:verb> --json '<args>'   inline, quote-free JSON only\n  ptool <group:verb> --projection '<spec>'  bound the result at dispatch time\n  ptool code:run --script-file batch.js   read the script from a file\n  ptool code:run --script - <<'EOF'      read the script from stdin\n  return await tools.dev.build_status({});\n  EOF\n  ptool --list [filter]         print the catalog (optionally name-filtered)\n  ptool <tool> --transport=uds  require direct local MCP (http and auto also accepted)\n\nPrefer --json-file or --json - for any payload that is not a trivial,\nquote-free literal \u2014 especially loop:checkpoint checks/walls with recheck text.\nA shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote\nterminates early). For code:run, prefer --script-file or --script - for source\nthat contains nested shell commands or quoted strings.\n\nFlags:\n  --json <json> / --args <json>   args object for a direct (non-interactive) call;\n                                   '-' reads the JSON from stdin instead\n  --json-file <path>              read the args JSON from a file (quoting-free)\n  --projection <json>             dispatch-level result projection (quote-free JSON)\n  --script <source>               direct code:run JavaScript source; '-' reads stdin\n  --script-file <path>            direct code:run JavaScript source (quoting-free)\n  --workspace <ws>                scope the session (needed for harness:*, features:*, \u2026)\n  --harness <slug>                scope the session to a harness\n  --idempotency-key <key>         reuse one logical tools/call receipt after reconciling an unknown outcome\n  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)\n  PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)\n  --raw                           print the raw result text (no JSON pretty-print)\n  --url=<http://host:port>        operator URL (default current PAPERCUSP_HONO_PORT host, then $PAPERCUSP_OPERATOR_URL or :3070)\n  -h, --help                      this help\n";
 export type EnvironmentMap = Record<string, string | undefined>;
 export type ToolCatalogEntry = {

@@ -61,7 +61,7 @@
  * matching psu launches; set `PAPERCUSP_CONTEXT_TIER=full` for the explicit
  * unshaped-payload escape hatch.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -591,19 +591,54 @@ export function mergeDispatchProjection(args, projection) {
   return { ...base, projection };
 }
 
+/** Server-owned proof metadata emitted by a completed, settled-read code:run. */
+export const CODE_RUN_REPLAY_PROOF_META_KEY = 'codeRunReplayProof';
+export const CODE_RUN_REPLAY_PROOF_SCHEMA_VERSION = 1;
+export const CODE_RUN_TOOL_NAME = 'code:run';
+
 /**
- * A replay is safe only when the server explicitly marks the listed tool as
- * read-only.  Do not infer this from a familiar name or from the call's
- * arguments: a tool may read and write state even when its name sounds like a
- * query.  The MCP ToolAnnotations field is advisory for clients, but it is the
- * narrow capability signal ptool needs before reconnecting after an ambiguous
- * post-connect transport failure.
- *
- * @param {ToolCatalogEntry | null | undefined} tool
- * @returns {boolean}
+ * Canonical JSON matching the server's codeRunRequestHash implementation:
+ * object keys sort recursively, array order is retained, undefined object
+ * values are dropped, and undefined array slots become null. Pure.
  */
-export function isReadOnlyTool(tool) {
-  return tool?.annotations?.readOnlyHint === true;
+export function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => entry === undefined ? 'null' : canonicalJson(entry)).join(',')}]`;
+  }
+  const object = value;
+  return `{${Object.keys(object)
+    .sort()
+    .filter((key) => object[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+    .join(',')}}`;
+}
+
+/** SHA-256 of the exact code:run argument object sent in `params.arguments`. */
+export function codeRunRequestHash(args) {
+  return createHash('sha256').update(canonicalJson(args), 'utf8').digest('hex');
+}
+
+/**
+ * Validate server-owned code:run replay evidence against the exact MCP body.
+ * Catalog annotations, tool names, script text, and caller-authored argument
+ * fields are deliberately not accepted as replay authority.
+ */
+export function isValidCodeRunReplayProof(proof, params) {
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return false;
+  if (params?.name !== CODE_RUN_TOOL_NAME) return false;
+  if (proof.schemaVersion !== CODE_RUN_REPLAY_PROOF_SCHEMA_VERSION) return false;
+  if (proof.kind !== 'settled-read' || proof.tool !== CODE_RUN_TOOL_NAME) return false;
+  if (!Number.isSafeInteger(proof.callCount) || proof.callCount < 1) return false;
+  if (typeof proof.requestHash !== 'string') return false;
+  const requestHash = proof.requestHash.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(requestHash)) return false;
+  return codeRunRequestHash(params.arguments) === requestHash;
+}
+
+/** Alias that reads naturally at the replay decision point. */
+export function isCodeRunReplayAuthorized(params, proof) {
+  return isValidCodeRunReplayProof(proof, params);
 }
 
 /* ─── result formatting (pure — exported for tests) ───────────────────── */
@@ -811,6 +846,7 @@ export function resultToText(result, { raw = false } = {}) {
 }
 
 const SCRATCH_URI_PREFIX = 'papercusp://scratch/';
+const OUTPUT_ENVELOPE_SCHEMA_VERSION = 'papercusp.output-envelope/v1';
 
 /**
  * Filesystem root for scratch spill files, mirroring
@@ -901,6 +937,7 @@ async function readSpilledPayload(path) {
  */
 export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayload, fileExists = existsSync, env = process.env } = {}) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed;
+  if (parsed.schemaVersion !== OUTPUT_ENVELOPE_SCHEMA_VERSION) return parsed;
   if (!Array.isArray(parsed.content)) return parsed;
   // Already result-shaped (carries `ok`) — prefer it outright. Also protects a
   // genuine tool result that happens to carry its own `content` array.
@@ -908,9 +945,13 @@ export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayl
 
   for (const part of parsed.content) {
     const inline = tryParseJsonObject(part?.text);
-    if (inline) return inline;
+    if (inline) return mergeUnwrappedMetadata(inline, parsed._meta);
 
-    if (part?.kind === 'reference' || part?.type === 'reference') {
+    if (
+      part?.kind === 'reference' ||
+      part?.kind === 'evidence-reference' ||
+      part?.type === 'reference'
+    ) {
       const path = scratchUriToPath(part.uri, env);
       if (!path || !fileExists(path)) continue;
       // The spilled payload is itself an envelope: one of its content parts
@@ -925,7 +966,7 @@ export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayl
       }
       for (const spilledPart of spilled?.content ?? []) {
         const candidate = tryParseJsonObject(spilledPart?.text);
-        if (candidate) return candidate;
+        if (candidate) return mergeUnwrappedMetadata(candidate, spilled?._meta, parsed._meta);
       }
       // A reference we could read but could not parse falls through to the
       // next part rather than returning early — if none parses, the caller
@@ -933,6 +974,19 @@ export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayl
     }
   }
   return parsed;
+}
+
+/**
+ * Keep result metadata attached while replacing an output envelope with its
+ * inner JSON. The outer server metadata is applied last so a payload cannot
+ * shadow server-owned replay proof with a caller-authored `_meta` field.
+ */
+function mergeUnwrappedMetadata(result, ...metadataSources) {
+  const metadata = [result?._meta, ...metadataSources]
+    .filter((value) => value && typeof value === 'object' && !Array.isArray(value))
+    .reduce((merged, value) => Object.assign(merged, value), {});
+  if (Object.keys(metadata).length === 0) return result;
+  return { ...result, _meta: metadata };
 }
 
 /**
@@ -1914,11 +1968,6 @@ export function formatOperatorConnectFailure(operatorUrl, error) {
  * immediate retry can overlap the original handler before its receipt exists.
  */
 export const PTOOL_POST_CONNECT_RETRIES = 0;
-// Read-only calls can be replayed once after reconnecting: unlike a mutation,
-// a second execution cannot duplicate a state change. Keep this separate from
-// PTOOL_POST_CONNECT_RETRIES so callers cannot accidentally opt mutations back
-// into automatic replay by increasing a generic retry budget.
-export const PTOOL_READ_ONLY_POST_CONNECT_RETRIES = 1;
 
 async function closeClientQuietly(client) {
   try {
@@ -1938,27 +1987,27 @@ async function closeClientQuietly(client) {
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, readOnly?: boolean}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown}} [options]
  */
 export async function callToolWithReplayRecovery(
   client,
   params,
   {
     reconnect,
-    // Use the read-only ceiling as the request budget default; mutations are
-    // still clamped to PTOOL_POST_CONNECT_RETRIES below, so this cannot opt
-    // them back into automatic replay.
-    maxAttempts = PTOOL_READ_ONLY_POST_CONNECT_RETRIES,
+    maxAttempts = PTOOL_POST_CONNECT_RETRIES,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
-    readOnly = false,
+    replayProof,
   } = {},
 ) {
   let activeClient = client;
   let retriesUsed = 0;
-  const retryBudget = Math.min(
-    maxAttempts,
-    readOnly ? PTOOL_READ_ONLY_POST_CONNECT_RETRIES : PTOOL_POST_CONNECT_RETRIES,
-  );
+  const requestedRetries = Number.isFinite(maxAttempts) ? Math.max(0, Math.floor(maxAttempts)) : 0;
+  // No automatic replay exists. A caller must explicitly supply a valid,
+  // server-owned proof for this exact code:run body, and even then only one
+  // replay is allowed.
+  const retryBudget = isCodeRunReplayAuthorized(params, replayProof)
+    ? Math.min(requestedRetries, 1)
+    : 0;
   while (true) {
     try {
       const result = await callToolWithPressureRetry(activeClient, params, { timeoutMs });
@@ -1978,6 +2027,37 @@ export async function callToolWithReplayRecovery(
     }
   }
 }
+
+/**
+ * Explicitly replay one exact code:run body after an unknown transport result.
+ * This is intentionally separate from normal recovery so catalog annotations
+ * and generic per-call retry budgets cannot opt a request into replay.
+ */
+export async function retryCodeRunWithProof(
+  client,
+  params,
+  replayProof,
+  {
+    reconnect,
+    timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
+    maxAttempts = 1,
+  } = {},
+) {
+  if (!isCodeRunReplayAuthorized(params, replayProof)) {
+    throw new Error(
+      'ptool: refusing code:run replay; a valid server-owned settled-read proof for the exact request body is required',
+    );
+  }
+  return callToolWithReplayRecovery(client, params, {
+    reconnect,
+    timeoutMs,
+    maxAttempts: Math.min(1, Math.max(0, Number.isFinite(maxAttempts) ? Math.floor(maxAttempts) : 0)),
+    replayProof,
+  });
+}
+
+/** Noun-first alias for callers that describe the operation as replay. */
+export const replayCodeRunWithProof = retryCodeRunWithProof;
 
 /**
  * Dispatch a named scripted call without first resolving its catalog entry.
@@ -2002,7 +2082,6 @@ export async function dispatchScriptedToolWithoutCatalog(
     {
       timeoutMs: timeoutMs ?? timeoutForTool(toolName, callArgs),
       reconnect,
-      readOnly: false,
     },
   );
 }
@@ -2833,7 +2912,6 @@ async function main() {
         {
           timeoutMs: timeoutForTool(toolName, callArgs),
           reconnect: () => connectOperator(),
-          readOnly: isReadOnlyTool(tool),
         },
       );
       client = recovered.client;
