@@ -4566,6 +4566,34 @@ describe('work_items:checkpoint — unchanged attestation surface (P-007/R-06)',
     expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['checks', { claim: 'the replacement row would change the carried checks' }],
+    ['retireIds', 'carried-row-id'],
+  ] as const)('refuses shorthand %s row mutations before attestation', async (field, value) => {
+    attestWorkItemCheckpointUnchanged.mockResolvedValue({
+      ok: true,
+      currentHash: HASH,
+      attestedCount: 1,
+      bodyAgeMs: 0,
+      remainingAttestations: 2,
+    });
+
+    const result = await one({
+      id: 'WI-ATT',
+      unchanged: true,
+      contentHash: HASH,
+      [field]: field === 'checks' ? [value] : [value],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'attestation_conflicting_args',
+    });
+    expect(result.error).toContain(field);
+    expect(attestWorkItemCheckpointUnchanged).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+  });
+
   it('refuses an attestation with no contentHash — you cannot attest a body you have not read', async () => {
     const result = await one({ id: 'WI-ATT', unchanged: true });
 

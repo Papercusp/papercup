@@ -1257,6 +1257,8 @@ export default defineTool({
             confirmShrink: args.confirmShrink,
             rowsMode: args.rowsMode,
             confirmRetire: args.confirmRetire,
+            retireIds: args.retireIds,
+            checks: args.checks,
             dependsOn: args.dependsOn,
             learned: args.learned,
             learnedLevel: args.learnedLevel,
@@ -1512,6 +1514,7 @@ export default defineTool({
               ['clear', it.clear === true],
               ['append', it.append === true],
               ['checks', it.checks !== undefined],
+              ['retireIds', it.retireIds !== undefined],
               ['dependsOn', it.dependsOn !== undefined],
             ] as const
           )
