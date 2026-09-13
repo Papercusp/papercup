@@ -20,9 +20,24 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-/** Convert a filesystem-shaped authored-doc ref into the Starlight slug form. */
+/** Convert a filesystem-shaped authored-doc ref to an extensionless slug. */
 export function normalizeDocsGetRef(value: string): string {
-  return value.trim().replace(/\.(?:md|mdx)$/i, '');
+  return value.trim().replaceAll('\\', '/').replace(/\/+$/, '').replace(/\.(?:md|mdx)$/i, '');
+}
+
+/**
+ * Convert engineering-doc URL/content-root refs to Starlight slugs.
+ *
+ * This is intentionally separate from normalizeDocsGetRef: harness docs keep
+ * their `docs/` prefix as part of the canonical slug, while Starlight maps
+ * `<section>/index.mdx` to the `<section>` slug.
+ */
+export function normalizeEngineeringDocsGetRef(value: string): string {
+  const ref = normalizeDocsGetRef(value)
+    .replace(/^\/?internal\/docs(?:\/|$)/, '')
+    .replace(/^\/?docs\//, '')
+    .replace(/^apps\/operator-docs\/src\/content\/docs\//, '');
+  return ref.replace(/\/index$/i, '');
 }
 
 /**

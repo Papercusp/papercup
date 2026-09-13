@@ -1,4 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+const h = vi.hoisted(() => ({ withWorkspace: vi.fn() }));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withWorkspace: h.withWorkspace,
+}));
+
 import {
   acceptanceBarApprovalSchema,
   approvalReceiptJsonSource,
@@ -10,6 +17,7 @@ import {
 } from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { normalizeAcceptanceBarCriterion } from './rubrics';
+import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import {
   ACCEPTANCE_BAR_MEANING_FIELDS,
   acceptanceBarMeaningField,
@@ -139,6 +147,25 @@ describe('acceptance BAR amendment transaction contract', () => {
         async () => true,
       ),
     ).rejects.toThrow(/must share one workspace/);
+  });
+
+  it('normalizes a raw advisory lock timeout to OrgTxnTimeoutError', async () => {
+    const raw = Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+    const tx = ((strings: TemplateStringsArray) => {
+      if (strings.join(' ').includes('pg_advisory_xact_lock')) return Promise.reject(raw);
+      return Promise.resolve([]);
+    }) as unknown;
+    h.withWorkspace.mockImplementationOnce(
+      async (_workspaceId: string, fn: (tx: unknown) => Promise<unknown>) => fn(tx),
+    );
+
+    const rejected = withAcceptanceBarAmendmentTransaction(
+      { plans: [{ workspaceId: 'ws', harnessSlug: 'h', planSlug: 'rubric' }] },
+      async () => true,
+    );
+
+    await expect(rejected).rejects.toBeInstanceOf(OrgTxnTimeoutError);
+    await expect(rejected).rejects.toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03', cause: raw });
   });
 });
 

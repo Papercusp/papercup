@@ -598,7 +598,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     }
   });
 
-  it('emits a submittable get-spec-evidence probe when the required layer is missing', () => {
+  it('emits a submittable get-specs probe for the declared required layer when evidence is missing', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
       evidence: [
@@ -617,8 +617,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     const correctLayerEvidence = result.ratings['correct-layer'].evidence;
 
     expect(correctLayerEvidence).toContain(
-      'Probe plans:get-spec-evidence with args={"harness":"papercusp","slug":"reconnect-plan","specIds":["SPEC-003-01"]}.',
+      'Probe plans:get-specs with args={"harness":"papercusp","slug":"reconnect-plan","specIds":["SPEC-003-01"]}; inspect specs[0].requiredTestLayers.',
     );
+    expect(correctLayerEvidence).toContain('expected ["integration"]');
+    expect(correctLayerEvidence).not.toContain('Probe plans:get-spec-evidence');
     expect(correctLayerEvidence).not.toMatch(/\b(planSlug|specId|specRevision|specFingerprint)=/);
   });
 

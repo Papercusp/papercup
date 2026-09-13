@@ -22,6 +22,7 @@ import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { runWithWorkspace } from './workspace-als';
 import { activeWorkspaceId } from './workspace-registry';
+import { OrgTxnTimeoutError } from './pg-bounded-txn';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
@@ -2705,13 +2706,17 @@ describe('template_data persistence boundary — the set-template-data door', ()
     // made this assertion fail for an environment reason while the system did
     // exactly what the test is named for (serialize, admit one, write nothing
     // partial). Those invariants are still asserted, above and below.
-    // This is NOT a loosening: the stale-CAS refusal is now pinned
+    // This is NOT a loosening: the stale-CAS refusal is pinned
     // DETERMINISTICALLY by the sequential test immediately below, where no
     // competing lock holder exists, so the specific code is still covered.
-    // That the lock path surfaces a RAW PostgresError instead of the typed
-    // OrgTxnTimeoutError the rest of operator-core maps 55P03 onto is a real
-    // gap, filed as EI-22629595262565099 rather than absorbed here.
-    expect(String(refusal.reason)).toMatch(/acceptance_bar_amendment_revision_conflict|lock timeout/);
+    // When the lock path wins, the cross-plan transaction boundary must expose
+    // the same typed timeout contract as the rest of operator-core rather than
+    // leaking the raw PostgresError.
+    if (refusal.reason instanceof OrgTxnTimeoutError) {
+      expect(refusal.reason.pgCode).toBe('55P03');
+    } else {
+      expect(String(refusal.reason)).toMatch(/acceptance_bar_amendment_revision_conflict/);
+    }
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision! + 1);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;

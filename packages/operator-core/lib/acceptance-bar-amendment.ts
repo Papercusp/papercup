@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
+import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import { setSpecClause, type SpecClauseSql, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
@@ -475,16 +476,26 @@ export async function withAcceptanceBarAmendmentTransaction<T>(
     throw new Error('acceptance_bar_amendment: plans must share one workspace');
   }
   const budgetMs = (args.ttlSec ?? 5) * 1000;
-  return withWorkspace(workspaceId, async (tx) => {
-    for (const plan of plans) {
-      await acquirePlanAdvisoryLock(
-        tx,
-        planAdvisoryLockKey(plan.workspaceId, plan.harnessSlug, plan.planSlug),
-        budgetMs,
-      );
-    }
-    return work(tx);
-  });
+  try {
+    return await withWorkspace(workspaceId, async (tx) => {
+      for (const plan of plans) {
+        await acquirePlanAdvisoryLock(
+          tx,
+          planAdvisoryLockKey(plan.workspaceId, plan.harnessSlug, plan.planSlug),
+          budgetMs,
+        );
+      }
+      return work(tx);
+    });
+  } catch (error) {
+    // acquirePlanAdvisoryLock deliberately propagates PostgreSQL's 55P03 after
+    // the transaction has been aborted. This boundary is the caller-facing
+    // cross-plan write seam, so normalize that raw driver error to the same
+    // typed contention contract used by other operator writes.
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === '55P03') throw new OrgTxnTimeoutError(code, error);
+    throw error;
+  }
 }
 
 /** The deterministic key used when a caller omits an explicit replay token. */

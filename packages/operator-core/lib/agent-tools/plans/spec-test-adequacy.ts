@@ -446,6 +446,19 @@ function clauseProbe(clause: SpecClauseRevision, harness?: string): string {
   );
 }
 
+function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): string {
+  const args = JSON.stringify({
+    ...(harness !== undefined ? { harness } : {}),
+    slug: clause.planSlug,
+    specIds: [clause.specId],
+  });
+  return (
+    `Probe plans:get-specs with args=${args}; inspect specs[0].requiredTestLayers. ` +
+    `This reads the canonical declared test-layer requirement for ${clauseIdentity(clause)} ` +
+    `(expected ${JSON.stringify(clause.requiredTestLayers)}).`
+  );
+}
+
 function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
   const lineage = classifySpecEvidenceLineage(row);
@@ -1057,7 +1070,7 @@ export function evaluateSpecTestAdequacy(input: {
   if (clause.requiredTestLayers.length === 0) {
     layerRating = {
       rating: 'not-applicable',
-      evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseProbe(clause, input.harness)}`,
+      evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseDeclarationProbe(clause, input.harness)}`,
     };
   } else {
     const required = [...new Set(clause.requiredTestLayers.map(normalizedLayer))];
@@ -1083,7 +1096,7 @@ export function evaluateSpecTestAdequacy(input: {
                 ...unreachable.map((layer) => `${layer}:unreachable`),
               ].join(', ')}.`,
               evidence,
-            )} ${clauseProbe(clause, input.harness)}`,
+            )} ${clauseDeclarationProbe(clause, input.harness)}`,
             suggestion: 'Bind proof for every requiredTestLayer and attest that it reaches the real path.',
           }
         : unresolved.length

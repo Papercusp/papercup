@@ -424,6 +424,52 @@ describe('docs:get handler', () => {
     );
   });
 
+  it('maps engineering URL and content-root aliases after selecting the engineering surface', async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    const tool = (await import('../get')).default;
+    const res = await tool.handler(
+      {
+        slugs: [
+          'docs/design/index',
+          'docs/design/gotchas',
+          '/internal/docs/design',
+          'apps/operator-docs/src/content/docs/design/index.mdx',
+        ],
+        harness: 'engineering',
+      } as never,
+      { harnessSlug: 'sheets', isSuperuser: true } as never,
+    );
+
+    expect(payloadOf(res)).toMatchObject({ surface: 'engineering' });
+    expect(engineeringAdapterForSlugs).toHaveBeenCalledWith([
+      'design',
+      'design/gotchas',
+      'design',
+      'design',
+    ]);
+    expect(getDocs).toHaveBeenCalledWith(
+      expect.objectContaining({ __adapter: 'engineering-request' }),
+      { slugs: ['design', 'design/gotchas', 'design', 'design'] },
+      expect.anything(),
+    );
+  });
+
+  it('preserves docs URL aliases on the harness surface', async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    const tool = (await import('../get')).default;
+    await tool.handler(
+      { slugs: ['docs/design/index', '/internal/docs/design/gotchas'] } as never,
+      { harnessSlug: 'sheets' } as never,
+    );
+
+    expect(engineeringAdapterForSlugs).not.toHaveBeenCalled();
+    expect(getDocs).toHaveBeenCalledWith(
+      expect.objectContaining({ __adapter: 'harness' }),
+      { slugs: ['docs/design/index', '/internal/docs/design/gotchas'] },
+      expect.anything(),
+    );
+  });
+
   /**
    * WI-1511581 — `source: true` is the read whose body can be written back.
    *
@@ -501,6 +547,39 @@ describe('docs:get slug coercion (WI-1985)', () => {
       });
     });
 
+    it('keeps docs URL and content-root refs route-neutral during coercion', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(
+        coerceDocsGetSlugs({
+          slugs: [
+            'docs/design/index',
+            'docs/design/gotchas',
+            '/internal/docs/design',
+            'apps/operator-docs/src/content/docs/design/index.mdx',
+          ],
+        }),
+      ).toEqual({
+        slugs: [
+          'docs/design/index',
+          'docs/design/gotchas',
+          '/internal/docs/design',
+          'apps/operator-docs/src/content/docs/design/index',
+        ],
+      });
+    });
+
+    it('maps engineering URL and content-root refs only with the engineering normalizer', async () => {
+      const { normalizeEngineeringDocsGetRef } = await import('../get-coerce');
+      expect(
+        [
+          'docs/design/index',
+          'docs/design/gotchas',
+          '/internal/docs/design',
+          'apps/operator-docs/src/content/docs/design/index.mdx',
+        ].map(normalizeEngineeringDocsGetRef),
+      ).toEqual(['design', 'design/gotchas', 'design', 'design']);
+    });
+
     it('splits a comma/space-separated slug string into multiple slugs', async () => {
       const { coerceDocsGetSlugs } = await import('../get-coerce');
       expect(coerceDocsGetSlugs({ slug: 'a/b, c/d  e/f' })).toEqual({ slugs: ['a/b', 'c/d', 'e/f'] });
@@ -546,6 +625,15 @@ describe('docs:get slug coercion (WI-1985)', () => {
       const parsed = mod.default.args.safeParse({ slugs: 'testing/agent-e2e' });
       expect(parsed.success).toBe(true);
       if (parsed.success) expect(parsed.data.slugs).toEqual(['testing/agent-e2e']);
+    });
+
+    it('preserves docs URL refs through the route-neutral args schema', async () => {
+      const mod = await import('../get');
+      const parsed = mod.default.args.safeParse({
+        slugs: ['docs/design/index', '/internal/docs/design/gotchas'],
+      });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) expect(parsed.data.slugs).toEqual(['docs/design/index', '/internal/docs/design/gotchas']);
     });
 
     it('a singular slug + heading still parses (single-slug heading path preserved)', async () => {
