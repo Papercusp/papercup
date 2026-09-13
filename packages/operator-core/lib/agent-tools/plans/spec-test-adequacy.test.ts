@@ -1445,7 +1445,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(recipe.args.includeDraft).toBe(true);
   });
 
-  it('keeps each inline grading-audit probe runnable across evaluator generations', () => {
+  it('keeps each inline grading-audit probe on the exact immutable evidence selection', () => {
     const current: EvidenceCurrentInput[] = [
       {
         planSlug: 'reconnect-plan',
@@ -1470,50 +1470,25 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     )?.[1];
     expect(inline).toBeDefined();
     const args = JSON.parse(inline!) as Record<string, unknown>;
-    const inlineCurrent = args.current as Array<Record<string, unknown>> | undefined;
     const recipe = result.scorecardDraft.rerunRecipe;
 
     expect(evaluatorArgsSchema.safeParse(args).success).toBe(true);
     expect(args).toEqual(crossGenerationAuditProbeArgs(recipe));
-    expect(Object.keys(args).sort()).toEqual(
-      ['classRef', 'current', 'harness', 'includeDraft', 'limit', 'slug', 'specIds', 'workItemIds'].sort(),
-    );
+    expect(args).toEqual(recipe.args);
     expect(args).toMatchObject({
       harness: 'papercusp',
       slug: 'reconnect-plan',
       classRef: 'plan-class-bugfix',
       specIds: ['SPEC-003-01'],
       workItemIds: ['WI-101'],
-      current: [
-        {
-          evidenceKind: 'coverage-census',
-          evidenceRef: 'surface:reconnect',
-          ...evidence().fingerprints,
-        },
-      ],
-      includeDraft: true,
-      limit: 25,
-    });
-    expect(args).not.toHaveProperty('evidenceRefs');
-    expect(inlineCurrent).not.toEqual(current);
-    expect(inlineCurrent?.[0]).not.toHaveProperty('planSlug');
-    expect(inlineCurrent?.[0]).not.toHaveProperty('specId');
-    expect(inlineCurrent?.[0]).not.toHaveProperty('specRevision');
-    expect(inlineCurrent?.[0]).not.toHaveProperty('specFingerprint');
-    expect(args).not.toHaveProperty('evaluatorBuild');
-    expect(args).not.toHaveProperty('specRevision');
-    expect(args).not.toHaveProperty('specFingerprint');
-    expect(args).not.toHaveProperty('replaySnapshot');
-
-    // The exact immutable replay is still retained on the card; only the
-    // criterion-local audit probe uses the compatibility subset.
-    expect(recipe.args).toMatchObject({
       evaluatorBuild: getBuildInfo(),
       evidenceRefs: ['surface:reconnect'],
       current,
       specRevision: 1,
       specFingerprint: 'sha256:spec-v1',
       replaySnapshot: true,
+      includeDraft: true,
+      limit: 25,
     });
   });
 

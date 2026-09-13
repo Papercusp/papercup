@@ -864,39 +864,14 @@ function rerunRecipeFor(
 }
 
 export function crossGenerationAuditProbeArgs(rerunRecipe: SpecTestAdequacyRerunRecipe) {
-  // The card-level recipe remains the exact, generation-pinned replay. Criterion
-  // evidence also needs a probe that a sweep-launched auditor can execute when
-  // its MCP surface is one green generation behind the staging emitter. Keep
-  // that inline probe on the long-standing public subset while preserving the
-  // exact selection/currentness contract in rerunRecipe itself. `evidenceRefs`
-  // and the four scoped currentness keys were added after the legacy subset, so
-  // keep them only in the exact recipe instead of making an older live schema
-  // reject every criterion's otherwise-runnable audit probe.
-  const {
-    evaluatorBuild: _evaluatorBuild,
-    specRevision: _specRevision,
-    specFingerprint: _specFingerprint,
-    replaySnapshot: _replaySnapshot,
-    evidenceRefs: _evidenceRefs,
-    current,
-    ...crossGenerationArgs
-  } = rerunRecipe.args;
-  return {
-    ...crossGenerationArgs,
-    ...(current !== undefined
-      ? {
-          current: current.map(
-            ({
-              planSlug: _planSlug,
-              specId: _specId,
-              specRevision: _currentSpecRevision,
-              specFingerprint: _currentSpecFingerprint,
-              ...fingerprint
-            }) => fingerprint,
-          ),
-        }
-      : {}),
-  };
+  // Keep this named export for persisted/test callers, but the criterion-local
+  // probe must be the SAME immutable replay as the card-level recipe. A reduced
+  // compatibility subset silently widens an exact evidenceRefs selection to
+  // historical bindings; a non-author can then execute the stated probe and get
+  // ratings that contradict the card even though the persisted recipe passes.
+  // An older evaluator that cannot parse this contract is an explicit generation
+  // mismatch, not permission to substitute a different evidence population.
+  return { ...rerunRecipe.args };
 }
 
 function appendRatingRerunProbes(
