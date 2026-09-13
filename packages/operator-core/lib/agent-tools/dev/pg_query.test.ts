@@ -843,6 +843,40 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(String(payloadOf(res as never).hint)).toContain('{0,1800}');
   });
 
+  it('adds DBOS workflow_status epoch and column guidance to failed forensic queries', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('operator does not exist: bigint > timestamp with time zone'), {
+        code: '42883',
+      }),
+    );
+    const res = await pgQueryTool.handler(
+      {
+        sql: 'SELECT count(*) FROM dbos.workflow_status WHERE created_at > now()',
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42883',
+      hint: expect.stringContaining('(extract(epoch from now()) * 1000)::bigint'),
+    });
+
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "updated_at_epoch_ms" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      { table: 'dbos.workflow_status', columns: ['created_at: bigint', 'updated_at: bigint', 'name: text'] },
+    ]);
+    const missingColumn = await pgQueryTool.handler(
+      { sql: 'SELECT updated_at_epoch_ms FROM dbos.workflow_status' } as never,
+      {} as never,
+    );
+    expect(payloadOf(missingColumn as never)).toMatchObject({
+      code: '42703',
+      hint: expect.stringContaining('`updated_at_epoch_ms` and `created_at_epoch_ms` are not columns'),
+      knownColumns: { 'dbos.workflow_status': expect.any(Array) },
+    });
+  });
+
   it('adds a targeted hint for a UNION column-count mismatch', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('each UNION query must have the same number of columns'), {

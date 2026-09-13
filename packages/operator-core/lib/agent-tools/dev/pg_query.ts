@@ -19,6 +19,7 @@ import {
   pgReadQuery,
   extractPgErrorInfo,
   buildBacklogFlowAdvisory,
+  buildDbosWorkflowStatusSchemaHint,
   buildClaimabilityAdvisory,
   buildEpochUnitAdvisory,
   buildCorpusNamespaceAdvisory,
@@ -299,7 +300,7 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      "Use `describe` before guessing schema. For rubric reads use `rubrics:list`, `rubrics:get`, or `rubrics:search`; raw schema is `harness_shared.harness_plans`. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`. Raw `harness_shared.work_items` SQL: `state` maps to table `status`, `id` maps to `feature_id`, and structured completion maps to `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` first. Alias duplicate columns and tighten truncated queries. Avoid unbounded JSON-text LIKE/ILIKE; prefer indexed predicates or `activity:tool-log`/`dev:telemetry`, and set `allowUnboundedJsonSearch: true` only deliberately. PostgreSQL regex repetition is at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
+      "Use `describe` before guessing schema. For rubric reads use `rubrics:list`, `rubrics:get`, or `rubrics:search`; raw schema is `harness_shared.harness_plans`. For `dbos.workflow_status`, `created_at` and `updated_at` are BIGINT epoch milliseconds; compare them with `(extract(epoch from now()) * 1000)::bigint`, and use existing `name`/`updated_at` columns rather than guessed `workflow_name`/`updated_at_epoch_ms`. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`. Raw `harness_shared.work_items` SQL: `state` maps to table `status`, `id` maps to `feature_id`, and structured completion maps to `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` first. Alias duplicate columns and tighten truncated queries. Avoid unbounded JSON-text LIKE/ILIKE; prefer indexed predicates or `activity:tool-log`/`dev:telemetry`, and set `allowUnboundedJsonSearch: true` only deliberately. PostgreSQL regex repetition is at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
     returns:
       'A DISCRIMINATED UNION on `mode` — switch on it, do not probe for `rows` vs `columns`. ' +
       `\`mode:"${PG_QUERY_MODE.query}"\` (you passed \`sql\`): ` +
@@ -767,6 +768,7 @@ export default defineTool({
       // the column "w.feature_id"` on a column error, which saves agents from
       // guessing non-obvious column names (EI-8301).
       const info = extractPgErrorInfo(err);
+      const dbosWorkflowStatusHint = buildDbosWorkflowStatusSchemaHint(sql, info);
       const dataDirectoryHint = dataDirectoryCapabilityHint(sql, info);
       if (dataDirectoryHint) {
         return jsonError('capability_unavailable', info.message, {
@@ -787,6 +789,7 @@ export default defineTool({
       if (regprocedureHint && !payload.hint) payload.hint = regprocedureHint;
       const regexRepetitionHint = postgresRegexRepetitionHint(sql, info);
       if (regexRepetitionHint && !payload.hint) payload.hint = regexRepetitionHint;
+      if (dbosWorkflowStatusHint && !payload.hint) payload.hint = dbosWorkflowStatusHint;
       const unionColumnCountCorrection = unionColumnCountHint(sql, info);
       if (unionColumnCountCorrection && !payload.hint) payload.hint = unionColumnCountCorrection;
       const jsonOperatorCorrection = jsonOperatorTypeHint(sql, info);
