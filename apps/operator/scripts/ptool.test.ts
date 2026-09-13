@@ -704,6 +704,60 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(message).toContain('not by adding idempotencyKey to the target tool JSON arguments');
   });
 
+  it('treats the proxy not_forwarded result as a safe pre-dispatch refusal', () => {
+    const error = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_upstream_unavailable","forwardingResult":"not_forwarded","detail":"upstream refused before forwarding"}',
+    ), { code: 503 });
+    const message = formatToolCallFailure('coord:inbox', error, {
+      idempotencyKey: 'not-forwarded-1',
+    });
+
+    expect(message).toContain('rejected before dispatch');
+    expect(message).toContain('no tool execution occurred');
+    expect(message).not.toContain('may have executed');
+    expect(message).not.toContain('outcome=unknown');
+    expect(message).not.toContain('idempotencyKey=not-forwarded-1');
+  });
+
+  it('treats a direct pre-connect ECONNREFUSED as safe to retry', () => {
+    const error = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:3170' },
+    });
+    const message = formatToolCallFailure('coord:inbox', error, {
+      idempotencyKey: 'refused-1',
+    });
+
+    expect(message).toContain('rejected before dispatch');
+    expect(message).toContain('no tool execution occurred');
+    expect(message).not.toContain('may have executed');
+    expect(message).not.toContain('outcome=unknown');
+    expect(message).not.toContain('idempotencyKey=refused-1');
+  });
+
+  it('keeps post-connect transport failures ambiguous even with a similar detail', () => {
+    const error = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'UND_ERR_SOCKET', message: 'other side closed after dispatch' },
+    });
+    const message = formatToolCallFailure('coord:inbox', error, {
+      idempotencyKey: 'unknown-1',
+    });
+
+    expect(message).toContain('may have executed');
+    expect(message).toContain('outcome=unknown');
+  });
+
+  it('does not infer pre-connect safety from ECONNREFUSED inside an HTTP error response', () => {
+    const error = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_upstream_error","forwardingResult":"outcome_unknown","detail":"ECONNREFUSED after the upstream connected"}',
+    ), { code: 502 });
+    const message = formatToolCallFailure('work_items:complete', error, {
+      idempotencyKey: 'http-unknown-1',
+    });
+
+    expect(message).toContain('may have executed');
+    expect(message).toContain('outcome=unknown');
+  });
+
   it('does not mislabel a known pre-dispatch pressure shed as ambiguous', () => {
     const error = new Error('loop_pressure_critical');
 
