@@ -332,6 +332,25 @@ describe('P-305 guest lifecycle contract', () => {
     expect(rollbackScript).not.toContain('bootc switch');
   });
 
+  it('marks only the reverse-forwarded release namespace insecure while bootc stages the switch', () => {
+    const switchScript = buildP305SwitchScript(UPDATE_REFERENCE);
+    const configWrite = `location = "${P305_RELEASE_REGISTRY_NAMESPACE}"`;
+    const switchCommand = 'bootc switch --enforce-container-sigpolicy "$update_ref"';
+
+    expect(switchScript).toContain(
+      'mktemp --suffix=.conf "$registry_config_dir/papercusp-p305-loopback.XXXXXX"',
+    );
+    expect(switchScript).toContain(configWrite);
+    expect(switchScript).toContain('insecure = true');
+    expect(switchScript).toContain('trap cleanup_registry_config EXIT');
+    expect(switchScript.indexOf(configWrite)).toBeLessThan(switchScript.indexOf(switchCommand));
+    expect(switchScript.indexOf('cleanup_registry_config', switchScript.indexOf(switchCommand))).toBeGreaterThan(
+      switchScript.indexOf(switchCommand),
+    );
+    expect(switchScript).not.toContain('location = "127.0.0.1"');
+    expect(switchScript).not.toContain('location = "localhost"');
+  });
+
   it('makes updated and rolled-back phases read the existing sentinel instead of recreating it', () => {
     for (const phase of ['updated', 'rolled-back'] as const) {
       const script = buildP305PhaseProbeScript({

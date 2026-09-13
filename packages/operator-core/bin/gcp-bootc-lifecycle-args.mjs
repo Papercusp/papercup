@@ -292,11 +292,25 @@ export function buildP305SwitchScript(updateImageReference) {
 set -euo pipefail
 update_ref=${shellQuote(update.reference)}
 update_digest=${shellQuote(update.digest)}
+registry_config_dir=/etc/containers/registries.conf.d
+install -d -o root -g root -m 0755 "$registry_config_dir"
+registry_config="$(mktemp --suffix=.conf "$registry_config_dir/papercusp-p305-loopback.XXXXXX")"
+cleanup_registry_config() {
+  rm -f -- "$registry_config"
+}
+trap cleanup_registry_config EXIT
+cat >"$registry_config" <<'P305_REGISTRY_CONFIG'
+[[registry]]
+location = "${P305_RELEASE_REGISTRY_NAMESPACE}"
+insecure = true
+P305_REGISTRY_CONFIG
 systemctl mask --runtime --now bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service >/dev/null 2>&1 || true
 observed_digest="$(skopeo inspect --tls-verify=false --format '{{.Digest}}' \
   "docker://$update_ref")"
 [[ "$observed_digest" == "$update_digest" ]]
 bootc switch --enforce-container-sigpolicy "$update_ref"
+cleanup_registry_config
+trap - EXIT
 bootc status --json | grep -F "$update_digest" >/dev/null
 printf 'PAPERCUSP-P305-SWITCH staged_digest=%s\\n' "$update_digest"
 `;
