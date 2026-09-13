@@ -6,6 +6,7 @@ import {
 } from '@papercusp/agent-mcp';
 import type { ProjectedTool } from '@papercusp/agent-mcp';
 import './tools'; // side-effect: registers code:tools
+import '../capability/read'; // side-effect: registers capability:read for the facade contract assertion
 
 /**
  * B-CX-API: code:tools registers as a READ-effect, role-gated lookup, AND the signature
@@ -50,5 +51,24 @@ describe('code:tools registration + wiring (B-CX-API)', () => {
 
     const idx = listFacadeNamespaces(tools, new Set(['work_items:list']));
     expect(idx).toEqual([{ ns: 'workItems', verbs: ['list'], toolNames: ['work_items:list'] }]);
+  });
+
+  it('renders capability:read code-mode return fields and its authored @returns contract', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'capability:read');
+    expect(tool).toBeDefined();
+
+    const dts = generateToolFacadeTypes([tool!], { allowed: new Set(['capability:read']) });
+    const signature = dts.split('\n').find((line) => line.includes('read('));
+    expect(signature).toBeDefined();
+    expect(signature).toContain('Promise<{ ok: boolean;');
+    expect(signature).toContain('file_path?: string');
+    expect(signature).toContain('body?: string');
+    expect(signature).toContain('total_lines?: number');
+    expect(signature).toContain('byte_offset?: number');
+    expect(signature).toContain('data?: string');
+    expect(signature).toContain('reason?: string');
+    expect(dts).toContain('/** @returns Across line/raw, byte-page, content/evidence-selection, and error branches:');
+    expect(tool?.guidance?.returns).toContain('put undecorated text in `body`');
+    expect(dts).not.toMatch(/read\([^)]*\): Promise<unknown>;/);
   });
 });
