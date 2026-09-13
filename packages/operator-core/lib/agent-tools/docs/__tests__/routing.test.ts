@@ -13,6 +13,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 function mockHarnessRegistry(factory: () => Record<string, unknown>) {
   vi.doMock('../../../harness-registry', async (importOriginal) => ({
@@ -158,6 +161,37 @@ describe('docs:get resolveAdapter', () => {
     const mod = await import('../get');
     const result = await mod.resolveAdapter('sheets');
     expect(result.surface).toBe('harness');
+  });
+
+  it('uses a declared docs root while preserving harness-state reads', async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'docs-get-routing-'));
+    const docsRoot = path.join(projectRoot, 'apps', 'operator-docs', 'src', 'content', 'docs');
+    try {
+      await fs.mkdir(path.join(projectRoot, '.papercusp'), { recursive: true });
+      await fs.mkdir(path.join(docsRoot, 'agent-insights'), { recursive: true });
+      await fs.writeFile(
+        path.join(projectRoot, '.papercusp', 'docs.json'),
+        JSON.stringify({ root: 'apps/operator-docs/src/content/docs' }),
+        'utf-8',
+      );
+      await fs.writeFile(path.join(projectRoot, 'SPEC.md'), '# Spec\n\nState remains available.\n', 'utf-8');
+      await fs.writeFile(
+        path.join(docsRoot, 'agent-insights', 'declared-root.mdx'),
+        '---\ntitle: Declared root\n---\n# Declared root\n\nThe canonical docs root.\n',
+        'utf-8',
+      );
+
+      mockRegistryWith('sheets', projectRoot);
+      const mod = await import('../get');
+      const result = await mod.resolveAdapter('sheets');
+
+      expect(result.surface).toBe('harness');
+      expect(await result.adapter.getPage('agent-insights/declared-root')).not.toBeNull();
+      expect(await result.adapter.getPage('harness-state/SPEC')).not.toBeNull();
+      expect(await result.adapter.getPage('docs/declared-root')).toBeNull();
+    } finally {
+      await fs.rm(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it('returns harness_not_registered error when slug is unknown', async () => {

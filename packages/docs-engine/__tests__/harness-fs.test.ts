@@ -58,6 +58,24 @@ describe('harnessFsAdapter', () => {
     expect(slugs).toContain('docs/features/auth');
   });
 
+  it('uses a declared docs root while keeping state files rooted at the project', async () => {
+    const declaredRoot = path.join(tmpDir, 'apps', 'operator-docs', 'src', 'content', 'docs');
+    await fs.mkdir(path.join(declaredRoot, 'agent-insights'), { recursive: true });
+    await fs.writeFile(
+      path.join(declaredRoot, 'agent-insights', 'runbook.mdx'),
+      '---\ntitle: Runbook\n---\n# Runbook\n\nCanonical docs root.\n',
+      'utf-8',
+    );
+
+    const adapter = harnessFsAdapter(tmpDir, { docsRoot: declaredRoot });
+    const pages = await adapter.listPages();
+    const slugs = pages.map((p) => p.slug);
+    expect(slugs).toContain('agent-insights/runbook');
+    expect(slugs).toContain('harness-state/SPEC');
+    expect(slugs).not.toContain('docs/architecture');
+    expect(await adapter.getPage('agent-insights/runbook')).toMatchObject({ title: 'Runbook' });
+  });
+
   it('ignores dotfile directories under docs/', async () => {
     const adapter = harnessFsAdapter(tmpDir);
     const pages = await adapter.listPages();

@@ -73,6 +73,7 @@ describe('ptool parseArgs', () => {
       list: false,
       listFilter: null,
       workspace: null,
+      allWorkspaces: false,
       harness: null,
       projection: null,
       idempotencyKey: null,

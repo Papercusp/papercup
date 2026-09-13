@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { genericFsAdapter, getDocs, harnessFsAdapter, withPreamble, type DocSource } from '@papercusp/docs-engine';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
+import { resolveDocsRoot } from '../../endpoint-route/routes/harness/project-docs';
 import { engineeringAdapter as engineeringBase, engineeringAdapterForSlugs } from './_engineering-adapter';
 import {
   HARNESS_REQUIRED_DETAIL,
@@ -90,10 +91,16 @@ export async function resolveAdapter(
       error: { code: 'harness_not_registered', slug: harnessSlug },
     };
   }
+  const projectRoot = resolveHarnessContentPath(reg, harnessSlug) ?? project.path;
   return {
     adapter: wrapWithPreamble(
-      harnessFsAdapter(resolveHarnessContentPath(reg, harnessSlug) ?? project.path, {
+      harnessFsAdapter(projectRoot, {
         name: `harness:${harnessSlug}`,
+        // Keep the read adapter aligned with docs:author and the project-docs
+        // route: a harness may declare its canonical docs corpus outside the
+        // legacy <repo>/docs directory. State files still resolve from the
+        // project root inside harnessFsAdapter.
+        docsRoot: await resolveDocsRoot(projectRoot),
       }),
     ),
     surface: 'harness',

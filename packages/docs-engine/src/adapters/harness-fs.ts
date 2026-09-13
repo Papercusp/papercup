@@ -25,6 +25,13 @@ export interface HarnessFsAdapterOptions {
   /** Stable identifier for telemetry + cache namespacing. */
   name?: string;
   /**
+   * Docs directory to walk instead of `<projectPath>/docs`.
+   *
+   * State files remain relative to projectPath; this only changes the docs
+   * corpus root. When omitted, the legacy `docs/...` slugs are preserved.
+   */
+  docsRoot?: string;
+  /**
    * State files to include in addition to `docs/**\/*.md`. Paths
    * relative to projectPath. Defaults to the operator's
    * SCANNED_FILES_FOR_INDEX list.
@@ -129,7 +136,8 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
   const name = opts.name ?? `harness-fs:${path.basename(projectPath)}`;
   const stateFiles = opts.stateFiles ?? DEFAULT_STATE_FILES;
   const maxDepth = opts.maxDepth ?? 5;
-  const docsRoot = path.join(projectPath, 'docs');
+  const docsRoot = opts.docsRoot ?? path.join(projectPath, 'docs');
+  const legacyDocsRoot = opts.docsRoot === undefined;
 
   // Cache pages by slug for getContent lookup.
   let pageCache: Map<string, FsPage> | null = null;
@@ -141,7 +149,11 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
     // docs/ tree
     const docsFiles = await walkDocs(docsRoot, maxDepth);
     for (const abs of docsFiles) {
-      const rel = path.relative(projectPath, abs);
+      // The historical default includes the `docs/` directory in the slug.
+      // A declared root is itself the docs corpus, so its slugs are relative
+      // to that root (e.g. agent-insights/runbook), matching docs:author's
+      // returned self-read ref.
+      const rel = path.relative(legacyDocsRoot ? projectPath : docsRoot, abs);
       const slug = slugFromRelPath(rel);
       const content = await readSafe(abs);
       if (content === null) continue;
@@ -222,7 +234,7 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
       if (sectionSlug === 'docs') {
         return {
           title: 'Project docs',
-          description: 'User-authored documentation under <projectPath>/docs/.',
+          description: 'User-authored documentation under the configured project docs root.',
         };
       }
       return {};
