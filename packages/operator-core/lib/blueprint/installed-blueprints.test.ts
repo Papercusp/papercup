@@ -73,10 +73,10 @@ describe('availableHiveBlueprintIds (P-019 — the pot:create picker set)', () =
       'retired: null',
       '',
     ].join('\n'));
-    composeMock.fn.mockReturnValueOnce((id: string) => {
+    composeMock.fn.mockReturnValueOnce(vi.fn((id: string) => {
       const installed = join(installedDir, id, 'blueprint.yaml');
       return existsSync(installed) ? installed : builtinBlueprintPath(id);
-    });
+    }));
 
     const hives = availableHiveBlueprintIds();
     expect(hives).toContain('installed-live-pot');
