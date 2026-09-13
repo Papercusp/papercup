@@ -4308,6 +4308,36 @@ describe("runGreenCheckpoint", () => {
     expect(calls).toContain("runGreen");
   });
 
+  it("EI-22728869583688089: treats a non-positive commit timestamp as unavailable instead of a fossil", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    const candidate = await commit("a", "2", "c2");
+    const logs: string[] = [];
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.commitUnixTime = async () => 0;
+    const priorLog = deps.log;
+    deps.log = (line: string) => {
+      logs.push(line);
+      priorLog?.(line);
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      green: false,
+      reason: "not-green",
+    });
+    expect(calls).toContain("runGreen");
+    expect(logs.some((line) => line.includes("candidate committed"))).toBe(
+      false,
+    );
+  });
+
   it("⭐ WI-7069: a long stretch between selection and the suite WARNS that the verdict describes a stale tree — and still judges", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
