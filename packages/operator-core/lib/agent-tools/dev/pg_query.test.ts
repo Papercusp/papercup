@@ -921,6 +921,52 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(payloadOf(res as never)).not.toHaveProperty('hint');
   });
 
+  // EI-22801631303104511: the operator role cannot inspect PostgreSQL's
+  // data_directory setting. Report this as a typed capability limitation so a
+  // caller stops retrying the same probe and chooses a permitted diagnostic.
+  it('reports the data_directory privilege boundary as capability_unavailable', async () => {
+    const message =
+      "Only roles with privileges of pg_read_all_settings may examine current_setting('data_directory').";
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error(message), { code: '42501' }));
+
+    const res = await pgQueryTool.handler(
+      { sql: "SELECT current_setting('data_directory')" } as never,
+      {} as never,
+    );
+    const payload = payloadOf(res as never);
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payload).toMatchObject({
+      error: message,
+      reason: 'capability_unavailable',
+      capability: 'pg_read_all_settings',
+      setting: 'data_directory',
+      code: '42501',
+    });
+    expect(String(payload.hint)).toContain('unavailable through `dev:pg_query`');
+  });
+
+  it('keeps unrelated 42501 errors on the normal PostgreSQL error path', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('permission denied for relation harness_shared.work_items'), {
+        code: '42501',
+      }),
+    );
+
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT feature_id FROM harness_shared.work_items' } as never,
+      {} as never,
+    );
+    const payload = payloadOf(res as never);
+
+    expect(payload).not.toHaveProperty('reason', 'capability_unavailable');
+    expect(payload).not.toHaveProperty('capability');
+    expect(payload).toMatchObject({
+      error: 'permission denied for relation harness_shared.work_items',
+      code: '42501',
+    });
+  });
+
   // EI-19415142351884573: a whole-call timeout is a distinct failure from a
   // real PG error ("we never found out" vs "PG said no") and must be reported
   // as such, not fall into the generic HINT/DETAIL/42703 error path below it.

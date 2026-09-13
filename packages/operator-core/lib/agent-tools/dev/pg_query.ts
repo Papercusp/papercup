@@ -89,10 +89,10 @@ function dataResult<T>(data: T) {
 }
 
 /** An error payload in the MCP content shape. */
-function jsonError(reason: string, message: string) {
+function jsonError(reason: string, message: string, extra: Record<string, unknown> = {}) {
   return {
     isError: true,
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, reason }) }],
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, reason, ...extra }) }],
   };
 }
 
@@ -261,6 +261,32 @@ function jsonOperatorTypeHint(
   );
 }
 
+/**
+ * EI-22801631303104511: the operator role is intentionally not granted
+ * `pg_read_all_settings`, so PostgreSQL rejects the otherwise read-only
+ * `current_setting('data_directory')` probe. Keep this classifier tied to both
+ * the server diagnostic and the caller's exact setting probe: unrelated 42501
+ * errors must retain the normal PostgreSQL error path.
+ */
+function dataDirectoryCapabilityHint(
+  sql: string,
+  info: { code?: string; message: string; detail?: string; hint?: string },
+): string | undefined {
+  if (info.code !== '42501') return undefined;
+  if (!/current_setting\s*\(\s*['"]data_directory['"]\s*\)/i.test(sql)) return undefined;
+
+  const errorText = `${info.message} ${info.detail ?? ''} ${info.hint ?? ''}`;
+  if (!/pg_read_all_settings/i.test(errorText) || !/\bdata_directory\b/i.test(errorText)) {
+    return undefined;
+  }
+
+  return (
+    'The operator PostgreSQL role cannot inspect `data_directory` because it is not granted ' +
+    '`pg_read_all_settings`; this diagnostic is unavailable through `dev:pg_query`. ' +
+    'Use a permitted host/runtime diagnostic instead of retrying the same SQL probe.'
+  );
+}
+
 export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
@@ -283,7 +309,7 @@ export default defineTool({
       '`{ mode, relation, kind, columns[], indexes[], constraints[] }`. ' +
       `\`mode:"${PG_QUERY_MODE.describeList}"\` (you passed a \`*\`/glob): ` +
       '`{ mode, pattern, relationCount, relations[] }` — names only, NOT column metadata. ' +
-      'Errors are `{ error, reason }` and carry no `mode`. `code:run` returns this root directly. bigint/int8 stays exact.',
+      'Errors are `{ error, reason }` and carry no `mode`; the data-directory privilege boundary uses `reason:"capability_unavailable"`. `code:run` returns this root directly. bigint/int8 stays exact.',
     seeAlso: [
       'work_items:claimable',
       'plans:list',
@@ -741,6 +767,17 @@ export default defineTool({
       // the column "w.feature_id"` on a column error, which saves agents from
       // guessing non-obvious column names (EI-8301).
       const info = extractPgErrorInfo(err);
+      const dataDirectoryHint = dataDirectoryCapabilityHint(sql, info);
+      if (dataDirectoryHint) {
+        return jsonError('capability_unavailable', info.message, {
+          capability: 'pg_read_all_settings',
+          setting: 'data_directory',
+          hint: dataDirectoryHint,
+          ...(info.detail ? { detail: info.detail } : {}),
+          ...(info.code ? { code: info.code } : {}),
+          ...(info.position ? { position: info.position } : {}),
+        });
+      }
       const payload: Record<string, unknown> = { error: info.message };
       if (info.hint) payload.hint = info.hint;
       if (info.detail) payload.detail = info.detail;
