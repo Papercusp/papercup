@@ -327,6 +327,18 @@ describe('affected-tests.mjs retry pool wiring (P-004)', () => {
     expect(src).toMatch(/retryBudgetMs != null\s*\?\s*"retry-budget"/);
   });
 
+  it('keeps governed receipts distinct when two lane retries converge on the default test script', () => {
+    // lane-pure and lane-stateful both spawn `@papercusp/operator-core :: test`
+    // during fresh-file absorption. The declared task key must survive in the
+    // receipt identity or the concurrent retry pool leases the same receipt twice.
+    expect(src).toContain(
+      'const processIdentity = `${taskKey(context.t)}=>${taskKey(spawnTask)}:${journalLabel}`;',
+    );
+    expect(src).not.toContain(
+      'const processIdentity = `${taskKey(spawnTask)}:${journalLabel}`;',
+    );
+  });
+
   it('keeps a retry pool failure from becoming a LOST RUN: the initial failures stand and the run still reports', () => {
     const poolCall = src.indexOf('await runBudgetedTasks(retryPoolTasks');
     const aborted = src.indexOf('phase: "aborted"', poolCall);

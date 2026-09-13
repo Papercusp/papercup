@@ -85,6 +85,14 @@ describe('affected-tests after-ready publication boundary (EI-21361599312981776)
     expect(abort).toBeGreaterThan(cleanup);
     expect(source).toContain('flag: "wx"');
   });
+
+  it('does not forward the outer barrier paths into nested workspace-test routers', () => {
+    // The marker is owned by affected-tests itself. A nested test-files router
+    // that inherits the path sees the live parent and correctly refuses EEXIST,
+    // producing exit 75 without running any tests.
+    expect(source).toContain('delete childEnv.PC_HEAVY_PREEMPT_READY_FILE;');
+    expect(source).toContain('delete childEnv.PC_HEAVY_PSI_FINALIZATION_FILE;');
+  });
 });
 
 describe('once-only package wiring', () => {

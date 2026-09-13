@@ -5761,6 +5761,14 @@ function runCapturedTask(
     VITEST_MAX_FORKS: String(allocation.workers),
     VITEST_MAX_THREADS: String(allocation.workers),
   };
+  // This runner can itself be the direct child of pc-heavy's once-only
+  // after-ready/finalization barrier. Those marker paths belong to THIS
+  // affected-tests process: forwarding them into a nested workspace-test
+  // router makes that router collide with its live parent and refuse the test
+  // with EEXIST before executing a single assertion. Nested children own no
+  // outer barrier, so keep the same boundary testing:run already enforces.
+  delete childEnv.PC_HEAVY_PREEMPT_READY_FILE;
+  delete childEnv.PC_HEAVY_PSI_FINALIZATION_FILE;
   // Remove the selector from the REAL process, not merely from a hash clone. This makes the
   // ordinary-task contract structural: if a test starts reading AFFECTED_BASE later it observes
   // no task input, while base-dependent guards/integration suites keep the value unchanged.
@@ -5959,7 +5967,13 @@ function runCapturedTask(
     diskBytes: MAX_CAPTURE_BYTES,
     fileDescriptors: 16 + Math.max(1, allocation.workers),
   });
-  const processIdentity = `${taskKey(spawnTask)}:${journalLabel}`;
+  // A lane retry deliberately rewrites both `test:lane-pure` and
+  // `test:lane-stateful` to the default `test` script for isolated execution.
+  // If the durable identity includes only that rewritten task, two concurrent
+  // retry-pool entries alias the same receipt and one fails as "not leaseable".
+  // Retain the declared task key as the per-entry identity while also recording
+  // the command shape that actually ran.
+  const processIdentity = `${taskKey(context.t)}=>${taskKey(spawnTask)}:${journalLabel}`;
   const governedOptions = {
     workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
     namespace: "affected-tests-process",
