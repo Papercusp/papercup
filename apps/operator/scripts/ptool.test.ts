@@ -16,6 +16,7 @@ import {
   resolveContextTier,
   resolvePayloadHarnessScope,
   resolveHarnessScope,
+  resolveWorkspaceScope,
   resolvePtoolOperatorBase,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
@@ -134,6 +135,29 @@ describe('ptool MCP identity binding', () => {
     const operatorUrl = 'http://127.0.0.1:3170';
     expect(parseArgs(['rubrics:get', '--url', operatorUrl]).url).toBe(operatorUrl);
     expect(parseArgs(['rubrics:get', `--url=${operatorUrl}`]).url).toBe(operatorUrl);
+  });
+
+  it('supports the explicit unscoped --all-workspaces transport escape', () => {
+    expect(parseArgs(['blueprint:publish', '--all-workspaces'])).toMatchObject({
+      tool: 'blueprint:publish',
+      allWorkspaces: true,
+      workspace: null,
+    });
+    expect(resolveWorkspaceScope({
+      allWorkspaces: true,
+      env: { PAPERCUSP_WORKSPACE: 'papercusp-workspace' },
+    })).toBe('*');
+    expect(buildMcpUrl('http://127.0.0.1:3170', { workspace: '*' }).searchParams.get('workspace')).toBe('*');
+  });
+
+  it('rejects combining --all-workspaces with an explicit workspace', () => {
+    expect(() => parseArgs([
+      'blueprint:publish',
+      '--all-workspaces',
+      '--workspace=papercusp-workspace',
+    ])).toThrow('--all-workspaces cannot be combined with --workspace');
+    expect(() => resolveWorkspaceScope({ allWorkspaces: true, workspace: 'papercusp-workspace' }))
+      .toThrow('--all-workspaces cannot be combined with --workspace');
   });
 
   it('carries the live PAPERCUSP_SID as the MCP client query parameter', () => {

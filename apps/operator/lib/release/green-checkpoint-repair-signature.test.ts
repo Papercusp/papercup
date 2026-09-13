@@ -265,6 +265,39 @@ describe("P-006 repairSignatureFromVerdict — a verdict names WHICH kinds it me
 });
 
 describe("P-006 verifyRepairHead — the typed signature drives the runners, at the repair head only", () => {
+  it("retains only the actual failing gate after a complete per-task measurement", async () => {
+    const queue = queueWith([
+      entry({ kind: "lint-leg", id: "lint:good" }),
+      entry({ kind: "lint-leg", id: "lint:bad" }),
+      entry({ kind: "lint-leg", id: "lint:later" }),
+    ]);
+    const { deps } = recordingDeps();
+    deps.runGateAtRef = async () => ({
+      pass: false,
+      summary: "good and later passed; bad failed",
+      measuredHead: HEAD,
+      perGate: [
+        { id: "lint:good", status: "pass" },
+        { id: "lint:bad", status: "fail" },
+        { id: "lint:later", status: "pass" },
+      ],
+    });
+    const verdict = await verifyRepairHead(deps, queue);
+    expect(verdict).toMatchObject({ kind: "red", failingTests: ["lint:bad"] });
+  });
+
+  it("holds on a foreign or incomplete gate population, even with aggregate pass", async () => {
+    const queue = queueWith([entry({ kind: "lint-leg", id: "lint:required" })]);
+    const { deps } = recordingDeps();
+    deps.runGateAtRef = async () => ({
+      pass: true,
+      summary: "wrong task passed",
+      measuredHead: HEAD,
+      perGate: [{ id: "lint:foreign", status: "pass" }],
+    });
+    expect(await verifyRepairHead(deps, queue)).toMatchObject({ kind: "unavailable" });
+  });
+
   it("a typed red re-emits files as test-file + workspace-task and a gate from the entry it was re-run from", async () => {
     const queue = queueWith([
       entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE, recipe: "npm run test:file -- lib/a.test.ts" }),

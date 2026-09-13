@@ -39,6 +39,7 @@
  *               EOF
  *               ptool --list [filter]              # print the catalog
  *               ptool <group:verb> --workspace=<ws> --harness=<slug>
+ *               ptool <group:verb> --all-workspaces
  *
  * Prefer `--json -` (read stdin) or `--json-file <path>` for arbitrary payloads,
  * especially `loop:checkpoint` checks/walls whose recheck text commonly contains
@@ -133,6 +134,7 @@ export function parseArgs(argv = []) {
     list: false,
     listFilter: null,
     workspace: null,
+    allWorkspaces: false,
     harness: null,
     projection: null,
     idempotencyKey: null,
@@ -165,6 +167,7 @@ export function parseArgs(argv = []) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { out.help = true; continue; }
     if (a === '--raw') { out.raw = true; continue; }
+    if (a === '--all-workspaces') { out.allWorkspaces = true; continue; }
     if (a === '--list' || a === '-l') { out.list = true; sawList = true; continue; }
     // `--flag=value`
     const eq = a.indexOf('=');
@@ -225,6 +228,9 @@ export function parseArgs(argv = []) {
   if (pendingStdinCapableValueFlag) {
     throw new Error(`--${pendingStdinCapableValueFlag.slice(2)} requires a value`);
   }
+  if (out.allWorkspaces && out.workspace) {
+    throw new Error('--all-workspaces cannot be combined with --workspace');
+  }
   return out;
 }
 
@@ -235,11 +241,15 @@ export function parseArgs(argv = []) {
  * `PAPERCUSP_HOME`/cwd. Returning null when no tracked scope is available is
  * deliberate — ptool must never guess a tenant. Pure when `env` and `cwd` are
  * supplied; both are injectable for tests.
- * @param {{workspace?: string | null, env?: EnvironmentMap, cwd?: string}} [options]
+ * @param {{workspace?: string | null, allWorkspaces?: boolean, env?: EnvironmentMap, cwd?: string}} [options]
  * @returns {string | null}
  */
-export function resolveWorkspaceScope({ workspace = null, env = process.env, cwd } = {}) {
+export function resolveWorkspaceScope({ workspace = null, allWorkspaces = false, env = process.env, cwd } = {}) {
   const explicit = typeof workspace === 'string' ? workspace.trim() : '';
+  if (allWorkspaces) {
+    if (explicit) throw new Error('--all-workspaces cannot be combined with --workspace');
+    return '*';
+  }
   if (explicit) return explicit;
 
   const fromEnv = typeof env?.PAPERCUSP_WORKSPACE === 'string' ? env.PAPERCUSP_WORKSPACE.trim() : '';
@@ -2787,6 +2797,7 @@ Flags:
   --script <source>               direct code:run JavaScript source; '-' reads stdin
   --script-file <path>            direct code:run JavaScript source (quoting-free)
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
+  --all-workspaces                use an unscoped superuser session (workspace=*)
   --harness <slug>                scope the session to a harness
   --idempotency-key <key>         reuse one logical tools/call receipt after reconciling an unknown outcome
   --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)
@@ -2877,7 +2888,7 @@ async function main() {
   }
 
   let operatorUrl = args.url || OPERATOR_URL;
-  const workspace = resolveWorkspaceScope({ workspace: args.workspace });
+  const workspace = resolveWorkspaceScope({ workspace: args.workspace, allWorkspaces: args.allWorkspaces });
   const harness = resolveHarnessScope({
     harness: args.harness,
     payload: jsonKind != null ? inputArgs : undefined,

@@ -2240,14 +2240,14 @@
           "POST"
         ]
       },
-      "description": "List a local/private blueprint on the Comb: resolves the member repo's GitHub coords + publishes a kind='blueprint' listing (listing_ref = blueprintId) with the operator's gh token + attestation. DELTA-NOT-COPY — the blueprint is listed keeping its `extends:`, so an install composes it against the upstream parent and inherits upstream improvements. Lands PENDING (D-007) — an operator must approve it before it is publicly visible.",
+      "description": "UNSCOPED-ONLY: List a local/private blueprint on the Comb: resolves the member repo's GitHub coords + publishes a kind='blueprint' listing (listing_ref = blueprintId) with the operator's gh token + attestation. Because repoDir is caller-selected and the publication is a workspace-global Cupboard write, this requires an unscoped (--all-workspaces) superuser session; workspace-scoped sessions are refused. DELTA-NOT-COPY — the blueprint is listed keeping its `extends:`, so an install composes it against the upstream parent and inherits upstream improvements. Lands PENDING (D-007) — an operator must approve it before it is publicly visible.",
       "capabilities": [
         "harness:write"
       ],
       "guidance": {
-        "when": "Sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
-        "notWhen": "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
-        "chaining": "Run after the blueprint files are committed + pushed via the project's normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing."
+        "when": "From an unscoped (--all-workspaces) superuser session, sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
+        "notWhen": "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); calling from a workspace-scoped session (the transport and handler refuse this global publication; the workspace argument cannot make it safe); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
+        "chaining": "Run from an unscoped (--all-workspaces) superuser session after the blueprint files are committed + pushed via the project's normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing."
       }
     },
     {

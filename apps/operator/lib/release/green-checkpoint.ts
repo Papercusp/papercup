@@ -744,14 +744,14 @@ export interface CheckpointDeps {
   runGateAtRef?(
     ref: string,
     gateIds: string[],
-  ): Promise<{ pass: boolean; summary: string }>;
+  ): Promise<TargetedGateResult>;
   /** Run the standard post-suite gate legs at an already-materialized targeted tip. */
   runPostSuiteAtRef?(ref: string): Promise<{ pass: boolean; summary: string }>;
   /** P-009 (gate-verdict-liveness-and-repair-reliability-2026-08-31): re-measure the cheap
    *  NON-TEST gate legs ({@link NON_TEST_GATE_SCRIPTS}) at `ref` — the frozen repair queue's
    *  MOVABLE repairHead — on an `awaiting-fixer` HOLD tick that renders no suite verdict.
-   *  Unlike {@link CheckpointDeps.runGateAtRef} (a rescue: short-circuits on first fail) this
-   *  is a MEASUREMENT: every leg runs, so `failingSignatures` is the complete fresh non-test
+   *  Like {@link CheckpointDeps.runGateAtRef}, every requested leg is measured; this hold-tick
+   *  variant additionally persists duration/lifecycle records, so `failingSignatures` is the complete fresh non-test
    *  failing set, not a floor. `null` ⇒ the measurement could not honestly attribute results
    *  to `ref` (setup/head mismatch) — callers must treat that as UNMEASURED, never as green.
    *  Optional: absent ⇒ hold ticks behave exactly as before (stubs/older deps unaffected). */
@@ -5654,6 +5654,18 @@ export async function verifyRepairHead(
       summary: `the ${fileRun === null ? "file" : "gate"} runner failed to execute at repair head ${at}; nothing was measured`,
     };
   }
+  // An optional detailed result is evidence only for this exact requested set/head.
+  // Aggregate-only older runners remain conservative; malformed detail must never erase
+  // a red merely because its array happens to have the right length.
+  const gateOutcomes = gateRun?.perGate === undefined
+    ? null
+    : validateTargetedGateOutcomes(gateRun, gateList, head);
+  if (gateRun?.perGate !== undefined && gateOutcomes === null) {
+    return {
+      kind: "unavailable",
+      summary: `targeted gate outcomes are incomplete or inconsistent at repair head ${at}; no failure obligation was discharged`,
+    };
+  }
 
   // P-006: the fresh signature is TYPED — a failing file is its `test-file` entry plus the
   // `workspace-task` marker for its workspace; a failing gate is re-emitted from the entry it
@@ -5686,9 +5698,12 @@ export async function verifyRepairHead(
     }
   }
   if (gateRun && !gateRun.pass) {
-    // `runGateAtRef` short-circuits on its first FAIL, so the legs after it are unmeasured;
-    // keep every leg in the fresh signature rather than declare an unmeasured one green.
-    for (const id of gateList) {
+    // A legacy aggregate-only runner may have short-circuited: retain its whole set.
+    // Detailed runners distinguish actual passes from failed and unmeasured work.
+    const unresolved = gateOutcomes
+      ? gateOutcomes.filter((entry) => entry.status === "fail" || entry.status === "errored").map((entry) => entry.id)
+      : gateList;
+    for (const id of unresolved) {
       const prior = priorById.get(id);
       emit(
         prior
@@ -5924,6 +5939,89 @@ export function resolveGateRuns(
     }
   }
   return [...runs.values()];
+}
+
+export interface TargetedGateOutcome {
+  id: string;
+  status: "pass" | "fail" | "errored" | "not-checked";
+}
+
+export interface TargetedGateResult {
+  pass: boolean;
+  summary: string;
+  /** Present only on the detailed runner, not legacy aggregate-only responses. */
+  perGate?: TargetedGateOutcome[];
+  measuredHead?: string;
+  /** NOT CHECKED and execution errors are not reusable coverage, even if non-gating. */
+  coverageComplete?: boolean;
+}
+
+/** Validate the producer's population, identity and aggregate before consuming any pass. */
+export function validateTargetedGateOutcomes(
+  result: TargetedGateResult,
+  requested: readonly string[],
+  head: string,
+): TargetedGateOutcome[] | null {
+  if (result.measuredHead !== head || !Array.isArray(result.perGate)) return null;
+  const expected = new Set(requested);
+  if (result.perGate.length !== expected.size) return null;
+  const seen = new Set<string>();
+  for (const entry of result.perGate) {
+    if (!entry || !expected.has(entry.id) || seen.has(entry.id) ||
+        !["pass", "fail", "errored", "not-checked"].includes(entry.status)) return null;
+    if (entry.status === "not-checked" && !resolveGateRuns([entry.id]).some(
+      ({ script, workspace }) => isNotCheckedNonGating(workspace ? `${workspace} :: ${script}` : script),
+    )) return null;
+    seen.add(entry.id);
+  }
+  const passed = result.perGate.every((entry) => entry.status === "pass" || entry.status === "not-checked");
+  if (passed !== result.pass) return null;
+  return result.perGate;
+}
+
+/**
+ * Measure the complete bounded target set, reusing duplicate physical invocations within
+ * this batch only. A first failing script no longer hides passes (or later failures).
+ * This is not a cross-run cache: every invocation below actually runs.
+ */
+export async function measureTargetedGateRuns(
+  gateIds: readonly string[],
+  run: (script: string, workspace: string | null) => Promise<{ code: number }>,
+): Promise<TargetedGateResult> {
+  const key = (script: string, workspace: string | null) => JSON.stringify([workspace, script]);
+  const measured = new Map<string, TargetedGateOutcome["status"]>();
+  const summaries: string[] = [];
+  for (const { script, workspace } of resolveGateRuns(gateIds)) {
+    const label = workspace ? `${workspace} :: ${script}` : script;
+    let status: TargetedGateOutcome["status"];
+    try {
+      const result = await run(script, workspace);
+      status = result.code === 0 ? "pass"
+        : result.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label) ? "not-checked"
+        : Number.isInteger(result.code) ? "fail" : "errored";
+    } catch {
+      status = "errored";
+    }
+    measured.set(key(script, workspace), status);
+    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}`);
+  }
+  const perGate = [...new Set(gateIds)].map((id): TargetedGateOutcome => {
+    const statuses = resolveGateRuns([id]).map(({ script, workspace }) => measured.get(key(script, workspace)));
+    return {
+      id,
+      status: statuses.length === 0 || statuses.some((status) => status === undefined || status === "errored")
+        ? "errored"
+        : statuses.includes("fail") ? "fail"
+        : statuses.includes("not-checked") ? "not-checked" : "pass",
+    };
+  });
+  const pass = perGate.every((entry) => entry.status === "pass" || entry.status === "not-checked");
+  return {
+    pass,
+    perGate,
+    coverageComplete: perGate.every((entry) => entry.status === "pass" || entry.status === "fail"),
+    summary: summaries.join("; "),
+  };
 }
 
 /* ── deploy-staleness alarm ───────────────────────────────────────────────────
@@ -18725,16 +18823,13 @@ export function realCheckpointDeps(
       // re-runnable at tip without needing a registry entry of its own. De-duplicated on
       // the resolved (workspace, script) pair so two entries naming the same script run
       // it once.
-      const runs = resolveGateRuns(gateIds);
       const env = buildGreenCheckpointEnv(
         null,
         process.env,
         undefined,
         cfg.greenCheckpointCapacityMode,
       );
-      const summaries: string[] = [headNote];
-      for (const { script, workspace } of runs) {
-        const label = workspace ? `${workspace} :: ${script}` : script;
+      const measured = await measureTargetedGateRuns(gateIds, async (script, workspace) => {
         const invocation = workspace
           ? resolveWorkspaceScriptInvocation(
               cfg.checkpointRoot,
@@ -18746,39 +18841,22 @@ export function realCheckpointDeps(
               args: ["run", script],
               cwd: cfg.checkpointRoot,
             };
-        const r = await exec(invocation.cmd, invocation.args, {
+        return exec(invocation.cmd, invocation.args, {
           cwd: invocation.cwd,
           env,
           allowNonZero: true,
           ...rescueTaskWatchdogOptions(script, env),
-        }).catch((e: unknown) => ({ code: 1, stdout: "", stderr: String(e) }));
-        // WI-10000288: three outcomes, not two. `EXIT_NOT_CHECKED` from a guard REGISTERED
-        // `notCheckedIsNonGating` means the guard examined nothing — the honest answer in a
-        // clean checkout, where its working-tree diff is empty by construction. Rendering it
-        // as FAIL put a leg into the repair signature that NO fix to the subject could ever
-        // clear, because the verdict was never about the subject; the frozen candidate then
-        // stayed red indefinitely. Reported distinctly rather than as a pass, so the coverage
-        // gap stays visible instead of reading as verification nobody performed — the same
-        // absent-evidence-is-not-evidence-of-absence contract affected-tests.mjs applies on
-        // its own path.
-        const notChecked =
-          r.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label);
-        summaries.push(
-          `${label}: ${
-            r.code === 0
-              ? "pass"
-              : notChecked
-                ? "NOT CHECKED (examined nothing — not gating)"
-                : "FAIL"
-          }`,
-        );
-        if (r.code !== 0 && !notChecked)
-          return { pass: false, summary: summaries.join("; ") };
-      }
-      return { pass: true, summary: summaries.join("; ") };
+        });
+      });
+      return {
+        ...measured,
+        measuredHead: verifiedHead,
+        coverageComplete: measured.coverageComplete === true && verifiedHead === ref,
+        summary: `${headNote}; ${measured.summary}`,
+      };
     },
     // P-009: the repair-tick cheap-legs MEASUREMENT — same tree/setup contract as
-    // runGateAtRef above, but non-short-circuiting with per-gate-id records (see
+    // runGateAtRef above, with additional per-gate duration/lifecycle records (see
     // measureRepairTickLegs for the contract; the hold tick's checkpoint tree is idle,
     // so materializing repairHead here steps on nothing).
     async runRepairTickLegs(ref, gateIds) {
