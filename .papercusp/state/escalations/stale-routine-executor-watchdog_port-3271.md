@@ -3,7 +3,7 @@ authority: null
 body_embedding_mode: "gemma"
 body_tsv: ""
 escalation: null
-mtime_ms: 1789262316215
+mtime_ms: 1789263577954
 phase: "stale-routine-executor-watchdog:port-3271"
 risk_tier: null
 supervisor_notes: null

@@ -17,6 +17,7 @@ import {
   admissionShedResponse,
   getMcpAdmissionSnapshot,
   resetMcpAdmissionForTests,
+  isBoundedDevTelemetryArgs,
 } from './mcp-admission';
 
 afterEach(() => resetMcpAdmissionForTests());
@@ -760,6 +761,43 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(6, 'dev:pg_query'));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('dev:pg_query');
+  });
+  it('admits a bounded dev:telemetry rollup under critical pressure so recovery diagnostics stay live', async () => {
+    const req = post(toolsCall(24, 'dev:telemetry', { hours: 24, limit: 50 }));
+    expect(isBoundedDevTelemetryArgs({ hours: 24, limit: 50 })).toBe(true);
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('dev:telemetry');
+  });
+  it('keeps broad dev:telemetry queries shed under critical pressure', async () => {
+    for (const args of [
+      { hours: 24, limit: 51 },
+      { hours: 25, limit: 50 },
+      { limit: 50, unexpected: true },
+      { hours: 24, limit: 50, workspaceIds: Array.from({ length: 33 }, (_, i) => `ws-${i}`) },
+    ]) {
+      expect(isBoundedDevTelemetryArgs(args)).toBe(false);
+      const shed = await evaluateAdmission(post(toolsCall(25, 'dev:telemetry', args)), 'critical', true);
+      expect(shed).not.toBeNull();
+      expect((await shed!.json()).error.data).toMatchObject({
+        retryable: true,
+        reason: 'loop_pressure_critical',
+      });
+    }
+  });
+  it('admits bounded dev:telemetry through tools:invoke under critical pressure', async () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 26,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__dev_telemetry',
+          args: { hours: 24, limit: 50 },
+        },
+      },
+    });
+    expect(await evaluateAdmission(post(body), 'critical', true)).toBeNull();
   });
   // EI-21574538947513211: the end-to-end shape of the reported failure. Asserted through
   // evaluateAdmission (not just the pure classifier) because the reported symptom was a real

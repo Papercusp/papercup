@@ -126,14 +126,6 @@ export default defineTool({
           if (rubric) {
             if (rubric.kind === 'acceptance') {
               const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
-              const vetting = await getAcceptanceRubricVettingStatus(rubric, {
-                listScorecards,
-                getRubric,
-                getRubricPlanRevision: async (rubricId) => {
-                  const read = await readRubricPlanRevision(rubricId);
-                  return read.ok ? read.revision : null;
-                },
-              });
               return { ok: true as const, rubricRef, rubric, vetting };
             }
             return { ok: true as const, rubricRef, rubric };

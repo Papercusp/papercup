@@ -50,7 +50,10 @@ import {
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
 import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
-import { isBoundedScorecardsListArgs } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
+import {
+  isBoundedDevTelemetryArgs,
+  isBoundedScorecardsListArgs,
+} from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
 export {
   CHEAP_REPEATING_BEAT_PATHS,
@@ -745,6 +748,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "dev:pipeline_position",
   "dev:pg_query",
   "dev:service_health",
+  "dev:telemetry",
   "dev:listening_ports",
   "dev:build_status",
   "dev:migrations",
@@ -1550,9 +1554,11 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
   ].map(normalizeMcpName),
 );
 const SCORECARDS_LIST_TOOL_NAME = normalizeMcpName("scorecards:list");
+const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
 
 function isReservedControlPlaneTool(name: string, args?: unknown): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
+  if (name === DEV_TELEMETRY_TOOL_NAME) return isBoundedDevTelemetryArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);
 }
 

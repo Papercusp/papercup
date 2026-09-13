@@ -122,8 +122,9 @@ export function resetMcpAdmissionForTests(): void {
  * The outer MCP proxy has the matching capacity-reserve list. This inner gate
  * still needs its own exemption because direct ptool/staging calls bypass that
  * proxy, and because a proxy-reserved request can otherwise be shed here after
- * it reaches the operator. `scheduler:get_next` and `loop:status` are included below as bounded
- * recovery/self-pull call: it claims at most one item and its handler has an
+ * it reaches the operator. `scheduler:get_next`, `loop:status`, and bounded `dev:telemetry`
+ * are included below as recovery calls. The scheduler self-pull claims at most one item and
+ * its handler has an
  * explicit whole-call deadline, but it is admitted only for its known, bounded
  * argument shape (unlike a generic ordinary tools/call).
  */
@@ -165,7 +166,8 @@ export function resetMcpAdmissionForTests(): void {
  * pressure condition; bulk checkpoint batches remain shed. `scorecards:get` is admitted only
  * for one bounded issue-id evidence read. `improvements:capture` is admitted only for the
  * tool-failure shorthand, whose nested metadata is bounded and is the required recovery record
- * for a shed tool call; ordinary captures remain shed.
+ * for a shed tool call; ordinary captures remain shed. `dev:telemetry` requires an explicit
+ * small result page so its aggregate query cannot become an unbounded pressure escape hatch.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -177,6 +179,12 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'loop:status',
   ].map(normalizeMcpName),
 );
+const DEV_TELEMETRY_NAME = normalizeMcpName('dev:telemetry');
+const CRITICAL_DEV_TELEMETRY_MAX_HOURS = 24;
+const CRITICAL_DEV_TELEMETRY_MAX_LIMIT = 50;
+const CRITICAL_DEV_TELEMETRY_MAX_WORKSPACE_IDS = 32;
+const CRITICAL_DEV_TELEMETRY_MAX_STRING_CHARS = 120;
+const DEV_TELEMETRY_TRANSPORTS = new Set(['http', 'mcp', 'ipc', 'in_process', 'unknown']);
 const SCHEDULER_GET_NEXT_NAME = normalizeMcpName('scheduler:get_next');
 const LOOP_STATUS_NAME = normalizeMcpName('loop:status');
 const CRITICAL_SCHEDULER_MAX_HARNESS_CHARS = 200;
@@ -417,6 +425,56 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (!singleId && !singleIds) return false;
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
+  return true;
+}
+
+/**
+ * Keep the telemetry rollup available for pressure diagnosis, but require the small,
+ * explicit page used by recovery callers. The handler's default limit is 100 and its
+ * schema permits a 168-hour/500-row query, both of which are too broad for the critical
+ * reserve. `hours` may be omitted because the handler default is the allowed 24-hour window.
+ */
+export function isBoundedDevTelemetryArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['workspaceIds', 'transports', 'hours', 'limit']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    !Number.isInteger(args.limit) ||
+    (args.limit as number) < 1 ||
+    (args.limit as number) > CRITICAL_DEV_TELEMETRY_MAX_LIMIT
+  ) {
+    return false;
+  }
+  if (
+    args.hours !== undefined &&
+    (!Number.isInteger(args.hours) ||
+      (args.hours as number) < 1 ||
+      (args.hours as number) > CRITICAL_DEV_TELEMETRY_MAX_HOURS)
+  ) {
+    return false;
+  }
+  if (args.workspaceIds !== undefined && args.workspaceIds !== null) {
+    if (
+      !Array.isArray(args.workspaceIds) ||
+      args.workspaceIds.length > CRITICAL_DEV_TELEMETRY_MAX_WORKSPACE_IDS ||
+      !args.workspaceIds.every(
+        (id) => typeof id === 'string' && id.trim().length > 0 && id.length <= CRITICAL_DEV_TELEMETRY_MAX_STRING_CHARS,
+      )
+    ) {
+      return false;
+    }
+  }
+  if (args.transports !== undefined && args.transports !== null) {
+    if (
+      !Array.isArray(args.transports) ||
+      args.transports.length > DEV_TELEMETRY_TRANSPORTS.size ||
+      !args.transports.every(
+        (transport) => typeof transport === 'string' && DEV_TELEMETRY_TRANSPORTS.has(transport),
+      )
+    ) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -691,6 +749,7 @@ function isBoundedJudgeGradingAuditEmitArgs(args: unknown, requestUrl?: string):
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, requestUrl?: string): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
+  if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
