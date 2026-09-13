@@ -660,6 +660,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   it('keeps ambiguous or oversized scorecards:get reads sheddable under critical pressure', () => {
     for (const args of [
       {},
+      { id: 'EI-22581128473264750' },
       { issueId: ' ' },
       { issueId: 'x'.repeat(121) },
       { issueId: 'EI-1', extra: true },
