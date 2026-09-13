@@ -16,9 +16,9 @@ vi.mock('../routes/transport/_mcp-host', () => ({
 }));
 
 import {
-  agentMcpBootstrapFailureCode,
   startDesktopAgentMcp,
 } from '../routes/transport/_mcp-uds-bootstrap';
+import { agentMcpBootstrapFailureCode } from '../routes/transport/_mcp-uds-error';
 import { readAgentMcpDiscoveryForPort, endpointIpcDiscoveryPathForPort } from '../../endpoint-ipc-discovery';
 
 beforeEach(async () => {
@@ -109,5 +109,20 @@ describe('desktop bootstrap publishes a separately authenticated MCP endpoint', 
     expect(source).toContain('if (ipcEnabled && cluster.isPrimary)');
     expect(source).toContain('await startDesktopAgentMcp(');
     expect(source).toContain('server.socketPath, Number(process.env.PAPERCUSP_HONO_PORT) || 3070');
+    expect(source).toContain(
+      "import { agentMcpBootstrapFailureCode } from '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-error';",
+    );
+    expect(source).not.toContain('bootstrap-unavailable');
+    expect(source).not.toMatch(/const \{[^}]*agentMcpBootstrapFailureCode[^}]*\} = await import/);
+  });
+
+  it('keeps the startup classifier independent from the listener import graph', () => {
+    const source = readFileSync(
+      new URL('../routes/transport/_mcp-uds-error.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).not.toMatch(/^import\s/m);
+    expect(agentMcpBootstrapFailureCode(new ReferenceError('secret module detail')))
+      .toBe('runtime:ReferenceError');
   });
 });
