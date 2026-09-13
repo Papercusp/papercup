@@ -2338,7 +2338,11 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       PC_HEAVY_COALESCE: '0',
       PC_HEAVY_GATE_RESERVE: '0',
       PC_HEAVY_MEM_PSI_OVERRIDE_FILE: psiFile,
-      PC_HEAVY_MEM_PSI_RECOVERY_SEC: '1',
+      // Keep the intermediate frozen-state assertion deterministic even when
+      // this test's 250 ms timer is delayed by sibling pure-lane work. The
+      // controller samples whole seconds, so a 1 s window can elapse before
+      // the JS callback is scheduled; 3 s still keeps this case bounded.
+      PC_HEAVY_MEM_PSI_RECOVERY_SEC: '3',
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
       PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '128',
     };
