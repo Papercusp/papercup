@@ -575,8 +575,14 @@ export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema, 
   // scope into this tool's args silently filters every CI row out. Callers that
   // need a ledger filter can provide it explicitly in the JSON payload.
   const injectScopeFilters = toolName !== 'testing:runs';
+  // `work_items:rehome` exposes a flattened union schema: `harness` belongs to
+  // the move variant, while classify accepts only its discriminator and id.
+  // Ambient session scope must not select a variant-incompatible key. Keep an
+  // explicitly supplied value untouched so this helper preserves its existing
+  // caller-owned-args semantics.
+  const rehomeClassify = toolName === 'work_items:rehome' && out.op === 'classify';
   if (injectScopeFilters && workspace != null && 'workspace' in props && !('workspace' in out)) out.workspace = workspace;
-  if (injectScopeFilters && harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
+  if (injectScopeFilters && !rehomeClassify && harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
   return out;
 }
 
