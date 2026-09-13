@@ -6,7 +6,9 @@
  * through OMP's native tool inventory, and runs a local RPC slash command that
  * performs initialize -> tools/list -> tools/call over UDS.  The same binary,
  * extension, credential, request sequence, fixture server, payload and result
- * are then driven over HTTP; only the transport address changes.
+ * are then driven over HTTP; only the transport address changes. P-008 extends
+ * the original feasibility proof with the pre-registered three-round, >100
+ * sample comparison and fixed rollout budgets from plan decision D-009.
  */
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
@@ -37,12 +39,20 @@ type Witness = {
 const TOKEN = 'p001-fixture-token';
 const PROTOCOL_VERSION = '2025-06-18';
 const WORKLOAD_VALUE = 'same-authenticated-workload';
+const WARM_ROUNDS = 3;
+const SAMPLES_PER_ROUND = 34;
+const WARM_SAMPLES = WARM_ROUNDS * SAMPLES_PER_ROUND;
 const roots: string[] = [];
 
 function object(value: unknown): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as JsonObject)
     : {};
+}
+
+function percentile(values: number[], quantile: number): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(sorted.length * quantile) - 1)]!;
 }
 
 function executableOnPath(name: string): string | null {
@@ -149,6 +159,14 @@ async function startFixture(root: string, witnesses: Witness[], fault?: FixtureF
           authenticated = meta.authorization === `Bearer ${TOKEN}`;
         }
         witnesses.push({ transport: 'uds', method, authenticated, connection: connectionId });
+        if (authenticated && method === 'tools/call') {
+          // Interleave server-push traffic with every benchmark call. The
+          // client must retain framing and match the subsequent response by id.
+          socket.write(`${JSON.stringify({
+            jsonrpc: '2.0', method: 'notifications/progress',
+            params: { progressToken: String(message.id), progress: 0.5 },
+          })}\n`);
+        }
         const response = authenticated ? responseFor(message, fault === 'missing-catalog' ? fault : undefined) : {
           jsonrpc: '2.0', id: message.id, error: { code: -32001, message: 'unauthorized' },
         };
@@ -221,6 +239,7 @@ async function udsJourney(value) {
   socket.setEncoding('utf8');
   let buffer = '';
   let nextId = 0;
+  let notifications = 0;
   const pending = new Map();
   socket.on('data', (chunk) => {
     buffer += chunk;
@@ -230,6 +249,10 @@ async function udsJourney(value) {
       buffer = buffer.slice(newline + 1);
       if (!line) continue;
       const frame = JSON.parse(line);
+      if (frame.method === 'notifications/progress') {
+        notifications++;
+        continue;
+      }
       const waiter = pending.get(String(frame.id));
       if (!waiter) continue;
       pending.delete(String(frame.id));
@@ -281,6 +304,7 @@ async function udsJourney(value) {
       : ['initialize', 'notifications/initialized', 'tools/list', 'tools/call'],
     initializeRoundTripMs, listRoundTripMs, callRoundTripMs,
     toolExecutionMs: called?._meta?.toolExecutionMs,
+    notifications,
     nonToolCallRoundTripMs: called ? callRoundTripMs - called._meta.toolExecutionMs : null,
     endToEndMs: performance.now() - started, cpuMicros: cpuMicros(cpuStarted),
   };
@@ -388,14 +412,35 @@ export default async function (pi) {
       const uds = await udsJourney(workloadValue);
       const http = await httpJourney(workloadValue);
       const samples = { uds: [], http: [] };
-      // Counterbalance order to avoid giving either transport all cold starts.
-      for (let i = 0; i < 24; i++) {
-        for (const transport of (i % 2 ? ['http', 'uds'] : ['uds', 'http'])) {
-          samples[transport].push(await (transport === 'uds' ? udsJourney : httpJourney)(workloadValue));
+      // D-009: three bounded rounds and >100 warm samples per transport.
+      // Counterbalance every pair and invert the first transport each round so
+      // neither route owns all early/cold or late/warm positions.
+      for (let round = 0; round < 3; round++) {
+        for (let i = 0; i < 34; i++) {
+          const udsFirst = (round + i) % 2 === 0;
+          for (const transport of (udsFirst ? ['uds', 'http'] : ['http', 'uds'])) {
+            samples[transport].push({
+              ...await (transport === 'uds' ? udsJourney : httpJourney)(workloadValue),
+              round,
+            });
+          }
         }
       }
+      const largeValue = workloadValue.repeat(4096);
+      const large = {
+        uds: await udsJourney(largeValue),
+        http: await httpJourney(largeValue),
+      };
+      const concurrent = {};
+      for (const transport of ['uds', 'http']) {
+        const started = performance.now();
+        const calls = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+          (transport === 'uds' ? udsJourney : httpJourney)(workloadValue + '-concurrent-' + i)));
+        const elapsedMs = performance.now() - started;
+        concurrent[transport] = { calls, elapsedMs, throughputPerSec: calls.length * 1000 / elapsedMs };
+      }
       await writeFile(resultPath, JSON.stringify({
-        installedRuntime: 'omp', discovery, nativeResults, uds, http, samples,
+        installedRuntime: 'omp', discovery, nativeResults, uds, http, samples, large, concurrent,
         workload: { value: workloadValue, tokenIdentity: 'p001-fixture-token' },
       }, null, 2));
     },
@@ -541,6 +586,14 @@ describe.skipIf(!ompBin)('installed OMP direct MCP transport proof', () => {
       expect(uds.tools).toEqual(http.tools);
       expect(uds.methods).toEqual(http.methods);
       expect(object((uds.call as JsonObject)).content).toEqual(object((http.call as JsonObject)).content);
+      expect(JSON.stringify(object((uds.call as JsonObject)).content))
+        .toBe(JSON.stringify(object((http.call as JsonObject)).content));
+      expect(object((uds.call as JsonObject))._meta).toMatchObject({
+        fixture: 'p001-shared-fixture', protocol: 'mcp',
+      });
+      expect(object((http.call as JsonObject))._meta).toMatchObject({
+        fixture: 'p001-shared-fixture', protocol: 'mcp',
+      });
       expect(object(result.workload)).toEqual({
         value: WORKLOAD_VALUE,
         tokenIdentity: TOKEN,
@@ -550,29 +603,74 @@ describe.skipIf(!ompBin)('installed OMP direct MCP transport proof', () => {
           expect(Number(journey[field]), `${String(journey.transport)} ${field}`).toBeGreaterThanOrEqual(0);
         }
       }
+      expect(Number(uds.notifications)).toBe(1);
 
       const fullMethods = ['initialize', 'notifications/initialized', 'tools/list', 'tools/call'];
-      const comparedJourneys = 26; // native invocation + cold comparison + 24 counterbalanced samples
-      expect(witnesses.filter((row) => row.transport === 'uds').map((row) => row.method)).toEqual([
-        'initialize', 'notifications/initialized', 'tools/list',
-        ...Array.from({ length: comparedJourneys }, () => fullMethods).flat(),
-      ]);
-      expect(witnesses.filter((row) => row.transport === 'http').map((row) => row.method))
-        .toEqual(Array.from({ length: comparedJourneys }, () => fullMethods).flat());
+      // native invocation + cold comparison + warm matrix + one large result
+      // + eight concurrent clients. Keep this exact: a missing or duplicate
+      // journey must change the wire census rather than hide in a lower bound.
+      const comparedJourneys = 2 + WARM_SAMPLES + 1 + 8;
+      const udsConnections = Map.groupBy(
+        witnesses.filter((row) => row.transport === 'uds'),
+        row => row.connection,
+      );
+      expect([...udsConnections.values()].filter(rows => rows.length === 3).map(rows => rows.map(row => row.method)))
+        .toEqual([['initialize', 'notifications/initialized', 'tools/list']]);
+      const fullUdsConnections = [...udsConnections.values()].filter(rows => rows.length === 4);
+      expect(fullUdsConnections).toHaveLength(comparedJourneys);
+      expect(fullUdsConnections.every(rows => rows.map(row => row.method).join(',') === fullMethods.join(',')))
+        .toBe(true);
+      const httpMethods = witnesses.filter((row) => row.transport === 'http').map((row) => row.method);
+      expect(httpMethods).toHaveLength(comparedJourneys * fullMethods.length);
+      for (const method of fullMethods) {
+        expect(httpMethods.filter(candidate => candidate === method)).toHaveLength(comparedJourneys);
+      }
       expect(witnesses.every((row) => row.authenticated)).toBe(true);
       const samples = object(result.samples);
       const summary: JsonObject = {};
       for (const transport of ['uds', 'http']) {
         const journeys = samples[transport] as JsonObject[];
-        expect(journeys).toHaveLength(24);
+        expect(journeys).toHaveLength(WARM_SAMPLES);
+        expect(new Set(journeys.map(journey => Number(journey.round)))).toEqual(new Set([0, 1, 2]));
         summary[transport] = Object.fromEntries(
           ['initializeRoundTripMs', 'listRoundTripMs', 'callRoundTripMs', 'toolExecutionMs', 'nonToolCallRoundTripMs', 'endToEndMs', 'cpuMicros'].map((field) => {
             const values = journeys.map((journey) => Number(journey[field])).sort((a, b) => a - b);
             expect(values.every((value) => Number.isFinite(value) && value >= 0)).toBe(true);
-            return [field, { p50: values[11], p95: values[22] }];
+            return [field, { p50: percentile(values, 0.5), p95: percentile(values, 0.95) }];
           }),
         );
       }
+      const udsSummary = object(summary.uds);
+      const httpSummary = object(summary.http);
+      const at = (summaryRow: JsonObject, field: string, quantile: string) =>
+        Number(object(summaryRow[field])[quantile]);
+      const udsCallP50 = at(udsSummary, 'callRoundTripMs', 'p50');
+      const httpCallP50 = at(httpSummary, 'callRoundTripMs', 'p50');
+      const udsE2eP95 = at(udsSummary, 'endToEndMs', 'p95');
+      const httpE2eP95 = at(httpSummary, 'endToEndMs', 'p95');
+      const udsCpuP50 = at(udsSummary, 'cpuMicros', 'p50');
+      const httpCpuP50 = at(httpSummary, 'cpuMicros', 'p50');
+      // D-009's immutable pre-comparison budgets. These are ratios against the
+      // same in-run HTTP arm, never absolute host-speed assertions.
+      expect(udsCallP50).toBeLessThanOrEqual(httpCallP50 * 0.8);
+      expect(udsE2eP95).toBeLessThanOrEqual(Math.max(httpE2eP95 * 1.1, httpE2eP95 + 2));
+      expect(udsCpuP50).toBeLessThanOrEqual(Math.max(httpCpuP50 * 1.25, httpCpuP50 + 2_000));
+      expect(1 / udsCallP50).toBeGreaterThanOrEqual((1 / httpCallP50) * 0.9);
+      expect(Number(uds.endToEndMs)).toBeLessThanOrEqual(Number(http.endToEndMs) + 500);
+      const large = object(result.large);
+      const largeUds = object(large.uds);
+      const largeHttp = object(large.http);
+      expect(object(largeUds.call).content).toEqual(object(largeHttp.call).content);
+      expect(JSON.stringify(object(largeUds.call).content).length).toBeGreaterThan(32_000);
+      expect(Number(largeUds.notifications)).toBe(1);
+      const concurrent = object(result.concurrent);
+      const concurrentUds = object(concurrent.uds);
+      const concurrentHttp = object(concurrent.http);
+      expect(concurrentUds.calls).toHaveLength(8);
+      expect(concurrentHttp.calls).toHaveLength(8);
+      expect(Number(concurrentUds.throughputPerSec))
+        .toBeGreaterThanOrEqual(Number(concurrentHttp.throughputPerSec) * 0.9);
+      expect((concurrentUds.calls as JsonObject[]).every(call => Number(call.notifications) === 1)).toBe(true);
       console.info('P001_TRANSPORT_BASELINE', JSON.stringify({ runtimeReadyMs, ...summary }));
 
       // Rebind this fixture-owned endpoint after an actual dead process leaves
@@ -594,6 +692,7 @@ describe.skipIf(!ompBin)('installed OMP direct MCP transport proof', () => {
       await waitFor(() => existsSync(resultPath) ? true : undefined, child);
       const reconnected = object(JSON.parse(readFileSync(resultPath, 'utf8')));
       expect(object(object(reconnected.uds).call).content).toEqual(object(uds.call).content);
+      expect(Number(object(reconnected.uds).endToEndMs)).toBeLessThanOrEqual(5_000);
       expect(object((await request('state-reconnected', 'get_state')).data).sessionId).toBe(beforeSessionId);
       expect(statSync(fixture.socketPath).mode & 0o777).toBe(0o600);
     } catch (error) {
