@@ -3,6 +3,10 @@
  * + the composed local→installed→built-in `extends` resolver.
  * Run with: cd packages/operator-core && npx vitest run lib/blueprint/installed-blueprints.test.ts
  */
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const rootMock = vi.hoisted(() => ({ fn: vi.fn(() => '/home/u/.papercusp') }));
@@ -17,7 +21,13 @@ import {
   availableHiveBlueprintIds,
 } from './installed-blueprints';
 
-afterEach(() => composeMock.fn.mockClear());
+const tempRoots: string[] = [];
+
+afterEach(() => {
+  composeMock.fn.mockClear();
+  rootMock.fn.mockReturnValue('/home/u/.papercusp');
+  for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('INSTALLED_BLUEPRINTS_DIR', () => {
   it('is <papercuspRoot>/blueprints', () => {
@@ -45,11 +55,31 @@ describe('operatorResolveExtends', () => {
 });
 
 describe('availableHiveBlueprintIds (P-019 — the pot:create picker set)', () => {
-  it('lists the built-in kind:hive blueprints and excludes kind:harness ones', () => {
-    // Reads the REAL built-in blueprints dir (the install tier is mocked-empty).
+  it('lists live pot blueprints and excludes direct or inherited retirement', () => {
+    const root = mkdtempSync(join(tmpdir(), 'installed-blueprints-'));
+    tempRoots.push(root);
+    rootMock.fn.mockReturnValue(root);
+    const installedDir = join(root, 'blueprints');
+    const livePotDir = join(installedDir, 'installed-live-pot');
+    mkdirSync(livePotDir, { recursive: true });
+    writeFileSync(join(livePotDir, 'blueprint.yaml'), [
+      'id: installed-live-pot',
+      'extends: coding',
+      'kind: pot',
+      'version: 0.1.0',
+      'retired: null',
+      '',
+    ].join('\n'));
+    composeMock.fn.mockReturnValueOnce((id: string) => {
+      const installed = join(installedDir, id, 'blueprint.yaml');
+      return existsSync(installed) ? installed : builtinBlueprintPath(id);
+    });
+
     const hives = availableHiveBlueprintIds();
-    expect(hives).toContain('coding');
-    expect(hives).toContain('work');
+    expect(hives).toContain('installed-live-pot');
+    // coding is retired directly; work inherits that retirement through extends.
+    expect(hives).not.toContain('coding');
+    expect(hives).not.toContain('work');
     // research / coding-factory are kind:harness — never offered as a hive template.
     expect(hives).not.toContain('research');
     expect(hives).not.toContain('coding-factory');

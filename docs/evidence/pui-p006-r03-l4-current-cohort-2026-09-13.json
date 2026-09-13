@@ -6,7 +6,7 @@
   "workItems": [
     "WI-10000428"
   ],
-  "recordedAt": "2026-09-13T01:17:29Z",
+  "recordedAt": "2026-09-13T05:14:00Z",
   "spec": {
     "specId": "AUTO-BAR-R-03-P-006",
     "specRevision": 6,
@@ -48,7 +48,7 @@
     "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PUI_REAL_ENGINE=1 PUI_BIN=$HOME/.cargo/bin/pui PUI_REAL_BACKEND=omp PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=\"$REPO/.papercusp/scratch/p006/account-catalog.json\" npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'restores the same native conversation after the operator OS process exits'",
     "modelPin": "Intentionally omitted for OMP account=auto under plan Decision D-013; pinning PUI_REAL_MODEL on this backend is refused rather than substituted.",
     "lock": {
-      "lockId": "b4f5fcc0-b639-4447-a945-0c846e3e3e34",
+      "lockId": "e9cf4411-8535-4648-8181-76d34642d740",
       "path": "packages/operator-core/lib/su-session-resume.ts",
       "releasedAfterRestore": true
     }
@@ -58,15 +58,15 @@
     "expected": "caught",
     "baseline": {
       "exit": 0,
-      "testFileResult": "requested=1 executed=1 matched=1 status=passed head=ec7e56d83d skippedTests=25",
-      "startedAt": "2026-09-13T01:03:46.976Z",
-      "duration": "244.84s"
+      "testFileResult": "requested=1 executed=1 matched=1 status=passed head=d20115d104 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T04:49:53.591Z skippedTests=25",
+      "startedAt": "2026-09-13T04:49:53.591Z",
+      "durationMs": 238290
     },
     "mutant": {
       "exit": 1,
-      "testFileResult": "requested=1 executed=1 matched=1 status=failed head=ec7e56d83d skippedTests=25",
-      "startedAt": "2026-09-13T01:08:05.206Z",
-      "duration": "239.71s",
+      "testFileResult": "requested=1 executed=1 matched=1 status=failed head=d20115d104 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T04:53:58.999Z skippedTests=25",
+      "startedAt": "2026-09-13T04:53:58.999Z",
+      "durationMs": 224859,
       "decisiveFailure": "The resumed descriptor comparison expected carry=warm and received carry=cold.",
       "notCleanupMasked": true
     },
@@ -81,10 +81,12 @@
     "match": true
   },
   "postProbeCleanRun": {
-    "testFileResult": "requested=1 executed=1 matched=1 status=passed head=cb11eaeb29 skippedTests=25",
-    "startedAt": "2026-09-13T01:12:50.163Z",
-    "finishedAt": "2026-09-13T01:15:51.019Z",
-    "durationMs": 168444,
+    "testRunId": 17855932,
+    "testFileResult": "requested=1 executed=1 matched=1 status=passed head=d20115d104 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-13T04:58:22.039Z skippedTests=25",
+    "startedAt": "2026-09-13T04:58:30.787Z",
+    "finishedAt": "2026-09-13T05:01:53.936Z",
+    "durationMs": 203149,
+    "commitSha": "d20115d10453369b9159397711a9a42e3d9d817d",
     "source": "local",
     "note": "This unmutated run is separately ledgered; the mutation binding below does not invent or require its numeric row id."
   },
@@ -110,9 +112,9 @@
   },
   "rawLogs": {
     "mutation": ".papercusp/scratch/p006/l4-mutation.log",
-    "mutationSha256": "43b7cd53734320b15aefe39cb92721039cedaeeb64dd2cdf5acf64deb9224f7a",
+    "mutationSha256": "bb3f3a6a0378d895b5a617a5db5d7b65d4d0e99c01b0036527a307ae114a6e6a",
     "postProbe": ".papercusp/scratch/p006/l4-bindable.log",
-    "postProbeSha256": "0a673ad0218fb86f7db026ad22a119f5fd79a2ffa3a3f17b1d871c89ac7a1268",
+    "postProbeSha256": "149cb2dc86db9b721cfdefdd5ced6f3fae9f6df8099964c07edd7466d01685f6",
     "durability": "The raw logs are gitignored and transient. Every load-bearing result line, assertion delta, file set, and restore hash is copied into this tracked artifact."
   },
   "binding": {

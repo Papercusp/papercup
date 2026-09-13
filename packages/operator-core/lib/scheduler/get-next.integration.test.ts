@@ -136,6 +136,16 @@ beforeAll(async () => {
     label: 'scheduler/get-next.integration.test.ts',
     runtimeTables: ['harness_shared.event_key_fires'],
   });
+  // The claim path records the latest coordination-post id in the claimed row's
+  // payload.  This focused fixture exercises real claims but does not bootstrap the
+  // full coordination substrate, so provide the minimal runtime shape that query
+  // reads.  Without it, every claim that reaches the UPDATE fails with a misleading
+  // missing-relation error before any scheduler floor can be evaluated.
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.coord_thread_posts (
+      id BIGSERIAL PRIMARY KEY,
+      workspace_id text NOT NULL
+    );`).simple();
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
