@@ -809,6 +809,23 @@ let readOmpDiagnosticState: (() => Promise<Record<string, unknown>>) | undefined
 let nativeProviderOrigin: string | undefined;
 const nativeProviderEvents: Array<Record<string, unknown>> = [];
 
+/**
+ * Node IPC preserves JSON nulls even when the launch request used null as the
+ * wire representation for an omitted optional field. The fixture's response
+ * records use optional properties, so restore semantic absence at this reader
+ * boundary instead of making each acceptance assertion know about transport
+ * normalization.
+ */
+function normalizeIpcOptionalLaunchField(value: string | null | undefined): string | undefined {
+  return value ?? undefined;
+}
+
+test('PUI IPC launch metadata restores omitted optional fields from JSON null', () => {
+  expect(normalizeIpcOptionalLaunchField(null)).toBeUndefined();
+  expect(normalizeIpcOptionalLaunchField(undefined)).toBeUndefined();
+  expect(normalizeIpcOptionalLaunchField('auto')).toBe('auto');
+});
+
 // Drop command frames only for deliberate acknowledgement-loss cases. All other
 // production SSE events still traverse the real HTTP connection to the PTY.
 function withoutCommandReceipts(response: Response): Response {
@@ -1969,7 +1986,8 @@ async function startOperatorProcess(port = 0) {
   child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
     events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
     path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string; error?: string;
-    model?: string; account?: string; mode?: string; carry?: string; planSlug?: string;
+    model?: string | null; account?: string | null; mode?: string | null; carry?: string | null;
+    planSlug?: string | null;
     before?: unknown[]; after?: unknown[]; body?: unknown; stage?: string; workers?: unknown }) => {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
     if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
@@ -1986,11 +2004,11 @@ async function startOperatorProcess(port = 0) {
     if (message.type === 'response') responses.push({
       path: message.path,
       status: message.status,
-      model: message.model,
-      account: message.account,
-      mode: message.mode,
-      carry: message.carry,
-      planSlug: message.planSlug,
+      model: normalizeIpcOptionalLaunchField(message.model),
+      account: normalizeIpcOptionalLaunchField(message.account),
+      mode: normalizeIpcOptionalLaunchField(message.mode),
+      carry: normalizeIpcOptionalLaunchField(message.carry),
+      planSlug: normalizeIpcOptionalLaunchField(message.planSlug),
     });
     if (message.type === 'readiness') readiness.push({ path: message.path, method: message.method,
       requestedAt: message.requestedAt, respondedAt: message.respondedAt, status: message.status,
