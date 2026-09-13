@@ -32,7 +32,9 @@ export const progressLeaseInputSchema = z.object({
   owner_id: z.string().min(1).max(200),
   work_item_id: z.string().min(1).max(200).optional(),
   remedy_after_misses: z.number().int().min(2).max(10).optional(),
-  remedy: progressLeaseRemedySchema,
+  remedy: progressLeaseRemedySchema.describe(
+    'Applied after repeated cadence misses. The first cadence miss automatically wakes owner_id; accepted kinds are spec-widen, outside-lane-placement, leader-claim, and create-unblock-item. wake-owner is not a remedy kind.',
+  ),
 });
 
 export type ProgressLeaseInput = z.infer<typeof progressLeaseInputSchema>;
