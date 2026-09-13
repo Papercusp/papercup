@@ -176,6 +176,20 @@ const READ_ONLY_SYSTEMCTL_COMMANDS = new Set([
 ]);
 
 const READ_ONLY_IP_COMMANDS = new Set(['address', 'addr', 'link', 'neigh', 'neighbor', 'route', 'rule']);
+// `find` has a read-only default, but several predicates execute commands or
+// write files. Keep those action operands write-classified even when every
+// surrounding pipeline stage is observational.
+const FIND_MUTATING_ACTIONS = new Set([
+  '-delete',
+  '-exec',
+  '-execdir',
+  '-fls',
+  '-fprint',
+  '-fprint0',
+  '-fprintf',
+  '-ok',
+  '-okdir',
+]);
 const SHELL_MUTATION_WORDS = new Set([
   'add',
   'append',
@@ -274,6 +288,13 @@ function classifiesStraceRead(tokens: readonly string[]): boolean {
   return false;
 }
 
+function classifiesFindRead(tokens: readonly string[]): boolean {
+  return !tokens.slice(1).some((token) => {
+    const action = token.toLowerCase().split('=', 1)[0];
+    return FIND_MUTATING_ACTIONS.has(action);
+  });
+}
+
 function classifiesSimpleRead(tokens: readonly string[], depth = 0): boolean {
   if (depth > 2 || tokens.length === 0) return false;
   const base = commandBase(tokens[0]!);
@@ -293,6 +314,7 @@ function classifiesSimpleRead(tokens: readonly string[], depth = 0): boolean {
   if (base === 'ip') return classifiesIpRead(tokens);
   if (base === 'git') return classifiesGitRead(tokens);
   if (base === 'strace') return classifiesStraceRead(tokens);
+  if (base === 'find') return classifiesFindRead(tokens);
   if (base === 'command') return tokens.length === 3 && (tokens[1] === '-v' || tokens[1] === '-V');
   if (base === 'docker') {
     return new Set(['info', 'inspect', 'ps', 'stats', 'version']).has(firstNonOption(tokens)?.toLowerCase() ?? '');
