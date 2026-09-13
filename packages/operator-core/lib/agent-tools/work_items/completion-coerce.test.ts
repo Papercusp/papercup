@@ -56,6 +56,15 @@ describe('coerceCompletionShape: selfReview scalar rescue (EI-21580906249884402)
     expect(sr.changedAsResult).toEqual(['one yielded change']);
   });
 
+  it('joins an array of reviewed paths into the persisted `lookedAt` string', () => {
+    const sr = selfReviewOf({
+      summary: 'closed something',
+      selfReview: { lookedAt: ['completion-coerce.ts', 'completion-coerce.test.ts'] },
+    });
+
+    expect(sr.lookedAt).toBe('completion-coerce.ts; completion-coerce.test.ts');
+  });
+
   // CONTROL. A genuine array must survive untouched. Without this, a coercion that
   // wrapped unconditionally (`[['a','b']]`) would still pass every case above.
   it('leaves a genuine array untouched rather than re-wrapping it', () => {

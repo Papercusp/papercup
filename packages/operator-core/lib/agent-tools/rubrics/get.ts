@@ -43,6 +43,15 @@ function normalizeRubricLookupRef(ref: string): string {
   return typed?.[1]?.trim() || trimmed;
 }
 
+/**
+ * Bound independent rubric reads so a list → bulk-get census does not spend the
+ * entire code:run foreground budget walking acceptance rubrics serially. Four is
+ * the same bounded worker pool used by the other bulk diagnostic reads; it keeps
+ * the DB fan-out finite while reducing the measured 78-rubric census below the
+ * 45-second code:run ceiling.
+ */
+export const RUBRICS_GET_MAX_CONCURRENCY = 4;
+
 export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
@@ -222,7 +231,10 @@ export default defineTool({
               freshCodeHint,
           };
         },
-        { keyOf: (rubricRef) => ({ rubricRef }) },
+        {
+          keyOf: (rubricRef) => ({ rubricRef }),
+          maxConcurrency: Math.max(1, Math.min(ids.length, RUBRICS_GET_MAX_CONCURRENCY)),
+        },
       );
       return bulkContent(env);
     });

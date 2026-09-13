@@ -106,7 +106,8 @@ const META_ACCEPTANCE_RUBRIC: Rubric = {
   rubricId: META_ACCEPTANCE_RUBRIC_ID,
 };
 
-const getTool = (await import('./get')).default;
+const getModule = await import('./get');
+const getTool = getModule.default;
 const ratifyTool = (await import('./ratify')).default;
 
 type Out = { data: any };
@@ -336,6 +337,27 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
       ['r-2', true],
     ]);
     expect(b.results[1]).toMatchObject({ ok: false, rubricRef: 'gone', error: 'rubric not found' });
+  });
+
+  it('bounds independent bulk reads with the shared worker-pool ceiling', async () => {
+    let active = 0;
+    let peak = 0;
+    getM.mockImplementation(async (id: string) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 8));
+        return { id } as never;
+      } finally {
+        active -= 1;
+      }
+    });
+
+    const refs = Array.from({ length: 10 }, (_, index) => `r-${index}`);
+    const b = await body(getTool, { rubricRefs: refs });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: refs.length, failed: 0 } });
+    expect(peak).toBe(getModule.RUBRICS_GET_MAX_CONCURRENCY);
   });
 
   it('reads an exact immutable revision and returns its selected revision plus criteria fingerprint', async () => {

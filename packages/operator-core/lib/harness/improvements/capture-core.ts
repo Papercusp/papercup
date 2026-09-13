@@ -1638,6 +1638,7 @@ export async function captureImprovement(
     }
   }
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
+  const checkOnly = input.checkDuplicatesOnly === true;
 
   // P-013: the invocation-ledger watchdog (or a caller with deterministic
   // reproduction evidence) corroborates an exact-key probation observation.
@@ -1665,7 +1666,7 @@ export async function captureImprovement(
     const classPrior = classKeyIssues.find((issue) =>
       sameToolFailureClassIdentity(issue, incomingProbation.classKey!, input, origin),
     );
-    if (isObservation && classPrior && issueWatchdogLane(classPrior) !== 'observation') {
+    if (!checkOnly && isObservation && classPrior && issueWatchdogLane(classPrior) !== 'observation') {
       // A later retry is evidence on the accountable existing issue. Preserve
       // its disposition, severity, narrative, review state and promoted payload.
       await appendCaptureOccurrence(deps, input, identity, 'coalesced', classPrior.id,
@@ -1673,7 +1674,7 @@ export async function captureImprovement(
       return { ok: true, created: false, reason: 'coalesced', issue: classPrior,
         possibleDuplicates: [], dedupCoverage: skippedDedupCoverage };
     }
-    if (classPrior && incomingProbation.state === 'promoted') {
+    if (!checkOnly && classPrior && incomingProbation.state === 'promoted') {
       const priorPayload = (classPrior.payload as Record<string, unknown> | null) ?? {};
       const priorProbation = toolFailureProbationOf(priorPayload);
       if (issueWatchdogLane(classPrior) === 'observation' && priorProbation?.state === 'probation') {
@@ -1703,7 +1704,7 @@ export async function captureImprovement(
         }
       }
     }
-    if (classPrior?.state === 'open') {
+    if (!checkOnly && classPrior?.state === 'open') {
       return coalesceWatchdogWinner({
         prior: classPrior,
         input,
@@ -1748,7 +1749,7 @@ export async function captureImprovement(
         issueScopeMatchesCapture(i, input.scope)
       );
     });
-    if (probation) {
+    if (!checkOnly && probation) {
       const promoted = await promoteToolFailureProbation(probation, input, deps, exactKeyIssues);
       if (promoted) {
         await appendCaptureOccurrence(
@@ -1797,7 +1798,7 @@ export async function captureImprovement(
       const payload = (i.payload as Record<string, unknown> | null) ?? {};
       return i.state === 'open' && payload.lane !== 'observation';
     });
-    if (openKeyPrior) {
+    if (!checkOnly && openKeyPrior) {
       const priorPayload = (openKeyPrior.payload as Record<string, unknown> | null) ?? {};
       const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
       const mergePatch: Record<string, unknown> = {
@@ -1863,7 +1864,7 @@ export async function captureImprovement(
     const autoResolvedPrior = exactKeyIssues.find(
       (i) => i.state === 'resolved' && i.terminalOwner === WATCHDOG_AUTO_CLOSE_OWNER,
     );
-    if (autoResolvedPrior) {
+    if (!checkOnly && autoResolvedPrior) {
       // Stale-lookback rail (same shape as the D-002 stale-evidence verdict): a
       // recurrence whose newest evidence pre-dates the row's resolution is
       // collector lookback junk — resurrecting a resolved row on it would be a
@@ -2123,7 +2124,7 @@ export async function captureImprovement(
     excludeId: undefined,
   });
 
-  if (input.checkDuplicatesOnly) {
+  if (checkOnly) {
     return {
       ok: true,
       created: false,

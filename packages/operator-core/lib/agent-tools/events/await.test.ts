@@ -15,7 +15,13 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   SU_ROLES: ['operator'],
 }));
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 'su-awaiter', ownerLabel: 'a', source: 'static-client', workspaceId: 'ws-x', userId: null }),
+  resolveAgentIdentity: () => ({
+    ownerId: 'su-awaiter',
+    ownerLabel: 'a',
+    source: 'static-client',
+    workspaceId: 'ws-x',
+    userId: null,
+  }),
 }));
 // EI-20268841604319803: the service-up EDGE advisory reads live health at arm
 // time. Stub ONLY the probe so the real predicate (./service-up-edge) and the
@@ -27,10 +33,26 @@ vi.mock('../../service-health', async (importOriginal) => ({
   probeNamedService: serviceHealthMock.probeNamedService,
 }));
 vi.mock('../../events/await/handle', () => ({
-  captureWakeHandleForOwner: vi.fn(async () => ({ handle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 }, note: 'resumable' })),
+  captureWakeHandleForOwner: vi.fn(async () => ({
+    handle: {
+      kind: 'adv-session',
+      advSessionId: 1,
+      agent: 'claude',
+      sessionId: 's',
+      ompThreadId: null,
+      cwd: '/r',
+      pid: 1,
+    },
+    note: 'resumable',
+  })),
 }));
 vi.mock('../../events/await/store', () => ({
-  registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 99, eventKey: i.eventKey, expiresTs: '2030-01-01', timeoutBehavior: i.timeoutBehavior })),
+  registerAwait: vi.fn(async (i: Record<string, unknown>) => ({
+    id: 99,
+    eventKey: i.eventKey,
+    expiresTs: '2030-01-01',
+    timeoutBehavior: i.timeoutBehavior,
+  })),
   // EI-21124063749265204: the post-registration egress-latch reconciliation
   // cancels only when this atomic pending-row guard wins the race.
   cancelAwait: vi.fn(async () => false),
@@ -86,8 +108,11 @@ vi.mock('./producer-health', async (importOriginal) => ({
     version: 1,
     producer: { kind: 'delegated-progress', id: 'lease-1' },
     owner: { ownerId: 'su-worker', workItemId: 'WI-1' },
-    issuedAtMs: 1, lastProgressAtMs: 1, lastFireAtMs: null,
-    expectedCadenceMs: 60_000, verificationDeadlineMs: 60_001,
+    issuedAtMs: 1,
+    lastProgressAtMs: 1,
+    lastFireAtMs: null,
+    expectedCadenceMs: 60_000,
+    verificationDeadlineMs: 60_001,
     progressLease: { leaseId: 'lease-1' },
   })),
 }));
@@ -140,7 +165,13 @@ vi.mock('../../plan-items/assignments', () => ({
 // default. Defaults to 'default' (no spec) so every PRE-EXISTING test above (none
 // of which awaits 'work-item:claimable') is unaffected; overridden per-test below.
 vi.mock('../../scheduler/claim-spec-store', () => ({
-  getClaimSpecRecord: vi.fn(async () => ({ source: 'default' as const, spec: null, revision: null, updatedBy: null, updatedAt: null })),
+  getClaimSpecRecord: vi.fn(async () => ({
+    source: 'default' as const,
+    spec: null,
+    revision: null,
+    updatedBy: null,
+    updatedAt: null,
+  })),
 }));
 vi.mock('../../scheduler/get-next', () => ({
   readIssueClaimability: vi.fn(async () => ({ rows: [] })),
@@ -148,7 +179,14 @@ vi.mock('../../scheduler/get-next', () => ({
 
 import awaitTool from './await';
 import { getClaimSpecRecord, type ClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
+import {
+  registerAwait,
+  cancelAwait,
+  cancelAwaitsForSubscribersOnKeys,
+  probeKeyFireEvidence,
+  findAnnouncementsForKey,
+  probePatternMatchScope,
+} from '../../events/await/store';
 // Namespace view of the SAME mocked module — the coverage guard at the bottom of this
 // file checks its key set against production's import list.
 import * as storeMock from '../../events/await/store';
@@ -159,7 +197,12 @@ import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
-import { liveBlockedState, liveSettledProbe, liveAssigneeProbe, liveWorkItemClaimableEventPayload } from '../../work-items-events';
+import {
+  liveBlockedState,
+  liveSettledProbe,
+  liveAssigneeProbe,
+  liveWorkItemClaimableEventPayload,
+} from '../../work-items-events';
 import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
@@ -322,14 +365,24 @@ describe('events:await wrapper defaults', () => {
 
   it('registers a delegated progress lease with its cadence and authoritative certificate', async () => {
     const progressLease = {
-      source_kind: 'checkpoint-revision', tool: 'work_items:get', args: { id: 'WI-1' },
-      path: 'results.0.checkpoint.revision', units: 'revision', expected_cadence_sec: 60,
-      owner_id: 'su-worker', remedy: { kind: 'leader-claim', workItemId: 'WI-1' },
+      source_kind: 'checkpoint-revision',
+      tool: 'work_items:get',
+      args: { id: 'WI-1' },
+      path: 'results.0.checkpoint.revision',
+      units: 'revision',
+      expected_cadence_sec: 60,
+      owner_id: 'su-worker',
+      remedy: { kind: 'leader-claim', workItemId: 'WI-1' },
     };
     await call({ event: 'work-item:done:WI-1', progress_lease: progressLease });
-    expect(resolveProgressLeaseCertificate).toHaveBeenCalledWith(expect.objectContaining({
-      progressLease, subscriberId: 'su-awaiter', workspaceId: 'ws-x', role: 'su',
-    }));
+    expect(resolveProgressLeaseCertificate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        progressLease,
+        subscriberId: 'su-awaiter',
+        workspaceId: 'ws-x',
+        role: 'su',
+      }),
+    );
     expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
       timeoutSec: 60,
       producerHealthCertificate: expect.objectContaining({ producer: { kind: 'delegated-progress', id: 'lease-1' } }),
@@ -353,11 +406,10 @@ describe('events:await wrapper defaults', () => {
   describe('EI-14225: supersede-on-registration', () => {
     it('retires the callers own prior pending await(s) on this EXACT key before registering the new one', async () => {
       await call({ event: 'work-item:claimable' });
-      expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
-        ['su-awaiter'],
-        ['work-item:claimable'],
-        { excludeNotePrefix: '[fleet:bench] ', onceOnly: true },
-      );
+      expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(['su-awaiter'], ['work-item:claimable'], {
+        excludeNotePrefix: '[fleet:bench] ',
+        onceOnly: true,
+      });
       // Ordering: the retirement must run BEFORE the new row is registered (both
       // mocks recorded on the same shared timeline via invocationCallOrder).
       const supersedeOrder = vi.mocked(cancelAwaitsForSubscribersOnKeys).mock.invocationCallOrder[0];
@@ -934,9 +986,7 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
       declaredRow({ boundTo: { kind: 'role', ref: 'release-fixer' } }),
     ] as never);
     vi.mocked(resolveAnnouncementOwnership).mockResolvedValueOnce(
-      new Map([
-        [1, { declaredByLiveness: 'live', liveSuccessorIds: [], staleOwner: false }],
-      ]),
+      new Map([[1, { declaredByLiveness: 'live', liveSuccessorIds: [], staleOwner: false }]]),
     );
 
     const out = await call({ event: 'green-gate-verdict' });
@@ -955,9 +1005,7 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
       declaredRow({ boundTo: { kind: 'fleet-leadership', ref: 'release-fleet' } }),
     ] as never);
     vi.mocked(resolveAnnouncementOwnership).mockResolvedValueOnce(
-      new Map([
-        [1, { declaredByLiveness: 'ended', liveSuccessorIds: ['su-successor'], staleOwner: false }],
-      ]),
+      new Map([[1, { declaredByLiveness: 'ended', liveSuccessorIds: ['su-successor'], staleOwner: false }]]),
     );
 
     const out = await call({ event: 'green-gate-verdict' });
@@ -1030,9 +1078,7 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
 
   it('passes the authenticated announcement generation into registerAwait', async () => {
     const eventKey = 'release:green:my-pipeline';
-    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
-      declaredRow({ eventKey, causalGeneration: 2 }),
-    ] as never);
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([declaredRow({ eventKey, causalGeneration: 2 })] as never);
 
     const out = await call({ event: eventKey, after_generation: 2 });
 
@@ -1045,9 +1091,7 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
 
   it('returns already_fired when the authenticated generation fires during registration', async () => {
     const eventKey = 'release:green:my-pipeline';
-    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
-      declaredRow({ eventKey, causalGeneration: 2 }),
-    ] as never);
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([declaredRow({ eventKey, causalGeneration: 2 })] as never);
     vi.mocked(registerAwait).mockRejectedValueOnce(
       Object.assign(new Error('generation fired during registration'), {
         code: 'await_generation_mismatch',
@@ -1073,9 +1117,7 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
 
   it('returns a structured resync when registration observes a different generation', async () => {
     const eventKey = 'release:green:my-pipeline';
-    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
-      declaredRow({ eventKey, causalGeneration: 2 }),
-    ] as never);
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([declaredRow({ eventKey, causalGeneration: 2 })] as never);
     vi.mocked(registerAwait).mockRejectedValueOnce(
       Object.assign(new Error('generation replaced during registration'), {
         code: 'await_generation_mismatch',
@@ -1180,7 +1222,12 @@ describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-awa
   it('awaiting work-item:done:<id> for an ALREADY-settled item answers already_done and registers NOTHING', async () => {
     vi.mocked(liveSettledProbe).mockResolvedValueOnce({ verdict: 'settled', itemState: 'resolved' });
     const out = await call({ event: 'work-item:done:WI-5075' });
-    expect(out).toMatchObject({ ok: true, already_done: true, event: 'work-item:done:WI-5075', item_state: 'resolved' });
+    expect(out).toMatchObject({
+      ok: true,
+      already_done: true,
+      event: 'work-item:done:WI-5075',
+      item_state: 'resolved',
+    });
     expect(out.advice).toContain('Do not wait');
     expect(registerAwait).not.toHaveBeenCalled();
     expect(liveSettledProbe).toHaveBeenCalledWith('WI-5075');
@@ -1272,7 +1319,11 @@ describe('the plan-item-done registration LATCH (EI-18734910825871393 — the 76
     });
     expect(out.advice).toContain('Do not wait');
     expect(registerAwait).not.toHaveBeenCalled();
-    expect(planItemEffectiveStatus).toHaveBeenCalledWith('papercup', 'retire-work-item-mail-surface-2026-07-26', 'P-008');
+    expect(planItemEffectiveStatus).toHaveBeenCalledWith(
+      'papercup',
+      'retire-work-item-mail-surface-2026-07-26',
+      'P-008',
+    );
   });
 
   it('a TODO/WIP item registers exactly as before (the latch only answers on done)', async () => {
@@ -1311,32 +1362,47 @@ describe('the plan-item-done registration LATCH (EI-18734910825871393 — the 76
 });
 
 describe('the SELF-AWAIT guard (EI-18731480441007330 — the WI-6095 unbreakable self-deadlock incident)', () => {
-  it('REFUSES a work-item:status:<id> await when the caller is the item\'s own current assignee', async () => {
+  it("REFUSES a work-item:status:<id> await when the caller is the item's own current assignee", async () => {
     vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-awaiter' });
     const out = await call({ event: 'work-item:status:WI-6095' });
-    expect(out).toMatchObject({ ok: false, error: 'self_await_deadlock', event: 'work-item:status:WI-6095', work_item_id: 'WI-6095' });
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'self_await_deadlock',
+      event: 'work-item:status:WI-6095',
+      work_item_id: 'WI-6095',
+    });
     expect(out.advice).toContain('CURRENT ASSIGNEE');
     expect(registerAwait).not.toHaveBeenCalled();
     expect(liveAssigneeProbe).toHaveBeenCalledWith('WI-6095');
   });
 
-  it('REFUSES a work-item:done:<id> await when the caller is the item\'s own current assignee', async () => {
+  it("REFUSES a work-item:done:<id> await when the caller is the item's own current assignee", async () => {
     vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-awaiter' });
     const out = await call({ event: 'work-item:done:WI-6095' });
-    expect(out).toMatchObject({ ok: false, error: 'self_await_deadlock', event: 'work-item:done:WI-6095', work_item_id: 'WI-6095' });
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'self_await_deadlock',
+      event: 'work-item:done:WI-6095',
+      work_item_id: 'WI-6095',
+    });
     expect(registerAwait).not.toHaveBeenCalled();
   });
 
   it('REFUSES a claim:released:<id> await when the caller still holds the item claim', async () => {
     vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-awaiter' });
     const out = await call({ event: 'claim:released:WI-6095' });
-    expect(out).toMatchObject({ ok: false, error: 'self_await_deadlock', event: 'claim:released:WI-6095', work_item_id: 'WI-6095' });
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'self_await_deadlock',
+      event: 'claim:released:WI-6095',
+      work_item_id: 'WI-6095',
+    });
     expect(out.advice).toContain('CURRENT ASSIGNEE');
     expect(registerAwait).not.toHaveBeenCalled();
     expect(liveAssigneeProbe).toHaveBeenCalledWith('WI-6095');
   });
 
-  it('a DIFFERENT assignee (a legitimate wait on a peer\'s work) registers exactly as before', async () => {
+  it("a DIFFERENT assignee (a legitimate wait on a peer's work) registers exactly as before", async () => {
     vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-someone-else' });
     const out = await call({ event: 'work-item:status:WI-6095' });
     expect(out.error).toBeUndefined();
@@ -1371,7 +1437,7 @@ describe('the SELF-AWAIT guard (EI-18731480441007330 — the WI-6095 unbreakable
   });
 });
 
-describe('EI-383 — extend the caller\'s plan-item claim leases to survive the sleep', () => {
+describe("EI-383 — extend the caller's plan-item claim leases to survive the sleep", () => {
   it('an ACTUAL registration extends claims sized to the resolved timeout_sec', async () => {
     await call({ event: 'lock:grant:t9', timeout_sec: 3600 });
     expect(extendOwnerClaimsForAwait).toHaveBeenCalledTimes(1);
@@ -1398,7 +1464,7 @@ describe('EI-383 — extend the caller\'s plan-item claim leases to survive the 
   });
 });
 
-describe('EI-13846 — default the `work-item:claimable` payload_filter to the caller\'s own claim spec', () => {
+describe("EI-13846 — default the `work-item:claimable` payload_filter to the caller's own claim spec", () => {
   it('an explicit payload_filter always wins — the claim-spec lookup is reconciliation-only, never auto-scopes over it', async () => {
     const filter = { kind: { equals: 'feature' } };
     await call({ event: 'work-item:claimable', payload_filter: filter });
@@ -1409,7 +1475,11 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
   it('a fleet-scoped caller with a narrowable spec gets it auto-applied as the default payload_filter', async () => {
     vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
       source: 'fleet',
-      spec: { specId: 'bug-drain-200k', revision: 2, view: { filter: { field: 'kind', op: '=', value: 'bug' } } } as never,
+      spec: {
+        specId: 'bug-drain-200k',
+        revision: 2,
+        view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      } as never,
       revision: 2,
       updatedBy: 'su-leader',
       updatedAt: '2026-07-19T00:00:00Z',
@@ -1433,7 +1503,11 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
   it('warns that an auto-scoped payload filter is a claimability hint, not a floor guarantee', async () => {
     vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
       source: 'fleet',
-      spec: { specId: 'bug-drain-200k', revision: 2, view: { filter: { field: 'kind', op: '=', value: 'bug' } } } as never,
+      spec: {
+        specId: 'bug-drain-200k',
+        revision: 2,
+        view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      } as never,
       revision: 2,
       updatedBy: 'su-leader',
       updatedAt: '2026-07-19T00:00:00Z',
@@ -1489,7 +1563,9 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
       harnessSlug: 'papercusp',
     });
     const out = await call({ event: 'work-item:claimable' });
-    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: { harness: { equals: 'papercusp' } } });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { harness: { equals: 'papercusp' } },
+    });
     expect(out.auto_scoped_payload_filter).toBe(true);
     expect(out.unscoped_claimable_await).toBeUndefined();
   });
@@ -1561,7 +1637,11 @@ describe('EI-21565976517547834 — reconcile an already-claimable level after aw
     vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as unknown as ClaimSpecRecord);
     vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [{ id: 'WI-42252' }] } as never);
     vi.mocked(liveWorkItemClaimableEventPayload).mockResolvedValueOnce({
-      id: 'WI-42252', kind: 'task', harness: 'papercusp', plan: 'byoc-plan', state: 'open',
+      id: 'WI-42252',
+      kind: 'task',
+      harness: 'papercusp',
+      plan: 'byoc-plan',
+      state: 'open',
     });
     vi.mocked(cancelAwait).mockResolvedValueOnce(false);
 
@@ -1670,7 +1750,7 @@ describe('EI-19344528739076339 — auto-scope a bare multi-pipeline gate key to 
    * NEVER fire: a silent hang, strictly worse than the wrong-pipeline wake being fixed. So
    * an unresolvable pipeline must WARN, never narrow.
    */
-  it('⭐ WARNS instead of narrowing when this process\'s own pipeline cannot be resolved', async () => {
+  it("⭐ WARNS instead of narrowing when this process's own pipeline cannot be resolved", async () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = '/';
     const out = await call({ event: 'release:green' });
     expect(out.auto_scoped_payload_filter).toBeUndefined();
@@ -1789,6 +1869,71 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
   });
 });
 
+describe('EI-23156083757639548 — task terminal exact-key latch', () => {
+  const terminalKey = 'task:terminal:0mtzw7ug42uhzvubiux';
+
+  it('answers already_fired when one concrete task reached terminal state before registration', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
+      prefix: 'task:terminal',
+      exact: true,
+      distinctKeys: 1,
+      fires: 1,
+      lastFiredAt: '2026-09-13T14:13:22.614Z',
+    });
+
+    const out = await call({ event: terminalKey });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_fired: true,
+      event: terminalKey,
+      fired_at: '2026-09-13T14:13:22.614Z',
+    });
+    expect(out.advice).toMatch(/first authoritative terminal ledger state/);
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(probeKeyFireEvidence).toHaveBeenCalledWith(terminalKey);
+  });
+
+  it('reconciles a task terminal fire that lands during registration', async () => {
+    vi.mocked(probeKeyFireEvidence)
+      .mockResolvedValueOnce({
+        prefix: 'task:terminal',
+        exact: false,
+        distinctKeys: 0,
+        fires: 0,
+        lastFiredAt: null,
+      })
+      .mockResolvedValueOnce({
+        prefix: 'task:terminal',
+        exact: true,
+        distinctKeys: 1,
+        fires: 1,
+        lastFiredAt: '2026-09-13T14:13:22.614Z',
+      });
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+
+    const out = await call({ event: terminalKey });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_fired: true,
+      event: terminalKey,
+      fired_at: '2026-09-13T14:13:22.614Z',
+    });
+    expect(out.advice).toMatch(/fired during registration/);
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps bare and pattern task-terminal streams edge-triggered', async () => {
+    await call({ event: 'task:terminal' });
+    await call({ event: 'task:terminal:*' });
+
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * EI-19928976726540168 — the SAME auto-narrow as EI-19344528739076339 above, for the GLOB form
  * of a gate-verdict key. The exact-key auto-narrow requires `!patternAwait`, so it never ran
@@ -1844,7 +1989,7 @@ describe('EI-19928976726540168 — auto-scope a GLOB multi-pipeline gate key to 
     expect(out.auto_scoped_payload_filter).toBeUndefined();
   });
 
-  it('⭐ WARNS instead of narrowing when this process\'s own pipeline cannot be resolved', async () => {
+  it("⭐ WARNS instead of narrowing when this process's own pipeline cannot be resolved", async () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = '/';
     const out = await call({ event: 'green-checkpoint:red:*' });
     expect(out.auto_scoped_payload_filter).toBeUndefined();

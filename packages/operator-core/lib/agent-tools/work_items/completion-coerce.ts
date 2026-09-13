@@ -376,6 +376,12 @@ export function coerceCompletionShape(raw: unknown): unknown {
   // untouched and wrap only the lossless scalar form before Zod validates it.
   if (isPlainObject(out.selfReview)) {
     const selfReview: Record<string, unknown> = { ...out.selfReview };
+    // `lookedAt` is persisted as one string, but callers often report the several
+    // files they re-read as an array. Join that lossless list using the same
+    // separator as the other string-valued completion fields (EI-22579012711003137).
+    if (Array.isArray(selfReview.lookedAt)) {
+      selfReview.lookedAt = joinToString(selfReview.lookedAt) || undefined;
+    }
     for (const f of ['findings', 'changedAsResult'] as const) {
       const value = selfReview[f];
       if (value == null || Array.isArray(value)) continue;

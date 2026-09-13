@@ -1243,6 +1243,46 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect(res.hint).toContain('final body');
   });
 
+  it('checkDuplicatesOnly does not coalesce or refresh an exact-key prior', async () => {
+    const prior = existing({
+      id: 'EI-CHECK-ONLY-KEY',
+      title: 'the original keyed finding',
+      body: 'the original body',
+      payload: { watchdogKey: 'check-only:key' },
+    });
+    const original = structuredClone(prior);
+    const mergeIssuePayload = vi.fn(async () => prior);
+    const updateIssuePatch = vi.fn(async () => prior);
+    const d = {
+      ...deps(),
+      findIssuesByWatchdogKeys: async () => [prior],
+      mergeIssuePayload,
+      updateIssuePatch,
+    } satisfies CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] };
+
+    const res = await captureImprovement(
+      {
+        title: 'the refreshed keyed finding',
+        body: 'the refreshed body must not persist during a pre-check',
+        kind: 'bug',
+        watchdogKey: 'check-only:key',
+        checkDuplicatesOnly: true,
+      },
+      d,
+    );
+
+    expect(res).toMatchObject({
+      created: false,
+      reason: 'check-only',
+      possibleDuplicates: [{ id: prior.id, exactKey: true }],
+    });
+    expect(prior).toEqual(original);
+    expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toHaveLength(0);
+    expect(mergeIssuePayload).not.toHaveBeenCalled();
+    expect(updateIssuePatch).not.toHaveBeenCalled();
+  });
+
   it('warns that a check-only result with a body is valid only for that exact body', async () => {
     const d = deps({ found: [] });
     const res = await captureImprovement(
