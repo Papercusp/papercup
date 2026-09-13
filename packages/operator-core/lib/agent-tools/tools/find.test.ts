@@ -595,7 +595,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       `constraint:completion.coverage (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`,
     );
     expect(compact).toContain(
-      'current?:array(≤500){planSlug?:string(1-2000),specId?:string(1-2000),specRevision?:integer(>0-9007199254740991),specFingerprint?:string(1-256),evidenceKind:enum(test|fixture|coverage-census|mutation|counterexample|check|manual|operational),evidenceRef:string(1-2000),sourceFingerprint:string(1-256)',
+      'current?:array(≤500){planSlug?:string(1-2000),specId?:string(1-2000),specRevision?:integer(>0-9007199254740991),specFingerprint?:string(1-256),evidenceKind:enum(test|fixture|coverage-census|mutation|counterexample|check|manual|operational),evidenceRef:string(1-2000),sourceFingerprint:string(1-256),testFingerprint?:string|null(1-256)',
     );
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });

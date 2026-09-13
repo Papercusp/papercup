@@ -708,6 +708,21 @@ describe('improvements:capture tool envelope', () => {
     expect(body.message).toEqual(expect.stringContaining('retry now'));
   });
 
+  it('preserves the retryable timeout envelope for PostgreSQL statement timeouts', async () => {
+    mockCapture.mockRejectedValueOnce(new OrgTxnTimeoutError('57014', new Error('statement timeout')));
+
+    const res = await callTool({ title: 'statement timeout', kind: 'bug' });
+    const body = JSON.parse(res.content[0].text) as Record<string, unknown>;
+
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      pgCode: '57014',
+    });
+    expect(body.message).toEqual(expect.stringContaining('retry now'));
+  });
+
   it('returns a byte-identical plain success for fresh and folded unkeyed observations (P-008)', async () => {
     mockCapture.mockResolvedValueOnce({
       ok: true,

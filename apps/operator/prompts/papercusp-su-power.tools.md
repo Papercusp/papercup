@@ -197,8 +197,9 @@ response at all, and never sit retrying the SAME denied edit (a blind
 retry loop is the same failure as not responding). **Never route around a
 block** (rename, copy, `--force`, writing a sibling copy) — that lock is
 the other agent's in-flight work. Hand-call `locks:acquire` only for the
-one case the hook can't cover — a deliberate change across several files
-held across multiple edits:
+one case the hook can't cover — a deliberate change across several files.
+`locks:acquire` requires a non-empty `intent` for every manual lock request.
+Hold the lock across multiple edits:
 
 ```
 locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wake_on_grant: true }

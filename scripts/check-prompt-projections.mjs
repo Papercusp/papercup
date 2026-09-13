@@ -11,13 +11,14 @@
  *
  *   node scripts/check-prompt-projections.mjs
  *   node scripts/check-prompt-projections.mjs --root /path/to/repo
+ *   node scripts/check-prompt-projections.mjs --write
  *
  * The --root override exists only for the falsifiability tests. The normal guard
  * always resolves the repository root from this script's own location.
  */
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
@@ -41,6 +42,25 @@ export const CANONICAL_PROMPT_PATH =
  */
 export const GENERATED_PROMPT_PATHS = Object.freeze([
   'papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md',
+]);
+
+/** Papercusp's authored pot-specific SU override and its tracked desktop copy. */
+export const INSTANCE_PROMPT_SOURCE_PATH =
+  'apps/operator/prompts/pot-instances/papercup-pot.su.md';
+export const INSTANCE_PROMPT_PROJECTION_PATHS = Object.freeze([
+  'papercusp-desktop/src-tauri/env-sidecars/staging/prompts/pot-instances/papercup-pot.su.md',
+]);
+
+/** Every authored source whose tracked desktop projection must stay byte-identical. */
+export const PROMPT_PROJECTION_GROUPS = Object.freeze([
+  Object.freeze({
+    sourcePath: CANONICAL_PROMPT_PATH,
+    projectionPaths: GENERATED_PROMPT_PATHS,
+  }),
+  Object.freeze({
+    sourcePath: INSTANCE_PROMPT_SOURCE_PATH,
+    projectionPaths: INSTANCE_PROMPT_PROJECTION_PATHS,
+  }),
 ]);
 
 export const PROMPT_PROJECTIONS_MARKER = '__PROMPT_PROJECTIONS__';
@@ -132,6 +152,82 @@ export function comparePromptProjections({
   };
 }
 
+/** Compare every maintained source/projection group used by the CLI guard. */
+export function compareAllPromptProjections({
+  root = REPO_ROOT,
+  groups = PROMPT_PROJECTION_GROUPS,
+  read = readFileSync,
+} = {}) {
+  const results = groups.map(({ sourcePath, projectionPaths }) =>
+    comparePromptProjections({ root, sourcePath, projectionPaths, read }),
+  );
+  return {
+    ok: results.every((result) => result.ok),
+    groups: results,
+    mismatches: results.flatMap((result) =>
+      result.mismatches.map((mismatch) => ({
+        sourcePath: result.source.path,
+        ...mismatch,
+      })),
+    ),
+  };
+}
+
+/**
+ * Refresh stale tracked projections with an atomic same-directory rename.
+ *
+ * Read every source before writing anything so one missing source cannot leave
+ * a partially refreshed projection set. Already-current targets are untouched.
+ */
+export function writePromptProjections({
+  root = REPO_ROOT,
+  groups = PROMPT_PROJECTION_GROUPS,
+  read = readFileSync,
+  write = writeFileSync,
+  rename = renameSync,
+  unlink = unlinkSync,
+  mkdir = mkdirSync,
+} = {}) {
+  const prepared = groups.map(({ sourcePath, projectionPaths }) => {
+    const source = readBytes(resolve(root, sourcePath), read);
+    if (!source.bytes) {
+      throw new Error(
+        `${sourcePath}: ${source.errorCode === 'ENOENT' ? 'missing-source' : 'unreadable-source'}`,
+      );
+    }
+    return { projectionPaths, bytes: source.bytes };
+  });
+
+  const written = [];
+  for (const { projectionPaths, bytes } of prepared) {
+    for (const projectionPath of projectionPaths) {
+      const target = resolve(root, projectionPath);
+      const current = readBytes(target, read);
+      if (current.bytes?.equals(bytes)) continue;
+
+      const targetDir = dirname(target);
+      mkdir(targetDir, { recursive: true });
+      const temporary = resolve(
+        targetDir,
+        `.${basename(target)}.prompt-projection-${process.pid}-${randomUUID()}.tmp`,
+      );
+      try {
+        write(temporary, bytes, { flag: 'wx' });
+        rename(temporary, target);
+      } catch (error) {
+        try {
+          unlink(temporary);
+        } catch {
+          // The rename may already have consumed the temporary path.
+        }
+        throw error;
+      }
+      written.push(projectionPath);
+    }
+  }
+  return written;
+}
+
 function rootFromArgs() {
   const index = process.argv.indexOf('--root');
   if (index === -1) return REPO_ROOT;
@@ -147,15 +243,33 @@ function rootFromArgs() {
 function main() {
   const root = rootFromArgs();
   if (!root) return;
-  const result = comparePromptProjections({ root });
-  console.log(PROMPT_PROJECTIONS_MARKER + ' ' + JSON.stringify(result));
+  let written = [];
+  if (process.argv.includes('--write')) {
+    try {
+      written = writePromptProjections({ root });
+    } catch (error) {
+      console.error(
+        'check-prompt-projections: refused to write: ' +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      process.exitCode = 2;
+      return;
+    }
+  }
+  const result = compareAllPromptProjections({ root });
+  console.log(PROMPT_PROJECTIONS_MARKER + ' ' + JSON.stringify({ ...result, written }));
   if (result.ok) {
+    const projectionCount = result.groups.reduce(
+      (count, group) => count + group.projections.length,
+      0,
+    );
     console.error(
-      '✓ check-prompt-projections: canonical su.md matches ' +
-        result.projections.length +
-        ' generated projection(s) (' +
-        result.source.bytes +
-        ' bytes)',
+      '✓ check-prompt-projections: ' +
+        result.groups.length +
+        ' authored source(s) match ' +
+        projectionCount +
+        ' generated projection(s)' +
+        (written.length > 0 ? ` (${written.length} refreshed)` : ''),
     );
     return;
   }
@@ -166,12 +280,13 @@ function main() {
       ' mismatch(es))',
   );
   for (const mismatch of result.mismatches) {
-    console.error('  - ' + mismatch.path + ': ' + mismatch.reason);
+    console.error(
+      '  - ' + mismatch.path + ': ' + mismatch.reason + ' (source ' + mismatch.sourcePath + ')',
+    );
   }
   console.error(
-    '  Regenerate the operator and desktop sidecar projections from ' +
-      CANONICAL_PROMPT_PATH +
-      '.',
+    '  Regenerate tracked desktop prompt projections with ' +
+      '`npm --prefix packages/operator-core run gen:prompt-projections`.',
   );
   process.exitCode = 1;
 }

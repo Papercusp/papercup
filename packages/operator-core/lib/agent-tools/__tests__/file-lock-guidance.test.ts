@@ -45,6 +45,7 @@ describe('canonical file-lock guidance', () => {
   it('documents the repository-relative and external path domains for manual locks', () => {
     for (const path of manualLockGuidanceSources) {
       const source = readFileSync(path, 'utf8');
+      expect(source, path).toContain('`locks:acquire` requires a non-empty');
       expect(source, path).toContain('repository-relative POSIX');
       expect(source, path).toContain('InvalidPathError');
       expect(source, path).toContain('external_paths');
