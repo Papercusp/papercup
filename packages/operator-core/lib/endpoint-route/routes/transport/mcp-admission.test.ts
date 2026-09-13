@@ -27,6 +27,7 @@ import {
   isBoundedLoopArmArgs,
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
+  isBoundedSessionsSearchArgs,
   isBoundedWorkItemsSetStateArgs,
 } from './mcp-admission';
 
@@ -307,6 +308,96 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     ]) {
       expect(classifyMcpBody(toolsCall(12, 'work_items:get', args))).toEqual({ sheddable: true, id: 12 });
     }
+  });
+
+  it.each([
+    'testing:run-status',
+    'testing_run_status',
+    'mcp__papercusp-su__testing_run_status',
+    'mcp__papercusp_su__testing_run_status',
+  ])('does NOT shed a bounded detached testing:run-status read under critical pressure: %s', (name) => {
+    const body = toolsCall(13, name, { runId: '6de15d63-d7fb-4ed4-bcec-8af90bdd6106' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps malformed or output-expanding testing:run-status reads sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { runId: '' },
+      { runId: 'x'.repeat(121) },
+      { runId: 'run-1', extra: true },
+    ]) {
+      const body = toolsCall(14, 'testing:run-status', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 14 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded testing:run-status read through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__testing_run_status',
+          args: { runId: 'run-1' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'sessions:search',
+    'sessions_search',
+    'mcp__papercusp-su__sessions_search',
+    'mcp__papercusp_su__sessions_search',
+  ])('does NOT shed bounded post-compaction self-recall under critical pressure: %s', (name) => {
+    const args = { query: 'resume the current lane', session: 'self', mode: 'verbatim' };
+    expect(isBoundedSessionsSearchArgs(args)).toBe(true);
+    const body = toolsCall(16, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad or output-expanding sessions:search reads sheddable under critical pressure', () => {
+    for (const args of [
+      { query: 'recover this', session: 'self' },
+      { query: 'recover this', session: 'self', mode: 'hybrid' },
+      { query: 'recover this', session: 'other', mode: 'verbatim' },
+      { query: 'recover this', session: 'self', mode: 'verbatim', limit: 6 },
+      { query: 'recover this', session: 'self', mode: 'verbatim', context: 3 },
+      { query: 'recover this', session: 'self', mode: 'verbatim', include_coord: true },
+      { query: 'recover this', session: 'self', mode: 'verbatim', cursor: 'opaque' },
+      { query: 'recover this', session: 'self', mode: 'verbatim', owner: 'self' },
+      { query: 'x'.repeat(501), session: 'self', mode: 'verbatim' },
+    ]) {
+      expect(isBoundedSessionsSearchArgs(args)).toBe(false);
+      const body = toolsCall(17, 'sessions:search', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 17 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes bounded sessions:search self-recall through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 18,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__sessions_search',
+          args: { query: 'resume the current lane', session: 'self', mode: 'verbatim', limit: 1, context: 0 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
   it.each([
@@ -1651,6 +1742,34 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
+  });
+  it('admits a bounded testing:run-status read under critical pressure so a detached test can be recovered', async () => {
+    const req = post(toolsCall(39, 'testing:run-status', { runId: 'run-1' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('testing:run-status');
+  });
+  it('admits bounded post-compaction sessions:search self-recall under critical pressure', async () => {
+    const req = post(toolsCall(40, 'sessions:search', {
+      query: 'resume the current lane',
+      session: 'self',
+      mode: 'verbatim',
+      limit: 1,
+      context: 0,
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('sessions:search');
+  });
+  it('still sheds broad sessions:search under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(41, 'sessions:search', { query: 'resume the current lane', session: 'self' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('admits a bounded heading-narrowed plans:get under critical pressure', async () => {
     const req = post(toolsCall(38, 'plans:get', {

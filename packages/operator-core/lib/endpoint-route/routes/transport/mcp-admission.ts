@@ -187,6 +187,8 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'tools:find',
     'plans:get',
     'work_items:get',
+    'testing:run-status',
+    'sessions:search',
     'loop:status',
   ].map(normalizeMcpName),
 );
@@ -219,6 +221,12 @@ const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const LOCKS_RELEASE_NAME = normalizeMcpName('locks:release');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const TESTING_RUN_STATUS_NAME = normalizeMcpName('testing:run-status');
+const CRITICAL_TESTING_RUN_STATUS_MAX_RUN_ID_CHARS = 120;
+const SESSIONS_SEARCH_NAME = normalizeMcpName('sessions:search');
+const CRITICAL_SESSIONS_SEARCH_MAX_QUERY_CHARS = 500;
+const CRITICAL_SESSIONS_SEARCH_MAX_LIMIT = 5;
+const CRITICAL_SESSIONS_SEARCH_MAX_CONTEXT = 2;
 const WORK_ITEMS_SET_STATE_NAME = normalizeMcpName('work_items:set_state');
 const PLANS_GET_NAME = normalizeMcpName('plans:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
@@ -482,6 +490,63 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (!singleId && !singleIds) return false;
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
+  return true;
+}
+
+/**
+ * `testing:run-status` is the documented recovery read after a detached
+ * `testing:run` timeout. Its handler reads one store-backed snapshot keyed by
+ * one run id and the snapshot's output is already bounded. Keep the critical
+ * pressure exemption to the exact one-field schema so arbitrary fields cannot
+ * turn the recovery reserve into an unbounded testing surface.
+ */
+export function isBoundedTestingRunStatusArgs(args: unknown): boolean {
+  if (!isRecord(args) || Object.keys(args).some((key) => key !== 'runId')) return false;
+  return (
+    typeof args.runId === 'string' &&
+    args.runId.trim().length > 0 &&
+    args.runId.length <= CRITICAL_TESTING_RUN_STATUS_MAX_RUN_ID_CHARS
+  );
+}
+
+/**
+ * `sessions:search` is the documented post-compaction self-recall door, but
+ * its default hybrid mode can acquire an embedding and its general filter bag
+ * can search the whole session corpus. Keep the critical-pressure exemption to
+ * the exact cheap recovery shape: one verbatim query over the caller's own
+ * respawn chain, with a small result/context page and no coord corpus or
+ * pagination. The normal handler remains authoritative for the full schema
+ * after pressure recovers.
+ */
+export function isBoundedSessionsSearchArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['query', 'mode', 'session', 'limit', 'context', 'include_coord']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.query !== 'string' ||
+    args.query.trim().length === 0 ||
+    args.query.length > CRITICAL_SESSIONS_SEARCH_MAX_QUERY_CHARS
+  ) {
+    return false;
+  }
+  if (args.mode !== 'verbatim' || args.session !== 'self') return false;
+  if (args.include_coord !== undefined && args.include_coord !== false) return false;
+  if (
+    args.limit !== undefined &&
+    (!Number.isInteger(args.limit) ||
+      (args.limit as number) < 1 ||
+      (args.limit as number) > CRITICAL_SESSIONS_SEARCH_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  if (
+    args.context !== undefined &&
+    (!Number.isInteger(args.context) ||
+      (args.context as number) < 0 ||
+      (args.context as number) > CRITICAL_SESSIONS_SEARCH_MAX_CONTEXT)
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -1585,6 +1650,8 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   }
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
   if (normalized === WORK_ITEMS_GET_NAME) return isBoundedWorkItemsGetArgs(args);
+  if (normalized === TESTING_RUN_STATUS_NAME) return isBoundedTestingRunStatusArgs(args);
+  if (normalized === SESSIONS_SEARCH_NAME) return isBoundedSessionsSearchArgs(args);
   return true;
 }
 
