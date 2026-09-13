@@ -98,8 +98,8 @@ const LONG_REASON = 'r'.repeat(501);
 const CLAMPED_REASON = LONG_REASON.slice(0, 500);
 
 /** A complete issue-family row for typed release/get fixtures. */
-const workItemFixture = (overrides: Partial<WorkItem> & Pick<WorkItem, 'id'>): WorkItem => ({
-  id: overrides.id,
+const workItemFixture = ({ id, ...overrides }: Partial<WorkItem> & Pick<WorkItem, 'id'>): WorkItem => ({
+  id,
   kind: 'bug',
   family: 'issue',
   harness: 'h',
