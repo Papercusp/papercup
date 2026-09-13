@@ -550,7 +550,7 @@ describe("OperatorConversationProvider streamed say projection", () => {
     );
   });
 
-  it("removes an uncommitted streamed row when the stream errors", async () => {
+  it("removes the partial and persists an assistant refusal when the stream errors", async () => {
     let failStream!: () => void;
     const waitToFail = new Promise<void>((resolve) => {
       failStream = resolve;
@@ -579,13 +579,32 @@ describe("OperatorConversationProvider streamed say projection", () => {
       expect(screen.getByTestId("error").textContent).toBe(
         "provider unavailable",
       );
+      expect(screen.getByText("The operator could not complete this turn: provider unavailable")).toBeTruthy();
       expect(screen.getByTestId("busy").textContent).toBe("false");
     });
     expect(
       screen
         .getByTestId("messages")
         .querySelectorAll('[data-role="assistant"]'),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
+
+    await waitFor(() => {
+      const refusalPost = vi.mocked(fetch).mock.calls.find(([input, init]) => {
+        if (
+          !String(input).includes("/api/operator/conversations/") ||
+          !String(input).endsWith("/turns") ||
+          init?.method !== "POST"
+        ) {
+          return false;
+        }
+        const body = JSON.parse(String(init.body)) as {
+          role?: string;
+          text?: string;
+        };
+        return body.role === "assistant" && body.text?.includes("provider unavailable");
+      });
+      expect(refusalPost).toBeTruthy();
+    });
   });
 
   it("removes the old partial when a newer user turn aborts its generation", async () => {

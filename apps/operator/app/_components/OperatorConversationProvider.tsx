@@ -2164,11 +2164,36 @@ export function OperatorConversationProvider({
           resetContinueChain();
         }
       } catch (err) {
-        if (streamedAssistantId && !streamedAssistantCommitted) {
-          dispatch({ type: "remove_message_id", id: streamedAssistantId });
-        }
         if (ctrl.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
+        // A generation can fail after the user turn has already been written
+        // but before an assistant turn exists. Keep the refusal in the same
+        // durable conversation so a restart/reload cannot turn the failed
+        // request into a silent gap (EI-22586012826782354). Do not add a
+        // second assistant row when the normal response was already handed
+        // to persistTurn and a later bookkeeping step happened to throw.
+        if (!streamedAssistantCommitted) {
+          if (streamedAssistantId) {
+            dispatch({ type: "remove_message_id", id: streamedAssistantId });
+          }
+          const refusalId = `opt-assistant-failure-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+          const refusalText = `The operator could not complete this turn: ${msg}`;
+          dispatch({
+            type: "append_message",
+            message: {
+              role: "assistant",
+              content: refusalText,
+              id: refusalId,
+              ts: new Date().toISOString(),
+            },
+          });
+          persistTurn(
+            "assistant",
+            refusalText,
+            isGlobalTarget && opts?.spokenReply ? "voice_tts" : "text_typed",
+            refusalId,
+          );
+        }
         dispatch({ type: "set_error", error: msg });
         dispatch({ type: "mark_error" });
         dispatch({
