@@ -450,6 +450,26 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     };
     expect(hasProperty(json.properties?.checks, 'testResult')).toBe(true);
     expect(hasProperty(json.properties?.items?.items, 'testResult')).toBe(true);
+    expect(hasProperty(json.properties?.checks, 'sinceMs')).toBe(true);
+    expect(hasProperty(json.properties?.items?.items, 'sinceMs')).toBe(true);
+  });
+
+  it('accepts and publishes the sinceMs check-row age anchor', () => {
+    const sinceMs = Date.parse('2026-09-13T12:00:00.000Z');
+    const parsed = parse({ id: 'WI-7', checks: [{ claim: 'the gate is green', sinceMs }] }) as {
+      checks: Array<{ claim: string; sinceMs?: number }>;
+    };
+    expect(parsed.checks[0]).toMatchObject({ claim: 'the gate is green', sinceMs });
+
+    const json = z.toJSONSchema(checkpoint.args as never) as {
+      $defs?: Record<string, unknown>;
+      properties?: { checks?: { $ref?: string } };
+    };
+    const checksRef = json.properties?.checks?.$ref;
+    const checks = (checksRef ? json.$defs?.[checksRef.slice('#/$defs/'.length)] : undefined) as
+      | { items?: { properties?: Record<string, unknown> } }
+      | undefined;
+    expect(checks?.items?.properties?.sinceMs).toMatchObject({ type: 'number' });
   });
 
   it('publishes shared checkpoint and checks schemas once via defs and refs', () => {
@@ -474,7 +494,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(23151);
+    expect(JSON.stringify(json)).toHaveLength(23268);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {

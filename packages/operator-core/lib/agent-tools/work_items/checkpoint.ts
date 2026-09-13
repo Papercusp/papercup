@@ -839,6 +839,14 @@ function checksSpec() {
             claim: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.claim, 'The claim about external state, stated concretely.', {
               min: 1,
             }),
+            // `sinceMs` is stamped and preserved by the shared carry-note normalizer. Keep it
+            // in the published row schema as well as the internal type so clients can submit
+            // an explicit age anchor without being rejected before that normalizer runs.
+            sinceMs: z
+              .number()
+              .finite()
+              .optional()
+              .describe('Optional epoch-millisecond timestamp for when this claim began standing.'),
             recheck: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.recheck,
               'The concrete probe that would falsify the claim.',
