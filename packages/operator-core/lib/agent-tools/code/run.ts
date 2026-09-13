@@ -221,6 +221,7 @@ export default defineTool({
           "A shell-command STRING passed to `tools.capability.bash({ command })` needs JS escaping too: write " +
           "`tr '\\\\0' ' ' </proc/self/cmdline` " +
           '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs. ' +
+          "Literal shell backslashes need the same JS escaping: use String.raw for the script or double each backslash in a JS string, e.g. `find /tmp \\\\( -name '*.unlikely-no-match' \\\\)`; a single `\\(` becomes `(` before bash runs, breaking grouped predicates. " +
           'Generated data needs the same JS layer: do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal. ' +
           'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument).',
       ),
