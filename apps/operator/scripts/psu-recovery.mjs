@@ -7,20 +7,23 @@
  * evidence is appended under ~/.papercusp/recovery and reconciled later by the
  * ordinary launcher path when the operator is reachable again.
  */
-import { spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn, spawnSync } from "node:child_process";
 import {
-  appendFileSync,
   chmodSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir, hostname, userInfo } from "node:os";
@@ -42,6 +45,64 @@ const MAX_ARGV_BYTES = 32_768;
 const MAX_REASON_BYTES = 2_000;
 const FUTURE_SKEW_MS = 30_000;
 
+/** @typedef {{ uid: number | null, username: string, hostname: string }} RecoveryIdentity */
+/** @typedef {{ name: "psu", version: string }} RecoveryClient */
+/**
+ * @typedef {{
+ *   capability: typeof RECOVERY_CAPABILITY_DIAGNOSTIC,
+ *   argv: string[],
+ *   cwd: string,
+ *   reason: string,
+ *   ttlMs?: number,
+ *   maxRuntimeMs?: number,
+ * }} RecoveryGrantInput
+ */
+/**
+ * @typedef {{
+ *   version: 1,
+ *   grantId: string,
+ *   capability: typeof RECOVERY_CAPABILITY_DIAGNOSTIC,
+ *   argv: string[],
+ *   cwd: string,
+ *   reason: string,
+ *   issuedAt: string,
+ *   issuedAtMs: number,
+ *   expiresAtMs: number,
+ *   maxRuntimeMs: number,
+ *   maxUses: 1,
+ *   terminalId: string,
+ *   identity: RecoveryIdentity,
+ *   client: RecoveryClient,
+ *   signature: string,
+ * }} RecoveryGrant
+ */
+/**
+ * @typedef {{
+ *   eventId: string,
+ *   event: string,
+ *   grantId: string,
+ *   [key: string]: unknown,
+ * }} RecoveryAuditRow
+ */
+/**
+ * @typedef {{
+ *   file: string,
+ *   args: string[],
+ *   cwd: string,
+ *   env: NodeJS.ProcessEnv,
+ *   timeoutMs: number,
+ * }} RecoveryExecutionSpec
+ */
+/**
+ * @typedef {{
+ *   exitCode: number | null,
+ *   signal: NodeJS.Signals | null,
+ *   timedOut: boolean,
+ *   error?: string,
+ * }} RecoveryExecutionResult
+ */
+
+/** @param {string} [home] */
 export function recoveryPaths(home = homedir()) {
   const root = join(home, ".papercusp", "recovery");
   return {
@@ -239,8 +300,25 @@ function grantPath(paths, grantId, kind = "grants") {
 
 function appendRecoveryAuditRow(row, { home = homedir() } = {}) {
   const paths = ensureRecoveryStore(home);
-  appendFileSync(paths.audit, `${JSON.stringify(row)}\n`, { encoding: "utf8", mode: 0o600, flag: "a" });
-  chmodSync(paths.audit, 0o600);
+  let fd;
+  try {
+    fd = openSync(
+      paths.audit,
+      fsConstants.O_WRONLY |
+        fsConstants.O_APPEND |
+        fsConstants.O_CREAT |
+        (fsConstants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    const st = fstatSync(fd);
+    if (!st.isFile() || (typeof process.getuid === "function" && st.uid !== process.getuid())) {
+      throw new Error("recovery audit must be an owner-held regular file");
+    }
+    writeSync(fd, `${JSON.stringify(row)}\n`, null, "utf8");
+    chmodSync(paths.audit, 0o600);
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
   return paths.audit;
 }
 
@@ -279,6 +357,21 @@ function refusalAudit(grantId, reason, atMs, opts = {}) {
   };
 }
 
+/**
+ * @param {RecoveryGrantInput} input
+ * @param {{
+ *   home?: string,
+ *   token: string,
+ *   nowMs?: number,
+ *   terminalId: string,
+ *   identity?: RecoveryIdentity,
+ *   clientVersion?: string,
+ *   grantId?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   resolveExecutable?: (command: string, context: { cwd: string, env: NodeJS.ProcessEnv }) => string,
+ * }} opts
+ * @returns {RecoveryGrant}
+ */
 export function issueRecoveryGrant(input, opts = {}) {
   const { reason, ttlMs, maxRuntimeMs } = validateIssueInput(input);
   const token = validateToken(opts.token);
@@ -380,6 +473,7 @@ const RECOVERY_IDENTITY_KEYS = new Set([
   "PI_CODING_AGENT_DIR",
 ]);
 
+/** @param {NodeJS.ProcessEnv} [env] @returns {NodeJS.ProcessEnv} */
 export function sanitizeRecoveryEnvironment(env = process.env) {
   const safeKeys = new Set([
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
@@ -396,6 +490,7 @@ export function sanitizeRecoveryEnvironment(env = process.env) {
 }
 
 /** Recovery authority never crosses into an ordinary psu launch/resume/wake. */
+/** @param {NodeJS.ProcessEnv} [env] @returns {NodeJS.ProcessEnv} */
 export function stripRecoveryMarkers(env = process.env) {
   const out = { ...env };
   for (const key of Object.keys(out)) {
@@ -404,6 +499,7 @@ export function stripRecoveryMarkers(env = process.env) {
   return out;
 }
 
+/** @param {RecoveryGrant} grant */
 export function renderRecoveryBanner(grant) {
   return [
     "================================================================================",
@@ -417,6 +513,15 @@ export function renderRecoveryBanner(grant) {
   ].join("\n");
 }
 
+/**
+ * @param {RecoveryExecutionSpec} spec
+ * @param {{
+ *   spawnImpl?: typeof nodeSpawn,
+ *   platform?: NodeJS.Platform,
+ *   kill?: (pid: number, signal?: NodeJS.Signals | number) => boolean,
+ * }} [opts]
+ * @returns {Promise<RecoveryExecutionResult>}
+ */
 export function executeExactRecoveryCommand(
   { file, args, cwd, env, timeoutMs },
   { spawnImpl = nodeSpawn, platform = process.platform, kill = process.kill.bind(process) } = {},
@@ -466,6 +571,21 @@ export function executeExactRecoveryCommand(
   });
 }
 
+/**
+ * @param {string} grantId
+ * @param {{
+ *   home?: string,
+ *   token: string,
+ *   nowMs?: number,
+ *   now?: () => number,
+ *   terminalId: string,
+ *   baseEnv?: NodeJS.ProcessEnv,
+ *   identity?: RecoveryIdentity,
+ *   clientVersion?: string,
+ *   execute?: (spec: RecoveryExecutionSpec) => Promise<RecoveryExecutionResult>,
+ *   writeBanner?: (text: string) => void,
+ * }} opts
+ */
 export async function runRecoveryGrant(grantId, opts = {}) {
   const home = opts.home ?? homedir();
   const token = validateToken(opts.token);
@@ -520,10 +640,27 @@ export async function runRecoveryGrant(grantId, opts = {}) {
   return { ok: true, grant, ...result };
 }
 
+/**
+ * @param {{ home?: string }} [opts]
+ * @returns {Promise<RecoveryAuditRow[]>}
+ */
 export async function readRecoveryAudit({ home = homedir() } = {}) {
   const path = recoveryPaths(home).audit;
+  let fd;
   let text;
-  try { text = readFileSync(path, "utf8"); } catch { return []; }
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const st = fstatSync(fd);
+    if (!st.isFile() || (typeof process.getuid === "function" && st.uid !== process.getuid())) {
+      throw new Error("recovery audit must be an owner-held regular file");
+    }
+    text = readFileSync(fd, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
   const rows = [];
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
@@ -537,6 +674,12 @@ export async function readRecoveryAudit({ home = homedir() } = {}) {
   return rows;
 }
 
+/**
+ * @param {{
+ *   home?: string,
+ *   send: (events: RecoveryAuditRow[]) => Promise<{ reconciledEventIds?: string[] }>,
+ * }} opts
+ */
 export async function reconcileRecoveryAudit({ home = homedir(), send } = {}) {
   if (typeof send !== "function") throw new Error("recovery audit reconciliation requires a sender");
   const rows = await readRecoveryAudit({ home });
@@ -590,14 +733,25 @@ const INHERITED_AGENT_MARKERS = [
 
 const AGENT_ANCESTOR_RE = /(?:^|[\/\s])(?:claude|codex|omp)(?:[\s\0]|$)|psu-pty-host\.mjs/i;
 
+/**
+ * @param {{
+ *   env?: NodeJS.ProcessEnv,
+ *   stdinIsTTY?: boolean,
+ *   stdoutIsTTY?: boolean,
+ *   ancestorCmdlines?: string[] | null,
+ * }} [opts]
+ */
 export function recoveryAuthorizationEligibility({
   env = process.env,
   stdinIsTTY = Boolean(process.stdin.isTTY),
   stdoutIsTTY = Boolean(process.stdout.isTTY),
-  ancestorCmdlines = [],
+  ancestorCmdlines = null,
 } = {}) {
   if (INHERITED_AGENT_MARKERS.some((key) => String(env[key] ?? "").length > 0)) {
     return { ok: false, reason: "inherited-agent-identity" };
+  }
+  if (!Array.isArray(ancestorCmdlines) || ancestorCmdlines.length === 0) {
+    return { ok: false, reason: "ancestor-scan-unavailable" };
   }
   if (ancestorCmdlines.some((line) => AGENT_ANCESTOR_RE.test(String(line)))) {
     return { ok: false, reason: "agent-process-ancestor" };
@@ -608,8 +762,21 @@ export function recoveryAuthorizationEligibility({
   return { ok: true };
 }
 
-export function readRecoveryAncestorCmdlines({ startPid = process.ppid, maxDepth = 32 } = {}) {
-  if (process.platform !== "linux") return [];
+/**
+ * @param {{
+ *   startPid?: number,
+ *   maxDepth?: number,
+ *   platform?: NodeJS.Platform,
+ *   run?: typeof spawnSync,
+ * }} [opts]
+ * @returns {string[] | null}
+ */
+export function readRecoveryAncestorCmdlines({
+  startPid = process.ppid,
+  maxDepth = 32,
+  platform = process.platform,
+  run = spawnSync,
+} = {}) {
   const out = [];
   const seen = new Set();
   let pid = Number(startPid);
@@ -617,15 +784,44 @@ export function readRecoveryAncestorCmdlines({ startPid = process.ppid, maxDepth
     if (!Number.isInteger(pid) || pid <= 1 || seen.has(pid)) break;
     seen.add(pid);
     try {
-      out.push(readFileSync(`/proc/${pid}/cmdline`, "utf8"));
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      const close = stat.lastIndexOf(")");
-      if (close < 0) break;
-      const fields = stat.slice(close + 1).trim().split(/\s+/);
-      pid = Number(fields[1]);
+      if (platform === "linux") {
+        out.push(readFileSync(`/proc/${pid}/cmdline`, "utf8"));
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        const close = stat.lastIndexOf(")");
+        if (close < 0) return null;
+        const fields = stat.slice(close + 1).trim().split(/\s+/);
+        pid = Number(fields[1]);
+      } else if (platform === "darwin" || platform === "freebsd") {
+        const result = run("ps", ["-o", "ppid=", "-o", "command=", "-p", String(pid)], {
+          encoding: "utf8",
+          timeout: 2_000,
+        });
+        if (result.status !== 0 || !String(result.stdout ?? "").trim()) return null;
+        const line = String(result.stdout).trim();
+        const match = line.match(/^(\d+)\s+(.+)$/s);
+        if (!match) return null;
+        pid = Number(match[1]);
+        out.push(match[2]);
+      } else if (platform === "win32") {
+        const script =
+          `$p=Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\"; ` +
+          `if ($null -eq $p) { exit 2 }; ` +
+          `$p | Select-Object ParentProcessId,CommandLine | ConvertTo-Json -Compress`;
+        const result = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+          encoding: "utf8",
+          timeout: 3_000,
+          windowsHide: true,
+        });
+        if (result.status !== 0 || !String(result.stdout ?? "").trim()) return null;
+        const row = JSON.parse(String(result.stdout));
+        pid = Number(row.ParentProcessId);
+        out.push(String(row.CommandLine ?? ""));
+      } else {
+        return null;
+      }
     } catch {
-      break;
+      return null;
     }
   }
-  return out;
+  return out.length > 0 ? out : null;
 }

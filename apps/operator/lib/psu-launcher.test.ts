@@ -2787,6 +2787,24 @@ describe("psu-launcher arg parsing", () => {
     expect(result.stderr).not.toContain("unrecognized flag");
   });
 
+  it("reaches recovery redemption without contacting the operator or connection controller", () => {
+    const launcher = join(__dirname, "..", "scripts", "psu-launcher.mjs");
+    const result = spawnSync(
+      process.execPath,
+      [launcher, "--recovery-grant=11111111-1111-4111-8111-111111111111"],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1" },
+        encoding: "utf8",
+        timeout: 5_000,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/native recovery requires a real local terminal/);
+    expect(result.stderr).not.toMatch(/ECONNREFUSED|connection profile|retrying/i);
+  });
+
   it("defaults to the interactive picker", () => {
     expect(parseArgs([])).toEqual({
       picker: true,

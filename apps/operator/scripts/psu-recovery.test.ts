@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -66,6 +66,10 @@ describe('psu bounded local recovery grant', () => {
     expect(recoveryAuthorizationEligibility({
       env: {}, stdinIsTTY: false, stdoutIsTTY: true, ancestorCmdlines: ['/usr/bin/bash'],
     })).toMatchObject({ ok: false, reason: 'interactive-terminal-required' });
+
+    expect(recoveryAuthorizationEligibility({
+      env: {}, stdinIsTTY: true, stdoutIsTTY: true, ancestorCmdlines: null,
+    })).toMatchObject({ ok: false, reason: 'ancestor-scan-unavailable' });
   });
 
   it('issues an owner-only signed grant with absolute executable, exact argv and hard bounds', async () => {
@@ -208,6 +212,67 @@ describe('psu bounded local recovery grant', () => {
     })).resolves.toMatchObject({
       exitCode: null, signal: null, timedOut: false, error: 'spawn unavailable',
     });
+  });
+
+  it('kills the whole exact-command process group at the hard runtime bound', async () => {
+    if (process.platform === 'win32') return;
+    const h = await home();
+    const marker = join(h, 'descendant-survived');
+    const child = [
+      "const { spawn } = require('node:child_process');",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'bad'), 350)`) }], { stdio: 'ignore' });`,
+      "setInterval(() => {}, 1000);",
+    ].join('\n');
+    const result = await executeExactRecoveryCommand({
+      file: process.execPath,
+      args: ['-e', child],
+      cwd: h,
+      env: { PATH: process.env.PATH },
+      timeoutMs: 100,
+    });
+    expect(result.timedOut).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('allows only one concurrent claimant to execute a one-use grant', async () => {
+    const h = await home();
+    const grant = issueRecoveryGrant(grantInput(), {
+      home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
+      resolveExecutable: () => '/usr/bin/printf',
+    });
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+    const results = await Promise.all([
+      runRecoveryGrant(grant.grantId, {
+        home: h, token: TOKEN, nowMs: NOW + 1, terminalId: TTY, execute, writeBanner: () => {},
+      }),
+      runRecoveryGrant(grant.grantId, {
+        home: h, token: TOKEN, nowMs: NOW + 1, terminalId: TTY, execute, writeBanner: () => {},
+      }),
+    ]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok)).toEqual([
+      expect.objectContaining({ reason: 'already-consumed' }),
+    ]);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a symlinked audit target and leaves no executable grant behind', async () => {
+    const h = await home();
+    const paths = recoveryPaths(h);
+    await mkdir(paths.grants, { recursive: true, mode: 0o700 });
+    await mkdir(paths.consumed, { recursive: true, mode: 0o700 });
+    const target = join(h, 'audit-target');
+    await writeFile(target, 'do-not-touch\n');
+    await symlink(target, paths.audit);
+    expect(() => issueRecoveryGrant(grantInput(), {
+      home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
+      grantId: '44444444-4444-4444-8444-444444444444',
+      resolveExecutable: () => '/usr/bin/printf',
+    })).toThrow();
+    await expect(readFile(join(paths.grants, '44444444-4444-4444-8444-444444444444.json')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(target, 'utf8')).toBe('do-not-touch\n');
   });
 
   it('reconciles only unreconciled append-only rows and checkpoints successful ids', async () => {
