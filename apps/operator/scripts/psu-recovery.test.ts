@@ -7,6 +7,7 @@ import {
   MAX_RECOVERY_RUNTIME_MS,
   MAX_RECOVERY_TTL_MS,
   RECOVERY_CAPABILITY_DIAGNOSTIC,
+  type RecoveryExecutionSpec,
   executeExactRecoveryCommand,
   issueRecoveryGrant,
   readRecoveryAudit,
@@ -116,7 +117,9 @@ describe('psu bounded local recovery grant', () => {
       home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
       resolveExecutable: () => '/usr/bin/printf',
     });
-    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+    const execute = vi.fn(async (_spec: RecoveryExecutionSpec) => ({
+      exitCode: 0, signal: null, timedOut: false,
+    }));
     const banners: string[] = [];
 
     const result = await runRecoveryGrant(grant.grantId, {
@@ -131,7 +134,8 @@ describe('psu bounded local recovery grant', () => {
 
     expect(result).toMatchObject({ ok: true, exitCode: 0, timedOut: false });
     expect(execute).toHaveBeenCalledTimes(1);
-    expect(execute.mock.calls[0]?.[0]).toMatchObject({
+    const execution = execute.mock.calls[0]![0];
+    expect(execution).toMatchObject({
       file: '/usr/bin/printf',
       args: ['%s', 'operator-offline-ok'],
       cwd: '/tmp',
@@ -143,8 +147,8 @@ describe('psu bounded local recovery grant', () => {
         PAPERCUSP_RECOVERY_CAPABILITY: RECOVERY_CAPABILITY_DIAGNOSTIC,
       },
     });
-    expect(execute.mock.calls[0]?.[0].env).not.toHaveProperty('PAPERCUSP_SID');
-    expect(execute.mock.calls[0]?.[0].env).not.toHaveProperty('OPENAI_API_KEY');
+    expect(execution.env).not.toHaveProperty('PAPERCUSP_SID');
+    expect(execution.env).not.toHaveProperty('OPENAI_API_KEY');
     expect(banners.join('\n')).toContain('NATIVE RECOVERY MODE');
     expect(banners.join('\n')).toContain(grant.grantId);
     expect(renderRecoveryBanner(grant)).toContain('CONTROL PLANE BYPASSED');
