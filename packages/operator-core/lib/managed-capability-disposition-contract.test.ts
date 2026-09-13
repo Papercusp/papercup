@@ -136,4 +136,28 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(jobs.cutoverReady).toBe(false);
     expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
   });
+
+  it('records the P-003 PTY/script lifecycle closure without claiming persistent-kernel or client cutover parity', () => {
+    const jobs = managedCapabilityDisposition('jobs-output-stop-pty');
+    const scripts = managedCapabilityDisposition('script-orchestration-kernels');
+
+    expect(jobs.evidence.anchors).toContain("name: 'capability:pty_resize'");
+    expect(jobs.boundary).toContain('emit task-terminal wakes');
+    expect(jobs.gaps.map((gap) => gap.id)).not.toContain('pty-resize-completion-reattach');
+    expect(jobs.gaps).toContainEqual(expect.objectContaining({
+      id: 'pty-real-client-restart-acceptance',
+      owningPlanItems: ['P-007', 'P-008'],
+    }));
+
+    expect(scripts.boundary).toContain('explicit replay state');
+    expect(scripts.boundary).toContain('uncertain-write reporting');
+    expect(scripts.gaps).toContainEqual(expect.objectContaining({
+      id: 'persistent-kernel-lifecycle',
+      owningPlanItems: ['P-006', 'P-008'],
+    }));
+    expect([...jobs.gaps, ...scripts.gaps].flatMap((gap) => gap.owningPlanItems)).not.toContain('P-003');
+    expect(jobs.cutoverReady).toBe(false);
+    expect(scripts.cutoverReady).toBe(false);
+    expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+  });
 });
