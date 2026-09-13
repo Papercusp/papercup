@@ -195,7 +195,12 @@ import {
   type ListIssuesFilter,
 } from './issues-engineer';
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
-import { fitsProseColumns } from './search/prose-vector-dims';
+import {
+  fitsProseColumns,
+  proseProfilePredicateSql,
+  resolveProseProfileSelection,
+  type ProseProfileSelection,
+} from './search/prose-vector-dims';
 import {
   runHybridSearch,
   type SearchSource,
@@ -1878,7 +1883,7 @@ function issueHarnessClause(sql: OrgSql, harness: string) {
  * always `activeWorkspaceId()`, and harness scoping is a derived expression
  * rather than a column (see `issueHarnessClause`).
  */
-function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | null): SearchSource {
+function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSelection | null): SearchSource {
   const ws = issuesScopeWorkspace();
   const scoped = (sql: OrgSql) => sql`
           workspace_id = ${ws}
@@ -1919,7 +1924,7 @@ function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | nul
          LIMIT ${limit}`;
       return toListing(rows, 'lexical');
     },
-    ...(embeddingMode
+    ...(selection
       ? {
           async embedding({ sql: pg, limit, qVec }): Promise<Listing> {
             const sql = pg as OrgSql;
@@ -1929,7 +1934,7 @@ function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | nul
                 FROM harness_shared.work_items
                WHERE ${scoped(sql)}
                  AND embedding IS NOT NULL
-                 AND embedding_mode = ${embeddingMode}
+                 AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}
             ORDER BY embedding <=> ${qVec}::vector
                LIMIT ${limit}`;
             return toListing(rows, 'embeddings');
@@ -1944,7 +1949,7 @@ function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | nul
  * `featureFamilyKindClause` keeps registered generic-kind datatypes visible
  * here exactly as it does for list/count.
  */
-function featureSearchSource(f: WorkItemSearchFilters, embeddingMode: string | null): SearchSource {
+function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSelection | null): SearchSource {
   const ws = activeWorkspaceId();
   const scoped = (sql: OrgSql) => sql`
           ${featureFamilyKindClause(sql, ws, { includeDeprecatedChunk: f.kind === 'chunk' })}
@@ -1981,7 +1986,7 @@ function featureSearchSource(f: WorkItemSearchFilters, embeddingMode: string | n
          LIMIT ${limit}`;
       return toListing(rows, 'lexical');
     },
-    ...(embeddingMode
+    ...(selection
       ? {
           async embedding({ sql: pg, limit, qVec }): Promise<Listing> {
             const sql = pg as OrgSql;
@@ -1991,7 +1996,7 @@ function featureSearchSource(f: WorkItemSearchFilters, embeddingMode: string | n
                 FROM harness_shared.harness_features_consolidated
                WHERE ${scoped(sql)}
                  AND embedding IS NOT NULL
-                 AND embedding_mode = ${embeddingMode}
+                 AND ${proseProfilePredicateSql(sql, selection, 'embedding_profile', 'embedding_mode')}
             ORDER BY embedding <=> ${qVec}::vector
                LIMIT ${limit}`;
             return toListing(rows, 'embeddings');
@@ -2181,7 +2186,7 @@ export async function searchWorkItems(
   // reports as a semantic leg that never ran, rather than one that found
   // nothing. Failing to resolve is never an error (fail-open).
   let embedder: ((t: string) => Promise<number[]>) | null = null;
-  let embeddingMode: string | null = null;
+  let embeddingSelection: ProseProfileSelection | null = null;
   let retry:
     | {
         token: string;
@@ -2206,13 +2211,15 @@ export async function searchWorkItems(
      */
     const selection = workItemEmbedderWarmup.select(opts.embedderResolver);
     embedder = selection.embedder;
-    embeddingMode = selection.resolved?.mode ?? null;
+    embeddingSelection = selection.resolved?.profile
+      ? resolveProseProfileSelection(selection.resolved.mode, selection.resolved.profile)
+      : null;
     retry = selection.retry;
   }
 
   const sources: SearchSource[] = [
-    ...(wantIssue ? [issueSearchSource(filters, embeddingMode)] : []),
-    ...(wantFeature ? [featureSearchSource(filters, embeddingMode)] : []),
+    ...(wantIssue ? [issueSearchSource(filters, embeddingSelection)] : []),
+    ...(wantFeature ? [featureSearchSource(filters, embeddingSelection)] : []),
   ];
   const { sql } = getOrgPg();
   const { results, legs, applied } = await runHybridSearch(sources, {
