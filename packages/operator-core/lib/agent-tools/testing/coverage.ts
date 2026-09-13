@@ -227,6 +227,72 @@ export interface CoverageRawInput {
   now?: number;
 }
 
+/**
+ * Keep the complete coverage MEASUREMENT when a model-facing result is bounded.
+ * The aggregate envelope is the point of this tool; only `rows` is a page and may
+ * be shortened further for transport. Without a domain shaper, tooldef's generic
+ * projection can retain part of that large row page while dropping the required
+ * root `count` / `total` / `truncatedByLimit` fields. A strict MCP client then
+ * rejects the whole otherwise-readable response against this tool's outputSchema.
+ */
+export const TESTING_COVERAGE_TIER_CAPS = {
+  trimmed: 4_800,
+  standard: 5_200,
+} as const;
+
+type TestingCoverageTier = keyof typeof TESTING_COVERAGE_TIER_CAPS;
+
+export function shapeTestingCoverage(data: unknown, tier: TestingCoverageTier): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const source = data as Record<string, unknown>;
+  if (!Array.isArray(source.rows)) return data;
+
+  const targetChars = TESTING_COVERAGE_TIER_CAPS[tier];
+  const rows = source.rows;
+  const base = { ...source, rows: [] as unknown[], count: 0 };
+  const kept: unknown[] = [];
+
+  for (const row of rows) {
+    const next = [...kept, row];
+    const candidate = {
+      ...base,
+      rows: next,
+      count: next.length,
+      truncatedByLimit: source.truncatedByLimit === true || next.length < rows.length,
+      payloadBounded: {
+        tier,
+        showingRows: next.length,
+        queryRows: rows.length,
+        droppedRows: rows.length - next.length,
+      },
+    };
+    // Preserve one real row even when an unusually large identifier alone crosses
+    // the target; the framework's much larger hard ceiling remains the final guard.
+    if (JSON.stringify(candidate).length > targetChars && kept.length > 0) break;
+    kept.push(row);
+  }
+
+  const droppedRows = rows.length - kept.length;
+  const shaped = {
+    ...base,
+    rows: kept,
+    count: kept.length,
+    total: source.total,
+    truncatedByLimit: source.truncatedByLimit === true || droppedRows > 0,
+  };
+  if (droppedRows === 0) return shaped;
+
+  return {
+    ...shaped,
+    payloadBounded: {
+      tier,
+      showingRows: kept.length,
+      queryRows: rows.length,
+      droppedRows,
+    },
+  };
+}
+
 export type TestingCensusPopulationAssessment = 'no-providers' | 'census-not-run' | 'empty-measured' | 'populated';
 
 /**
@@ -574,6 +640,40 @@ export default defineTool({
       truncatedByLimit: z.boolean(),
     })
     .passthrough(),
+  shape: {
+    contract: {
+      rows: 'rows',
+      fields: [
+        'kind',
+        'surfaceId',
+        'sourceFile',
+        'provider',
+        'fidelity',
+        'depth',
+        'meets',
+        'mutationScore',
+        'authoredEvidence',
+        'lastEvidenceAt',
+        'firstSeen',
+        'retiredAt',
+        'waived',
+      ],
+      preserve: [
+        'scope',
+        'assessments',
+        'verdict',
+        'censusUnknown',
+        'census',
+        'coverage',
+        'byKind',
+        'count',
+        'total',
+        'truncatedByLimit',
+      ],
+    },
+    standard: (data) => shapeTestingCoverage(data, 'standard'),
+    trimmed: (data) => shapeTestingCoverage(data, 'trimmed'),
+  },
   // ⚠ WRAPPED IN `{ data }`, like every sibling tool. A handler must return a
   // `ToolResult | ToolResponse`, not a bare payload — `dispatchReadOnlyTool` unwraps
   // `data`, which is why the state cells' declared paths are rooted at `coverage.pct`

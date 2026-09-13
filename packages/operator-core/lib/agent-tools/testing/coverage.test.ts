@@ -13,7 +13,14 @@
  * be wrong about.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  dispatchProjectedTool,
+  lookupByMcpName,
+  readJsonResult,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import {
   assembleCoverage,
   assessTestingCensusPopulation,
@@ -25,8 +32,16 @@ import {
   AGGREGATE_BASIS,
   FIDELITY_ORDER,
   RUNGS,
+  shapeTestingCoverage,
   type CoverageRawInput,
 } from './coverage';
+import coverageTool from './coverage';
+
+const sqlMock = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMock }),
+}));
 
 const SCOPE = { workspace: 'ws', harness: 'papercusp' };
 
@@ -364,6 +379,164 @@ describe('the aggregates do not move with `limit` — behavioural, not by field 
   it('does not claim truncation when the page holds everything', () => {
     const whole = assembleCoverage(input({ totals, fidelityRows, registrations, rows: [row('a')], rowTotal: 1 }));
     expect(whole.truncatedByLimit).toBe(false);
+  });
+});
+
+describe('testing:coverage payload-tier shape', () => {
+  const dbRows = Array.from({ length: 50 }, (_, index) => ({
+    kind: 'http-route',
+    surface_id: `GET /api/coverage-regression/${String(index).padStart(2, '0')}/${'segment'.repeat(4)}`,
+    source_file: `apps/operator/app/coverage-regression/${index}/route.ts`,
+    provider: 'hono-routes',
+    fidelity: 'declared',
+    depth: 0,
+    meets_l1: false,
+    meets_l2: false,
+    meets_l3: false,
+    meets_l4: false,
+    mutation_score: null,
+    authored_evidence: '0',
+    last_evidence_at: null,
+    first_seen: '2026-09-13T00:00:00.000Z',
+    retired_at: null,
+    waived: false,
+  }));
+
+  const totals = {
+    surfaces: '50',
+    retired: '0',
+    waived: '0',
+    last_census_at: '2026-09-13T00:00:00.000Z',
+    meets_l1: '0',
+    meets_l2: '0',
+    meets_l3: '0',
+    meets_l4: '0',
+    meets_floor: '0',
+    evidenced: '1',
+    below_unwaived_l1: '50',
+    below_unwaived_l2: '50',
+    below_unwaived_l3: '50',
+    below_unwaived_l4: '50',
+    below_unwaived_floor: '50',
+  };
+
+  const dispatchContext = (contextTier: 'trimmed' | 'standard'): UnifiedToolContext => ({
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    workspaceId: 'papercusp-workspace',
+    runId: `testing-coverage-shape-${contextTier}`,
+    isSuperuser: true,
+    uiClientId: 'testing-coverage-shape-test',
+    role: 'su',
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+    contextTier,
+    tx: {},
+  });
+
+  function installCoverageSqlFixture() {
+    sqlMock.mockReset();
+    sqlMock.mockImplementation((strings: TemplateStringsArray | string, ...values: unknown[]) => {
+      if (typeof strings === 'string') return { identifier: strings };
+      const call = { strings: Array.from(strings), values };
+      const text = call.strings.join(' ');
+      if (text.includes('FROM harness_shared.census_provider_registrations')) {
+        return Promise.resolve([{ registered: '3', enabled: '3' }]);
+      }
+      if (text.includes('SELECT kind,') && text.includes('GROUP BY kind, fidelity')) {
+        return Promise.resolve([
+          { kind: 'http-route', fidelity: 'declared', n: '50', meets: '0', waived: '0', below_unwaived: '50' },
+        ]);
+      }
+      if (text.includes('SELECT fidelity, count(*) AS n')) {
+        return Promise.resolve([{ fidelity: 'declared', n: '50' }]);
+      }
+      if (text.includes('SELECT kind, surface_id')) return Promise.resolve(dbRows);
+      if (text.includes('SELECT count(*) AS n FROM')) return Promise.resolve([{ n: '50' }]);
+      if (text.includes('FROM harness_shared.testing_surface_depth')) return Promise.resolve([totals]);
+      return call;
+    });
+  }
+
+  it.each(['trimmed', 'standard'] as const)(
+    'keeps required census counts in %s projected output while bounding only rows',
+    async (contextTier) => {
+      installCoverageSqlFixture();
+      const raw = (await coverageTool.handler({ limit: 50 } as never, {} as never)) as { data: unknown };
+      expect(JSON.stringify(raw).length).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
+
+      installCoverageSqlFixture();
+      const projected = lookupByMcpName('testing:coverage');
+      expect(projected).toBeDefined();
+      const dispatched = await dispatchProjectedTool(
+        projected!,
+        'testing:coverage',
+        { harness: 'papercusp', workspace: 'papercusp-workspace', rung: 'l3', limit: 50 },
+        dispatchContext(contextTier),
+        {},
+      );
+
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      const payload = readJsonResult<{
+        scope: { workspace: string; harness: string };
+        assessments: unknown;
+        census: unknown;
+        coverage: unknown;
+        byKind: unknown[];
+        rows: unknown[];
+        count: number;
+        total: number;
+        truncatedByLimit: boolean;
+        payloadBounded?: { tier: string; showingRows: number; queryRows: number; droppedRows: number };
+        _projection?: unknown;
+      }>(dispatched.result!);
+      expect(payload?._projection).toBeUndefined();
+      expect(payload).toMatchObject({
+        scope: { workspace: 'papercusp-workspace', harness: 'papercusp' },
+        count: payload?.rows.length,
+        total: 50,
+        truncatedByLimit: true,
+      });
+      expect(payload?.assessments).toBeDefined();
+      expect(payload?.census).toBeDefined();
+      expect(payload?.coverage).toBeDefined();
+      expect(payload?.byKind).toHaveLength(1);
+      expect(payload?.rows.length).toBeGreaterThan(0);
+      expect(payload?.rows.length).toBeLessThan(50);
+      expect(payload?.payloadBounded).toMatchObject({
+        tier: contextTier,
+        showingRows: payload?.rows.length,
+        queryRows: 50,
+        droppedRows: 50 - (payload?.rows.length ?? 0),
+      });
+      expect(dispatched.result?.structuredContent).toMatchObject({
+        count: payload?.rows.length,
+        total: 50,
+        truncatedByLimit: true,
+      });
+    },
+  );
+
+  it('preserves an already complete small page without claiming transport truncation', () => {
+    const full = assembleCoverage(
+      input({
+        totals: { ...totals, surfaces: 1, below_unwaived_l1: 1, below_unwaived_floor: 1 },
+        fidelityRows: [{ fidelity: 'declared', n: 1 }],
+        byKindRows: [
+          { kind: 'http-route', fidelity: 'declared', n: 1, meets: 0, waived: 0, below_unwaived: 1 },
+        ],
+        registrations: { registered: 3, enabled: 3 },
+        rows: [dbRows[0]],
+        rowTotal: 1,
+      }),
+    );
+    const shaped = shapeTestingCoverage(full, 'trimmed') as Record<string, unknown>;
+    expect(shaped).toMatchObject({ count: 1, total: 1, truncatedByLimit: false });
+    expect(shaped.payloadBounded).toBeUndefined();
   });
 });
 
