@@ -24,6 +24,7 @@
  */
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR = resolve(ROOT, 'libs/papercusp/libs/db/sql');
@@ -133,6 +134,4 @@ export async function main(argv = process.argv.slice(2)) {
   return 0;
 }
 
-const isMainModule = process.argv[1]
-  && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
-if (isMainModule) process.exitCode = await main();
+if (isCliEntry(import.meta.url)) process.exitCode = await main();

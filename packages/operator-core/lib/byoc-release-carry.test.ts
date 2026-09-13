@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { TaskReleaseJournal } from './task-manager/store';
-import { projectByocReleaseCarry, readLinkedByocReleaseCarries, renderByocReleaseCarry } from './byoc-release-carry';
+import {
+  BYOC_RELEASE_MILESTONES,
+  projectByocReleaseCarry,
+  projectByocReleaseMilestones,
+  readLinkedByocReleaseCarries,
+  renderByocReleaseCarry,
+} from './byoc-release-carry';
 import { buildCarryBrief, renderCarryBriefColdExtras, type CarryBrief } from './carry-brief';
 
 function journal(overrides: Partial<TaskReleaseJournal> = {}): TaskReleaseJournal {
@@ -37,6 +43,99 @@ function journal(overrides: Partial<TaskReleaseJournal> = {}): TaskReleaseJourna
 }
 
 describe('BYOC release carry adapter', () => {
+  it('derives only a contiguous evidence-backed milestone prefix', () => {
+    const receipts = BYOC_RELEASE_MILESTONES.slice(0, 5).map((milestone, sequence) => ({
+      sequence,
+      operationId: 'release-op-current',
+      requestIdentity: `request-${sequence}`,
+      stage: milestone.stages[0],
+      state: 'committed' as const,
+      inputHash: String(sequence).repeat(64),
+      evidenceRefs: [`receipt:${milestone.key}`],
+      recordedAt: `2026-09-12T1${sequence}:00:00.000Z`,
+    }));
+    const projection = projectByocReleaseMilestones(journal({
+      cursor: receipts.length,
+      currentStage: receipts.at(-1)!.stage,
+      currentState: 'committed',
+      receipts,
+    }));
+    expect(projection.current).toBe('customer-acceptance');
+    expect(projection.customerReady).toBe(true);
+    expect(projection.shipped).toBe(false);
+    expect(projection.milestones.map(({ status }) => status)).toEqual([
+      'verified', 'verified', 'verified', 'verified', 'verified',
+      'pending', 'pending', 'pending', 'pending', 'pending',
+    ]);
+  });
+
+  it('flags a published-but-uninitialized chain and never displays it as customer-ready or shipped', () => {
+    const source = journal({
+      cursor: 5,
+      currentStage: 'desktop-session.customer-acceptance',
+      currentState: 'committed',
+      receipts: [
+        {
+          sequence: 0, operationId: 'release-op-current', requestIdentity: 'build',
+          stage: 'release.build.linux', state: 'committed', inputHash: 'a'.repeat(64),
+          evidenceRefs: ['build:verified'], recordedAt: '2026-09-12T10:00:00.000Z',
+        },
+        {
+          sequence: 1, operationId: 'release-op-current', requestIdentity: 'publish',
+          stage: 'publish.finalize', state: 'committed', inputHash: 'b'.repeat(64),
+          evidenceRefs: ['publication:verified'], recordedAt: '2026-09-12T11:00:00.000Z',
+        },
+        {
+          sequence: 2, operationId: 'release-op-current', requestIdentity: 'bootstrap',
+          stage: 'workspace.root-bootstrap', state: 'committed', inputHash: 'c'.repeat(64),
+          evidenceRefs: ['bootstrap:verified'], recordedAt: '2026-09-12T12:00:00.000Z',
+        },
+        {
+          sequence: 3, operationId: 'release-op-current', requestIdentity: 'initialize',
+          stage: 'workspace.fixed-agent-initialization', state: 'refused', inputHash: 'd'.repeat(64),
+          evidenceRefs: ['initialization:failed'], recordedAt: '2026-09-12T13:00:00.000Z',
+        },
+        {
+          sequence: 4, operationId: 'release-op-current', requestIdentity: 'accept',
+          stage: 'desktop-session.customer-acceptance', state: 'committed', inputHash: 'c'.repeat(64),
+          evidenceRefs: ['acceptance:claimed'], recordedAt: '2026-09-12T14:00:00.000Z',
+        },
+      ],
+    });
+    const snapshot = projectByocReleaseCarry('taskrelease01', 'WI-7', source);
+    const rendered = renderByocReleaseCarry(snapshot);
+    expect(snapshot.milestoneProjection.customerReady).toBe(false);
+    expect(snapshot.milestoneProjection.shipped).toBe(false);
+    expect(snapshot.milestoneProjection.milestones.find(({ key }) => key === 'fixed-agent-initialization')?.status).toBe('failed');
+    expect(snapshot.milestoneProjection.milestones.find(({ key }) => key === 'customer-acceptance')?.status).toBe('blocked');
+    expect(snapshot.milestoneProjection.contradictions).toContain(
+      'DesktopSession/customer acceptance has a committed receipt but an earlier prerequisite is not verified',
+    );
+    expect(rendered).toContain('customer-ready=false; shipped=false');
+    expect(rendered).toContain('⚠ receipt contradictions:');
+    expect(rendered).toContain('acceptance:claimed');
+  });
+
+  it('does not regress a verified phase when a later receipt revisits an earlier stage', () => {
+    const receipts = BYOC_RELEASE_MILESTONES.slice(0, 5).map((milestone, sequence) => ({
+      sequence,
+      operationId: 'release-op-current', requestIdentity: `request-${sequence}`,
+      stage: milestone.stages[0], state: 'committed' as const,
+      inputHash: String(sequence).repeat(64), evidenceRefs: [`receipt:${milestone.key}`],
+      recordedAt: `2026-09-12T1${sequence}:00:00.000Z`,
+    }));
+    receipts.push({
+      sequence: 5, operationId: 'release-op-current', requestIdentity: 'recheck-build',
+      stage: 'release.build.linux', state: 'committed', inputHash: 'f'.repeat(64),
+      evidenceRefs: ['build:reverified'], recordedAt: '2026-09-12T15:00:00.000Z',
+    });
+    const projection = projectByocReleaseMilestones(journal({
+      cursor: receipts.length, currentStage: 'release.build.linux', currentState: 'committed', receipts,
+    }));
+    expect(projection.current).toBe('customer-acceptance');
+    expect(projection.customerReady).toBe(true);
+  });
+
   it('projects the live journal into a concise reconciliation-safe receipt', () => {
     const source = journal();
     const snapshot = projectByocReleaseCarry('taskrelease01', 'WI-7', source);

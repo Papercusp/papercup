@@ -6,6 +6,39 @@ import { taskReleaseJournalFromDetail } from './task-manager/store';
 export const BYOC_RELEASE_CARRY_SCHEMA_VERSION = 'byoc-release-carry-v1' as const;
 export const BYOC_RELEASE_CARRY_MAX = 3;
 
+export const BYOC_RELEASE_MILESTONES = [
+  { key: 'build', label: 'build', stages: ['release.build.'] },
+  { key: 'publication', label: 'publication', stages: ['publish.finalize'] },
+  { key: 'root-bootstrap', label: 'root bootstrap', stages: ['workspace.root-bootstrap', 'root.bootstrap'] },
+  { key: 'fixed-agent-initialization', label: 'fixed-agent initialization', stages: ['workspace.fixed-agent-initialization', 'fixed-agent.initialization'] },
+  { key: 'customer-acceptance', label: 'DesktopSession/customer acceptance', stages: ['desktop-session.customer-acceptance', 'customer.acceptance'] },
+  { key: 'soak-24h', label: '24-hour soak', stages: ['acceptance.soak-24h', 'release.soak-24h'] },
+  { key: 'resource-census', label: 'teardown/eight-kind resource census', stages: ['teardown.resource-census'] },
+  { key: 'billing-closure', label: 'billing closure', stages: ['billing.closure'] },
+  { key: 'cleanup', label: 'cleanup', stages: ['release.cleanup'] },
+  { key: 'shipment', label: 'final green shipment', stages: ['release.shipment.green', 'deploy.green'] },
+] as const;
+
+export type ByocReleaseMilestoneKey = (typeof BYOC_RELEASE_MILESTONES)[number]['key'];
+export type ByocReleaseMilestoneStatus = 'verified' | 'failed' | 'pending' | 'blocked';
+
+export interface ByocReleaseMilestone {
+  key: ByocReleaseMilestoneKey;
+  label: string;
+  status: ByocReleaseMilestoneStatus;
+  receiptState: TaskReleaseReceiptState | null;
+  receiptSequence: number | null;
+  evidenceRefs: string[];
+}
+
+export interface ByocReleaseMilestoneProjection {
+  current: ByocReleaseMilestoneKey | null;
+  customerReady: boolean;
+  shipped: boolean;
+  milestones: ByocReleaseMilestone[];
+  contradictions: string[];
+}
+
 export interface ByocReleaseCarrySnapshot {
   schemaVersion: typeof BYOC_RELEASE_CARRY_SCHEMA_VERSION;
   taskId: string;
@@ -20,9 +53,67 @@ export interface ByocReleaseCarrySnapshot {
   credentialExpiresAt: string | null;
   spentRequestIdentities: string[];
   evidenceRefs: string[];
+  milestoneProjection: ByocReleaseMilestoneProjection;
   nextAction: string;
   /** Exact ledger pointer for older receipts/input preimages omitted here. */
   historyRef: string;
+}
+
+function receiptMatchesMilestone(
+  receipt: TaskReleaseReceipt,
+  milestone: (typeof BYOC_RELEASE_MILESTONES)[number],
+): boolean {
+  return milestone.stages.some((stage) =>
+    stage.endsWith('.') ? receipt.stage.startsWith(stage) : receipt.stage === stage,
+  ) || receipt.evidenceRefs.includes(`milestone:${milestone.key}`);
+}
+
+/**
+ * Derive the user-visible release phase from the complete receipt chain. A
+ * downstream committed receipt is evidence, but it is not permission to skip a
+ * failed or absent prerequisite: the public phase advances only across the
+ * contiguous verified prefix and the impossible chain is reported explicitly.
+ */
+export function projectByocReleaseMilestones(
+  journal: TaskReleaseJournal,
+): ByocReleaseMilestoneProjection {
+  let prefixVerified = true;
+  let current: ByocReleaseMilestoneKey | null = null;
+  const contradictions: string[] = [];
+  const milestones = BYOC_RELEASE_MILESTONES.map((definition) => {
+    const receipt = [...journal.receipts].reverse().find((candidate) =>
+      receiptMatchesMilestone(candidate, definition),
+    ) ?? null;
+    const receiptVerified = receipt?.state === 'committed';
+    let status: ByocReleaseMilestoneStatus;
+    if (receiptVerified && prefixVerified) {
+      status = 'verified';
+      current = definition.key;
+    } else if (receiptVerified) {
+      status = 'blocked';
+      contradictions.push(
+        `${definition.label} has a committed receipt but an earlier prerequisite is not verified`,
+      );
+    } else if (receipt?.state === 'refused') {
+      status = 'failed';
+    } else {
+      status = 'pending';
+    }
+    if (!receiptVerified) prefixVerified = false;
+    return {
+      key: definition.key,
+      label: definition.label,
+      status,
+      receiptState: receipt?.state ?? null,
+      receiptSequence: receipt?.sequence ?? null,
+      evidenceRefs: [...(receipt?.evidenceRefs ?? [])],
+    };
+  });
+  const customerReady = milestones
+    .slice(0, BYOC_RELEASE_MILESTONES.findIndex((entry) => entry.key === 'customer-acceptance') + 1)
+    .every((milestone) => milestone.status === 'verified');
+  const shipped = milestones.every((milestone) => milestone.status === 'verified');
+  return { current, customerReady, shipped, milestones, contradictions };
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
@@ -74,6 +165,7 @@ export function projectByocReleaseCarry(
     credentialExpiresAt: typeof credential?.expiresAt === 'string' ? credential.expiresAt : null,
     spentRequestIdentities: [...journal.spentOperationIds],
     evidenceRefs: [...new Set(journal.receipts.flatMap((receipt) => receipt.evidenceRefs))],
+    milestoneProjection: projectByocReleaseMilestones(journal),
     nextAction: nextActionFor(journal),
     historyRef: `task:${taskId}#release`,
   };
@@ -126,6 +218,9 @@ function compactList(values: readonly string[], empty: string): string {
 }
 
 export function renderByocReleaseCarry(snapshot: ByocReleaseCarrySnapshot): string {
+  const milestones = snapshot.milestoneProjection.milestones
+    .map((milestone) => `${milestone.label}=${milestone.status}${milestone.evidenceRefs.length > 0 ? ` [${milestone.evidenceRefs.join(', ')}]` : ''}`)
+    .join('; ');
   return [
     `  • task ${snapshot.taskId}${snapshot.workItemId ? ` (work-item ${snapshot.workItemId})` : ''}`,
     `    operation=${snapshot.operationId}; cursor=${snapshot.cursor}; stage=${snapshot.currentStage ?? 'not-started'}; state=${snapshot.currentState ?? 'absent'}`,
@@ -133,6 +228,11 @@ export function renderByocReleaseCarry(snapshot: ByocReleaseCarrySnapshot): stri
     `    credential=${snapshot.credentialGeneration ?? 'none'}${snapshot.credentialExpiresAt ? ` (expires ${snapshot.credentialExpiresAt})` : ''}`,
     `    spent request ids: ${compactList(snapshot.spentRequestIdentities, 'none')}`,
     `    evidence refs: ${compactList(snapshot.evidenceRefs, 'none')}`,
+    `    evidence-backed milestones: ${milestones}`,
+    `    customer-ready=${snapshot.milestoneProjection.customerReady}; shipped=${snapshot.milestoneProjection.shipped}`,
+    ...(snapshot.milestoneProjection.contradictions.length > 0
+      ? [`    ⚠ receipt contradictions: ${snapshot.milestoneProjection.contradictions.join('; ')}`]
+      : []),
     `    next: ${snapshot.nextAction}`,
     `    older receipt narrative/input preimages: ${snapshot.historyRef}`,
   ].join('\n');
