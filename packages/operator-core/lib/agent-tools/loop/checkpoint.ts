@@ -97,6 +97,7 @@ import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/stor
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
 import { postLearnedAtLevel } from '../../effort-thread';
+import { LIMITS } from '../limits';
 import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
@@ -739,7 +740,7 @@ export default defineTool({
                 // shared with work_items:checkpoint). They must still be present in the
                 // published row schema because some clients validate the manifest before
                 // invoking the server-side parser.
-                tool: z.string().min(1).max(160).optional().describe('Compatibility field for a flattened tool probe.'),
+                tool: z.string().min(1).max(LIMITS.IDENT).optional().describe('Compatibility field for a flattened tool probe.'),
                 args: z
                   .record(z.string(), z.unknown())
                   .optional()

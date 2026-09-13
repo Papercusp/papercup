@@ -9,7 +9,7 @@ import {
 } from '../../harness/improvements/capture-core';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { computeObservationsImpact } from '../../scout/observation-impact-leg';
 import { getModes } from '../../modes/store';
@@ -69,6 +69,7 @@ const mockRecordCaptureReviewFailure = vi.mocked(recordCaptureReviewFailure);
 const mockSetCaptureReviewState = vi.mocked(setCaptureReviewState);
 const mockEnterAgentReview = vi.mocked(enterAgentReview);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
+const mockResolveSelfLiteral = vi.mocked(resolveSelfLiteral);
 const mockPriorArt = vi.mocked(noveltyPriorArt);
 const mockRecordRoutedIdea = vi.mocked(recordRoutedIdea);
 const mockGetModes = vi.mocked(getModes);
@@ -313,6 +314,7 @@ describe('improvements:capture tool envelope', () => {
     drainAdmission.blocked = false;
     drainAdmission.unavailable = false;
     mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockResolveSelfLiteral.mockImplementation((value, callerOwnerId) => (value === 'self' ? callerOwnerId : value));
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
@@ -326,6 +328,12 @@ describe('improvements:capture tool envelope', () => {
     mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-abc'));
     await callTool({ title: 'flaky lock hook', kind: 'bug' });
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ source: 'su', createdBy: 'su-abc' }));
+  });
+
+  it('resolves assign_to:"self" to the caller ownerId before persistence (EI-22710550330241133)', async () => {
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+    await callTool({ title: 'self-assigned filing', kind: 'bug', assign_to: 'self' });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ assignee: 'su-filer' }));
   });
 
   it('derives a title before forwarding an ordinary body-only capture to the core (EI-22658735915306595)', async () => {

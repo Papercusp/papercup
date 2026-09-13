@@ -12,11 +12,25 @@ import { z } from 'zod';
 import { defineTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { continuityProbeRevision } from '../../continuity-probes';
+import { LIMITS } from '../limits';
 
 const LOOP_CONTINUITY_TEST_TOOL = 'test:loop-continuity-read';
+const LOOP_LONG_CONTINUITY_TEST_TOOL = `test:${'x'.repeat(167 - 'test:'.length)}`;
 defineTool({
   name: LOOP_CONTINUITY_TEST_TOOL,
   description: 'read-only fixture for loop checkpoint executable probes',
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: ['su'],
+  effect: 'read',
+  args: z.object({ value: z.string() }),
+  async handler(args) {
+    return { data: { value: args.value } };
+  },
+});
+defineTool({
+  name: LOOP_LONG_CONTINUITY_TEST_TOOL,
+  description: 'read-only fixture for long loop checkpoint executable probes',
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: ['su'],
@@ -810,6 +824,19 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     // the pre-existing `{kind, command, result}` compatibility path is covered
     // by the checksLint/absenceLint tests elsewhere in this suite.
     expect(parsed.checks[0]).not.toHaveProperty('kind');
+  });
+
+  it('accepts a 167-character flattened executable tool name at the shared identifier cap', () => {
+    const probe = {
+      kind: 'tool' as const,
+      tool: LOOP_LONG_CONTINUITY_TEST_TOOL,
+      args: { value: 'green' },
+      schemaRevision: continuityProbeRevision(LOOP_LONG_CONTINUITY_TEST_TOOL)!,
+      expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+    };
+    expect(LOOP_LONG_CONTINUITY_TEST_TOOL).toHaveLength(167);
+    expect(LIMITS.IDENT).toBeGreaterThanOrEqual(167);
+    expect(() => parse({ did: 'progress', checks: [{ claim: 'long tool is accepted', ...probe }] })).not.toThrow();
   });
 
   it('EI-21926988610689807: accepts a NESTED probe whose kind is implied by `tool`', () => {

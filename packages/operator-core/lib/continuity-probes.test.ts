@@ -8,7 +8,9 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   listAllProjectedTools: () => catalog,
   projectedToolRegistryRevision: (tools: Array<Record<string, any>>) =>
-    `rev:${tools.map((entry) => entry.expose.mcp.name).join(',')}:${JSON.stringify(tools.map((entry) => entry.inputSchema)).length}`,
+    // Keep the synthetic revision bounded independently of the tool name so the
+    // long-name regression exercises `tool` rather than the revision field's cap.
+    `rev:${tools.map((entry) => entry.expose.mcp.name).join(',').length}:${JSON.stringify(tools.map((entry) => entry.inputSchema)).length}`,
 }));
 
 vi.mock('./cell-registry', () => ({
@@ -32,6 +34,9 @@ import {
   type ContinuityProbeSource,
 } from './continuity-probes';
 import { renderCarryNote } from './carry-note';
+import { LIMITS } from './agent-tools/limits';
+
+const LONG_READ_TOOL = `test:${'x'.repeat(167 - 'test:'.length)}`;
 
 function projected(name: string, effect: 'read' | 'write' = 'read', properties: Record<string, unknown> = {}) {
   return {
@@ -72,6 +77,7 @@ beforeEach(() => {
     projected('status:read', 'read', { id: { type: 'string' } }),
     projected('state:read', 'read', { cell: { type: 'string' }, as: { type: 'string' } }),
     projected('status:write', 'write', { id: { type: 'string' } }),
+    projected(LONG_READ_TOOL, 'read', { value: { type: 'string' } }),
     projected('dev:pg_query', 'read', { sql: { type: 'string' } }),
     projected('tools:invoke', 'read', { name: { type: 'string' } }),
   );
@@ -144,6 +150,18 @@ describe('continuity probe persistence contract', () => {
     expect(() => continuityProbeSchema.parse({ ...readProbe(), projection: { pipe: [{ op: 'head' }] } })).toThrow(
       /projection/,
     );
+  });
+
+  it('accepts a 167-character read-only tool name under the shared identifier cap', () => {
+    const probe = readProbe({
+      tool: LONG_READ_TOOL,
+      args: { value: 'green' },
+      schemaRevision: continuityProbeRevision(LONG_READ_TOOL)!,
+      expect: { path: '$.value', op: 'eq', value: 'green' },
+    });
+    expect(LONG_READ_TOOL).toHaveLength(167);
+    expect(LIMITS.IDENT).toBeGreaterThanOrEqual(167);
+    expect(() => continuityProbeSchema.parse(probe)).not.toThrow();
   });
 
   it('names the `live` sentinel escape hatch in a caller-hardcoded schema-revision mismatch (EI-21886701316980990)', () => {

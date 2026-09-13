@@ -18,6 +18,7 @@ import { getCellUnchecked } from './cell-registry';
 import { withBoundedTimeout } from './bounded-timeout';
 import { mapWithConcurrency } from './gym/concurrency';
 import type { CheckEntry } from './carry-note';
+import { LIMITS } from './agent-tools/limits';
 
 export const CONTINUITY_PROBE_MAX_BYTES = 12_000;
 export const CONTINUITY_PROBE_ARGS_MAX_BYTES = 8_000;
@@ -116,7 +117,7 @@ const toolProbeShape = z
     tool: z
       .string()
       .min(1)
-      .max(160)
+      .max(LIMITS.IDENT)
       .describe(
         'Exact direct projected-tool name. Only directly invoked read-only tools may be persisted; indirect/meta surfaces such as `dev:pg_query`, `tools:invoke`, `code:run`, `recipes:run`, `capability:*`, and `computer:*` are rejected.',
       ),
