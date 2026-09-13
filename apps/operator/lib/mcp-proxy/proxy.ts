@@ -57,6 +57,7 @@ import {
   isBoundedJudgeScorecardsEvaluateArgs,
   isBoundedScorecardsEvaluateArgs,
   isBoundedScorecardsListArgs,
+  isBoundedTestingRunStatusArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
 export {
@@ -1565,6 +1566,7 @@ const SCORECARDS_EVALUATE_TOOL_NAME = normalizeMcpName("scorecards:evaluate");
 const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
 const COORD_PRESENCE_TOOL_NAME = normalizeMcpName("coord:presence");
 const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
+const TESTING_RUN_STATUS_TOOL_NAME = normalizeMcpName("testing:run-status");
 
 function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: string): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
@@ -1574,6 +1576,7 @@ function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: 
   if (name === DEV_TELEMETRY_TOOL_NAME) return isBoundedDevTelemetryArgs(args);
   if (name === COORD_PRESENCE_TOOL_NAME) return isBoundedCoordPresenceArgs(args);
   if (name === COORD_ROSTER_TOOL_NAME) return isBoundedCoordRosterArgs(args);
+  if (name === TESTING_RUN_STATUS_TOOL_NAME) return isBoundedTestingRunStatusArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);
 }
 

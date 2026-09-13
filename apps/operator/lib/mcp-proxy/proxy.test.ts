@@ -2890,7 +2890,7 @@ describe("EI-21908521835344903: client_gone records the write's actual outcome",
  *      32-89 minutes.
  */
 describe("EI-19305299022434394: admission control — shed with 429 before opening an upstream socket", () => {
-  it("recognizes the MCP session handshake plus fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, bounded diagnostics, event-wait registration/cancellation, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic", () => {
+  it("recognizes the MCP session handshake plus fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, bounded diagnostics, detached test recovery, event-wait registration/cancellation, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic", () => {
     const call = (name: string) =>
       Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
     const targetedCall = (name: string, args: Record<string, unknown>) =>
@@ -3003,6 +3003,24 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("loop:arm"))).toBe(true);
     expect(isReservedControlPlaneCall(call("plans:get"))).toBe(true);
     expect(isReservedControlPlaneCall(call("improvements:capture"))).toBe(true);
+    expect(isReservedControlPlaneCall(targetedCall("testing:run-status", { runId: "run-1" }))).toBe(true);
+    expect(isReservedControlPlaneCall(targetedCall("testing:run-status", { runId: "run-1", extra: true }))).toBe(false);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__testing_run_status",
+                args: { runId: "run-1" },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
     expect(isReservedControlPlaneCall(call("locks:acquire"))).toBe(true);
     expect(isReservedControlPlaneCall(call("locks:queue"))).toBe(true);
     expect(isReservedControlPlaneCall(call("locks:cancel_wait"))).toBe(true);
