@@ -209,6 +209,24 @@ describe('facts:assert { dryRun } — forecasts the cap cost without writing', (
     expect(passed.scopeRef).toBe('su-test-dry-run');
   });
 
+  it('rejects a malformed scope ref before dryRun can return a false green', async () => {
+    await expect(
+      assertTool.handler(
+        {
+          scope: 'owner',
+          scopeRef: 'EI-23119165509578289',
+          key: 'k',
+          body: 'b',
+          dryRun: true,
+        } as never,
+        ctx,
+      ),
+    ).rejects.toThrow(/cannot be a 'owner' reference/);
+
+    expect(previewSpy).not.toHaveBeenCalled();
+    expect(assertFactSpy).not.toHaveBeenCalled();
+  });
+
   it('WITHOUT dryRun the write still happens — the branch is opt-in, not a new default', async () => {
     // The control. Without it, "dryRun does not write" would also pass for a
     // handler that had stopped writing altogether.

@@ -171,6 +171,30 @@ describe('validateFactScopeRefShape (EI-22179589084262757 — an unfoldable scop
   });
 });
 
+describe('previewFactCapImpact validation parity', () => {
+  const failSql = (() => {
+    throw new Error('SQL SHOULD NOT BE REACHED — preview validation must refuse first');
+  }) as unknown as Sql;
+
+  it('rejects the same malformed scope ref as assertFact before querying', async () => {
+    await expect(
+      (async () => {
+        const { previewFactCapImpact } = await import('./store');
+        return previewFactCapImpact(
+          {
+            scope: 'owner',
+            scopeRef: 'EI-23119165509578289',
+            key: 'k',
+            body: 'b',
+            createdBy: 'su-test',
+          },
+          failSql,
+        );
+      })(),
+    ).rejects.toThrow(/cannot be a 'owner' reference/);
+  });
+});
+
 describe('EI-7463 — a caller-side scope/ref validation failure throws InvalidInputError, not a plain Error', () => {
   // The dispatcher (dispatch-stack.ts) codes InvalidInputError as `invalid_input`
   // (400) and any other thrown Error as `handler_error` (500) — so a facts:assert

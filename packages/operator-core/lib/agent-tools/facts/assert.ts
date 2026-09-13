@@ -18,6 +18,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   assertFact,
   resolveFactScopeRef,
+  validateFactScopeRefShape,
   clampFactBody,
   FACT_SCOPES,
   FACT_BODY_MAX_CHARS,
@@ -866,6 +867,11 @@ export default defineTool({
       harnessSlug: concreteHarnessSlug,
       role: deriveAgentRole(identity),
     });
+    // Keep dryRun's forecast on the same validated input as the real write.
+    // `ref`/`scopeRef` aliases are resolved above, so validate the final
+    // selector before any preview work can return a false green.
+    const scopeRefShapeErr = validateFactScopeRefShape(args.scope, scopeRef);
+    if (scopeRefShapeErr) throw new InvalidInputError(`facts:assert — ${scopeRefShapeErr}`);
     // F1-1 federation identity: a SHAREABLE fact must carry the hive-home slug
     // (mig 461 harness_slug) or the capture routes nowhere and peers reject the
     // wire row. Resolved only when federating (a registry read per assert is

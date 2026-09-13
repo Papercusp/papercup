@@ -2740,6 +2740,11 @@ export async function previewFactCapImpact(
   const sql = sqlOf(inject);
   const err = validateFactScope(input.scope, input.scopeRef);
   if (err) throw new InvalidInputError(`facts:assert — ${err}`);
+  // The real assert path rejects scope refs whose shape cannot match the
+  // selector. A dry-run must make the same decision, or it can report a
+  // forecast for a write that would be refused.
+  const refShapeErr = validateFactScopeRefShape(input.scope, input.scopeRef);
+  if (refShapeErr) throw new InvalidInputError(`facts:assert — ${refShapeErr}`);
   const key = input.key.trim();
   if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
   const ws = input.workspaceId ?? activeWorkspaceId();
