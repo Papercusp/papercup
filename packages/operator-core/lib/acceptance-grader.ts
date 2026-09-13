@@ -440,7 +440,7 @@ export function classifyAcceptanceGraderTerminalFailure(
   // acceptance prompt cannot retire a healthy grader.
   const gatewayError = allowInferenceGatewayError
     ? normalized.match(
-        /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)(?:\s*·\s*inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after \d+s|\s+This request would exceed your\s+account(?:'|’)s rate limit\.\s*Please try again later\.))[\s\S]{0,800}?(?:Baked|Brewed|Churned|Cogitated|Cooked|Worked) for [^\n]{1,120}?\s*·\s*done\b/i,
+        /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)(?:\s*·\s*inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after \d+s|\s+This request would exceed your\s+account(?:'|’)s rate limit\.\s*Please try again later\.))[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
       ) ??
       (allowGatewayErrorWithoutFooter
         ? normalized.match(

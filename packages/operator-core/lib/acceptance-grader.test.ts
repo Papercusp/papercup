@@ -643,6 +643,24 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
         'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Brewed for 13m 45s · done',
     });
     expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace('Worked', 'Crunched'), {
+        allowInferenceGatewayError: true,
+      }),
+    ).toEqual({
+      code: 'inference_gateway_error',
+      evidence:
+        'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Crunched for 13m 45s · done',
+    });
+    expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace('Worked', 'Sautéed'), {
+        allowInferenceGatewayError: true,
+      }),
+    ).toEqual({
+      code: 'inference_gateway_error',
+      evidence:
+        'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Sautéed for 13m 45s · done',
+    });
+    expect(
       classifyAcceptanceGraderTerminalFailure(raw.replace(' · done', ' · retrying'), {
         allowInferenceGatewayError: true,
       }),
@@ -736,6 +754,13 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure(
         'The incident report quotes API Error: 500 inference-gateway internal error without a terminal footer.',
+        { allowInferenceGatewayError: true },
+      ),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderTerminalFailure(
+        'The report quotes API Error: Request rejected (429) · inference-gateway: all accounts throttled; ' +
+          'retry after 60s and says Sautéed for 10m 4s · done.',
         { allowInferenceGatewayError: true },
       ),
     ).toBeNull();

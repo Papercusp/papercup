@@ -622,6 +622,25 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(spawnConsoleMock).toHaveBeenCalledTimes(3);
   });
 
+  it('pre-pins and returns a distinct coord owner for every fresh member', async () => {
+    const res = await launchAgent.handler({ brief: 'triage each lane', count: 3 }, ctx);
+
+    const ownerIds = spawnConsoleMock.mock.calls.map(
+      ([opts]) =>
+        (opts as { envelope: { greetingCmd: string } }).envelope.greetingCmd.match(/--owner-id=([^ ]+)/)?.[1],
+    );
+    expect(ownerIds).toHaveLength(3);
+    expect(ownerIds.every((ownerId): ownerId is string => /^su-[0-9a-f-]{36}$/.test(ownerId ?? ''))).toBe(true);
+    expect(new Set(ownerIds).size).toBe(3);
+    expect(dataOf(res)?.launch).toMatchObject({
+      ownerIds,
+      tasks: ownerIds.map((ownerId) => expect.objectContaining({ ownerId })),
+    });
+    expect(verifyFreshLaunchStartedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expected: 3, expectedOwnerIds: ownerIds }),
+    );
+  });
+
   it('wires the flat persona role into a fresh launch command', async () => {
     await launchAgent.handler({ brief: 'run as reviewer', role: 'reviewer' }, ctx);
 
@@ -944,6 +963,9 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       fleetSlug: null,
       kickoffProof: true,
     });
+    const ownerId = (spawnHeadlessMock.mock.calls[0][0] as { coordOwnerId?: string }).coordOwnerId;
+    expect(ownerId).toMatch(/^su-[0-9a-f-]{36}$/);
+    expect(dataOf(res)?.launch).toMatchObject({ ownerIds: [ownerId], tasks: [{ ownerId }] });
     expect(dataOf(res)?.launch).toMatchObject({
       deduped: false,
       opened: 1,

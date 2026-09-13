@@ -30,6 +30,7 @@
  *     one transcript (WI-3882), so a LIVE source is auto-forked instead (D-007) —
  *     a fork mints a fresh identity and leaves the original untouched.
  */
+import { randomUUID } from 'node:crypto';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
@@ -1340,6 +1341,18 @@ export default defineTool({
       });
       return { ...folded, model: selection.model, modelSource: selection.source };
     });
+    // Pre-pin every ordinary fresh member before opening its process. The
+    // bootstrap can then register the session under the same owner that the
+    // launcher, admission metadata, and launch verifier already know. A
+    // respawn supplies its durable replacement identity; successors and
+    // in-place resumes retain the source identity; forks deliberately mint a
+    // new identity from their resumed transcript and therefore stay unpinned.
+    const memberOwnerIds: Array<string | null> = Array.from({ length: count }, (_v, i) => {
+      if (isSuccessor || (isResume && !fork)) return resumeOwnerId;
+      if (isResume) return null;
+      if (i === 0 && respawnOwnerId) return respawnOwnerId;
+      return `su-${randomUUID()}`;
+    });
     if (!isResume) {
       const roleFailure = unresolvedAgentRole({
         harness: slug,
@@ -1435,7 +1448,7 @@ export default defineTool({
           : buildAgentLaunchCommand({
               mode: 'fresh',
               agent: (isSuccessor ? resumeAgent : folded.agent) ?? null,
-              ownerId: isSuccessor ? resumeOwnerId : respawnOwnerId,
+              ownerId: memberOwnerIds[i],
               plan: args.plan ?? null,
               // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
               // live-verify): `--harness` is what makes psu bootstrap a papercusp-su
@@ -1572,7 +1585,7 @@ export default defineTool({
         const memberBrief = memberBriefs[i];
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
         const memberLabel = memberLabels[i];
-        const targetOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
+        const targetOwnerId = memberOwnerIds[i];
         // Any scripted brief is a real first-turn obligation. Ask the headless
         // spawner for its native-transcript receipt so a stale wrapper that
         // ignores the option (missing receipt) and a host that reports negative
@@ -1607,9 +1620,10 @@ export default defineTool({
                 launchedBy: callerOwnerId ?? undefined,
                 fleetSlug,
                 kickoffProof: requireKickoffProof,
-                // A successor is explicitly pre-pinned to the source owner; an
-                // in-place resume re-attaches that owner. A fork deliberately gets
-                // no stamp because it mints a distinct identity at boot.
+                // Fresh members and successors are explicitly pre-pinned. An
+                // in-place resume re-attaches its source owner. A fork
+                // deliberately gets no stamp because it mints a distinct
+                // identity at boot.
                 coordOwnerId: targetOwnerId,
               });
               // Preserve the successful spawn result. The process/task/log
@@ -1661,6 +1675,9 @@ export default defineTool({
 
     const opened = results.filter((r) => r.status === 'ok');
     const failed = results.filter((r) => r.status !== 'ok');
+    const openedOwnerIds = results.flatMap((result, i) =>
+      result.status === 'ok' && memberOwnerIds[i] ? [memberOwnerIds[i]] : [],
+    );
     const kickoffProofFailures = results.flatMap((result, i) => {
       if (
         result.status !== 'ok' ||
@@ -1880,7 +1897,7 @@ export default defineTool({
             launcherOwnerId: callerOwnerId,
             since: spawnStartedAt,
             expected: opened.length,
-            ...(isSuccessor && resumeOwnerId ? { expectedOwnerIds: [resumeOwnerId] } : {}),
+            ...(openedOwnerIds.length === opened.length ? { expectedOwnerIds: openedOwnerIds } : {}),
           },
           {
             probeProcessEvidence: () =>
@@ -1997,6 +2014,7 @@ export default defineTool({
         : null,
       mode: isSuccessor ? 'successor' : isResume ? (fork ? 'fork' : 'resume') : 'fresh',
       resumedOwnerId: resumeOwnerId,
+      ownerIds: memberOwnerIds,
       ...(kickoffProofFailures.length > 0
         ? {
             kickoffProof: {
@@ -2023,6 +2041,7 @@ export default defineTool({
                 pid: result.pid,
                 terminalPid: result.terminalPid ?? null,
                 label: memberLabels[i],
+                ownerId: memberOwnerIds[i],
                 headless: !!foldedConfigs[i].headless,
                 kickoffProof: result.kickoffProof ?? null,
               },
