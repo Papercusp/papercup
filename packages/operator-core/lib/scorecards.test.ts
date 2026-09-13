@@ -30,6 +30,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       },
     }));
     const mergeIssuePayload = vi.fn(async () => ({ id: 'EI-TARGET' }));
+    const replaceSettledGradingAudit = vi.fn(async () => true);
 
     const result = await recordGradingAudit(
       'EI-TARGET',
@@ -38,8 +39,16 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
         auditor: 'su-auditor-2',
         verdict: 'passed',
         at: '2026-09-07T00:02:00.000Z',
+        rubricRevision: 7,
+        criteriaHash: 'grading-integrity-v7',
+        requireCurrentIdentity: true,
+        supersedesAuditIssueId: 'EI-AUDIT-FALSE',
       },
-      { getIssue: getIssue as never, mergeIssuePayload: mergeIssuePayload as never },
+      {
+        getIssue: getIssue as never,
+        mergeIssuePayload: mergeIssuePayload as never,
+        replaceSettledGradingAudit,
+      },
     );
 
     expect(result).toEqual({
@@ -48,26 +57,101 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       gradingAudit: {
         state: 'passed',
         metaRubricRef: 'grading-integrity',
+        rubricRevision: 7,
+        criteriaHash: 'grading-integrity-v7',
         auditIssueId: 'EI-AUDIT-CORRECTION',
         auditor: 'su-auditor-2',
         stampedAt: '2026-09-07T00:00:00.000Z',
         auditedAt: '2026-09-07T00:02:00.000Z',
       },
     });
-    expect(mergeIssuePayload).toHaveBeenCalledWith('EI-TARGET', {
-      observation: {
-        rubricRef: 'spec-test-adequacy',
-        ratings: { coverage: { rating: 'pass', evidence: 'verified' } },
-        gradingAudit: {
-          state: 'passed',
-          metaRubricRef: 'grading-integrity',
-          auditIssueId: 'EI-AUDIT-CORRECTION',
-          auditor: 'su-auditor-2',
-          stampedAt: '2026-09-07T00:00:00.000Z',
-          auditedAt: '2026-09-07T00:02:00.000Z',
-        },
-      },
+    expect(replaceSettledGradingAudit).toHaveBeenCalledWith('EI-TARGET', 'EI-AUDIT-FALSE', {
+      state: 'passed',
+      metaRubricRef: 'grading-integrity',
+      rubricRevision: 7,
+      criteriaHash: 'grading-integrity-v7',
+      auditIssueId: 'EI-AUDIT-CORRECTION',
+      auditor: 'su-auditor-2',
+      stampedAt: '2026-09-07T00:00:00.000Z',
+      auditedAt: '2026-09-07T00:02:00.000Z',
     });
+    expect(mergeIssuePayload).not.toHaveBeenCalled();
+  });
+
+  it('refuses a settled replacement that does not name the audit currently stamped on the target', async () => {
+    const mergeIssuePayload = vi.fn();
+    const replaceSettledGradingAudit = vi.fn();
+    const result = await recordGradingAudit(
+      'EI-TARGET',
+      {
+        auditIssueId: 'EI-AUDIT-CORRECTION',
+        auditor: 'su-auditor-2',
+        verdict: 'passed',
+        supersedesAuditIssueId: 'EI-SOME-OTHER-AUDIT',
+      },
+      {
+        getIssue: vi.fn(async () => ({
+          payload: {
+            observation: {
+              rubricRef: 'r',
+              ratings: {},
+              gradingAudit: {
+                state: 'failed',
+                metaRubricRef: 'grading-integrity',
+                auditIssueId: 'EI-AUDIT-WINNER',
+                stampedAt: '2026-09-07T00:00:00.000Z',
+              },
+            },
+          },
+        })) as never,
+        mergeIssuePayload: mergeIssuePayload as never,
+        replaceSettledGradingAudit,
+      },
+    );
+
+    expect(result).toMatchObject({ ok: false, issueId: 'EI-TARGET' });
+    expect(result.error).toContain('explicitly supersede that audit card');
+    expect(mergeIssuePayload).not.toHaveBeenCalled();
+    expect(replaceSettledGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('does not use explicit supersession to launder a complete stale rubric identity', async () => {
+    const replaceSettledGradingAudit = vi.fn();
+    const result = await recordGradingAudit(
+      'EI-TARGET',
+      {
+        auditIssueId: 'EI-AUDIT-CORRECTION',
+        auditor: 'su-auditor-2',
+        verdict: 'passed',
+        rubricRevision: 8,
+        criteriaHash: 'grading-integrity-v8',
+        requireCurrentIdentity: true,
+        supersedesAuditIssueId: 'EI-AUDIT-OLD',
+      },
+      {
+        getIssue: vi.fn(async () => ({
+          payload: {
+            observation: {
+              rubricRef: 'r',
+              ratings: {},
+              gradingAudit: {
+                state: 'failed',
+                metaRubricRef: 'grading-integrity',
+                rubricRevision: 7,
+                criteriaHash: 'grading-integrity-v7',
+                auditIssueId: 'EI-AUDIT-OLD',
+                stampedAt: '2026-09-07T00:00:00.000Z',
+              },
+            },
+          },
+        })) as never,
+        replaceSettledGradingAudit,
+      },
+    );
+
+    expect(result).toMatchObject({ ok: false, issueId: 'EI-TARGET' });
+    expect(result.error).toContain('stale gradingAudit stamp');
+    expect(replaceSettledGradingAudit).not.toHaveBeenCalled();
   });
 
   it('keeps a replay of the same settled audit idempotent', async () => {

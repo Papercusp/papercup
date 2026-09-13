@@ -1147,14 +1147,65 @@ export interface GradingAuditRecordResult {
   gradingAudit?: ScorecardGradingAudit;
 }
 
+type ReplaceSettledGradingAudit = (
+  issueId: string,
+  expectedAuditIssueId: string,
+  gradingAudit: ScorecardGradingAudit,
+) => Promise<boolean>;
+
+/**
+ * Replace one SETTLED grading-audit stamp only while it still names the audit
+ * the caller explicitly superseded. The compare-and-set lives in the UPDATE,
+ * not in the preceding application read: a concurrent correction therefore
+ * wins instead of being overwritten by whichever emit finishes last.
+ */
+async function replaceSettledGradingAuditAtomically(
+  issueId: string,
+  expectedAuditIssueId: string,
+  gradingAudit: ScorecardGradingAudit,
+): Promise<boolean> {
+  const workspaceId = await resolveIssueWorkspace(issueId);
+  const rows = await boundedOrgTxn(
+    (tx: OrgSql) => tx<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items AS target
+       SET payload = jsonb_set(
+             COALESCE(payload, '{}'::jsonb),
+             '{observation,gradingAudit}',
+             ${JSON.stringify(gradingAudit)}::jsonb,
+             true
+           ),
+           origin = 'local',
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ${issueId}
+       AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.ctid = (
+         SELECT candidate.ctid
+           FROM harness_shared.work_items AS candidate
+          WHERE candidate.workspace_id = ${workspaceId}
+            AND candidate.feature_id = ${issueId}
+            AND candidate.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+          ORDER BY candidate.updated_ts DESC NULLS LAST
+          LIMIT 1
+       )
+       AND payload->'observation'->'gradingAudit'->>'state' IN ('passed', 'failed')
+       AND payload->'observation'->'gradingAudit'->>'auditIssueId' = ${expectedAuditIssueId}
+    RETURNING feature_id`,
+  );
+  return rows.length > 0;
+}
+
 /**
  * P-013: settle a graded card's audit-pending stamp after its audit scorecard filed.
  * Mirrors {@link retractScorecard}: mergeIssuePayload merges the payload ROOT only,
  * so the COMPLETE nested observation is written back with the settled stamp.
  * Idempotent-safe: replays of the same audit card return the existing stamp as-is.
  * A validated correction that supersedes a settled audit card carries a different
- * auditIssueId and must replace the target stamp too; otherwise a retracted false
- * audit leaves the target permanently failed.
+ * auditIssueId and must replace the target stamp too; the replacement is a database
+ * compare-and-set on the superseded audit id so two corrections cannot overwrite one
+ * another. A legacy identity-less stamp may be upgraded only through that explicit
+ * supersession edge; otherwise a retracted false audit leaves the target permanently
+ * failed or a late writer can regress a newer verdict.
  */
 export async function recordGradingAudit(
   issueId: string,
@@ -1166,10 +1217,12 @@ export async function recordGradingAudit(
     rubricRevision?: number;
     criteriaHash?: string;
     requireCurrentIdentity?: boolean;
+    supersedesAuditIssueId?: string;
   },
   deps: {
     getIssue?: typeof getIssue;
     mergeIssuePayload?: typeof mergeIssuePayload;
+    replaceSettledGradingAudit?: ReplaceSettledGradingAudit;
   } = {},
 ): Promise<GradingAuditRecordResult> {
   const issue = await (deps.getIssue ?? getIssue)(issueId);
@@ -1188,15 +1241,39 @@ export async function recordGradingAudit(
     return { ok: false, issueId, error: `'${issueId}' carries no gradingAudit stamp to settle` };
   }
   const incomingIdentitySupplied = input.rubricRevision != null || input.criteriaHash != null;
-  if (input.requireCurrentIdentity && !incomingIdentitySupplied) {
+  const incomingIdentityComplete = input.rubricRevision != null && Boolean(input.criteriaHash);
+  if (input.requireCurrentIdentity && !incomingIdentityComplete) {
     return {
       ok: false,
       issueId,
       error: `'${issueId}' cannot be settled without the grading-integrity rubric revision and criteria hash`,
     };
   }
+  if (existing.state !== 'pending' && existing.auditIssueId === input.auditIssueId) {
+    return { ok: true, issueId, gradingAudit: existing };
+  }
+  const explicitSettledSupersession =
+    existing.state !== 'pending' &&
+    input.supersedesAuditIssueId != null &&
+    existing.auditIssueId === input.supersedesAuditIssueId &&
+    input.auditIssueId !== input.supersedesAuditIssueId;
+  if (existing.state !== 'pending' && !explicitSettledSupersession) {
+    return {
+      ok: false,
+      issueId,
+      error:
+        `'${issueId}' is already audited (${existing.state}) by '${existing.auditIssueId ?? 'unknown'}'; ` +
+        'a replacement must explicitly supersede that audit card',
+    };
+  }
   const recordedIdentityComplete = existing.rubricRevision != null && Boolean(existing.criteriaHash);
-  if (incomingIdentitySupplied && (input.requireCurrentIdentity || existing.state !== 'pending' || recordedIdentityComplete)) {
+  const recordedIdentityAbsent = existing.rubricRevision == null && !existing.criteriaHash;
+  const upgradesLegacySettledIdentity = explicitSettledSupersession && recordedIdentityAbsent;
+  if (
+    !upgradesLegacySettledIdentity &&
+    incomingIdentitySupplied &&
+    (input.requireCurrentIdentity || existing.state !== 'pending' || recordedIdentityComplete)
+  ) {
     const currentness = classifyGradingAuditCurrentness(existing, {
       rubricId: existing.metaRubricRef,
       revision: input.rubricRevision,
@@ -1212,9 +1289,6 @@ export async function recordGradingAudit(
       };
     }
   }
-  if (existing.state !== 'pending' && existing.auditIssueId === input.auditIssueId) {
-    return { ok: true, issueId, gradingAudit: existing };
-  }
   const settled: ScorecardGradingAudit = {
     ...existing,
     state: input.verdict,
@@ -1225,9 +1299,17 @@ export async function recordGradingAudit(
     auditedAt: input.at ?? new Date().toISOString(),
   };
   delete settled.dispatchReservation;
-  const updated = await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
-    observation: { ...(rawObservation as Record<string, unknown>), gradingAudit: settled },
-  });
+  const updated = explicitSettledSupersession
+    ? await (deps.replaceSettledGradingAudit ?? replaceSettledGradingAuditAtomically)(
+        issueId,
+        input.supersedesAuditIssueId!,
+        settled,
+      )
+    : Boolean(
+        await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
+          observation: { ...(rawObservation as Record<string, unknown>), gradingAudit: settled },
+        }),
+      );
   if (!updated) {
     return { ok: false, issueId, error: `failed to record grading audit on '${issueId}'` };
   }

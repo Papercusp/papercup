@@ -669,7 +669,11 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(res).toMatchObject({ ok: true, created: true, supersedes: 'EI-AUDIT-OLD' });
     expect(recordGradingAudit).toHaveBeenCalledWith(
       'EI-CARD',
-      expect.objectContaining({ auditIssueId: 'EI-AUDIT-1', verdict: 'passed' }),
+      expect.objectContaining({
+        auditIssueId: 'EI-AUDIT-1',
+        verdict: 'passed',
+        supersedesAuditIssueId: 'EI-AUDIT-OLD',
+      }),
     );
     expect(captureImprovement.mock.calls[0]?.[0]).toMatchObject({
       payloadExtra: {

@@ -49,10 +49,11 @@ const {
   listScorecardPage,
   listScorecards,
   readScorecardEvidence,
+  recordGradingAudit,
   scorecardTotalCountsByRubric,
   scorecardTrend,
 } = await import('./scorecards');
-const { createIssue, issueRef, issuesScopeWorkspace, linkIssue } = await import('./issues-engineer');
+const { createIssue, getIssue, issueRef, issuesScopeWorkspace, linkIssue } = await import('./issues-engineer');
 const { proposeRubric, setRubricHistoryReset } = await import('./rubrics');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
@@ -801,5 +802,95 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
       total: 0,
       matched: 0,
     });
+  });
+
+  it('CAS-restamps a legacy settled audit and cannot overwrite a concurrent correction', async () => {
+    const target = await createIssue({
+      title: 'legacy grading-audit target',
+      kind: 'change',
+      topics: [OBSERVATION_TOPIC],
+      createdBy: 'su-target-author',
+      payload: {
+        observation: {
+          rubricRef: RUBRIC,
+          ratings: {
+            'end-to-end-flow': { rating: 'healthy', evidence: 'current proof' },
+          },
+          gradingAudit: {
+            state: 'failed',
+            metaRubricRef: 'grading-integrity',
+            auditIssueId: 'EI-AUDIT-OLD',
+            auditor: 'su-old-auditor',
+            stampedAt: '2026-09-07T00:00:00.000Z',
+            auditedAt: '2026-09-07T00:01:00.000Z',
+          },
+        },
+      },
+    });
+    const staleSnapshot = await getIssue(target.id);
+    await db.adminSql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               payload,
+               '{observation,ratings,end-to-end-flow,evidence}',
+               ${JSON.stringify('concurrent proof must survive the audit CAS')}::jsonb,
+               false
+             )
+       WHERE workspace_id = ${issuesScopeWorkspace()}
+         AND feature_id = ${target.id}`;
+
+    const winner = await recordGradingAudit(target.id, {
+      auditIssueId: 'EI-AUDIT-WINNER',
+      auditor: 'su-winning-auditor',
+      verdict: 'passed',
+      rubricRevision: 7,
+      criteriaHash: 'grading-integrity-v7',
+      requireCurrentIdentity: true,
+      supersedesAuditIssueId: 'EI-AUDIT-OLD',
+    });
+    expect(winner).toMatchObject({
+      ok: true,
+      gradingAudit: {
+        state: 'passed',
+        auditIssueId: 'EI-AUDIT-WINNER',
+        rubricRevision: 7,
+        criteriaHash: 'grading-integrity-v7',
+      },
+    });
+
+    const late = await recordGradingAudit(
+      target.id,
+      {
+        auditIssueId: 'EI-AUDIT-LATE',
+        auditor: 'su-late-auditor',
+        verdict: 'failed',
+        rubricRevision: 7,
+        criteriaHash: 'grading-integrity-v7',
+        requireCurrentIdentity: true,
+        supersedesAuditIssueId: 'EI-AUDIT-OLD',
+      },
+      { getIssue: vi.fn(async () => staleSnapshot) as never },
+    );
+    expect(late).toMatchObject({ ok: false, issueId: target.id });
+
+    const stored = await getIssue(target.id);
+    const storedObservation = (
+      stored?.payload as {
+        observation?: {
+          ratings?: Record<string, { evidence?: string }>;
+          gradingAudit?: unknown;
+        };
+      }
+    )?.observation;
+    expect(storedObservation?.gradingAudit).toMatchObject({
+      state: 'passed',
+      auditIssueId: 'EI-AUDIT-WINNER',
+      auditor: 'su-winning-auditor',
+      rubricRevision: 7,
+      criteriaHash: 'grading-integrity-v7',
+    });
+    expect(storedObservation?.ratings?.['end-to-end-flow']?.evidence).toBe(
+      'concurrent proof must survive the audit CAS',
+    );
   });
 });

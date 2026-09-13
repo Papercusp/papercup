@@ -2275,6 +2275,7 @@ export async function emitScorecard(
         requireCurrentIdentity: true,
         ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
         ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
+        ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
       });
       if (auditSettlement.ok) {
         try {
