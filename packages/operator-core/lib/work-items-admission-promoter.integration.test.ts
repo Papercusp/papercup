@@ -79,6 +79,7 @@ const DDL = `
     terminal_owner text,
     embedding vector(3),
     embedding_mode text,
+    embedding_profile text,
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
   );
   CREATE TABLE harness_shared.coord_links (
@@ -210,6 +211,7 @@ async function seedItem(input: {
   status?: string;
   createdAtMs?: number;
   vector?: string | null;
+  embeddingProfile?: string | null;
   conditionKey?: string | null;
   /** Defaults to the run's own harness/workspace; set to seed a NEIGHBOUR the sweep may or may not reach. */
   harness?: string;
@@ -228,7 +230,8 @@ async function seedItem(input: {
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, parent_id,
        taken_by, admission, admitted_at, first_claimed_at, condition_key, lane, payload,
-       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, embedding, embedding_mode)
+       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, embedding, embedding_mode,
+       embedding_profile)
     VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
             ${input.title ?? 'vitest clone failure'},
             ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, ${input.itemKind ?? 'bug'},
@@ -241,7 +244,8 @@ async function seedItem(input: {
             ${input.closedTs ?? null}, ${input.authority ?? null}, ${input.expectedCostCents ?? null},
             ${input.origin ?? 'local'},
             ${input.vector === undefined ? '[1,0,0]' : input.vector}::vector,
-            ${input.vector === null ? null : 'gemma'})`;
+            ${input.vector === null ? null : 'gemma'},
+            ${input.vector === null ? null : (input.embeddingProfile ?? null)})`;
 }
 
 function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
@@ -258,6 +262,33 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 }
 
 describe('work-item admission promoter (real Postgres)', () => {
+  it('does not compare equal-mode rows whose exact stored profiles differ', async () => {
+    await seedItem({
+      id: 'WI-gemma',
+      title: 'alpha profile candidate',
+      admission: 'pending',
+      embeddingProfile: 'gemma-embeddinggemma-300m-768@v1',
+    });
+    await seedItem({
+      id: 'WI-openai',
+      title: 'orthogonal profile candidate',
+      admission: 'admitted',
+      embeddingProfile: 'openai-text-embedding-3-small-768@v1',
+    });
+    const llmCall = vi.fn();
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-exact-profile-isolation',
+      sql: db.sql,
+      llmCall,
+      now: () => NOW,
+    });
+
+    expect(result).toMatchObject({ promoted: 1, merged: 0, modelCalled: false });
+    expect(llmCall).not.toHaveBeenCalled();
+  });
+
   describe('dependency-reference rewrite transaction boundary', () => {
     const insertDependency = async (blockedRef: string, blockerRef: string): Promise<void> => {
       await db.sql`

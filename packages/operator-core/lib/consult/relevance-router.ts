@@ -40,6 +40,10 @@
  * reaches memory/configure, which opens PG at import time).
  */
 import type { Sql } from 'postgres';
+import {
+  proseProfilePredicateSql,
+  type ProseProfileSelection,
+} from '../search/prose-vector-dims';
 import { selectRanked, type Selected, type SelectionVia } from '@papercusp/ranked-selection';
 import { withIterativeScan } from '../agent-tools/search/hnsw-iterative-scan';
 
@@ -263,6 +267,9 @@ export interface RouteResult {
    * consult_state row (retrieval-cache forward-fill) and runs the
    * archive-first lookup with it — computed ONCE here, never re-embedded. */
   queryVec: number[] | null;
+  /** Exact profile that produced queryVec; null iff the semantic instrument
+   * was unavailable or its identity could not be established. */
+  queryProfile: ProseProfileSelection | null;
 }
 
 export interface ConsultRouteParams {
@@ -291,6 +298,7 @@ export interface ConsultRouteDeps {
   getSql: () => Sql;
   /** null = no embedder available this host right now (honest degrade). */
   embed: ConsultEmbedder | null;
+  embeddingProfile: ProseProfileSelection | null;
   /** Presence oracle: ownerId → sessionState. Optional; default 'unknown'. */
   /** `null` for an owner the liveness oracle could not measure
    *  (EI-18771777750306094 — the oracle reports an unknown IN BAND rather than
@@ -356,7 +364,9 @@ export async function routeConsult(
   };
 
   const sql = deps.getSql();
-  const vec = deps.embed ? await deps.embed(params.question).catch(() => null) : null;
+  const vec = deps.embed && deps.embeddingProfile
+    ? await deps.embed(params.question).catch(() => null)
+    : null;
   if (!vec || vec.length === 0) {
     // The semantic instrument is unavailable, but the session-turn index still
     // has the same bounded lexical contract as search: `text_tsv` generated
@@ -460,6 +470,7 @@ export async function routeConsult(
       qualified: [],
       snapshot: { ...base, candidates: snapshotCandidates, degraded: 'embed-unavailable', fallback: 'lexical' },
       queryVec: null,
+      queryProfile: null,
     };
   }
 
@@ -483,6 +494,7 @@ export async function routeConsult(
       FROM harness_shared.session_turns
      WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
        AND text_embedding IS NOT NULL
+       AND ${proseProfilePredicateSql(sql, deps.embeddingProfile, 'text_embedding_profile', 'text_embedding_mode')}
        AND owner IS NOT NULL
        AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
@@ -502,6 +514,7 @@ export async function routeConsult(
       qualified: [],
       snapshot: { ...base, candidates: [] },
       queryVec: vec,
+      queryProfile: deps.embeddingProfile,
     };
   }
 
@@ -614,5 +627,6 @@ export async function routeConsult(
     qualified,
     snapshot: { ...base, candidates: snapshotCandidates },
     queryVec: vec,
+    queryProfile: deps.embeddingProfile,
   };
 }

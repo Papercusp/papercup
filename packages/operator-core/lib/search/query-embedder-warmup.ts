@@ -9,10 +9,14 @@
  * reported as blocked and one background warm-up prepares the next request.
  */
 import type { Embedder } from '@papercusp/search';
+import type { EmbedderProfileSpec } from '@papercusp/memory';
 
 export interface ResolvedQueryEmbedder {
   mode: string;
   dims: number;
+  /** Exact space contract. Optional only for legacy/test resolvers; consumers
+   * that compare stored vectors must fail closed when it is absent. */
+  profile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>;
   embed: Embedder;
 }
 

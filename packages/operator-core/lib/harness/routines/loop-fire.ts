@@ -336,9 +336,9 @@ export function readLoopCostCapCents(payloadTemplate: Record<string, unknown> | 
 export const LOOP_WAKE_CHECKPOINT_MAX_CHARS = 3_000;
 
 /** Settled checks are durable history, not a per-wake action queue. Keep only the
- * newest few expanded; older verified rows remain addressable by stable id in one
+ * newest row expanded; older verified rows remain addressable by stable id in one
  * summary line. Predicted/contested rows are never compacted. */
-export const LOOP_WAKE_EXPANDED_VERIFIED_CHECKS = 2;
+export const LOOP_WAKE_EXPANDED_VERIFIED_CHECKS = 1;
 
 /** EI-18187907490692276: clip an over-long carry-note for a wake prompt WITHOUT dropping
  *  the load-bearing tail. A loop:checkpoint carry-note is authored Did → Left → Insight →

@@ -40,6 +40,7 @@
  *     convenience for hand-written test inserts that omit them.
  */
 export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
+  CREATE EXTENSION IF NOT EXISTS vector;
   -- migration 632 (event-key-fire-latch): every real awaited-event emission
   -- upserts this per-key latch. The claim-path integration tests emit
   -- work-item:claimed events, so omitting the table turns an unrelated
@@ -200,6 +201,13 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- claim/preview queries outright with 'column "condition_key" does not exist',
     -- same class as the lane note above.
     condition_key text,
+    -- migrations 551/1154: shared prose vector plus its human-readable mode
+    -- and exact immutable space identity. Semantic work-item tests use the
+    -- same physical columns as production instead of silently skipping the
+    -- vector source when provenance is present.
+    embedding vector(768),
+    embedding_mode text,
+    embedding_profile text,
     _search tsvector GENERATED ALWAYS AS (
       setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
       setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||

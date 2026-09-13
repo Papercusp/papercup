@@ -6,6 +6,10 @@ import type {
   PersonalSearchInput,
   PersonalSearchResult,
 } from './types';
+import {
+  proseProfilePredicateSql,
+  resolveCurrentProseProfileSelection,
+} from '../search/prose-vector-dims';
 
 const SOURCE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -289,6 +293,10 @@ export async function upsertPersonalDocuments(
               WHEN personal_documents.title IS DISTINCT FROM EXCLUDED.title
                 OR personal_documents.text IS DISTINCT FROM EXCLUDED.text
               THEN NULL ELSE personal_documents.embedding_mode END,
+            embedding_profile = CASE
+              WHEN personal_documents.title IS DISTINCT FROM EXCLUDED.title
+                OR personal_documents.text IS DISTINCT FROM EXCLUDED.text
+              THEN NULL ELSE personal_documents.embedding_profile END,
             updated_at = now()
       RETURNING id`;
     ids.push(rows[0]!.id);
@@ -527,9 +535,11 @@ export async function searchPersonalDocuments(
   const fromFilter = input.timeRange?.from ? sql`AND d.occurred_at >= ${input.timeRange.from}` : sql``;
   const toFilter = input.timeRange?.to ? sql`AND d.occurred_at <= ${input.timeRange.to}` : sql``;
   const vector = input.queryEmbedding?.length ? `[${input.queryEmbedding.join(',')}]` : null;
+  const personalSelection = resolveCurrentProseProfileSelection('gemma');
   const vectorCte = vector
     ? sql`SELECT id, row_number() OVER (ORDER BY embedding <=> ${vector}::vector) AS vector_rank
-            FROM filtered WHERE embedding IS NOT NULL AND embedding_mode = 'gemma'
+            FROM filtered WHERE embedding IS NOT NULL
+              AND ${proseProfilePredicateSql(sql, personalSelection, 'embedding_profile', 'embedding_mode')}
            ORDER BY embedding <=> ${vector}::vector LIMIT ${Math.max(limit * 4, 20)}`
     : sql`SELECT id, NULL::bigint AS vector_rank FROM filtered WHERE false`;
 

@@ -29,6 +29,13 @@ import { admissionIdentity } from './harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import type { OrgSql } from './work-items';
+import {
+  proseProfilePredicateSql,
+  resolveAcceptedProseProfileSelection,
+  resolveCurrentProseProfileSelection,
+  resolveProseProfileIdSelection,
+  type ProseProfileSelection,
+} from './search/prose-vector-dims';
 
 export const ADMISSION_EDGE_FLOOR = 0.85;
 export const ADMISSION_COMPONENT_FLOOR = 0.9;
@@ -68,6 +75,9 @@ export interface AdmissionCensusItem {
   originClass: AdmissionOriginClass;
   hasEmbedding: boolean;
   embeddingMode: string | null;
+  /** Effective exact profile id; null means the physical vector cannot be
+   * compared safely and the census must fail closed. */
+  embeddingProfile: string | null;
   /** Persisted file-time identity (`payload.admissionIdentity.titleKey`), when present. */
   titleKey: string | null;
   /** Machine-emitter recurring-condition identity. */
@@ -476,6 +486,7 @@ interface CorpusDbRow {
   summary: string;
   has_embedding: boolean;
   embedding_mode: string | null;
+  embedding_profile: string | null;
   condition_key: string | null;
   title_key: string | null;
   idea_origin: string | null;
@@ -553,6 +564,7 @@ export async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): 
            COALESCE(wi.summary, '') AS summary,
            (wi.embedding IS NOT NULL) AS has_embedding,
            wi.embedding_mode,
+           wi.embedding_profile,
            wi.condition_key,
            wi.payload #>> '{admissionIdentity,titleKey}' AS title_key,
            idea.origin AS idea_origin
@@ -568,7 +580,13 @@ export async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): 
       ) idea ON TRUE
      WHERE ${corpusWhere(sql, opts, 'wi')}
      ORDER BY wi.feature_id`;
-  return rows.map((row) => ({
+  return rows.map((row) => {
+    const selection = row.has_embedding
+      ? row.embedding_profile
+        ? resolveProseProfileIdSelection(row.embedding_profile, row.embedding_mode)
+        : resolveCurrentProseProfileSelection(row.embedding_mode ?? '')
+      : null;
+    return {
     id: row.id,
     title: row.title,
     summary: row.summary,
@@ -576,9 +594,11 @@ export async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): 
     originClass: classifyOrigin(row),
     hasEmbedding: row.has_embedding,
     embeddingMode: row.embedding_mode,
+    embeddingProfile: selection?.profileId ?? null,
     titleKey: row.title_key,
     conditionKey: row.condition_key,
-  }));
+    };
+  });
 }
 
 async function readUnadjudicatedCensus(
@@ -701,6 +721,7 @@ async function scanEdgeChunk(
   opts: AdmissionCensusRunOptions,
   runId: string,
   mode: string,
+  selection: ProseProfileSelection,
   embeddedIds: readonly string[],
   chunkIndex: number,
   chunkCount: number,
@@ -723,7 +744,7 @@ async function scanEdgeChunk(
          AND wi.harness_slug = ${opts.harnessSlug}
          AND wi.feature_id = ANY(${embeddedIds}::text[])
          AND wi.embedding IS NOT NULL
-         AND wi.embedding_mode = ${mode}
+         AND ${proseProfilePredicateSql(tx, selection, 'wi.embedding_profile', 'wi.embedding_mode')}
     ), anchors AS MATERIALIZED (
       SELECT * FROM corpus
        WHERE mod((rn - 1)::int, ${chunkCount}) = ${chunkIndex}
@@ -1021,17 +1042,24 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
     const corpusIds = corpus.map((item) => item.id);
     const embeddedIds = embedded.map((item) => item.id);
     const missingEmbeddingIds = corpus.filter((item) => !item.hasEmbedding).map((item) => item.id);
-    const modes = [
-      ...new Set(embedded.map((item) => item.embeddingMode).filter((mode): mode is string => Boolean(mode))),
+    const profiles = [
+      ...new Set(embedded.map((item) => item.embeddingProfile).filter((profile): profile is string => Boolean(profile))),
     ];
-    if (embedded.some((item) => !item.embeddingMode)) {
-      throw new Error('embedded work-item rows exist without embedding_mode');
+    if (embedded.some((item) => !item.embeddingProfile)) {
+      throw new Error('embedded work-item rows exist without a compatible embedding_profile');
     }
-    if (modes.length > 1) throw new Error(`mixed embedding modes in census corpus: ${modes.sort().join(', ')}`);
-    const mode = modes[0] ?? null;
+    if (profiles.length > 1) {
+      throw new Error(`mixed embedding profiles in census corpus: ${profiles.sort().join(', ')}`);
+    }
+    const profileId = profiles[0] ?? null;
+    const selection = profileId ? resolveAcceptedProseProfileSelection(profileId) : null;
+    if (profileId && !selection) {
+      throw new Error(`census resolved an unaccepted embedding profile: ${profileId}`);
+    }
+    const mode = selection?.legacyMode ?? embedded[0]?.embeddingMode ?? null;
     const snapshotFingerprint = createHash('sha256')
       .update(
-        corpus.map((item) => `${item.id}\u0000${item.hasEmbedding ? item.embeddingMode : 'text-only'}`).join('\u0001'),
+        corpus.map((item) => `${item.id}\u0000${item.hasEmbedding ? item.embeddingProfile : 'text-only'}`).join('\u0001'),
       )
       .digest('hex');
     await sql`
@@ -1051,9 +1079,9 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
     const chunkCoverage: number[] = [];
     let scannedEdgeWrites = 0;
     let scannedHardEdges = 0;
-    if (mode) {
+    if (mode && selection) {
       for (let i = 0; i < chunkCount; i += 1) {
-        const result = await scanEdgeChunk(sql, opts, runId, mode, embeddedIds, i, chunkCount);
+        const result = await scanEdgeChunk(sql, opts, runId, mode, selection, embeddedIds, i, chunkCount);
         chunkCoverage.push(result.anchors);
         scannedEdgeWrites += result.edges;
         scannedHardEdges += result.hard;

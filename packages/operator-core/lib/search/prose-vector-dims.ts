@@ -44,6 +44,7 @@ import {
   type EmbeddingProfileId,
   type PgvectorIndexOperatorClass,
 } from '@papercusp/memory';
+import type { Sql } from 'postgres';
 
 /**
  * Width of every shared prose embedding column, per migration 727.
@@ -161,6 +162,16 @@ export function resolveProseProfileSelection(
   return { profileId: profile.profileId, legacyMode };
 }
 
+/** Resolve the declared CURRENT profile for a prose-eligible mode. This is for
+ * mode-shaped operator inputs (diagnostic scans), not stored-row inference: an
+ * unknown mode fails closed, and alternate/historical profiles must be passed
+ * explicitly through {@link resolveProseProfileSelection}. */
+export function resolveCurrentProseProfileSelection(mode: string): ProseProfileSelection | null {
+  if (!(PROSE_ELIGIBLE_MODES as readonly string[]).includes(mode)) return null;
+  const profile = EMBEDDER_DIM_SPECS[mode as ProseEligibleMode];
+  return resolveProseProfileSelection(mode, profile);
+}
+
 /** Resolve provenance carried by a query embedder when the full profile object
  * is no longer in scope. The accepted-id registry remains the authority; the
  * legacy mode branch is granted only to that mode's declared current id. */
@@ -181,6 +192,56 @@ export function resolveProseProfileIdSelection(
         ? mode
         : null,
   };
+}
+
+/** Resolve an accepted profile id and grant its legacy-mode fallback only when
+ * that id is the declared current profile for exactly one eligible mode. */
+export function resolveAcceptedProseProfileSelection(profileId: string): ProseProfileSelection | null {
+  const legacyMode = PROSE_ELIGIBLE_MODES.find(
+    (mode) => EMBEDDER_DIM_SPECS[mode].profileId === profileId,
+  ) ?? null;
+  return resolveProseProfileIdSelection(profileId, legacyMode);
+}
+
+/** Compile the one canonical SQL predicate for a stored prose vector's exact
+ * space. Column names are internal schema literals supplied by audited call
+ * sites; profile values remain bound parameters. A missing/unknown selection
+ * is SQL FALSE, never a mode-only fallback. */
+export function proseProfilePredicateSql(
+  sql: Sql,
+  selection: ProseProfileSelection | null,
+  profileColumn: string,
+  modeColumn: string,
+) {
+  if (!selection) return sql`FALSE`;
+  const profile = sql.unsafe(profileColumn);
+  const mode = sql.unsafe(modeColumn);
+  return selection.legacyMode !== null
+    ? sql`(${profile} = ${selection.profileId} OR (${profile} IS NULL AND ${mode} = ${selection.legacyMode}))`
+    : sql`${profile} = ${selection.profileId}`;
+}
+
+/** Compile a row's effective exact profile id for row↔row comparisons. Exact
+ * stored ids win only when accepted by the physical storage contract; a NULL
+ * profile may map through the closed current-mode registry. Unknown identities
+ * become SQL NULL and therefore cannot establish comparability. */
+export function effectiveStoredProseProfileIdSql(
+  sql: Sql,
+  profileColumn: string,
+  modeColumn: string,
+) {
+  const profile = sql.unsafe(profileColumn);
+  const mode = sql.unsafe(modeColumn);
+  const accepted = [...PROSE_VECTOR_STORAGE_PROFILE.acceptedProfileIds];
+  return sql`CASE
+    WHEN ${profile} = ANY(${accepted}::text[]) THEN ${profile}
+    WHEN ${profile} IS NULL THEN CASE
+      WHEN ${mode} = 'gemma' THEN ${EMBEDDER_DIM_SPECS.gemma.profileId}
+      WHEN ${mode} = 'openai' THEN ${EMBEDDER_DIM_SPECS.openai.profileId}
+      ELSE NULL
+    END
+    ELSE NULL
+  END`;
 }
 
 /** Pure row-level identity judgement used by tests and non-SQL consumers.

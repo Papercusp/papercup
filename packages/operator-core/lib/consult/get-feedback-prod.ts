@@ -11,11 +11,13 @@ export async function getFeedbackProd(
   } = {},
 ) {
   const [
-    { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs },
+    { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs },
+    { resolveProseProfileSelection },
     { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { notifyAgents }, { makeConsultReviver },
   ] = await Promise.all([
     import('@papercusp/db-org'), import('./get-feedback-core'), import('./relevance-router'),
-    import('../agent-tools/search/embedder'), import('../agent-tools/coordination/liveness-oracle'),
+    import('../agent-tools/search/embedder'), import('../search/prose-vector-dims'),
+    import('../agent-tools/coordination/liveness-oracle'),
     import('../harness/routines/release-pause-ttl'),
     import('../agent-tools/coordination/conversations'), import('../agent-tools/coordination/notify-agents'),
     import('./revive-responder'),
@@ -25,13 +27,18 @@ export async function getFeedbackProd(
   // The shared helper keeps this budget aligned with the other interactive
   // query surfaces (WI-3922); the losing acquisition continues warming the
   // process for a later consult.
-  const embed = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+  const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+  const embed = resolved?.embed ?? null;
+  const embeddingProfile = resolved
+    ? resolveProseProfileSelection(resolved.mode, resolved.profile)
+    : null;
   return getFeedbackCore(request, {
     getSql: () => getOrgPg().sql,
     route: async (params) => {
       const routed = await routeConsult(params, {
         getSql: () => getOrgPg().sql,
         embed,
+        embeddingProfile,
         getLiveness: async (ownerIds) => {
           const [verdicts, pausedOwners] = await Promise.all([
             resolveSessionStates(ownerIds.map((ownerId) => ({ ownerId })), {

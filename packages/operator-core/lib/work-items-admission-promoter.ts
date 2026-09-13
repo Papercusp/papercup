@@ -40,6 +40,7 @@ import {
 } from './dbos/work-item-deps-store';
 import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
 import type { OrgSql } from './work-items';
+import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
 
 export const WORK_ITEM_ADMISSION_PROMOTER = 'work-item-admission-promoter';
 export const WORK_ITEM_ADMISSION_FAIL_OPEN = 'work-item-admission-fail-open';
@@ -1955,7 +1956,7 @@ async function readPromoterPairs(
   const rows = await sql<PromoterPairRow[]>`
     WITH pending AS (
       SELECT feature_id, title, summary, status, item_kind, admission, condition_key,
-             created_ts, embedding, embedding_mode
+             created_ts, embedding, embedding_mode, embedding_profile
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
@@ -1985,7 +1986,8 @@ async function readPromoterPairs(
                CASE
                  WHEN p.embedding IS NOT NULL
                   AND wi.embedding IS NOT NULL
-                  AND p.embedding_mode = wi.embedding_mode
+                  AND ${effectiveStoredProseProfileIdSql(sql, 'p.embedding_profile', 'p.embedding_mode')}
+                      = ${effectiveStoredProseProfileIdSql(sql, 'wi.embedding_profile', 'wi.embedding_mode')}
                  THEN 1 - (p.embedding <=> wi.embedding)
                  ELSE NULL
                END AS cosine
@@ -2012,7 +2014,8 @@ async function readPromoterPairs(
              OR (
                p.embedding IS NOT NULL
                AND wi.embedding IS NOT NULL
-               AND p.embedding_mode = wi.embedding_mode
+               AND ${effectiveStoredProseProfileIdSql(sql, 'p.embedding_profile', 'p.embedding_mode')}
+                   = ${effectiveStoredProseProfileIdSql(sql, 'wi.embedding_profile', 'wi.embedding_mode')}
                AND 1 - (p.embedding <=> wi.embedding) >= ${PROMOTER_COSINE_FLOOR}
              )
            )

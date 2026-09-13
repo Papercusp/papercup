@@ -13,6 +13,7 @@
  *  • promote-to-pipeline mints an F-FIX feature from a bug (D-005).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -2697,7 +2698,7 @@ describe('unified work_items surface (real PG)', () => {
     const resolver = vi.fn(async () => {
       resolverStartedResolve();
       await resolverGate;
-      return { mode: 'gemma', dims: 768, embed };
+      return { mode: 'gemma', dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed };
     });
 
     const firstPromise = wi.searchWorkItems('warmup singleflight', {
@@ -2747,7 +2748,12 @@ describe('unified work_items surface (real PG)', () => {
 
     const vector = Array.from({ length: 768 }, () => 0.01);
     const embed = vi.fn(async (text: string) => vector);
-    const resolver = vi.fn(async () => ({ mode: 'gemma', dims: 768, embed }));
+    const resolver = vi.fn(async () => ({
+      mode: 'gemma',
+      dims: 768,
+      profile: EMBEDDER_DIM_SPECS.gemma,
+      embed,
+    }));
 
     expect(await wi.warmWorkItemQueryEmbedder(resolver)).toBe(true);
     const first = await wi.searchWorkItems('boot prewarm', {
@@ -2761,6 +2767,50 @@ describe('unified work_items surface (real PG)', () => {
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(embed).toHaveBeenNthCalledWith(1, 'work-items search embedder warmup');
     expect(embed).toHaveBeenNthCalledWith(2, 'boot prewarm', expect.any(AbortSignal));
+  });
+
+  it('semantic search selects the exact stored profile and excludes equal-mode foreign profiles', async () => {
+    const matching = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'profile matching work item',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const foreign = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'profile foreign work item',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const vector = Array.from({ length: 768 }, () => 0.01);
+    const vectorText = `[${vector.join(',')}]`;
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET embedding = ${vectorText}::vector,
+             embedding_mode = 'gemma',
+             embedding_profile = CASE feature_id
+               WHEN ${matching.id} THEN ${EMBEDDER_DIM_SPECS.gemma.profileId}
+               ELSE ${EMBEDDER_DIM_SPECS.openai.profileId}
+             END
+       WHERE feature_id = ANY(${[matching.id, foreign.id]}::text[])`;
+    const embed = vi.fn(async () => vector);
+    const resolver = vi.fn(async () => ({
+      mode: 'gemma',
+      dims: 768,
+      profile: EMBEDDER_DIM_SPECS.gemma,
+      embed,
+    }));
+
+    expect(await wi.warmWorkItemQueryEmbedder(resolver)).toBe(true);
+    const result = await wi.searchWorkItems('tokens absent from both titles', {
+      family: 'feature',
+      semantic: true,
+      embedderResolver: resolver,
+    });
+
+    expect(result.items.map((item) => item.id)).toContain(matching.id);
+    expect(result.items.map((item) => item.id)).not.toContain(foreign.id);
+    expect(result.legs.semantic.status).toBe('ran');
   });
 
   it('keeps the retry receipt on the mandatory delayed retry while warmup remains in flight', async () => {
@@ -2791,7 +2841,7 @@ describe('unified work_items surface (real PG)', () => {
     const resolver = vi.fn(async () => {
       resolverStartedResolve();
       await resolverGate;
-      return { mode: 'gemma', dims: 768, embed };
+      return { mode: 'gemma', dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed };
     });
 
     const first = await wi.searchWorkItems('warmup delayed retry', {

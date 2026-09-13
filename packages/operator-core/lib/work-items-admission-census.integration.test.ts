@@ -33,6 +33,7 @@ const DDL = `
     created_ts bigint,
     embedding vector(3),
     embedding_mode text,
+    embedding_profile text,
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
   );
   CREATE TABLE harness_shared.scout_routed_ideas (
@@ -410,7 +411,7 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
     expect(detail).toEqual([{ lex: 3, lexu: 2 }]);
   }, 60_000);
 
-  it('records a failed run instead of laundering mixed embedding spaces into a clean census', async () => {
+  it('records a failed run instead of laundering an identity-unknown vector into a clean census', async () => {
     await seed();
     await db.sql`UPDATE harness_shared.work_items SET embedding_mode = 'foreign' WHERE feature_id = 'c'`;
 
@@ -422,7 +423,7 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
         sql: db.sql,
         now: () => 2_000,
       }),
-    ).rejects.toThrow(/mixed embedding modes/);
+    ).rejects.toThrow(/compatible embedding_profile/);
 
     const rows = await db.sql<Array<{ status: string; error: string; unit: string; failure: string }>>`
       SELECT detail->>'status' AS status, detail->>'error' AS error,
@@ -430,8 +431,28 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
              detail #>> '{outcome,failureReason}' AS failure
         FROM harness_shared.admission_runs WHERE id = 'mixed-mode'`;
     expect(rows[0]?.status).toBe('failed');
-    expect(rows[0]?.error).toMatch(/mixed embedding modes/);
+    expect(rows[0]?.error).toMatch(/compatible embedding_profile/);
     expect(rows[0]?.unit).toBe('snapshots');
-    expect(rows[0]?.failure).toMatch(/mixed embedding modes/);
+    expect(rows[0]?.failure).toMatch(/compatible embedding_profile/);
   }, 60_000);
-});
+  });
+
+  it('rejects equal-mode vectors carrying two different exact accepted profiles', async () => {
+    await seed();
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET embedding_profile = CASE feature_id
+           WHEN 'c' THEN 'openai-text-embedding-3-small-768@v1'
+           ELSE 'gemma-embeddinggemma-300m-768@v1'
+         END
+       WHERE embedding IS NOT NULL AND lane IS DISTINCT FROM 'observation' AND status = 'open'`;
+
+    await expect(
+      runWorkItemAdmissionCensus({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'census-mixed-exact-profiles',
+        sql: db.sql,
+      }),
+    ).rejects.toThrow(/mixed embedding profiles/);
+  });

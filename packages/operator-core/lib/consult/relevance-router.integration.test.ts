@@ -22,6 +22,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
   routeConsult,
   extractPathTokens,
@@ -34,9 +36,9 @@ const WS = 'ws-consult';
 const NOW = new Date('2026-08-16T00:00:00Z');
 const DAY = 86_400_000;
 
-/** 384-d unit vector at angle θ in the (0,1) plane. */
+/** 768-d unit vector at angle θ in the (0,1) plane. */
 const vecAt = (theta: number): number[] => {
-  const v = new Array<number>(384).fill(0);
+  const v = new Array<number>(768).fill(0);
   v[0] = Math.cos(theta);
   v[1] = Math.sin(theta);
   return v;
@@ -47,6 +49,9 @@ let rootSql: Sql;
 const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): ConsultRouteDeps => ({
   getSql: () => rootSql,
   embed: embedTheta === null ? null : async () => vecAt(embedTheta),
+  embeddingProfile: embedTheta === null
+    ? null
+    : resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
   now: () => NOW,
   ...over,
 });
@@ -56,11 +61,13 @@ async function insertTurn(owner: string, theta: number, tsMsAgo: number, over: {
   turnSeq += 1;
   await rootSql`
     INSERT INTO harness_shared.session_turns
-      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text, text_embedding, turn_origin_verdict)
+      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text,
+       text_embedding, text_embedding_mode, text_embedding_profile, turn_origin_verdict)
     VALUES ('default', 'claude', ${'sess-' + owner}, ${turnSeq},
             ${new Date(NOW.getTime() - tsMsAgo).toISOString()}::timestamptz,
             ${owner}, 'assistant', ${'turn ' + turnSeq + ' of ' + owner},
             ${JSON.stringify(vecAt(theta))}::vector,
+            'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId},
             ${over.verdict ?? null})`;
 }
 
@@ -108,7 +115,9 @@ beforeAll(async () => {
       speaker text NOT NULL,
       text text NOT NULL,
       ingested_at timestamptz NOT NULL DEFAULT now(),
-      text_embedding vector(384),
+      text_embedding vector(768),
+      text_embedding_mode text,
+      text_embedding_profile text,
       text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
       turn_origin_verdict text,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)

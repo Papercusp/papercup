@@ -34,6 +34,8 @@ import {
   computeProseColumnWidthSkew,
   modeTargetDims,
   resolveProseProfileSelection,
+  resolveCurrentProseProfileSelection,
+  resolveAcceptedProseProfileSelection,
   storedProseIdentityMatches,
   validateProseStorageCompatibility,
 } from './prose-vector-dims';
@@ -92,6 +94,23 @@ describe('the prose column width contract', () => {
         alternate,
       ),
     ).toBe(true);
+  });
+
+  it('resolves mode-shaped diagnostic inputs only to their declared current profile', () => {
+    expect(resolveCurrentProseProfileSelection('gemma')).toEqual({
+      profileId: EMBEDDER_DIM_SPECS.gemma.profileId,
+      legacyMode: 'gemma',
+    });
+    expect(resolveCurrentProseProfileSelection('local')).toBeNull();
+    expect(resolveCurrentProseProfileSelection('future-mode')).toBeNull();
+  });
+
+  it('resolves an accepted exact id with only its canonical legacy fallback', () => {
+    expect(resolveAcceptedProseProfileSelection(EMBEDDER_DIM_SPECS.openai.profileId)).toEqual({
+      profileId: EMBEDDER_DIM_SPECS.openai.profileId,
+      legacyMode: 'openai',
+    });
+    expect(resolveAcceptedProseProfileSelection('unknown-profile@v1')).toBeNull();
   });
 
   it('every prose-eligible mode emits EXACTLY the column width', () => {

@@ -26,6 +26,9 @@ const WS = 'personal-vault-test';
 
 beforeAll(async () => {
   org = await createOrgTestDb();
+  await org.adminSql`
+    ALTER TABLE harness_shared.personal_documents
+      ADD COLUMN IF NOT EXISTS embedding_profile text`;
   const [user] = await org.adminSql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'personal-test-' + Date.now()}, 'Personal Test') RETURNING id`;
@@ -124,7 +127,8 @@ describe('Personal Vault core', () => {
     await org.adminSql`
       UPDATE harness_shared.personal_documents
          SET embedding = ${JSON.stringify(localEmbedding)}::vector,
-             embedding_mode = 'gemma'
+             embedding_mode = 'gemma',
+             embedding_profile = 'gemma-embeddinggemma-300m-768@v1'
        WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'facebook'`;
     const semantic = await searchPersonalDocuments(org.adminSql, WS, userId, {
       query: 'lexically absent query',
@@ -138,6 +142,17 @@ describe('Personal Vault core', () => {
       lexicalRank: null,
       vectorRank: 1,
     });
+
+    await org.adminSql`
+      UPDATE harness_shared.personal_documents
+         SET embedding_profile = 'openai-text-embedding-3-small-768@v1'
+       WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'facebook'`;
+    const mismatched = await searchPersonalDocuments(org.adminSql, WS, userId, {
+      query: 'lexically absent query',
+      queryEmbedding: localEmbedding,
+      scopes: ['facebook'],
+    });
+    expect(mismatched).toEqual([]);
   });
 
   it('upserts/dedupes and hybrid-searches with scope, participant, time, and bounded snippets', async () => {

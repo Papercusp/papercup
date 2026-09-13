@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
   ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS,
   buildAdmissionShardPlan,
@@ -25,6 +26,7 @@ function item(
     originClass,
     hasEmbedding: true,
     embeddingMode: 'gemma',
+    embeddingProfile: EMBEDDER_DIM_SPECS.gemma.profileId,
     titleKey: null,
     conditionKey: null,
   };
