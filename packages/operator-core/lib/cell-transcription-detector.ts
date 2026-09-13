@@ -140,9 +140,24 @@ function isExplicitLockOrLeaseIdentifier(haystack: string, valueStart: number, v
 const CHECKPOINT_VALUE_PREFIX = /\bcheckpoint\s*$/i;
 const CONTENT_HASH_VALUE_PREFIX = /\bcontent[- ]?hash\s*(?::|=)?\s*$/i;
 
+/**
+ * Git blob object ids are hex-shaped, but a blob is an object artifact rather than
+ * a commit or pipeline position. Keep this exclusion anchored to the value: the
+ * reported `InboxPane staging blob <sha>` shape must stay quiet even though
+ * `staging` is a valid pipeline context word nearby, while an unrelated `blob`
+ * mention elsewhere cannot suppress a real deployment claim.
+ */
+const GIT_BLOB_VALUE_PREFIX =
+  /\b(?:git\s+)?blob(?:[-\s]+(?:id|identifier|hash|sha|oid)){0,2}\s*(?:[:=]\s*)?$/i;
+
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   return CHECKPOINT_VALUE_PREFIX.test(before) || CONTENT_HASH_VALUE_PREFIX.test(before);
+}
+
+function isGitBlobHash(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return GIT_BLOB_VALUE_PREFIX.test(before);
 }
 
 function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valueLength: number): boolean {
@@ -283,7 +298,8 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
           (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
             isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
             isStagingOnlyCommitCitation(haystack, m.index, m[0].length) ||
-            isCheckpointMetadataValue(haystack, m.index)))
+            isCheckpointMetadataValue(haystack, m.index) ||
+            isGitBlobHash(haystack, m.index)))
       ) {
         continue;
       }
