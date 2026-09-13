@@ -311,6 +311,14 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit?.returns?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('publishes work_items:get resume exclusivity before dispatch', async () => {
+    const out = await callHandler({ query: 'work_items:get', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'work_items:get');
+    expect(hit?.argSchema).toContain(
+      'constraint:$ (resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs; use a separate read for those enrichments)',
+    );
+  });
+
   it('uses the raw discovery schema for a release:trace-style path-or-sha union', () => {
     const name = 'test:release-trace-discovery-schema';
     defineTool({
