@@ -568,6 +568,7 @@ export default defineTool({
       callerAuthorization: z.unknown().optional(),
       verdict: z.string().optional(),
       admitted: z.boolean().optional(),
+      precheckOperation: z.unknown().optional(),
       dryRun: z.boolean().optional(),
       judgedSha: z.string().nullable().optional(),
       source: z.unknown().optional(),
