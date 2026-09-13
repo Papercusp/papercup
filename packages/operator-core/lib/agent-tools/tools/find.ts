@@ -527,14 +527,53 @@ const COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS = 240;
 const COMPACT_CONTRACT_DESCRIPTION_PATTERN =
   /\b(?:phase\s+only|only|required|must|requires?|forbidden|cannot|exact(?:ly)?)\b/i;
 
+/**
+ * Long descriptions sometimes put their most important callable contract in a
+ * late clause rather than at the front. Keep a short, self-contained clause
+ * for the canonical BAR heading so compact discovery does not teach callers
+ * only the plan-body shape while hiding the requirement-to-work mapping that
+ * plans:new validates. This is deliberately marker-driven and bounded: other
+ * descriptions retain the ordinary prefix projection below.
+ */
+const COMPACT_BAR_MAP_MARKER = /(?:###\s*)?Bar-to-work map for this plan/i;
+
+function compactContractSynopsis(description: string): string | null {
+  const marker = COMPACT_BAR_MAP_MARKER.exec(description);
+  if (!marker || marker.index < COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS) return null;
+
+  const remainder = description.slice(marker.index).trim();
+  if (!remainder) return null;
+
+  // The BAR column grammar and evidence-plane choices precede the first
+  // semicolon in plans:new's guidance. Stop there so subsequent operational
+  // prose cannot evict the actual mapping contract from the bounded snippet.
+  const semicolon = remainder.indexOf(';');
+  const period = remainder.indexOf('.');
+  const clauseEnd = semicolon >= 0 && (period < 0 || semicolon < period)
+    ? semicolon + 1
+    : period >= 0
+      ? period + 1
+      : remainder.length;
+  const clause = remainder.slice(0, clauseEnd).trim();
+  if (!clause) return null;
+
+  const omittedPrefix = marker.index > 0 ? '…' : '';
+  const candidate = `${omittedPrefix}${clause}`;
+  return candidate.length <= COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS
+    ? candidate
+    : `${candidate.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
+}
+
 function compactTopLevelDescription(node: JsonSchemaNode): { text: string; priority: number } | null {
   if (typeof node.description !== 'string') return null;
   const description = node.description.replace(/\s+/g, ' ').trim();
   if (!description) return null;
+  const synopsis = compactContractSynopsis(description);
+  const projected = synopsis ?? description;
   const bounded =
-    description.length <= COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS
-      ? description
-      : `${description.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
+    projected.length <= COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS
+      ? projected
+      : `${projected.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
   return {
     text: ` ${bounded}`,
     priority: COMPACT_CONTRACT_DESCRIPTION_PATTERN.test(description) ? 100 : 10,

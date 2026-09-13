@@ -15,6 +15,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
+import plansNew from '../plans/new';
 import plansAudit from '../plans/audit';
 import bindSpecEvidence from '../plans/bind-spec-evidence';
 import plansSearch from '../plans/search';
@@ -368,6 +369,19 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain(
       'auditedSha?:string(7-64) Completion phase only: commit audited against; resolved from the local tree when omitted.',
     );
+  });
+
+  it('keeps the late plans:new BAR contract in compact discovery output', () => {
+    expect(plansNew.name).toBe('plans:new');
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:new')) ?? '';
+
+    expect(compact).toContain('Bar-to-work map for this plan');
+    expect(compact).toContain('| bar | implementing plan items | evidence plane |');
+    expect(compact).toContain('tree');
+    expect(compact).toContain('deployed');
+    expect(compact).toContain('live');
+    expect(compact.length).toBeLessThanOrEqual(2_200);
   });
 
   it('projects root anyOf and oneOf branches with their required-key hint', () => {
