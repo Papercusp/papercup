@@ -21,6 +21,7 @@ import {
 import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from "../../work-item-checkpoint";
+import { compareWorkItemSubjectFingerprint, type WorkItemSubjectFingerprintComparison } from "../../carry-note";
 import { scanCheckpointRetractions } from "./retraction-advisory";
 import { getClaimTimePriorWorkHint, priorWorkWarning } from "../../work-item-prior-work";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
@@ -251,7 +252,7 @@ const SOURCE_TOP_LEVEL_ROOTS = new Set(['ok', 'counts', 'read', '_shapeNote']);
 const SOURCE_ROW_ROOTS = new Set([
   'ok', 'id', 'availability', 'workItem', 'holder', 'checkpoint', 'checkpointChecks',
   'checkpointBody',
-  'checkpointAgeMs', 'checkpointUpdatedAtMs', 'checkpointContentHash', 'checkpointRetractions',
+  'checkpointAgeMs', 'checkpointUpdatedAtMs', 'checkpointContentHash', 'checkpointSubjectFingerprint', 'checkpointRetractions',
   'checkpointReadFailed', 'checkpointFreshness', 'checkpointStale', 'checkpointBgJobWarning',
   'priorWork', 'priorWorkWarning', 'completion', 'hasCompletionEvidence', 'completionFreshness',
   'deploymentPosition', 'citedFacts', 'planItemBlocked', 'planItemClaimCollision',
@@ -346,6 +347,24 @@ function checkpointCheckIdentities(checks: readonly CheckEntry[]): {
     rows,
     ...(rows.length < checks.length ? { rowsTruncated: { shown: rows.length, total: checks.length } } : {}),
   };
+}
+
+/** Compare the newest checkpoint journal subject with the authoritative item row.
+ * A failed or empty metadata read deliberately remains `unknown`; the current
+ * fingerprint is still useful context when the item row itself was available. */
+function checkpointSubjectFingerprintForRead(
+  workItem: {
+    id: string;
+    harness: string | null;
+    kind: string;
+    title: string;
+    summary: string;
+    state: string;
+  },
+  readFailed: boolean,
+  stored: unknown,
+): WorkItemSubjectFingerprintComparison {
+  return compareWorkItemSubjectFingerprint(workItem, readFailed ? undefined : stored);
 }
 
 /**
@@ -508,6 +527,11 @@ const workItemsGetResultRowSchema = z.object({
   checkpointAgeMs: z.number().nullable().optional(),
   checkpointUpdatedAtMs: z.number().nullable().optional(),
   checkpointContentHash: z.string().nullable().optional(),
+  checkpointSubjectFingerprint: z.object({
+    status: z.enum(['current', 'mismatch', 'unknown']),
+    current: z.object({ version: z.number().int(), sha256: z.string() }).optional(),
+    stored: z.object({ version: z.number().int(), sha256: z.string() }).optional(),
+  }).passthrough().optional(),
   threadWindowReadFailed: z.boolean().optional(),
   threadLimitClamped: z.object({
     requested: z.number().int(),

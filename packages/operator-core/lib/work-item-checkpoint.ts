@@ -29,6 +29,7 @@ import {
   getCarryNote,
   getCarryJournal,
   readCarryLatestUpdate,
+  normalizeWorkItemSubjectFingerprint,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
   workItemScope,
@@ -414,6 +415,8 @@ export interface WorkItemCheckpointWithMeta {
    * Optional for compatibility with injected/older readers. */
   readFailed?: boolean;
   latestUpdate?: ReturnType<typeof readCarryLatestUpdate>;
+  /** Subject identity captured on the newest journal entry, when available. */
+  subjectFingerprint?: import('./carry-note').WorkItemSubjectFingerprint;
 }
 
 /** Read a work-item's checkpoint WITH its write instant. Same scope-canonicalization
@@ -424,15 +427,26 @@ export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef):
   const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ note: string | null; updated_ts: string | number | null; latest_update?: unknown }[]>`
-      SELECT note, updated_ts, journal -> -1 -> 'latestUpdate' AS latest_update FROM harness_shared.carry_notes
+    const rows = await sql<{
+      note: string | null;
+      updated_ts: string | number | null;
+      latest_update?: unknown;
+      subject_fingerprint?: unknown;
+    }[]>`
+      SELECT note, updated_ts,
+             journal -> -1 -> 'latestUpdate' AS latest_update,
+             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint
+        FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
     const note = (rows[0]?.note ?? '').trim();
-    if (note.length === 0) return { checkpoint: null, updatedAtMs: null };
+    const subjectFingerprint = normalizeWorkItemSubjectFingerprint(rows[0]?.subject_fingerprint);
+    const subjectMetadata = subjectFingerprint ? { subjectFingerprint } : {};
+    if (note.length === 0) return { checkpoint: null, updatedAtMs: null, ...subjectMetadata };
     const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
     const latestUpdate = readCarryLatestUpdate(note, rows[0]?.latest_update);
     return { checkpoint: note, updatedAtMs: Number.isFinite(ts) ? ts : null,
-      ...(latestUpdate ? { latestUpdate } : {}) };
+      ...(latestUpdate ? { latestUpdate } : {}),
+      ...subjectMetadata };
   } catch {
     return { checkpoint: null, updatedAtMs: null, readFailed: true };
   }
