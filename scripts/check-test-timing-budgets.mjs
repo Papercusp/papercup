@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * check-test-timing-budgets.mjs — fail-loud guard against a NEW test landing with a
- * TIGHT WALL-CLOCK BUDGET, the undetected gate-red class filed as EI-20290625014691548.
+ * TIGHT OR INVERTED WALL-CLOCK BUDGET, the undetected gate-red class filed as
+ * EI-20290625014691548 and extended after the P-003 gate retry on 2026-09-13.
  *
  * ── THE CLASS ────────────────────────────────────────────────────────────────────
  * A test that asserts `expect(Date.now() - started).toBeLessThan(80)` passes in
@@ -60,11 +61,21 @@
  * For the two-step shape the file's elapsed-variable names are learned first, so only a
  * variable actually bound to a wall-clock delta is treated as elapsed.
  *
- * KNOWN BOUND, stated rather than implied: a budget reached through a helper, a struct
+ * The second class is a synchronous child-process budget that is not smaller than its
+ * enclosing Vitest test budget. `runGuardScript(..., { timeoutMs: 180_000 })` inside a
+ * test with the shared 60-second default can never exercise its promised timeout: Vitest
+ * kills the parent first. The whole-tree undrained-stdout ratchet measured 57.3s current-
+ * byte / 69.5s under the affected retry, so this exact inversion produced a false red.
+ * Direct literal `runGuardScript` sites are parsed with TypeScript so comments, fixtures,
+ * and nested calls cannot masquerade as live invocations. Give the enclosing `it`/`test`
+ * an explicit larger timeout; the parent remains the final bound.
+ *
+ * KNOWN BOUND, stated rather than implied: an elapsed budget reached through a helper, a struct
  * field (`expect(res.latencyMs).toBeLessThan(400)`), or a cross-file constant is NOT
- * detected. This guard reports what it can see textually and its --list output is the
- * honest population — it is not a proof that no other tight budget exists. Overstating
- * a guard's reach is how the next reader mistakes silence for safety.
+ * detected. For child-process inversions, calls routed through a helper or budgets held in
+ * identifiers are also not resolved. This guard reports what it can see and its --list
+ * output is the honest population — it is not a proof that no other tight budget exists.
+ * Overstating a guard's reach is how the next reader mistakes silence for safety.
  *
  * GRANULARITY: BASELINE grandfathering is FILE-level, matching the established
  * convention in this directory. A baselined file could in principle grow a second tight
@@ -78,7 +89,9 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { DEFAULT_UNIT_TEST_TIMEOUT_MS } from '@papercusp/test-config/vitest-config';
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -194,6 +207,81 @@ export function hasTightLiteralBudget(text, floorMs = TIGHT_BUDGET_FLOOR_MS) {
   return findWallClockBudgets(text).some((b) => b.budgetMs !== null && b.budgetMs < floorMs);
 }
 
+function numericLiteralMs(node) {
+  if (!node || !ts.isNumericLiteral(node)) return null;
+  const value = Number.parseInt(node.text.replaceAll('_', ''), 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function propertyNameText(name) {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  return null;
+}
+
+function isTestCallExpression(expression) {
+  if (ts.isIdentifier(expression)) return expression.text === 'it' || expression.text === 'test';
+  if (!ts.isPropertyAccessExpression(expression)) return false;
+  let base = expression.expression;
+  while (ts.isPropertyAccessExpression(base)) base = base.expression;
+  return ts.isIdentifier(base) && (base.text === 'it' || base.text === 'test');
+}
+
+/**
+ * Direct `runGuardScript` child budgets that can outlive their enclosing Vitest parent.
+ * Literal-only by design: a symbolic budget is not guessed, and a helper invocation has
+ * no enclosing test ancestor at the call site. Both bounds are documented above.
+ */
+export function findNestedChildBudgetInversions(
+  text,
+  fileName = 'fixture.test.ts',
+  defaultParentMs = DEFAULT_UNIT_TEST_TIMEOUT_MS,
+) {
+  const kind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
+  const inversions = [];
+
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'runGuardScript' &&
+      node.arguments.length >= 3 &&
+      ts.isObjectLiteralExpression(node.arguments[2])
+    ) {
+      const timeoutProperty = node.arguments[2].properties.find(
+        (property) => ts.isPropertyAssignment(property) && propertyNameText(property.name) === 'timeoutMs',
+      );
+      const childTimeoutMs = timeoutProperty && ts.isPropertyAssignment(timeoutProperty)
+        ? numericLiteralMs(timeoutProperty.initializer)
+        : null;
+
+      if (childTimeoutMs !== null) {
+        let ancestor = node.parent;
+        while (ancestor) {
+          if (ts.isCallExpression(ancestor) && isTestCallExpression(ancestor.expression)) {
+            const explicitParentMs = numericLiteralMs(ancestor.arguments[2]);
+            const parentTimeoutMs = explicitParentMs ?? defaultParentMs;
+            if (childTimeoutMs >= parentTimeoutMs) {
+              inversions.push({
+                line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
+                childTimeoutMs,
+                parentTimeoutMs,
+                parentSource: explicitParentMs === null ? 'implicit-default' : 'explicit',
+              });
+            }
+            break;
+          }
+          ancestor = ancestor.parent;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(source);
+  return inversions;
+}
+
 function walkTestFiles(dir, out) {
   let entries;
   try {
@@ -223,22 +311,31 @@ function main() {
 
   const offenders = [];
   const measured = [];
+  const nestedInversions = [];
   for (const abs of files) {
+    let rawText;
     let text;
     try {
+      rawText = readFileSync(abs, 'utf8');
       // Mask comments before matching (guard-string-literal-blindness): a `// budget: 50ms`
       // note or a doc comment quoting `toBeLessThan(5)` must not mint a phantom tight budget.
       // Ranges are blanked in place, so `lineOf` still reports the original line.
-      text = stripCommentsOnly(readFileSync(abs, 'utf8'), abs);
+      text = stripCommentsOnly(rawText, abs);
     } catch {
       continue;
     }
-    if (!text.includes('.now()')) continue;
     const rel = relative(REPO_ROOT, abs);
-    for (const b of findWallClockBudgets(text)) {
-      if (b.budgetMs === null) continue;
-      measured.push({ rel, ...b });
-      if (b.budgetMs < TIGHT_BUDGET_FLOOR_MS && !BASELINE.has(rel)) offenders.push({ rel, ...b });
+    if (rawText.includes('runGuardScript')) {
+      for (const inversion of findNestedChildBudgetInversions(rawText, abs)) {
+        nestedInversions.push({ rel, ...inversion });
+      }
+    }
+    if (text.includes('.now()')) {
+      for (const b of findWallClockBudgets(text)) {
+        if (b.budgetMs === null) continue;
+        measured.push({ rel, ...b });
+        if (b.budgetMs < TIGHT_BUDGET_FLOOR_MS && !BASELINE.has(rel)) offenders.push({ rel, ...b });
+      }
     }
   }
 
@@ -253,11 +350,27 @@ function main() {
       `\n${measured.length} literal wall-clock budget(s) in ${new Set(measured.map((m) => m.rel)).size} file(s); ` +
         `${tight.length} below the ${TIGHT_BUDGET_FLOOR_MS}ms floor, in ${new Set(tight.map((m) => m.rel)).size} file(s).`,
     );
+    console.log(`${nestedInversions.length} direct runGuardScript child/parent timeout inversion(s).`);
     console.log('Re-seed BASELINE from the TIGHT/BASELINE paths above — never from a hand-run grep.');
     return;
   }
 
-  if (offenders.length > 0) {
+  if (offenders.length > 0 || nestedInversions.length > 0) {
+    if (nestedInversions.length > 0) {
+      console.error(`\n✖ ${nestedInversions.length} runGuardScript child/parent timeout inversion(s):\n`);
+      for (const o of nestedInversions) {
+        console.error(
+          `   ${o.rel}:${o.line}  child ${o.childTimeoutMs}ms >= ` +
+            `${o.parentSource} parent ${o.parentTimeoutMs}ms`,
+        );
+      }
+      console.error(
+        '\nGive the enclosing it()/test() an explicit timeout larger than the child budget.\n' +
+          'A child timeout that outlives its parent is unreachable: Vitest kills the test first,\n' +
+          'manufacturing a timeout red while the guarded subprocess is still validly running.\n',
+      );
+    }
+    if (offenders.length === 0) process.exit(1);
     console.error(
       `\n✖ ${offenders.length} NEW tight wall-clock timing budget(s) — below the ` +
         `${TIGHT_BUDGET_FLOOR_MS}ms floor and not in the BASELINE:\n`,
@@ -281,7 +394,8 @@ function main() {
 
   console.log(
     `✓ no NEW tight wall-clock timing budgets (floor ${TIGHT_BUDGET_FLOOR_MS}ms, ` +
-      `${BASELINE.size} file(s) baselined). --list to measure the population.`,
+      `${BASELINE.size} file(s) baselined) or direct runGuardScript timeout inversions. ` +
+      '--list to measure the population.',
   );
 }
 

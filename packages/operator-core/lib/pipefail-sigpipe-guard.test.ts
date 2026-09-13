@@ -209,5 +209,5 @@ describe('§3 the guard is clean over the real tree', () => {
       'These ALLOWLIST entries no longer match a site; delete them so the allowlist ' +
         'cannot silently cover a future one.',
     ).toEqual([]);
-  });
+  }, 240_000);
 });

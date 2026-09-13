@@ -22,7 +22,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: tsc reports TS7016 at the module-SPECIFIER line, so on a multi-line import the @ts-ignore lands on `import {` and suppresses nothing.
-import { findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
+import { findNestedChildBudgetInversions, findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
 
 describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () => {
   it('FLAGS a tight literal budget on a direct elapsed assertion', () => {
@@ -102,5 +102,60 @@ describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () =
     // direction and a rise means someone grandfathered instead of fixing.
     expect((BASELINE as Set<string>).size).toBe(8);
     expect((BASELINE as Set<string>).has('packages/operator-core/lib/release-checkpoint-launch.test.ts')).toBe(true);
+  });
+
+  it('FLAGS a child-process timeout that outlives the implicit Vitest parent', () => {
+    const src = `
+      it('scans the tree', () => {
+        const guard = runGuardScript('node', ['scripts/check-tree.mjs'], {
+          cwd: REPO_ROOT,
+          timeoutMs: 180_000,
+        });
+        expect(guard.status).toBe(0);
+      });
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([
+      expect.objectContaining({ childTimeoutMs: 180_000, parentTimeoutMs: 60_000, parentSource: 'implicit-default' }),
+    ]);
+  });
+
+  it('does NOT flag a child-process budget with an explicit larger Vitest parent', () => {
+    const src = `
+      test('scans the tree', () => {
+        runGuardScript('node', ['scripts/check-tree.mjs'], {
+          cwd: REPO_ROOT,
+          timeoutMs: 180_000,
+        });
+      }, 240_000);
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([]);
+  });
+
+  it('FLAGS equal child and parent budgets because the parent has no completion headroom', () => {
+    const src = `
+      it.only('scans the tree', () => {
+        runGuardScript('node', [], { cwd: REPO_ROOT, timeoutMs: 120_000 });
+      }, 120_000);
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([
+      expect.objectContaining({ childTimeoutMs: 120_000, parentTimeoutMs: 120_000, parentSource: 'explicit' }),
+    ]);
+  });
+
+  it('does NOT infer a helper-routed or symbolic budget beyond the detector boundary', () => {
+    const src = `
+      const run = () => runGuardScript('node', [], { cwd: REPO_ROOT, timeoutMs: CHILD_TIMEOUT_MS });
+      it('uses a helper', () => run());
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([]);
+  });
+
+  it('does NOT crash or invent a budget when runGuardScript uses its default timeout', () => {
+    const src = `
+      it('uses the helper default', () => {
+        runGuardScript('node', [], { cwd: REPO_ROOT });
+      });
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([]);
   });
 });

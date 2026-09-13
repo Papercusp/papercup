@@ -279,5 +279,5 @@ describe('the tree is currently clean (ratchet)', () => {
     // would make every other consumer — the npm lint entry, the gate — read a dirty
     // tree as clean, and no assertion above would notice.
     expect(guard.status, guard.output).toBe(0);
-  });
+  }, 240_000);
 });

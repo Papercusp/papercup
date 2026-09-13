@@ -62,7 +62,7 @@ describe('OKF conformance ratchet', () => {
     const denominators = [...out.matchAll(/DENOMINATOR: (\d+) file\(s\) judged/g)].map((m) => Number(m[1]));
     expect(denominators).toHaveLength(3); // insights, pack docs, pack manifests
     for (const n of denominators) expect(n).toBeGreaterThan(0);
-  });
+  }, 180_000);
 });
 
 describe('OKF conformance routing predicate', () => {

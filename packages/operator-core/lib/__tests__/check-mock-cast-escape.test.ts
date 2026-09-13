@@ -224,5 +224,5 @@ describe('the --json CLI report', () => {
     expect(report.increases).toEqual([]);
     expect(report.verdict).toMatch(/^(?:fail-file-increase|fail-exceeds|ok-ratchet-files|ok-below-files|ok-ratchet|ok-below|ok)$/);
     expect(guard.status, guard.output).toBe(report.verdict.startsWith('fail-') ? 1 : 0);
-  });
+  }, 240_000);
 });
