@@ -480,12 +480,21 @@ class PuiPane {
   readonly pty: IPty;
   private raw = '';
   private exit: Promise<{ exitCode: number; signal?: number }>;
+  private cols: number;
+  private rows: number;
 
-  constructor(bin: string, operatorPort: number, home: string) {
-    this.pty = ptySpawn(bin, [], {
+  constructor(
+    bin: string,
+    operatorPort: number,
+    home: string,
+    options: { args?: string[]; cols?: number; rows?: number } = {},
+  ) {
+    this.cols = options.cols ?? 150;
+    this.rows = options.rows ?? 44;
+    this.pty = ptySpawn(bin, options.args ?? [], {
       name: 'xterm-256color',
-      cols: 150,
-      rows: 44,
+      cols: this.cols,
+      rows: this.rows,
       cwd: REPO_ROOT,
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -507,9 +516,15 @@ class PuiPane {
   }
 
   screen(): string {
-    const vt = new VtScreen(44, 150);
+    const vt = new VtScreen(this.rows, this.cols);
     vt.feed(this.raw);
     return vt.text();
+  }
+
+  resize(cols: number, rows: number): void {
+    this.cols = cols;
+    this.rows = rows;
+    this.pty.resize(cols, rows);
   }
 
   /**
