@@ -8,8 +8,9 @@
  * `outputJsonSchema`. Two directional checks then keep the public contract
  * honest:
  *
- *  1. top-level field tokens in the first authored `{ ... }` shape clause
- *     must resolve to top-level properties in the registered schema;
+ *  1. field tokens in the first authored `{ ... }` shape clause must resolve
+ *     to registered properties. An `Each row:` clause resolves against the
+ *     best matching array-item schema (or the root for legacy flat schemas);
  *  2. every top-level registered property must survive the compact shape
  *     rendered by tools:find.
  *
@@ -156,6 +157,39 @@ function topLevelSchemaFields(schema: JsonSchema): string[] {
     : [];
 }
 
+function firstClauseDescribesRows(returns: string): boolean {
+  const start = returns.indexOf('{');
+  return start >= 0 && /Each row:\s*$/.test(returns.slice(0, start));
+}
+
+/**
+ * Resolve an `Each row:` promise to the declared row schema without hardcoding
+ * a container name such as `runs`. Some older tools publish a flat/root row
+ * schema, while newer list envelopes publish `rows/items/runs` arrays. Pick the
+ * candidate that explains the most promised fields; a missing field remains a
+ * violation instead of disappearing behind `.passthrough()`.
+ */
+function promisedSchemaFields(schema: JsonSchema, returns: string, promised: string[]): Set<string> {
+  const root = new Set(topLevelSchemaFields(schema));
+  if (!firstClauseDescribesRows(returns)) return root;
+
+  const properties = schema.properties;
+  const candidates: Set<string>[] = [root];
+  if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+    for (const property of Object.values(properties as JsonSchema)) {
+      if (!property || typeof property !== 'object' || Array.isArray(property)) continue;
+      const node = property as JsonSchema;
+      if (node.type !== 'array' || !node.items || typeof node.items !== 'object' || Array.isArray(node.items)) continue;
+      candidates.push(new Set(topLevelSchemaFields(node.items as JsonSchema)));
+    }
+  }
+  return candidates.reduce((best, candidate) => {
+    const score = promised.filter((field) => candidate.has(field)).length;
+    const bestScore = promised.filter((field) => best.has(field)).length;
+    return score > bestScore ? candidate : best;
+  }, root);
+}
+
 function renderedFieldNames(rendered: string): Set<string> {
   return new Set([...rendered.matchAll(/(?:^|;\s)([A-Za-z_$][\w$-]*)(?:\?)?(?=[:;]|$)/g)].map((match) => match[1]!));
 }
@@ -176,8 +210,9 @@ export function returnSchemaViolations(
       continue;
     }
 
-    const schemaFields = new Set(topLevelSchemaFields(schema));
-    const promisedMissing = structuralReturnFields(returns).filter((field) => !schemaFields.has(field));
+    const promised = structuralReturnFields(returns);
+    const schemaFields = promisedSchemaFields(schema, returns, promised);
+    const promisedMissing = promised.filter((field) => !schemaFields.has(field));
     if (promisedMissing.length > 0) {
       violations.push({ tool: name, kind: 'promised-field-missing', fields: promisedMissing });
     }
@@ -227,12 +262,33 @@ describe('guidance return shapes resolve through registered output schemas', () 
       },
     };
     const mutated = { ...sessionRead, outputJsonSchema: schema };
-    expect(returnSchemaViolations([mutated], (value) => compactOutputSchemaForResult(value)?.replace(/; loadBearingSentinel[^;]*/, '') ?? null))
-      .toContainEqual({
-        tool: 'sessions:read',
-        kind: 'generated-clause-omission',
-        fields: ['loadBearingSentinel'],
-      });
+    expect(
+      returnSchemaViolations(
+        [mutated],
+        (value) => compactOutputSchemaForResult(value)?.replace(/; loadBearingSentinel[^;]*/, '') ?? null,
+      ),
+    ).toContainEqual({
+      tool: 'sessions:read',
+      kind: 'generated-clause-omission',
+      fields: ['loadBearingSentinel'],
+    });
+  });
+
+  it('resolves an Each row clause through the registered array-item schema', () => {
+    const testingRuns = namedTool('testing:runs');
+    expect(returnSchemaViolations([testingRuns])).toEqual([]);
+    const properties = { ...((testingRuns.outputJsonSchema!.properties ?? {}) as JsonSchema) };
+    const runs = { ...(properties.runs as JsonSchema) };
+    const items = { ...(runs.items as JsonSchema) };
+    const itemProperties = { ...((items.properties ?? {}) as JsonSchema) };
+    delete itemProperties.filePath;
+    properties.runs = { ...runs, items: { ...items, properties: itemProperties } };
+    const mutated = { ...testingRuns, outputJsonSchema: { ...testingRuns.outputJsonSchema!, properties } };
+    expect(returnSchemaViolations([mutated])).toContainEqual({
+      tool: 'testing:runs',
+      kind: 'promised-field-missing',
+      fields: ['filePath'],
+    });
   });
 
   it('does not force mixed MCP content into a fake object schema', () => {

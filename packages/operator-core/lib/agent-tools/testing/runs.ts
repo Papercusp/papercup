@@ -49,9 +49,9 @@ const NO_RUNS_RECORDED_REASON = 'no_runs_recorded' as const;
  * the established shape, while callers can distinguish "not measured" from
  * "measured and no red rows".
  */
-function emptyResultMetadata(rowCount: number):
-  | { notRecorded: true; reason: typeof NO_RUNS_RECORDED_REASON }
-  | Record<string, never> {
+function emptyResultMetadata(
+  rowCount: number,
+): { notRecorded: true; reason: typeof NO_RUNS_RECORDED_REASON } | Record<string, never> {
   return rowCount === 0 ? { notRecorded: true, reason: NO_RUNS_RECORDED_REASON } : {};
 }
 
@@ -63,6 +63,51 @@ const RED_STATUSES: string[] = ['fail', 'error'];
 // NOT `d.toISOString()`: a timestamptz column arrives as a STRING here, so the old
 // spelling threw on every row and left this tool dead on every call. See _pg-timestamp.
 const iso = toIso;
+
+/**
+ * The ledger row contract advertised in guidance. Keep this explicit instead
+ * of relying on `.passthrough()`: passthrough permits fields at runtime, but it
+ * does not publish them in MCP `outputSchema`, so typed callers cannot discover
+ * them and guidance can silently drift away from the registered contract.
+ */
+const testingRunResultSchema = z
+  .object({
+    id: z.number().int().positive(),
+    workspaceId: z.string().nullable(),
+    harnessSlug: z.string().nullable(),
+    filePath: z.string(),
+    status: z.enum(['pass', 'fail', 'skip', 'cancelled', 'error', 'running']),
+    framework: z.string(),
+    startedAt: z.string(),
+    finishedAt: z.string().nullable(),
+    durationMs: z.number().nonnegative().nullable(),
+    commitSha: z.string().nullable(),
+    runGroupId: z.string().nullable(),
+    source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']),
+    branch: z.string().nullable(),
+    outputTail: z.string().nullable(),
+    loopLagP95Ms: z.number().nullable(),
+    rssMb: z.number().nullable(),
+    saturationSuspect: z.boolean().nullable(),
+    worktreeDirty: z.boolean(),
+    isScratchConfig: z.boolean(),
+    outputTailTruncated: z.boolean().optional(),
+  })
+  .passthrough();
+
+const testingRunGroupResultSchema = z
+  .object({
+    key: z.string().nullable(),
+    commitSha: z.string().nullable(),
+    commitShaCount: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    failedFiles: z.number().int().nonnegative(),
+    files: z.number().int().nonnegative(),
+    firstStart: z.string().nullable(),
+    lastFinish: z.string().nullable(),
+  })
+  .passthrough();
 
 /**
  * A red row recorded while the host's event loop was past the critical band is
@@ -254,12 +299,16 @@ export default defineTool({
       .min(1)
       .max(100)
       .optional()
-      .describe('Match exact durable test_runs row IDs (1–100). Use this for evidence-lineage lookups; no per-file collapse is applied by default.'),
+      .describe(
+        'Match exact durable test_runs row IDs (1–100). Use this for evidence-lineage lookups; no per-file collapse is applied by default.',
+      ),
     filePath: z
       .string()
       .max(400)
       .optional()
-      .describe('Match test file path as a literal SUBSTRING (a memorable fragment is fine); LIKE metacharacters are treated literally.'),
+      .describe(
+        'Match test file path as a literal SUBSTRING (a memorable fragment is fine); LIKE metacharacters are treated literally.',
+      ),
     commitSha: z.string().max(80).optional().describe('Match commit sha as a PREFIX — a short sha works.'),
     runGroup: z.string().max(200).optional().describe('Exact run_group_id (one suite execution).'),
     status: z
@@ -270,7 +319,9 @@ export default defineTool({
     source: z
       .enum(['ci', 'local', 'admin-ui', 'mutation-probe'])
       .optional()
-      .describe('Which writer produced the row. Use "ci" for gate/CI triage or explicit "mutation-probe" for falsifiability evidence.'),
+      .describe(
+        'Which writer produced the row. Use "ci" for gate/CI triage or explicit "mutation-probe" for falsifiability evidence.',
+      ),
     since: z.string().max(64).optional().describe('Only runs started at/after this ISO-8601 timestamp.'),
     sinceHours: z
       .number()
@@ -316,7 +367,9 @@ export default defineTool({
     latestPerFile: z
       .boolean()
       .optional()
-      .describe('Collapse to the most recent run per file. Defaults true, or false when `filePath` or `testRunIds` is given.'),
+      .describe(
+        'Collapse to the most recent run per file. Defaults true, or false when `filePath` or `testRunIds` is given.',
+      ),
     limit: z.number().int().min(1).max(200).optional().describe(`Max rows (default ${DEFAULT_LIMIT}).`),
   }),
   result: z
@@ -325,12 +378,12 @@ export default defineTool({
       total: z.number().int().nonnegative(),
       truncatedByLimit: z.boolean(),
       latestPerFile: z.boolean(),
-      runs: z.array(z.object({
-        id: z.number().int().positive(),
-        workspaceId: z.string().nullable(),
-        harnessSlug: z.string().nullable(),
-      }).passthrough()).optional(),
-      groups: z.array(z.unknown()).optional(),
+      rollup: z.enum(['commit', 'runGroup']).optional(),
+      source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']).optional(),
+      notRecorded: z.literal(true).optional(),
+      reason: z.literal(NO_RUNS_RECORDED_REASON).optional(),
+      runs: z.array(testingRunResultSchema).optional(),
+      groups: z.array(testingRunGroupResultSchema).optional(),
     })
     .passthrough(),
   shape: {
@@ -365,15 +418,15 @@ export default defineTool({
     const testRunIds = args.testRunIds ?? null;
     const runGroup = args.runGroup ?? null;
     const source = defaultRollupSource(args.rollup, args.source);
-    const sourceFilter = args.source === undefined && args.rollup === undefined
-      ? sql`source <> 'mutation-probe'`
-      : sql`(${source}::text IS NULL OR source = ${source})`;
+    const sourceFilter =
+      args.source === undefined && args.rollup === undefined
+        ? sql`source <> 'mutation-probe'`
+        : sql`(${source}::text IS NULL OR source = ${source})`;
     const workspace = args.workspace ?? null;
     const harness = args.harness ?? null;
     const statuses = args.status ?? null;
     const sinceTs =
-      args.since ??
-      (args.sinceHours != null ? new Date(Date.now() - args.sinceHours * 3_600_000).toISOString() : null);
+      args.since ?? (args.sinceHours != null ? new Date(Date.now() - args.sinceHours * 3_600_000).toISOString() : null);
     // Naming a file means you want THAT FILE'S HISTORY; asking broadly means
     // you want the current picture, where a stale red would mislead.
     const latestPerFile = args.latestPerFile ?? (args.filePath === undefined && args.testRunIds == null);
