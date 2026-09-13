@@ -7,6 +7,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV,
@@ -41,6 +42,7 @@ import {
   getJob,
   isBackgroundTestCommand,
   killJob,
+  normalizeExpectedSigpipeResult,
   readJobOutput,
   runForeground,
   startBackground,
@@ -60,6 +62,7 @@ import {
 } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-'));
+const REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url)).replace(/\/$/, '');
 const never = new AbortController().signal;
 
 afterEach(() => __resetBashJobs());
@@ -174,6 +177,34 @@ describe('runForeground', () => {
     const r = await runForeground({ command: 'echo hello | tail -1', cwd: STATE, stateDir: STATE }, never, 10_000);
     expect(r.exitCode).toBe(0);
     expect(r.status).toBe('completed');
+  });
+
+  it('treats producer SIGPIPE as success for a bounded read-only head pipeline', async () => {
+    const command = ['rg --files', JSON.stringify(REPO_ROOT), '| head -n 1'].join(' ');
+    const r = await runForeground({ command, cwd: STATE, stateDir: STATE }, never, 10_000);
+
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain(REPO_ROOT + '/');
+  });
+
+  it('does not normalize SIGPIPE outside the narrow bounded-read shape', () => {
+    expect(normalizeExpectedSigpipeResult('rg --files . | head -n 1', 'failed', 141)).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+    expect(normalizeExpectedSigpipeResult('cat input | tail -n 1', 'failed', 141)).toEqual({
+      status: 'failed',
+      exitCode: 141,
+    });
+    expect(normalizeExpectedSigpipeResult('unknown-mutator | head -n 1', 'failed', 141)).toEqual({
+      status: 'failed',
+      exitCode: 141,
+    });
+    expect(normalizeExpectedSigpipeResult('rg --files . | head -n 1 && echo ok', 'failed', 141)).toEqual({
+      status: 'failed',
+      exitCode: 141,
+    });
   });
 
   it('fails loudly when a missing command is hidden inside a successful outer pipeline', async () => {
@@ -954,6 +985,49 @@ describe('detectUntrackedShellBackgrounding (EI-21810817545133564)', () => {
   it('permits a single child joined by wait, including wait "$!"', () => {
     expect(detectUntrackedShellBackgrounding('watcher & wait')).toBeNull();
     expect(detectUntrackedShellBackgrounding('watcher & wait "$!"')).toBeNull();
+  });
+
+  it('permits a watcher joined by a named EXIT-trap cleanup function declared before it', () => {
+    const command = [
+      'cleanup() {',
+      '  kill "$watcher_pid" 2>/dev/null || true',
+      '  wait "$watcher_pid" 2>/dev/null || true',
+      '}',
+      'trap cleanup EXIT',
+      'watcher &',
+      'watcher_pid=$!',
+    ].join('\n');
+    expect(detectUntrackedShellBackgrounding(command)).toBeNull();
+  });
+
+  it('permits a watcher joined by a quoted EXIT trap, but not a non-EXIT trap or prose', () => {
+    expect(
+      detectUntrackedShellBackgrounding(
+        'trap \'kill "$watcher_pid" 2>/dev/null; wait "$watcher_pid" 2>/dev/null\' EXIT; watcher & watcher_pid=$!',
+      ),
+    ).toBeNull();
+    expect(
+      detectUntrackedShellBackgrounding(
+        'trap \'kill "$watcher_pid" 2>/dev/null; wait "$watcher_pid" 2>/dev/null\' TERM; watcher & watcher_pid=$!',
+      ),
+    ).toMatchObject({ operator: '&', backgroundCount: 1 });
+    expect(detectUntrackedShellBackgrounding('echo "trap wait EXIT"; watcher &')).toMatchObject({
+      operator: '&',
+      backgroundCount: 1,
+    });
+    expect(detectUntrackedShellBackgrounding('echo "x; trap \'wait\' EXIT"; watcher &')).toMatchObject({
+      operator: '&',
+      backgroundCount: 1,
+    });
+  });
+
+  it('still requires a bare wait in EXIT cleanup when multiple children are backgrounded', () => {
+    expect(
+      detectUntrackedShellBackgrounding(
+        'trap \'wait "$last_pid"\' EXIT; one & first_pid=$!; two & last_pid=$!',
+      ),
+    ).toMatchObject({ operator: '&', backgroundCount: 2 });
+    expect(detectUntrackedShellBackgrounding("trap 'wait' EXIT; one &; two &")).toBeNull();
   });
 
   it('requires a bare wait after multiple background children', () => {
