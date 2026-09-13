@@ -1,9 +1,9 @@
-/** Real-Postgres association and stale-carry recovery for BYOC P-007. */
+/** Real-Postgres association, stale recovery and milestone views for BYOC P-007/P-008. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { readLinkedByocReleaseCarries } from './byoc-release-carry';
+import { readLinkedByocReleaseCarries, renderByocReleaseCarry } from './byoc-release-carry';
 
 const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 const WS = 'byoc-carry-integration';
@@ -97,5 +97,53 @@ describe('BYOC release carry real task ledger', () => {
     });
     expect(recovered.some((snapshot) => snapshot.taskId === 'unrelated01')).toBe(false);
     expect(recovered.some((snapshot) => snapshot.taskId === 'malformed01')).toBe(false);
+  });
+
+  it('renders a published release with refused fixed-agent initialization as blocked, never customer-ready', async () => {
+    const operationId = 'operation-contradictory';
+    const receipt = (
+      sequence: number,
+      stage: string,
+      state: 'committed' | 'refused',
+      evidence: string,
+    ) => ({
+      sequence, operationId, requestIdentity: `request-${sequence}`, stage, state,
+      inputHash: String(sequence).repeat(64), inputIdentity: { stage }, evidenceRefs: [evidence],
+      credentialGeneration: 'credential-7', credentialExpiresAt: '2026-09-13T00:00:00.000Z',
+      recordedAt: `2026-09-12T1${sequence}:00:00.000Z`,
+    });
+    const receipts = [
+      receipt(0, 'release.build.linux', 'committed', 'build:verified'),
+      receipt(1, 'publish.finalize', 'committed', 'publication:verified'),
+      receipt(2, 'workspace.root-bootstrap', 'committed', 'bootstrap:verified'),
+      receipt(3, 'workspace.fixed-agent-initialization', 'refused', 'initialization:failed'),
+      receipt(4, 'desktop-session.customer-acceptance', 'committed', 'acceptance:claimed'),
+    ];
+    await insertTask({
+      id: 'contradictory01', workItemId: 'WI-8',
+      release: {
+        ...release(operationId, 'committed'),
+        cursor: receipts.length,
+        currentStage: 'desktop-session.customer-acceptance',
+        spentOperationIds: receipts.map((item) => item.requestIdentity),
+        receipts,
+      },
+    });
+
+    const [snapshot] = await readLinkedByocReleaseCarries({
+      ownerId: 'su-owner', workspaceId: WS, heldWorkItemIds: ['WI-8'],
+    }, db.sql);
+    expect(snapshot?.milestoneProjection).toMatchObject({
+      current: 'root-bootstrap', customerReady: false, shipped: false,
+    });
+    expect(snapshot?.milestoneProjection.milestones.find(({ key }) => key === 'fixed-agent-initialization'))
+      .toMatchObject({ status: 'failed', evidenceRefs: ['initialization:failed'] });
+    expect(snapshot?.milestoneProjection.milestones.find(({ key }) => key === 'customer-acceptance'))
+      .toMatchObject({ status: 'blocked', evidenceRefs: ['acceptance:claimed'] });
+    const rendered = renderByocReleaseCarry(snapshot!);
+    expect(rendered).toContain('customer-ready=false; shipped=false');
+    expect(rendered).toContain('fixed-agent initialization=failed [initialization:failed]');
+    expect(rendered).toContain('DesktopSession/customer acceptance=blocked [acceptance:claimed]');
+    expect(rendered).toContain('⚠ receipt contradictions:');
   });
 });

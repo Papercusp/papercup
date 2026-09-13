@@ -422,7 +422,9 @@ describe('coord:orient args', () => {
         'ws-test',
         expect.any(Object),
       );
-      expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith(ownerId, 'ws-test', 5);
+      // The handler must not advance the control watermark while this late
+      // fold is still preventing the orient payload from assembling.
+      expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
       const result = (await resultPromise) as { data: Record<string, unknown> };
@@ -463,6 +465,65 @@ describe('coord:orient args', () => {
       warnSpy.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it('acknowledges the recovered control generation after a successful afterCompaction assembly', async () => {
+    const ownerId = 'su-orient-handler-success-test';
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { generation: 5 },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    const result = (await orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(result.data).toMatchObject({ ok: true, recovery });
+    expect(recordOrientDisclosuresMock).toHaveBeenCalledWith(
+      ownerId,
+      'ws-test',
+      expect.any(Object),
+    );
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith(ownerId, 'ws-test', 5);
   });
 
   it('keeps recovery in the aggregate fallback when a post-composition fold stalls', async () => {
