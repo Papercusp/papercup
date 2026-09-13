@@ -383,9 +383,30 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
     expect(out.status).toBe(0);
     expect(releaseRequests).toHaveLength(1);
     expect(releaseObservedAfterRegen).toEqual([true]);
+    expect(releaseRequests[0]?.params?.arguments).toMatchObject({
+      native_edit_proof: {
+        success: true,
+        source: 'codex',
+        tool: 'apply_patch',
+        paths: ['scripts/input.mjs'],
+      },
+    });
     expect(JSON.parse(fs.readFileSync(regenMarker, 'utf8'))).toEqual([
       '--files=scripts/input.mjs',
     ]);
+  });
+
+  it('keeps PostToolBatch attribution Claude-only when a Codex edit appears', async () => {
+    writeBatch('codex-batch', 'granted', ['tu-codex']);
+
+    const out = await runHook(BATCH_HOOK, {
+      ...batchInput(['tu-codex']),
+      tool_calls: [{ tool_use_id: 'tu-codex', tool_name: 'apply_patch', tool_response: { success: true } }],
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(0);
+    expectClean('codex-batch', ['tu-codex']);
   });
 
   it('does not attach proof for a failed native result', async () => {

@@ -1858,6 +1858,31 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(res.hint).toContain('REVIVED');
   });
 
+  it('wakeable parked minimum-fill wins before dead-preempt revival', async () => {
+    const parkedMinimum = cand('parked-minimum', {
+      score: 0.3,
+      liveness: 'parked',
+      signals: { similarity: 0.2, recency: 0.5, verification: 0.3, authorship: 0 },
+    });
+    const { deps, reached, revived } = makeReviveDeps(
+      routeOf([deadExpert], { all: [deadExpert, parkedMinimum] }),
+      { spawned: true, verified: true, detail: 'dead expert should not be revived' },
+    );
+
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+
+    expect(res.verdict).toBe('routed');
+    expect(res.responder?.ownerId).toBe('parked-minimum');
+    expect(res.responder_via).toBe('minimum');
+    expect(res.revival).toBeUndefined();
+    expect(revived).toHaveLength(0);
+    expect(reached.map((wake) => wake.responder)).toEqual(['parked-minimum']);
+    const row = await stateRow(res.conversation_id);
+    expect(row.responder_id).toBe('parked-minimum');
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'parked-minimum', via: 'minimum', liveness: 'parked' });
+  });
+
   it('persists the provisional responder before revival so its kickoff can reply on the first turn', async () => {
     let revivedReply: Awaited<ReturnType<typeof consultReplyCore>> | undefined;
     const { deps } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert] }), {

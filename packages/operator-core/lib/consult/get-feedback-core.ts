@@ -1059,8 +1059,17 @@ export async function getFeedbackCore(
   //     that turn a durable responder/selection gate. A failed spawn restores
   //     the pre-revival selection before the normal wake.
   const revive = deps.revive;
+  // A fresh parked minimum-fill candidate is already wakeable. Prefer that
+  // reachable fallback over reviving a higher-scoring dead expert: dead
+  // preemption is reserved for an unfilled minimum or a live below-floor pick,
+  // not a candidate the normal wake path can already reach.
+  const wakeableParkedMinimum =
+    chosenVia === 'minimum' &&
+    chosen?.liveness === 'parked' &&
+    chosen.warmIdle !== true &&
+    chosen.ownerPaused !== true;
   const revivalCandidate =
-    revive && (!chosen || chosenVia === 'minimum')
+    revive && (!chosen || (chosenVia === 'minimum' && !wakeableParkedMinimum))
       ? (route.qualified.find(
           (c) => DEAD_RESPONDER_STATES.has(c.liveness) && !lineageOwners.includes(c.ownerId),
         ) ?? null)

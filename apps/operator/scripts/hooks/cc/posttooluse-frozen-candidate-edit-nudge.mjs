@@ -149,6 +149,8 @@ export function warningFor(marker, editedPath, ledger = null) {
 /** Every path an Edit/Write/MultiEdit payload touched. */
 export function editedPathsFrom(payload) {
   const input = payload?.tool_input ?? {};
+  const name = String(payload?.tool_name ?? '').toLowerCase();
+  if (name === 'apply_patch') return codexPatchPaths(input);
   const paths = [];
   if (typeof input.file_path === 'string') paths.push(input.file_path);
   else if (typeof input.path === 'string') paths.push(input.path);
@@ -165,14 +167,132 @@ export function editedPathsFrom(payload) {
  *   Write / capability_write       { file_path, content }
  *   MultiEdit / capability_multi_edit { file_path, edits:[{ old_string, new_string, replace_all? }] }
  *   Codex write_file               { path, content }
- *   Codex apply_patch              patch text — not a hunk pair; nothing extracted (recorded as absent).
+ *   Codex edit_file                { path, old_string, new_string, replace_all? }
+ *   Codex apply_patch              Add/Update patch operations become replayable hunks;
+ *                                  unsupported Delete/Move or malformed patches are absent.
  */
+function codexPatchText(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return null;
+  for (const nested of Object.values(value)) {
+    if (typeof nested === 'string' && nested.includes('*** Begin Patch')) return nested;
+  }
+  return null;
+}
+
+function codexPatchPaths(value) {
+  const text = codexPatchText(value);
+  if (text === null) return [];
+  const paths = [];
+  for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const operation = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line);
+    if (operation) paths.push(operation[1].trim());
+    const move = /^\*\*\* Move to: (.+)$/.exec(line);
+    if (move) paths.push(move[1].trim());
+  }
+  return paths.filter(Boolean);
+}
+
+function hunksFromCodexApplyPatch(toolInput) {
+  const text = codexPatchText(toolInput);
+  if (text === null) return [];
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  while (lines.at(-1) === '') lines.pop();
+  if (lines.length < 2 || lines[0] !== '*** Begin Patch' || lines.at(-1) !== '*** End Patch') return [];
+
+  const output = [];
+  const seenPaths = new Set();
+  let current = null;
+  let active = null;
+  let editIndex = 0;
+
+  const finishActive = () => {
+    if (!active) return true;
+    if (!current || current.kind !== 'update' || !active.hasLine || !active.changed) return false;
+    const old = active.old.join('');
+    const next = active.new.join('');
+    if (!old || old === next) return false;
+    current.hunks.push({ old, new: next });
+    active = null;
+    return true;
+  };
+
+  const finishCurrent = () => {
+    if (!current) return true;
+    if (current.kind === 'add') {
+      output.push({
+        path: current.path,
+        hunk: { kind: 'write', body: current.body.join('') },
+        editIndex: editIndex++,
+      });
+      current = null;
+      return true;
+    }
+    if (!finishActive() || current.hunks.length === 0) return false;
+    for (const hunk of current.hunks) {
+      output.push({
+        path: current.path,
+        hunk: { kind: 'edit', old: hunk.old, new: hunk.new, replaceAll: false },
+        editIndex: editIndex++,
+      });
+    }
+    current = null;
+    return true;
+  };
+
+  for (let index = 1; index < lines.length - 1; index += 1) {
+    const line = lines[index];
+    const operation = /^\*\*\* (Add|Update) File: (.+)$/.exec(line);
+    if (operation) {
+      if (!finishCurrent()) return [];
+      const path = operation[2].trim();
+      const key = normalizeRepoPath(path);
+      if (!key || seenPaths.has(key)) return [];
+      seenPaths.add(key);
+      current = operation[1] === 'Add'
+        ? { kind: 'add', path, body: [] }
+        : { kind: 'update', path, hunks: [] };
+      active = null;
+      continue;
+    }
+    if (/^\*\*\* (?:Delete File:|Move to:)/.test(line) || /^\*\*\* /.test(line)) return [];
+    if (!current) return [];
+
+    if (current.kind === 'add') {
+      if (!line.startsWith('+')) return [];
+      current.body.push(line.slice(1) + '\n');
+      continue;
+    }
+    if (line.startsWith('@@')) {
+      if (!finishActive()) return [];
+      active = { old: [], new: [], changed: false, hasLine: false };
+      continue;
+    }
+    if (!active || ![' ', '+', '-'].includes(line[0] ?? '')) return [];
+    const content = line.slice(1) + '\n';
+    active.hasLine = true;
+    if (line.startsWith(' ')) {
+      active.old.push(content);
+      active.new.push(content);
+    } else if (line.startsWith('-')) {
+      active.old.push(content);
+      active.changed = true;
+    } else {
+      active.new.push(content);
+      active.changed = true;
+    }
+  }
+  if (!finishCurrent() || output.length === 0) return [];
+  return output;
+}
+
 export function hunksFrom(payload) {
   const input = payload?.tool_input;
-  if (!input || typeof input !== 'object') return [];
   const name = String(payload?.tool_name ?? '').toLowerCase();
+  if (name === 'apply_patch') return hunksFromCodexApplyPatch(input);
+  if (!input || typeof input !== 'object') return [];
   const isMulti = /multi_?edit/.test(name);
-  const isEdit = !isMulti && /(^|_)edit$/.test(name);
+  const isEdit = !isMulti && /(^|_)edit(?:_file)?$/.test(name);
   const isWrite = /(^|_)write(_file)?$/.test(name);
   const filePath = typeof input.file_path === 'string' ? input.file_path : typeof input.path === 'string' ? input.path : null;
   if (!filePath) return [];
@@ -692,7 +812,15 @@ async function selfTest() {
     tool_input: { file_path: '/r/a.ts', edits: [{ old_string: 'a', new_string: 'b' }, 'junk', { old_string: 'c', new_string: 'd', replace_all: true }] },
   });
   if (multi.length !== 2 || multi[1].editIndex !== 2 || multi[1].hunk.replaceAll !== true) fail('MultiEdit → N hunks with positions');
-  if (hunksFrom({ tool_name: 'apply_patch', tool_input: 'diff' }).length !== 0) fail('apply_patch extracts nothing');
+  const patch = ['*** Begin Patch', '*** Update File: /r/a.ts', '@@', '-old', '+new', '*** End Patch'].join('\n');
+  const patchHunks = hunksFrom({ tool_name: 'apply_patch', tool_input: patch });
+  if (patchHunks.length !== 1 || patchHunks[0].hunk.kind !== 'edit' || patchHunks[0].hunk.old !== 'old\n' || patchHunks[0].hunk.new !== 'new\n') fail('apply_patch → one edit hunk');
+  const wrappedPatch = hunksFrom({ tool_name: 'apply_patch', tool_input: { input: patch } });
+  if (wrappedPatch.length !== 1 || wrappedPatch[0].path !== '/r/a.ts') fail('wrapped apply_patch → one edit hunk');
+  const added = hunksFrom({ tool_name: 'apply_patch', tool_input: ['*** Begin Patch', '*** Add File: /r/new.ts', '+new', '*** End Patch'].join('\n') });
+  if (added.length !== 1 || added[0].hunk.kind !== 'write' || added[0].hunk.body !== 'new\n') fail('apply_patch Add → write hunk');
+  if (editedPathsFrom({ tool_name: 'apply_patch', tool_input: patch }).join(',') !== '/r/a.ts') fail('apply_patch paths');
+  if (hunksFrom({ tool_name: 'apply_patch', tool_input: 'diff' }).length !== 0) fail('malformed apply_patch extracts nothing');
   if (hunksFrom({ tool_name: 'Read', tool_input: { file_path: 'x' } }).length !== 0) fail('a read extracts nothing');
   if (!toolCallFailed({ tool_response: { is_error: true } }) || toolCallFailed({ tool_response: { ok: true } })) fail('toolCallFailed');
   // parseMcpToolResult: JSON, SSE, rpc error, isError

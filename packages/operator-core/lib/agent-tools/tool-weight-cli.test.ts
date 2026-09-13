@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { BUDGET, HARD_CAP, type NamedToolWeight } from './tool-guidance-budget';
 import {
@@ -12,6 +15,8 @@ const weights: NamedToolWeight[] = [
   { name: 'over:budget', weight: BUDGET + 7 },
   { name: 'over:hard-cap', weight: HARD_CAP + 4 },
 ];
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const TSX = resolve(REPO_ROOT, 'node_modules/.bin/tsx');
 
 describe('tool-weight CLI', () => {
   it('parses a single tool selector and JSON output flag', () => {
@@ -61,4 +66,26 @@ describe('tool-weight CLI', () => {
     const cleanWeights: NamedToolWeight[] = [{ name: 'small:tool', weight: 200 }];
     expect(runToolWeightCli([], cleanWeights, vi.fn(), vi.fn())).toBe(0);
   });
+
+  it('preserves a large JSON report when the caller exits immediately (EI-22578574821528569)', () => {
+    const cliUrl = pathToFileURL(resolve(REPO_ROOT, 'packages/operator-core/lib/agent-tools/tool-weight-cli.ts')).href;
+    const program = [
+      `import { runToolWeightCli } from ${JSON.stringify(cliUrl)};`,
+      "const weights = Array.from({ length: 2000 }, (_, i) => ({ name: `tool:${i}`, weight: 200 }));",
+      "process.exit(runToolWeightCli(['--json', '--all'], weights));",
+    ].join('\n');
+    const output = execFileSync(TSX, ['--eval', program], {
+      cwd: REPO_ROOT,
+      encoding: 'buffer',
+      timeout: 30_000,
+    });
+
+    // A console.log followed by process.exit truncates this report through a pipe;
+    // parsing the complete catalog proves the writer and the CLI's exit-status path
+    // agree even when the caller exits as soon as the report is produced.
+    expect(output.length).toBeGreaterThan(100_000);
+    const report = JSON.parse(output.toString('utf8')) as { catalogSize: number; tools: unknown[] };
+    expect(report.catalogSize).toBe(2000);
+    expect(report.tools).toHaveLength(2000);
+  }, 45_000);
 });

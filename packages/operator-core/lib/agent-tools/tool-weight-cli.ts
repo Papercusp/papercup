@@ -6,6 +6,7 @@ import {
   type NamedToolWeight,
   type PromptWeightBreakdown,
 } from './tool-guidance-budget';
+import { writeStdoutSync } from '../../../../scripts/lib/write-stdout-sync.mjs';
 
 export interface ToolWeightRow {
   name: string;
@@ -135,7 +136,7 @@ export function formatToolWeightReport(
 export function runToolWeightCli(
   args: readonly string[],
   weights: readonly NamedToolWeight[],
-  write: (text: string) => void = console.log,
+  write: (text: string) => void = writeStdoutSync,
   error: (text: string) => void = console.error,
 ): number {
   let parsed: ToolWeightCliArgs;
