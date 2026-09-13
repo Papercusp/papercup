@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "WI-10000428",
+  "capturedAt": "2026-09-08T09:25:31.147026+00:00",
+  "sources": [
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-rpc-engine.ts",
+      "sha256": "b4d40c10cc03b2854139d556e9a839ed247f0c558ba7c927a5765680ec2b62f6",
+      "bytes": 28791
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-rpc-engine.test.ts",
+      "sha256": "b174f90923a2c4998e0c84fe4aff8d04973e36cedfce907876211310d13326a3",
+      "bytes": 28188
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-claude-engine.ts",
+      "sha256": "9ea5de30e6558ae0d4d19a97ebe4717fd8fd2275edae728e317924f46b7d9051",
+      "bytes": 17710
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-claude-engine.test.ts",
+      "sha256": "74b504ca58807c46f8db1ba27ab58a751b97f5e43826b7bd29978c604fd1750d",
+      "bytes": 26286
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-omp-adapter.ts",
+      "sha256": "f6b7a9a5a4229dbd9ccfdd01394f255ef3d40c9be022d8f50e0ec02a041f0002",
+      "bytes": 26155
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-codex-adapter.ts",
+      "sha256": "be8b5965a3e8fb9e4e30eeabae2407bd8a1d980b2626932a1ceeaff3cfbcaf8a",
+      "bytes": 29953
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-claude-adapter.ts",
+      "sha256": "5f8d03ae04964527ca23d62908ad90d1f33629f76711865fc964757cc7a5eaec",
+      "bytes": 33810
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "sha256": "5666d728aa37c81d9aa21a16f02774efaffbef2be70650ad6f87522f66c0eefa",
+      "bytes": 93993
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/pui-e2e/operator-process.mts",
+      "sha256": "8d322a13bc1a982b9482feab0070233922577a7a02bb7e483a6152a481b9101b",
+      "bytes": 6513
+    },
+    {
+      "path": "@repo-root@/apps/operator/scripts/hooks/omp/coord-hook.ts",
+      "sha256": "7bceef181fab110953266e309fb4ab4103b210808a74ef92c56a2ee0d856bb54",
+      "bytes": 262050
+    },
+    {
+      "path": "@repo-root@/apps/operator/scripts/hooks/omp/__tests__/coord-hook.test.ts",
+      "sha256": "d4728b8fa1252bbf4bd016b5fccd60938e2c7137d844a796237bd9c4ccd1d2ed",
+      "bytes": 281539
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/pui-p006-omp-native-question-3.log",
+      "sha256": "6544adb6b4fab97ad3dec72d2445e944a5972eddf0bf6347b9bde3723772b835",
+      "bytes": 51304
+    },
+    {
+      "path": "/tmp/pui-p006-omp-native-question-4.log",
+      "sha256": "9f1a6bc1f1bd7ffc906e9c5e041e92d9dd63b8eb0cb32e19df49a1c496268af6",
+      "bytes": 48712
+    },
+    {
+      "path": "/tmp/pui-p006-omp-native-question-5.log",
+      "sha256": "94a2bcdd00e7a1a03945ac51ea38e10b49f3b56b3b55cec41316645081c3bd60",
+      "bytes": 43180
+    },
+    {
+      "path": "/tmp/pui-p006-omp-native-question-6.log",
+      "sha256": "91fdd41542bb8d7f683636f87de4dcb0f532f84b349980487d19a47ef4485e40",
+      "bytes": 49735
+    },
+    {
+      "path": "/tmp/pui-p006-omp-operator-restart-3.log",
+      "sha256": "e999e2f3f4a82b68ab209954edc5e544c94dbaaaad9868ebb0fd40135499fa42",
+      "bytes": 18152
+    },
+    {
+      "path": "/tmp/pui-p006-replay-readiness-before.log",
+      "sha256": "a8bbdc94e749dc87fc5cfa2d58aa4db674818f84d583462caa3f2221b1848c90",
+      "bytes": 21610
+    },
+    {
+      "path": "/tmp/pui-p006-claude-replay-readiness-before.log",
+      "sha256": "e9e1a2e20f8eef10e3341f39f94ca6e04e5baa7c20a6400f6f9af07c0b2229b5",
+      "bytes": 14490
+    },
+    {
+      "path": "/tmp/pui-p006-replay-readiness-after.log",
+      "sha256": "7966b420a303e4a06379f918a2d016aa45aaffde05d962644340fe15e122b86f",
+      "bytes": 8579
+    },
+    {
+      "path": "/tmp/pui-p006-omp-ask-guard-before.log",
+      "sha256": "4215c1fd088f86f6e80819efe13d7bccd623a02f2291269111eb058e9c64ea89",
+      "bytes": 201396
+    },
+    {
+      "path": "/tmp/pui-p006-omp-ask-guard-after.log",
+      "sha256": "907e26d600e099ca2279a2579c523d5a7e70c3463a2b1ec8c3dddfcc2e423e64",
+      "bytes": 165687
+    },
+    {
+      "path": "/tmp/pui-p006-question-readiness-types-1.log",
+      "sha256": "452013ee8a07814b62c47877f1f923fbe1c50dad90421e949846369d5eba4de8",
+      "bytes": 7246
+    },
+    {
+      "path": "/tmp/pui-p006-question-readiness-types-final.log",
+      "sha256": "45fda4d3dc56b3f85b47f8aeeb2dd37267b19aac425a8ed866db85c6e32f6db3",
+      "bytes": 7104
+    }
+  ],
+  "installed": [
+    {
+      "path": "@home@/.cargo/bin/pui",
+      "sha256": "4bc6b3db30b5fe5c48cd99121c743cd3194986bf12abcebb140f790f6f6e7942",
+      "bytes": 19196408
+    },
+    {
+      "path": "@home@/.papercusp/papercusp-coord.ts",
+      "sha256": "7bceef181fab110953266e309fb4ab4103b210808a74ef92c56a2ee0d856bb54",
+      "bytes": 262050
+    },
+    {
+      "path": "@home@/.papercusp/hooks/omp/coord-hook.ts",
+      "sha256": "7bceef181fab110953266e309fb4ab4103b210808a74ef92c56a2ee0d856bb54",
+      "bytes": 262050
+    },
+    {
+      "path": "@home@/.papercusp/hooks/omp/inject-hook.ts",
+      "sha256": "b1a2d70a7253f1d1e6138368752b4b240419a13e848388f2a0e90132dae77957",
+      "bytes": 25527
+    }
+  ],
+  "ompQuestion6": {
+    "identity": {
+      "agentChatId": "044113f5-ea27-4d89-98ee-5706ad4a9718",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a08052-e85f-72d9-8bb9-054c5e323c47",
+      "ownerId": "su-fddb6730-0e0f-4476-8349-7f5074ea36ce",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "descriptor": {
+      "identity": {
+        "agentChatId": "044113f5-ea27-4d89-98ee-5706ad4a9718",
+        "advSessionId": 1,
+        "backend": "omp",
+        "nativeSessionId": "01a08052-e85f-72d9-8bb9-054c5e323c47",
+        "ownerId": "su-fddb6730-0e0f-4476-8349-7f5074ea36ce",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "lifecycle": "waiting-for-owner",
+      "runtimeGeneration": 0,
+      "role": "su",
+      "model": "papercusp-gateway/claude-sonnet-4-6",
+      "accountRoute": "auto",
+      "carry": "warm",
+      "modes": [],
+      "capabilities": {
+        "commands": {
+          "owner_turn": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "interrupt": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "resume": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "requires the tracked OMP thread id and a live or P-004-reconciled managed runtime"
+          },
+          "fork": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "forks must be created through the tracked launcher so they receive a new durable identity"
+          },
+          "focus": {
+            "state": "supported",
+            "implementation": "host"
+          },
+          "end": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "the managed host may refuse to close a human-attended runtime"
+          }
+        },
+        "features": {
+          "tool-events": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "interactive-cards": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "reasoning-stream": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "usage": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "OMP message records may carry usage/cost metadata but the v1 SU-session event contract has no usage event"
+          },
+          "compaction": {
+            "state": "conditional",
+            "implementation": "host",
+            "reason": "OMP carry uses the managed host hard-recycle path and P-004 runtime reconciliation"
+          }
+        }
+      },
+      "backendExtension": {
+        "backend": "omp",
+        "agentHome": "/tmp/pcv/pui-agent-chat-e2e-lGiOAf/native-omp/session-1/agent"
+      }
+    },
+    "question": "Would you like to keep or change the draft title?",
+    "selected": "Change",
+    "cardReplies": [
+      {
+        "path": "/api/operator/conversations/044113f5-ea27-4d89-98ee-5706ad4a9718/card-response",
+        "status": 200
+      }
+    ],
+    "expected": "You chose: Change.",
+    "card": {
+      "correlationId": "6a04fd47-bfdd-4218-a792-579ec3a0b547",
+      "createdAt": 1788859336480,
+      "prompt": "Would you like to keep or change the draft title?",
+      "fallbackText": "Would you like to keep or change the draft title?",
+      "presentation": {
+        "kind": "radio",
+        "options": [
+          {
+            "id": "0",
+            "label": "Keep"
+          },
+          {
+            "id": "1",
+            "label": "Change"
+          },
+          {
+            "id": "2",
+            "label": "Other (type your own)"
+          }
+        ]
+      },
+      "allowDecline": true
+    },
+    "toolEvents": [
+      {
+        "type": "tool",
+        "phase": "started",
+        "turnId": "pui-turn-pui-1788859308071756440",
+        "callId": "toolu_01QfGrHjBTBizYjVv8mNi1Vx",
+        "name": "ask",
+        "input": {
+          "questions": [
+            {
+              "id": "choice",
+              "header": "Choice",
+              "question": "Would you like to keep or change the draft title?",
+              "options": [
+                {
+                  "label": "Keep"
+                },
+                {
+                  "label": "Change"
+                }
+              ]
+            }
+          ]
+        },
+        "schema": "papercusp.su-session/v1",
+        "protocolVersion": 1,
+        "eventId": "044113f5-ea27-4d89-98ee-5706ad4a9718:24",
+        "sequence": 24,
+        "at": "2026-09-08T09:22:16.481Z",
+        "session": {
+          "agentChatId": "044113f5-ea27-4d89-98ee-5706ad4a9718",
+          "advSessionId": 1,
+          "backend": "omp",
+          "nativeSessionId": "01a08052-e85f-72d9-8bb9-054c5e323c47",
+          "ownerId": "su-fddb6730-0e0f-4476-8349-7f5074ea36ce",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        }
+      },
+      {
+        "type": "tool",
+        "phase": "completed",
+        "turnId": "pui-turn-pui-1788859308071756440",
+        "callId": "toolu_01QfGrHjBTBizYjVv8mNi1Vx",
+        "name": "ask",
+        "output": {
+          "content": [
+            {
+              "type": "text",
+              "text": "User selected: Change"
+            },
+            {
+              "type": "text",
+              "text": "<system-reminder type=\"papercusp-orientation\">\nYou are a Papercusp superuser agent. Read this once.\n\nWHERE THINGS LIVE: plans, work-items, inbox, assignments, and coordination state live in the Papercusp COORDINATION SYSTEM (a database), NOT as files on disk. Do NOT ls/find/read the filesystem to find them — use the coordination tools below.\n\nFINDING ANY CAPABILITY: to find the right tool for ANYTHING, call tools:find(\"<what you need>\"). It is a hybrid semantic+lexical search over the full ~550-tool catalog and is the discovery BRAIN — it understands intent, not just keywords, so it works even when you do not know the exact tool name. It returns the exact tool names that match.\n\nCALLING A TOOL BY NAME: your core spine (below) is always callable directly. For anything else, once tools:find gives you an exact name, run it with tools:invoke {name:\"<exact name>\", args:{...}} — tools:invoke executes ANY catalog tool server-side, so it never needs a separate \"load\"/activation step and works even for a tool that is hidden behind discovery. Do NOT guess name variants and do NOT reach for any native keyword tool-search (e.g. search_tool_bm25) — tools:find (to discover) and tools:invoke (to call) are the only two you need.\n\nSTART HERE: call coord:orient (it is in your core spine — always available) — one call returns your assignments, the claimable backlog, your unread inbox, recent plan changes, and a memory recall.\n\nYOUR CORE TOOLSET (your always-callable spine — call these directly; for anything else use tools:find → tools:invoke):\n  coord:orient · coord:inbox · coord:ack · coord:send · coord:glance · coord:ask\n  plans:get · plans:set-status · plans:items · work_items:list · work_items:claim · work_items:set_state · work_items:update\n  locks:acquire_granular · locks:release_granular · docs:search · memory:search · memory:remember · tools:find\n\nCAPABILITY MAP — namespaces in the ~550-tool catalog (call tools:find(\"<intent>\") to get exact names in any of these):\n  coord       talk to peers / the Queen — orient, inbox, send, ack, ask, handoff, escalate\n  plans       work-plan store — get, items, set-status, set-now, add-item, decisions\n  work_items  the work backlog — list, claim, update, set_state, complete, comment\n  locks       file/resource claims before editing — acquire_granular, release_granular\n  hive        spawn / steer sub-agent hives — create, start, wake, status, report\n  fleet       worker fleet — spawn, assignments, capacity, supervise, tree\n  flags       feature flags — get, set, list\n  deploy      ship / teardown harnesses + hives — harness, hive, status, teardown\n  docs        knowledge base — search, get, outline, author\n  memory      durable facts (mem0) — search, remember, forget, update\n  harness     harness / repo management — get, list, status, health, overview\n  capability  host capabilities — bash, edit, write, read, git, fetch, computer\n  accounts    model / account pool — list, status, register, pin\n  (and more — tools:find reaches every namespace, not just these.)\n</system-reminder>\n\n<system-reminder type=\"coord\">A coordination read was slow and was skipped this turn (transient — it retries automatically; NO action needed). Inbox/locks/changed-plans may be momentarily stale; just continue your task.</system-reminder>"
+            }
+          ],
+          "details": {
+            "question": "Would you like to keep or change the draft title?",
+            "options": [
+              "Keep",
+              "Change"
+            ],
+            "multi": false,
+            "selectedOptions": [
+              "Change"
+            ]
+          }
+        },
+        "isError": false,
+        "schema": "papercusp.su-session/v1",
+        "protocolVersion": 1,
+        "eventId": "044113f5-ea27-4d89-98ee-5706ad4a9718:27",
+        "sequence": 27,
+        "at": "2026-09-08T09:22:16.696Z",
+        "session": {
+          "agentChatId": "044113f5-ea27-4d89-98ee-5706ad4a9718",
+          "advSessionId": 1,
+          "backend": "omp",
+          "nativeSessionId": "01a08052-e85f-72d9-8bb9-054c5e323c47",
+          "ownerId": "su-fddb6730-0e0f-4476-8349-7f5074ea36ce",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        }
+      }
+    ]
+  },
+  "validation": {
+    "nativeQuestion6": "PASS: one selected installed OMP test, 15 unselected. Actual ask tool/card, HTTP200 response, native tool completion isError=false and correlated selected-answer reply. Both installed coordinator copies matched source before this fresh launch; observed actual process used rpc-ui and ~/.papercusp/papercusp-coord.ts at the recorded hash.",
+    "historyReadiness": "Before: Codex, OMP and Claude each advertised waiting-for-owner while executorAttached=false/streamReady=false. After: 80 engine/adapter tests passed across five files. Historical snapshots can preserve runtime lifecycle; all three engines remain resuming until their executor is ready.",
+    "askGuard": "Before: attached rpc-ui hook case failed, 9 other focused cases passed. After: all 10 focused guard cases pass; managed unattended/plain-rpc/text sessions remain blocked.",
+    "types": "11 edited TypeScript files passed scoped checks, then final 2 changed fixture files passed scoped checks. No whole-project typecheck verdict.",
+    "operatorRestart4": "RUNNING at capture; no positive restart verdict yet."
+  },
+  "failedAttempts": {
+    "question3": "First-turn persistence now succeeded; no native question. Model later cited ask-blocked.",
+    "question4": "Model refused UUID/tool-format request as prompt injection, no card. Preserved as failed acceptance.",
+    "question5": "Normal question request invoked ask but returned ask-blocked. Older hooks/omp copy was observed after the run; exact loaded extension bytes from that run were not frozen.",
+    "operatorRestart3": "Failed first operator stop. Coredumpctl independently confirms child PID3005185, Node25, SIGABRT at 2026-09-08T09:01:58Z; frame#7 is onnxruntime_binding.node+0x1e7ab. No second operator/readiness-at-Enter evidence in this run."
+  },
+  "shutdownRepair": {
+    "workItem": "EI-22683727515147288",
+    "observation": "The fixture called process.exit without the explicit worker shutdown required by the shared embedder and reranker APIs.",
+    "change": "Await shutdownLocalEmbedder and shutdownLocalReranker after HTTP/invalidation drain and before DB reset/exit; emit shutdown-stage and assert that stage plus normal OS exit in installed acceptance.",
+    "causality": "ONNX crash origin and omitted teardown are verified. At capture the omitted-teardown explanation for that particular crash remains H1 awaiting repeat; H2 is a deeper addon fault that recurs after completed worker teardown. No hard-exit masking."
+  },
+  "issues": {
+    "ompQuestion": "EI-22680951793973176",
+    "historyReadiness": "EI-22681984426245850",
+    "onnxShutdown": "EI-22683727515147288",
+    "originalTeardown": "EI-22651749738479868 remains distinct/open",
+    "globalRetiredModel": "EI-22683825697216572 filed unclaimed"
+  },
+  "limits": [
+    "Current-source hashes are post-run measurements, not a frozen complete import graph or a claim all earlier runs used these bytes.",
+    "Installed Linux PUI remains 4bc6b3db30b5…; operator is the isolated production Hono app running current source. No deployed-main or public-distribution claim.",
+    "Native question and operator restart are separate sessions/tests.",
+    "OMP question6 exercised auto routing, model papercusp-gateway/claude-sonnet-4-6, warm carry, modes[]. Nondefault scope/modes/tasks/context/carry and Codex Plan-mode question/approval acceptance remain open.",
+    "Existing fixture explicitly isolates per-run native home roots. No directory collision was established; earlier collision caution was retracted.",
+    "No implementation delegation or LIVE_GATE_OPS; full remaining plan and P015 public-publication approval remain."
+  ]
+}

@@ -1,0 +1,426 @@
+{
+  "recordedAt": "2026-09-08T01:30:50.619630+00:00",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "item": "P-006",
+  "status": "in-progress; installed Codex greeting/tool/interrupt/history/native resume assertions passed",
+  "issues": {
+    "nativeHome": "EI-22653306998869382",
+    "visibleReconnectRefusal": "EI-22653345522234346",
+    "nativeLinkageAndTeardown": "EI-22651749738479868"
+  },
+  "sourceAtCheckpoint": {
+    "head": "ee753db4e7f66d98d37324f26eddaaf978d505d6",
+    "sha256": {
+      "packages/operator-core/lib/su-session-persistence.ts": "6d8c41d96c0794d2fd056dfab1da7b39a05d9fb41c77f1d0258a2b7904febe3f",
+      "packages/operator-core/lib/su-session-rpc-engine.ts": "97342944d29b0accd10e0f2acc9e433c0ef7df6ef98cef5badaef0c57cb9bf46",
+      "packages/operator-core/lib/su-session-rpc-engine.test.ts": "01a644003d21432464e2edf6fd4cbdc5a9533c61cf27e9e5f38f5a403c817648",
+      "packages/operator-core/lib/su-session-claude-engine.ts": "54f5562178c1a15aeed66ba2119470ad2b89215bfe9240ff47d21e2e1d6f709e",
+      "packages/operator-core/lib/su-session-claude-engine.test.ts": "5e1073e4caf205d0fa0871f24cb5a2c4efd48ba92797b7a084b1529620132567",
+      "packages/operator-core/lib/su-session-codex-adapter.ts": "dddc818b04e0ebfbba15240ae5953ec1733fdf31ad62197d8a8caee95eb9ac0e",
+      "packages/operator-core/lib/su-session-omp-adapter.ts": "f5994ffc1114cffa55d09116a850074047fd89eedbd61c83d0306d75f58ee7bb",
+      "packages/operator-core/lib/su-session-claude-adapter.ts": "1eb3e9ea7db0a76cd3cb78db95a768f1758bf4def44f51e1e251febd2ab0bbab",
+      "packages/operator-core/lib/su-session-restart-journey.integration.test.ts": "b1db652b42ee7e6a3d967b61a6d70e948af359f2794a32601ba3dbc225479db7",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "03f7f0f9c62e1fc2535c58aff5025a8b1fa313c4084b0ae07b8e239f5965e1b1",
+      "apps/operator/scripts/psu-launcher.mjs": "cd6d6f50004501f9cc8ea45d57a86a8c876040d06947f0de4dde8630bbd089b0",
+      "apps/operator/lib/psu-launcher.test.ts": "3ff596d214f1671220b3aca902d45e6f432c92a27ca9bdd1aea668148224d1cf",
+      "apps/tui/src/app.rs": "ef2bc16f33b6cb75e7ca6efde53b9b260a9207d738f79626a782b248b674c540",
+      "apps/tui/src/ui.rs": "f59d77c0636c89c38603aaf153bcb86a86edcea4214551019267e0f07b972b4a",
+      "packages/operator-core/lib/session-end-lease-release-hook.ts": "671b38a8f2c2a65abf972bcce13c49041c0ba6f608d13b6fe42e96cfab84e07e",
+      "packages/operator-core/lib/session-end-lease-release-hook.test.ts": "f451f90dd94487ab8c5a004092073ac9a07a18b8f608827c106e4613344ca24a"
+    }
+  },
+  "nativeCodexRun10": {
+    "binary": "@home@/.cargo/bin/pui",
+    "binarySha256": "72e05db0b71da76cf6c718420400f5e69e35a35b597619f84cfb37715d63dfe0",
+    "manifest": {
+      "binaryPath": "@home@/.cargo/bin/pui",
+      "binarySha256": "72e05db0b71da76cf6c718420400f5e69e35a35b597619f84cfb37715d63dfe0",
+      "builtAtEpoch": 1788829793,
+      "companionPath": "@home@/.papercusp/pui-companion.wasm",
+      "companionSha256": "5f454f787ffab4b85d3f889d9cb321f62a8304ef310feb8e1ef47cab114c22cd",
+      "schemaVersion": 1,
+      "sourceDirty": true,
+      "sourceRoot": "@repo-root@",
+      "sourceSha": "bea43c950be0371dea5cf8a0445e8a839807641f"
+    },
+    "chatId": "b5e75917-7d86-4e22-8d1e-e8790654169d",
+    "identity": {
+      "agentChatId": "b5e75917-7d86-4e22-8d1e-e8790654169d",
+      "advSessionId": 1,
+      "backend": "codex",
+      "nativeSessionId": "01a07e9e-ff86-71c1-8062-392f1745033b",
+      "ownerId": "su-a6d4eddd-4674-41fd-9941-f346fb169e4f",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "greetingReply": "PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e",
+    "fileResult": "PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45",
+    "followupReply": "PUI-CONTINUED-79c4009f-b1bc-4ab1-8591-506cf086e54e",
+    "resumedReply": "RESUMED:PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e",
+    "resumedDescriptor": {
+      "identity": {
+        "agentChatId": "b5e75917-7d86-4e22-8d1e-e8790654169d",
+        "advSessionId": 1,
+        "backend": "codex",
+        "nativeSessionId": "01a07e9e-ff86-71c1-8062-392f1745033b",
+        "ownerId": "su-a6d4eddd-4674-41fd-9941-f346fb169e4f",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "lifecycle": "ready",
+      "runtimeGeneration": 1,
+      "role": "su",
+      "model": "gpt-5.6-sol",
+      "accountRoute": "default",
+      "carry": "warm",
+      "modes": [],
+      "capabilities": {
+        "commands": {
+          "owner_turn": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "interrupt": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "resume": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "requires the tracked rollout and a live or P-004-reconciled managed runtime"
+          },
+          "fork": {
+            "state": "unsupported",
+            "reason": "the tracked Codex psu path exposes exact resume but no identity-safe native fork transport"
+          },
+          "focus": {
+            "state": "supported",
+            "implementation": "host"
+          },
+          "end": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "the managed host may refuse to close a human-attended runtime"
+          }
+        },
+        "features": {
+          "tool-events": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "interactive-cards": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "reasoning-stream": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "readable reasoning summaries are emitted; encrypted reasoning bodies remain unavailable"
+          },
+          "usage": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "native token-count records are available but the v1 SU-session event contract has no usage event"
+          },
+          "compaction": {
+            "state": "conditional",
+            "implementation": "host",
+            "reason": "Codex carry uses the managed host hard-recycle path and P-004 runtime reconciliation"
+          }
+        }
+      },
+      "backendExtension": {
+        "backend": "codex",
+        "codexHome": "/tmp/pcv/pui-agent-chat-e2e-Ou0HVx/native-codex/session-1"
+      }
+    },
+    "readStart": {
+      "type": "tool",
+      "phase": "started",
+      "turnId": "pui-turn-pui-1788830750741774483",
+      "callId": "exec-eb046e71-b8d1-472e-8905-7c24d1170e9a",
+      "name": "commandExecution",
+      "input": {
+        "type": "commandExecution",
+        "id": "exec-eb046e71-b8d1-472e-8905-7c24d1170e9a",
+        "pluginId": null,
+        "scriptPath": null,
+        "command": "/bin/bash -lc \"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt\"",
+        "cwd": "@repo-root@",
+        "processId": "77166",
+        "source": "unifiedExecStartup",
+        "status": "inProgress",
+        "commandActions": [
+          {
+            "type": "read",
+            "command": "sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt",
+            "name": "read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt",
+            "path": "/tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt"
+          }
+        ],
+        "aggregatedOutput": null,
+        "exitCode": null,
+        "durationMs": null
+      },
+      "schema": "papercusp.su-session/v1",
+      "protocolVersion": 1,
+      "eventId": "b5e75917-7d86-4e22-8d1e-e8790654169d:54",
+      "sequence": 54,
+      "at": "2026-09-08T01:26:02.231Z",
+      "session": {
+        "agentChatId": "b5e75917-7d86-4e22-8d1e-e8790654169d",
+        "advSessionId": 1,
+        "backend": "codex",
+        "nativeSessionId": "01a07e9e-ff86-71c1-8062-392f1745033b",
+        "ownerId": "su-a6d4eddd-4674-41fd-9941-f346fb169e4f",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      }
+    },
+    "readEnd": {
+      "type": "tool",
+      "phase": "completed",
+      "turnId": "pui-turn-pui-1788830750741774483",
+      "callId": "exec-eb046e71-b8d1-472e-8905-7c24d1170e9a",
+      "name": "commandExecution",
+      "output": {
+        "type": "commandExecution",
+        "id": "exec-eb046e71-b8d1-472e-8905-7c24d1170e9a",
+        "pluginId": null,
+        "scriptPath": null,
+        "command": "/bin/bash -lc \"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt\"",
+        "cwd": "@repo-root@",
+        "processId": "77166",
+        "source": "unifiedExecStartup",
+        "status": "completed",
+        "commandActions": [
+          {
+            "type": "read",
+            "command": "sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt",
+            "name": "read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt",
+            "path": "/tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt"
+          }
+        ],
+        "aggregatedOutput": "PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45\n",
+        "exitCode": 0,
+        "durationMs": 0
+      },
+      "isError": false,
+      "schema": "papercusp.su-session/v1",
+      "protocolVersion": 1,
+      "eventId": "b5e75917-7d86-4e22-8d1e-e8790654169d:55",
+      "sequence": 55,
+      "at": "2026-09-08T01:26:02.231Z",
+      "session": {
+        "agentChatId": "b5e75917-7d86-4e22-8d1e-e8790654169d",
+        "advSessionId": 1,
+        "backend": "codex",
+        "nativeSessionId": "01a07e9e-ff86-71c1-8062-392f1745033b",
+        "ownerId": "su-a6d4eddd-4674-41fd-9941-f346fb169e4f",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      }
+    },
+    "commandTypes": [
+      "owner_turn",
+      "owner_turn",
+      "owner_turn",
+      "interrupt",
+      "owner_turn",
+      "owner_turn"
+    ],
+    "processes": [
+      {
+        "pid": 2171370,
+        "tty": "?",
+        "name": "node-MainThread"
+      },
+      {
+        "pid": 2171510,
+        "tty": "?",
+        "name": "node-MainThread"
+      },
+      {
+        "pid": 2171541,
+        "tty": "?",
+        "name": "codex"
+      },
+      {
+        "pid": 2183880,
+        "tty": "?",
+        "name": "codex-code-mode"
+      }
+    ],
+    "traffic": [
+      {
+        "method": "POST",
+        "path": "/api/adv/sessions/launch-su",
+        "status": 200,
+        "count": 2,
+        "agent": "codex",
+        "attachedEngine": true,
+        "transport": "structured",
+        "headless": false,
+        "deferred": false,
+        "advSessionId": 1,
+        "nativeSessionPresent": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/harness/papercusp/agent-chats/b5e75917-7d86-4e22-8d1e-e8790654169d/su-session",
+        "status": 200,
+        "count": 8
+      },
+      {
+        "method": "GET",
+        "path": "/api/harness/papercusp/agent-chats/b5e75917-7d86-4e22-8d1e-e8790654169d/su-session/events",
+        "status": 200,
+        "count": 2
+      },
+      {
+        "method": "POST",
+        "path": "/api/harness/papercusp/agent-chats/b5e75917-7d86-4e22-8d1e-e8790654169d/su-session/commands",
+        "status": 202,
+        "count": 6
+      }
+    ]
+  },
+  "nativeCodexVisibleFrames": {
+    "greeting": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 38                                                                                                     │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text.                                                            │\n│agent                                                                                                                                               │\n│PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                      │\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · codex · adv 1 · chat b5e75917-7d8 · waiting-for-owner · pot papercusp · role operator                                                          │\n│>                                                                                                                                                   │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2",
+    "file": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 91                                                                                                     │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text.                                                            │\n│agent                                                                                                                                               │\n│PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                      │\n│you                                                                                                                                                 │\n│Use your file-reading tool to inspect /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt, then reply with its         │\n│contents. Do not modify any file.                                                                                                                   │\n│agent                                                                                                                                               │\n│I’m reading the requested file without modifying it.                                                                                                │\n│agent                                                                                                                                               │\n│PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45                                                                                                       │\n│  ⚙ commandExecution  ✓                                                                                                                             │\n│    {\"aggregatedOutput\":null,\"command\":\"/bin/bash -lc \\\"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54…│\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · codex · adv 1 · chat b5e75917-7d8 · waiting-for-owner · pot papercusp · role operator                                                          │\n│>                                                                                                                                                   │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2",
+    "running": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat · Running · Ctrl+X cancel ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · running · adv 1 · seq 94                                                                                                               │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text.                                                            │\n│agent                                                                                                                                               │\n│PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                      │\n│you                                                                                                                                                 │\n│Use your file-reading tool to inspect /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt, then reply with its         │\n│contents. Do not modify any file.                                                                                                                   │\n│agent                                                                                                                                               │\n│I’m reading the requested file without modifying it.                                                                                                │\n│agent                                                                                                                                               │\n│PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45                                                                                                       │\n│  ⚙ commandExecution  ✓                                                                                                                             │\n│    {\"aggregatedOutput\":null,\"command\":\"/bin/bash -lc \\\"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54…│\n│you                                                                                                                                                 │\n│For interruption check PUI-CANCELLED-79c4009f-b1bc-4ab1-8591-506cf086e54e, count from 1 through 10000, one number per line. Do not summarize or use │\n│tools.                                                                                                                                              │\n┌ Running — input locked ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · codex · adv 1 · chat b5e75917-7d8 · running · pot papercusp · role operator                                                                    │\n│Running · Ctrl+X cancel                                                                                                                             │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2",
+    "interrupted": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · interrupted · adv 1 · seq 97                                                                                                           │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text.                                                            │\n│agent                                                                                                                                               │\n│PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                      │\n│you                                                                                                                                                 │\n│Use your file-reading tool to inspect /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt, then reply with its         │\n│contents. Do not modify any file.                                                                                                                   │\n│agent                                                                                                                                               │\n│I’m reading the requested file without modifying it.                                                                                                │\n│agent                                                                                                                                               │\n│PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45                                                                                                       │\n│  ⚙ commandExecution  ✓                                                                                                                             │\n│    {\"aggregatedOutput\":null,\"command\":\"/bin/bash -lc \\\"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54…│\n│you                                                                                                                                                 │\n│For interruption check PUI-CANCELLED-79c4009f-b1bc-4ab1-8591-506cf086e54e, count from 1 through 10000, one number per line. Do not summarize or use │\n│tools.                                                                                                                                              │\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · codex · adv 1 · chat b5e75917-7d8 · interrupted · pot papercusp · role operator                                                                │\n│>                                                                                                                                                   │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2",
+    "followup": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 132                                                                                                    │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text.                                                            │\n│agent                                                                                                                                               │\n│PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                      │\n│you                                                                                                                                                 │\n│Use your file-reading tool to inspect /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt, then reply with its         │\n│contents. Do not modify any file.                                                                                                                   │\n│agent                                                                                                                                               │\n│I’m reading the requested file without modifying it.                                                                                                │\n│agent                                                                                                                                               │\n│PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45                                                                                                       │\n│  ⚙ commandExecution  ✓                                                                                                                             │\n│    {\"aggregatedOutput\":null,\"command\":\"/bin/bash -lc \\\"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54…│\n│you                                                                                                                                                 │\n│For interruption check PUI-CANCELLED-79c4009f-b1bc-4ab1-8591-506cf086e54e, count from 1 through 10000, one number per line. Do not summarize or use │\n│tools.                                                                                                                                              │\n│you                                                                                                                                                 │\n│Reply with exactly PUI-CONTINUED-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text. Do not resume the interrupted task.                        │\n│agent                                                                                                                                               │\n│PUI-CONTINUED-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                  │\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · codex · adv 1 · chat b5e75917-7d8 · waiting-for-owner · pot papercusp · role operator                                                          │\n│>                                                                                                                                                   │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2",
+    "history": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│<cwd>@repo-root@</cwd>                                                                                        │\n│<shell>bash</shell>                                                                                                                                 │\n│<current_date>2026-09-07</current_date>                                                                                                             │\n│<timezone>America/New_York</timezone>                                                                                                               │\n│<filesystem><workspace_roots><root>@repo-root@</root></workspace_roots><permission_profile                    │\n│type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>                                                               │\n│</environment_context>                                                                                                                              │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text.                                                            │\n│agent                                                                                                                                               │\n│PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                      │\n│you                                                                                                                                                 │\n│Use your file-reading tool to inspect /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt, then reply with its         │\n│contents. Do not modify any file.                                                                                                                   │\n│agent                                                                                                                                               │\n│I’m reading the requested file without modifying it.                                                                                                │\n│agent                                                                                                                                               │\n│PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45                                                                                                       │\n│  ⚙ exec  ✓                                                                                                                                         │\n│    \"const r = await tools.exec_command({\\n  cmd: \\\"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.tx…│\n│you                                                                                                                                                 │\n│For interruption check PUI-CANCELLED-79c4009f-b1bc-4ab1-8591-506cf086e54e, count from 1 through 10000, one number per line. Do not summarize or use │\n│tools.                                                                                                                                              │\n│you                                                                                                                                                 │\n│Reply with exactly PUI-CONTINUED-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text. Do not resume the interrupted task.                        │\n│agent                                                                                                                                               │\n│PUI-CONTINUED-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                  │\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · codex · adv 1 · chat b5e75917-7d8 · ready · pot papercusp · role operator                                                                      │\n│>                                                                                                                                                   │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2",
+    "resumed": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│</environment_context>                                                                                                                              │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text.                                                            │\n│agent                                                                                                                                               │\n│PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                      │\n│you                                                                                                                                                 │\n│Use your file-reading tool to inspect /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.txt, then reply with its         │\n│contents. Do not modify any file.                                                                                                                   │\n│agent                                                                                                                                               │\n│I’m reading the requested file without modifying it.                                                                                                │\n│agent                                                                                                                                               │\n│PUI-FILE-55a1ce45-6bb6-4c2d-8a13-c6c3f12d7c45                                                                                                       │\n│  ⚙ exec  ✓                                                                                                                                         │\n│    \"const r = await tools.exec_command({\\n  cmd: \\\"sed -n '1,200p' /tmp/pcv/pui-agent-chat-e2e-Ou0HVx/read-79c4009f-b1bc-4ab1-8591-506cf086e54e.tx…│\n│you                                                                                                                                                 │\n│For interruption check PUI-CANCELLED-79c4009f-b1bc-4ab1-8591-506cf086e54e, count from 1 through 10000, one number per line. Do not summarize or use │\n│tools.                                                                                                                                              │\n│you                                                                                                                                                 │\n│Reply with exactly PUI-CONTINUED-79c4009f-b1bc-4ab1-8591-506cf086e54e and no other text. Do not resume the interrupted task.                        │\n│agent                                                                                                                                               │\n│PUI-CONTINUED-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                                  │\n│you                                                                                                                                                 │\n│Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.                                              │\n│agent                                                                                                                                               │\n│RESUMED:PUI-HELLO-79c4009f-b1bc-4ab1-8591-506cf086e54e                                                                                              │\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · codex · adv 1 · chat b5e75917-7d8 · waiting-for-owner · pot papercusp · role operator                                                          │\n│>                                                                                                                                                   │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2"
+  },
+  "installedRefusal": {
+    "binarySha256": "72e05db0b71da76cf6c718420400f5e69e35a35b597619f84cfb37715d63dfe0",
+    "chatId": "33331f5e-393d-4cf8-961e-6ab17537c039",
+    "commands": [
+      "owner_turn"
+    ],
+    "visibleText": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│No messages yet — press i to talk to this agent, or s to choose a role/session.                                                                     │\n┌ Session unavailable — Esc, then l: choose session to reconnect ────────────────────────────────────────────────────────────────────────────────────┐\n│pot papercusp · role operator · session 33331f5e-393… · backend Claude · model server default · effort model/default · account default · mode manual│\n│>                                                                                                                                                   │\n│open SU session: POST /api/adv/sessions/launch-su -> 503: {\"error\":\"PUI-E2E startup connection interrupted\"}                                        │\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op htl/m/e/a/u:select · b:backend · i:compose · ?:help2"
+  },
+  "nativeTeardown": [
+    {
+      "session_id": "01a07e9e-ff86-71c1-8062-392f1745033b",
+      "omp_thread_id": null,
+      "ended_at": "2026-09-08T01:26:28.046Z",
+      "native_pid": 2171370,
+      "presence_pid": 2171370,
+      "presence_host": "@build-host@",
+      "activity_before_end": true,
+      "heartbeat_before_end": true,
+      "held_features": false,
+      "held_issues": false,
+      "held_claims": false,
+      "held_plan_claims": false
+    }
+  ],
+  "tests": {
+    "historyUnit": "47 passed",
+    "historyAdapters": "13 passed",
+    "nativeBindingPg": "16 passed",
+    "reopenedCleanup": "19 passed",
+    "savedCodexHome": "16 passed,744 filtered",
+    "reconnectErrorRust": "1 passed",
+    "reconnectErrorInstalled": "1 passed,12 skipped",
+    "nativeCodex10": "1 passed,12 skipped; post-suite delayed cleanup warning remains"
+  },
+  "logs": {
+    "historyUnit": {
+      "path": "/tmp/pui-p006-history-unit-2.log",
+      "sha256": "371ac7edc4cc5149e6c492901a05dde539071f2fa7ced33c04b0467c18540151"
+    },
+    "historyAdapters": {
+      "path": "/tmp/pui-p006-history-adapter-integration.log",
+      "sha256": "9f500147123ae874a825276ec84b2f2e7bb7059061bf70cf450de18aceed6298"
+    },
+    "nativeBindingPg": {
+      "path": "/tmp/pui-p006-native-binding-pg-full.log",
+      "sha256": "56d3e3fd6a7c67e048067cecf92be57ed1ace109100cb8b5461d6f47d7a52aec"
+    },
+    "reopenedCleanup": {
+      "path": "/tmp/pui-p006-reopened-cleanup-tests.log",
+      "sha256": "5d2597b4b840c95a34de523cc9468f13cbd8c8d75fc01775f57e6455522f364d"
+    },
+    "savedCodexHome": {
+      "path": "/tmp/pui-p006-codex-home-tests.log",
+      "sha256": "aaaa5bb801d133e02e7bbeb318050080839c2c188824d8783e423f0e25cc56c1"
+    },
+    "reconnectErrorRust": {
+      "path": "/tmp/pui-p006-reconnect-error-rust.log",
+      "sha256": "8c23ee698e118a4aedaf362519a8438442f8aeb4ce727edcaa4a61b851f3537a"
+    },
+    "reconnectErrorInstalled": {
+      "path": "/tmp/pui-p006-reconnect-refusal-e2e.log",
+      "sha256": "0b58a129f08555c4e942d52e4300399aa4d5600cf6260e179807f9d2b8c2bd14"
+    },
+    "nativeCodex10": {
+      "path": "/tmp/pui-p006-codex-installed-10.log",
+      "sha256": "907f5de049a1b0afd93ea339a8190c7da3630f2968bd77b8900c753ca176397b"
+    }
+  },
+  "followup": {
+    "recordedAt": "2026-09-08T01:50:19.431222+00:00",
+    "ledgerStatesVerified": {
+      "EI-22653306998869382": "done",
+      "EI-22653345522234346": "done",
+      "EI-22651749738479868": "open-owned",
+      "EI-22655052453427393": "open-owned",
+      "EI-22655684878802920": "open-owned",
+      "WI-10000428": "wip-owned"
+    },
+    "latestSourceHashes": {
+      "packages/operator-core/lib/su-session-rpc-engine.ts": "b27d0aa39b518ef1f41c99f06d7d95c6ce0600a960595e5592ccec341f0b102c",
+      "packages/operator-core/lib/su-session-rpc-engine.test.ts": "1dad10211f174128ddc4aa5bb26af83aaa2caf35ba10f18b4da3502b5ca83439",
+      "packages/operator-core/lib/session-end-lease-release-hook.ts": "c6b23e7a3a6b1220143d014cdb4abc3a6e9e41ec058352eb77fc973aef53ffb8",
+      "packages/operator-core/lib/session-end-lease-release-hook.test.ts": "649df0e0a6d830d894bee5bb1384947255394a6591bbcc14fa8289f9fabe6c37",
+      "packages/operator-core/lib/session-archive-hook.ts": "4bb5bbb75d24dc9d14577fd8ccc349e4424b18908d3ee464c198b86fa57f2e02",
+      "packages/operator-core/lib/adv-sessions.ts": "14741cb3a4b078827301398f4be53965b77e356e4f9b83ba352a4c14d0cd0228",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "1758c643a04ec897ceeff819da9574441e6294beaa45d694011ca5183c2c59d2"
+    },
+    "laterChecks": {
+      "maintenanceHooks": "38 passed (archive17 + lease21), including stop-before-fire and join-running-pass",
+      "maintenanceInstalledFixture": "1 passed,12 skipped; fixture stops and joins its own maintenance before DB disposal",
+      "ompMountedRouteUnit": "31 passed; current native OMP readiness still fails",
+      "scopedTypes": "Requested changed files clean; other import-graph diagnostics remain outside this scope"
+    },
+    "laterNativeRuns": {
+      "claude2": {
+        "result": "FAILED before resumed readiness: The resume reservation was lost before readiness",
+        "issue": "EI-22655684878802920",
+        "next": "Trace actual native lifecycle writers clearing resume_claim_key. No root cause proved."
+      },
+      "omp3": {
+        "result": "FAILED before greeting: top-level tools read,bash,edit,glob,grep,task,hub,todo,web_search,write; generated mounted SU routes none",
+        "issue": "EI-22655052453427393",
+        "next": "Inspect the actual OMP18.0.3 runtime state/config and connected device projection. Bun global TS source is17.3.5 and may differ. Do not claim the mounted-route accommodation fixed actual OMP."
+      }
+    },
+    "cleanupResidue": "OMP3 additionally reported Structured engine teardown failed: incomplete and DB connection errors. Actual test native PID3239647 was probed dead after runner exit. Make fixture stopEngines/afterAll complete cleanup despite a close failure; preserve the original failure. EI-22651749738479868 remains open.",
+    "sourcesConsulted": [
+      "https://github.com/can1357/oh-my-pi/blob/main/docs/rpc.md",
+      "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+      "@home@/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/sdk.ts",
+      "@home@/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/session/session-tools.ts"
+    ],
+    "logs": {
+      "/tmp/pui-p006-maintenance-lifecycle-tests.log": "003d89f55bbb8c9ae07722bafbeb8266d50dbaee8b50e1ac8bd29a481a306863",
+      "/tmp/pui-p006-maintenance-refusal-e2e.log": "c87279639f923a42f62a422df44978dcfc43934f64abe083d0550c5f038928bc",
+      "/tmp/pui-p006-omp-device-tests.log": "8e72a4f4bd32313b906e6bd87f3fca790d118501602947d4c0c5abfcce08cf60",
+      "/tmp/pui-p006-omp-installed-3.log": "6441360d262ebb7daa04e68bb142c9ba801bd0cd9dd8a533cfac035dadf937ed",
+      "/tmp/pui-p006-claude-installed-2.log": "21e8a7f49282eeefefbb99aa208666ccb003fd6cb3ae4ad2cb530bea10a38487"
+    }
+  },
+  "limitations": [
+    "P006 remains open: actual approvals, OS operator-process restart, all-engine nondefault scope/mode/carry/task preservation and exact P006@6 audits remain.",
+    "Run10 restarts the native process and host registry while the Hono operator stays in its original OS process.",
+    "Codex run10 passed all journey assertions, but a delayed maintenance timer queried the dropped fixture DB after the test and logged CONNECT_TIMEOUT. This fixture cleanup defect remains on EI-22651749738479868.",
+    "No actual work-item or claim lease was present at native teardown; the earlier owner-live warning alone was not proof of a leak.",
+    "Run8 historical assistant replay was visible, but its fixture waited for a composing footer in normal mode. Its native process later closed unexpectedly while the fixture idled; cause remains unverified. Run9 failed because its helper treated the intentionally stopped predecessor as the active engine. Both are failed runs, not full acceptance.",
+    "These source hashes identify checkpoint state, not a claim that every command checked this exact entire shared-tree commit or its import graph.",
+    "No public publication or deployed-main shipment is claimed."
+  ]
+}

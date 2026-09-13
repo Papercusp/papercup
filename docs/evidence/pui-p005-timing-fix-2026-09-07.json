@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-005",
+  "workItem": "WI-10000427",
+  "status": "installed-journeys-green-awaiting-exact-spec-audits",
+  "writtenAt": "2026-09-07T20:53:41.995784+00:00",
+  "issues": [
+    "EI-22624891413821529",
+    "EI-22635039030625077"
+  ],
+  "changes": [
+    {
+      "path": "apps/tui/src/main.rs",
+      "behavior": "Network board background hydration follows the selected or pinned Network pane. Explicit entry, manual refresh, saved-view restore, invalidations, and safety refresh remain."
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/executable-frontier.ts",
+      "behavior": "Resolve membership before importing fleet read models; load plan/DAG/lane modules only for an applicable exact-plan fleet."
+    },
+    {
+      "path": "apps/tui/src/main.rs",
+      "behavior": "Only Overview fetches pipeline status; entering Overview wakes the existing refetch channel. Pinned Fleet no longer reads that invisible tile."
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "behavior": "Process inspection uses asynchronous execFile. Both chat journeys reject Network/pipeline reads. Opt-in timing/PG/CPU tracing keeps warnings fatal; temporary reader mocks have been removed."
+    }
+  ],
+  "baseline": {
+    "log": "/tmp/pui-p005-timing-before.log",
+    "profile": "/tmp/pui-p005-timing-before/worker-1071977.json",
+    "binarySha256": "f96ec6b480aa5498f438da847460b0ecf338ad67a99c56fff58bcb496771b339",
+    "testVerdict": "failed",
+    "journeyAssertions": "passed",
+    "failure": "[sync-slow] name=network.board ms=8181",
+    "limit": "The CPU profile mostly observed worker idle time in the slow Network window; it does not establish a database or cold-import root cause."
+  },
+  "tests": [
+    {
+      "name": "cold non-fleet dependency regression, before source fix",
+      "runId": "d920a886-b23a-4bf5-b02d-8c5adabb0e7a",
+      "passed": 0,
+      "failed": 1,
+      "evidence": "All five unrelated module factories loaded for a session without a fleet."
+    },
+    {
+      "name": "cold non-fleet and existing fleet-frontier tests, after fix",
+      "runId": "f6843d07-d302-4857-9eca-4aed603d5048",
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "name": "full Rust",
+      "log": "/tmp/pui-network-scope-rust-all.log",
+      "exitCode": 0,
+      "unitPassed": 893,
+      "integrationPassed": 13,
+      "unitIgnored": 17
+    },
+    {
+      "name": "Clippy all targets, warnings denied",
+      "log": "/tmp/pui-network-scope-clippy.log",
+      "exitCode": 0
+    },
+    {
+      "name": "three changed TypeScript files",
+      "log": "/tmp/pui-p005-timing-tsc.log",
+      "exitCode": 0
+    },
+    {
+      "name": "final full Rust and Clippy",
+      "log": "/tmp/pui-p005-prefetch-build.log",
+      "unitPassed": 894,
+      "integrationPassed": 13,
+      "unitIgnored": 17,
+      "clippy": "passed",
+      "installerExit": 1,
+      "installerNote": "The installer wrote a matching binary/companion/manifest, then exited 1 because pui doctor detected an older running workbench. No existing workbench was stopped."
+    },
+    {
+      "name": "final three-file TypeScript",
+      "log": "/tmp/pui-p005-prefetch-tsc.log",
+      "exitCode": 0
+    },
+    {
+      "name": "final installed protocol",
+      "log": "/tmp/pui-p005-prefetch-protocol.log",
+      "exitCode": 0,
+      "passed": 11,
+      "otherModeSkipped": 1
+    },
+    {
+      "name": "final installed actual engine",
+      "log": "/tmp/pui-p005-prefetch-real.log",
+      "exitCode": 0,
+      "passed": 1,
+      "otherModeSkipped": 11
+    }
+  ],
+  "installed": {
+    "binaryPath": "@home@/.cargo/bin/pui",
+    "binarySha256": "a9dc772fef9cc3d4ff57b637db50087ea3766a2ce197e615ebac06b230372a00",
+    "builtAtEpoch": 1788813983,
+    "companionPath": "@home@/.papercusp/pui-companion.wasm",
+    "companionSha256": "46ebe91e7ac82975365471a880b92e21fb220aa7e90e7b1cf2656107132f1bf8",
+    "schemaVersion": 1,
+    "sourceDirty": true,
+    "sourceRoot": "@repo-root@",
+    "sourceSha": "6370b7fa981d1e77db44d5b02800942da68dcac2"
+  },
+  "installLimit": "The installer wrote a matching binary/companion/manifest, then exited 1 because pui doctor detected an older running workbench. No existing workbench was stopped.",
+  "realEngineBefore": {
+    "at": "2026-09-07T20:53:41.995784+00:00",
+    "hashes": {
+      "apps/tui/src/app.rs": "8307615a8844ca6cae0e4bce86d1ac4121cbc46ec89fe05b9f925b4a4cc8be6d",
+      "apps/tui/src/main.rs": "28a8d928542a3b122a3e041aff425e9569c9019fb7faca939f8e6a2204bf7d8c",
+      "packages/operator-core/lib/su-session-claude-engine.ts": "52c3f2cd20da2736ba8f22c81384ba7abb40a6fde30bacfdb5b7d156af28d4b6",
+      "packages/operator-core/lib/su-session-claude-adapter.ts": "0730bd40c5a17169198cc5e59223168236b926737fe23d2f7ee8820051478345",
+      "packages/operator-core/lib/su-session-attached-launch.ts": "41a394931fdd20d7d19597a703c0e5e373083890adf4c0f53fd30978d9289eb9",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "f007d69c67cc81550f8a5a7ef85a86a124e3103915dd3ba827b796ad6dc0e1d5",
+      "packages/operator-core/lib/fleet/executable-frontier.ts": "b32dd1564fbab689bdc2ce53a0555a69d9a227a5d96a84c7c59bf0727643fce7"
+    },
+    "manifest": {
+      "binaryPath": "@home@/.cargo/bin/pui",
+      "binarySha256": "a9dc772fef9cc3d4ff57b637db50087ea3766a2ce197e615ebac06b230372a00",
+      "builtAtEpoch": 1788813983,
+      "companionPath": "@home@/.papercusp/pui-companion.wasm",
+      "companionSha256": "46ebe91e7ac82975365471a880b92e21fb220aa7e90e7b1cf2656107132f1bf8",
+      "schemaVersion": 1,
+      "sourceDirty": true,
+      "sourceRoot": "@repo-root@",
+      "sourceSha": "6370b7fa981d1e77db44d5b02800942da68dcac2"
+    }
+  },
+  "pending": [
+    {
+      "kind": "exact immutable specification bindings and independent audits; then P005 closure",
+      "specs": [
+        "AUTO-BAR-R-01-P-005@6",
+        "PUI-TOOL-TURN@4",
+        "PUI-INTERRUPT@4"
+      ]
+    }
+  ],
+  "warningPolicy": "No new warning exception or timeout widening. Existing explicit optional-memory diagnostic handling in the real-engine fixture remains.",
+  "latestEvidence": "docs/evidence/pui-p005-installed-green-2026-09-07.json",
+  "latestInstalled": {
+    "binaryPath": "@home@/.cargo/bin/pui",
+    "binarySha256": "6734915778311f914d632da7972460680398785ff3a3c9fe53e8ce5ee4e6d9a7",
+    "builtAtEpoch": 1788815801,
+    "companionPath": "@home@/.papercusp/pui-companion.wasm",
+    "companionSha256": "b84a0b9813cee14bde3910819cd3203d10b92013307f60f7844c5fd69c33a40c",
+    "schemaVersion": 1,
+    "sourceDirty": true,
+    "sourceRoot": "@repo-root@",
+    "sourceSha": "2c2ac882d2367bd95fb6af51261aa5a6dfbf518e"
+  },
+  "attribution": {
+    "profile": "/tmp/pui-p005-real-stages/worker-2436033.json",
+    "warningWindowPerformanceMs": [
+      123900,
+      127000
+    ],
+    "observed": "The exact warning window includes Git process spawn under realGit -> oldestCommitAgeMs -> gitPipelinePosition, reached by PUI's hidden Overview pipeline prefetch. A separate earlier trace found synchronous test cleanup process scans and real PostgreSQL WAL waits. None licenses disabling diagnostics or durability."
+  }
+}

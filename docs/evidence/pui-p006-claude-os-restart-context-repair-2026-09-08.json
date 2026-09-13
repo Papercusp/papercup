@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItem": "WI-10000428",
+  "issue": "EI-22723449996779424",
+  "capturedAt": "2026-09-08T22:42:28Z",
+  "rootCause": {
+    "origin": "packages/operator-core/lib/su-session-resume.ts",
+    "summary": "A structured Claude restart fell back to the descriptor's persisted resolved model id. Claude native initialization persists the bare resolved id without the launcher's [1m] suffix, so the restored 1M transcript was relaunched explicitly as a 200K model and rejected locally before the resumed request reached the gateway.",
+    "run20Evidence": {
+      "log": "/tmp/pui-p006-claude-operator-restart-20.log",
+      "sha256": "dc4f8238c07c11a5eb6f403f57b38c2d5489551f5f17d4803e2aa709b2695047",
+      "firstRequest": "HTTP 200 through the 1M route with inputTotal 838526",
+      "resumedRequest": "No gateway request; Claude rejected the restored conversation locally with Prompt is too long"
+    }
+  },
+  "repair": {
+    "source": "packages/operator-core/lib/su-session-resume.ts",
+    "behavior": "prepareStructuredSuResume reapplies normalizeModelSpecForAgent('claude', model) before account-route resolution and SDK launch.",
+    "recurrenceGuard": {
+      "source": "packages/operator-core/lib/su-session-resume.test.ts",
+      "assertion": "A persisted bare claude-fable-5-1 model is restored as claude-fable-5-1[1m], and account-route resolution receives the decorated model spec."
+    },
+    "focusedVerification": {
+      "result": "32 passed",
+      "scope": "10 structured-resume tests plus 22 Claude-engine tests",
+      "source": "EI-22723449996779424 checkpoint at 2026-09-08T22:20:21Z"
+    }
+  },
+  "run21": {
+    "command": "PUI_REAL_ENGINE=1 PUI_REAL_BACKEND=claude PUI_REAL_ACCOUNT=auto PUI_NATIVE_ACCOUNT_CATALOG=/tmp/pui-p006-native-accounts-2026-09-08.json PUI_BIN=@home@/.cargo/bin/pui npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts -t 'restores the same native conversation after the operator OS process exits'",
+    "result": "passed",
+    "testFiles": "1 passed",
+    "tests": "1 passed, 15 skipped",
+    "durationMs": 272690,
+    "selectedTestDurationMs": 175423,
+    "invocationId": "ce77aef6b2aa4eac98c7e1e546903aef",
+    "log": {
+      "path": "/tmp/pui-p006-claude-operator-restart-21.log",
+      "sha256": "10a6eb7cc79a8a4de3235b3343006ba077cac6dc4bd84d4358a02ac5dc2091dd"
+    },
+    "binary": {
+      "path": "@home@/.cargo/bin/pui",
+      "sha256": "9678f19104fe61a4120ac08db66baeeac8d511be01a7540f426677a26f04f3d1"
+    },
+    "operatorRestart": {
+      "first": {
+        "pid": 1662717,
+        "instanceId": "cda456a6-68ef-4058-b385-9f993ce58dcc"
+      },
+      "second": {
+        "pid": 1787193,
+        "instanceId": "3ddb716c-6cc6-409b-8bb8-691fda296b99"
+      }
+    },
+    "identity": {
+      "agentChatId": "249ca4b6-1bee-47e2-bae0-eb180d904e93",
+      "nativeSessionId": "1ba7388f-4b3f-4085-9661-7b1c3b7579a7",
+      "ownerId": "su-f36a82a9-6d41-4113-b453-7c0031e73840",
+      "savedRuntimeGeneration": 0,
+      "resumedRuntimeGeneration": 1,
+      "model": "claude-fable-5-1",
+      "accountRoute": "auto",
+      "carry": "warm"
+    },
+    "conversation": {
+      "firstReply": "PUI-PROCESS-9b555267-793b-434c-b234-e22245234eda",
+      "resumedReply": "RESUMED: PUI-PROCESS-9b555267-793b-434c-b234-e22245234eda",
+      "assertion": "The selected test also requires a completed assistant transcript event matching the exact resumed reply."
+    },
+    "gateway": {
+      "ownerReportAt": 1788907192840,
+      "requests": 2,
+      "ok": 2,
+      "upstreamErrors": 0,
+      "upstream429": 0,
+      "sheds": 0,
+      "stalls": 0,
+      "lastStatus": 200,
+      "lastAccount": "aviynw8",
+      "lastRoute": {
+        "model": "claude-fable-5-1",
+        "context1m": true,
+        "nativeSessionId": "1ba7388f-4b3f-4085-9661-7b1c3b7579a7",
+        "inputTotal": 415722,
+        "observedInputFloor": 415722,
+        "observations": 2
+      },
+      "metricSemantics": "inputTotal is written from the upstream message_start usage as input_tokens + cache_read_input_tokens + cache_creation_input_tokens. observedInputFloor is the minimum inputTotal retained for that native session."
+    }
+  },
+  "sourceProvenance": {
+    "testHead": "974c56a3a9",
+    "headAfterRun": "98365aa5941dc28bfe689195303b110a18523177",
+    "hashesStableAfterRun": true,
+    "files": [
+      {
+        "path": "packages/operator-core/lib/interactive-claude-config.ts",
+        "sha256": "5d034ab67ca519e7ae46fcc1880e6da01e53e4d737d0e4b095a174079951595b"
+      },
+      {
+        "path": "packages/operator-core/lib/interactive-claude-config.test.ts",
+        "sha256": "b31e288f577f8a2de4015f4f546790ddb8a528895fd1d6852fe65eeb62c61672"
+      },
+      {
+        "path": "packages/operator-core/lib/su-session-claude-engine.ts",
+        "sha256": "23c5a614e54e95721b4f0c5d84b0069b4d1da393da6e0b77e3b7af835187336f"
+      },
+      {
+        "path": "packages/operator-core/lib/su-session-claude-engine.test.ts",
+        "sha256": "f1939750ff1b3f97a773d7c6a4780218ef0e39bf834da93beb4e8576d22e1926"
+      },
+      {
+        "path": "packages/operator-core/lib/su-session-resume.ts",
+        "sha256": "585082c9c49ba102750fa35af490ee87d26837fa136a09b9efb67e229e26aa37"
+      },
+      {
+        "path": "packages/operator-core/lib/su-session-resume.test.ts",
+        "sha256": "6d88a7a88499133697c7823ee055e2292c5b6fc815b8bad719ee186e950b6008"
+      },
+      {
+        "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+        "sha256": "96b7dadbcc323086332a939e74ccc459d448e30acc7ecad6433b949ce36bef17"
+      }
+    ]
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --changed-paths=packages/operator-core/lib/su-session-resume.ts,packages/operator-core/lib/su-session-resume.test.ts",
+    "result": "package-wide red, unrelated to the repaired files",
+    "detail": "The command expanded to operator-core scope=all and reported 11 files above baseline. Neither repaired file was among them; concurrent peer edits were explicitly identified for two reported files."
+  },
+  "limits": [
+    "The installed PUI binary was exercised against current operator source; its manifest sourceSha predates this repair and is not presented as the operator-source provenance.",
+    "The test runner stamps only the named integration file. The seven governing hashes above remained stable, but the entire transitive import graph was not frozen.",
+    "This artifact closes the Claude OS-process-restart context-overflow bug only; it does not complete all P-006 parity or authorize P-015 publication."
+  ]
+}

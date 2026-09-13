@@ -1,0 +1,207 @@
+
+> @papercupai/papercusp-monorepo@0.0.1 test:file
+> PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs apps/operator/app/adv/hud/GoalDetailPanel.test.tsx apps/operator/app/adv/hud/GoalModeStateSection.test.tsx apps/operator/app/adv/hud/goal-detail-model.test.ts packages/operator-core/lib/agent-obligation-providers.test.ts packages/operator-core/lib/agent-obligation-reader.test.ts packages/operator-core/lib/agent-obligation-reminders.test.ts packages/operator-core/lib/agent-obligations.test.ts packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.test.ts packages/operator-core/lib/agent-tools/scorecards/grader-eligibility.test.ts packages/operator-core/lib/goal-owner-report.test.ts packages/operator-core/lib/plan-acceptance-gate.test.ts packages/operator-core/lib/sync-resolver/goals.integration.test.ts packages/operator-core/lib/system-health/goal-owner-report-watchdog.integration.test.ts packages/operator-core/lib/system-health/goal-owner-report-watchdog.test.ts packages/operator-core/lib/turn-start-orientation.test.ts
+
+[pc-heavy] slot acquired — starting real work
+PC_HEAVY_PREEMPT_READY pid=3340747
+TEST_FILE_PROGRESS state=started cwd="apps/operator" elapsedMs=514 capturedBytes=0 completedFiles=[] pendingFiles=["app/adv/hud/GoalDetailPanel.test.tsx","app/adv/hud/GoalModeStateSection.test.tsx","app/adv/hud/goal-detail-model.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="apps/operator" elapsedMs=3550 capturedBytes=222 completedFiles=["app/adv/hud/goal-detail-model.test.ts"] pendingFiles=["app/adv/hud/GoalDetailPanel.test.tsx","app/adv/hud/GoalModeStateSection.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="apps/operator" elapsedMs=5092 capturedBytes=285 completedFiles=["app/adv/hud/goal-detail-model.test.ts","app/adv/hud/GoalModeStateSection.test.tsx"] pendingFiles=["app/adv/hud/GoalDetailPanel.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=10658 capturedBytes=285 completedFiles=["app/adv/hud/goal-detail-model.test.ts","app/adv/hud/GoalModeStateSection.test.tsx"] pendingFiles=["app/adv/hud/GoalDetailPanel.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=3340747
+TEST_FILE_PROGRESS state=file-completed cwd="apps/operator" elapsedMs=15080 capturedBytes=796 completedFiles=["app/adv/hud/goal-detail-model.test.ts","app/adv/hud/GoalModeStateSection.test.tsx","app/adv/hud/GoalDetailPanel.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="apps/operator" elapsedMs=15081 capturedBytes=796 completedFiles=["app/adv/hud/goal-detail-model.test.ts","app/adv/hud/GoalModeStateSection.test.tsx","app/adv/hud/GoalDetailPanel.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: run-u889198.scope; invocation ID: fc460f8fffc948fe836466c5685643f6
+PC_HEAVY_ADMISSION status=skipped reason=memory-not-scarce priority=50 psiFullAvg10=16 admittedCgroupMiB=3239 admissionId=pc-heavy-3340252-1788771253978697895 retryHandle=psi-recovery:pc-heavy-3340252-1788771253978697895
+TEST_FILE_PROGRESS state=started cwd="packages/operator-core" elapsedMs=484 capturedBytes=0 completedFiles=[] pendingFiles=["lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts","lib/agent-obligation-reminders.test.ts","lib/agent-obligations.test.ts","lib/goal-owner-report.test.ts","lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=3335 capturedBytes=389 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts"] pendingFiles=["lib/agent-obligation-reminders.test.ts","lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=10832 capturedBytes=389 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts"] pendingFiles=["lib/agent-obligation-reminders.test.ts","lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=12172 capturedBytes=522 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts","lib/agent-obligation-reminders.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts"] pendingFiles=["lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=12845 capturedBytes=597 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts","lib/agent-obligation-reminders.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts"] pendingFiles=["lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=12997 capturedBytes=651 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts","lib/agent-obligation-reminders.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts","lib/plan-acceptance-gate.test.ts"] pendingFiles=["lib/turn-start-orientation.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=13006 capturedBytes=707 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts","lib/agent-obligation-reminders.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts","lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts"] pendingFiles=["lib/agent-tools/fleet/leader-brief-shape.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=3340747
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=13523 capturedBytes=1040 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts","lib/agent-obligation-reminders.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts","lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="packages/operator-core" elapsedMs=13577 capturedBytes=1040 completedFiles=["lib/goal-owner-report.test.ts","lib/agent-obligations.test.ts","lib/agent-obligation-providers.test.ts","lib/agent-obligation-reader.test.ts","lib/agent-obligation-reminders.test.ts","lib/system-health/goal-owner-report-watchdog.test.ts","lib/agent-tools/scorecards/grader-eligibility.test.ts","lib/plan-acceptance-gate.test.ts","lib/turn-start-orientation.test.ts","lib/agent-tools/fleet/leader-brief-shape.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: run-u889216.scope; invocation ID: cd32588bb5584aa18db8b7dc53bf7ea0
+TEST_FILE_PROGRESS state=started cwd="packages/operator-core" elapsedMs=455 capturedBytes=0 completedFiles=[] pendingFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=10455 capturedBytes=324 completedFiles=[] pendingFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=20455 capturedBytes=324 completedFiles=[] pendingFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+[flags] No override store installed in this process: runtime overrides (flags:set / POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. If this process is expected to observe runtime flag flips, call initFlagOverrideStore() during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=30833 capturedBytes=324 completedFiles=[] pendingFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=41134 capturedBytes=324 completedFiles=[] pendingFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=51134 capturedBytes=324 completedFiles=[] pendingFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=57019 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=61325 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=71326 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=81655 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=91886 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=101886 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=111958 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=121958 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=132010 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=142010 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=152146 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=162146 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=172147 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=182148 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=192148 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=202149 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=212301 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=222301 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=232303 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=242340 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=252438 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=262438 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=272438 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=282681 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=292768 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=302768 capturedBytes=738 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts"] pendingFiles=["lib/sync-resolver/goals.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=3340747
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=308071 capturedBytes=807 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="packages/operator-core" elapsedMs=308224 capturedBytes=2882 completedFiles=["lib/system-health/goal-owner-report-watchdog.integration.test.ts","lib/sync-resolver/goals.integration.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: run-u889237.scope; invocation ID: a52aac33de714f79a15a40d9ca6d3639
+(node:3395852) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+TEST_FILE_ROUTE requested=15 groups=3
+TEST_FILE_PROVENANCE head=ddb59a866e testedPaths=15 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-07T08:54:14.620Z
+  HEAD         : ddb59a866e
+  tested files : apps/operator/app/adv/hud/GoalDetailPanel.test.tsx  [clean]
+                 apps/operator/app/adv/hud/GoalModeStateSection.test.tsx  [clean]
+                 apps/operator/app/adv/hud/goal-detail-model.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligation-providers.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligation-reader.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligation-reminders.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligations.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/scorecards/grader-eligibility.test.ts  [clean]
+                 packages/operator-core/lib/goal-owner-report.test.ts  [clean]
+                 packages/operator-core/lib/plan-acceptance-gate.test.ts  [clean]
+                 packages/operator-core/lib/sync-resolver/goals.integration.test.ts  [clean]
+                 packages/operator-core/lib/system-health/goal-owner-report-watchdog.integration.test.ts  [clean]
+                 packages/operator-core/lib/system-health/goal-owner-report-watchdog.test.ts  [clean]
+                 packages/operator-core/lib/turn-start-orientation.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+ROUTE cwd=apps/operator config=vitest.config.ts
+  requested app/adv/hud/GoalDetailPanel.test.tsx
+  requested app/adv/hud/GoalModeStateSection.test.tsx
+  requested app/adv/hud/goal-detail-model.test.ts
+  matched app/adv/hud/GoalDetailPanel.test.tsx
+  matched app/adv/hud/GoalModeStateSection.test.tsx
+  matched app/adv/hud/goal-detail-model.test.ts
+
+ RUN  v4.1.8 @repo-root@/apps/operator
+
+ ✓ app/adv/hud/goal-detail-model.test.ts (45 tests) 66ms
+ ✓ app/adv/hud/GoalModeStateSection.test.tsx (4 tests) 175ms
+ ✓ app/adv/hud/GoalDetailPanel.test.tsx (64 tests) 8604ms
+     ✓ asks goals.detail for the workspace it was GIVEN, never a default  355ms
+       ✓ shows the fleet zone only when the agent is actually in a fleet — never an empty column  469ms
+
+ Test Files  3 passed (3)
+      Tests  113 passed (113)
+   Start at  04:54:22
+   Duration  12.58s (transform 2.59s, setup 1.05s, import 3.50s, tests 8.85s, environment 2.79s)
+
+JSON report written to /dev/shm/pcv/papercusp-test-files-report-lTJ3lt/group-0.json
+ROUTE cwd=packages/operator-core config=vitest.config.ts
+  requested lib/agent-obligation-providers.test.ts
+  requested lib/agent-obligation-reader.test.ts
+  requested lib/agent-obligation-reminders.test.ts
+  requested lib/agent-obligations.test.ts
+  requested lib/agent-tools/fleet/leader-brief-shape.test.ts
+  requested lib/agent-tools/scorecards/grader-eligibility.test.ts
+  requested lib/goal-owner-report.test.ts
+  requested lib/plan-acceptance-gate.test.ts
+  requested lib/system-health/goal-owner-report-watchdog.test.ts
+  requested lib/turn-start-orientation.test.ts
+  matched lib/agent-obligation-providers.test.ts
+  matched lib/agent-obligation-reader.test.ts
+  matched lib/agent-obligation-reminders.test.ts
+  matched lib/agent-obligations.test.ts
+  matched lib/goal-owner-report.test.ts
+  matched lib/plan-acceptance-gate.test.ts
+  matched lib/turn-start-orientation.test.ts
+  matched lib/system-health/goal-owner-report-watchdog.test.ts
+  matched lib/agent-tools/fleet/leader-brief-shape.test.ts
+  matched lib/agent-tools/scorecards/grader-eligibility.test.ts
+
+ RUN  v4.1.8 @repo-root@/packages/operator-core
+
+ ✓ lib/goal-owner-report.test.ts (6 tests) 14ms
+ ✓ lib/agent-obligations.test.ts (22 tests) 34ms
+ ✓ lib/agent-obligation-providers.test.ts (25 tests) 32ms
+ ✓ lib/agent-obligation-reader.test.ts (9 tests) 37ms
+ ✓ lib/agent-obligation-reminders.test.ts (9 tests) 37ms
+ ✓ lib/system-health/goal-owner-report-watchdog.test.ts (36 tests) 31ms
+ ✓ lib/agent-tools/scorecards/grader-eligibility.test.ts (10 tests) 18ms
+ ✓ lib/plan-acceptance-gate.test.ts (76 tests) 52ms
+ ✓ lib/turn-start-orientation.test.ts (58 tests) 46ms
+ ✓ lib/agent-tools/fleet/leader-brief-shape.test.ts (26 tests) 77ms
+
+ Test Files  10 passed (10)
+      Tests  277 passed (277)
+   Start at  04:54:40
+   Duration  11.40s (transform 37.54s, setup 2.74s, import 62.39s, tests 379ms, environment 2ms)
+
+JSON report written to /dev/shm/pcv/papercusp-test-files-report-lTJ3lt/group-1.json
+ROUTE cwd=packages/operator-core config=vitest.integration.config.ts
+  requested lib/sync-resolver/goals.integration.test.ts
+  requested lib/system-health/goal-owner-report-watchdog.integration.test.ts
+  matched lib/system-health/goal-owner-report-watchdog.integration.test.ts
+  matched lib/sync-resolver/goals.integration.test.ts
+
+ RUN  v4.1.8 @repo-root@/packages/operator-core
+
+ ✓ lib/system-health/goal-owner-report-watchdog.integration.test.ts (3 tests) 38513ms
+     ✓ uses the newest complete exact-goal stamp from escalation, human-send, or attributed attention  4683ms
+     ✓ rejects arbitrary, partial, wrong-subject, wrong-owner, wrong-workspace, and non-human rows  5565ms
+     ✓ keeps complete exact-goal legacy reports on coord rails, never on unattributed attention  419ms
+ ✓ lib/sync-resolver/goals.integration.test.ts (26 tests) 299396ms
+     ✓ resolveGoalsList RUNS — the assertion the whole file exists for  7612ms
+     ✓ reports the TRUE goal count even when the limit cut the rows  1349ms
+     ✓ harness-scoped listing includes an installed goal with no pot attachment  2323ms
+     ✓ exposes a spend snapshot only when its goal-pot provenance is present  344ms
+     ✓ resolveGoalDetail RUNS and returns every section the detail view reads  1861ms
+     ✓ returns the goal holder’s exact turn-start obligation projection and canonical portfolio  1532ms
+     ✓ carries the goal’s launch settings, parsed, with the editor’s option lists  1796ms
+     ✓ reports an UNREADABLE settings document instead of rendering it as “none”  613ms
+     ✓ reports no settings as null, which is the launch default and not an error  1412ms
+     ✓ counts waiting-on-you UNBOUNDED while capping the rows it returns  5119ms
+     ✓ converts the epoch-ms timestamps into something Date can parse  330ms
+     ✓ KEEPS a removed project in the payload, carrying removedAt  563ms
+     ✓ derives plans from the goal’s work items — and never from its pots’ harnesses  1746ms
+     ✓ shows a plan the goal’s agent AUTHORED before any work item has come from it  748ms
+     ✓ keeps the DERIVED leg for a plan the goal inherited but never authored  555ms
+     ✓ returns a plan that is BOTH stamped and derived exactly ONCE  512ms
+     ✓ does not lend the stamp to ANOTHER goal’s plan  1038ms
+     ✓ returns the agent RUNNING this goal, and only that goal  1139ms
+     ✓ surfaces BOTH stamps when two agents claim one goal rather than collapsing to one  556ms
+     ✓ the LIST carries the same agents as the detail, so the HUD Goals tab can filter by agent id  699ms
+     ✓ scopes to the workspace it was asked for  508ms
+
+ Test Files  2 passed (2)
+      Tests  29 passed (29)
+   Start at  04:54:59
+   Duration  303.84s (transform 10.76s, setup 548ms, import 14.82s, tests 337.91s, environment 1ms)
+
+JSON report written to /dev/shm/pcv/papercusp-test-files-report-lTJ3lt/group-2.json
+TEST_FILE_PROVENANCE head=ddb59a866e testedPaths=15 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-07T09:00:10.258Z
+  HEAD         : ddb59a866e
+  tested files : apps/operator/app/adv/hud/GoalDetailPanel.test.tsx  [clean]
+                 apps/operator/app/adv/hud/GoalModeStateSection.test.tsx  [clean]
+                 apps/operator/app/adv/hud/goal-detail-model.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligation-providers.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligation-reader.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligation-reminders.test.ts  [clean]
+                 packages/operator-core/lib/agent-obligations.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/fleet/leader-brief-shape.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/scorecards/grader-eligibility.test.ts  [clean]
+                 packages/operator-core/lib/goal-owner-report.test.ts  [clean]
+                 packages/operator-core/lib/plan-acceptance-gate.test.ts  [clean]
+                 packages/operator-core/lib/sync-resolver/goals.integration.test.ts  [clean]
+                 packages/operator-core/lib/system-health/goal-owner-report-watchdog.integration.test.ts  [clean]
+                 packages/operator-core/lib/system-health/goal-owner-report-watchdog.test.ts  [clean]
+                 packages/operator-core/lib/turn-start-orientation.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+TEST_FILE_RESULT requested=15 executed=15 matched=15 status=passed head=ddb59a866e uncommittedPaths=0/15 provenance=stamped startedAt=2026-09-07T08:54:14.620Z skippedTests=0

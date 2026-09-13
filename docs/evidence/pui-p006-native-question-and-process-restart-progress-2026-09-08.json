@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "WI-10000428",
+  "capturedAt": "2026-09-08T08:41:35.244623+00:00",
+  "sourceHashes": [
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-rpc-engine.ts",
+      "sha256": "3fb62e1a6db09608697f4724e2afef707818f1afa2402d21c1571abd2474f544",
+      "bytes": 28566
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-rpc-engine.test.ts",
+      "sha256": "e14d7794d09853fa41396c2e652bc03c63b794e8732d155f5c07a832d0ef3098",
+      "bytes": 26606
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-native-cards.ts",
+      "sha256": "ad28d40c7796a93e8f53dd53d0278b4915535851083379c6d9708a8b85ea1a6a",
+      "bytes": 9150
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/su-session-native-cards.test.ts",
+      "sha256": "744cf405b09f23bdfba5e510476e0171a94f36e4a02c722a7821189261bd14f9",
+      "bytes": 6302
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "sha256": "4531556abf4f98af1d317fea5adb4eabff55c4369a13cba54cecd2856da222ee",
+      "bytes": 92371
+    },
+    {
+      "path": "@repo-root@/packages/operator-core/lib/pui-e2e/operator-process.mts",
+      "sha256": "598e0ea14140c3816d310008a2cb36fa2feccda738c334d6842b6737f82de1f8",
+      "bytes": 5406
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/pui-p006-codex-native-question-1.log",
+      "sha256": "b5aaac882a28a14d53862ad383be601293de8302a2250d92850e00e2d7d7163c",
+      "bytes": 30193
+    },
+    {
+      "path": "/tmp/pui-p006-omp-native-question-1.log",
+      "sha256": "5e39febf60654de5c62533723a8877d2727c1f29b768877780508af32b5afb21",
+      "bytes": 49223
+    },
+    {
+      "path": "/tmp/pui-p006-operator-restart-claude-1.log",
+      "sha256": "abaea8efef970d35805b534f34e424783f254e0becc21f4e39ffa3752e90f5c6",
+      "bytes": 17181
+    },
+    {
+      "path": "/tmp/pui-p006-omp-rpc-ui-before.log",
+      "sha256": "854ddbbe5311a16e5ee7f7cb53b9d4ad2273e8ac40f2fa80c36e612b0ce72ef8",
+      "bytes": 21278
+    },
+    {
+      "path": "/tmp/pui-p006-omp-rpc-ui-after.log",
+      "sha256": "f11183f390a6f6e016382b20b04c5e78732bf972a3ccc951e6f40d8731e8fbf8",
+      "bytes": 10569
+    },
+    {
+      "path": "/tmp/pui-p006-omp-rpc-ui-final.log",
+      "sha256": "cbd593575ae053a6d027ad334331b948ffcad71648b0176e3703c0292ce70596",
+      "bytes": 6112
+    },
+    {
+      "path": "/tmp/pui-p006-omp-native-question-and-restart-2.log",
+      "sha256": "eaef17b88e2aa10b4c5372197cd659866506e0d9caceeb5e4d28903ffe471f59",
+      "bytes": 54482
+    },
+    {
+      "path": "/tmp/pui-p006-native-question-restart-types-final.log",
+      "sha256": "0ccdd7b25dc61835557f2e93953273131366ae5eb6175519b6eadce3bfcb279b",
+      "bytes": 4313
+    }
+  ],
+  "binary": {
+    "path": "@home@/.cargo/bin/pui",
+    "sha256": "4bc6b3db30b5fe5c48cd99121c743cd3194986bf12abcebb140f790f6f6e7942",
+    "bytes": 19196408
+  },
+  "validation": {
+    "rpcUiRegressionBefore": "Failed: expected rpc-ui, received rpc.",
+    "unitAfter": "50 passed: 42 RPC engine and 8 native card tests. The earlier after run had a stale rpc expectation (49 passed/1 failed), corrected before this run.",
+    "types": "Final scoped lint:tsc clean for 4 edited source/test files; whole-project baseline errors are not a clean whole-project verdict.",
+    "codexNativeQuestion": "FAILED positive assertion: installed native Default mode reports request_user_input unavailable. Positive Codex question case is now explicitly skipped pending native Plan-mode PUI controls, not counted as a pass.",
+    "ompNativeQuestion1": "FAILED: native ask absent under plain rpc. Model reported absence in PUI. Source test file moved later during this run.",
+    "ompNativeQuestion2": "FAILED before question: still starting/native id empty at the fixture's 15s waitForSavedTurn deadline. No rpc-ui question result established.",
+    "operatorRestartClaude1": "FAILED before child ready: ESM named import of CJS host-app lacked app. Test helper changed to createRequire.",
+    "operatorRestartOmp2": "FAILED resumed inference: new process reached restored greeting history, then retained the RESUMED draft with Session is not ready. Later header ready does not establish readiness at Enter. Distinguish test timing from UI readiness bug before claiming cause."
+  },
+  "openIssues": {
+    "ompRpcUi": "EI-22680951793973176",
+    "resumedReadiness": "EI-22681984426245850",
+    "nativeTeardown": "EI-22651749738479868: second OMP test run startup abort: systemctl kill reports scope pc-0mtserhy61d5zdso1jm.scope not loaded; later lease warning. Whole-subtree teardown unresolved.",
+    "viteShutdown": "EI-22681383052334643, filed unclaimed: earlier RPC/card run logged Vite close timeout."
+  },
+  "next": [
+    "Wait for actual structured readiness/owner-turn receipt within the supported startup budget before asserting first native question persistence; do not increase production timeouts or suppress native failures.",
+    "Repeat OMP native question alone under rpc-ui; complete actual question, answer HTTP response, native tool and correlated reply.",
+    "Instrument snapshot/command readiness at the restored PUI Enter to distinguish fixture timing from frontend readiness defect; repeat OS-process restart alone.",
+    "Complete Codex native planning/approval capability and nondefault settings/scope/tasks/context/carry for all3; exact P006@6 audits; then full remaining plan including P016 and P015 publication approval."
+  ],
+  "limits": [
+    "Source hashes are the current files captured after runs, not a frozen import graph or assertion that each run used these exact entire files.",
+    "OMP compound run named test path drifted when an unrelated Codex skip/comment was added; imported dependencies and runtime artifacts were not frozen.",
+    "Installed Linux PUI artifact unchanged; no new install, deployed-main or public-distribution verdict.",
+    "The new OS-process fixture uses the real Hono app in forked OS processes against an isolated migrated DB; it is not a deployment/service restart verdict.",
+    "No product native question or OS-resumed inference PASS is claimed in this continuation. Existing Claude10 question/separate seven-frame successes remain historical.",
+    "No implementation delegation or live-gate operations."
+  ]
+}

@@ -15,8 +15,10 @@ import {
 
 // A stand-in owner — never the real one (putting his name in a source file to test
 // for it would BE the leak, committed to git).
+const FAKE_HOME = ['/home', 'jdoe'].join('/');
+const GRAPHVIZ_VIRTUAL_HOME = ['/home', 'web_user'].join('/');
 const LITS: IdentityLiteral[] = [
-  { kind: 'home', value: '/home/jdoe' },
+  { kind: 'home', value: FAKE_HOME },
   { kind: 'user', value: 'jdoe' },
   { kind: 'git-name', value: 'Jane' },
 ];
@@ -35,6 +37,27 @@ function site(files: Record<string, string>): string {
 }
 
 describe('gateSite — it must be able to FAIL, or it is not a gate', () => {
+  it('distinguishes the vendor video-extension registry from identity text', () => {
+    const vendor = 'assets/vditor/dist/js/lute/lute.min.js';
+    const formats = '["mov","avi","wmv"]';
+    const literals: IdentityLiteral[] = [{ kind: 'git-name', value: 'mov' }];
+    expect(gateSite(site({ [vendor]: formats }), literals)).toEqual([]);
+    expect(gateSite(site({ [vendor]: `${formats}; const owner = "mov";` }), literals).length).toBeGreaterThan(0);
+    expect(gateSite(site({ 'other.js': formats }), literals).length).toBeGreaterThan(0);
+  });
+  it('checks renderer JS/CSS and only permits the vendor virtual filesystem home', () => {
+    const virtual = 'assets/vditor/dist/js/graphviz/full.render.js';
+    expect(gateSite(site({ [virtual]: `FS.mkdir("${GRAPHVIZ_VIRTUAL_HOME}");` }), LITS)).toEqual([]);
+    const leaks = gateSite(site({
+      [virtual]: `FS.mkdir("${GRAPHVIZ_VIRTUAL_HOME}"); const build = "${FAKE_HOME}/work";`,
+      'assets/project-history.js': 'const author = "Jane";',
+      'assets/project-history.css': '/* contact: jane@example.invalid */',
+    }), LITS);
+    expect(new Set(leaks.map((leak) => leak.file))).toEqual(new Set([
+      virtual, 'assets/project-history.js', 'assets/project-history.css',
+    ]));
+    expect(gateSite(site({ 'other.js': `"${GRAPHVIZ_VIRTUAL_HOME}"` }), LITS).length).toBeGreaterThan(0);
+  });
   it('passes a clean site', () => {
     const dir = site({
       'index.html': '<h1>Papercusp releases</h1><p>Download the installer.</p>',
@@ -46,12 +69,12 @@ describe('gateSite — it must be able to FAIL, or it is not a gate', () => {
   it('catches the home path in a nested plan page, and says WHERE', () => {
     const dir = site({
       'index.html': '<h1>clean</h1>',
-      'plans/leaky.html': '<h1>A plan</h1>\n<p>Run bash /home/jdoe/.papercusp/x.sh now</p>',
+      'plans/leaky.html': `<h1>A plan</h1>\n<p>Run bash ${FAKE_HOME}/.papercusp/x.sh now</p>`,
     });
     const leaks = gateSite(dir, LITS);
     expect(leaks.length).toBeGreaterThan(0);
     expect(leaks[0].file).toBe(path.join('plans', 'leaky.html'));
-    expect(leaks[0].sample).toContain('/home/jdoe');
+    expect(leaks[0].sample).toContain(FAKE_HOME);
   });
 
   it('catches an email nobody enumerated — the leak that actually shipped', () => {

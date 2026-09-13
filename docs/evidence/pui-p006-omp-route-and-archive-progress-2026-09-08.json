@@ -1,0 +1,413 @@
+{
+  "schemaVersion": "pui-p006-omp-route-archive-progress-v1",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "WI-10000428",
+  "capturedAt": "2026-09-08T06:34:42.419289+00:00",
+  "sourceHashes": {
+    "apps/operator/scripts/psu-launcher.mjs": "b42252e569d7fd10f8752d634a56f52372ee01e738e59c1f5d731795287963f8",
+    "apps/operator/lib/psu-launcher.test.ts": "a74daf92fabdba4478bbfbef8e8a1d3cc7f9c332de40da74a4276634bef6fbb4",
+    "packages/operator-core/lib/su-session-rpc-engine.ts": "09722d7718a7e2ff2bc647e6e0e182088dd2251c6e765a02e193064c95ef0388",
+    "packages/operator-core/lib/su-session-rpc-engine.test.ts": "e10f539a9356c5bea58f5d14d6783c0fa7662c09518c07595bc25568c51f02df",
+    "packages/operator-core/lib/su-session-resume.ts": "446f05c61216e3df02b5e8ebf9c3975c498684bca4dc8cf03382cbbc7685ab75",
+    "packages/operator-core/lib/su-session-resume.test.ts": "c86cc1ea601d97d9c5d35b2c61a9ea90b4ddd7711e915250eed24b404b2393c6",
+    "packages/operator-core/lib/session-archive-hook.ts": "40ce1fc58072323ed84db7b6adc2632a6adca5a94ed736fabf07e0df4a1ad002",
+    "packages/operator-core/lib/session-archive-hook.test.ts": "715f0e7e85be0a5c079ae3d4f547df20718006a0fe0032ecd2a81cf84d379e73",
+    "packages/operator-core/lib/su-session-stdio-peer.ts": "27f39e3d8525aaa9276ae315d1d4effd26dad64d952ed63d4fafd2c2e1ade396",
+    "packages/operator-core/lib/su-session-stdio-peer.integration.test.ts": "e7001530cf5c2ecc0703606a5447d0780f5d7ced9e91f46d7c7071847bb5008a",
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "44d683c7c4f052611835ce48d6708b70c781b953b3c58b99250d7a31c6a3c307",
+    "packages/operator-core/lib/pui-e2e/native-provider-trace.ts": "6bef8971545f7055707079a3139e86a26e97723e5f6b11b4c30aeded01aba233",
+    "packages/operator-core/lib/pui-e2e/native-provider-trace.test.ts": "314f48f8340faad4c431f78d16fbf443738daf660c9a01901e995af9f4369cfc"
+  },
+  "logHashes": {
+    "/tmp/pui-p006-omp-archive-before.log": "0f775d5916ebfa9ef825f3bd0b6834acd977cc52468dd4dd22ffd6dfd54befe1",
+    "/tmp/pui-p006-omp-archive-after.log": "746ad8a15848f4b733e0ecff31ad1869941e340122eca21e9c0c6f60d5822ef6",
+    "/tmp/pui-p006-omp-route-before.log": "c0a617c1e97098e80dbdc099feb57e87c203c2ab3d7ac6441d096b34d5e808da",
+    "/tmp/pui-p006-omp-route-after.log": "2d47c6562a5363cec02168088ab03e5c7950bd4dead45ed8d6dc7de90b182ea8",
+    "/tmp/pui-p006-omp-route-final.log": "8dbac50707744ea1d841c36733ca967015b11bac923cd38a2d7e9252c4cf65fb",
+    "/tmp/pui-p006-omp-resume-types-final.log": "f1b867b7b98628fe69c296026260a09d3aaf5c481f567e3ae0d23fce24a55a2b",
+    "/tmp/pui-p006-omp-catalog-types.log": "9add56b0a50d3a8bfce918ab5c42feab7e6da24cf3c4847afbe4853d19fb25ba",
+    "/tmp/pui-p006-teardown-detail-before.log": "7828c80e824e71b680b9797eb6da68d6be3801b34e806956795542f3d0ac2252",
+    "/tmp/pui-p006-teardown-detail-after.log": "b0082d22bb0fa24dcbe5342549f73054ae4a275262bf716057aef936857db7b0",
+    "/tmp/pui-p006-teardown-detail-types.log": "dbdec158c46ce9e30f1612e56fcb3deb1dcb1f0b1b388303070131b4cffc3617",
+    "/tmp/pui-p006-native-id-links-current.log": "0d65c106e2ed2eec5555c78a9409a1e984a652b2eb0a86345ff9f8f94426c0f4",
+    "/tmp/pui-p006-provider-abort-before.log": "04a2e6efd39a5546ed319382e7b3089af489f2ef5044342d96c0a6a1c41ffbc6",
+    "/tmp/pui-p006-provider-abort-after.log": "ecc8bb2fc869e022892e2d85d4868a324fe587f257c3d8a8c1890800231e23f8",
+    "/tmp/pui-p006-provider-abort-final.log": "8e0ce0d22fdfbfc6ad788bf4fd98a17d830dd9c28cfcac70f0fd6c78c2ee0208",
+    "/tmp/pui-p006-provider-abort-types.log": "73976718c9399e9d704d607fc2a03c314ef6a95c56364c09b29932aa7f176af6",
+    "/tmp/pui-p006-omp-installed-16.log": "deff3cf3bb8cf85a4db436ed814b42f6cdd903597bc266af0d614e9d32aec91b",
+    "/tmp/pui-p006-omp-installed-17.log": "6c39361f140e976c86b6ce78f79cd772e9913e38edea3924022d41da391958ce",
+    "/tmp/pui-p006-omp-installed-18.log": "a669348a8170a605fda302581821cbb89997bb6daad45933770a16f91b1ede2a",
+    "/tmp/pui-p006-omp-installed-19.log": "9c6a5d85048f6c7ee20936b3cb77a17cb5490b148df978677543c686ccb9dad8",
+    "/tmp/pui-p006-omp-installed-20.log": "02fcb19841dd0995977ff19b28cd7d0a30ada0af1eedf70425ef61c0f5fd112b"
+  },
+  "binary": {
+    "path": "@home@/.cargo/bin/pui",
+    "sha256": "40a1d68f9a560601a26450ffe06d3f6323aef6106f75aefe077c25d936b518a7"
+  },
+  "catalogue": {
+    "path": "/tmp/pui-p006-native-accounts-2026-09-08.json",
+    "sha256": "266cdb3ca5ea46a4c18c682b7d74c48d4db7ca221060ef8a39fceba38ae4a389",
+    "fields": [
+      "id",
+      "provider"
+    ],
+    "credentialsCopied": false
+  },
+  "native19": {
+    "marker": "PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE",
+    "frames": [
+      "greeting",
+      "file",
+      "running",
+      "interrupted",
+      "followup",
+      "history",
+      "resumed"
+    ],
+    "identity": {
+      "agentChatId": "b1f4f0f3-542e-438e-be30-fdcd56165cc7",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a07fa3-e069-7103-a35b-bf126db58808",
+      "ownerId": "su-9a5e02c9-4a17-48be-827b-2ef638cc2a2d",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "resumed": {
+      "identity": {
+        "agentChatId": "b1f4f0f3-542e-438e-be30-fdcd56165cc7",
+        "advSessionId": 1,
+        "backend": "omp",
+        "nativeSessionId": "01a07fa3-e069-7103-a35b-bf126db58808",
+        "ownerId": "su-9a5e02c9-4a17-48be-827b-2ef638cc2a2d",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "model": "papercusp-gateway/claude-sonnet-4-6",
+      "accountRoute": "auto",
+      "runtimeGeneration": 1,
+      "carry": "warm",
+      "modes": []
+    },
+    "providerEvents": [
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:10:52.349Z",
+        "priority": "su",
+        "owner": "su-9a5e02c9-4a17-48be-827b-2ef638cc2a2d",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:11:03.568Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:11:12.007Z",
+        "priority": "su",
+        "owner": "su-9a5e02c9-4a17-48be-827b-2ef638cc2a2d",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:11:22.346Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:11:25.466Z",
+        "priority": "su",
+        "owner": "su-9a5e02c9-4a17-48be-827b-2ef638cc2a2d",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:11:35.948Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:11:49.098Z",
+        "priority": "su",
+        "owner": "su-9a5e02c9-4a17-48be-827b-2ef638cc2a2d",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:11:58.912Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:12:45.632Z",
+        "priority": null,
+        "owner": "su-9a5e02c9-4a17-48be-827b-2ef638cc2a2d",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:12:56.960Z"
+      }
+    ],
+    "configurationWarnings": [
+      "psu: CONFIG ERROR — modelRoles.default (openrouter/stealth/ox-alpha) is a RETIRED upstream model that 404s; rewriting this session's copy to papercusp-gateway/claude-sonnet-4-6. Fix your global ~/.omp/agent/config.yml."
+    ],
+    "intentPivotWarnings": [
+      "[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback"
+    ],
+    "summary": [
+      "Test Files  1 failed (1)",
+      "Tests  1 failed | 13 skipped (14)"
+    ],
+    "errors": [
+      "Error: vitest-fail-on-console > Expected test not to call console.error()."
+    ],
+    "runnerProvenance": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=13fae0a22d uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-08T06:08:37.343Z skippedTests=13"
+  },
+  "native20": {
+    "marker": "PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE",
+    "frames": [
+      "greeting",
+      "file",
+      "running",
+      "interrupted",
+      "followup",
+      "history",
+      "resumed"
+    ],
+    "identity": {
+      "agentChatId": "5b9aa380-8975-476b-86fb-ffc8fdf0c31d",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a07fb6-55d8-71ff-ace9-4a88775569b0",
+      "ownerId": "su-11807852-7da8-47ad-8ac6-d694dfcf5c45",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "resumed": {
+      "identity": {
+        "agentChatId": "5b9aa380-8975-476b-86fb-ffc8fdf0c31d",
+        "advSessionId": 1,
+        "backend": "omp",
+        "nativeSessionId": "01a07fb6-55d8-71ff-ace9-4a88775569b0",
+        "ownerId": "su-11807852-7da8-47ad-8ac6-d694dfcf5c45",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "model": "papercusp-gateway/claude-sonnet-4-6",
+      "accountRoute": "auto",
+      "runtimeGeneration": 1,
+      "carry": "warm",
+      "modes": []
+    },
+    "providerEvents": [
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:30:56.051Z",
+        "priority": "su",
+        "owner": "su-11807852-7da8-47ad-8ac6-d694dfcf5c45",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:30:58.980Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:31:03.208Z",
+        "priority": "su",
+        "owner": "su-11807852-7da8-47ad-8ac6-d694dfcf5c45",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:31:05.023Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:31:07.611Z",
+        "priority": "su",
+        "owner": "su-11807852-7da8-47ad-8ac6-d694dfcf5c45",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:31:09.732Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:31:14.683Z",
+        "priority": "su",
+        "owner": "su-11807852-7da8-47ad-8ac6-d694dfcf5c45",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:31:15.771Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T06:31:39.624Z",
+        "priority": null,
+        "owner": "su-11807852-7da8-47ad-8ac6-d694dfcf5c45",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T06:31:42.176Z"
+      }
+    ],
+    "configurationWarnings": [
+      "psu: CONFIG ERROR — modelRoles.default (openrouter/stealth/ox-alpha) is a RETIRED upstream model that 404s; rewriting this session's copy to papercusp-gateway/claude-sonnet-4-6. Fix your global ~/.omp/agent/config.yml."
+    ],
+    "intentPivotWarnings": [
+      "[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback"
+    ],
+    "summary": [
+      "Test Files  1 passed (1)",
+      "Tests  1 passed | 13 skipped (14)"
+    ],
+    "errors": [],
+    "runnerProvenance": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=5d045da819 uncommittedPaths=1/1 provenance=unknown startedAt=2026-09-08T06:29:42.772Z skippedTests=13"
+  },
+  "sourceProvenance": {
+    "before": "/tmp/pui-p006-native20-source-before.json",
+    "beforeSha256": "8b68700b000fbcf8f55720243c56a7d93589fa389b77d5285f0effd5da914dd5",
+    "after": "/tmp/pui-p006-native20-source-after.json",
+    "afterSha256": "e3f9dce36a3bb610a765be7af909ef5d3a40ba44e3a1636da090112605992b9d",
+    "headBefore": "5d045da8191b3a54e68c07b0ed3c3710eba0e528",
+    "headAfter": "93a43f471e4ed85e55ef420ec2262b9697f446f2",
+    "changedSourcePaths": [
+      "papercusp-desktop/bin/lib/windows-source-repair.js",
+      "papercusp-desktop/test/windows-source-repair.test.js"
+    ],
+    "changedRepairPaths": [],
+    "claimLimit": "Local installed-product observation. Selected repair source hashes were measured; whole runtime dependency closure was not frozen. Do not claim exact-current-HEAD or a deployed operator build."
+  },
+  "validation": {
+    "archiveAndTraceBefore": "3 archive regressions failed; 20 tests passed",
+    "archiveAndTraceAfter": "37 passed: archive hook20 + reconciler14 + original trace3",
+    "modelRoute": "launcher770, resume9, final RPC41 passed; pre-fix saved default/gateway resume regression failed",
+    "nativeIdentity": "all3 asynchronous native identity PG linkage tests passed;13 other cases not selected",
+    "teardownDiagnostic": "regression failed before;5 pipe tests passed after;2 opt-in native protocol probes not selected",
+    "providerAbort": "real HTTP downstream-abort regression failed before and after first incomplete repair; final5tests passed",
+    "types": "final scope10files clean across operator/operator-core; subsequent3file stdio and3file trace scopes clean, last added disconnect string has no type-shape change"
+  },
+  "limits": [
+    "P006 remains WIP; no public-release or whole-plan completion",
+    "Actual installed OMP20 exercised gateway auto with default modes [] and warm carry; approvals and nondefault settings not exercised",
+    "Native process and PUI were restarted; operator OS process was not restarted",
+    "Invalid legacy default/gateway descriptors now refuse explicitly before credential/route mutation; not silently repaired to another account",
+    "Original Codex6 archive/live-lease defect and OMP18 tracked close command_failed remain on EI-22651749738479868; later successful close does not establish their root",
+    "Native OMP18 optional AgentStorage SQLite lock warning filed and owned as EI-22671703614917950; lock holder not proved",
+    "Native16 failed missing fixture account metadata; native17 failed fixture updated_at type; native18 reached followup then failed tracked close; native19 passed product assertions but failed HTTP cancellation console guard",
+    "No gateway configuration, credentials, proxies, release gate or deploy operations changed"
+  ]
+}

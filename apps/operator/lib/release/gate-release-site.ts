@@ -48,7 +48,7 @@ export interface SiteLeak {
  * read `.html` would wave through a leak sitting in the feed the app itself fetches.
  * Gate what ships, not what you happened to think of first.
  */
-const PUBLISHED = ['.html', '.json'];
+const PUBLISHED = ['.html', '.json', '.js', '.css'];
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -81,8 +81,23 @@ export function gateSite(dir: string, literals = identityLiterals()): SiteLeak[]
   const leaks: SiteLeak[] = [];
   for (const file of walk(dir)) {
     const text = fs.readFileSync(file, 'utf8');
+    // Emscripten creates this VIRTUAL filesystem home in Graphviz's WASM
+    // runtime. It is executable behavior, not the build machine's identity.
+    // Keep the exception local to that vendor file and exact virtual username;
+    // every actual home path and every explicit identity literal still gates.
+    const relative = path.relative(dir, file).split(path.sep).join('/');
+    const vendorGraphviz = relative ===
+      'assets/vditor/dist/js/graphviz/full.render.js';
+    const graphvizVirtualHome = ['/home', 'web_user'].join('/');
+    let scanned = vendorGraphviz ? text.replaceAll(graphvizVirtualHome, '/virtual/web_user') : text;
+    if (relative === 'assets/vditor/dist/js/lute/lute.min.js') {
+      // Video-format names can coincide with a person's name. This exact
+      // neighboring-token sequence is Lute's extension registry, not identity
+      // prose. Any occurrence elsewhere in the file remains fully checked.
+      scanned = scanned.replaceAll('"mov","avi","wmv"', '"video-formats"');
+    }
     const allowEmails = allowedEmailsFor(file, text);
-    for (const hit of findIdentityLeaks(text, literals, { allowEmails })) {
+    for (const hit of findIdentityLeaks(scanned, literals, { allowEmails })) {
       // Show the first occurrence in context. Without this the operator knows a page
       // is dirty but not WHERE, and the tempting next move is to hand-edit the HTML —
       // which the next regenerate silently reverts.

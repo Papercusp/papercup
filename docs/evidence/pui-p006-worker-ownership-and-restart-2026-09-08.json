@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "EI-22683727515147288",
+  "parent": "WI-10000428",
+  "capturedAt": "2026-09-08T10:17:26.977124+00:00",
+  "rootCause": "tsx evaluates memory/rerank worker modules through CJS and ESM in the same process. Each formerly had its own worker handle and pending-request map. CJS shutdown could complete while leaving an ESM-started worker alive.",
+  "change": "Pin both worker ownership states through the existing @papercusp/module-singleton primitive, including readiness, request IDs, pending requests, refs, teardown hook and fallback-warning state. Declare rerank dependency in manifest and root lock. Fixture verifies CJS and ESM readers after shutdown and logs OS exit results.",
+  "sources": [
+    {
+      "path": "libs/generic/memory/src/local-embedder-worker.ts",
+      "sha256": "eb8f4fea89375dab10375d4c24ef8324b4a93eb0917252db0b7c4d85e1ecb8b9",
+      "bytes": 30727
+    },
+    {
+      "path": "libs/generic/memory/src/local-embedder-worker.test.ts",
+      "sha256": "900411e1765a3719896192f2f729479e26761b4b4366c666f2e8281b46ac7872",
+      "bytes": 19420
+    },
+    {
+      "path": "libs/generic/rerank/src/local-reranker-worker.ts",
+      "sha256": "962f0767462ffd50fbf7502c23a2d3d6e262b7bced10d417b109b29e06458306",
+      "bytes": 13395
+    },
+    {
+      "path": "libs/generic/rerank/src/local-reranker-worker.test.ts",
+      "sha256": "4449293bf3a4430610a8d89852a62ba26d1d3b8f11458052c2dfae9334e20745",
+      "bytes": 9740
+    },
+    {
+      "path": "libs/generic/rerank/package.json",
+      "sha256": "3624c8ef04c70aa1a0b8bbb8d147ade32e7ac4c3adf2067e9037e23dd3780513",
+      "bytes": 1420
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "d8dfce55580de6dd6526373405fee395c3eb438da106619e582f650ce1b12d7e",
+      "bytes": 1306072
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/operator-process.mts",
+      "sha256": "733beecf820229a0183b8b317ae04827f8828cbda57930715579043d29f15769",
+      "bytes": 7050
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "sha256": "3cb45f04313e3b0602cbb4778eaf3c2dad1e14962d504c5b13db725b5760d32c",
+      "bytes": 94314
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/pui-p006-omp-operator-restart-5.log",
+      "sha256": "ff7d7a2989fff07aebc71f9bcb631a16b266a0a1324d4f538e364c788481f5a9",
+      "bytes": 53434
+    },
+    {
+      "path": "/tmp/pui-p006-worker-singleton-types.log",
+      "sha256": "843082dd6791437f783bc64ea7d4d9ef5dee22e9f5fa887ec6b47fa212286fe3",
+      "bytes": 4978
+    },
+    {
+      "path": "/tmp/pui-p006-operator-restart5-types.log",
+      "sha256": "f84a5fd5ecd17f031857109ad876427e52d2e5a2c44138c8b5a875f8ee38fa02",
+      "bytes": 2161
+    },
+    {
+      "path": "/tmp/pui-p006-operator-restart6-types.log",
+      "sha256": "cb76b5d419b68558dbac5406d9b2442399f1c47349aaf41f90052a09759aa6e2",
+      "bytes": 1778
+    },
+    {
+      "path": "/tmp/pui-p006-omp-operator-restart-6.log",
+      "sha256": "3c4f93d58bba52c9be12e02a0dfdffb7dd0a22fce6c147e51aa368151dfc06d1",
+      "bytes": 36375
+    }
+  ],
+  "installed": [
+    {
+      "path": "@home@/.cargo/bin/pui",
+      "sha256": "1acf76e8b925bfda9ea082277904d540d0264c7b1cbd293253f9cd5e253b4ac7",
+      "bytes": 19196520
+    },
+    {
+      "path": "@home@/.papercusp/pui-companion.wasm",
+      "sha256": "1d7d4bc3b21efbed936ba23f6d129279eede7f369489fced97c37f020d580a63",
+      "bytes": 2124644
+    },
+    {
+      "path": "@home@/.papercusp/pui-install.json",
+      "sha256": "2e571d7e2db9d3dbb6c32273dd12715785cd28415c79a5c141f26fe1baf4155c",
+      "bytes": 506
+    }
+  ],
+  "validation": {
+    "before": {
+      "runId": "88d4015b-d753-40b4-bcb0-bb7ee9154409",
+      "passed": 0,
+      "failed": 2,
+      "unselected": 24,
+      "failure": "Both second module records reported alive:false while first records had alive:true and one pending request."
+    },
+    "focusedAfter": {
+      "runId": "23f02253-3924-4e14-a1d4-ea7c91736b68",
+      "passed": 2,
+      "failed": 0,
+      "unselected": 24
+    },
+    "workerSuites": {
+      "runId": "c4371243-f55b-4c3b-88a4-3be28fa78323",
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "files": 2
+    },
+    "actualNode25CrossLoader": {
+      "node": "v25.9.0",
+      "before": "384-vector returned; ESM reader alive:true, CJS reader alive:false; CJS shutdown leaves ESM worker alive. ESM cleanup then exits0.",
+      "after": "384-vector returned; BOTH readers alive:true. CJS shutdown leaves BOTH alive:false/pending0. Process exits0."
+    },
+    "isolatedImports": "ONNX natural/explicit exit, Transformers import with/without tsx, and main+worker imports with awaited Worker.terminate all exit0; import alone did not reproduce.",
+    "scopedTypes": "memory and rerank workspace typechecks passed; both operator fixture files tsc-clean after final navigation/exit-log edit. No whole-project typecheck verdict."
+  },
+  "operatorRestart5": {
+    "status": "FAILED-navigation",
+    "stages": [
+      {
+        "type": "ready",
+        "pid": 2543468,
+        "instanceId": "d8e82158-dbc0-4ef7-8547-6069ed179280",
+        "at": "2026-09-08T10:00:53.929Z"
+      },
+      {
+        "type": "shutdown-stage",
+        "stage": "embedding-workers-stopped",
+        "pid": 2543468,
+        "instanceId": "d8e82158-dbc0-4ef7-8547-6069ed179280",
+        "workers": {
+          "cjsEmbed": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "esmEmbed": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "cjsRerank": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "esmRerank": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          }
+        },
+        "at": "2026-09-08T10:02:20.145Z"
+      },
+      {
+        "type": "stopped",
+        "pid": 2543468,
+        "instanceId": "d8e82158-dbc0-4ef7-8547-6069ed179280",
+        "at": "2026-09-08T10:02:20.944Z"
+      },
+      {
+        "type": "ready",
+        "pid": 2637362,
+        "instanceId": "bd55bd2f-312f-4c11-9c2e-99486aacdd3b",
+        "at": "2026-09-08T10:02:42.213Z"
+      },
+      {
+        "type": "shutdown-stage",
+        "stage": "embedding-workers-stopped",
+        "pid": 2637362,
+        "instanceId": "bd55bd2f-312f-4c11-9c2e-99486aacdd3b",
+        "workers": {
+          "cjsEmbed": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "esmEmbed": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "cjsRerank": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "esmRerank": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          }
+        },
+        "at": "2026-09-08T10:03:47.539Z"
+      },
+      {
+        "type": "stopped",
+        "pid": 2637362,
+        "instanceId": "bd55bd2f-312f-4c11-9c2e-99486aacdd3b",
+        "at": "2026-09-08T10:03:47.556Z"
+      }
+    ],
+    "normalExits": "Both first and second stop() exit0/null-signal assertions execute in finally. They did not replace the navigation error. Explicit per-process exit logs were added AFTER this run.",
+    "failure": "Line1553 expected session new after opening Agent Chat, but installed PUI already restored the saved conversation. No resumed owner turn entered.",
+    "installedBinarySha256": "1acf76e8b925bfda9ea082277904d540d0264c7b1cbd293253f9cd5e253b4ac7"
+  },
+  "operatorRestart6": {
+    "status": "FAILED-before-native-launch",
+    "log": "/tmp/pui-p006-omp-operator-restart-6.log",
+    "stages": [
+      {
+        "type": "ready",
+        "pid": 3015056,
+        "instanceId": "372ca5c2-8b48-4bed-8966-ec0fd988535a",
+        "at": "2026-09-08T10:11:06.047Z"
+      },
+      {
+        "type": "shutdown-stage",
+        "stage": "embedding-workers-stopped",
+        "pid": 3015056,
+        "instanceId": "372ca5c2-8b48-4bed-8966-ec0fd988535a",
+        "workers": {
+          "cjsEmbed": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "esmEmbed": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "cjsRerank": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          },
+          "esmRerank": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false
+          }
+        },
+        "at": "2026-09-08T10:11:57.653Z"
+      },
+      {
+        "type": "stopped",
+        "pid": 3015056,
+        "instanceId": "372ca5c2-8b48-4bed-8966-ec0fd988535a",
+        "at": "2026-09-08T10:11:59.107Z"
+      }
+    ],
+    "exits": [
+      {
+        "pid": 3015056,
+        "instanceId": "372ca5c2-8b48-4bed-8966-ec0fd988535a",
+        "code": 0,
+        "signal": null
+      }
+    ],
+    "failure": "Initial openComposer expected overview-only o:Agent Chat hint, but the installed PUI initially displayed Agent Chat/new-session. No greeting, native launch or second operator in this run."
+  },
+  "corrections": [
+    "The core frame is a JavaScript-facing InferenceSession method callback; a native finalizer was not established as its caller. Do not label the crashing OS thread from the process comm alone.",
+    "The router buffers test stdout until completion. Missing stage lines in an in-flight router log did not establish a database setup stall. That same-turn inference was retracted immediately and recorded on the item."
+  ],
+  "limits": [
+    "Current source hashes are point-in-time measurements, not a frozen complete import graph or provenance for earlier runs.",
+    "The installed PUI differs from historical4bc6...; this run uses1acf76... with a matching installer manifest. Refresh actor/time were not established.",
+    "P006 and EI-22681984426245850 remain open; complete resumed inference plus remaining all-engine scope/tool/mode/task/carry and approval journeys are required.",
+    "No implementation delegation, LIVE_GATE_OPS, deployed-main or public-publication claim. Full16-item plan and P015 publication approval preserved."
+  ],
+  "previousEvidence": "docs/evidence/pui-p006-question-and-restart-final-2026-09-08.json",
+  "operatorRestart7": {
+    "status": "RUNNING",
+    "log": "/tmp/pui-p006-omp-operator-restart-7.log",
+    "change": "Use the global Agent Chat action after leaving any restored composer; verify actual chat panel instead of assuming an overview-only navigation hint. Native history/readiness/identity/answer assertions unchanged."
+  }
+}

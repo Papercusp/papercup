@@ -1,0 +1,52 @@
+
+> @papercupai/papercusp-monorepo@0.0.1 test:file
+> PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs packages/operator-core/lib/agent-tools/capability/launch-agent.test.ts packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+
+[pc-heavy] slot acquired — starting real work
+PC_HEAVY_ADMISSION status=skipped reason=memory-not-scarce priority=50 psiFullAvg10=13 admittedCgroupMiB=306 admissionId=pc-heavy-758122-1788786674489285664 retryHandle=psi-recovery:pc-heavy-758122-1788786674489285664
+PC_HEAVY_PREEMPT_READY pid=758641
+TEST_FILE_PROGRESS state=started cwd="packages/operator-core" elapsedMs=169 capturedBytes=0 completedFiles=[] pendingFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=10240 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=11185 capturedBytes=442 completedFiles=["lib/agent-tools/capability/launch-agent.test.ts"] pendingFiles=["lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=758641
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=15064 capturedBytes=1398 completedFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="packages/operator-core" elapsedMs=15149 capturedBytes=1398 completedFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: run-u916260.scope; invocation ID: 5ae818a543f54a6397e7de879c8fafda
+TEST_FILE_ROUTE requested=2 groups=1
+TEST_FILE_PROVENANCE head=5f95dea7aa testedPaths=2 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-07T13:11:14.853Z
+  HEAD         : 5f95dea7aa
+  tested files : packages/operator-core/lib/agent-tools/capability/launch-agent.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+ROUTE cwd=packages/operator-core config=vitest.config.ts
+  requested lib/agent-tools/capability/launch-agent.test.ts
+  requested lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+  matched lib/agent-tools/capability/launch-agent.test.ts
+  matched lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+
+ RUN  v4.1.8 @repo-root@/packages/operator-core
+
+stdout | lib/agent-tools/capability/launch-agent.test.ts > resume + fork (D-004/D-007) > starts an identity-preserving fresh successor for an ended critical source
+[sync] invalidation bus listening
+
+ ✓ lib/agent-tools/capability/launch-agent.test.ts (110 tests) 193ms
+stdout | lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts > fleet:launch-on-plan GOAL pot sovereignty fence (EI-22180799091614070) > does not apply the GOAL-only fence to an ordinary launcher
+[sync] invalidation bus listening
+
+ ✓ lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts (182 tests) 3059ms
+     ✓ reuses the persisted headcount launch profile for an existing-fleet top-up/takeover with an omitted recipe (D-008)  992ms
+     ✓ uses the existing fleet live claim lane before stale saved-plan admission on an omitted top-up (EI-21577352340987493)  1105ms
+     ✓ reads capacity for the resolved member provider, including OMP model-aware routing  567ms
+
+ Test Files  2 passed (2)
+      Tests  292 passed (292)
+   Start at  09:11:18
+   Duration  13.85s (transform 13.92s, setup 594ms, import 19.77s, tests 3.25s, environment 0ms)
+
+JSON report written to /dev/shm/pcv/papercusp-test-files-report-9HQywP/group-0.json
+TEST_FILE_PROVENANCE head=5f95dea7aa testedPaths=2 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-07T13:11:32.710Z
+  HEAD         : 5f95dea7aa
+  tested files : packages/operator-core/lib/agent-tools/capability/launch-agent.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=5f95dea7aa uncommittedPaths=0/2 provenance=stamped startedAt=2026-09-07T13:11:14.853Z skippedTests=0

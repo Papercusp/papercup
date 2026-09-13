@@ -1,0 +1,295 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "parent": "WI-10000428",
+  "capturedAt": "2026-09-08T11:17:32.851200+00:00",
+  "scope": "Four local repairs verified in the current build. Parent P-006 and the entire release plan remain incomplete. P-015 public publication approval is retained.",
+  "specs": [
+    "AUTO-BAR-R-03-P-006@6",
+    "AUTO-BAR-R-10-P-006@6"
+  ],
+  "repairs": [
+    {
+      "workItem": "EI-22688523783073893",
+      "rootCause": "Asynchronous ViewStateLoaded applied the saved tab/scope after interactive input and could apply repeatedly.",
+      "change": "A one-shot startup restore is superseded by keyboard input, nonempty paste, or mutating control intent. Background data and read-only inspection preserve untouched startup restoration.",
+      "before": "Four new reducer regressions failed; untouched startup positive passed.",
+      "after": "All 12 view_state tests passed. Full final PUI binary suite: 906 passed, zero failed, 17 pre-existing ignored.",
+      "nativeObservation": "All three installed restart8 screens stayed in Agent Chat; none completed the whole journey."
+    },
+    {
+      "workItem": "EI-22689758663742138",
+      "rootCause": "draw_status painted the right shortcut hint over a full-width status/error. The default status duplicated the shortcuts and crowded backend identity.",
+      "change": "Separate rendering rectangles, compact help when space is constrained/errors are shown, and concise default status.",
+      "before": "Two existing footer tests failed in the full unit suite; the error test also failed in isolation.",
+      "after": "Both pass in full final binary suite; backend identity/error visibility assertions retained."
+    },
+    {
+      "workItem": "EI-22690535037598610",
+      "rootCause": "The composer reserved a single unwrapped configuration row; account/mode were clipped beside Presence.",
+      "change": "Group complete settings when wrapping and allocate their measured rows, preserving input/error space in short panes.",
+      "before": "New actual-renderer test failed at width100.",
+      "after": "Test passes at widths100 and150 with Presence, selected account/mode and unsent draft; full binary suite906 passed/17ignored.",
+      "retraction": "Initial settings-loss/late-AgentChatLoaded hypothesis was incorrect. Setter preserves chat_account and AgentChatLoaded does not reset it; both work-item title/body and checkpoint were corrected."
+    },
+    {
+      "workItem": "EI-22691235280524871",
+      "rootCause": "The acceptance reader compared the entire terminal row to agent after removing only outer borders, so a neighboring Presence pane broke valid reply detection.",
+      "change": "Measure the Agent Chat transcript borders and match assistant content within that pane; exclude the composer and other panes, preserve literal pipes.",
+      "before": "3 failed, 2 passed using the extracted old predicate; helper source SHA256 f34fc29396f340a3bbde6122e430ba600d04e12c56f966fac6dfe1c8f634e0ce.",
+      "after": "5 passed, zero failed/skipped. Exact three-file lint:tsc baseline gate clean.",
+      "limits": "This does not explain OMP8: that captured screen contained no assistant bubble and remained at sequence7."
+    }
+  ],
+  "provenance": "Hashes below are point-in-time source/log/artifact snapshots, not a frozen complete runtime import graph. Installed pair matched its installer manifest. Native8 runtime observations retain UNKNOWN imported-source provenance. Native9 is running and is not evidence in this artifact.",
+  "tests": {
+    "cargo": "cargo test --manifest-path apps/tui/Cargo.toml --locked --bin pui",
+    "replyReader": "Node25 npm run test:file -- packages/operator-core/lib/pui-e2e/vt-screen.test.ts",
+    "types": "npm run lint:tsc -- --files=packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts,packages/operator-core/lib/pui-e2e/vt-screen.ts,packages/operator-core/lib/pui-e2e/vt-screen.test.ts; requested file gate clean; no broader-project typecheck verdict",
+    "typesForeground": "Three-file build:typecheck timed out at its documented50s cap; supported repository baseline gate completed cleanly.",
+    "installer": "Supported install-update.sh built both matched artifacts. Final doctor exits1 because an older pui-wb pane remains open; that pane was not killed."
+  },
+  "sources": [
+    {
+      "path": "apps/tui/src/app.rs",
+      "sha256": "d3032710d8a6050ef87aea0084c6740e9e49ee3b9e705520216796124a9c3e76",
+      "bytes": 877467
+    },
+    {
+      "path": "apps/tui/src/ui.rs",
+      "sha256": "294aaec5197ff5ddb14be87790b1a50f5cd091c215f05803b8cefc9ce45f7bb4",
+      "bytes": 342835
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "sha256": "a8e1370e6c9ec92a1401f938ef821662b8e565b1f306540869fd821d0f1ee329",
+      "bytes": 94423
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/operator-process.mts",
+      "sha256": "733beecf820229a0183b8b317ae04827f8828cbda57930715579043d29f15769",
+      "bytes": 7050
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/vt-screen.ts",
+      "sha256": "0f2e9f70d6aa7555b6b31d7acdc029fbce27e7c7b145c2912841015a05e1895e",
+      "bytes": 6757
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/vt-screen.test.ts",
+      "sha256": "61aa6783a6b0f13aa3be35ddf4f7b493494d0d46b88abdd3aa536cd7ad44eca9",
+      "bytes": 1537
+    },
+    {
+      "path": "@home@/.cargo/bin/pui",
+      "sha256": "f786c2a9e816115ca7c8b19049f3cf2f8e2c797fe82b8100dbcc56c5da1675f5",
+      "bytes": 19230928
+    },
+    {
+      "path": "@home@/.papercusp/pui-companion.wasm",
+      "sha256": "b31c679b01b9755cd41de675a851aafdface7ea448137ee9a375b7a34fa37067",
+      "bytes": 2124644
+    },
+    {
+      "path": "@home@/.papercusp/pui-install.json",
+      "sha256": "b0485b52f03f0e7302ffb62f41b6cc0c2aa5d5851918e4fb9dc646081d726363",
+      "bytes": 505
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/pui-p006-view-restore-before.log",
+      "sha256": "a9c0303e4a1534ae315e71f93023f18a8759a177bbefce2df114fca1f2a2be8b",
+      "bytes": 2399
+    },
+    {
+      "path": "/tmp/pui-p006-view-restore-after.log",
+      "sha256": "f09fb0064f69d1561d5e70bc295597ee0c7df4c72826109d281152f552356393",
+      "bytes": 2500
+    },
+    {
+      "path": "/tmp/pui-p006-view-restore-suite.log",
+      "sha256": "b345ac993b188e80992be794faa0dd58d2a30cc60e6b8d3cd0f92e91e6d36d60",
+      "bytes": 73659
+    },
+    {
+      "path": "/tmp/pui-p006-view-restore-footer-suite.log",
+      "sha256": "eb7de3d126914c04ab2135875c3d65bbc03b78a72f5e00728fc55ff8fa0e111b",
+      "bytes": 68057
+    },
+    {
+      "path": "/tmp/pui-p006-view-restore-install.log",
+      "sha256": "998a1f8bb26a508f2dc61512da413edc69782e9ba7a9461b9d683129e47675c5",
+      "bytes": 2901
+    },
+    {
+      "path": "/tmp/pui-p006-footer-error-repro.log",
+      "sha256": "c986b1d4cb2b7ae87746f59a51fcc62296d022b3fdad405928cb0f74f0df72a1",
+      "bytes": 799
+    },
+    {
+      "path": "/tmp/pui-p006-composer-width-before.log",
+      "sha256": "ce64925c2791d9b446b87d6fd86e4b1dca4d96a4fb4839aa9bf304d795542637",
+      "bytes": 6113
+    },
+    {
+      "path": "/tmp/pui-p006-composer-width-suite.log",
+      "sha256": "1e8f354b4392a82f68493e258d68443fda862faa9f75673b11020135fd77f519",
+      "bytes": 68094
+    },
+    {
+      "path": "/tmp/pui-p006-composer-width-install.log",
+      "sha256": "23ebb6352f1f3974dd21531f0e2011c710a9acb14eeed49d7821386e22606a9b",
+      "bytes": 2901
+    },
+    {
+      "path": "/tmp/pui-p006-restart-diagnostics-types.log",
+      "sha256": "91b80dd3f92e7289d984aa910e82ef2ac556505b59bbb1839610a242b3c29611",
+      "bytes": 5714
+    },
+    {
+      "path": "/tmp/pui-p006-reply-render-before.log",
+      "sha256": "ef890f42700d7f713f16cf273c2f15b0aaede5034b40bca6762374be794057a5",
+      "bytes": 6986
+    },
+    {
+      "path": "/tmp/pui-p006-reply-render-after.log",
+      "sha256": "0124cb9ad5842632b6dcdfc9d3325f368aea411ce860e504f1d238155b881eb7",
+      "bytes": 4588
+    },
+    {
+      "path": "/tmp/pui-p006-reply-render-types.log",
+      "sha256": "cd437aaa70d4c8c3cf82b33d6bf15bb78c7f231d8a05b3110dcb1cfb7aee18bb",
+      "bytes": 1246
+    },
+    {
+      "path": "/tmp/pui-p006-reply-render-types-final.log",
+      "sha256": "164e34dd64d5ef36ccea16e9ac5738a50d4b128d66a54df9f2c3d4a9bc5bffe3",
+      "bytes": 6784
+    },
+    {
+      "path": "/tmp/pui-p006-omp-operator-restart-8.log",
+      "sha256": "2d3181f647843d3decca0c2a01ef8fa3e4df2b4b90b06422efdbc586c19a3053",
+      "bytes": 38545
+    },
+    {
+      "path": "/tmp/pui-p006-claude-operator-restart-8.log",
+      "sha256": "b6f42bd9c5013d69949a7f12fcb248aeffbfd671ef8a38bee0600f26994593be",
+      "bytes": 34306
+    },
+    {
+      "path": "/tmp/pui-p006-codex-operator-restart-8.log",
+      "sha256": "9f56e837800b38819e16fb5d018813efeea1445888e49cab325687d37756fbbe",
+      "bytes": 34763
+    }
+  ],
+  "immutablePredecessor": {
+    "path": "docs/evidence/pui-p006-worker-ownership-and-restart-2026-09-08.json",
+    "sha256": "39999c77c582070019d32d853fbc8484cdd8a921f4e8441762d538ca52492725",
+    "bytes": 11263
+  },
+  "native8": {
+    "omp": {
+      "acceptance": false,
+      "events": [
+        {
+          "type": "ready",
+          "pid": 1360595,
+          "instanceId": "afa25f3d-cfc5-483a-a6ae-dc79da25ba19",
+          "at": "2026-09-08T10:51:12.830Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 1360595,
+          "instanceId": "afa25f3d-cfc5-483a-a6ae-dc79da25ba19",
+          "at": "2026-09-08T10:53:27.784Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 1360595,
+          "instanceId": "afa25f3d-cfc5-483a-a6ae-dc79da25ba19",
+          "at": "2026-09-08T10:53:27.915Z"
+        }
+      ],
+      "exitEvidence": [
+        {
+          "pid": 1360595,
+          "instanceId": "afa25f3d-cfc5-483a-a6ae-dc79da25ba19",
+          "code": 0,
+          "signal": null
+        }
+      ],
+      "provenance": "unknown: named fixture unchanged, HEAD moved, import graph not measured",
+      "failure": "First reply not rendered; running/adv1/sequence7, no assistant bubble in captured screen."
+    },
+    "claude": {
+      "acceptance": false,
+      "events": [
+        {
+          "type": "ready",
+          "pid": 1487550,
+          "instanceId": "e22d27ae-ff71-434b-823d-c0ba97cf1aad",
+          "at": "2026-09-08T10:53:22.196Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 1487550,
+          "instanceId": "e22d27ae-ff71-434b-823d-c0ba97cf1aad",
+          "at": "2026-09-08T10:53:52.602Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 1487550,
+          "instanceId": "e22d27ae-ff71-434b-823d-c0ba97cf1aad",
+          "at": "2026-09-08T10:53:52.666Z"
+        }
+      ],
+      "exitEvidence": [
+        {
+          "pid": 1487550,
+          "instanceId": "e22d27ae-ff71-434b-823d-c0ba97cf1aad",
+          "code": 0,
+          "signal": null
+        }
+      ],
+      "provenance": "unknown: named fixture unchanged, HEAD moved, import graph not measured",
+      "failure": "Selected account text clipped by composer configuration row; native launch not reached. Settings-loss hypothesis retracted."
+    },
+    "codex": {
+      "acceptance": false,
+      "events": [
+        {
+          "type": "ready",
+          "pid": 1487548,
+          "instanceId": "0cb1483c-3d1d-49ae-818f-ee4bd5aa1c92",
+          "at": "2026-09-08T10:53:22.211Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 1487548,
+          "instanceId": "0cb1483c-3d1d-49ae-818f-ee4bd5aa1c92",
+          "at": "2026-09-08T10:53:52.599Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 1487548,
+          "instanceId": "0cb1483c-3d1d-49ae-818f-ee4bd5aa1c92",
+          "at": "2026-09-08T10:53:52.669Z"
+        }
+      ],
+      "exitEvidence": [
+        {
+          "pid": 1487548,
+          "instanceId": "0cb1483c-3d1d-49ae-818f-ee4bd5aa1c92",
+          "code": 0,
+          "signal": null
+        }
+      ],
+      "provenance": "unknown: named fixture unchanged, HEAD moved, import graph not measured",
+      "failure": "Selected account text clipped by composer configuration row; native launch not reached. Settings-loss hypothesis retracted."
+    }
+  }
+}

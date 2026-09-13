@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "WI-10000427",
+  "planItem": "P-005",
+  "log": "/tmp/pui-p005-real-after-timing.log",
+  "nativeExecHandle": 31599,
+  "journeyAssertions": "passed",
+  "suiteVerdict": "failed",
+  "failure": "Unexpected turn-start timing warnings remain; no journey assertion failed.",
+  "unexpectedWarnings": [
+    "[bounded-timeout] agent-obligations:goal-subject exceeded 900ms — degrading to fallback",
+    "[bounded-timeout] agent-obligations:plan-context exceeded 900ms — degrading to fallback",
+    "[bounded-timeout] turn-start executable frontier exceeded 900ms — degrading to fallback",
+    "[bounded-timeout] turn-start tool surface exceeded 700ms — degrading to fallback"
+  ],
+  "sourceHashesAfterRun": {
+    "apps/tui/src/app.rs": "8307615a8844ca6cae0e4bce86d1ac4121cbc46ec89fe05b9f925b4a4cc8be6d",
+    "apps/tui/src/main.rs": "28a8d928542a3b122a3e041aff425e9569c9019fb7faca939f8e6a2204bf7d8c",
+    "packages/operator-core/lib/su-session-claude-engine.ts": "52c3f2cd20da2736ba8f22c81384ba7abb40a6fde30bacfdb5b7d156af28d4b6",
+    "packages/operator-core/lib/su-session-claude-adapter.ts": "0730bd40c5a17169198cc5e59223168236b926737fe23d2f7ee8820051478345",
+    "packages/operator-core/lib/su-session-attached-launch.ts": "41a394931fdd20d7d19597a703c0e5e373083890adf4c0f53fd30978d9289eb9",
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "f007d69c67cc81550f8a5a7ef85a86a124e3103915dd3ba827b796ad6dc0e1d5",
+    "packages/operator-core/lib/fleet/executable-frontier.ts": "b32dd1564fbab689bdc2ce53a0555a69d9a227a5d96a84c7c59bf0727643fce7"
+  },
+  "nativeTranscript": "@home@/.papercusp/session-claude/su-f2e3ced9-011b-48d1-bf55-6a547f54349d/projects/-home-@build-user@-papercupai-workspace-papercusp/d0812085-ac66-4ec6-ac82-798931a411c4.jsonl",
+  "nativeModels": [
+    "claude-opus-5"
+  ],
+  "proof": {
+    "binary": "@home@/.cargo/bin/pui",
+    "binarySha256": "a9dc772fef9cc3d4ff57b637db50087ea3766a2ce197e615ebac06b230372a00",
+    "manifest": {
+      "binaryPath": "@home@/.cargo/bin/pui",
+      "binarySha256": "a9dc772fef9cc3d4ff57b637db50087ea3766a2ce197e615ebac06b230372a00",
+      "builtAtEpoch": 1788813983,
+      "companionPath": "@home@/.papercusp/pui-companion.wasm",
+      "companionSha256": "46ebe91e7ac82975365471a880b92e21fb220aa7e90e7b1cf2656107132f1bf8",
+      "schemaVersion": 1,
+      "sourceDirty": true,
+      "sourceRoot": "@repo-root@",
+      "sourceSha": "6370b7fa981d1e77db44d5b02800942da68dcac2"
+    },
+    "chatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+    "identity": {
+      "agentChatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+      "advSessionId": 1,
+      "backend": "claude",
+      "nativeSessionId": "d0812085-ac66-4ec6-ac82-798931a411c4",
+      "ownerId": "su-f2e3ced9-011b-48d1-bf55-6a547f54349d",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "frames": {
+      "greeting": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 15                                                                                                     │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e and no other text.                                                            │\n│                                                                                                                                                    │\n│agent                                                                                                                                               │\n│PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e                                                                                                      │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · claude · adv 1 · chat cf9866f0-d58 · waiting-for-owner · pot papercusp · role operator                                                         │\n│>                                                                                                                                                   │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op http://127.0.0l/m/e/a/u:select · i:compose · ?:help2",
+      "file": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 33                                                                                                     │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e and no other text.                                                            │\n│                                                                                                                                                    │\n│agent                                                                                                                                               │\n│PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e                                                                                                      │\n│                                                                                                                                                    │\n│you                                                                                                                                                 │\n│Use the Read tool to inspect /tmp/pcv/pui-agent-chat-e2e-JQGRpG/read-876a824e-81eb-4a4b-ba55-7358968fd33e.txt, then reply with its contents. Do not │\n│modify any file.                                                                                                                                    │\n│                                                                                                                                                    │\n│agent                                                                                                                                               │\n│PUI-FILE-a8fa8874-5a85-468d-ac44-c325277c8c11                                                                                                       │\n│  ⚙ Read  ✓                                                                                                                                         │\n│    {\"file_path\":\"/tmp/pcv/pui-agent-chat-e2e-JQGRpG/read-876a824e-81eb-4a4b-ba55-7358968fd33e.txt\"}                                                │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · claude · adv 1 · chat cf9866f0-d58 · waiting-for-owner · pot papercusp · role operator                                                         │\n│>                                                                                                                                                   │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op http://127.0.0l/m/e/a/u:select · i:compose · ?:help2",
+      "running": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat · Running · Ctrl+X cancel ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU session · running · adv 1 · seq 42                                                                                                               │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                                                            │\n│  reconciliation: attached                                                                                                                          │\n│you                                                                                                                                                 │\n│Hi. Reply with exactly PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e and no other text.                                                            │\n│                                                                                                                                                    │\n│agent                                                                                                                                               │\n│PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e                                                                                                      │\n│                                                                                                                                                    │\n│you                                                                                                                                                 │\n│Use the Read tool to inspect /tmp/pcv/pui-agent-chat-e2e-JQGRpG/read-876a824e-81eb-4a4b-ba55-7358968fd33e.txt, then reply with its contents. Do not │\n│modify any file.                                                                                                                                    │\n│                                                                                                                                                    │\n│agent                                                                                                                                               │\n│PUI-FILE-a8fa8874-5a85-468d-ac44-c325277c8c11                                                                                                       │\n│  ⚙ Read  ✓                                                                                                                                         │\n│    {\"file_path\":\"/tmp/pcv/pui-agent-chat-e2e-JQGRpG/read-876a824e-81eb-4a4b-ba55-7358968fd33e.txt\"}                                                │\n│                                                                                                                                                    │\n│you                                                                                                                                                 │\n│For interruption check PUI-CANCELLED-876a824e-81eb-4a4b-ba55-7358968fd33e, count from 1 through 10000, one number per line. Do not summarize or use │\n│tools.                                                                                                                                              │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n│                                                                                                                                                    │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n┌ Running — input locked ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · claude · adv 1 · chat cf9866f0-d58 · running · pot papercusp · role operator                                                                   │\n│Running · Ctrl+X cancel                                                                                                                             │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n▲ issues: decode issues                                                                                         l/m/e/a/u:select · i:compose · ?:help",
+      "interrupted": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│107                                                                                                                                                 │\n│108                                                                                                                                                 │\n│109                                                                                                                                                 │\n│110                                                                                                                                                 │\n│111                                                                                                                                                 │\n│112                                                                                                                                                 │\n│113                                                                                                                                                 │\n│114                                                                                                                                                 │\n│115                                                                                                                                                 │\n│116                                                                                                                                                 │\n│117                                                                                                                                                 │\n│118                                                                                                                                                 │\n│119                                                                                                                                                 │\n│120                                                                                                                                                 │\n│121                                                                                                                                                 │\n│122                                                                                                                                                 │\n│123                                                                                                                                                 │\n│124                                                                                                                                                 │\n│125                                                                                                                                                 │\n│126                                                                                                                                                 │\n│127                                                                                                                                                 │\n│128                                                                                                                                                 │\n│129                                                                                                                                                 │\n│130                                                                                                                                                 │\n│131                                                                                                                                                 │\n│132                                                                                                                                                 │\n│133                                                                                                                                                 │\n│134                                                                                                                                                 │\n│135                                                                                                                                                 │\n│136                                                                                                                                                 │\n│137                                                                                                                                                 │\n│138                                                                                                                                                 │\n│139                                                                                                                                                 │\n│140                                                                                                                                                 │\n│141                                                                                                                                                 │\n│                                                                                                                                                    │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · claude · adv 1 · chat cf9866f0-d58 · waiting-for-owner · pot papercusp · role operator                                                         │\n│>                                                                                                                                                   │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n▲ SU-session: error_during_execution                                                                            l/m/e/a/u:select · i:compose · ?:help",
+      "followup": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│113                                                                                                                                                 │\n│114                                                                                                                                                 │\n│115                                                                                                                                                 │\n│116                                                                                                                                                 │\n│117                                                                                                                                                 │\n│118                                                                                                                                                 │\n│119                                                                                                                                                 │\n│120                                                                                                                                                 │\n│121                                                                                                                                                 │\n│122                                                                                                                                                 │\n│123                                                                                                                                                 │\n│124                                                                                                                                                 │\n│125                                                                                                                                                 │\n│126                                                                                                                                                 │\n│127                                                                                                                                                 │\n│128                                                                                                                                                 │\n│129                                                                                                                                                 │\n│130                                                                                                                                                 │\n│131                                                                                                                                                 │\n│132                                                                                                                                                 │\n│133                                                                                                                                                 │\n│134                                                                                                                                                 │\n│135                                                                                                                                                 │\n│136                                                                                                                                                 │\n│137                                                                                                                                                 │\n│138                                                                                                                                                 │\n│139                                                                                                                                                 │\n│140                                                                                                                                                 │\n│141                                                                                                                                                 │\n│                                                                                                                                                    │\n│you                                                                                                                                                 │\n│Reply with exactly PUI-CONTINUED-876a824e-81eb-4a4b-ba55-7358968fd33e and no other text. Do not resume the interrupted task.                        │\n│                                                                                                                                                    │\n│agent                                                                                                                                               │\n│PUI-CONTINUED-876a824e-81eb-4a4b-ba55-7358968fd33e                                                                                                  │\n│                                                                                                                                                    │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n┌ Message — Enter send · ↑↓ history · Esc cancel ────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│SU · claude · adv 1 · chat cf9866f0-d58 · waiting-for-owner · pot papercusp · role operator                                                         │\n│>                                                                                                                                                   │\n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n⊙ all pots · pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot · op http://127.0.0l/m/e/a/u:select · i:compose · ?:help2"
+    },
+    "greetingReply": "PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e",
+    "fileResult": "PUI-FILE-a8fa8874-5a85-468d-ac44-c325277c8c11",
+    "followupReply": "PUI-CONTINUED-876a824e-81eb-4a4b-ba55-7358968fd33e",
+    "readStart": {
+      "type": "tool",
+      "phase": "started",
+      "turnId": "pui-turn-pui-1788814602217567404",
+      "callId": "toolu_0179UiHZ3LFSLLXuakhPzcMv",
+      "name": "Read",
+      "input": {
+        "file_path": "/tmp/pcv/pui-agent-chat-e2e-JQGRpG/read-876a824e-81eb-4a4b-ba55-7358968fd33e.txt"
+      },
+      "schema": "papercusp.su-session/v1",
+      "protocolVersion": 1,
+      "eventId": "cf9866f0-d581-4801-93a3-25857513e7f1:24",
+      "sequence": 24,
+      "at": "2026-09-07T20:56:49.304Z",
+      "session": {
+        "agentChatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+        "advSessionId": 1,
+        "backend": "claude",
+        "nativeSessionId": "d0812085-ac66-4ec6-ac82-798931a411c4",
+        "ownerId": "su-f2e3ced9-011b-48d1-bf55-6a547f54349d",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      }
+    },
+    "readEnd": {
+      "type": "tool",
+      "phase": "completed",
+      "turnId": "pui-turn-pui-1788814602217567404",
+      "callId": "toolu_0179UiHZ3LFSLLXuakhPzcMv",
+      "name": "Read",
+      "output": "1\tPUI-FILE-a8fa8874-5a85-468d-ac44-c325277c8c11\n2\t",
+      "isError": false,
+      "schema": "papercusp.su-session/v1",
+      "protocolVersion": 1,
+      "eventId": "cf9866f0-d581-4801-93a3-25857513e7f1:26",
+      "sequence": 26,
+      "at": "2026-09-07T20:56:53.789Z",
+      "session": {
+        "agentChatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+        "advSessionId": 1,
+        "backend": "claude",
+        "nativeSessionId": "d0812085-ac66-4ec6-ac82-798931a411c4",
+        "ownerId": "su-f2e3ced9-011b-48d1-bf55-6a547f54349d",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      }
+    },
+    "commandTypes": [
+      "owner_turn",
+      "owner_turn",
+      "owner_turn",
+      "interrupt",
+      "owner_turn"
+    ],
+    "processes": [
+      {
+        "pid": 1887546,
+        "tty": "?",
+        "name": "node-MainThread"
+      },
+      {
+        "pid": 1887560,
+        "tty": "?",
+        "name": "claude"
+      }
+    ],
+    "traffic": [
+      {
+        "method": "POST",
+        "path": "/api/adv/sessions/launch-su",
+        "status": 200,
+        "count": 1,
+        "agent": "claude",
+        "attachedEngine": true,
+        "transport": "structured",
+        "headless": false,
+        "deferred": false,
+        "advSessionId": 1,
+        "nativeSessionPresent": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/harness/papercusp/agent-chats/cf9866f0-d581-4801-93a3-25857513e7f1/su-session",
+        "status": 200,
+        "count": 5
+      },
+      {
+        "method": "GET",
+        "path": "/api/harness/papercusp/agent-chats/cf9866f0-d581-4801-93a3-25857513e7f1/su-session/events",
+        "status": 200,
+        "count": 1
+      },
+      {
+        "method": "POST",
+        "path": "/api/harness/papercusp/agent-chats/cf9866f0-d581-4801-93a3-25857513e7f1/su-session/commands",
+        "status": 202,
+        "count": 5
+      }
+    ],
+    "initializeWarnings": [
+      {
+        "traceId": "b242e285-e69c-4367-a2a8-111e0755eadf",
+        "pid": 1807526,
+        "outcome": "timeout",
+        "stages": {
+          "sdkMs": 1,
+          "spawnContextMs": 2,
+          "userLookupMs": null,
+          "preludeMs": null,
+          "enrichmentMs": 2502,
+          "totalMs": 2503
+        }
+      }
+    ],
+    "optionalMemoryWarnings": [
+      "[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010)."
+    ],
+    "assistantReplies": [
+      {
+        "type": "transcript",
+        "phase": "completed",
+        "turnId": "pui-turn-pui-1788814559169844188",
+        "role": "assistant",
+        "channel": "text",
+        "content": "PUI-HELLO-876a824e-81eb-4a4b-ba55-7358968fd33e",
+        "schema": "papercusp.su-session/v1",
+        "protocolVersion": 1,
+        "eventId": "cf9866f0-d581-4801-93a3-25857513e7f1:13",
+        "sequence": 13,
+        "at": "2026-09-07T20:56:35.977Z",
+        "session": {
+          "agentChatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+          "advSessionId": 1,
+          "backend": "claude",
+          "nativeSessionId": "d0812085-ac66-4ec6-ac82-798931a411c4",
+          "ownerId": "su-f2e3ced9-011b-48d1-bf55-6a547f54349d",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        }
+      },
+      {
+        "type": "transcript",
+        "phase": "completed",
+        "turnId": "pui-turn-pui-1788814602217567404",
+        "role": "assistant",
+        "channel": "text",
+        "content": "PUI-FILE-a8fa8874-5a85-468d-ac44-c325277c8c11",
+        "schema": "papercusp.su-session/v1",
+        "protocolVersion": 1,
+        "eventId": "cf9866f0-d581-4801-93a3-25857513e7f1:32",
+        "sequence": 32,
+        "at": "2026-09-07T20:56:56.687Z",
+        "session": {
+          "agentChatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+          "advSessionId": 1,
+          "backend": "claude",
+          "nativeSessionId": "d0812085-ac66-4ec6-ac82-798931a411c4",
+          "ownerId": "su-f2e3ced9-011b-48d1-bf55-6a547f54349d",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        }
+      },
+      {
+        "type": "transcript",
+        "phase": "completed",
+        "turnId": "pui-turn-pui-1788814621012620271",
+        "role": "assistant",
+        "channel": "text",
+        "content": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40\n41\n42\n43\n44\n45\n46\n47\n48\n49\n50\n51\n52\n53\n54\n55\n56\n57\n58\n59\n60\n61\n62\n63\n64\n65\n66\n67\n68\n69\n70\n71\n72\n73\n74\n75\n76\n77\n78\n79\n80\n81\n82\n83\n84\n85\n86\n87\n88\n89\n90\n91\n92\n93\n94\n95\n96\n97\n98\n99\n100\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110\n111\n112\n113\n114\n115\n116\n117\n118\n119\n120\n121\n122\n123\n124\n125\n126\n127\n128\n129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141",
+        "schema": "papercusp.su-session/v1",
+        "protocolVersion": 1,
+        "eventId": "cf9866f0-d581-4801-93a3-25857513e7f1:48",
+        "sequence": 48,
+        "at": "2026-09-07T20:57:13.446Z",
+        "session": {
+          "agentChatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+          "advSessionId": 1,
+          "backend": "claude",
+          "nativeSessionId": "d0812085-ac66-4ec6-ac82-798931a411c4",
+          "ownerId": "su-f2e3ced9-011b-48d1-bf55-6a547f54349d",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        }
+      },
+      {
+        "type": "transcript",
+        "phase": "completed",
+        "turnId": "pui-turn-pui-1788814633645552581",
+        "role": "assistant",
+        "channel": "text",
+        "content": "PUI-CONTINUED-876a824e-81eb-4a4b-ba55-7358968fd33e",
+        "schema": "papercusp.su-session/v1",
+        "protocolVersion": 1,
+        "eventId": "cf9866f0-d581-4801-93a3-25857513e7f1:65",
+        "sequence": 65,
+        "at": "2026-09-07T20:57:24.664Z",
+        "session": {
+          "agentChatId": "cf9866f0-d581-4801-93a3-25857513e7f1",
+          "advSessionId": 1,
+          "backend": "claude",
+          "nativeSessionId": "d0812085-ac66-4ec6-ac82-798931a411c4",
+          "ownerId": "su-f2e3ced9-011b-48d1-bf55-6a547f54349d",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        }
+      }
+    ]
+  },
+  "beforeRun": {
+    "at": "2026-09-07T20:53:41.995784+00:00",
+    "hashes": {
+      "apps/tui/src/app.rs": "8307615a8844ca6cae0e4bce86d1ac4121cbc46ec89fe05b9f925b4a4cc8be6d",
+      "apps/tui/src/main.rs": "28a8d928542a3b122a3e041aff425e9569c9019fb7faca939f8e6a2204bf7d8c",
+      "packages/operator-core/lib/su-session-claude-engine.ts": "52c3f2cd20da2736ba8f22c81384ba7abb40a6fde30bacfdb5b7d156af28d4b6",
+      "packages/operator-core/lib/su-session-claude-adapter.ts": "0730bd40c5a17169198cc5e59223168236b926737fe23d2f7ee8820051478345",
+      "packages/operator-core/lib/su-session-attached-launch.ts": "41a394931fdd20d7d19597a703c0e5e373083890adf4c0f53fd30978d9289eb9",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "f007d69c67cc81550f8a5a7ef85a86a124e3103915dd3ba827b796ad6dc0e1d5",
+      "packages/operator-core/lib/fleet/executable-frontier.ts": "b32dd1564fbab689bdc2ce53a0555a69d9a227a5d96a84c7c59bf0727643fce7"
+    },
+    "manifest": {
+      "binaryPath": "@home@/.cargo/bin/pui",
+      "binarySha256": "a9dc772fef9cc3d4ff57b637db50087ea3766a2ce197e615ebac06b230372a00",
+      "builtAtEpoch": 1788813983,
+      "companionPath": "@home@/.papercusp/pui-companion.wasm",
+      "companionSha256": "46ebe91e7ac82975365471a880b92e21fb220aa7e90e7b1cf2656107132f1bf8",
+      "schemaVersion": 1,
+      "sourceDirty": true,
+      "sourceRoot": "@repo-root@",
+      "sourceSha": "6370b7fa981d1e77db44d5b02800942da68dcac2"
+    }
+  },
+  "namedSourcesUnchanged": true
+}

@@ -1,0 +1,245 @@
+{
+  "schemaVersion": "pui-p006-omp-gateway-repairs-v1",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "item": "P-006",
+  "workItem": "WI-10000428",
+  "owner": "su-53f20916-e509-4e77-92ad-5f76d90f6a25",
+  "capturedAt": "2026-09-08T04:40:55.594Z",
+  "sourceHashes": {
+    "libs/papercusp/packages/orchestrator/src/omp-gateway-config.ts": "fefceb8ecf00bb681bbf1f3210700d2a2631104dbe998d36bbb3e658537c1eca",
+    "apps/operator/scripts/psu-launcher.mjs": "c83dd40ec483186a93c45ba27ceb823522c5bd695236de445c6d70da2b8a07bf",
+    "apps/operator/lib/psu-launcher.test.ts": "2e2917b083e6a00e940c75de071f89308ea5749b050b50434fa65626fc91f528",
+    "packages/operator-core/lib/inference-gateway/omp-models-config.test.ts": "ad48900f535394a7cb7eb0629ed4471c77a605511e5707e3e7b44a798a6ebe9b",
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "1cf53e03f8792a705f046464d8efe3a18f5c678128d9daeb21fbdfa029926c89"
+  },
+  "logHashes": {
+    "/tmp/pui-p006-omp-attribution-before.log": "39bb5392e436704ef0958502da9c73d5945ea9532ab3b8a0a0109780c316ade8",
+    "/tmp/pui-p006-omp-attribution-after.log": "379a125fa7edf190c72642f0f8945d1aadb42ebd016791dcf1804522607cf0a4",
+    "/tmp/pui-p006-omp-attribution-types-2.log": "59d3ce5215930c3745498383e4e61cf366cc79abbbb82923f5b85dcac81e3159",
+    "/tmp/pui-p006-omp-oauth-before.log": "118a4c1c2696fb41b11adc3d95530587aa8379c0fc7b7c62c69bdc179020470e",
+    "/tmp/pui-p006-omp-oauth-after.log": "4ddec57c6baa4b19fc8844ea3f4c894cb728a594bd1bdb4ed16f2931bd6843af",
+    "/tmp/pui-p006-omp-oauth-types.log": "c50fadc30e7ac1f28c000b5b795a23b13dec2c83802f869b10a175865e6f7ba6",
+    "/tmp/pui-p006-omp-installed-13.log": "5da2a250fe10678b69049791b16aeb3faea92702d9a2728a3b0bcbe389b7f86a",
+    "/tmp/pui-p006-omp-installed-14.log": "3ee27685b294a4f768da9108ef9ec06d67515142718bdd980c1fa56d6fd21061",
+    "/tmp/pui-p006-omp-oauth-types-routed.log": "ab2ec13e14aaa306ef028ca8748ec161badd79ceea46b65897eadb8d77bd8d4b"
+  },
+  "native13": {
+    "binary": "@home@/.cargo/bin/pui",
+    "binarySha256": "40a1d68f9a560601a26450ffe06d3f6323aef6106f75aefe077c25d936b518a7",
+    "identity": {
+      "agentChatId": "0f605daf-55aa-479b-a34f-23322e032055",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a07f3c-e061-747a-a01b-1121f229d77e",
+      "ownerId": "su-889e282f-e5df-40d1-bb36-987216b3c609",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "state": {
+      "isStreaming": true,
+      "messageCount": 2
+    },
+    "providerEvents": [
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:18:19.400Z",
+        "priority": "interactive",
+        "owner": "su-889e282f-e5df-40d1-bb36-987216b3c609",
+        "account": null
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "retryAfter": null,
+        "at": "2026-09-08T04:18:52.740Z",
+        "errorBody": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Error\"},\"request_id\":\"req_011CeqL22UdHkAVYVn7QoZ7d\"}"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:18:53.253Z",
+        "priority": "interactive",
+        "owner": "su-889e282f-e5df-40d1-bb36-987216b3c609",
+        "account": null
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "retryAfter": null,
+        "at": "2026-09-08T04:19:25.023Z",
+        "errorBody": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Error\"},\"request_id\":\"req_011CeqL4R9SSGdCGZ1Z1q1YA\"}"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:19:25.858Z",
+        "priority": "interactive",
+        "owner": "su-889e282f-e5df-40d1-bb36-987216b3c609",
+        "account": null
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "retryAfter": null,
+        "at": "2026-09-08T04:19:57.473Z",
+        "errorBody": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Error\"},\"request_id\":\"req_011CeqL6otUMWcBcKYb3Zavp\"}"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:19:59.386Z",
+        "priority": "interactive",
+        "owner": "su-889e282f-e5df-40d1-bb36-987216b3c609",
+        "account": null
+      }
+    ]
+  },
+  "native14": {
+    "identity": {
+      "agentChatId": "9d2cd2d8-dd86-438c-9c62-7b938eedb4fc",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a07f4e-6ae9-74b7-8c15-1135291f61cd",
+      "ownerId": "su-349fa194-31c3-410f-89fc-be8a014d080c",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "binary": "@home@/.cargo/bin/pui",
+    "binarySha256": "40a1d68f9a560601a26450ffe06d3f6323aef6106f75aefe077c25d936b518a7",
+    "completedFrames": [
+      "greeting",
+      "file",
+      "running"
+    ],
+    "greetingVisible": true,
+    "fileVisible": true,
+    "providerEvents": [
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:37:25.782Z",
+        "priority": "interactive",
+        "owner": "su-349fa194-31c3-410f-89fc-be8a014d080c",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T04:37:28.826Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:37:34.663Z",
+        "priority": "interactive",
+        "owner": "su-349fa194-31c3-410f-89fc-be8a014d080c",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T04:37:35.962Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:37:38.168Z",
+        "priority": "interactive",
+        "owner": "su-349fa194-31c3-410f-89fc-be8a014d080c",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T04:37:39.606Z"
+      }
+    ],
+    "stateReadError": "Structured engine connection is closed",
+    "remainingFailure": "Interrupt accepted but Message — Enter send not restored within30000ms; separate exact intent-pivot-embed1500ms warning."
+  },
+  "repairs": {
+    "attribution": {
+      "workItem": "EI-22663779667665027",
+      "root": "Copied gateway model registries omitted the native session owner even though the launcher already had clientId.",
+      "change": "Extend the shared OMP registry helper, preserve account/model/direct providers and global source bytes, stamp owner on session copies and stale per-model overrides.",
+      "proof": "Four added regressions failed before; full launcher764+gateway14 passed. ActualOMP13 and14 send the matching SU owner and populate the gateway owner ledger."
+    },
+    "oauth": {
+      "workItem": "EI-22659285243048839",
+      "root": "Explicit auth:apiKey disabled OMP's native OAuth request formatting; its placeholder key cannot reveal the real OAuth credential injected by the gateway.",
+      "change": "Shared gateway builder and copied Anthropic registries use OMP's supported auth:oauth; OpenAI and direct providers retain their modes.",
+      "proof": "Three assertions failed before; launcher766+gateway14 passed. ActualOMP14 rendered the randomized greeting and file contents and received HTTP200 streaming responses.",
+      "sourceExamined": "/tmp/pui-omp18-source-mQToxF/pi-coding-agent/src/config/custom-models.ts: resolveCustomModelIsOAuth"
+    }
+  },
+  "verification": {
+    "units": {
+      "beforeAttribution": "4 failed;760 skipped",
+      "afterAttribution": "764+14 passed;0 skipped",
+      "beforeOAuth": "3 failed;777 skipped",
+      "afterOAuth": "766+14 passed;0 skipped"
+    },
+    "typecheck": {
+      "result": "All five changed files clean across operator-core, orchestrator and operator legs.",
+      "log": "/tmp/pui-p006-omp-oauth-types.log"
+    },
+    "smallRequestProbes": {
+      "unframed": {
+        "status": 429,
+        "elapsedMs": 32348,
+        "model": "claude-sonnet-4-6",
+        "requestedAccount": null,
+        "requestId": "req_011CeqLUuDKUiqDFGHyq8uC7"
+      },
+      "framed": {
+        "status": 200,
+        "elapsedMs": 1402,
+        "model": "claude-sonnet-4-6",
+        "requestedAccount": "aviynw4",
+        "requestId": "req_011CeqLqqVuo4gdDvbks363A"
+      },
+      "qualification": "The fully retained probes differ in requested account as well as framing. The intervening pinned-unframed probe's tool result was clipped. Native14 provides the direct installed-product proof after the supported OAuth mode repair."
+    }
+  },
+  "limitations": [
+    "P006 and the overall plan remain incomplete. Native14 full journey failed at interruption and the independent intent-pivot warning; no full OMP acceptance pass is claimed.",
+    "Native13 is historical attribution evidence before the OAuth-mode fix. It failed at greeting with real upstream429s.",
+    "Installed Rust binary remains40a1d68f9a56; no Rust change or reinstall in this repair.",
+    "Source hashes are captured snapshots after implementation; Native13 preceded the OAuth changes and a type-only annotation repair.",
+    "Gateway stage telemetry prematurely closed borrowed spans as500 despite later HTTP429; recorded asEI-22666774837615847. Do not use those stage totals as the actual HTTP duration.",
+    "No operator OS restart, public-publication, or live-gate operation was performed.",
+    "Owner-directed proxy disablement remains intact."
+  ]
+}
+

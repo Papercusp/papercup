@@ -1,0 +1,61 @@
+
+> @papercupai/papercusp-monorepo@0.0.1 test:file
+> PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs packages/operator-core/lib/agent-tools/capability/launch-agent.test.ts packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+
+[pc-heavy] slot acquired — starting real work
+PC_HEAVY_ADMISSION status=skipped reason=memory-not-scarce priority=50 psiFullAvg10=29 admittedCgroupMiB=7918 admissionId=pc-heavy-2686815-1788788511641225032 retryHandle=psi-recovery:pc-heavy-2686815-1788788511641225032
+PC_HEAVY_PREEMPT_READY pid=2687327
+TEST_FILE_PROGRESS state=started cwd="packages/operator-core" elapsedMs=325 capturedBytes=0 completedFiles=[] pendingFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=10436 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=20439 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=21843 capturedBytes=442 completedFiles=["lib/agent-tools/capability/launch-agent.test.ts"] pendingFiles=["lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=2687327
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=26602 capturedBytes=1137 completedFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="packages/operator-core" elapsedMs=27596 capturedBytes=1398 completedFiles=["lib/agent-tools/capability/launch-agent.test.ts","lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: run-u919765.scope; invocation ID: 0c4558370c2749b385c0ddb26ec2c3e1
+TEST_FILE_ROUTE requested=2 groups=1
+TEST_FILE_PROVENANCE head=52db2dd1e9 testedPaths=2 uncommitted=1 unknown=0 phase=pre-run startedAt=2026-09-07T13:41:52.064Z
+  HEAD         : 52db2dd1e9
+  tested files : packages/operator-core/lib/agent-tools/capability/launch-agent.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts  [DIRTY +19/-8]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+  ⚠ 1 of 2 tested path(s) carry uncommitted changes — this result describes LOCAL state and is not reproducible by anyone else. Cite it with this stamp or not at all.
+  ⛔ STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale — the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.
+     Falsify against the judged candidate BEFORE recording any of them as stale:
+       git show <candidate>:packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+ROUTE cwd=packages/operator-core config=vitest.config.ts
+  requested lib/agent-tools/capability/launch-agent.test.ts
+  requested lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+  matched lib/agent-tools/capability/launch-agent.test.ts
+  matched lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+
+ RUN  v4.1.8 @repo-root@/packages/operator-core
+
+stdout | lib/agent-tools/capability/launch-agent.test.ts > resume + fork (D-004/D-007) > starts an identity-preserving fresh successor for an ended critical source
+[sync] invalidation bus listening
+
+ ✓ lib/agent-tools/capability/launch-agent.test.ts (110 tests) 234ms
+stdout | lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts > fleet:launch-on-plan GOAL pot sovereignty fence (EI-22180799091614070) > does not apply the GOAL-only fence to an ordinary launcher
+[sync] invalidation bus listening
+
+ ✓ lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts (182 tests) 3935ms
+     ✓ reuses the persisted headcount launch profile for an existing-fleet top-up/takeover with an omitted recipe (D-008)  760ms
+     ✓ uses the existing fleet live claim lane before stale saved-plan admission on an omitted top-up (EI-21577352340987493)  1568ms
+     ✓ reads capacity for the resolved member provider, including OMP model-aware routing  859ms
+
+ Test Files  2 passed (2)
+      Tests  292 passed (292)
+   Start at  09:41:58
+   Duration  24.52s (transform 29.76s, setup 724ms, import 37.59s, tests 4.17s, environment 0ms)
+
+JSON report written to /dev/shm/pcv/papercusp-test-files-report-40covR/group-0.json
+TEST_FILE_PROVENANCE head=52db2dd1e9 testedPaths=2 uncommitted=1 unknown=0 phase=post-run startedAt=2026-09-07T13:42:24.146Z
+  HEAD         : 52db2dd1e9
+  tested files : packages/operator-core/lib/agent-tools/capability/launch-agent.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts  [DIRTY +19/-8]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+  ⚠ 1 of 2 tested path(s) carry uncommitted changes — this result describes LOCAL state and is not reproducible by anyone else. Cite it with this stamp or not at all.
+  ⛔ STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale — the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.
+     Falsify against the judged candidate BEFORE recording any of them as stale:
+       git show <candidate>:packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts
+TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=52db2dd1e9 uncommittedPaths=1/2 provenance=stamped startedAt=2026-09-07T13:41:52.064Z skippedTests=0

@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItem": "WI-10000428",
+  "status": "in-progress; local recovery implementation verified, installed acceptance failing",
+  "recordedAt": "2026-09-07T23:58:06.718771+00:00",
+  "headAtCheckpoint": "7e8e135e6aa918d27d8a2a5f672d728a2ce64229",
+  "sourceHashesAtCheckpoint": {
+    "apps/tui/src/app.rs": "287b3eee766ef0979bd60a1a9534ec4458ddc1b88c8af4bdf1c9d9a5720511d1",
+    "apps/tui/src/session_config.rs": "3e9f1dd759e51fb3b12fcdbc4aded244658b561e46ed23afda2bd613b8d225ae",
+    "apps/tui/src/ui.rs": "97cff55bc3d340d6a7d067986a3dfeb96af9f57d4eb8e1409a06c57c2928499a",
+    "apps/operator/scripts/psu-launcher.mjs": "047d4ee3089d8bec106432bf81456a7faea5272765ffa0481d971acb5d0a27c4",
+    "apps/operator/lib/psu-launcher.test.ts": "7bf72c8f096d0e79349cb2aa76b38d9fe1aedd3f2d6e5e7c54357f5981959ebe",
+    "packages/operator-core/lib/su-session-host.ts": "336afce1fb403e1dc824578d83fcda4c85b9815ead09f3b58ecef6df482db65a",
+    "packages/operator-core/lib/su-session-host.test.ts": "a287d891ac3e65b13c5dc11fe2fe3d97437d602457f95b8f2235a8e4a9e337e5",
+    "packages/operator-core/lib/su-session-claude-adapter.ts": "cfdc98e8b48a212237f1dfe2beeb4932e6cee21bf1a5501fb42fe213e1dbdb4a",
+    "packages/operator-core/lib/su-session-codex-adapter.ts": "6146332a3e8f26a1a91adc94cbe5e2f0c6a854f6726d15b8d2972cfbcb0ba962",
+    "packages/operator-core/lib/su-session-omp-adapter.ts": "28665588e57f8f484318b019650faf22aafb1b1a2cd4830eaee92aa7f7a3c0a9",
+    "packages/operator-core/lib/su-session-claude-engine.ts": "24a4664617e512edcf364f09bea1f174a8547cb5813e0a56cacc094cd656c199",
+    "packages/operator-core/lib/su-session-rpc-engine.ts": "785f60505d12b17b713d8fce105bba9886b50522799c1561944089f5c05d8cf4",
+    "packages/operator-core/lib/su-session-rpc-engine.test.ts": "ff65beeac76627ea2424d150cf3defce885963070d371d524ba362377fee8f88",
+    "packages/operator-core/lib/su-session-resume.ts": "3340b374c0a6a67dff0f5ba770d1f5cb442bfce6e16061ff5a61a1fd4d8ef561",
+    "packages/operator-core/lib/su-session-resume.test.ts": "584eb5a7e0dd7ac1962dd5f3ecde2c90416dab780014100527ded577a67e01d1",
+    "packages/operator-core/lib/su-session-attached-launch.ts": "4130b7830bbd3a2e8ea822b835ad936fffcd95236c81ac88b2b3dab2b285d8d7",
+    "packages/operator-core/lib/su-session-attached-launch.test.ts": "7d5eae17f5ed74cfe2731838a250ecd5942814d9bacbf1e3d733709d9116c74d",
+    "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts": "9c1869deaf7a0a7815276d1961946356c6bacb3504946e95ba7f3fc73e67b9cb",
+    "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.test.ts": "fc09fb146f57e8472a6d130d01e62cf70c35c9a64dbd6bfe2e640273d7d7d26e",
+    "packages/operator-core/lib/session-transcript-resolvers.ts": "c5c82306e8fa23a71dc93e885e5d4d8de902f1200ad7262f9ffa2226701b95dc",
+    "packages/operator-core/lib/session-transcript-resolvers.test.ts": "1656b77c56fb1c1621d6b00a8edafa2c183f9c46c2863cd55dae855c1c8a64d9",
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "04a9c0ab702f20c657c31fba7d65fc5211582e5d18203a284d9e92aa7d5d3dc8"
+  },
+  "installed": {
+    "binaryPath": "@home@/.cargo/bin/pui",
+    "binarySha256": "d158f717047b6a6c4d598140dbc613542b16fac9370f1d23cbd139a637ed4968",
+    "builtAtEpoch": 1788825113,
+    "companionPath": "@home@/.papercusp/pui-companion.wasm",
+    "companionSha256": "75a996d71b9410261dfac989ae911f9a1bf29dd3c3446e6f4bf3c5a5fd914ad3",
+    "schemaVersion": 1,
+    "sourceDirty": false,
+    "sourceRoot": "@repo-root@",
+    "sourceSha": "7e8e135e6aa918d27d8a2a5f672d728a2ce64229"
+  },
+  "implemented": [
+    "prepareStructuredSuResume reuses existing full-SU config, native transcript recovery, account routing, exclusive liveness witnesses and keyed adv-session resume leases.",
+    "Descriptor-only SuSessionHost can attach one replacement executor with identical identity and a higher generation; it preserves its channel and updates runtime reconciliation.",
+    "Claude uses SDK resume; Codex and OMP use their exact native handles. A resume is finalized from a native PID before publishing ready.",
+    "The actual launch-su attach endpoint reconnects saved structured PUI sessions. PUI has a backend picker and a persistent selected-backend label; stopped sessions go through the same structured attach door.",
+    "RPC completed transcript events include accumulated text.",
+    "Fixture native homes are isolated before bootstrap. OMP writer/resume/canonical reader share PAPERCUSP_SU_OMP_HOMES_DIR; existing Codex/Claude/MCP root overrides are used. EI-22648261762039689 completed with regression evidence."
+  ],
+  "tests": [
+    {
+      "suite": "su-session-host.test.ts + su-session-claude-engine.test.ts + su-session-rpc-engine.test.ts",
+      "result": "49 passed",
+      "at": "2026-09-07T23:19:10Z",
+      "limitation": "Earlier state before later RPC transcript and host reconciliation edits"
+    },
+    {
+      "suite": "su-session-resume.test.ts + su-session-attached-launch.test.ts",
+      "result": "19 passed",
+      "at": "2026-09-07T23:24:34Z",
+      "limitation": "Before later archive and isolation extensions"
+    },
+    {
+      "suite": "su-session-host.test.ts + su-session-resume.test.ts + su-session-rpc-engine.test.ts + endpoint-route/routes/adv/launch-su.test.ts",
+      "result": "68 passed",
+      "at": "2026-09-07T23:35:21Z",
+      "head": "1f539843be",
+      "limitation": "Local tree, one named test dirty; resume had seven cases before archive extension"
+    },
+    {
+      "suite": "su-session-resume.test.ts",
+      "result": "8 passed",
+      "at": "2026-09-07T23:39:52Z",
+      "scope": "Includes OMP archive restore through the selected operator"
+    },
+    {
+      "suite": "Rust session_picker filter",
+      "result": "6 passed, 907 filtered",
+      "scope": "Includes stopped-session reconnect and pending/rematerializing read-only controls"
+    },
+    {
+      "suite": "Rust backend_picker filter",
+      "result": "1 passed, 912 filtered",
+      "scope": "All three choices, visible selected-backend label, existing-session immutability; final run after label change and formatting"
+    },
+    {
+      "suite": "OMP isolated-root writer/resume and canonical resolver filters",
+      "result": "2 passed, 773 filtered",
+      "at": "2026-09-07T23:49:33Z",
+      "head": "d0c2a3a61b",
+      "log": "/tmp/pui-p006-isolation-tests.log"
+    },
+    {
+      "suite": "Scoped lint-tsc",
+      "result": "clean",
+      "at": "2026-09-07T23:49:15Z",
+      "head": "d0c2a3a61b",
+      "files": [
+        "su-session-resume.ts",
+        "pui-e2e/agent-chat-pty.integration.test.ts",
+        "session-transcript-resolvers.ts"
+      ],
+      "limitation": "Named-file baseline gate; earlier wider run was inconclusive due to concurrent E2E edits"
+    },
+    {
+      "suite": "cargo fmt --check",
+      "result": "passed after formatting apps/tui/src/app.rs"
+    }
+  ],
+  "installedArtifact": {
+    "sourceSha": "7e8e135e6aa918d27d8a2a5f672d728a2ce64229",
+    "sourceDirty": false,
+    "binary": "@home@/.cargo/bin/pui",
+    "binarySha256": "d158f717047b6a6c4d598140dbc613542b16fac9370f1d23cbd139a637ed4968",
+    "companion": "@home@/.papercusp/pui-companion.wasm",
+    "companionSha256": "75a996d71b9410261dfac989ae911f9a1bf29dd3c3446e6f4bf3c5a5fd914ad3",
+    "verified": "Both file hashes re-resolved and matched the installer manifest.",
+    "installerResult": "Artifacts installed and local doctor check OK; final exit1 because an existing old pui-wb pane was detected. That unrelated pane was left running.",
+    "log": "/tmp/pui-p006-reinstall.log"
+  },
+  "installedJourneys": [
+    {
+      "backend": "codex",
+      "run": 1,
+      "result": "failed before native launch",
+      "log": "/tmp/pui-p006-codex-installed.log",
+      "cause": "Fixture waited for a post-picker note that was not visible. Fixed by rendering the selected backend persistently and waiting on that label."
+    },
+    {
+      "backend": "codex",
+      "run": 2,
+      "result": "failed; created chat but no greeting receipt",
+      "head": "7e8e135e6a",
+      "uncommittedNamedPaths": 0,
+      "log": "/tmp/pui-p006-codex-installed-2.log",
+      "observed": "waitForCorrelatedReply timed out waiting for a saved owner turn. Last chat ffcd39df-18b2-455d-818c-b7cd79014ac0 had transcript: [].",
+      "unknown": "Failure output does not include the PUI screen, startup traffic or host state. Native launch/inference and the originating refusal are not established by this run."
+    }
+  ],
+  "provenance": "Native tool results observed in Codex session 01a07e21-8bc1-7a73-a9f2-acc8d4a21929. Logs listed above were re-read. Vitest per-group temporary reports are not claimed retained. Test hashes generally cover named files only; the current source hashes are checkpoint identities, not proof every test ran against every final hash.",
+  "remaining": [
+    "Capture bounded PUI/host/launch-traffic evidence on failed installed journeys; diagnose the actual Codex startup/delivery failure and rerun.",
+    "The generalized fixture still has Claude-specific nativeSessionPresent:true launch expectations; Codex/OMP allocate their native identity after the launch response. Reconcile these assertions with the production response and later identity handshake.",
+    "Run actual installed Claude/Codex/OMP greeting, tool, approval, interrupt and exact resume, including actual SU identity, task, mode, carry and scope preservation.",
+    "The current added resume fixture loses the native process and host registry but leaves Hono in the same process; it is not OS operator-process restart evidence.",
+    "Review historical transcript replay after host reconstruction. Existing adapter snapshot consumers are available; do not invent a second transcript store.",
+    "Bind both P006@6 specifications and obtain independent exact-spec audits before completing P006.",
+    "Continue the entire 16-item approved AUTO/self plan, including full P016. P015 public publication still requires explicit approval."
+  ],
+  "residuals": [
+    "EI-22633331216678992 streaming",
+    "EI-22626217437947102 historical staging startup, with new ECONNREFUSED observation EI-22647176223732408",
+    "EI-22614713938386539 historical test-DB timeout"
+  ],
+  "coordination": "No implementation fanout or LIVE_GATE_OPS. All exec handles terminal at this checkpoint; all locks released after this file write."
+}

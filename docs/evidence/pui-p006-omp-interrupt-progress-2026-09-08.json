@@ -1,0 +1,287 @@
+{
+  "schemaVersion": "pui-p006-omp-interrupt-progress-v1",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "item": "P-006",
+  "workItem": "WI-10000428",
+  "capturedAt": "2026-09-08T05:07:28.708Z",
+  "sourceHashes": {
+    "packages/operator-core/lib/su-session-rpc-engine.ts": "dde513c61e2dcbcdf9643543dcfcb4d5241315de1d25831b1c1a723910bbadc9",
+    "packages/operator-core/lib/su-session-rpc-engine.test.ts": "6741922229980bf5d330f52fcc38f9a700734b08ac5fd0ccb95006de244eb553",
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "b9610fd9c0035360ff0ec49da68ff4de7aa68fc6defa4d38673ef8b111e7ac53"
+  },
+  "logHashes": {
+    "/tmp/pui-p006-omp-interrupt-before.log": "82cdd434e2af33fa19c866c6f80d116f05c5ccd43c22bef22ebc42df709c90fb",
+    "/tmp/pui-p006-omp-interrupt-before-2.log": "374c33015830ecb3dbe77934311969e2fd69b29feba8b6205cf8ac10bbbb5954",
+    "/tmp/pui-p006-omp-interrupt-after.log": "a0dcdb9c31add72cb6396e029eb2febbf465a807b1897e2e8a410752453c7749",
+    "/tmp/pui-p006-omp-interrupt-types.log": "03610fb6012b165b321ef9fd68c86e3adc1599cb7ee61d88dc7eaa468624fc68",
+    "/tmp/pui-p006-omp-installed-15.log": "ead503222eddcecedc96fd34c76c9c547e01f62ef779fbdb4e67a9167e6000ba"
+  },
+  "native15": {
+    "binary": "@home@/.cargo/bin/pui",
+    "binarySha256": "40a1d68f9a560601a26450ffe06d3f6323aef6106f75aefe077c25d936b518a7",
+    "identity": {
+      "agentChatId": "e1c1a00a-c557-4235-bbc5-07643445b24d",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a07f60-263d-770d-b496-2eb30b55ec51",
+      "ownerId": "su-156fc8c0-96b8-41ed-ba50-d16b08d2b7ae",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "completedFrames": [
+      "greeting",
+      "file",
+      "running",
+      "interrupted",
+      "followup",
+      "history"
+    ],
+    "controlEvents": [
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "sent",
+        "at": "2026-09-08T04:56:47.081Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "acknowledged",
+        "at": "2026-09-08T04:56:47.087Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "sent",
+        "at": "2026-09-08T04:56:54.082Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "acknowledged",
+        "at": "2026-09-08T04:56:54.084Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "sent",
+        "at": "2026-09-08T04:57:05.533Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "acknowledged",
+        "at": "2026-09-08T04:57:05.534Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "abort",
+        "phase": "sent",
+        "at": "2026-09-08T04:57:05.646Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "abort",
+        "phase": "acknowledged",
+        "at": "2026-09-08T04:57:05.649Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "sent",
+        "at": "2026-09-08T04:57:07.573Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "acknowledged",
+        "at": "2026-09-08T04:57:07.574Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "sent",
+        "at": "2026-09-08T04:57:35.655Z"
+      },
+      {
+        "type": "rpc_control",
+        "command": "prompt",
+        "phase": "acknowledged",
+        "at": "2026-09-08T04:57:35.659Z"
+      }
+    ],
+    "providerEvents": [
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:56:48.914Z",
+        "priority": "interactive",
+        "owner": "su-156fc8c0-96b8-41ed-ba50-d16b08d2b7ae",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T04:56:51.995Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:56:55.477Z",
+        "priority": "interactive",
+        "owner": "su-156fc8c0-96b8-41ed-ba50-d16b08d2b7ae",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T04:56:57.209Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:56:59.180Z",
+        "priority": "interactive",
+        "owner": "su-156fc8c0-96b8-41ed-ba50-d16b08d2b7ae",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T04:57:03.276Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T04:57:11.743Z",
+        "priority": "interactive",
+        "owner": "su-156fc8c0-96b8-41ed-ba50-d16b08d2b7ae",
+        "account": null,
+        "model": "claude-sonnet-4-6",
+        "systemBlockCount": 4,
+        "systemPrefixKinds": [
+          "billing",
+          "other",
+          "other"
+        ]
+      },
+      {
+        "phase": "headers",
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "retryAfter": null,
+        "at": "2026-09-08T04:57:13.866Z"
+      }
+    ],
+    "intentPivotWarnings": [
+      "[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback"
+    ],
+    "engines": [
+      {
+        "lifecycle": "ended",
+        "identity": {
+          "agentChatId": "e1c1a00a-c557-4235-bbc5-07643445b24d",
+          "advSessionId": 1,
+          "backend": "omp",
+          "nativeSessionId": "01a07f60-263d-770d-b496-2eb30b55ec51",
+          "ownerId": "su-156fc8c0-96b8-41ed-ba50-d16b08d2b7ae",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        },
+        "errors": []
+      },
+      {
+        "lifecycle": "waiting-for-owner",
+        "identity": {
+          "agentChatId": "e1c1a00a-c557-4235-bbc5-07643445b24d",
+          "advSessionId": 1,
+          "backend": "omp",
+          "nativeSessionId": "01a07f60-263d-770d-b496-2eb30b55ec51",
+          "ownerId": "su-156fc8c0-96b8-41ed-ba50-d16b08d2b7ae",
+          "workspaceId": "pui-agent-chat-e2e",
+          "harnessSlug": "papercusp"
+        },
+        "errors": [
+          {
+            "code": "omp_turn_failed",
+            "message": "No API key found for anthropic.\n\nUse /login, set an API key environment variable, or create /tmp/pcv/pui-agent-chat-e2e-QEVqNn/native-omp/session-1/agent/agent.db"
+          }
+        ]
+      }
+    ],
+    "teardown": [
+      {
+        "session_id": null,
+        "omp_thread_id": "01a07f60-263d-770d-b496-2eb30b55ec51",
+        "ended_at": "2026-09-08T04:57:25.849Z",
+        "native_pid": 2098698,
+        "presence_pid": null,
+        "presence_host": "",
+        "activity_before_end": true,
+        "heartbeat_before_end": true,
+        "held_features": false,
+        "held_issues": false,
+        "held_claims": false,
+        "held_plan_claims": false
+      }
+    ],
+    "provenance": "TEST_FILE_PROVENANCE_HEAD_MOVED from=b58ad74a37 to=bb79ce169e; the named test paths did not change, but their imported source/change radius was not measured. Result provenance is UNKNOWN; re-run at settled HEAD before citing it as evidence.",
+    "result": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=b58ad74a37 uncommittedPaths=1/1 provenance=unknown startedAt=2026-09-08T04:55:24.524Z skippedTests=13"
+  },
+  "changes": {
+    "interrupt": {
+      "workItem": "EI-22667002717122713",
+      "root": "Host waited for optional agent_end after native OMP abort had already acknowledged idle; lost acknowledgements also left lifecycle running.",
+      "repair": "Use the native OMP idle acknowledgement to settle cancellation; expose transport failure before cleanup if abort fails.",
+      "unitProof": "Both regression assertions fail on pre-fix source. First test attempt had an incorrect expected command status for lost ACK; corrected before-2 is the valid pre-fix pair. Full RPC39+intent8=47 pass; three exact TS files clean.",
+      "nativeEvidence": "Native15 observed prompt acknowledgement followed by abort sent05.646/ack05.649, interrupted UI and successful followup/history; full native journey failed after restart."
+    },
+    "advisory": {
+      "workItem": "EI-22662451852499659",
+      "change": "Installed fixture retains only the exact documented intent-pivot deadline warning as a diagnostic. Unexpected warnings still fail.",
+      "limitation": "No embedding-service performance improvement is claimed; the underlying latency investigation remains open."
+    }
+  },
+  "remaining": {
+    "resume": "EI-22668319612514806 — directAnthropic selection on resume lacks a native API key; preserve truthful default/auto/pin semantics.",
+    "archive": "EI-22651749738479868 — native15 archive warning says native:null though omp_thread_id is present; previous kill/reaper hypotheses remain unproved.",
+    "trace": "EI-22668323910277384 — diagnostic wrapper overwrites upstream with itself on same-home resume; source finding, recursion not exercised because auth fails earlier.",
+    "telemetry": "EI-22666774837615847 — adopted gateway span finalized before outer retry ends; filed, unimplemented."
+  },
+  "limitations": [
+    "P006 remains WIP; no full OMP journey pass or exact-current-HEAD acceptance is claimed.",
+    "Native15 provenance is UNKNOWN because HEAD moved b58ad74a37→bb79ce169e while named test bytes stayed unchanged; imported source radius was not measured. Retain as runtime observation, rerun for exact-source qualification.",
+    "Native15 also failed on the archive warning; it was not suppressed.",
+    "Gateway-repair artifact042ad698767d4b7dfc345c4cfeb8fe78223c77664d33487f5214b87dd5a004d5 is historical after later fixture edits.",
+    "Installed Rust binary is unchanged; no operator OS restart, public publication or live-gate operations.",
+    "Entire approved AUTO/self plan—all16 items including fullP016—continues. P015 retains final publication approval."
+  ]
+}
+

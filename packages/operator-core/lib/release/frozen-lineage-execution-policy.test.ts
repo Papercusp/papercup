@@ -437,6 +437,9 @@ describe('frozen lineage carry policy', () => {
 
   it.each([
     'Run focused unit tests on staging while the repair is admitted separately.',
+    'Canonical tree is the shared checkout root on staging.',
+    'Ordinary staging work remains legal — The policy blocks selecting staging as the judged candidate...',
+    'Ordinary staging work remains legal: The policy blocks selecting staging as the judged candidate.',
     'The earlier instruction to pin current staging/current HEAD was wrong and is retracted.',
     'Never derive the judged candidate from staging; use the live repairHead.',
     'A checkpoint that instructs a successor to use current HEAD as the judged candidate is rejected.',

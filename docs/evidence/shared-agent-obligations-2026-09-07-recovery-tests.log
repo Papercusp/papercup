@@ -1,0 +1,160 @@
+
+> @papercupai/papercusp-monorepo@0.0.1 test:file
+> PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs packages/operator-core/lib/events/await/store.integration.test.ts packages/operator-core/lib/agent-tools/coordination/unanswered-directed.integration.test.ts
+
+[pc-heavy] slot acquired — starting real work
+PC_HEAVY_PREEMPT_READY pid=4031270
+TEST_FILE_PROGRESS state=started cwd="packages/operator-core" elapsedMs=248 capturedBytes=0 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=10412 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=20775 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=30776 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=40989 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=51031 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+[flags] No override store installed in this process: runtime overrides (flags:set / POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. If this process is expected to observe runtime flag flips, call initFlagOverrideStore() during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=61031 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=71031 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=81032 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=91032 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=101032 capturedBytes=172 completedFiles=[] pendingFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=106440 capturedBytes=265 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=111033 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=121177 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=131388 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=141393 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=151549 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=161549 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=171774 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=181843 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=192048 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=202321 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="packages/operator-core" elapsedMs=212336 capturedBytes=4032 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts"] pendingFiles=["lib/events/await/store.integration.test.ts"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=4031270
+TEST_FILE_PROGRESS state=file-completed cwd="packages/operator-core" elapsedMs=216431 capturedBytes=10777 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="packages/operator-core" elapsedMs=216923 capturedBytes=11040 completedFiles=["lib/agent-tools/coordination/unanswered-directed.integration.test.ts","lib/events/await/store.integration.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: run-u890139.scope; invocation ID: b62a6a74492e4ab98f0b615867d3ab44
+TEST_FILE_ROUTE requested=2 groups=1
+TEST_FILE_PROVENANCE head=ddb59a866e testedPaths=2 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-07T09:06:25.463Z
+  HEAD         : ddb59a866e
+  tested files : packages/operator-core/lib/events/await/store.integration.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/coordination/unanswered-directed.integration.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+ROUTE cwd=packages/operator-core config=vitest.integration.config.ts
+  requested lib/events/await/store.integration.test.ts
+  requested lib/agent-tools/coordination/unanswered-directed.integration.test.ts
+  matched lib/agent-tools/coordination/unanswered-directed.integration.test.ts
+  matched lib/events/await/store.integration.test.ts
+
+ RUN  v4.1.8 @repo-root@/packages/operator-core
+
+ ✓ lib/agent-tools/coordination/unanswered-directed.integration.test.ts (32 tests) 95929ms
+     ✓ a directed expectsReply message with NO reply at all is unanswered  2116ms
+     ✓ an EXACT threaded reply (related_msg_id = the ask) clears it (existing behavior)  2185ms
+     ✓ EI-22458045233456597: one exact reply clears an earlier same-goal ask cluster, but not a later ask  2225ms
+     ✓ EI-13819: a reply-shaped message threaded onto something ELSE in the same correspondence, sent after the ask, also clears it  1524ms
+     ✓ a reply-shaped message to a DIFFERENT sender does not clear an unrelated ask (scoping preserved)  718ms
+     ✓ WI-5345: a bare unthreaded status update back to the sender (no related_msg_id) DOES clear it  796ms
+     ✓ WI-5345: several standalone genuine-status replies (no related_msg_id) after multiple separate asks all clear the count  2461ms
+     ✓ a reply-shaped message sent BEFORE the ask does not clear it (chronology enforced)  1243ms
+     ✓ WI-6729: a reply threaded to a DIFFERENT message does NOT clear an open ask (the live false-zero)  3180ms
+     ✓ WI-6729: one un-threaded reply clears only ONE ask — the older ones stay open  6212ms
+     ✓ WI-6729: continued correspondence still converges — N replies clear N asks (no EI-13819 stuck-at-1)  5729ms
+     ✓ WI-6729: an exact threaded reply still clears its own ask even when older asks stay open  4461ms
+     ✓ EI-19315474516256070: an explicit expects:"none" overrides a stale/inconsistent expectsReply:true (the live divergence)  1443ms
+     ✓ EI-19315474516256070: a machine-pattern sender is excluded even when it sets expectsReply:true  1224ms
+     ✓ WI-7147: release_request remains visible despite machine lifecycle stamps  4019ms
+     ✓ EI-19315474516256070: auto:true lifecycle chatter is excluded even when it sets expectsReply:true  5309ms
+     ✓ a genuine expects:"answer" (or unset expects) directed message still counts (no over-exclusion)  3191ms
+     ✓ WI-4537(c) baseline: an unthreaded ack-shaped reply to the recipient's own message ping-pongs and clears (no expects override)  3994ms
+     ✓ EI-22192594388203470: a reply carrying expects:"action" is NOT swallowed as ack-ping-pong — it is a fresh decision request  5426ms
+     ✓ EI-22192594388203470: a reply carrying expects:"answer" is likewise NOT swallowed as ack-ping-pong  5488ms
+     ✓ EI-21547691921890849: a satisfied expectEffect checkpoint clears the same directed action from unanswered_directed  3529ms
+     ✓ EI-21665996495417179: committed terminal completion is a checkpoint-safety alternative  1673ms
+     ✓ keeps an expectEffect directive unanswered until its named effect is proven  6532ms
+     ✓ EI-20085805220385722: the SQL per-sender rollup comes back populated (busiest first), and nothing is demoted by default  8119ms
+     ✓ EI-20085805220385722: a positively-ended sender moves to staleCount while an unknown sender still counts  5969ms
+     ✓ EI-20085805220385722: a THROWING death-evidence read demotes nothing (fail open through the real path)  1137ms
+     ✓ a directed expectsReply message with no reply at all is a still-open ask  1476ms
+     ✓ EI-22458045233456597 mirrored: one exact reply clears an earlier same-goal ask cluster, but not a later ask  2694ms
+     ✓ EI-22401733710869471: SQL rolls up recipients and partitions ended recipients in one batch  719ms
+     ✓ EI-22401733710869471: a throwing recipient-liveness read fails open through the SQL path  310ms
+     ✓ baseline: our own plain ack-shaped reply to something the recipient sent does NOT count as a fresh ask on them (mirrored ping-pong)  360ms
+     ✓ EI-22192594388203470 mirrored: OUR OWN reply carrying expects:"action" still counts as a fresh ask, even though it is threaded onto something the recipient sent  311ms
+ ✓ lib/events/await/store.integration.test.ts (68 tests) 206157ms
+     ✓ persists lifecycle bindings, folds their provenance into deliveries, and retires only matching machinery rows  7471ms
+     ✓ registerAwait persists a one-shot watch; listActiveAwaits reads it back  13116ms
+     ✓ pins registration to the current announcement generation and rejects stale or fired pins  11395ms
+     ✓ upsertInboxWakeAwait is one-per-agent and KEEPS the prior handle on a null re-arm (COALESCE)  8096ms
+     ✓ fireAwaitsForKey claims a one-shot EXACTLY ONCE; a standing watch keeps matching  7154ms
+     ✓ serializes announcement latching behind the per-key generation lock  8915ms
+     ✓ persists an announcement lifecycle binding for successor resolution  6317ms
+     ✓ preserves an unfired announcement when its declarer is reaped  11616ms
+     ✓ retires only the unfired announcement, preserves its waiter, and removes it from discovery  9020ms
+     ✓ retirement clears the matching event blocker and restores an auto-blocked issue  1528ms
+     ✓ same-key supersession clears only the event blocker and preserves unrelated blockers  875ms
+     ✓ firing clears the matching event blocker and restores an auto-blocked issue  1115ms
+     ✓ guards announcement retirement by owner, generation, and fired state  4937ms
+     ✓ serializes different transport keys for one logical gate and rejects the loser  1966ms
+     ✓ a payload_filter gates firing: a non-matching emit leaves the once-row unclaimed, a matching one claims it exactly once  1921ms
+     ✓ fires a grading-integrity await with the legacy eq filter for the exact scorecard subject  2069ms
+     ✓ a filter-less once row on the SAME key is unaffected by a sibling filtered row (fast path untouched)  5741ms
+     ✓ a standing watch with a payload_filter only appears in fired rows on matching emits, and keeps matching  2728ms
+     ✓ a pattern (glob) watch combines key-glob matching with a payload_filter  1292ms
+     ✓ cancelInboxWakeAwaits / cancelAwait are subscriber-scoped and skip non-active rows  3047ms
+     ✓ cancelling an await drops its queued backlog and the pump guard settles a claimed race  1941ms
+     ✓ refuses an unconfirmed standing operator cancellation without dropping its backlog  973ms
+     ✓ never exposes or cancels an announcement through ordinary await ids  2860ms
+     ✓ records explicit operator cancellation markers and clears them by exact subscriber/key  4900ms
+     ✓ cancelClaimableAwaits cancels ONLY the caller's work-item:claimable await(s), key- and subscriber-scoped  4906ms
+     ✓ cancelAwaitsForSubscribersOnKeys cancels only the named subscribers' PENDING rows on the named keys  8050ms
+     ✓ concurrent superseding registrations leave exactly one pending await for a subscriber/key  6072ms
+     ✓ round-trips an obligation episode through the real await ledger and cancels it when it leaves scope  2279ms
+     ✓ events:await supersession retires only one-shot rows and preserves the standing inbox wake  837ms
+     ✓ onceOnly cancellation preserves a standing watch while retiring a pending one-shot  762ms
+     ✓ keeps a leader-managed fleet bench out of member self-await supersede, while re-stage can retire it explicitly  2647ms
+     ✓ atomically replaces leader-managed benches across event keys without touching member-owned awaits  1838ms
+     ✓ refuses subscriber-wide supersession without a coordination-surface prefix  498ms
+     ✓ does not cancel an announced declaration sharing the waiter subscriber and key  1614ms
+     ✓ cancelAwaitsForSubscribersOnKeys never touches an already-fired row (fire wins the race)  1835ms
+     ✓ cancelAwaitsByIds cancels exactly the named rows, leaves a sibling row on the SAME key+subscriber untouched, and is idempotent  1042ms
+     ✓ cancelAwaitsByIds never touches an already-fired row  801ms
+     ✓ listParkedAwaitsForSubscribers returns only ACTIVE non-inbox-wake awaits for the asked subscribers  3185ms
+     ✓ excludes platform-armed claim and obligation reminders but keeps genuine lifecycle waits  1462ms
+     ✓ lists only recent stalled/absent verified waits with owner-aware takeover remedies  1722ms
+     ✓ suppresses a self-referential takeover row with no owning work item  2402ms
+     ✓ suppresses self-referential takeover rows even when a stale work-item id is present  990ms
+     ✓ suppresses a takeover row once its owning work item has since gone terminal  1946ms
+     ✓ suppresses a stale ownerless verdict after the live gate singleton moves owners  798ms
+     ✓ countActiveAwaitsByPrefixes groups LIVE awaits per prefix, in one round trip, zero-filling a matchless prefix  2967ms
+     ✓ countActiveAwaitsByKeyShapes bounds a bare-namespace family by arity, keyed by family  1622ms
+     ✓ producer dies before emit: persists an absent verdict and an owner-aware takeover  2695ms
+     ✓ slow-but-progressing producer: renews the same one-shot row without consuming it  1885ms
+     ✓ latched completion: authoritative completion wins over a missing producer  1935ms
+     ✓ fallback takeover is race-safe: a pushed completion that wins first cannot be consumed twice  743ms
+     ✓ getKeyFireLatch is null for a key that has never fired  501ms
+     ✓ a second recordKeyFire on the SAME key upserts in place — increments fire_count, refreshes last_*, keeps first_fired_at  319ms
+     ✓ inspectEventKey folds the fire latch in alongside announcements/waiters/deliveries  1380ms
+     ✓ keyFireEvidencePrefix takes the family (first two segments), and a short key probes itself  679ms
+     ✓ reports NO evidence for a key whose family has never fired — the genuine-orphan case still warns  656ms
+     ✓ reports EXACT evidence when this very key has fired  336ms
+     ✓ reports SIBLING evidence for a never-before-seen key whose FAMILY fires — the coord:inbox-wake case  1367ms
+     ✓ does NOT leak across families — a neighbouring prefix is not evidence  1358ms
+     ✓ treats LIKE wildcards in a key as literals (a `%` key cannot widen the scan)  635ms
+     ✓ REPRODUCES THE INCIDENT: release:green:* spans co-hosted pipelines, and names the foreign one  3053ms
+     ✓ does NOT match the BARE family key — `release:green:*` requires a pipeline segment  2117ms
+     ✓ narrows with the REAL matcher, not just the prefix scan — a mid-key glob excludes non-matches  1096ms
+     ✓ returns nothing for an EXACT key — the recommended fix must never warn about itself  729ms
+     ✓ bounds a wildcard-led glob instead of scanning the whole table unanchored  901ms
+     ✓ flags a capped scan as truncated so the caller reads the count as a floor  1060ms
+
+ Test Files  2 passed (2)
+      Tests  100 passed (100)
+   Start at  05:06:43
+   Duration  215.24s (transform 8.84s, setup 334ms, import 14.60s, tests 302.09s, environment 0ms)
+
+JSON report written to /dev/shm/pcv/papercusp-test-files-report-xsSk2Y/group-0.json
+TEST_FILE_PROVENANCE head=ddb59a866e testedPaths=2 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-07T09:10:19.098Z
+  HEAD         : ddb59a866e
+  tested files : packages/operator-core/lib/events/await/store.integration.test.ts  [clean]
+                 packages/operator-core/lib/agent-tools/coordination/unanswered-directed.integration.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=ddb59a866e uncommittedPaths=0/2 provenance=stamped startedAt=2026-09-07T09:06:25.463Z skippedTests=0
