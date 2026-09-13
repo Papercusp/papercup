@@ -3012,7 +3012,16 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const greeting = `Reply exactly ${greetingReply}. Do not use tools.`;
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
     const approvalResult = `PUI-PERMISSION-FIXTURE-${randomUUID()}`;
-    const approvalFixturePath = path.join(home, `approved-${randomUUID()}.txt`);
+    // Codex's `on-request` policy asks only when a command must leave its
+    // workspace-write sandbox. The fixture home lives under the system temp
+    // root, which Codex may write without escalation; targeting it would let
+    // the command execute successfully while measuring no approval path at
+    // all. Use a unique file beside (not inside) the checkout so every backend
+    // must honor the explicit approval before the exact effect can occur.
+    const approvalFixturePath = path.join(
+      path.dirname(REPO_ROOT),
+      `.pui-approval-fixture-${randomUUID()}.txt`,
+    );
     // Ask for the ordinary outcome in ordinary language. Security-attestation
     // rhetoric and instructions not to inspect the task correctly make a real
     // provider stop and ask what is actually being tested, which exercises
@@ -3155,8 +3164,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       );
       throw error;
     } finally {
-      await pane.stop();
-      await first.stop({ endSessions: false });
+      try {
+        await pane.stop();
+        await first.stop({ endSessions: false });
+      } finally {
+        rmSync(approvalFixturePath, { force: true });
+      }
     }
     expect(first.shutdownStages).toContain('os-hard-exit-ready');
     // A process exit is observed before a NEW OS process binds the SAME port.
