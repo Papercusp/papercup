@@ -62,7 +62,16 @@ import { z } from 'zod';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync, type Dirent } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  type Dirent,
+} from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -107,6 +116,7 @@ import {
   type CgroupFs,
 } from '../../task-manager/cgroup-read';
 import { deriveUserManagerRoot, scopeCgroupRelPath } from '../../task-manager/types';
+import { isShuttingDown } from '../../shutdown-state';
 import {
   admissionContextFromEnvironment,
   governedExecutionLeaseTtlForTimeout,
@@ -1452,6 +1462,7 @@ export interface ManagedTestProcess {
   taskId: string;
   scopeUnit: string | null;
   scopeCgroupPath: string | null;
+  outputPath: string;
   confined: boolean;
   /** Idempotent whole-tree termination. Confined runs address their exact scope;
    *  fail-soft/unconfined runs retain the legacy negative-PGID cleanup. */
@@ -1487,40 +1498,50 @@ export async function launchManagedTestProcess(
     timeoutMs: number;
     runGroup: string;
     workspaceId: string;
+    outputPath: string;
   },
   deps: ManagedTestProcessDeps = {},
 ): Promise<ManagedTestProcess> {
   const spawnManaged = deps.managedSpawnFn ?? managedSpawn;
   const killOwnedScope = deps.killScopeUnitFn ?? killScopeUnit;
   const killProcessGroup = deps.killProcessGroupFn ?? ((pid, signal) => process.kill(-pid, signal));
-  const launched = await spawnManaged(
-    opts.command,
-    opts.args,
-    {
-      class: 'test-run',
-      title: `testing:run foreground ${opts.runGroup}`,
-      argv: [opts.command, ...opts.args],
-      cwd: opts.cwd,
-      harnessSlug: opts.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
-      launchedBy: `testing:run:${opts.runGroup}`,
-      // The in-process timer owns the ordinary verdict. This slightly wider
-      // kernel deadline is the restart-safe backstop and still bounds the task
-      // when the operator (and therefore its timer) disappears mid-run.
-      runtimeMaxSec: Math.max(1, Math.ceil((opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000)),
-      detail: { runGroup: opts.runGroup, foreground: true },
-    },
-    {
-      workspaceId: opts.workspaceId,
-      spawnOptions: {
+  const outputFd = openSync(opts.outputPath, 'w', 0o600);
+  let launched: ManagedTestSpawn;
+  try {
+    launched = await spawnManaged(
+      opts.command,
+      opts.args,
+      {
+        class: 'test-run',
+        title: `testing:run foreground ${opts.runGroup}`,
+        argv: [opts.command, ...opts.args],
         cwd: opts.cwd,
-        env: opts.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // Preserve the unconfined fallback's whole-process-group identity.
-        // Under confinement the scope is the stronger whole-tree handle.
-        detached: true,
+        harnessSlug: opts.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
+        launchedBy: `testing:run:${opts.runGroup}`,
+        // The in-process timer owns the ordinary verdict. This slightly wider
+        // kernel deadline is the restart-safe backstop and still bounds the task
+        // when the operator (and therefore its timer) disappears mid-run.
+        runtimeMaxSec: Math.max(1, Math.ceil((opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000)),
+        detail: { runGroup: opts.runGroup, foreground: true },
       },
-    },
-  );
+      {
+        workspaceId: opts.workspaceId,
+        spawnOptions: {
+          cwd: opts.cwd,
+          env: opts.env,
+          // A pipe belongs to this operator process; its death closes the read
+          // end and can EPIPE the surviving payload. An inherited file fd keeps
+          // diagnostics writable across the restart and is read on normal close.
+          stdio: ['ignore', outputFd, outputFd],
+          // Preserve the unconfined fallback's whole-process-group identity.
+          // Under confinement the scope is the stronger whole-tree handle.
+          detached: true,
+        },
+      },
+    );
+  } finally {
+    closeSync(outputFd);
+  }
   const scopeCgroupPath =
     launched.confined && launched.scopeUnit
       ? scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)), 'test-run', launched.scopeUnit)
@@ -1550,6 +1571,7 @@ export async function launchManagedTestProcess(
   return {
     ...launched,
     scopeCgroupPath,
+    outputPath: opts.outputPath,
     terminate(): void {
       if (terminationStarted) return;
       terminationStarted = true;
@@ -1575,6 +1597,13 @@ export async function launchManagedTestProcess(
       );
     },
   };
+}
+
+export function preserveConfinedTestOnHostShutdown(
+  shuttingDown: boolean,
+  running: Pick<ManagedTestProcess, 'confined'> | null,
+): boolean {
+  return shuttingDown && running?.confined === true;
 }
 
 /** Aggregate actual residency from the task's whole cgroup, not merely from
@@ -1768,11 +1797,28 @@ function runTestProcess(
           }
           return new Promise((resolve) => {
             const outputCapture = createBoundedRouterOutputCapture();
+            const routerOutputPath = join(
+              ensurePapercuspTmpdir() ?? tmpdir(),
+              `papercusp-testing-run-router-${runGroup}-${randomUUID()}.log`,
+            );
             let outputBytes = 0;
             let timedOut = false;
             let aborted = false;
             let spawnError: string | undefined;
             let settled = false;
+            let outputLoaded = false;
+            const loadOutput = (): void => {
+              if (outputLoaded) return;
+              outputLoaded = true;
+              try {
+                const bytes = readFileSync(routerOutputPath);
+                outputBytes = bytes.byteLength;
+                outputCapture.append('stdout', bytes);
+              } catch {
+                /* spawn may have failed before creating output */
+              }
+              void rm(routerOutputPath, { force: true });
+            };
             // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
             // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
             // `detached: true` — so that vitest process inherits THIS process's process group
@@ -1794,6 +1840,7 @@ function runTestProcess(
             const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
               if (settled) return;
               settled = true;
+              loadOutput();
               if (timer !== null) {
                 clearTimeout(timer);
                 timer = null;
@@ -1819,6 +1866,7 @@ function runTestProcess(
             };
             onAbort = () => {
               if (settled) return;
+              if (preserveConfinedTestOnHostShutdown(isShuttingDown(), running)) return;
               aborted = true;
               if (running) running.terminate();
               else settleBeforeLaunchHandoff();
@@ -1838,6 +1886,7 @@ function runTestProcess(
               timeoutMs: launchTimeoutMs,
               runGroup,
               workspaceId: env.PAPERCUSP_WORKSPACE_ID ?? activeWorkspaceId(),
+              outputPath: routerOutputPath,
             }).then(
               (launched) => {
                 running = launched;
@@ -1864,8 +1913,6 @@ function runTestProcess(
                   outputBytes += b.byteLength;
                   outputCapture.append(channel, b);
                 };
-                child.stdout?.on('data', append('stdout'));
-                child.stderr?.on('data', append('stderr'));
                 child.on('error', (e) => {
                   spawnError = e.message;
                   outputCapture.append('stderr', `\n[spawn-error] ${e.message}\n`);
@@ -1878,14 +1925,18 @@ function runTestProcess(
                     output: outputCapture.finish(),
                   });
                 });
-                child.on('close', (code, closeSignal) =>
-                  finish({
-                    code,
-                    signal: closeSignal ?? null,
-                    timedOut,
-                    aborted,
-                    output: outputCapture.finish(),
-                  }),
+                child.on(
+                  'close',
+                  (code, closeSignal) => (
+                    loadOutput(),
+                    finish({
+                      code,
+                      signal: closeSignal ?? null,
+                      timedOut,
+                      aborted,
+                      output: outputCapture.finish(),
+                    })
+                  ),
                 );
               },
               (error) => {

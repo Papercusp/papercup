@@ -48,6 +48,7 @@ import runTool, {
   parseRouterTerminalCompletion,
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
+  preserveConfinedTestOnHostShutdown,
   readManagedTestProcessResourceSnapshot,
   readTestProcessResourceSnapshot,
   runTestFilesCore,
@@ -560,6 +561,9 @@ describe('testing:run (integration)', () => {
       action: 'kill',
     }));
     const killProcessGroupFn = vi.fn();
+    const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-managed-output-'));
+    selectorRoots.push(outputDir);
+    const outputPath = join(outputDir, 'router.log');
 
     const running = await launchManagedTestProcess(
       {
@@ -570,6 +574,7 @@ describe('testing:run (integration)', () => {
         timeoutMs: 60_000,
         runGroup: 'restart-survival-run',
         workspaceId: 'papercusp-workspace',
+        outputPath,
       },
       { managedSpawnFn, killScopeUnitFn, killProcessGroupFn },
     );
@@ -586,7 +591,11 @@ describe('testing:run (integration)', () => {
       }),
       expect.objectContaining({
         workspaceId: 'papercusp-workspace',
-        spawnOptions: expect.objectContaining({ cwd: REPO_ROOT, detached: true }),
+        spawnOptions: expect.objectContaining({
+          cwd: REPO_ROOT,
+          detached: true,
+          stdio: ['ignore', expect.any(Number), expect.any(Number)],
+        }),
       }),
     );
 
@@ -601,6 +610,13 @@ describe('testing:run (integration)', () => {
     // termination must never mistake that client process group for the tree.
     expect(killProcessGroupFn).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('preserves only a confined runner when the host shutdown flag is set', () => {
+    expect(preserveConfinedTestOnHostShutdown(true, { confined: true })).toBe(true);
+    expect(preserveConfinedTestOnHostShutdown(false, { confined: true })).toBe(false);
+    expect(preserveConfinedTestOnHostShutdown(true, { confined: false })).toBe(false);
+    expect(preserveConfinedTestOnHostShutdown(true, null)).toBe(false);
   });
 
   it('accounts confined foreground demand from the whole task cgroup rather than the launcher pid', async () => {
