@@ -493,15 +493,20 @@ fn merge_session_switcher_rows(
             .or_else(|| hit.get("ts"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
-        let session_harness = provenance
+        let provenance_harness = provenance
             .get("harness_slug")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
         let agent_chat_id = (source == "agent_chat").then(|| session_id.to_string());
+        let session_harness = (source == "agent_chat")
+            .then_some(provenance_harness)
+            .flatten();
         let already_present = rows.iter().position(|row| {
-            row.agent_chat_id.as_deref() == agent_chat_id.as_deref()
+            agent_chat_id
+                .as_deref()
+                .is_some_and(|chat_id| row.agent_chat_id.as_deref() == Some(chat_id))
                 || row
                     .native_session
                     .as_ref()

@@ -105,6 +105,7 @@ import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed
 import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
+import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';
 
 // WI-41422: this entrypoint is also launched directly by desktop-dev/background
 // task supervision, bypassing serve.ts (and its stdio guard). If that supervisor
@@ -334,6 +335,7 @@ function startRequestServers(): void {
 
   const onListening = (boundPort: number): void => {
     console.log(`[hono-host] listening on http://${hostname}:${boundPort} (pid=${process.pid})`);
+    notifySystemdReady();
 
     // Guardrail: a stray PAPERCUSP_WORKSPACE_ID pin silently rebinds every
     // non-request path on this multi-workspace host. Warn loudly at boot — a bare
