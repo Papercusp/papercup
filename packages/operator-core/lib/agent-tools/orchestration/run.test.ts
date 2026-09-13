@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
 import { DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS } from '../../output-envelope';
@@ -24,6 +25,14 @@ function envelope(result: ToolResult) {
 }
 
 describe('orchestrate:run server-script adapter', () => {
+  it('uses the read-only facade capability while preserving the write-effect outer contract', () => {
+    const projected = listAllProjectedTools().find((tool) => tool.expose.mcp?.name === 'orchestrate:run');
+    expect(projected).toBeDefined();
+    expect(projected?.capabilities).toEqual(['agent_tools:read']);
+    expect(projected?.capabilities).not.toContain('capability:bash');
+    expect(projected?.effect).toBe('write');
+  });
+
   it('registers the unified public shape and returns a typed client-mode rejection', async () => {
     expect(orchestrateRunTool.name).toBe('orchestrate:run');
     expect(

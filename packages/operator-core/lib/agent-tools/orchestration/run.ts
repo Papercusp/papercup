@@ -624,7 +624,12 @@ const orchestrateRunTool = defineTool({
       'orchestrate:search { query } → orchestrate:inspect { recipe|script } → orchestrate:run { recipe|script }',
     seeAlso: ['orchestrate:search', 'orchestrate:inspect', 'code:run (compatibility door)', 'recipes:run (compatibility door)'],
   },
-  capability: 'capability:bash',
+  // The wrapper only needs the read-only facade capability: inner tools retain their own
+  // capability/role/envelope gates, which lets evidence-only roles (notably judge) orchestrate
+  // reads without granting the shell capability. Keep the explicit write effect because this
+  // generic execution door can still contain write-effect inner calls for roles that have them.
+  capability: 'agent_tools:read',
+  effect: 'write',
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
