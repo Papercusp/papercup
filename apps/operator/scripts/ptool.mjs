@@ -81,11 +81,16 @@ import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-
  * }} ToolCatalogEntry
  */
 
-// When ptool is launched from an operator host, prefer that host's serving
-// port over the inherited `.env.local` green pin. This keeps plan/rubric writes
-// on the current staging source tree; packaged installs without a host-port
-// identity retain operator.json discovery and the resilient proxy/default.
+// When ptool is launched from an operator host, prefer the host's explicit
+// resolved base (written by serve.ts after binding) or serving port over the
+// inherited `.env.local` green pin. Source-root markers identify ownership,
+// not a listener port; packaged installs without a host identity retain
+// operator.json discovery and the resilient proxy/default.
 export function resolvePtoolOperatorBase(env = process.env) {
+  const resolvedBase = typeof env.PAPERCUSP_OPERATOR_BASE === 'string'
+    ? env.PAPERCUSP_OPERATOR_BASE.trim()
+    : '';
+  if (resolvedBase) return resolveOperatorBase({ operatorUrl: resolvedBase }, env);
   return resolveOperatorBase({}, env, { preferSelfPort: true });
 }
 

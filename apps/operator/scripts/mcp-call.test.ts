@@ -9,6 +9,7 @@ import {
   readJsonArgs,
   resolveMcpClientId,
   resolveMcpWorkspace,
+  resolveCandidatePorts,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
@@ -125,6 +126,25 @@ describe('mcp-call argument parsing', () => {
       { allWorkspaces: true, workspace: 'papercusp-workspace' },
       {},
     )).toThrow('--all-workspaces cannot be combined with --workspace');
+  });
+
+  it('falls back to the canonical operator when the inherited port hint is stale', () => {
+    expect(resolveCandidatePorts({}, { PAPERCUSP_HONO_PORT: '3271' })).toEqual({
+      configuredPort: '3271',
+      candidatePorts: ['3271', '3070'],
+      pinned: false,
+    });
+  });
+
+  it('keeps an explicitly pinned operator port fail-closed', () => {
+    expect(resolveCandidatePorts(
+      { port: '3170' },
+      { PAPERCUSP_HONO_PORT: '3271' },
+    )).toEqual({
+      configuredPort: '3170',
+      candidatePorts: ['3170'],
+      pinned: true,
+    });
   });
 });
 
