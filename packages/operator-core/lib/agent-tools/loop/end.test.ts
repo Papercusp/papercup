@@ -32,6 +32,9 @@ vi.mock('../coordination/identity', () => ({
     workspaceId: 'ws-1',
     userId: null,
   })),
+  resolveSelfLiteral: vi.fn((value: string | undefined, callerOwnerId: string) =>
+    value === 'self' ? callerOwnerId : value,
+  ),
 }));
 vi.mock('../../harness/routines/loop', () => ({
   deactivateLoop: vi.fn(async () => true),
@@ -608,6 +611,16 @@ describe('argument schema', () => {
     expect(schema.safeParse({ disposition: 'handoff', handoffTo: 'su-next' }).success).toBe(true);
     expect(schema.safeParse({ acknowledgeWakeLessAutonomy: true }).success).toBe(true);
     expect(schema.safeParse({ acknowledgeWakeLessAutonomy: 'yes' }).success).toBe(false);
+  });
+});
+
+describe('ownerId self selector (EI-23143537656999647)', () => {
+  it('resolves self to the caller before reading and ending the loop', async () => {
+    const got = await run({ ownerId: 'self', reason: 'finished' });
+
+    expect(got).toMatchObject({ ok: true, ended: true, ownerId: 'su-caller-own-id' });
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-caller-own-id');
+    expect(deactivateLoopMock).toHaveBeenCalledWith('su-caller-own-id', { reason: 'finished' });
   });
 });
 

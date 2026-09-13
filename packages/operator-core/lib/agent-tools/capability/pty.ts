@@ -38,8 +38,6 @@ const DEFAULT_ROWS = 24;
 const MAX_STDIN_CHARS = 1_000_000;
 const PTY_TASK_ID_ENV = 'PAPERCUSP_PTY_TASK_ID';
 
-type TextContent = { type: 'text'; text: string };
-
 /**
  * `defineTool`'s legacy compatibility overload can supply either context shape.
  * Keep the PTY helpers structural: these are the only optional fields they read,
@@ -390,7 +388,7 @@ export const ptyResizeTool = defineTool({
 export const ptyReadScreenTool = defineTool({
   name: 'capability:pty_read_screen',
   description:
-    'Read the bounded ANSI screen state of an interactive PTY session using its durable task_id. Returns a dedicated non-text `pty` content item so the shared result-door accounts and envelopes it.',
+    'Read the bounded ANSI screen state of an interactive PTY session using its durable task_id. Returns a standard MCP embedded resource so the shared result-door accounts and envelopes it as non-text content.',
   guidance: {
     when: 'Inspect the current screen of a session opened by capability:pty_open, including TUIs that redraw in place.',
     notWhen: 'Use capability:bash_output for append-only output from a capability:bash background job.',
@@ -411,20 +409,31 @@ export const ptyReadScreenTool = defineTool({
       return errorResult('pty_session_unavailable', { task_id: args.task_id });
     }
 
-    const screenItem = {
-      type: 'pty' as const,
-      task_id: args.task_id,
-      mimeType: 'application/x-papercusp-pty-screen+ansi',
-      encoding: 'utf-8',
-      cols: handle.headless.cols,
-      rows: handle.headless.rows,
-      data: screen,
-    };
+    const cols = handle.headless.cols;
+    const rows = handle.headless.rows;
     return {
-      // D-019/D-025: this lane owns a distinct content-item variant. Keep the
-      // cast on the one item until the generic wire union grows that variant;
-      // do not widen or special-case output-envelope/result-door here.
-      content: [screenItem as unknown as TextContent],
+      // D-006: screen state remains a distinct, non-text medium without
+      // inventing a protocol variant. MCP already provides embedded resources;
+      // the URI + metadata carry identity/geometry while resource.text carries
+      // the bounded ANSI serialization accepted by every conforming client.
+      content: [
+        {
+          type: 'resource' as const,
+          resource: {
+            uri: `papercusp://pty/${encodeURIComponent(args.task_id)}/screen?cols=${cols}&rows=${rows}`,
+            mimeType: 'application/x-papercusp-pty-screen+ansi',
+            text: screen,
+          },
+        },
+      ],
+      _meta: {
+        pty: {
+          task_id: args.task_id,
+          encoding: 'utf-8',
+          cols,
+          rows,
+        },
+      },
     };
   },
 });

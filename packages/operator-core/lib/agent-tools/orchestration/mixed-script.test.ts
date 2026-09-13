@@ -196,15 +196,15 @@ describe('P-012 server-side mixed capability scripts', () => {
         record('capability:pty_read_screen', () => ({
           content: [
             {
-              type: 'pty',
-              task_id: ptyTaskId,
-              mimeType: 'application/x-papercusp-pty-screen+ansi',
-              encoding: 'utf-8',
-              cols: 80,
-              rows: 24,
-              data: 'PTY_READY',
-            } as never,
+              type: 'resource',
+              resource: {
+                uri: `papercusp://pty/${ptyTaskId}/screen?cols=80&rows=24`,
+                mimeType: 'application/x-papercusp-pty-screen+ansi',
+                text: 'PTY_READY',
+              },
+            },
           ],
+          _meta: { pty: { task_id: ptyTaskId, encoding: 'utf-8', cols: 80, rows: 24 } },
         })),
       ),
       fixtureTool(
@@ -243,7 +243,7 @@ describe('P-012 server-side mixed capability scripts', () => {
               background_task: background.task_id,
               background_status: backgroundRead.status,
               pty_task: pty.task_id,
-              screen_seen: screen.content[0].data.includes('PTY_READY'),
+              screen_seen: screen.content[0].resource.text.includes('PTY_READY'),
               cleaned_up: true
             };
           `,

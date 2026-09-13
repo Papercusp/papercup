@@ -88,6 +88,22 @@ interface RunResult {
   detachedRunId?: string;
   hint?: string;
   routerOutput?: string;
+  completedGroups?: Array<{
+    root: string;
+    files: string[];
+    filesOmitted?: number;
+    ok: boolean;
+    result: {
+      passed: number;
+      failed: number;
+      skipped: number;
+      files: number;
+      failures: Array<{ file: string; test: string; message: string; actual?: string; expected?: string }>;
+      failuresTruncated: boolean;
+      byFile: Record<string, unknown>;
+    };
+  }>;
+  completedGroupsOmitted?: number;
   status?: 'not-measured';
   reason?: 'admission-starved' | 'undetermined';
   requested?: number;
@@ -339,6 +355,59 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     // all-groups recovery running while the rest of this suite runs.
     expect(cancelRun(detachedRunId)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 250));
+  }, 30_000);
+
+  it('keeps a bounded, checkout-attributed result when a later mixed-root group times out', async () => {
+    await mkdir(join(REPO_ROOT, '.papercusp', 'tmp'), { recursive: true });
+    const parent = await mkdtemp(join(REPO_ROOT, '.papercusp', 'tmp', 'testing-run-mixed-partial-'));
+    selectorRoots.push(parent);
+    const roots = [join(parent, 'operator-core'), join(parent, 'db')];
+    const files = roots.map((root, index) => join(root, `${index === 0 ? 'operator-core' : 'db'}.test.ts`));
+    const redRouter = [
+      "import { writeFileSync } from 'node:fs';",
+      "const output = process.argv.find((arg) => arg.startsWith('--outputFile='));",
+      "const file = process.argv.find((arg) => arg.endsWith('.test.ts')) ?? 'unknown.test.ts';",
+      "if (!output) process.exit(2);",
+      "writeFileSync(output.slice('--outputFile='.length), JSON.stringify({ testResults: [{ name: file, status: 'failed', startTime: 0, endTime: 7, assertionResults: [{ status: 'passed', fullName: 'setup' }, { status: 'failed', fullName: 'schema width', failureMessages: ['expected 1536, received 768'] }] }] }));",
+      'process.exit(1);',
+    ].join('\n');
+    const sleepingRouter = 'setTimeout(() => process.exit(0), 10_000);\n';
+    for (const [index, root] of roots.entries()) {
+      await mkdir(join(root, '.git'), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+      await writeFile(join(root, 'scripts', 'test-files.mjs'), index === 0 ? redRouter : sleepingRouter);
+      await writeFile(files[index]!, 'export {};\n');
+    }
+
+    const out = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 1_000 });
+
+    expect(out.error, JSON.stringify(out)).toBe('timeout');
+    if (out.error !== 'timeout') return;
+    expect(out.completedGroups).toHaveLength(1);
+    expect(out.completedGroups?.[0]).toMatchObject({
+      root: roots[0],
+      files: [files[0]],
+      ok: false,
+      result: {
+        passed: 1,
+        failed: 1,
+        files: 1,
+        failures: [expect.objectContaining({ test: 'schema width' })],
+      },
+    });
+    expect(out.completedGroups?.[0]?.result.byFile).toMatchObject({
+      [`${roots[0]}/operator-core.test.ts`]: { passed: 1, failed: 1 },
+    });
+    expect(out.completedGroups?.[0]?.result.failures.length).toBeLessThanOrEqual(5);
+    expect(out.completedGroups?.[0]?.result.failuresTruncated).toBe(false);
+
+    const detachedRunId = out.detachedRunId;
+    expect(typeof detachedRunId).toBe('string');
+    if (typeof detachedRunId === 'string') {
+      expect(cancelRun(detachedRunId)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }, 30_000);
 });
 

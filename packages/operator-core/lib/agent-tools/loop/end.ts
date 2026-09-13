@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
@@ -185,7 +185,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const ownerId = args.ownerId ?? identity.ownerId;
+    const ownerId = resolveSelfLiteral(args.ownerId, identity.ownerId) ?? identity.ownerId;
     // Read first so a no-op end on an already-inactive loop stays a no-op: it
     // cannot CREATE the unsafe state the open-directives guard exists to
     // prevent. This also remains the carry-note/report lookup for goal

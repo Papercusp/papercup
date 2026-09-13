@@ -169,7 +169,11 @@ export async function hasOwnerRelevantCoordDelta(
          AND id <= ${throughId}::bigint
          AND surface = 'messages'
          AND jsonb_typeof(body->'to') = 'array'
-         AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+         -- Keep JSONB membership in PostgreSQL's native operator form so the
+         -- coord_event_log recipient GIN index can answer this predicate. The
+         -- equivalent jsonb_exists(...) function form falls back to a parallel
+         -- sequential scan of the messages surface.
+         AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
     ) AS relevant
   `;
   const relevant = rows[0]?.relevant;

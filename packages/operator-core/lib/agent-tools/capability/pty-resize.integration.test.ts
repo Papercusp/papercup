@@ -129,10 +129,17 @@ async function waitForScreen(
   let last: Record<string, any> = {};
   while (Date.now() - startedAt < timeoutMs) {
     const result = await ptyReadScreenTool.handler({ task_id: taskId }, ctx()) as unknown as {
-      content: Array<Record<string, any>>;
+      content: Array<{ type: string; resource?: { uri?: string; mimeType?: string; text?: string } }>;
+      _meta?: { pty?: Record<string, any> };
     };
-    last = result.content[0] ?? {};
-    const data = String(last.data ?? '');
+    const item = result.content[0];
+    last = {
+      type: item?.type,
+      resource: item?.resource,
+      ...(result._meta?.pty ?? {}),
+      data: item?.resource?.text ?? '',
+    };
+    const data = String(last.data);
     if (typeof expected === 'string' ? data.includes(expected) : expected.test(data)) return last;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -175,7 +182,16 @@ describe('managed PTY resize', () => {
     // kernel geometry and the marker emitted after `stty` has returned.
     const screen = await waitForScreen(taskId, /37 111[\s\S]*AFTER/);
     expect(String(screen.data)).toMatch(/37 111/);
-    expect(screen).toMatchObject({ type: 'pty', task_id: taskId, cols: 111, rows: 37 });
+    expect(screen).toMatchObject({
+      type: 'resource',
+      task_id: taskId,
+      cols: 111,
+      rows: 37,
+      resource: {
+        uri: `papercusp://pty/${taskId}/screen?cols=111&rows=37`,
+        mimeType: 'application/x-papercusp-pty-screen+ansi',
+      },
+    });
     expect(mocks.state.task).toMatchObject({ taskId, pid: originalPid, state: 'running' });
     expect(mocks.finishSyncEnrolment).not.toHaveBeenCalled();
   });

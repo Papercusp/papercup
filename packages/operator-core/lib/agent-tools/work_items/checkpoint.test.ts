@@ -338,6 +338,22 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
+  it('keeps the generated compact catalog guidance aligned with the typed probe contract', () => {
+    const catalog = JSON.parse(
+      readFileSync(new URL('../../../../../.papercusp/tool-catalog.json', import.meta.url), 'utf8'),
+    ) as { tools: Array<{ name: string; guidance?: { when?: string } }> };
+    const compact = catalog.tools.find((entry) => entry.name === 'work_items:checkpoint');
+    expect(compact, 'generated catalog must include work_items:checkpoint').toBeDefined();
+
+    const authored = String((checkpoint as { guidance?: { when?: unknown } }).guidance?.when ?? '');
+    const projected = compact?.guidance?.when ?? '';
+    expect(projected).toBe(authored);
+    for (const token of ["kind:'tool'", "kind:'state-cell'", 'tool:', 'args:', 'schemaRevision', 'recheck']) {
+      expect(projected).toContain(token);
+    }
+    expect(projected).toContain('probe:{expect:...}');
+  });
+
   it('EI-21989135403192173: lifts a legacy check-level schemaRevision into a nested probe before validation', () => {
     const revision = continuityProbeRevision(WORK_ITEM_CONTINUITY_TEST_TOOL)!;
     const parsed = parse({

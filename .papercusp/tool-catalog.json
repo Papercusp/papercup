@@ -3344,7 +3344,7 @@
           "POST"
         ]
       },
-      "description": "Read the bounded ANSI screen state of an interactive PTY session using its durable task_id. Returns a dedicated non-text `pty` content item so the shared result-door accounts and envelopes it.",
+      "description": "Read the bounded ANSI screen state of an interactive PTY session using its durable task_id. Returns a standard MCP embedded resource so the shared result-door accounts and envelopes it as non-text content.",
       "capabilities": [
         "capability:bash"
       ],
@@ -31603,9 +31603,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. Declare `dependsOn` for a real freshness verdict. An unmeasured claim goes in `checks:[{claim,recheck}]`; no `verified` ⇒ ? PREDICTED.",
-        "notWhen": "Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit channel: use work_items:update for the body, work_items:comment for a note. The terminal-only `assumptions` declaration belongs to work_items:complete / work_items:set_state, not this checkpoint tool; passing it is invalid. Not for a peer's item — claim it, or comment instead.",
-        "chaining": "Call before work_items:complete / on yield; clear with checkpoint:null or clear:true. Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed."
+        "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor needs — done, left, approach, gotchas. A digest, not a transcript. Declare `dependsOn` for freshness. Unmeasured claims use `checks:[{claim,recheck}]` (? PREDICTED without `verified`). `checks[].probe` requires a target: `{kind:'tool',tool:'<read-only>',args:{...},schemaRevision:'live',expect:{...}}` or `{kind:'state-cell',cell:'<cell>',schemaRevision:'<revision>',expect:{...}}`; `args` defaults to `{}`. `probe:{expect:...}` has no target—omit it and use `recheck`.",
+        "notWhen": "Not mid-task scratch, file/tool output, or an edit channel: use `work_items:update`; peer notes use `work_items:comment`. `assumptions` belongs to `work_items:complete`/`set_state`. For a peer item, claim or comment.",
+        "chaining": "Before `work_items:complete`/yield; clear with `checkpoint:null` or `clear:true`. Also a liveness pulse during long local-only work."
       }
     },
     {

@@ -1115,6 +1115,13 @@ export type TestFilesCoreResult =
       detachedRunId?: string;
       /** Whether the detached run's durable snapshot landed before we advertised its id. */
       detachedDurable?: boolean;
+      /**
+       * Bounded results from checkout groups that completed before another group
+       * timed out or refused. The timeout/refusal is still the overall verdict;
+       * these results keep already-measured failures from disappearing.
+       */
+      completedGroups?: PartialCompletedTestGroup[];
+      completedGroupsOmitted?: number;
       status?: 'not-measured';
       reason?: RouterNotMeasuredReason;
       requested?: number;
@@ -1122,6 +1129,76 @@ export type TestFilesCoreResult =
       matched?: number;
       measuredFiles?: 0;
     };
+
+export type PartialCompletedTestGroup = {
+  /** Checkout that owned this group's test files. */
+  root: string;
+  /** Exact files sent to that checkout's runner. */
+  files: string[];
+  filesOmitted?: number;
+  /** Whether this group completed with a normal test verdict. */
+  ok: boolean;
+  /** Bounded distilled result for this group. */
+  result: DistilledTestRun & {
+    failuresReturned?: number;
+    failuresOmitted?: number;
+    truncationNote?: string;
+  };
+};
+
+const PARTIAL_COMPLETED_GROUP_LIMIT = 4;
+const PARTIAL_COMPLETED_FILE_LIMIT = 16;
+const PARTIAL_COMPLETED_FAILURE_LIMIT = 5;
+const PARTIAL_COMPLETED_RESULT_BYTES = 1_800;
+
+type CompletedTestGroup = {
+  group: TestFileCheckoutGroup;
+  result: Extract<TestFilesCoreResult, { error?: undefined }>;
+};
+
+/**
+ * Keep the useful part of groups that finished before a mixed-root error. This
+ * is deliberately separate from the final merged result: the caller must see
+ * which checkout produced each partial verdict, and a timed-out group must not
+ * be represented as if it completed.
+ */
+function summarizePartialCompletedGroups(completed: readonly CompletedTestGroup[]): {
+  completedGroups?: PartialCompletedTestGroup[];
+  completedGroupsOmitted?: number;
+} {
+  if (completed.length === 0) return {};
+
+  const retained = completed.slice(0, PARTIAL_COMPLETED_GROUP_LIMIT).map(({ group, result }) => {
+    const failures = result.failures.slice(0, PARTIAL_COMPLETED_FAILURE_LIMIT);
+    const compactResult: DistilledTestRun = {
+      passed: result.passed,
+      failed: result.failed,
+      skipped: result.skipped,
+      files: result.files,
+      failures,
+      failuresTruncated: result.failuresTruncated || failures.length < result.failures.length,
+      durationMs: result.durationMs,
+      // A partial surface is diagnostic, not the authoritative full per-file
+      // attribution. Keep a small bounded prefix so a large group cannot make
+      // the timeout response unbounded.
+      byFile: Object.fromEntries(Object.entries(result.byFile).slice(0, PARTIAL_COMPLETED_FILE_LIMIT)),
+    };
+    return {
+      root: group.root,
+      files: group.files.slice(0, PARTIAL_COMPLETED_FILE_LIMIT),
+      ...(group.files.length > PARTIAL_COMPLETED_FILE_LIMIT
+        ? { filesOmitted: group.files.length - PARTIAL_COMPLETED_FILE_LIMIT }
+        : {}),
+      ok: result.ok,
+      result: boundTestRunPayload({}, compactResult, { maxBytes: PARTIAL_COMPLETED_RESULT_BYTES }),
+    };
+  });
+
+  return {
+    completedGroups: retained,
+    ...(completed.length > retained.length ? { completedGroupsOmitted: completed.length - retained.length } : {}),
+  };
+}
 
 /** Characters whose presence makes a string mean something different as a regex than as itself. */
 const REGEX_METACHARACTERS = /[.*+?^${}()|[\]\\]/g;
@@ -2345,7 +2422,7 @@ export async function runTestFilesCore(opts: {
     if (groups.length > 1) {
       const roots = groups.map((group) => group.root);
       const deadline = Date.now() + timeoutMs;
-      const completed: Array<Extract<TestFilesCoreResult, { error?: undefined }>> = [];
+      const completed: CompletedTestGroup[] = [];
       const errors: Array<Extract<TestFilesCoreResult, { error: string }>> = [];
       for (const group of groups) {
         const result = await runTestFilesCore({
@@ -2357,7 +2434,7 @@ export async function runTestFilesCore(opts: {
           allowDetachedRecovery: false,
         });
         if (result.error !== undefined) errors.push(result);
-        else completed.push(result);
+        else completed.push({ group, result });
       }
       const timeout = errors.find((result) => result.error === 'timeout');
       if (timeout) {
@@ -2379,17 +2456,18 @@ export async function runTestFilesCore(opts: {
           detachedRunId: detachedStart.snapshot.runId,
           detachedDurable: detachedStart.durable,
           routerOutput: errors.map((result) => result.routerOutput ?? result.hint ?? result.error).join('\n'),
+          ...summarizePartialCompletedGroups(completed),
         };
       }
       if (errors.length > 0) {
-        return { ...errors[0]!, runId, roots };
+        return { ...errors[0]!, runId, roots, ...summarizePartialCompletedGroups(completed) };
       }
       const merged = mergeDistilledRuns(
-        completed.map((result, index) => rebaseDistilledRunToAmbient(result, groups[index]!.root, opts.root)),
+        completed.map(({ group, result }) => rebaseDistilledRunToAmbient(result, group.root, opts.root)),
         { maxFailures: opts.maxFailures },
       );
       return boundTestRunPayload(
-        { ok: completed.every((result) => result.ok), runId, root: resolve(opts.root), roots },
+        { ok: completed.every(({ result }) => result.ok), runId, root: resolve(opts.root), roots },
         merged,
       ) as TestFilesCoreResult;
     }

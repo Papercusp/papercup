@@ -1085,23 +1085,18 @@ export default defineTool({
     'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true`.',
   guidance: {
     when:
-      'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
-      'next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. ' +
-      'Declare `dependsOn` for a real freshness verdict. ' +
-      // EI-19455262557905604: the write-time `unreadRunLint` below cannot reach the
-      // sharper of the two recorded misses — an su READING this tool, writing no
-      // checkpoint at all, concluded the VERIFIED/PREDICTED distinction did not exist
-      // and filed to build it. Only a read-time line reaches that reader. Paid for by
-      // the description trim above, which took the tool from 1515 to 1411 of 1500.
-      'An unmeasured claim goes in `checks:[{claim,recheck}]`; no `verified` ⇒ ? PREDICTED.',
+      'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor needs — ' +
+      'done, left, approach, gotchas. A digest, not a transcript. Declare `dependsOn` for freshness. ' +
+      'Unmeasured claims use `checks:[{claim,recheck}]` (? PREDICTED without `verified`). ' +
+      '`checks[].probe` requires a target: `{kind:\'tool\',tool:\'<read-only>\',args:{...},schemaRevision:\'live\',expect:{...}}` or ' +
+      '`{kind:\'state-cell\',cell:\'<cell>\',schemaRevision:\'<revision>\',expect:{...}}`; `args` defaults to `{}`. ' +
+      '`probe:{expect:...}` has no target—omit it and use `recheck`.',
     notWhen:
-      'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
-      "channel: use work_items:update for the body, work_items:comment for a note. The terminal-only `assumptions` " +
-      'declaration belongs to work_items:complete / work_items:set_state, not this checkpoint tool; passing it is invalid. ' +
-      "Not for a peer's item — claim it, or comment instead.",
+      'Not mid-task scratch, file/tool output, or an edit channel: use `work_items:update`; peer notes use ' +
+      '`work_items:comment`. `assumptions` belongs to `work_items:complete`/`set_state`. For a peer item, claim or comment.',
     chaining:
-      'Call before work_items:complete / on yield; clear with checkpoint:null or clear:true. ' +
-      'Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed.',
+      'Before `work_items:complete`/yield; clear with `checkpoint:null` or `clear:true`. ' +
+      'Also a liveness pulse during long local-only work.',
     returns:
       'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
       'A body that asserts a missing surface without a matching stored check returns `absenceLint { flagged, claims }`; the write is kept. ' +

@@ -232,18 +232,26 @@ describe('interactive PTY capability family', () => {
     const read = (await ptyReadScreenTool.handler(
       { task_id: 'mptysession001' },
       ctx(),
-    )) as unknown as { content: Array<Record<string, unknown>> };
+    )) as unknown as {
+      content: Array<Record<string, unknown>>;
+      _meta: { pty: Record<string, unknown> };
+    };
     expect(read.content).toEqual([
       {
-        type: 'pty',
-        task_id: 'mptysession001',
-        mimeType: 'application/x-papercusp-pty-screen+ansi',
-        encoding: 'utf-8',
-        cols: 111,
-        rows: 37,
-        data: '\u001b[2JREADY>',
+        type: 'resource',
+        resource: {
+          uri: 'papercusp://pty/mptysession001/screen?cols=111&rows=37',
+          mimeType: 'application/x-papercusp-pty-screen+ansi',
+          text: '\u001b[2JREADY>',
+        },
       },
     ]);
+    expect(read._meta.pty).toEqual({
+      task_id: 'mptysession001',
+      encoding: 'utf-8',
+      cols: 111,
+      rows: 37,
+    });
 
     const killed = await ptyKillTool.handler({ task_id: 'mptysession001' }, ctx());
     expect(parseText(killed)).toEqual({ ok: true, task_id: 'mptysession001', killed: true });

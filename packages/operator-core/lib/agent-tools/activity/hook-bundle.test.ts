@@ -234,8 +234,9 @@ describe('owner-relevant generation gate', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.text).toContain("surface = 'messages'");
     expect(calls[0]?.text).toContain("jsonb_typeof(body->'to') = 'array'");
-    expect(calls[0]?.text).toContain("jsonb_exists(body->'to', ?)");
-    expect(calls[0]?.text).toContain("jsonb_exists(body->'to', '*')");
+    expect(calls[0]?.text).toContain("(body->'to') ? ?");
+    expect(calls[0]?.text).toContain("(body->'to') ? '*'");
+    expect(calls[0]?.text).not.toContain('jsonb_exists');
     expect(calls[0]?.text).toContain('id > ?::bigint');
     expect(calls[0]?.text).toContain('id <= ?::bigint');
     expect(calls[0]?.values).toEqual(expect.arrayContaining(['41', '43', 'su-abc']));
