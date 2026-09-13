@@ -919,23 +919,45 @@ type ScopedSuperuserTransportClampResult =
 /**
  * A loop carry-note READ is a recovery operation, not a cross-hive data escape:
  * `loop:checkpoint` explicitly documents `harness` as the way to read a note that
- * was stranded under another scope, while every WRITE is still forced to the
- * active routine's authoritative scope by the handler itself.
+ * was stranded under another scope. Issue-family `work_items:checkpoint` writes
+ * use the same narrow transport exception because EI-prefixed work items resolve
+ * workspace-wide; the handler remains authoritative for the item's assignee and
+ * refuses a write when its `not_holder` guard fails.
  *
  * Keep this exception narrow. It requires a concrete harness and either an omitted
- * ownerId (the normal self-read) or the transport caller's resolved identity. The
- * wildcard/global harness spellings and another owner's note remain behind the
- * regular hive clamp.
+ * ownerId (the normal self-read), the transport caller's resolved identity, or an
+ * EI-prefixed checkpoint id. The wildcard/global harness spellings, feature-family
+ * checkpoint ids, and another owner's loop note remain behind the regular hive
+ * clamp.
  */
-function isSelfOwnedLoopCheckpointRead(
+function isSelfOwnedCheckpointTransportException(
   toolName: string,
   callArgs: Record<string, unknown>,
   spawnCtx: BuiltSpawnContext,
 ): boolean {
-  if (toolName !== 'loop:checkpoint' || callArgs.read !== true) return false;
-
   const requestedHarness = typeof callArgs.harness === 'string' ? callArgs.harness.trim() : '';
   if (!requestedHarness || requestedHarness === '*' || requestedHarness.toLowerCase() === 'all') return false;
+
+  if (toolName === 'work_items:checkpoint') {
+    // Match work_items:checkpoint's own runBulk selection: a non-empty `items`
+    // array wins over the shorthand `id`, while an empty array falls back to it.
+    // The handler's workspace-wide EI lookup plus `not_holder` check is the
+    // authority for whether the resolved item is actually writable by this caller.
+    const rawItems = Array.isArray(callArgs.items) && callArgs.items.length > 0
+      ? callArgs.items
+      : [callArgs.id];
+    if (rawItems.length === 0) return false;
+
+    return rawItems.every((rawItem) => {
+      const id =
+        rawItem && typeof rawItem === 'object'
+          ? (rawItem as Record<string, unknown>).id
+          : rawItem;
+      return typeof id === 'string' && id.trim().startsWith('EI-');
+    });
+  }
+
+  if (toolName !== 'loop:checkpoint' || callArgs.read !== true) return false;
 
   const requestedOwnerId = typeof callArgs.ownerId === 'string' ? callArgs.ownerId.trim() : '';
   if (!requestedOwnerId) return true;
@@ -1114,7 +1136,7 @@ async function applyScopedSuperuserTransportClamp(
           args,
           spawnCtx.workspaceId,
         );
-        const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(toolName, args, spawnCtx);
+        const isSelfOwnedCheckpointRead = isSelfOwnedCheckpointTransportException(toolName, args, spawnCtx);
         const escapesHive =
           !isEngineeringDocsSurface &&
           !isPlatformPotGitSyncTarget &&
@@ -3361,7 +3383,7 @@ export function registerMcpHost(server: McpServer): void {
                 args,
                 spawnRes.ctx.workspaceId,
               );
-              const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(toolName, args, spawnRes.ctx);
+              const isSelfOwnedCheckpointRead = isSelfOwnedCheckpointTransportException(toolName, args, spawnRes.ctx);
               const escapes =
                 !isEngineeringDocsSurface &&
                 !isPlatformPotGitSyncTarget &&
