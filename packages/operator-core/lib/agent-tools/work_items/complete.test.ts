@@ -3888,6 +3888,28 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       });
     });
 
+    it('wires self-review lookedAt array coercion through the public completion schema', () => {
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: unknown };
+        }
+      ).safeParse({
+        id: 'WI-self-review-looked-at',
+        completion: {
+          summary: 's',
+          selfReview: {
+            lookedAt: ['completion-coerce.ts', 'completion-coerce.test.ts'],
+            findings: [],
+            changedAsResult: [],
+          },
+        },
+      });
+
+      expect(result.success).toBe(true);
+      const completion = (result.data as { completion: { selfReview: { lookedAt: unknown } } }).completion;
+      expect(completion.selfReview.lookedAt).toBe('completion-coerce.ts; completion-coerce.test.ts');
+    });
+
     it('normalizes false self-review scalars to explicit empty arrays', () => {
       const out = coerceCompletionShape({
         summary: 's',
