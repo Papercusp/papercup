@@ -1241,6 +1241,57 @@ interface HeredocDeclaration {
 }
 
 /**
+ * Commands commonly used only to probe or tear down a job. Their own stdout
+ * redirects must not make the enclosing job look as if it redirected its
+ * output away from the capability log (EI-23104327379801926).
+ */
+const COMMAND_LOCAL_REDIRECT_HELPERS = new Set(['cleanup', 'curl']);
+const REDIRECT_COMMAND_KEYWORDS = new Set([
+  'case',
+  'coproc',
+  'do',
+  'done',
+  'elif',
+  'else',
+  'esac',
+  'fi',
+  'for',
+  'function',
+  'if',
+  'in',
+  'select',
+  'then',
+  'time',
+  'until',
+  'while',
+]);
+const SHELL_COMMAND_PREFIXES = new Set([
+  'builtin',
+  'command',
+  'env',
+  'exec',
+  'nice',
+  'nohup',
+  'setsid',
+  'sudo',
+  'stdbuf',
+]);
+
+interface RedirectCandidate {
+  redirect: SelfOutputRedirect;
+  commandId: number;
+  helperScope: boolean;
+}
+
+interface ShellCommandState {
+  commandId: number;
+  commandName: string | null;
+  commandToken: string;
+  commandTokenStart: number;
+  commandPrefixPending: boolean;
+}
+
+/**
  * Read the delimiter from a heredoc operator outside shell quotes. The body is
  * not shell syntax, so a `>` in JavaScript, Markdown, or another embedded
  * language must not be mistaken for a stdout redirect by the advisory scanner.
@@ -1303,16 +1354,109 @@ function skipHeredocBody(command: string, bodyStart: number, declaration: Heredo
  * Detects whether `command` redirects its OWN stdout to a file, anywhere in the
  * command (not just the last stage — `for i in …; do echo … >> /tmp/x; done`
  * counts). Skips stderr-only redirects (`2>`), fd dups (`>&2`, `2>&1`), process
- * substitution (`>(…)`), and anything inside quotes. Returns the LAST such
- * redirect (the conventional main one), or `null`. Deliberately pragmatic, like
+ * substitution (`>(…)`), anything inside quotes, and redirects owned by the
+ * command-local curl/cleanup helpers. Returns the LAST owned redirect (the
+ * conventional main one), or `null`. Deliberately pragmatic, like
  * `detectBufferingLastStage`: this feeds an advisory note, so a rare miss just
  * preserves today's behavior.
  */
 export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | null {
   let inSingle = false;
   let inDouble = false;
-  let found: SelfOutputRedirect | null = null;
+  let commandId = 0;
+  let commandName: string | null = null;
+  let commandToken = '';
+  let commandTokenStart = -1;
+  let commandPrefixPending = false;
+  let pendingFunctionName: string | null = null;
+  let functionParenDepth = 0;
+  const helperBraceScopes: boolean[] = [];
+  const nestedCommandStates: ShellCommandState[] = [];
+  const commandNames = new Map<number, string | null>();
+  const candidates: RedirectCandidate[] = [];
   const pendingHeredocs: HeredocDeclaration[] = [];
+
+  const commandBasename = (value: string): string => {
+    const slash = value.lastIndexOf('/');
+    return (slash >= 0 ? value.slice(slash + 1) : value).replace(/^['"]|['"]$/g, '');
+  };
+
+  const isCommandLocalHelperRedirect = (owner: string | null | undefined, redirect: SelfOutputRedirect): boolean => {
+    const name = owner ? commandBasename(owner) : null;
+    // A standalone curl that deliberately writes a report file is still the
+    // managed command. Only the conventional health-check discard is helper
+    // output; cleanup is helper-owned regardless of its discard target.
+    return name === 'cleanup' || (name === 'curl' && redirect.target === '/dev/null');
+  };
+
+  const flushCommandToken = (): void => {
+    if (!commandToken) return;
+    const value = commandToken;
+    commandToken = '';
+    commandTokenStart = -1;
+    const base = commandBasename(value);
+    const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/.test(value);
+    if (commandName !== null || assignment || REDIRECT_COMMAND_KEYWORDS.has(base)) return;
+    if (commandPrefixPending) {
+      if (base.startsWith('-') || assignment) return;
+      commandPrefixPending = false;
+      commandName = base;
+      return;
+    }
+    if (SHELL_COMMAND_PREFIXES.has(base)) {
+      commandPrefixPending = true;
+      return;
+    }
+    commandName = base;
+  };
+
+  const startNewCommand = (): void => {
+    flushCommandToken();
+    commandNames.set(commandId, commandName);
+    commandId += 1;
+    commandName = null;
+    commandToken = '';
+    commandTokenStart = -1;
+    commandPrefixPending = false;
+    pendingFunctionName = null;
+    functionParenDepth = 0;
+  };
+
+  const pushNestedCommand = (): void => {
+    flushCommandToken();
+    nestedCommandStates.push({
+      commandId,
+      commandName,
+      commandToken,
+      commandTokenStart,
+      commandPrefixPending,
+    });
+    commandId += 1;
+    commandName = null;
+    commandToken = '';
+    commandTokenStart = -1;
+    commandPrefixPending = false;
+    pendingFunctionName = null;
+    functionParenDepth = 0;
+  };
+
+  const popNestedCommand = (): void => {
+    flushCommandToken();
+    const state = nestedCommandStates.pop();
+    if (!state) {
+      startNewCommand();
+      return;
+    }
+    commandNames.set(commandId, commandName);
+    commandId = state.commandId;
+    commandName = state.commandName;
+    commandToken = state.commandToken;
+    commandTokenStart = state.commandTokenStart;
+    commandPrefixPending = state.commandPrefixPending;
+  };
+
+  const helperScopeActive = (): boolean => helperBraceScopes.some(Boolean);
+
   for (let i = 0; i < command.length; i++) {
     if (command[i] === '\n' && !inSingle && !inDouble && pendingHeredocs.length > 0) {
       let bodyCursor = i + 1;
@@ -1332,81 +1476,196 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
       inDouble = !inDouble;
       continue;
     }
-    if (!inSingle && !inDouble && ch === '<' && command[i + 1] === '<') {
-      const heredoc = readHeredocDeclaration(command, i);
-      if (heredoc) {
-        // Keep scanning the declaration line: a real redirect may follow the
-        // heredoc (`cat <<EOF > /tmp/out`). Its body begins after the line.
-        pendingHeredocs.push(heredoc);
-      }
-    }
-    if (inSingle || inDouble || ch !== '>') continue;
 
-    const prev = command[i - 1];
-    let op: string;
-    let opEnd = i + 1; // index just past the operator
-    if (prev === '&' && command[i - 2] !== '>') {
-      // `&>` / `&>>` — bash "both streams" redirect. (`>&` dup is handled below.)
-      op = '&>';
-    } else if (prev !== undefined && /\d/.test(prev)) {
-      // A digit-prefixed redirect (`1>`, `2>`) only counts as an fd redirect
-      // when the digit starts its own token; otherwise the digit is part of a
-      // word (`echo hi1>f` still redirects stdout, with `hi1` the word).
-      const beforeDigit = command[i - 2];
-      const digitIsFd = beforeDigit === undefined || /[\s;|&(]/.test(beforeDigit);
-      if (digitIsFd && prev !== '1') {
-        // Stderr(-or-other-fd)-only redirect: stdout still reaches the
-        // capability log, so this is not a self-output redirect. Skip past its
-        // target so we do not re-trigger inside it.
-        if (command[opEnd] === '>') opEnd++;
-        i = opEnd;
-        continue;
-      }
-      op = digitIsFd ? '1>' : '>';
-    } else {
-      op = '>';
-    }
-    if (command[opEnd] === '>') {
-      op += '>';
-      opEnd++;
-    }
-    // Fd dup (`>&1`, `1>&2`, `2>&1`) or process substitution (`>(…)`) — not a file.
-    if (command[opEnd] === '&' || command[opEnd] === '(') {
-      i = opEnd;
+    if (inSingle || inDouble) continue;
+
+    // A backslash-newline is continuation whitespace, not a command boundary.
+    if (ch === '\\' && command[i + 1] === '\n') {
+      i += 1;
       continue;
     }
 
-    // Parse the target token (respecting quotes), tracking expansion characters.
-    let j = opEnd;
-    while (j < command.length && /\s/.test(command[j])) j++;
-    let target = '';
-    let hasExpansion = false;
-    let tSingle = false;
-    let tDouble = false;
-    for (; j < command.length; j++) {
-      const tc = command[j];
-      if (tc === "'" && !tDouble) {
-        tSingle = !tSingle;
+    if (functionParenDepth > 0) {
+      if (ch === '(') functionParenDepth += 1;
+      if (ch === ')') {
+        functionParenDepth -= 1;
+        if (functionParenDepth === 0) pendingFunctionName = commandName;
+      }
+      continue;
+    }
+
+    if (ch === '<') {
+      flushCommandToken();
+      if (command[i + 1] === '<') {
+        const heredoc = readHeredocDeclaration(command, i);
+        if (heredoc) {
+          // Keep scanning the declaration line: a real redirect may follow the
+          // heredoc (`cat <<EOF > /tmp/out`). Its body begins after the line.
+          pendingHeredocs.push(heredoc);
+        }
+        i += 1;
         continue;
       }
-      if (tc === '"' && !tSingle) {
-        tDouble = !tDouble;
+      // Input redirects cannot own stdout. Skip their target so it cannot be
+      // mistaken for the first command word in a redirect-before-command form.
+      let j = i + 1;
+      while (j < command.length && /\s/.test(command[j])) j++;
+      let targetQuote: "'" | '"' | null = null;
+      for (; j < command.length; j++) {
+        const targetChar = command[j];
+        if (targetQuote) {
+          if (targetChar === targetQuote) targetQuote = null;
+          continue;
+        }
+        if (targetChar === "'" || targetChar === '"') {
+          targetQuote = targetChar;
+          continue;
+        }
+        if (/[\s;|&<>()]/.test(targetChar)) break;
+      }
+      i = j - 1;
+      continue;
+    }
+
+    if (ch === '\n' || ch === ';') {
+      startNewCommand();
+      continue;
+    }
+    if (ch === '&') {
+      if (command[i + 1] === '>' || command[i - 1] === '>') continue;
+      if (command[i + 1] === '&') i += 1;
+      startNewCommand();
+      continue;
+    }
+    if (ch === '|') {
+      if (command[i + 1] === '|') i += 1;
+      else if (command[i + 1] === '&') i += 1;
+      startNewCommand();
+      continue;
+    }
+    if (ch === '(') {
+      const isFunctionDeclaration =
+        commandName !== null && !REDIRECT_COMMAND_KEYWORDS.has(commandName) && /^\s*\)/.test(command.slice(i + 1));
+      if (isFunctionDeclaration) {
+        functionParenDepth = 1;
         continue;
       }
-      if (!tSingle && !tDouble && /[\s;|&<>()]/.test(tc)) break;
-      if (!tSingle && (tc === '$' || tc === '`')) hasExpansion = true;
-      target += tc;
+      pushNestedCommand();
+      continue;
     }
-    if (target.length > 0) {
-      found = {
-        target,
-        op,
-        literalPath: target.startsWith('/') && !hasExpansion && !/[*?]/.test(target),
-      };
+    if (ch === ')') {
+      popNestedCommand();
+      continue;
     }
-    i = j - 1;
+    if (ch === '{') {
+      flushCommandToken();
+      const functionPrefix = /(?:^|[;\n])\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*$/.exec(
+        command.slice(0, i),
+      );
+      helperBraceScopes.push(
+        (pendingFunctionName !== null && COMMAND_LOCAL_REDIRECT_HELPERS.has(commandBasename(pendingFunctionName))) ||
+          (functionPrefix !== null && COMMAND_LOCAL_REDIRECT_HELPERS.has(functionPrefix[1])),
+      );
+      startNewCommand();
+      continue;
+    }
+    if (ch === '}') {
+      flushCommandToken();
+      helperBraceScopes.pop();
+      startNewCommand();
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flushCommandToken();
+      continue;
+    }
+    if (ch === '>') {
+      flushCommandToken();
+
+      const prev = command[i - 1];
+      let op: string;
+      let opEnd = i + 1; // index just past the operator
+      if (prev === '&' && command[i - 2] !== '>') {
+        // `&>` / `&>>` — bash "both streams" redirect. (`>&` dup is handled below.)
+        op = '&>';
+      } else if (prev !== undefined && /\d/.test(prev)) {
+        // A digit-prefixed redirect (`1>`, `2>`) only counts as an fd redirect
+        // when the digit starts its own token; otherwise the digit is part of a
+        // word (`echo hi1>f` still redirects stdout, with `hi1` the word).
+        const beforeDigit = command[i - 2];
+        const digitIsFd = beforeDigit === undefined || /[\s;|&(]/.test(beforeDigit);
+        if (digitIsFd && prev !== '1') {
+          // Stderr(-or-other-fd)-only redirect: stdout still reaches the
+          // capability log, so this is not a self-output redirect. Skip past its
+          // target so we do not re-trigger inside it.
+          if (command[opEnd] === '>') opEnd++;
+          i = opEnd;
+          continue;
+        }
+        op = digitIsFd ? '1>' : '>';
+      } else {
+        op = '>';
+      }
+      if (command[opEnd] === '>') {
+        op += '>';
+        opEnd++;
+      }
+      // Fd dup (`>&1`, `1>&2`) or process substitution (`>(…)`) — not a file.
+      if (command[opEnd] === '&' || command[opEnd] === '(') {
+        i = opEnd;
+        continue;
+      }
+
+      // Parse the target token (respecting quotes), tracking expansion characters.
+      let j = opEnd;
+      while (j < command.length && /\s/.test(command[j])) j++;
+      let target = '';
+      let hasExpansion = false;
+      let tSingle = false;
+      let tDouble = false;
+      for (; j < command.length; j++) {
+        const tc = command[j];
+        if (tc === "'" && !tDouble) {
+          tSingle = !tSingle;
+          continue;
+        }
+        if (tc === '"' && !tSingle) {
+          tDouble = !tDouble;
+          continue;
+        }
+        if (!tSingle && !tDouble && /[\s;|&<>()]/.test(tc)) break;
+        if (!tSingle && (tc === '$' || tc === '`')) hasExpansion = true;
+        target += tc;
+      }
+      if (target.length > 0) {
+        candidates.push({
+          redirect: {
+            target,
+            op,
+            literalPath: target.startsWith('/') && !hasExpansion && !/[*?]/.test(target),
+          },
+          commandId,
+          helperScope: helperScopeActive(),
+        });
+      }
+      i = j - 1;
+      continue;
+    }
+    if (commandTokenStart < 0) commandTokenStart = i;
+    commandToken += ch;
   }
-  return found;
+
+  flushCommandToken();
+  commandNames.set(commandId, commandName);
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const candidate = candidates[i]!;
+    const owner = commandNames.get(candidate.commandId);
+    if (candidate.helperScope || isCommandLocalHelperRedirect(owner, candidate.redirect)) {
+      continue;
+    }
+    return candidate.redirect;
+  }
+  return null;
 }
 
 /**
@@ -2113,9 +2372,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       : '';
     const deadlineDiagnostic =
       `\n[capability:bash] deadline reached: exceeded ${effectiveTimeoutMs}ms wall-clock.` +
-        queuedHint +
-        ` Sending SIGTERM (SIGKILL in ${TIMEOUT_SIGTERM_GRACE_MS}ms if it does not exit). ` +
-        `For a longer job pass an explicit \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms).\n`;
+      queuedHint +
+      ` Sending SIGTERM (SIGKILL in ${TIMEOUT_SIGTERM_GRACE_MS}ms if it does not exit). ` +
+      `For a longer job pass an explicit \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms).\n`;
     appendRawOutput(deadlineDiagnostic);
     appendRunnerOwnedDiagnostic(deadlineDiagnostic);
     // SIGTERM first so the job's own trap/finally can clean up (temp trees,
