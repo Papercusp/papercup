@@ -25,6 +25,7 @@ import {
   type RepairManifest,
   type RepairManifestSummary,
 } from './repair-manifest';
+import type { FixPrecheckVerdict } from './admission-fix-precheck';
 
 /**
  * Schema 4 (P-006, frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the row
@@ -405,6 +406,27 @@ export interface FrozenRepairDispatchReservation {
   expiresAtMs: number;
 }
 
+/**
+ * A confirmed admission's long R6 test leg.  The tool call returns after this marker is
+ * persisted; a later call publishes only after `status:'passed'`.  Keeping the marker on the
+ * queue makes `op:get` distinguish "still deciding" from "nothing landed", including across
+ * MCP request boundaries.  The background leg never publishes the lineage ref itself.
+ */
+export interface FrozenRepairAdmissionPrecheck {
+  schemaVersion: 1;
+  operationId: string;
+  status: 'running' | 'passed' | 'failed';
+  candidate: string;
+  repairHead: string;
+  builtCommit: string;
+  files: string[];
+  actor: string;
+  startedAtMs: number;
+  updatedAtMs: number;
+  expiresAtMs: number;
+  verdict?: FixPrecheckVerdict;
+}
+
 export interface FrozenCandidateRepairQueue {
   /** Every version the parser accepts; a parsed row is always re-stamped with the current one. */
   schemaVersion: 1 | 2 | 3 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
@@ -473,6 +495,8 @@ export interface FrozenCandidateRepairQueue {
   ageEscalatedRung?: number;
   /** Short-lived CAS lease held only while one process launches this queue's fixer. */
   dispatchReservation?: FrozenRepairDispatchReservation;
+  /** Observable, bounded R6 admission pre-check; publication requires a later confirmed call. */
+  admissionPrecheck?: FrozenRepairAdmissionPrecheck;
   /**
    * P-006: the flat PROJECTION of `signature` (`signature.map(e => e.id)`), kept for every
    * consumer that correlates by id. Written together with `signature`; never diverges.
@@ -1243,6 +1267,48 @@ function parseDispatchReservation(value: unknown): FrozenRepairDispatchReservati
   };
 }
 
+function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (row.schemaVersion !== 1) return undefined;
+  if (row.status !== 'running' && row.status !== 'passed' && row.status !== 'failed') return undefined;
+  if (
+    !nonBlank(row.operationId) ||
+    !nonBlank(row.candidate) ||
+    !nonBlank(row.repairHead) ||
+    !nonBlank(row.builtCommit) ||
+    !nonBlank(row.actor) ||
+    !Array.isArray(row.files) ||
+    !row.files.every(nonBlank) ||
+    !validTimestamp(row.startedAtMs) ||
+    !validTimestamp(row.updatedAtMs) ||
+    !validTimestamp(row.expiresAtMs) ||
+    (row.updatedAtMs as number) < (row.startedAtMs as number) ||
+    (row.expiresAtMs as number) < (row.startedAtMs as number)
+  ) return undefined;
+  const verdict = row.verdict;
+  if (row.status === 'running' && verdict !== undefined) return undefined;
+  if (
+    row.status !== 'running' &&
+    (!verdict || typeof verdict !== 'object' || Array.isArray(verdict) ||
+      typeof (verdict as Record<string, unknown>).ok !== 'boolean')
+  ) return undefined;
+  return {
+    schemaVersion: 1,
+    operationId: row.operationId as string,
+    status: row.status,
+    candidate: row.candidate as string,
+    repairHead: row.repairHead as string,
+    builtCommit: row.builtCommit as string,
+    files: [...(row.files as string[])],
+    actor: row.actor as string,
+    startedAtMs: row.startedAtMs as number,
+    updatedAtMs: row.updatedAtMs as number,
+    expiresAtMs: row.expiresAtMs as number,
+    ...(verdict ? { verdict: verdict as FixPrecheckVerdict } : {}),
+  };
+}
+
 function assertTimestamp(value: number, label: string): void {
   if (!validTimestamp(value)) throw new Error(`${label} must be a finite non-negative timestamp`);
 }
@@ -1414,6 +1480,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (row.fixerSpawnId !== null && !nonBlank(row.fixerSpawnId)) return null;
   const dispatchReservation = parseDispatchReservation(row.dispatchReservation);
   if (dispatchReservation === null) return null;
+  const admissionPrecheck = parseAdmissionPrecheck(row.admissionPrecheck);
   if (!Array.isArray(row.failingTests) || !row.failingTests.every((v) => typeof v === 'string')) {
     return null;
   }
@@ -1494,6 +1561,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(blockedReason ? { blockedReason } : {}),
     ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
     ...(dispatchReservation ? { dispatchReservation } : {}),
+    ...(admissionPrecheck ? { admissionPrecheck } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(legs.length > 0 ? { legs } : {}),
     ...(admissions.length > 0 ? { admissions } : {}),
@@ -1995,6 +2063,7 @@ export function diagnoseFrozenCandidateRepairQueue(
     fixerAlive,
     repairLatency: frozenRepairLatency(queue, observation.nowMs),
     dispatchReservation: reservation,
+    admissionPrecheck: queue.admissionPrecheck ?? null,
     decision: decision.kind,
     retireAllowed,
     retireRefusal,
@@ -2188,10 +2257,12 @@ export function markFrozenRepairAdmitted(
   const {
     blockedReason: _leavingBlocked,
     lastResumeRunStartedAtMs: _priorResumeStart,
+    admissionPrecheck: _completedPrecheck,
     ...rest
   } = queue;
   void _leavingBlocked;
   void _priorResumeStart;
+  void _completedPrecheck;
   return {
     ...rest,
     phase,
