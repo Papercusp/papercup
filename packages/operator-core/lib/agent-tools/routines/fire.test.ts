@@ -7,7 +7,10 @@ const { sqlMock, enqueueMock, workspaceMock, homeMock } = vi.hoisted(() => ({
   homeMock: vi.fn(() => 'home'),
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMock }),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: workspaceMock }));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: homeMock }));
 vi.mock('../../dbos/routines-workflow', () => ({ enqueueRoutineFire: enqueueMock }));

@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
     reason: 'await-blocking',
     detail: 'owner is parked on a blocking await',
   } as const,
+  dbosStarted: true,
+  startWorkflow: vi.fn((_workflow: unknown, _options: unknown) => async (..._args: unknown[]) => undefined),
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -36,7 +38,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
       },
       registerWorkflow: (impl: unknown) => impl,
       registerScheduled: vi.fn(),
-      startWorkflow: vi.fn(),
+      startWorkflow: state.startWorkflow,
     },
   };
 });
@@ -47,6 +49,8 @@ vi.mock('./idempotent-register-workflow', () => ({
 }));
 
 vi.mock('./queue-concurrency', () => ({ queueConcurrency: (ceiling: number) => ceiling }));
+
+vi.mock('./bootstrap', () => ({ dbosStarted: () => state.dbosStarted }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
@@ -85,6 +89,7 @@ import {
   orderDueRoutinesFairly,
   ROUTINE_FIRE_QUEUES,
   ROUTINE_FIRE_TIMEOUT_MS,
+  enqueueRoutineFire,
   routineFireTimeoutMs,
   routineFireWorkflow,
 } from './routines-workflow';
@@ -371,6 +376,62 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     ]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('fire WITHHELD (await-blocking'));
     warn.mockRestore();
+  });
+});
+
+describe('enqueueRoutineFire — on-demand durable dispatch', () => {
+  const routine = {
+    id: 'rt_home_git_sync',
+    workspaceId: 'workspace-1',
+    installSlug: 'home',
+    name: 'git-sync',
+    targetRole: 'system:git-sync',
+    triggerConfig: { cron: '*/3 * * * * *' },
+    payloadTemplate: null,
+    rescheduleIntervalSec: null,
+    targetOwnerId: null,
+  } as Parameters<typeof enqueueRoutineFire>[0];
+
+  it('uses the live routine dispatch classification and stable deduplication key', async () => {
+    const result = await enqueueRoutineFire(routine);
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'enqueued',
+      routineId: routine.id,
+      deduplicationId: `routine:${routine.id}`,
+      queueName: ROUTINES_CRITICAL_QUEUE,
+    });
+    expect(state.startWorkflow).toHaveBeenCalledWith(
+      routineFireWorkflow,
+      expect.objectContaining({
+        queueName: ROUTINES_CRITICAL_QUEUE,
+        enqueueOptions: { deduplicationID: `routine:${routine.id}` },
+      }),
+    );
+  });
+
+  it('reports an active DBOS deduplication conflict as already queued', async () => {
+    state.startWorkflow.mockImplementationOnce(() => {
+      throw Object.assign(new Error('duplicate workflow'), { dbosErrorCode: 28 });
+    });
+
+    await expect(enqueueRoutineFire(routine)).resolves.toMatchObject({
+      ok: true,
+      status: 'deduplicated',
+      deduplicationId: `routine:${routine.id}`,
+    });
+  });
+
+  it('reports DBOS unavailable without attempting an enqueue', async () => {
+    state.dbosStarted = false;
+
+    await expect(enqueueRoutineFire(routine)).resolves.toMatchObject({
+      ok: false,
+      status: 'unavailable',
+      reason: 'dbos-not-started',
+    });
+    expect(state.startWorkflow).not.toHaveBeenCalled();
   });
 });
 
