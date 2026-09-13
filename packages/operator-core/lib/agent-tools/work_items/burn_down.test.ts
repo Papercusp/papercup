@@ -897,6 +897,43 @@ describe('work_items:burn_down', () => {
     });
   });
 
+  it('overlaps claim-floor attribution with a pending occurrence census', async () => {
+    let occurrenceResolved = false;
+    let resolveOccurrences!: (value: IssueOccurrenceCounts) => void;
+    const occurrencePromise = new Promise<IssueOccurrenceCounts>((resolve) => {
+      resolveOccurrences = (value) => {
+        occurrenceResolved = true;
+        resolve(value);
+      };
+    });
+    let floorsStarted = false;
+    let releaseFloors!: () => void;
+    const explainFloors = vi.fn(async (_harness: string, ids: readonly string[]) => {
+      floorsStarted = true;
+      await new Promise<void>((resolve) => {
+        releaseFloors = resolve;
+      });
+      return ids.map((id) => ({ id, admissible: true, refusedBy: null, detail: null }));
+    });
+
+    const resultPromise = buildFleetMetricsResult(fleetResolution('current-spec'), fleetMetricItems(), {
+      issueOccurrences: occurrencePromise,
+      sourceCapExhausted: false,
+      explainFloors,
+    });
+
+    await Promise.resolve();
+    expect(floorsStarted).toBe(true);
+    expect(occurrenceResolved).toBe(false);
+    resolveOccurrences(issueOccurrenceCounts);
+    releaseFloors();
+
+    const result = await resultPromise;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.issueUnits).toMatchObject({ occurrences: 5, duplicateOccurrences: 3 });
+  });
+
   it('builds exact at-event-spec flow from the revision effective at each lifecycle event while stock stays current-spec', async () => {
     const result = await buildFleetMetricsResult(fleetResolution('at-event-spec'), fleetMetricItems(), {
       issueOccurrences: issueOccurrenceCounts,

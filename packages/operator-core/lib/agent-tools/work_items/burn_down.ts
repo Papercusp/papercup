@@ -855,7 +855,7 @@ export async function buildFleetMetricsResult(
   resolution: FleetMetricScopeResolution,
   items: readonly WorkItem[],
   opts: {
-    issueOccurrences: IssueOccurrenceCounts;
+    issueOccurrences: IssueOccurrenceCounts | PromiseLike<IssueOccurrenceCounts>;
     sourceCapExhausted: boolean;
     assignee?: string;
     explainFloors?: typeof explainIssueClaimFloors;
@@ -893,11 +893,17 @@ export async function buildFleetMetricsResult(
   const terminalItems = terminalSelection.events.map((event) => event.item);
   const remainingItems = currentCanonical.filter((item) => !TERMINAL_STATES.has(item.state));
   const explainFloors = opts.explainFloors ?? explainIssueClaimFloors;
-  const floorRows = await explainFloors(
-    resolution.scope.harness,
-    remainingItems.map((item) => item.id),
-    { assignee: opts.assignee },
-  );
+  // The occurrence census and claim-floor explanation are independent reads. Keep
+  // the caller's occurrence promise deferred until this point so the two expensive
+  // legs overlap instead of consuming the metric budget back-to-back.
+  const [floorRows, issueOccurrences] = await Promise.all([
+    explainFloors(
+      resolution.scope.harness,
+      remainingItems.map((item) => item.id),
+      { assignee: opts.assignee },
+    ),
+    Promise.resolve(opts.issueOccurrences),
+  ]);
   const floorById = new Map(floorRows.map((row: ClaimFloorAttribution) => [row.id, row]));
   const buckets = {
     needsHuman: 0,
@@ -983,8 +989,8 @@ export async function buildFleetMetricsResult(
       issueUnits: {
         canonicalBugs: currentCanonical.filter((item) => item.kind === 'bug').length,
         observations: observations.length,
-        occurrences: opts.issueOccurrences.rawOccurrences,
-        duplicateOccurrences: opts.issueOccurrences.duplicateOccurrences,
+        occurrences: issueOccurrences.rawOccurrences,
+        duplicateOccurrences: issueOccurrences.duplicateOccurrences,
         separateUnits: true,
         units: {
           canonicalBugs: FLEET_METRIC_UNITS.canonicalBugs,
@@ -1763,7 +1769,7 @@ export default defineTool({
     const fleetMetrics = await (async (): Promise<FleetMetricsResult | null> => {
       if (!fleetMetricResolution || !fleetMetricSourceItems) return null;
       if (!fleetMetricResolution.ok) return parseFleetMetricsResult(fleetMetricResolution);
-      const metricOccurrences = await readIssueOccurrenceCounts({
+      const metricOccurrences = readIssueOccurrenceCounts({
         workspaceId: occurrenceWorkspaceId,
         harnessSlug: args.harness,
         since: fleetMetricResolution.scope.window.startAt,

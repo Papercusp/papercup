@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 882,
+  "count": 883,
   "tools": [
     {
       "name": "ablation:report",
@@ -1649,6 +1649,29 @@
       "guidance": {
         "when": "Restore a backup snapshot — replay PG dump + filesystem into the workspace. Destructive: replaces current state.",
         "notWhen": "For ROLLING BACK without changing the snapshot list, use `backup:rollback`. restore is the full apply."
+      }
+    },
+    {
+      "name": "backup:restore_clone_cleanup",
+      "http": {
+        "path": "/api/agent-tools/backup/restore_clone_cleanup",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Preview or remove aged restore-to-clone directories under .restored/<snapshot>/<slug>. Dry-run is the default; removal requires dryRun:false and is protected by restore-liveness and promotion-reference proofs.",
+      "capabilities": [
+        "backup:write"
+      ],
+      "agentRoles": [
+        "operator",
+        "debugger"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Clean up old restore-to-clone results after reviewing the preview.",
+        "notWhen": "For recovery debris with .broken-* or .rolled-back-* names, use the scheduled recovery sweep.",
+        "chaining": "backup:restore_clone_cleanup (dryRun:true) → review candidates/protected → dryRun:false."
       }
     },
     {
