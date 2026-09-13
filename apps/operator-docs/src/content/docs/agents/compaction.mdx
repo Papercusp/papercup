@@ -4,10 +4,13 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Context compaction — surviving the window limit
-description: What happens when an agent session outgrows its context window — auto-compaction, the flush-before-summarize discipline, and the carry surfaces that make continuity lossless.
+title: "Context compaction — surviving the window limit"
+description: "What happens when an agent session outgrows its context window — auto-compaction, the flush-before-summarize discipline, and the carry surfaces that make continuity lossless."
+type: Insight
+discovered: 2026-09-13
+status: active
 plans:
-  - agent-first-onboarding-2026-07-03
+  - "agent-first-onboarding-2026-07-03"
 ---
 
 Every agent session has a finite context window. A long-running session
@@ -34,7 +37,15 @@ summary carry pointers, not copies.** The surfaces:
 |---|---|---|
 | In-flight work-item progress | `work_items:checkpoint { id, checkpoint }` | The item's next invocation (yours or a successor's) |
 | An armed loop's progress | `loop:checkpoint { did, left, insight, next }` | The next loop wake |
-| Scoped standing conclusions | `facts:assert { scope, key, body }` | Every future orient/brief, verbatim, until retracted |
+| Scoped standing conclusions | `facts:assert { scope, scopeRef?, key, body, ttlSec }` | Every future orient/brief, verbatim, until retracted or its declared lifetime ends; ordinary facts must declare `ttlSec` or `permanent:true` (documented typed-slot, convention, and confidence-tier exceptions) |
+
+Standing facts have no silent ordinary lifetime. For a bounded claim about current code
+or state, pass `ttlSec`; use `permanent:true` only for cap-exempt standing rules.
+`kind:'convention'`, typed safety slots (`slot:'wall'|'dead-end'|'guard-rail'`), and
+`confidence:'provisional'|'suspected'` provide their documented lifetime semantics.
+The writer refuses an ordinary fact that declares none. Retract a fact as soon as its
+conclusion stops being true; a stale fact is worse than no fact because it is delivered
+verbatim.
 | Fuzzy background knowledge | `memory:remember` | Semantic recall (`coord:orient` / `memory:search`) |
 
 Checkpoints and facts live in Postgres (`harness_shared.carry_notes` — see
