@@ -42,8 +42,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -181,13 +182,31 @@ describe('behaviour: the real gate script emits the coverage fields on a run tha
   // loop, green the whole time (EI-19454727576364875). This is the sibling assertion to
   // affected-tests-result-line.test.ts and uses the same cheap real-execution path.
   it('stamps testsExecuted / testsSkipped / coverageUnreadableTasks on AFFECTED_TESTS_RESULT', () => {
-    const r = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', '.gitignore'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      timeout: 180_000,
-      env: { ...process.env, AFFECTED_RETRY_FAILED: '' },
-    });
-    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    // EI-23157763484314411: this test runs a real affected-tests process from INSIDE an
+    // already-admitted Vitest lane. Letting that child join the host-wide admission mutex
+    // made the assertion depend on unrelated fleet work: a live holder with a 98-minute
+    // lower-bound ETA kept the child queued until spawnSync's 180s watchdog killed it, before
+    // any task or result marker ran. `PAPERCUSP_FS_MUTEX_LOCK_DIR` is the mutex module's
+    // documented test/operator seam. A unique root keeps this nested proof deterministic
+    // while preserving the real selector, four guard children, settlement fold, and terminal
+    // reporting path this behavior test exists to exercise.
+    const mutexRoot = mkdtempSync(join(tmpdir(), 'affected-coverage-mutex-'));
+    let out = '';
+    try {
+      const r = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', '.gitignore'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        timeout: 180_000,
+        env: {
+          ...process.env,
+          AFFECTED_RETRY_FAILED: '',
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: mutexRoot,
+        },
+      });
+      out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    } finally {
+      rmSync(mutexRoot, { recursive: true, force: true });
+    }
     const line = out.split('\n').find((l) => l.startsWith('AFFECTED_TESTS_RESULT '));
     expect(line, 'the run emitted no AFFECTED_TESTS_RESULT marker at all').toBeTruthy();
 
