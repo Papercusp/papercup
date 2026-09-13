@@ -124,7 +124,7 @@
       ]
     }
   },
-  "controls": [
+  "assertions": [
     {
       "id": "structured-positive",
       "passed": true,

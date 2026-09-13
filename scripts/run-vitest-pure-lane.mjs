@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { resolveLaneInclude } from "@papercusp/test-config/lane-split";
+import {
+  buildGovernedProcessDemand,
+  classifyGovernedTestProcessOutcome,
+  createGovernedProcessDemandSampler,
+  governedProcessIdempotencyKey,
+  runGovernedTestProcess as runGovernedTestProcessDefault,
+} from "./lib/governed-test-process.mjs";
 
 /**
  * A non-isolated Vitest fork retains the transformed module graph for every file it runs.
@@ -73,21 +81,81 @@ export function buildPureLaneShardArgs(shard, shardCount, forwardedArgs = []) {
   ];
 }
 
-export function runVitestProcess(args, { env = process.env } = {}) {
+export function runVitestProcess(
+  args,
+  {
+    env = process.env,
+    spawnProcess = spawn,
+    runGovernedTestProcess = runGovernedTestProcessDefault,
+    createSampler = createGovernedProcessDemandSampler,
+  } = {},
+) {
   const command = process.platform === "win32" ? "vitest.cmd" : "vitest";
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: "inherit" });
-    child.once("error", reject);
-    child.once("close", (code, signal) => {
-      if (signal) {
-        process.stderr.write(
-          `VITEST_PURE_LANE_SHARD state=signaled signal=${signal}\n`,
+  const workerCaps = WORKER_ENV_KEYS.flatMap((key) => {
+    const value = positiveInteger(env[key]);
+    return value === null ? [] : [value];
+  });
+  const workers = workerCaps.length > 0 ? Math.min(...workerCaps) : 8;
+  const demand = buildGovernedProcessDemand({
+    memoryBytes: workers * 1024 * 1024 * 1024,
+    fileDescriptors: 16 + workers,
+  });
+  const identity = `${process.pid}:${randomUUID()}:${args.join("\0")}`;
+  return runGovernedTestProcess(
+    {
+      workspaceId: env.PAPERCUSP_WORKSPACE_ID ?? env.PAPERCUSP_WORKSPACE,
+      namespace: "vitest-pure-lane-shard",
+      owner: `vitest-pure-lane:${process.pid}`,
+      idempotencyKey: governedProcessIdempotencyKey(
+        "vitest-pure-lane",
+        identity,
+      ),
+      payloadRef: "test:lane-pure",
+      demand,
+      env,
+      settle: classifyGovernedTestProcessOutcome,
+    },
+    (_admissionContext, governedEnv) =>
+      new Promise((resolve) => {
+        const sampler = createSampler(demand);
+        let child;
+        try {
+          child = spawnProcess(command, args, {
+            env: governedEnv,
+            stdio: "inherit",
+          });
+        } catch (error) {
+          resolve({
+            code: null,
+            signal: null,
+            spawnError: error,
+            actualDemand: sampler.stop(),
+          });
+          return;
+        }
+        sampler.attach(child.pid);
+        let settled = false;
+        const finish = (outcome) => {
+          if (settled) return;
+          settled = true;
+          resolve({ ...outcome, actualDemand: sampler.stop() });
+        };
+        child.once("error", (error) =>
+          finish({ code: null, signal: null, spawnError: error }),
         );
-        resolve(1);
-        return;
-      }
-      resolve(code ?? 1);
-    });
+        child.once("close", (code, signal) => {
+          finish({ code, signal });
+        });
+      }),
+  ).then((outcome) => {
+    if (outcome.signal || outcome.spawnError) {
+      process.stderr.write(
+        `VITEST_PURE_LANE_SHARD state=${outcome.signal ? "signaled" : "spawn-error"} ` +
+          `signal=${outcome.signal ?? "none"}\n`,
+      );
+      return 1;
+    }
+    return outcome.code ?? 1;
   });
 }
 

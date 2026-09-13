@@ -15,7 +15,12 @@ export function buildPureLaneShardArgs(
 
 export function runVitestProcess(
   args: string[],
-  options?: { env?: Readonly<Record<string, string | undefined>> },
+  options?: {
+    env?: Readonly<Record<string, string | undefined>>;
+    spawnProcess?: (...args: unknown[]) => unknown;
+    runGovernedTestProcess?: (...args: unknown[]) => Promise<unknown>;
+    createSampler?: (...args: unknown[]) => unknown;
+  },
 ): Promise<number>;
 
 export function runPureLaneShards(options?: {
