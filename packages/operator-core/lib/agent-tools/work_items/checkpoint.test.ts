@@ -598,10 +598,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
   it('EI-22041231879905297: rejects a body-less omission without metadata before reading or touching the store', async () => {
     const single = await one({ id: 'WI-7' });
     const bulk = await env({
-      items: [
-        { id: 'WI-A' },
-        { id: 'WI-B', append: false },
-      ],
+      items: [{ id: 'WI-A' }, { id: 'WI-B', append: false }],
     });
 
     for (const result of [single, ...bulk.results]) {
@@ -969,8 +966,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       getWorkItemCheckpoint.mockResolvedValueOnce('did step 1; next: step 2 (detailed 4-file build record)');
       setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
       const r = await one({ id: 'WI-7', checkpoint: 'tsc came back clean', append: true });
-      expect(setWorkItemCheckpointWithPrior.mock.calls.at(-1)?.[2])
-        .toMatchObject({ latestUpdate: 'tsc came back clean' });
+      expect(setWorkItemCheckpointWithPrior.mock.calls.at(-1)?.[2]).toMatchObject({
+        latestUpdate: 'tsc came back clean',
+      });
       expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
         { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
         'did step 1; next: step 2 (detailed 4-file build record)\n\n---\ntsc came back clean',
@@ -1216,7 +1214,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.ok).toBe(true);
     });
 
-    it('EI-21921431863111143: allows the write when the item is assigned to a TRUNCATED PREFIX of the caller\'s own ownerId', async () => {
+    it("EI-21921431863111143: allows the write when the item is assigned to a TRUNCATED PREFIX of the caller's own ownerId", async () => {
       // The exact repro: an upstream dispatch write persisted `opspawn-bee` (a strict
       // prefix of the caller's real `opspawn-bee-1`) instead of the canonical full
       // id — this used to deadlock as not_holder against a "peer" that never existed.
@@ -2344,7 +2342,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             if (!value || typeof value !== 'object') return value as JsonNode;
             const ref = (value as JsonNode).$ref;
             if (typeof ref !== 'string' || !ref.startsWith('#/$defs/')) return value as JsonNode;
-            return (schema.$defs as Record<string, JsonNode> | undefined)?.[ref.slice('#/$defs/'.length)] ?? (value as JsonNode);
+            return (
+              (schema.$defs as Record<string, JsonNode> | undefined)?.[ref.slice('#/$defs/'.length)] ??
+              (value as JsonNode)
+            );
           };
           const checks = resolveRef((schema.properties as JsonNode).checks);
           const rows = resolveRef(checks.items);
@@ -2883,7 +2884,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           return { stored, priorLength: prior?.length ?? 0 };
         },
       );
-      getWorkItemCheckpoint.mockImplementation(async (ref: { workItemId: string }) => current.get(ref.workItemId) ?? null);
+      getWorkItemCheckpoint.mockImplementation(
+        async (ref: { workItemId: string }) => current.get(ref.workItemId) ?? null,
+      );
       postLearnedAtLevel.mockImplementation(async (input: { workItemId: string; level?: string }) => ({
         posted: true,
         level: input.level ?? 'work_item',
@@ -4264,10 +4267,10 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
       paths: [missing],
       note: expect.stringContaining('advisory only'),
     });
-    expect(resolveCurrentTokens).toHaveBeenCalledWith(
-      [`file:${missing}`, `file:${present}`],
-      { workspaceId: 'default', harness: 'papercup' },
-    );
+    expect(resolveCurrentTokens).toHaveBeenCalledWith([`file:${missing}`, `file:${present}`], {
+      workspaceId: 'default',
+      harness: 'papercup',
+    });
   });
 
   it('checks only narrative prose, not paths quoted by a structured recheck row', async () => {
