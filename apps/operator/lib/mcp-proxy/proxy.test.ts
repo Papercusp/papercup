@@ -770,6 +770,29 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
     ];
     for (const w of writers) expect([...READ_ONLY_TOOLS]).not.toContain(w);
   });
+
+  it.each([
+    ["coord:presence", { owner: "su-target" }],
+    ["coord:presence", { ownerIds: ["su-target"] }],
+    ["coord:roster", { owner: "su-target" }],
+    ["coord:roster", { view: "members", owner: "su-target", project: "liveness" }],
+  ])("classifies targeted %s as replay-safe", (name, arguments_) => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: arguments_ },
+      }),
+    );
+
+    expect(
+      prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: () => "00000000-0000-4000-8000-000000000000",
+      }).klass,
+    ).toBe("readonly");
+  });
   it("entries are lowercase namespaced verbs", () => {
     for (const t of READ_ONLY_TOOLS)
       expect(t).toMatch(/^[a-z0-9_-]+:[a-z0-9_-]+$/);
@@ -2870,6 +2893,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
   it("recognizes the MCP session handshake plus fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, bounded diagnostics, event-wait registration/cancellation, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic", () => {
     const call = (name: string) =>
       Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
+    const targetedCall = (name: string, args: Record<string, unknown>) =>
+      Buffer.from(JSON.stringify({ method: "tools/call", params: { name, arguments: args } }));
     expect(
       isReservedControlPlaneCall(
         Buffer.from(JSON.stringify({ method: "initialize", params: {} })),
@@ -2889,6 +2914,12 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("coord:orient"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:send"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:glance"))).toBe(true);
+    expect(isReservedControlPlaneCall(targetedCall("coord:presence", { owner: "su-target" }))).toBe(true);
+    expect(isReservedControlPlaneCall(targetedCall("coord:roster", { owner: "su-target" }))).toBe(true);
+    expect(isReservedControlPlaneCall(targetedCall("coord:roster", { view: "members", owner: "su-target" }))).toBe(true);
+    expect(isReservedControlPlaneCall(call("coord:presence"))).toBe(false);
+    expect(isReservedControlPlaneCall(call("coord:roster"))).toBe(false);
+    expect(isReservedControlPlaneCall(targetedCall("coord:roster", { view: "claims", owner: "su-target" }))).toBe(false);
     expect(isReservedControlPlaneCall(call("state:read"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:inbox"))).toBe(true);
     expect(isReservedControlPlaneCall(call("fleet:assignments"))).toBe(true);
@@ -2933,6 +2964,38 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           JSON.stringify({
             method: "tools/call",
             params: { name: "dev:telemetry", arguments: { hours: 24, limit: 51 } },
+          }),
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__coord_roster",
+                args: { view: "members", owner: "su-target" },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__coord_presence",
+                args: {},
+              },
+            },
           }),
         ),
       ),

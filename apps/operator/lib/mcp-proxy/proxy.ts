@@ -52,6 +52,8 @@ import {
 import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
 import {
   isBoundedDevTelemetryArgs,
+  isBoundedCoordPresenceArgs,
+  isBoundedCoordRosterArgs,
   isBoundedScorecardsEvaluateArgs,
   isBoundedScorecardsListArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
@@ -789,6 +791,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // coordination/state reads (presence/glance are pure snapshots;
   // coord:inbox EXCLUDED — reading marks messages read)
   "coord:presence",
+  "coord:roster",
   "coord:glance",
   // coord:whoami resolves the caller identity without mutating coordination state.
   "coord:whoami",
@@ -1559,11 +1562,15 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
 const SCORECARDS_LIST_TOOL_NAME = normalizeMcpName("scorecards:list");
 const SCORECARDS_EVALUATE_TOOL_NAME = normalizeMcpName("scorecards:evaluate");
 const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
+const COORD_PRESENCE_TOOL_NAME = normalizeMcpName("coord:presence");
+const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
 
 function isReservedControlPlaneTool(name: string, args?: unknown): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
   if (name === SCORECARDS_EVALUATE_TOOL_NAME) return isBoundedScorecardsEvaluateArgs(args);
   if (name === DEV_TELEMETRY_TOOL_NAME) return isBoundedDevTelemetryArgs(args);
+  if (name === COORD_PRESENCE_TOOL_NAME) return isBoundedCoordPresenceArgs(args);
+  if (name === COORD_ROSTER_TOOL_NAME) return isBoundedCoordRosterArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);
 }
 
