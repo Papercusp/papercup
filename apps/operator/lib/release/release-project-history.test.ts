@@ -79,6 +79,19 @@ describe('release Project History adapter', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
+  it('normalizes read-only files copied from an immutable dependency generation', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-assets-readonly-'));
+    const file = path.join(directory, 'theme.css');
+    try {
+      fs.writeFileSync(file, '/* development comment */\n.demo { color: red; }');
+      fs.chmodSync(file, 0o444);
+
+      expect(() => normalizeReleaseHistoryAssets(directory)).not.toThrow();
+      expect(fs.readFileSync(file, 'utf8').trim()).toBe('.demo{color:red}');
+      expect(fs.statSync(file).mode & 0o200).toBe(0o200);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('replaces old asset output and builds a self-hosted, privacy-clean renderer', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-assets-build-'));
     try {

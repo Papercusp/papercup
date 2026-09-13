@@ -130,6 +130,13 @@ export function normalizeReleaseHistoryAssets(directory: string): void {
       const { code } = transformSync(text, {
         loader: entry.name.endsWith('.css') ? 'css' : 'js', minify: true, legalComments: 'none',
       });
+      // Checkpoint node_modules is materialized from an immutable dependency
+      // generation. Its files are deliberately 0444, and fs.cpSync preserves
+      // that mode in this private staging tree. Make only the staged copy
+      // owner-writable before replacing its normalized contents; the source
+      // generation remains immutable and its hardlinked inode is untouched.
+      const mode = fs.statSync(file).mode;
+      if ((mode & 0o200) === 0) fs.chmodSync(file, mode | 0o200);
       fs.writeFileSync(file, code);
     }
   }
