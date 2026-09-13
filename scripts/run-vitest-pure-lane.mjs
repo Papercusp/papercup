@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
 
+import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { resolveLaneInclude } from "@papercusp/test-config/lane-split";
 
 /**
@@ -126,6 +126,4 @@ export async function runPureLaneShards({
   return result;
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) process.exitCode = await runPureLaneShards();
+if (isCliEntry(import.meta.url)) process.exitCode = await runPureLaneShards();
