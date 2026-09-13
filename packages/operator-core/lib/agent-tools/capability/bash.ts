@@ -4,18 +4,20 @@
  * shared endpoint dispatch so policy / capability-envelope / telemetry apply
  * (P-010, `agent-capability-confinement-2026-06-13`). It replicates the native
  * Bash tool's ergonomics: combined output streaming (the `output` event),
- * truncation/overflow-to-file, and async/background jobs (`run_in_background`).
+ * truncation/overflow-to-file, and durable jobs (`run_in_background`).
  *
- * Foreground: streams output, enforces a short wall-clock timeout, returns the
- * (head+tail-trimmed-if-large) combined output + the spill-log path.
- * Background: returns a `bash_id` and durable `task_id` immediately; read
+ * Ordinary calls start one durable job and stream while waiting. Fast commands
+ * return terminal output; a command that exceeds the bounded response window
+ * returns that SAME job's `bash_id`/`task_id` without killing or restarting it.
+ * `timeout` remains the independent execution deadline. Explicit background
+ * mode returns the handles immediately; read
  * incremental output with `capability:bash_output` and stop it with
- * `capability:bash_kill` — the way a 5-minute build is run without holding one
+ * `processes:kill` — the way a 5-minute build is run without holding one
  * blocking request. The task id remains observable through the task ledger if
  * the operator restarts and its in-memory bash-job map is lost.
  *
- * BOTH modes have a deadline; they do NOT share one (WI-6677). The background
- * default is hours, not the foreground's two minutes, because a background job
+ * BOTH modes have a deadline; they do NOT share one (WI-6677). The explicit-background
+ * default is hours, not the ordinary call's two minutes, because a background job
  * is by definition meant to outlive the call — see the constants in
  * `bash-jobs.ts` for why inheriting the foreground pair was a trap.
  */
@@ -36,15 +38,11 @@ import {
   formatSelfRedirectAdvice,
   formatUntrackedShellBackgroundAdvice,
   MAX_BACKGROUND_TIMEOUT_MS,
-  MAX_TIMEOUT_MS,
-  runForeground,
+  snapshotJobResult,
   startBackground,
+  waitForJobResponse,
 } from './bash-jobs';
-import {
-  FOREGROUND_TIMEOUT_CEILING_MS,
-  clampForegroundTimeoutMs,
-  foregroundTimeoutHint,
-} from './foreground-transport-cap';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from './foreground-transport-cap';
 import { typecheckHeapLaunchWarning } from './background-typecheck-verdict';
 import { similarity } from '../../operator-fuzzy-dedup';
 import { capabilityExecSandboxPolicy } from './exec-sandbox';
@@ -65,11 +63,7 @@ import {
 } from '../../release/frozen-lineage-execution-policy';
 import { repoHeadSha } from '../../harness/docs/git-runner';
 import { resolveCapabilityIntegrationRoot } from './base-dir';
-import {
-  classifyCapabilityBashEffect,
-  commandBase,
-  splitClassifiableShell,
-} from './bash-effect';
+import { classifyCapabilityBashEffect, commandBase, splitClassifiableShell } from './bash-effect';
 
 export { classifyCapabilityBashEffect } from './bash-effect';
 
@@ -479,11 +473,11 @@ export default defineTool({
   effectForCall: classifyCapabilityBashEffect,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
-  // Wall-clock dispatch timeout must exceed the max command timeout so a long
-  // foreground command can complete (background mode is preferred for those).
-  timeoutSec: Math.floor(MAX_TIMEOUT_MS / 1000) + 30,
-  // EI-18666279107998059: this handler awaits a child process for up to
-  // MAX_TIMEOUT_MS (minutes) and never reads ctx.tx — without this, the host's
+  // The handler waits at most the response window; the durable job owns the
+  // potentially much longer execution deadline independently.
+  timeoutSec: Math.floor(FOREGROUND_TIMEOUT_CEILING_MS / 1000) + 10,
+  // EI-18666279107998059: this handler can await a child through the bounded
+  // response window and never reads ctx.tx — without this, the host's
   // ambient workspace transaction sits idle for the whole exec and gets killed
   // by Postgres's idle_in_transaction_session_timeout (60s), surfacing as a
   // bare "write CONNECTION_CLOSED 127.0.0.1:6432" that correlates with call
@@ -517,24 +511,37 @@ export default defineTool({
       .optional()
       .describe(
         `Wall-clock timeout in ms (minimum ${MIN_TIMEOUT_MS}; values below one second are rejected to catch ` +
-          `seconds-vs-milliseconds mistakes — 20 seconds = 20000ms). FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, CLAMPED to ${FOREGROUND_TIMEOUT_CEILING_MS} — ` +
-          `below the ~55s MCP transport cap, so a slow command returns an actionable timeout instead of an opaque ` +
-          `transport failure. Raising it past the clamp does nothing: run anything longer with run_in_background. ` +
-          `BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — ` +
-          `not bound by the transport cap, but the whole confined task subtree IS terminated at its own deadline ` +
+          `seconds-vs-milliseconds mistakes — 20 seconds = 20000ms). This is the EXECUTION deadline, not the response window. ` +
+          `Ordinary calls default to ${DEFAULT_TIMEOUT_MS}; if still running at the response window they return the SAME durable job without killing it. ` +
+          `Explicit run_in_background calls default to ${DEFAULT_BACKGROUND_TIMEOUT_MS}. Maximum ${MAX_BACKGROUND_TIMEOUT_MS}. ` +
+          `The whole confined task subtree IS terminated only at this execution deadline ` +
           `(systemd RuntimeMaxSec plus the local SIGTERM/SIGKILL path), ` +
           `so raise this for a job that legitimately runs longer. Deliberately daemonized descendants remain tracked ` +
           `inside the same task and share its deadline; use a dedicated service launcher for a different lifetime.`,
       ),
+    yield_after_ms: z
+      .number()
+      .int()
+      .min(10)
+      .max(FOREGROUND_TIMEOUT_CEILING_MS)
+      .optional()
+      .describe(
+        `Ordinary-call RESPONSE window in ms (default ${FOREGROUND_TIMEOUT_CEILING_MS}, max ${FOREGROUND_TIMEOUT_CEILING_MS}). ` +
+          `If the command is still running when this window ends, the call returns its original durable bash_id/task_id and ` +
+          `the job continues until completion, explicit kill/abort, or the separate timeout execution deadline. ` +
+          `This never restarts or duplicates the command. Ignored with run_in_background:true, which yields immediately.`,
+      ),
     run_in_background: z
       .boolean()
       .optional()
-      .describe('Run detached; returns a bash_id immediately. Read output via capability:bash_output.'),
+      .describe(
+        'Return the durable job immediately instead of waiting for fast completion. Ordinary calls already yield the same job automatically at yield_after_ms. Read later output via capability:bash_output.',
+      ),
     allow_duplicate: z
       .boolean()
       .optional()
       .describe(
-        'Allow a duplicate background launch when a live task already has the exact same command and cwd. ' +
+        'Allow a duplicate launch when a live task already has the exact same command and cwd. ' +
           'Use only when the duplicate is intentional.',
       ),
     cwd: z
@@ -557,6 +564,11 @@ export default defineTool({
         'command is required (the bash command to run, passed to `bash -c`); `cmd` is also accepted as an alias',
       );
     }
+    // Start the caller-visible response clock before filesystem/policy/provenance
+    // preflight. Otherwise a slow preflight plus a full wait window could still
+    // outrun the MCP cap even though the job itself yielded on time.
+    const responseWindowMs = args.yield_after_ms ?? FOREGROUND_TIMEOUT_CEILING_MS;
+    const responseDeadlineAtMs = Date.now() + responseWindowMs;
     const baseDir = resolveCapabilityBaseDir(ctx);
     const cwd = args.cwd
       ? isAbsolute(args.cwd)
@@ -600,84 +612,71 @@ export default defineTool({
       });
       return frozenLineageShellCommandViolationPayload(verdict);
     };
-    if (args.run_in_background) {
-      const untrackedBackgrounding = detectUntrackedShellBackgrounding(command);
-      if (untrackedBackgrounding) {
+    const untrackedBackgrounding = detectUntrackedShellBackgrounding(command);
+    if (untrackedBackgrounding) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              reason: 'untracked_shell_background',
+              message: formatUntrackedShellBackgroundAdvice(untrackedBackgrounding),
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    // EI-21910156647461981: an explicitly detached task survives the caller's
+    // carry boundary, so a successor can accidentally launch the exact same
+    // command again. Keep this cross-call guard scoped to run_in_background:
+    // applying it to ordinary calls makes unrelated concurrent fast commands
+    // with the same command/cwd reject one another. P-002's per-call start-once
+    // invariant is enforced separately by the single startBackground call.
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+    if (args.run_in_background && !args.allow_duplicate && workspaceId) {
+      const expectedArgv = ['bash', '-o', 'pipefail', '-c', command];
+      const duplicate = (await listLiveTasks(workspaceId)).find(
+        (task) =>
+          task.class === 'bash-job' &&
+          task.cwd === cwd &&
+          task.argv.length === expectedArgv.length &&
+          task.argv.every((arg, index) => arg === expectedArgv[index]),
+      );
+      if (duplicate) {
+        const bashId = duplicate.detail?.bashJobId;
+        const taskHandle = `capability:bash_output { task_id: "${duplicate.taskId}" }`;
+        const bashHandle =
+          typeof bashId === 'string' && bashId.length > 0
+            ? ` (or { bash_id: "${bashId}" } in the original launching context)`
+            : '';
         return {
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify({
                 ok: false,
-                reason: 'untracked_shell_background',
-                message: formatUntrackedShellBackgroundAdvice(untrackedBackgrounding),
+                reason: 'duplicate_live_task',
+                task_id: duplicate.taskId,
+                ...(typeof bashId === 'string' && bashId.length > 0 ? { bash_id: bashId } : {}),
+                cwd,
+                advice:
+                  `A live background shell with the exact command and cwd already exists. ` +
+                  `Reattach with ${taskHandle}${bashHandle}. ` +
+                  'Pass allow_duplicate:true only when this duplicate launch is intentional.',
               }),
             },
           ],
           isError: true,
         };
       }
-      // EI-21910156647461981: background tasks survive the caller's carry boundary.
-      // A successor can therefore see the old task in the durable ledger while a
-      // contradictory carry surface tells it to launch the same command again.
-      // Compare the exact argv shape emitted by startBackground (bash -o pipefail
-      // -c <command>) and the resolved cwd before creating another task. The
-      // explicit override is reserved for callers that genuinely intend to run
-      // the same command more than once.
-      const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
-      if (!args.allow_duplicate && workspaceId) {
-        const expectedArgv = ['bash', '-o', 'pipefail', '-c', command];
-        const duplicate = (await listLiveTasks(workspaceId)).find(
-          (task) =>
-            task.class === 'bash-job' &&
-            task.cwd === cwd &&
-            task.argv.length === expectedArgv.length &&
-            task.argv.every((arg, index) => arg === expectedArgv[index]),
-        );
-        if (duplicate) {
-          const bashId = duplicate.detail?.bashJobId;
-          const taskHandle = `capability:bash_output { task_id: "${duplicate.taskId}" }`;
-          const bashHandle =
-            typeof bashId === 'string' && bashId.length > 0
-              ? ` (or { bash_id: "${bashId}" } in the original launching context)`
-              : '';
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({
-                  ok: false,
-                  reason: 'duplicate_live_task',
-                  task_id: duplicate.taskId,
-                  ...(typeof bashId === 'string' && bashId.length > 0 ? { bash_id: bashId } : {}),
-                  cwd,
-                  advice:
-                    `A live background shell with the exact command and cwd already exists. ` +
-                    `Reattach with ${taskHandle}${bashHandle}. ` +
-                    'Pass allow_duplicate:true only when this duplicate launch is intentional.',
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-      }
     }
-    // WI-6677: the default depends on the MODE. A background job is contractually
-    // meant to outlive this call, so it must not inherit the short foreground
-    // default — that made the tool SIGKILL exactly the long jobs it exists for.
-    const requestedTimeoutMs =
+    // WI-6677: the EXECUTION default still depends on explicit background mode.
+    // P-002 separates that deadline from the response window: an ordinary call
+    // starts a durable job and may yield it without changing this value.
+    const executionTimeoutMs =
       args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
-    // EI-20645849301780712: clamp the FOREGROUND timeout below the ~55s MCP transport cap,
-    // exactly as capability:inspect / testing:run / build:typecheck already do. Without it this
-    // tool advertised a foreground window (default 120s, arg max 600s) that the transport can
-    // never deliver: past ~55s the CLIENT abandons the call and reports a generic failure — the
-    // same token a real non-zero exit produces — so the agent cannot tell "my command failed"
-    // from "the transport gave up", and (because no abort reaches the child) the command may
-    // still have run to completion invisibly. Clamped, the TOOL self-times-out first and returns
-    // `status: 'timed_out'` plus the log path and a re-run-detached hint.
-    // A BACKGROUND job returns a handle immediately, so the cap does not apply to it.
-    const timeoutMs = args.run_in_background ? requestedTimeoutMs : clampForegroundTimeoutMs(requestedTimeoutMs);
     // Resolve from server-owned caller identity. Trusted owner automation keeps
     // the rollout flag's compatibility behavior; confined work forces a real
     // wrapper and refuses before spawn when none is available.
@@ -746,40 +745,46 @@ export default defineTool({
       ...(hive && hive !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: hive } : {}),
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: ctx.workspaceId } : {}),
       PAPERCUSP_SID: callerSid,
-      // The marker is owned by this handler, not by caller-provided env. A
-      // foreground timeout kills the entire process tree, so mutation probes
-      // must refuse --in-tree before they touch a tracked file. Background
-      // jobs explicitly clear both names so a stale inherited value cannot
-      // make a detached probe refuse for the wrong reason.
+      // The marker is owned by this handler, not by caller-provided env. An
+      // ordinary call survives a response yield, but its execution deadline or
+      // caller abort still kills the entire process tree, so mutation probes
+      // must refuse --in-tree before they touch a tracked file. Explicit
+      // background jobs clear both names as before.
       [CAPABILITY_BASH_FOREGROUND_ENV]: args.run_in_background ? '' : '1',
-      [CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV]: args.run_in_background ? '' : String(timeoutMs),
+      [CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV]: args.run_in_background ? '' : String(executionTimeoutMs),
     };
     const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
     const integrationHeader =
       integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
 
+    const provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null);
+    const frozenRefusal = await frozenLineageRefusal();
+    if (frozenRefusal) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(frozenRefusal) }],
+        isError: true,
+      };
+    }
+
+    // CAP-CONTRACT-P002-YIELD-SAME-JOB@1: every admitted call forks exactly
+    // once through the existing durable background/task seam. The only mode
+    // difference is how long this request waits before returning that handle.
+    const job = startBackground(
+      {
+        command,
+        cwd,
+        stateDir: ctx.stateDir,
+        ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
+        sandboxEnabled: sandboxPolicy.enabled,
+        sandboxRequired: sandboxPolicy.required,
+        ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
+        ...(redactValues.length > 0 ? { redactValues } : {}),
+        ...provenance,
+      },
+      executionTimeoutMs,
+    );
+
     if (args.run_in_background) {
-      const provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null);
-      const frozenRefusal = await frozenLineageRefusal();
-      if (frozenRefusal) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(frozenRefusal) }],
-          isError: true,
-        };
-      }
-      const job = startBackground(
-        {
-          command: command,
-          cwd,
-          stateDir: ctx.stateDir,
-          sandboxEnabled: sandboxPolicy.enabled,
-          sandboxRequired: sandboxPolicy.required,
-          ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
-          ...(redactValues.length > 0 ? { redactValues } : {}),
-          ...provenance,
-        },
-        timeoutMs,
-      );
       // EI-19915289191989412: a command whose LAST pipeline stage is a buffering
       // filter (`| tail -45`, `| head`, `| sort`, …) does not flush anything to
       // the job's log until the WHOLE pipeline exits — the log stays at exactly
@@ -838,50 +843,69 @@ export default defineTool({
       };
     }
 
-    const frozenRefusal = await frozenLineageRefusal();
-    if (frozenRefusal) {
+    const disposition = await waitForJobResponse(job, ctx.signal, Math.max(0, responseDeadlineAtMs - Date.now()));
+    const r = snapshotJobResult(job);
+
+    if (disposition === 'yielded') {
+      const bufferingStage = detectBufferingLastStage(command);
+      const bufferingNote = bufferingStage ? formatBufferingPipelineAdvice(bufferingStage, 'launch') : '';
+      const selfRedirectAtLaunch = detectSelfOutputRedirect(command);
+      const selfRedirectLaunchNote = selfRedirectAtLaunch
+        ? ` ${formatSelfRedirectAdvice(selfRedirectAtLaunch, null)}`
+        : '';
+      const heapNote = typecheckHeapLaunchWarning(command) ?? '';
+      const payload = {
+        ok: r.status === 'running',
+        bash_id: job.id,
+        task_id: job.taskId,
+        status: r.status,
+        running: r.status === 'running',
+        yielded: true,
+        cleanup_pending: r.status !== 'running',
+        cwd,
+        output: r.output,
+        truncated: r.truncated,
+        total_bytes: r.totalBytes,
+        log_path: job.logPath,
+        response_window_ms: responseWindowMs,
+        timeout_ms: job.timeoutMs,
+        deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
+        ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
+        advice:
+          `Response window elapsed; the original shell ${
+            r.status === 'running' ? 'is still running' : `has status ${r.status} and is finishing whole-tree cleanup`
+          }. Preserve durable task_id "${job.taskId}" across carry. ` +
+          `Read output: capability:bash_output { task_id: "${job.taskId}" } ` +
+          `(or { bash_id: "${job.id}" } in this launching context). ` +
+          `Stop: processes:kill { taskId: "${job.taskId}" }. ` +
+          `The response yield did NOT restart or kill the command; its separate execution deadline is ` +
+          `${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'still in force'}.` +
+          bufferingNote +
+          selfRedirectLaunchNote +
+          heapNote,
+      };
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(frozenRefusal) }],
-        isError: true,
+        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+        ...(ctx.codeMode ? { structuredContent: payload } : {}),
       };
     }
-
-    const r = await runForeground(
-      {
-        command: command,
-        cwd,
-        stateDir: ctx.stateDir,
-        onChunk: (chunk) => ctx.emit('output', chunk),
-        sandboxEnabled: sandboxPolicy.enabled,
-        sandboxRequired: sandboxPolicy.required,
-        ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
-        ...(redactValues.length > 0 ? { redactValues } : {}),
-      },
-      ctx.signal,
-      timeoutMs,
-    );
 
     const header =
       `exit ${r.exitCode ?? 'null'}` +
       (r.status !== 'completed' ? ` (${r.status})` : '') +
       ` · ${(r.durationMs / 1000).toFixed(1)}s · cwd ${cwd}` +
-      (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '') +
+      (r.truncated ? ` · bounded preview (${r.totalBytes} bytes total)` : '') +
+      ` · full output → ${r.logPath}` +
       integrationHeader;
 
     const isError = r.status === 'failed' && r.exitCode === null;
-    // EI-20645849301780712: on a clamped timeout, say so — and name the spill log, which is
-    // where the partial output lives and is otherwise only surfaced when output OVERFLOWED.
-    const timeoutHint = foregroundTimeoutHint(
-      r.status,
-      timeoutMs,
-      'capability:bash { …same command…, run_in_background: true }',
-    );
-    const timeoutLogNote = r.status === 'timed_out' && !r.truncated ? ` Partial output: ${r.logPath}.` : '';
+    const timeoutHint =
+      r.status === 'timed_out'
+        ? `\n⏱ execution deadline reached after ${((job.timeoutMs ?? executionTimeoutMs) / 1000).toFixed(0)}s; the same job's whole process tree was terminated. Partial/full permitted output: ${r.logPath}.`
+        : '';
 
     return {
-      content: [
-        { type: 'text' as const, text: `${header}\n${r.output || '(no output)'}${timeoutHint}${timeoutLogNote}` },
-      ],
+      content: [{ type: 'text' as const, text: `${header}\n${r.output || '(no output)'}${timeoutHint}` }],
       isError,
       // EI-20066912585022608: the text above is the right answer for a MODEL reading
       // this result and the wrong one for a `code:run` script, which gets handed the
@@ -908,17 +932,22 @@ export default defineTool({
               // Defining ok as !isError instead would hand back ok:true for a command
               // that exited 3 — the reads-true-but-false shape this whole item is about.
               ok: r.status === 'completed',
+              bash_id: job.id,
+              task_id: job.taskId,
               status: r.status,
+              running: false,
+              yielded: false,
               exit_code: r.exitCode,
               duration_ms: r.durationMs,
               cwd,
               output: r.output,
               truncated: r.truncated,
+              total_bytes: r.totalBytes,
+              log_path: r.logPath,
+              response_window_ms: responseWindowMs,
+              timeout_ms: job.timeoutMs,
+              deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
               ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
-              ...(r.truncated ? { total_bytes: r.totalBytes, log_path: r.logPath } : {}),
-              // A timed_out run's partial output is ONLY on disk unless it also overflowed —
-              // a script reading this result needs the path in both cases (EI-20645849301780712).
-              ...(r.status === 'timed_out' && !r.truncated ? { log_path: r.logPath } : {}),
             },
           }
         : {}),

@@ -33,10 +33,7 @@ import {
   type BuildSandboxOpts,
 } from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
-import {
-  SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
-  SYSTEMD_RUNNER_REDACTIONS_ENV,
-} from '../../systemd-scope-env-runner.mjs';
+import { SYSTEMD_RUNNER_OUTPUT_PATH_ENV, SYSTEMD_RUNNER_REDACTIONS_ENV } from '../../systemd-scope-env-runner.mjs';
 import {
   absCgroupDir,
   CGROUP_ROOT,
@@ -154,10 +151,12 @@ export function isBackgroundTestCommand(command: string): boolean {
  * durable background seam may mint this marker; callers cannot override it. */
 export const CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV = 'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID';
 /** Reserved child-env marker for commands launched through capability:bash's
- * foreground seam. A foreground timeout kills the whole process tree, so
- * mutation probes use this to refuse in-tree mutations before touching a
- * tracked file. The handler owns the marker; callers cannot forge or clear it
- * through command environment input. */
+ * ordinary, response-waiting seam. The command is a durable job and survives a
+ * response-window yield, but its separate execution deadline or caller abort
+ * can still terminate the whole process tree. Mutation probes use this marker
+ * to refuse in-tree mutations before touching a tracked file. The handler owns
+ * the marker; callers cannot forge or clear it through command environment
+ * input. */
 export const CAPABILITY_BASH_FOREGROUND_ENV = 'PAPERCUSP_CAPABILITY_BASH_FOREGROUND';
 export const CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV = 'PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS';
 export const PC_HEAVY_DURABLE_CALLER_ENV = 'PC_HEAVY_DURABLE_CALLER';
@@ -478,6 +477,10 @@ export interface BashJob {
   /** Index into `buffer` already returned by bash_output (incremental reads). */
   readCursor: number;
   logStream: WriteStream | null;
+  /** Present only while the launching request can receive output events.
+   * Cleared atomically when its response completes or yields so a durable job
+   * neither emits into nor retains a closed request context. */
+  responseStream?: (chunk: string) => void;
   /** A confined transient service writes command bytes + JOB END directly to
    *  the spill file. The operator keeps an append-only stream for its bounded
    *  diagnostics, but must not duplicate the runner's mirrored command bytes. */
@@ -1098,12 +1101,7 @@ export function detectUntrackedShellBackgrounding(command: string): UntrackedShe
       continue;
     }
     if (ch === '&') {
-      if (
-        source[i + 1] === '>' ||
-        source[i - 1] === '>' ||
-        source[i - 1] === '|' ||
-        source[i + 1] === '&'
-      ) {
+      if (source[i + 1] === '>' || source[i - 1] === '>' || source[i - 1] === '|' || source[i + 1] === '&') {
         if (tokenStart < 0) tokenStart = i;
         token += ch;
         continue;
@@ -1157,9 +1155,7 @@ export function detectUntrackedShellBackgrounding(command: string): UntrackedShe
   const lastAsyncIndex = asyncIndexes[asyncIndexes.length - 1]!;
   const waitsAfterLastAsync = waits.filter((wait) => wait.index > lastAsyncIndex);
   const joined =
-    asyncIndexes.length === 1
-      ? waitsAfterLastAsync.length > 0
-      : waitsAfterLastAsync.some((wait) => !wait.hasArgument);
+    asyncIndexes.length === 1 ? waitsAfterLastAsync.length > 0 : waitsAfterLastAsync.some((wait) => !wait.hasArgument);
   if (joined) return null;
 
   const operatorIndex =
@@ -1173,11 +1169,11 @@ export function detectUntrackedShellBackgrounding(command: string): UntrackedShe
   };
 }
 
-/** Render the refusal returned before a background task can be launched. */
+/** Render the refusal returned before a durable task can be launched. */
 export function formatUntrackedShellBackgroundAdvice(diagnostic: UntrackedShellBackgrounding): string {
   const operator = diagnostic.operator === 'coproc' ? '`coproc`' : 'a shell background operator (`&`)';
   return (
-    `Refused: this run_in_background command starts ${operator} without joining it before the shell exits ` +
+    `Refused: this command starts ${operator} without joining it before the shell exits ` +
     `(${diagnostic.excerpt}). The task service owns the shell's cgroup, so the child is reaped when the ` +
     `shell finishes; nohup/setsid/disown do not give it a different lifetime. Run the long-lived command ` +
     `as the foreground payload (remove the shell backgrounding), or use the dedicated service launcher for ` +
@@ -1705,7 +1701,7 @@ export interface RunOptions {
    *  or spill logs. Redaction happens before every one of those sinks and keeps
    *  enough suffix state to catch a value split across child-process chunks. */
   redactValues?: readonly string[];
-  /** Per-event streamer (foreground only). */
+  /** Per-event streamer while the launching request is still awaiting this job. */
   onChunk?: (chunk: string) => void;
   /** Whether to engage the existing SRT/bwrap execution sandbox. */
   sandboxEnabled?: boolean;
@@ -2185,10 +2181,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // keeps recording after that pipe reader disappears. The runner consumes
     // and deletes both fields before spawning the workload.
     childEnv[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] = logPath;
-    childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV] = Buffer.from(
-      JSON.stringify(opts.redactValues ?? []),
-      'utf8',
-    ).toString('base64');
+    childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV] = Buffer.from(JSON.stringify(opts.redactValues ?? []), 'utf8').toString(
+      'base64',
+    );
   }
 
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
@@ -2234,6 +2229,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // as the preflight snapshot; appendOutput deliberately skips mirrored
     // command chunks while runnerOwnsLog is true.
     logStream: safeWriteStream(logPath, runnerOwnsLog ? 'a' : 'w'),
+    responseStream: opts.onChunk,
     runnerOwnsLog,
     taskId: enrolment.taskId,
     scopeUnit: enrolment.scopeUnit,
@@ -2256,6 +2252,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   };
 
   const redactor = createStreamingSecretRedactor(opts.redactValues);
+  const streamLineCap = opts.onChunk ? createStreamingLineCap() : null;
   const missingCommandDetector = createMissingCommandMarkerDetector(id);
   const preflightFailureDetector = createPreflightFailureMarkerDetector();
   // Decode each child stream incrementally so UTF-8 bytes split across data
@@ -2263,11 +2260,14 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const stdoutDecoder = new StringDecoder('utf8');
   const stderrDecoder = new StringDecoder('utf8');
   let redactorFlushed = false;
+  let streamLineCapFlushed = false;
   let preflightSnapshotWritten = false;
   const appendSafeOutput = (chunk: string): void => {
     if (!chunk) return;
     missingCommandDetector.push(chunk);
     appendOutput(job, chunk);
+    const streamed = job.responseStream ? (streamLineCap?.push(chunk) ?? '') : '';
+    if (streamed) job.responseStream?.(streamed);
     // The snapshot is deliberately log-only. Existing callers rely on the
     // in-memory output containing only the command's own bytes; attribution is
     // durable context for a later reader, not a second command result.
@@ -2279,6 +2279,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     redactorFlushed = true;
     const tail = redactor?.flush() ?? '';
     appendSafeOutput(tail);
+  };
+  const flushStreamLineCap = (): void => {
+    if (streamLineCapFlushed) return;
+    streamLineCapFlushed = true;
+    const tail = job.responseStream ? (streamLineCap?.flush() ?? '') : '';
+    if (tail) job.responseStream?.(tail);
   };
 
   const appendPreflightSnapshot = (): void => {
@@ -2403,13 +2409,22 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     appendRawOutput(stdoutDecoder.end());
     appendRawOutput(stderrDecoder.end());
     flushRedactor();
+    flushStreamLineCap();
+    job.responseStream = undefined;
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
     // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
     // tell "finished" from "nothing written yet" without a second call.
     const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);
-    appendRawOutput(terminalMarker);
-    appendRunnerOwnedDiagnostic(terminalMarker);
+    // The terminal marker is durable LOG metadata, not command output. Keeping
+    // it out of the retained buffer preserves the ordinary-call result exactly
+    // as command stdout+stderr while capability:bash_output reports terminal
+    // status structurally.
+    try {
+      job.logStream?.write(terminalMarker);
+    } catch {
+      /* a spill-write fault must not affect the command result */
+    }
     try {
       job.logStream?.end();
     } catch {
@@ -2441,11 +2456,16 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // Flush any redactor suffix before the attribution block so the snapshot
     // is guaranteed to precede the normal terminal marker in the durable log.
     flushRedactor();
+    flushStreamLineCap();
+    job.responseStream = undefined;
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
     const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);
-    appendRawOutput(terminalMarker);
-    appendRunnerOwnedDiagnostic(terminalMarker);
+    try {
+      job.logStream?.write(terminalMarker);
+    } catch {
+      /* a spill-write fault must not affect the command result */
+    }
     try {
       job.logStream?.end();
     } catch {
@@ -2474,6 +2494,79 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   return job;
 }
 
+export type BashJobResponseDisposition = 'terminal' | 'yielded';
+
+/**
+ * Wait only for the caller-facing response window. The execution deadline is
+ * owned independently by {@link startBackground}; reaching this timer never
+ * signals the job and therefore cannot restart, orphan, or kill it.
+ *
+ * A caller abort is different: it deliberately stops this SAME job through the
+ * existing whole-tree kill path, then waits for the child close notification so
+ * a returned terminal result does not race its cleanup.
+ */
+export function waitForJobResponse(
+  job: BashJob,
+  signal: AbortSignal,
+  responseWindowMs: number,
+): Promise<BashJobResponseDisposition> {
+  if (job.endedAt !== null) {
+    job.responseStream = undefined;
+    return Promise.resolve('terminal');
+  }
+
+  return new Promise<BashJobResponseDisposition>((resolvePromise) => {
+    let settled = false;
+    let aborting = false;
+    let abortFallback: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = (): void => {
+      clearTimeout(responseTimer);
+      if (abortFallback) clearTimeout(abortFallback);
+      signal.removeEventListener('abort', onAbort);
+      job.child.removeListener('close', onTerminal);
+      job.child.removeListener('error', onTerminal);
+    };
+    const finish = (disposition: BashJobResponseDisposition): void => {
+      if (settled) return;
+      settled = true;
+      job.responseStream = undefined;
+      cleanup();
+      resolvePromise(disposition);
+    };
+    const onTerminal = (): void => finish('terminal');
+    const onAbort = (): void => {
+      if (aborting) return;
+      aborting = true;
+      job.responseStream = undefined;
+      killJob(job);
+      if (job.endedAt !== null) {
+        finish('terminal');
+        return;
+      }
+      // killJob escalates to SIGKILL after two seconds. This outer guard keeps a
+      // pathological child from retaining a cancelled tool request forever.
+      abortFallback = setTimeout(() => finish('terminal'), 5_000);
+    };
+
+    job.child.once('close', onTerminal);
+    job.child.once('error', onTerminal);
+    signal.addEventListener('abort', onAbort, { once: true });
+    const responseTimer = setTimeout(
+      () => {
+        if (aborting) return;
+        finish(job.endedAt === null ? 'yielded' : 'terminal');
+      },
+      Math.max(0, responseWindowMs),
+    );
+
+    // Close/abort can race listener registration. Re-read both after every
+    // listener exists so neither edge can be lost.
+    if (job.endedAt !== null) finish('terminal');
+    else if (signal.aborted) onAbort();
+  });
+}
+
 export function getJob(id: string): BashJob | undefined {
   return JOBS.get(id);
 }
@@ -2483,6 +2576,22 @@ export function readJobOutput(job: BashJob, peek = false): string {
   const chunk = job.buffer.slice(job.readCursor);
   if (!peek) job.readCursor = job.buffer.length;
   return chunk;
+}
+
+/** Snapshot the output/status currently observable for one durable job. */
+export function snapshotJobResult(job: BashJob, peek = false): ForegroundResult {
+  const chunk = readJobOutput(job, peek);
+  const retainedBytes = Buffer.byteLength(job.buffer, 'utf8');
+  const truncated = chunk.length > INLINE_OUTPUT_CAP || job.totalBytes > retainedBytes;
+  return {
+    status: job.status,
+    exitCode: job.exitCode,
+    output: chunk.length > INLINE_OUTPUT_CAP ? headTail(chunk) : chunk,
+    totalBytes: job.totalBytes,
+    truncated,
+    logPath: job.logPath,
+    durationMs: (job.endedAt ?? Date.now()) - job.startedAt,
+  };
 }
 
 /** Kill a job's process (SIGTERM, then SIGKILL after a grace period). */
