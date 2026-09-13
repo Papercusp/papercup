@@ -55,6 +55,20 @@ export async function routeSourceGradingAudit(
   const workspaceId = input.ctx.workspaceId?.trim() || identity.workspaceId;
   if (!workspaceId) throw new Error('source audit workspace is unknown');
   const sql = (deps.getSql ?? (() => getOrgPg().sql))();
+  const resolveResponderState =
+    deps.resolveResponderLiveness ??
+    (async (ownerId: string) => {
+      try {
+        return (
+          (await resolveSessionStates([{ ownerId }], {
+            hydratePerId: true,
+            psuHostPositiveAuthority: true,
+          })).get(ownerId) ?? null
+        );
+      } catch {
+        return null;
+      }
+    });
   // The card reservation already serializes creation. On its TTL retry, reuse
   // a still-active chain instead of recruiting a second auditor.
   const active = await sql<{
@@ -77,16 +91,7 @@ export async function routeSourceGradingAudit(
     // non-wakeable; an unknown/degraded liveness read preserves the previous
     // fail-open dedupe behavior rather than creating a duplicate audit.
     const responderState = active[0].responder_id
-      ? await (deps.resolveResponderLiveness ?? (async (ownerId: string) => {
-          try {
-            return (await resolveSessionStates([{ ownerId }], {
-              hydratePerId: true,
-              psuHostPositiveAuthority: true,
-            })).get(ownerId) ?? null;
-          } catch {
-            return null;
-          }
-        }))(active[0].responder_id)
+      ? await resolveResponderState(active[0].responder_id)
       : null;
     if (responderState?.sessionState === 'ended' || responderState?.sessionState === 'recorded') {
       // Retire the stranded row before routing a fresh audit. Without this,
@@ -124,10 +129,48 @@ export async function routeSourceGradingAudit(
     filterRoute: (route) => independentSourceAuditRoute(route, input.card, workspaceId, deps.resolveParties),
   });
   if ('error' in result) throw new Error(`source audit routing refused: ${result.error}`);
-  if (result.verdict === 'routed') return {
-    state: 'routed', conversationId: result.conversation_id,
-    reason: 'Independent audit routed; declines and expiry advance the persisted cascade. Exact scorecard emission settles it.',
-  };
+  if (result.verdict === 'routed') {
+    // EI-23146582794512094: selection and durable delivery are separated by a
+    // small race. A candidate can be ranked LIVE, accept the queued notify, and
+    // already be only a recorded/non-wakeable launch trace by the time this
+    // adapter returns. The retry path below has always retired such responders,
+    // but the reservation lease suppresses that retry for fifteen minutes. Do
+    // the same authoritative liveness check in the initial epoch so the caller
+    // can take its bounded fresh-judge fallback immediately.
+    const routedResponder = result.responder?.ownerId;
+    const responderState = routedResponder ? await resolveResponderState(routedResponder) : null;
+    if (
+      routedResponder &&
+      (responderState?.sessionState === 'ended' || responderState?.sessionState === 'recorded')
+    ) {
+      const retired = await sql<{ conversation_id: string }[]>`
+        UPDATE harness_shared.consult_state
+           SET state = 'expired', closed_at = now(), updated_at = now(),
+               outcome = jsonb_build_object(
+                 'dispatch', 'stale-responder',
+                 'responderId', ${routedResponder}::text,
+                 'sessionState', ${responderState.sessionState}::text,
+                 'phase', 'post-route'
+               )
+         WHERE workspace_id = ${workspaceId}
+           AND conversation_id = ${result.conversation_id}
+           AND responder_id = ${routedResponder}
+           AND state IN ('awaiting_responder', 'active')
+       RETURNING conversation_id`;
+      if (retired[0]) {
+        return {
+          state: 'fallback',
+          reason:
+            `new router responder ${routedResponder} became ${responderState.sessionState} before pickup; ` +
+            'bounded launch fallback',
+        };
+      }
+    }
+    return {
+      state: 'routed', conversationId: result.conversation_id,
+      reason: 'Independent audit routed; declines and expiry advance the persisted cascade. Exact scorecard emission settles it.',
+    };
+  }
   // No responder was selected. Retire this empty row before the existing fresh
   // judge fallback runs; an expiry must not revive it alongside that judge.
   await sql`

@@ -362,6 +362,42 @@ export type ClaimPlanItemResult =
     };
 
 /**
+ * EI-23133179677607394: a plan-item claim must honor the claim-hold on its
+ * linked execution record. `convertPlanItem` has a later check for this, but
+ * `coord:declare-intent` reaches `claimPlanItem` through `claimForWork` and
+ * otherwise acquires the plan lease before it ever reaches conversion.
+ *
+ * Keep the lookup dynamic: convert.ts imports this module for claimPlanItem.
+ * A missing/broken implements link is treated as no linked hold, preserving
+ * the existing optional-link behavior of the merged view; a found non-terminal
+ * held record is a deliberate park and blocks the pre-lease claim.
+ */
+async function parkedImplementingWorkItem(
+  planSlug: string,
+  itemId: string,
+): Promise<{ id: string } | null> {
+  try {
+    const [{ findImplementingWorkItem, TERMINAL_WORK_ITEM_STATES }, { isClaimHoldParked }] = await Promise.all([
+      import('./convert'),
+      import('../work-items'),
+    ]);
+    const workItem = await findImplementingWorkItem(planSlug, itemId);
+    if (
+      !workItem ||
+      TERMINAL_WORK_ITEM_STATES.has(workItem.state) ||
+      !isClaimHoldParked(workItem.payload)
+    ) {
+      return null;
+    }
+    return { id: workItem.id };
+  } catch {
+    // An implementing record is optional for an unconverted plan item. Keep
+    // the established fail-open behavior if its best-effort lookup is down.
+    return null;
+  }
+}
+
+/**
  * Take the live claim on a plan item, enforcing the assignment + work-group policy,
  * then leasing via the authority-mediated store.
  */
@@ -404,6 +440,16 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
         };
       }
     }
+  }
+
+  const parked = await parkedImplementingWorkItem(opts.planSlug, opts.itemId);
+  if (parked) {
+    return {
+      status: 'refused',
+      reason:
+        `work item ${parked.id} is parked by claimHold; clear the durable park explicitly ` +
+        'before claiming this plan item again',
+    };
   }
 
   // A force takeover is authorized by the tool layer, where the caller's

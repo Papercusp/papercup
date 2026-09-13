@@ -10,7 +10,7 @@
  *  - Tier ordering: quick < domain < surface.
  */
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   defineTestDomain,
   getTestDomain,
@@ -30,11 +30,21 @@ function minimalDomain(id: string, overrides: Partial<TestDomain> = {}): TestDom
   };
 }
 
-describe('defineTestDomain', () => {
-  beforeEach(() => {
-    _resetTestDomainRegistry();
-  });
+// The pure lane deliberately shares one module process across files. Preserve
+// whatever registry the process had before these mutation tests, then restore
+// it after every case so fixture domains cannot leak into a later consumer
+// such as the generated-contract freshness assertion.
+let priorDomains: TestDomain[] = [];
+beforeEach(() => {
+  priorDomains = listTestDomains();
+  _resetTestDomainRegistry();
+});
+afterEach(() => {
+  _resetTestDomainRegistry();
+  for (const domain of priorDomains) defineTestDomain(domain);
+});
 
+describe('defineTestDomain', () => {
   it('registers a minimal domain', () => {
     const d = defineTestDomain(minimalDomain('voice'));
     expect(d.id).toBe('voice');
@@ -94,10 +104,6 @@ describe('defineTestDomain', () => {
 });
 
 describe('listTestDomains tier ordering', () => {
-  beforeEach(() => {
-    _resetTestDomainRegistry();
-  });
-
   it('orders quick before domain before surface', () => {
     defineTestDomain(minimalDomain('z-surface', { tier: 'surface' }));
     defineTestDomain(minimalDomain('a-quick', { tier: 'quick' }));

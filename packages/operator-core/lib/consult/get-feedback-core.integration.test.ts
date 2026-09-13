@@ -234,6 +234,66 @@ const baseReq: GetFeedbackRequest = {
 
 describe('source-audit dispatcher through persisted consult routing', () => {
   it.each(['ended', 'recorded'] as const)(
+    'falls back in the initial reservation epoch when the newly routed responder is already %s',
+    async (sessionState) => {
+      const issueId = `EI-newly-stale-responder-${sessionState}`;
+      const responderId = `newly-stale-${sessionState}-responder`;
+      const fixture = makeDeps(routeOf([cand(responderId)]));
+      let conversationId = '';
+      const feedback = vi.fn(async (
+        req: GetFeedbackRequest,
+        _identity: unknown,
+        options: {
+          harnessSlug?: string | null;
+          filterRoute?: (route: RouteResult) => Promise<RouteResult>;
+        } = {},
+      ) => {
+        const result = await getFeedbackCore(req, {
+          ...fixture.deps,
+          route: async (params) => {
+            const routed = await fixture.deps.route(params);
+            return options.filterRoute ? options.filterRoute(routed) : routed;
+          },
+        });
+        if (!('error' in result)) conversationId = result.conversation_id;
+        return result;
+      });
+      const resolveResponderLiveness = vi.fn(async () => ({ sessionState }));
+
+      const result = await routeSourceGradingAudit(
+        {
+          card: { issueId, createdBy: 'source-author' } as ScorecardRow,
+          reservationKey: `grading-audit:${issueId}`,
+          brief: 'Audit newly stale responder regression',
+          ctx: { workspaceId: WS, uiClientId: `newly-stale-${sessionState}-requester`, isSuperuser: true },
+        },
+        {
+          getSql: () => rootSql,
+          feedback,
+          resolveParties: async (ids) =>
+            new Map(ids.filter((id): id is string => Boolean(id)).map((id) => [id, id])),
+          resolveResponderLiveness,
+        },
+      );
+
+      expect(result).toMatchObject({
+        state: 'fallback',
+        reason: expect.stringContaining(`became ${sessionState} before pickup`),
+      });
+      expect(resolveResponderLiveness).toHaveBeenCalledWith(responderId);
+      expect(fixture.reached.map((delivery) => delivery.responder)).toEqual([responderId]);
+      const row = await stateRow(conversationId);
+      expect(row.state).toBe('expired');
+      expect(row.outcome).toMatchObject({
+        dispatch: 'stale-responder',
+        responderId,
+        sessionState,
+        phase: 'post-route',
+      });
+    },
+  );
+
+  it.each(['ended', 'recorded'] as const)(
     'does not dedupe an active reservation whose persisted responder is %s',
     async (sessionState) => {
       const issueId = `EI-stale-responder-${sessionState}`;

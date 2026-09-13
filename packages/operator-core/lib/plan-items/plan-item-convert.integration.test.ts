@@ -105,6 +105,7 @@ vi.mock('../agent-tools/plans/source', () => ({
 const convert = await import('./convert');
 const asg = await import('./assignments');
 const liveness = await import('./liveness');
+const discipline = await import('./claim-discipline');
 const wi = await import('../work-items');
 // planItemRef / PLAN_ITEM_KIND are pure helpers, but import them through the same
 // post-mock dynamic seam as convert so module load-order never races the mocks.
@@ -372,6 +373,43 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     const after = await wi.getWorkItem(first.workItem.id, HARNESS);
     expect(after?.assignee).toBeNull();
     expect((after?.payload as { _claimHold?: unknown } | null)?._claimHold).toBe(true);
+    expect(
+      await db.sql`SELECT owner FROM harness_shared.plan_item_claims WHERE plan_slug = ${PLAN} AND item_id = 'P-001'`,
+    ).toHaveLength(0);
+  });
+
+  it('EI-23133179677607394: coord lane reconciliation refuses a linked claim-held work-item before leasing the plan item', async () => {
+    const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
+    expect(first.status).toBe('converted');
+    if (first.status !== 'converted') return;
+
+    await wi.releaseWorkItem(first.workItem.id, {
+      harness: HARNESS,
+      expectedAssignee: 'sess-A',
+    });
+    await discipline.releaseOwnClaim(WS, HARNESS, PLAN, 'P-001', 'sess-A');
+    const parked = await wi.setWorkItemClaimHold(first.workItem.id, true, {
+      harness: HARNESS,
+      parkedBy: 'sess-A',
+      parkedReason: 'waiting for an explicit owner decision',
+    });
+    expect(parked).toMatchObject({ id: first.workItem.id, hold: true, applicable: true });
+
+    const reconciled = await discipline.reconcileDeclaredClaims({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      items: ['P-001'],
+      owner: 'sess-B',
+      ownerLabel: 'builder-2',
+      ownerUser: 'user-y',
+      intent: 'resume the declared lane',
+    });
+
+    expect(reconciled.claimed).toEqual([]);
+    expect(reconciled.conflicts).toHaveLength(1);
+    expect(reconciled.conflicts[0]).toMatchObject({ item: 'P-001' });
+    expect(reconciled.conflicts[0]?.reason).toMatch(/claim.?hold|park/i);
     expect(
       await db.sql`SELECT owner FROM harness_shared.plan_item_claims WHERE plan_slug = ${PLAN} AND item_id = 'P-001'`,
     ).toHaveLength(0);

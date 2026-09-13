@@ -96,7 +96,9 @@ describe('operation-boundary handler wiring — resource parity', () => {
     readFileSync(new URL(file, import.meta.url), 'utf8');
 
   it.each([
-    ['bash.ts', 2],
+    // bash now has one durable startBackground seam for both response modes;
+    // git and inspect still have two distinct subprocess seams.
+    ['bash.ts', 1],
     ['git.ts', 2],
     ['inspect.ts', 2],
   ] as const)('%s resolves the server profile and passes required confinement to every spawn', (file, requiredUses) => {

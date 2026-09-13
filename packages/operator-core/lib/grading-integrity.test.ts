@@ -336,7 +336,7 @@ describe('dispatchPendingGradingAudits', () => {
         state: 'running',
         detail: { label: 'grading-audit:EI-live-auditor' },
         logPath: '/tmp/old-auditor.log',
-      } as TaskRow,
+      } as unknown as TaskRow,
     ]);
 
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-live-auditor'], ctx }, d);
