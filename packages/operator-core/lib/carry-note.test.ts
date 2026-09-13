@@ -237,6 +237,21 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
     expect(splitCarryNoteWalls(null)).toEqual({ body: '', walls: [] });
   });
 
+  it('preserves a blank-delimited prose addendum after generated Walls for re-rendering', () => {
+    const addendum = '14:40Z QUIET-WAKE DISPOSITION: the current lane is settled';
+    const raw = `${renderCarryNote({ did: 'finished the pass', walls: [WALL] })}\n\n${addendum}`;
+
+    const { body, walls } = splitCarryNoteWalls(raw);
+    expect(walls).toEqual([WALL]);
+    expect(body).toContain('## Did\nfinished the pass');
+    expect(body).toContain(addendum);
+    expect(body).not.toContain('## Walls');
+
+    const rerendered = withCarryNoteWalls(body, walls);
+    expect(rerendered).toContain(addendum);
+    expect(rerendered.indexOf(addendum)).toBeLessThan(rerendered.indexOf('## Walls'));
+  });
+
   it('withCarryNoteWalls replaces an existing section, and yields a walls-only note for a blank body', () => {
     const prior = renderCarryNote({ next: 'go', walls: [{ claim: 'old wall' }] });
     const swapped = withCarryNoteWalls(prior, [WALL]);

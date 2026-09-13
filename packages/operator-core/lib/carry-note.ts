@@ -1555,15 +1555,27 @@ function splitCarryNoteSection<T>(
   const bodyLines: string[] = [];
   const rows: T[] = [];
   let inSection = false;
+  let sectionTail = false;
   for (const line of lines) {
     if (headingRe.test(line)) {
       inSection = true;
+      sectionTail = false;
       continue;
     }
     if (inSection && /^##\s+/.test(line)) inSection = false; // a later section ends the block
     if (inSection) {
+      // Generated row sections are rendered last, but callers sometimes append a
+      // plain-text disposition to the raw note. Once a parsed row is followed by
+      // a blank delimiter and non-row text, that text is a narrative tail, not a
+      // malformed row. Keeping it in the body lets the canonical re-render place
+      // it before the generated section instead of silently discarding it.
+      if (sectionTail) {
+        bodyLines.push(line);
+        continue;
+      }
       const r = parseLine(line);
       if (r !== null) rows.push(r);
+      else if (rows.length > 0 && line.trim() === '') sectionTail = true;
       continue; // non-row lines inside the section are dropped with it
     }
     bodyLines.push(line);

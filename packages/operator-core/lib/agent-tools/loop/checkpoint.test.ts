@@ -1789,6 +1789,19 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     expect(b).toMatchObject({ ok: true, walls: 1 });
   });
 
+  it('preserves prose appended after the generated Walls section and verifies the retained note', async () => {
+    const addendum = '14:40Z QUIET-WAKE DISPOSITION: the current lane is settled';
+    getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
+    setLoopCarryNote.mockImplementation(async (_ref: unknown, note: unknown) => note as string);
+
+    const b = body(await call({ note: `${PRIOR_WITH_WALL}\n\n${addendum}` }));
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+
+    expect(b).toMatchObject({ ok: true, verified: true });
+    expect(written).toContain(addendum);
+    expect(written.indexOf(addendum)).toBeLessThan(written.indexOf('## Walls'));
+  });
+
   it('a note CLEAR with standing walls preserves them as a walls-only note (never an incidental clear)', async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     await call({ note: '' });
