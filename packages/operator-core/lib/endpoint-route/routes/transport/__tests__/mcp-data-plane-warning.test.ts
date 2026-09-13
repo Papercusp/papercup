@@ -34,6 +34,20 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
   });
 
+  it('does not warn for an explicitly authoritative empty result', () => {
+    const body = { ecosystem: 'react-tailwind', results: [], authoritative: true };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it('does not add the proxy degradation warning to a populated successful result', () => {
     const result: McpCallResult = {
       content: [{ type: 'text', text: JSON.stringify({ ok: true, results: [{ id: 'WI-10000979' }] }) }],

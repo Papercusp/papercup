@@ -2071,7 +2071,8 @@ function withMcpDiagnosticWarning<T extends McpCallResult>(
  * The proxy warning is useful when a response could be an empty/not-found
  * transport result, but it is noise on a successful response that contains
  * data. Keep this deliberately envelope-oriented: only an explicit `ok:true`
- * result (or a JSON array) is classified as populated/empty; unknown shapes
+ * result (or a JSON array) is classified as populated/empty; a source may also
+ * explicitly mark an otherwise empty result as authoritative. Unknown shapes
  * retain the warning rather than pretending that their payload was verified.
  */
 function hasPopulatedMcpResult(result: McpCallResult): boolean {
@@ -2091,6 +2092,10 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   if (!parsed || typeof parsed !== 'object') return false;
 
   const body = parsed as Record<string, unknown>;
+  // Some successful sources can answer with an empty result without an `ok`
+  // envelope. Only an explicit boolean marker may bypass the proxy warning;
+  // empty arrays and unknown shapes remain warning-eligible by default.
+  if (body.authoritative === true) return true;
   if (body.notFound === true || body.not_found === true || body.missing === true) return false;
   if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') {
     return false;
