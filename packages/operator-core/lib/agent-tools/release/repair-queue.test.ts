@@ -752,11 +752,36 @@ describe('release:repair-queue', () => {
       // The serving host's root is a LINKED worktree on :3170; the runner must be created for the
       // main worktree (checkpoint tree, run-lock and setup-release-checkout all key off it).
       mocks.canonicalRoot.mockReturnValue('/canonical');
-      const runner = vi.fn(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
-        ran: true as const,
-        commit,
-        results: files.map((path) => ({ path, status: 'pass' as const })),
-      }));
+      const progressSnapshots: Array<{
+        currentFile: string;
+        completedCount: number;
+        totalCount: number;
+        heartbeatAtMs: number;
+      }> = [];
+      const runner = vi.fn(async ({ commit, files, onProgress }: {
+        commit: string;
+        files: readonly string[];
+        onProgress?: (snapshot: {
+          currentFile: string;
+          completedCount: number;
+          totalCount: number;
+          heartbeatAtMs: number;
+        }) => Promise<void> | void;
+      }) => {
+        const snapshot = {
+          currentFile: files[0] as string,
+          completedCount: 0,
+          totalCount: files.length,
+          heartbeatAtMs: Date.now(),
+        };
+        await onProgress?.(snapshot);
+        progressSnapshots.push(snapshot);
+        return {
+          ran: true as const,
+          commit,
+          results: files.map((path) => ({ path, status: 'pass' as const })),
+        };
+      });
       mocks.precheckFactory.mockReturnValue(runner);
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       const started = body(
@@ -776,7 +801,15 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true]);
       expect(mocks.write).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ admissionPrecheck: expect.objectContaining({ status: 'running' }) }),
+        expect.objectContaining({
+          admissionPrecheck: expect.objectContaining({
+            status: 'running',
+            currentFile: 'lib/red.test.ts',
+            completedCount: 0,
+            totalCount: 1,
+            heartbeatAtMs: expect.any(Number),
+          }),
+        }),
         { expectedUpdatedAtMs: queue.updatedAtMs },
       );
       expect(mocks.canonicalRoot).toHaveBeenCalledWith('/repo');
@@ -785,9 +818,36 @@ describe('release:repair-queue', () => {
         integrationRoot: '/canonical',
         checkpointRoot: checkpointRootMirror('/canonical'),
       });
-      expect(runner).toHaveBeenCalledWith({ commit: NEW_HEAD, files: ['lib/red.test.ts'] });
+      expect(runner).toHaveBeenCalledWith({
+        commit: NEW_HEAD,
+        files: ['lib/red.test.ts'],
+        onProgress: expect.any(Function),
+      });
       const settled = await settledPrecheckQueue();
       expect(settled.admissionPrecheck).toMatchObject({ status: 'passed', builtCommit: NEW_HEAD });
+      expect(progressSnapshots).toEqual([
+        { currentFile: 'lib/red.test.ts', completedCount: 0, totalCount: 1, heartbeatAtMs: expect.any(Number) },
+      ]);
+      const progressTransition = mocks.transition.mock.calls[0]?.[1] as
+        | ((fresh: typeof queue) => typeof queue)
+        | undefined;
+      expect(progressTransition).toEqual(expect.any(Function));
+      const pendingMarker = mocks.write.mock.calls[0]?.[1] as typeof queue;
+      const progressed = progressTransition!(pendingMarker);
+      expect(progressed).toMatchObject({
+        admissionPrecheck: {
+          operationId: started.precheckOperation.operationId,
+          status: 'running',
+          currentFile: 'lib/red.test.ts',
+          completedCount: 0,
+          totalCount: 1,
+          heartbeatAtMs: expect.any(Number),
+          updatedAtMs: expect.any(Number),
+        },
+        updatedAtMs: expect.any(Number),
+      });
+      expect(progressed.updatedAtMs).toBeGreaterThan(pendingMarker.updatedAtMs);
+      expect(progressed.admissionPrecheck.updatedAtMs).toBe(progressed.updatedAtMs);
       expect((settled as { dispatchReservation?: unknown }).dispatchReservation).toBeUndefined();
       expect(dryRuns()).toEqual([true]); // the detached leg never publishes
       mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
