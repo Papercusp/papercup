@@ -58,7 +58,7 @@ import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
 import { readIdentity } from '../locks/identity';
 
-const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
+const json = (payload: unknown) => ({ data: payload });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
 const FULL_COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 const queueIdentityFields = {

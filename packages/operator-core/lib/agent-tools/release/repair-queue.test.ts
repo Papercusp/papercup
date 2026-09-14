@@ -195,8 +195,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 const repairQueueModule = await import('./repair-queue');
 const tool = repairQueueModule.default;
 const { assessFrozenRepairFixerAuthorization } = repairQueueModule;
-type Out = { content: { text: string }[] };
-const body = (value: unknown) => JSON.parse((value as Out).content[0]!.text);
+type Out = { data?: unknown; content?: { text: string }[] };
+const body = (value: unknown) => {
+  const out = value as Out;
+  return 'data' in out ? out.data : JSON.parse(out.content![0]!.text);
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
