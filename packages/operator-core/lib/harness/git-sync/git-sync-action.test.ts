@@ -454,12 +454,86 @@ import {
   mergeAttributionRosters,
   isGenericLockIntent,
   runWithGitSyncPerInstallLease,
+  resolveGitServingStateWithBootRecovery,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
 
 const endedSessionOwnersMock = vi.mocked(endedSessionOwners);
 import type { OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
+import type { GitServingRequest, GitServingState } from '../../sync/pot-git/serving-capability';
+
+describe('WI-10000734 omitted serving-handle recovery', () => {
+  const request: GitServingRequest = {
+    workspaceId: 'ws-serving-recovery',
+    installSlug: 'papercusp',
+    potHomeSlug: 'papercusp',
+    scope: { hive_id: 'stable-hive', repo_key: 'gh-1223568103' },
+  };
+
+  const ready = (): GitServingState => {
+    const now = Date.now();
+    return {
+      status: 'ready',
+      capability: {
+        ...request,
+        v: 1,
+        runtimeId: 'recovered-runtime',
+        identity: { devicePubkeyBase64: 'device', githubUserId: 42, keychainId: 'keychain' },
+        context: { ...request.scope, store_generation: `sg2-1-${'a'.repeat(40)}` },
+        issuedAtMs: now,
+        expiresAtMs: now + 30_000,
+      },
+    };
+  };
+
+  it('awaits the coalesced lazy boot and immediately uses the newly registered local handle', async () => {
+    let handle: { getGitServingCapability(request: GitServingRequest): Promise<GitServingState> } | null = null;
+    const bootSingleHarness = vi.fn(async () => {
+      handle = { getGitServingCapability: async () => ready() };
+      return { state: 'booted' as const };
+    });
+    const getPgGitServingCapability = vi.fn(async () => ({
+      status: 'absent' as const,
+      retryable: true as const,
+      reason: 'serving handle omitted from owner snapshot',
+    }));
+
+    const result = await resolveGitServingStateWithBootRecovery(request, {
+      getBootedHarness: () => handle,
+      bootSingleHarness,
+      getPgGitServingCapability,
+    });
+
+    expect(result).toMatchObject({
+      status: 'ready',
+      capability: { runtimeId: 'recovered-runtime', identity: { devicePubkeyBase64: 'device' } },
+    });
+    expect(bootSingleHarness).toHaveBeenCalledExactlyOnceWith('ws-serving-recovery', 'papercusp');
+    expect(getPgGitServingCapability).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the exact lazy-boot failure instead of collapsing it to no_device_identity', async () => {
+    const result = await resolveGitServingStateWithBootRecovery(request, {
+      getBootedHarness: () => null,
+      bootSingleHarness: async () => ({
+        state: 'failed',
+        error: 'substrate routing unavailable: migration 1142 failed',
+      }),
+      getPgGitServingCapability: async () => ({
+        status: 'absent',
+        retryable: true,
+        reason: 'serving handle omitted from owner snapshot',
+      }),
+    });
+
+    expect(result).toEqual({
+      status: 'unknown',
+      retryable: true,
+      reason: 'lazy serving recovery failed: substrate routing unavailable: migration 1142 failed',
+    });
+  });
+});
 
 describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-38968)', () => {
   it('admits only an exact device pubkey present in the Pot roster', () => {
