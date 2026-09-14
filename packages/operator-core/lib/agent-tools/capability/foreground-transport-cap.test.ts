@@ -152,6 +152,12 @@ describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-215700
     expect(foregroundClampDisclosure(FOREGROUND_TIMEOUT_CEILING_MS, FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
   });
 
+  it('also covers the testing:run-sized 900s request', () => {
+    const disclosure = foregroundClampDisclosure(900_000, FOREGROUND_TIMEOUT_CEILING_MS);
+    expect(disclosure).toContain('you requested 900s');
+    expect(disclosure).toContain(`effective budget was ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s`);
+  });
+
   // CALIBRATION (permanent control): the assertions above must be able to FAIL. A disclosure that
   // omitted the requested budget — the exact shape that shipped, where only the effective ceiling
   // ever reached the caller — must be rejected by the same checks.
@@ -287,5 +293,16 @@ describe('every foreground-capable tool applies the clamp (EI-20645849301780712)
   it('the same assertions REJECT a tool that redeclares the ceiling locally', () => {
     const redeclared = `const FOREGROUND_TIMEOUT_CEILING_MS = 240_000;\n`;
     expect(redeclared).toMatch(/(const|let)\s+FOREGROUND_TIMEOUT_CEILING_MS\s*=/); // ← would fail
+  });
+});
+
+describe('testing:run discloses its requested/effective timeout pair', () => {
+  const runSrc = readFileSync(join(TOOLS_DIR, 'testing', 'run.ts'), 'utf8');
+
+  it('keeps the caller budget separate and wires the shared disclosure onto timeout hints', () => {
+    expect(runSrc).toContain('const requestedTimeoutMs = args.timeoutMs;');
+    expect(runSrc).toContain('clampForegroundTimeoutMs(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS)');
+    expect(runSrc).toMatch(/testingRunTimeoutClampDisclosure\(requestedTimeoutMs, timeoutMs\)/);
+    expect(runSrc).toMatch(/foregroundClampDisclosure\(requestedTimeoutMs, effectiveTimeoutMs\)/);
   });
 });

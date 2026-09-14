@@ -302,7 +302,6 @@ type ContentBlock = TextBlock | ToolUseBlock | { type: string; [k: string]: unkn
 interface AnthropicMessage { role: 'user' | 'assistant'; content: string | ContentBlock[] }
 type SystemBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
 
-const MAX_TOOL_ITERATIONS = 6;
 const COMPACTION_SUMMARY_MARKER = 'Earlier conversation compacted';
 
 /**
@@ -630,10 +629,15 @@ class SuSession implements ChatSession {
 
     const ctrl = new AbortController();
     const TURN_CAP_MS = 240_000;
+    const deadline = performance.now() + TURN_CAP_MS;
     const killer = setTimeout(() => ctrl.abort(), TURN_CAP_MS);
+    let completed = false;
 
     try {
-      for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+      // Discovery + reads can legitimately consume six responses before the
+      // final answer. Bound the turn by its existing deadline, not by an
+      // arbitrary round count that silently returns "done" mid-conversation.
+      for (let iter = 0; !ctrl.signal.aborted && performance.now() < deadline; iter++) {
         let resp: AnthropicResponse;
         try {
           resp = await callWithRetry(makeClient, {
@@ -672,6 +676,7 @@ class SuSession implements ChatSession {
         }
 
         if (resp.stop_reason !== 'tool_use' || toolUses.length === 0) {
+          completed = true;
           break; // assistant turn complete
         }
 
@@ -691,6 +696,10 @@ class SuSession implements ChatSession {
           });
         }
         messages.push({ role: 'user', content: toolResults });
+      }
+      if (!completed && result.finishReason !== 'error') {
+        result.finishReason = 'error';
+        result.error = `su Anthropic turn deadline reached after ${TURN_CAP_MS}ms before a final response`;
       }
     } finally {
       clearTimeout(killer);
@@ -724,11 +733,13 @@ class SuSession implements ChatSession {
     const replay: ResponsesInputItem[] = messagesToResponsesInput(input.messages);
     const ctrl = new AbortController();
     const turnCapMs = 240_000;
+    const deadline = performance.now() + turnCapMs;
     const killer = setTimeout(() => ctrl.abort(new Error(`su Codex turn timed out after ${turnCapMs}ms`)), turnCapMs);
     killer.unref?.();
     const price = priceFor(model);
+    let completed = false;
     try {
-      for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+      for (let iter = 0; !ctrl.signal.aborted && performance.now() < deadline; iter++) {
         let turn: Awaited<ReturnType<typeof callCodexResponsesTurn>>;
         try {
           turn = await callCodexResponsesTurn({
@@ -752,7 +763,10 @@ class SuSession implements ChatSession {
           result.rawSseTape.push(sse('delta', { text: turn.text }));
         }
         replay.push(...turn.outputItems);
-        if (turn.toolCalls.length === 0) break;
+        if (turn.toolCalls.length === 0) {
+          completed = true;
+          break;
+        }
 
         const outputs: ResponsesInputItem[] = [];
         for (const call of turn.toolCalls) {
@@ -771,6 +785,10 @@ class SuSession implements ChatSession {
           });
         }
         replay.push(...outputs);
+      }
+      if (!completed && result.finishReason !== 'error') {
+        result.finishReason = 'error';
+        result.error = `su Codex turn deadline reached after ${turnCapMs}ms before a final response`;
       }
     } finally {
       clearTimeout(killer);

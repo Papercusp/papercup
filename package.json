@@ -357,6 +357,7 @@
     "lint:tsc:scripts": "node scripts/lint-tsc-scripts.mjs",
     "lint:tsc:workspaces": "bash scripts/pc-heavy.sh node scripts/lint-tsc-workspaces.mjs",
     "typecheck": "node scripts/lint-tsc.mjs",
+    "typecheck:operator": "npm --workspace @papercusp/web run typecheck --",
     "typecheck:operator-core": "npm --workspace @papercusp/operator-core run typecheck --",
     "lint:vite-externalized": "node scripts/check-vite-externalized-warnings.mjs",
     "trace:vite-externalized": "node scripts/trace-vite-externalized.mjs",

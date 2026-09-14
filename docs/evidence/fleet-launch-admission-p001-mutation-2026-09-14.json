@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-001 launcher-routing diagnostic mutation proof",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/work-items-admission.ts",
+    "--mutate",
+    "s|It does not block opening an agent or|It blocks opening an agent or|",
+    "--test",
+    "npm run test:file -- packages/operator-core/lib/work-items-admission-pending-bound.test.ts -t 'scopes duplicate screening to the work-item claim instead of inventing an agent-launch delay'",
+    "--expect",
+    "caught",
+    "--in-tree",
+    "--sweep-lock-held"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-14T02:05:21.020-04:00",
+  "finishedAt": "2026-09-14T02:06:27.804-04:00",
+  "summary": "The current launcher-routing guard passed on the canonical source, failed when the admission diagnostic was mutated from 'does not block opening' to 'blocks opening', and the mutation harness restored the tracked source byte-for-byte.",
+  "assertions": [
+    {
+      "id": "canonical-baseline-green",
+      "passed": true,
+      "evidence": "The targeted current-tree assertion passed before mutation: 1 passed, 10 excluded by the exact name filter."
+    },
+    {
+      "id": "launch-delay-mutant-caught",
+      "passed": true,
+      "evidence": "Replacing only 'It does not block opening an agent or' with 'It blocks opening an agent or' made the selected assertion fail with the expected missing 'does not block opening an agent or fleet process' message."
+    },
+    {
+      "id": "targeted-assertion-only",
+      "passed": true,
+      "evidence": "Both baseline and mutant selected exactly the launcher-delay assertion; the mutant remained parseable enough for Vitest to import and execute the assertion rather than failing during collection."
+    },
+    {
+      "id": "canonical-tree-integrity",
+      "passed": true,
+      "evidence": "mutation-probe reported the canonical work-items-admission.ts byte-identical to its pre-probe state; the post-probe file SHA-256 was 8e7eb8bb26e9bc6c3c6bb0b9a30774e31703ac792c8de37e45d0e7bcaef5bc66."
+    }
+  ],
+  "spec": {
+    "plan": "fleet-launch-admission-clarity-2026-09-13",
+    "planItem": "P-001",
+    "workItem": "WI-10001257",
+    "specId": "LAUNCH-ROUTING",
+    "specRevision": 2,
+    "specContentHash": "435fd7cdc4950e5812044ce04fe7ed590035446b823fa7f0b9802cf9a5c7a783"
+  },
+  "result": {
+    "verdict": "caught",
+    "baselineExit": 0,
+    "guardExit": 1,
+    "raw": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1 mutant_parse=unchecked"
+  }
+}

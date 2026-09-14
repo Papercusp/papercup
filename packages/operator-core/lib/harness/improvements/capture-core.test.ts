@@ -3472,6 +3472,158 @@ describe('captureImprovement — keyless non-observation bug folds onto its open
     expect(res.created).toBe(true);
   });
 
+  it('force:true keyless captures omit admissionIdentity so the title arbiter preserves distinctness', async () => {
+    const d = { ...recurrenceDeps(), findSemanticDupes: async () => null };
+    const first = await captureImprovement({ title: CANARY_TITLE, kind: 'bug', force: true }, d);
+    const second = await captureImprovement({ title: CANARY_TITLE, kind: 'bug', force: true }, d);
+
+    expect(first).toMatchObject({ ok: true, created: true });
+    expect(second).toMatchObject({ ok: true, created: true });
+    expect(first.admissionIdentity).toBeUndefined();
+    expect(second.admissionIdentity).toBeUndefined();
+    expect(d.created).toHaveLength(2);
+    for (const created of d.created) expect(created.payload).not.toHaveProperty('admissionIdentity');
+  });
+
+  it('migration 1157 recovers a concurrent same-title INSERT conflict by coalescing the exact winner', async () => {
+    const attempts: CreateIssueInput[] = [];
+    const occurrences: RecordIssueOccurrenceInput[] = [];
+    const TITLE = 'operator MCP admission sheds requests during grading fan-out';
+    let lookupCount = 0;
+    let releaseInitialLookups!: () => void;
+    const initialLookups = new Promise<void>((resolve) => {
+      releaseInitialLookups = resolve;
+    });
+    let winner: EngineerIssue | null = null;
+    const d: CaptureDeps & { store: EngineerIssue[]; occurrences: RecordIssueOccurrenceInput[] } = {
+      store: [],
+      occurrences,
+      searchIssues: async () => {
+        lookupCount += 1;
+        if (lookupCount <= 2) {
+          if (lookupCount === 2) releaseInitialLookups();
+          await initialLookups;
+          return [];
+        }
+        return winner ? [winner] : [];
+      },
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      recordIssueOccurrence: async (input) => {
+        occurrences.push(input);
+        return null;
+      },
+      createIssue: async (input) => {
+        attempts.push(input);
+        if (winner) {
+          throw {
+            code: '23505',
+            constraint_name: 'work_items_keyless_title_identity_uq',
+            message: 'duplicate key value violates unique constraint "work_items_keyless_title_identity_uq"',
+          };
+        }
+        winner = existing({
+          id: 'EI-TITLE-RACE-WINNER',
+          title: input.title,
+          scope: input.scope ?? 'operator',
+          payload: input.payload as Record<string, unknown>,
+        });
+        d.store.push(winner);
+        return winner;
+      },
+      mergeIssuePayload: async (_id, patch) => {
+        if (!winner) return null;
+        winner.payload = { ...(winner.payload as Record<string, unknown> | null), ...patch };
+        return winner;
+      },
+      updateIssuePatch: async (_id, patch) => {
+        if (!winner) return null;
+        if (patch.title !== undefined) winner.title = patch.title;
+        if (patch.body !== undefined) winner.body = patch.body;
+        return winner;
+      },
+    };
+
+    const [left, right] = await Promise.all([
+      captureImprovement({ title: TITLE, kind: 'bug', scope: 'harness:papercusp' }, d),
+      captureImprovement({ title: TITLE, kind: 'bug', scope: 'harness:papercusp' }, d),
+    ]);
+    const results = [left, right];
+
+    expect(results.filter((result) => result.created)).toHaveLength(1);
+    expect(results.filter((result) => result.reason === 'coalesced')).toHaveLength(1);
+    expect(results.find((result) => result.reason === 'coalesced')?.coalescedOnto).toMatchObject({
+      id: 'EI-TITLE-RACE-WINNER',
+      identity: 'title-key',
+      repeatCount: 2,
+    });
+    expect(attempts).toHaveLength(2);
+    expect(d.store).toHaveLength(1);
+    const winningIssue = winner!;
+    expect((winningIssue.payload as Record<string, unknown>).repeatCount).toBe(2);
+    expect(occurrences.map((row) => row.reportKind).sort()).toEqual(['canonical-created', 'coalesced']);
+  });
+
+  it.each([
+    ['titleKey', { payload: { admissionIdentity: { schemaVersion: 'admission-identity-v1', titleKey: 'title:other' } } }],
+    ['scope', { scope: 'harness:other-pot' }],
+    ['lane', { payload: { lane: 'observation' } }],
+    ['terminal', { state: 'done' }],
+  ] as const)('does not coalesce a named title-index conflict with a mismatched %s winner', async (_dimension, mismatch) => {
+    const TITLE = 'keyless title winner must match every identity component';
+    const identity = { schemaVersion: 'admission-identity-v1' as const, titleKey: 'title:component every identity keyless match must title winner' };
+    const winner = existing({
+      id: `EI-TITLE-MISMATCH-${_dimension}`,
+      title: TITLE,
+      scope: 'harness:papercusp',
+      payload: {
+        admissionIdentity: identity,
+        ...('payload' in mismatch ? mismatch.payload : {}),
+      },
+      ...('scope' in mismatch ? { scope: mismatch.scope } : {}),
+      ...('state' in mismatch ? { state: mismatch.state } : {}),
+    });
+    let lookupCount = 0;
+    const d: CaptureDeps = {
+      searchIssues: async () => {
+        lookupCount += 1;
+        return lookupCount === 1 ? [] : [winner];
+      },
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      createIssue: async () => {
+        throw {
+          code: '23505',
+          constraint_name: 'work_items_keyless_title_identity_uq',
+          message: 'duplicate key value violates unique constraint "work_items_keyless_title_identity_uq"',
+        };
+      },
+      mergeIssuePayload: async () => {
+        throw new Error('must not merge a mismatched title identity winner');
+      },
+    };
+
+    await expect(
+      captureImprovement({ title: TITLE, kind: 'bug', scope: 'harness:papercusp' }, d),
+    ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_keyless_title_identity_uq' });
+  });
+
+  it('does not swallow a different unique violation as a keyless title race', async () => {
+    const d: CaptureDeps = {
+      searchIssues: async () => [],
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      createIssue: async () => {
+        throw {
+          code: '23505',
+          constraint_name: 'work_items_condition_key_uq',
+          message: 'duplicate key value violates unique constraint "work_items_condition_key_uq"',
+        };
+      },
+    };
+
+    await expect(
+      captureImprovement({ title: 'unrelated keyless unique failure', kind: 'bug' }, d),
+    ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_condition_key_uq' });
+  });
+
   it('CONTROL: a RESOLVED twin does not absorb the filing — the fold is open-rows-only', async () => {
     const twin = existing({ id: 'EI-904', title: CANARY_TITLE, state: 'resolved' });
     const d = { ...recurrenceDeps([twin]), findSemanticDupes: async () => null };
