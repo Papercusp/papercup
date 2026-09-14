@@ -920,6 +920,115 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
   );
 
   it(
+    'keeps a folded delivery ID retryable when its parent waiter defers at the busy cap (F03)',
+    async () => {
+      const busyMs = 1_500;
+      const ownerId = uniqueOwner('DEDUP-FOLDED-DEFER');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        // Keep the parent waiter busy past its short cap, then leave the child
+        // quiet long enough for a retry to exercise a fresh delivery cycle.
+        args: ['-e', busyThenIdleChildCode(busyMs, 50, 5_000)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        advSessionId: 35_093,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      try {
+        const host = await waitForHost(ownerId);
+        expect(host).not.toBeNull();
+        // Do not race child startup: the busy gate must observe genuine output.
+        expect(await waitForOutput(captured, '.')).toBe(true);
+
+        const envelope = {
+          mode: 'turn' as const,
+          ownerId,
+          routineId: 'f03-folded-routine',
+        };
+        const parent = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'F03_DIAG parent-A',
+          deliveryId: 'f03-parent-a',
+          fireNumber: 1,
+        });
+        expect(parent).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+
+        // B has a DISTINCT durable delivery ID but the SAME routine source, so
+        // it folds into A's gate waiter. Its ID must remain retryable if A is
+        // later dropped by the busy cap.
+        const folded = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'F03_DIAG folded-B',
+          deliveryId: 'f03-folded-b',
+          fireNumber: 2,
+        });
+        expect(folded).toMatchObject({
+          ok: true,
+          confirmation: 'acked',
+          reason: 'coalesced-into-pending-turn',
+        });
+
+        // Anchor on the parent's actual cap expiry, then wait past the original
+        // busy window + quiet gate before retrying B.
+        const capDeadline = Date.now() + 3_000;
+        let events = '';
+        while (Date.now() < capDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (events.includes('"kind":"busy-gate-expired"')) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"kind":"busy-gate-expired"');
+        await sleep(busyMs + 300);
+        expect(captured()).not.toContain('ECHO:F03_DIAG');
+
+        const retry = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'F03_DIAG folded-B',
+          deliveryId: 'f03-folded-b',
+          fireNumber: 2,
+        });
+        expect(retry).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+        expect(await waitForOutput(captured, 'ECHO:F03_DIAG folded-B', 6_000)).toBe(true);
+        await sleep(300);
+
+        const output = captured();
+        expect((output.match(/ECHO:F03_DIAG folded-B/g) ?? []).length).toBe(1);
+        expect(output).not.toContain('ECHO:F03_DIAG parent-A');
+      } finally {
+        await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(meta, { force: true });
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
     'a DIFFERENT deliveryId with the SAME text is a genuinely new delivery — not deduped',
     async () => {
       // Guards against an over-broad fix: dedup must key off the delivery ID, never
