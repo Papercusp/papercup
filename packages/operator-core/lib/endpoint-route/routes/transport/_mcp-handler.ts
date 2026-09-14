@@ -3,10 +3,15 @@ import { createMcpHandler } from 'mcp-handler';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
-import { ensureOperatorToolsLoaded, registerMcpHost, mcpHostServerOptions } from './_mcp-host';
+type BuildMcpToolContextForTests = typeof import('./_mcp-host')['__buildMcpToolContext_forTests'];
+type ResolveMcpTargetAfterPluginHostWarm = typeof import('./_mcp-host')['resolveMcpTargetAfterPluginHostWarm'];
 
-// Preserve the existing import surface while non-HTTP transports use the host directly.
-export * from './_mcp-host';
+// Keep the route's lightweight contract helpers available without pulling in the
+// operator host. Host-only helpers are imported from `_mcp-host` by their tests
+// and by the native transport; the HTTP adapter loads that host on first request.
+export { MCP_SERVER_CAPABILITIES } from './mcp-contract';
+export { withMcpDiagnosticWarnings } from './mcp-diagnostic-warnings';
+export type { McpCallResult } from './mcp-diagnostic-warnings';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -19,11 +24,12 @@ let handlerLoad: Promise<McpRouteHandler> | null = null;
  * interval at construction time; doing that at module scope made importing a
  * pure exported helper keep direct tsx probes alive forever.
  */
-function getMcpRouteHandler(): Promise<McpRouteHandler> {
+async function getMcpRouteHandler(): Promise<McpRouteHandler> {
   if (!handlerLoad) {
     handlerLoad = (async () => {
-      await ensureOperatorToolsLoaded();
-      return createMcpHandler(registerMcpHost, mcpHostServerOptions(), {
+      const host = await import('./_mcp-host');
+      await host.ensureOperatorToolsLoaded();
+      return createMcpHandler(host.registerMcpHost, host.mcpHostServerOptions(), {
         basePath: '/api',
         maxDuration: 60,
         verboseLogs: process.env.NODE_ENV !== 'production',
@@ -41,7 +47,24 @@ function getMcpRouteHandler(): Promise<McpRouteHandler> {
       throw error;
     });
   }
-  return handlerLoad;
+  return await handlerLoad;
+}
+
+// Compatibility boundary for the handler-level tests and existing internal
+// callers. Keep these helpers lazy: a runtime re-export from `_mcp-host` would
+// recreate the eager operator-tool graph that makes one-shot tsx imports hang.
+export async function __buildMcpToolContext_forTests(
+  ...args: Parameters<BuildMcpToolContextForTests>
+): ReturnType<BuildMcpToolContextForTests> {
+  const host = await import('./_mcp-host');
+  return host.__buildMcpToolContext_forTests(...args);
+}
+
+export async function resolveMcpTargetAfterPluginHostWarm(
+  ...args: Parameters<ResolveMcpTargetAfterPluginHostWarm>
+): ReturnType<ResolveMcpTargetAfterPluginHostWarm> {
+  const host = await import('./_mcp-host');
+  return host.resolveMcpTargetAfterPluginHostWarm(...args);
 }
 
 /**
