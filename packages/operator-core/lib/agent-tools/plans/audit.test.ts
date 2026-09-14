@@ -255,6 +255,35 @@ describe('plans:audit D-008 writer contract', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it.each(['code', 'test'] as const)('requires path for ref-only %s citations at the live input schema', (kind) => {
+    const parsed = tool.args.safeParse({
+      slug: 'plan-a',
+      items: [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind, ref: 'evidence-ref' }] }],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('projects path as required for code/test citation branches', () => {
+    const projected = lookupByMcpName('plans:audit');
+    const schema = projected?.inputSchema as {
+      properties?: {
+        items?: {
+          items?: {
+            properties?: {
+              citations?: { items?: { anyOf?: Array<{ properties?: { kind?: { const?: string }; path?: unknown }; required?: string[] }> } };
+            };
+          };
+        };
+      };
+    };
+    const branches = schema.properties?.items?.items?.properties?.citations?.items?.anyOf ?? [];
+    expect(branches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ properties: expect.objectContaining({ kind: expect.objectContaining({ const: 'code' }) }), required: expect.arrayContaining(['path']) }),
+      expect.objectContaining({ properties: expect.objectContaining({ kind: expect.objectContaining({ const: 'test' }) }), required: expect.arrayContaining(['path']) }),
+    ]));
+  });
+
   it('records a resolving code citation with blob provenance and reports it verified', async () => {
     const result = await body([
       { itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] },

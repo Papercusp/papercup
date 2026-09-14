@@ -72,16 +72,41 @@ import {
   slugScopeErrorResult,
 } from './slug-scope';
 
-const citationSchema = z.object({
-  kind: z.enum(CITATION_KINDS).describe(
-    "`code`/`test` RESOLVE against the tree (path required, must name a real file) and are the ONLY kinds that count as verification. `doc` records where a non-source deliverable lives: give `path` if it is a tree file (resolved like any other path) or `ref` + `reason` if it is a PG-canonical doc — either way it never supports `implemented`. `none` is the escape hatch and REQUIRES `reason`. The unverified counts come back in the result and go in front of the independent grader, because a self-audit cannot police its own use of them.",
-  ),
-  path: z.string().min(1).optional().describe('Repo-relative path. No leading `/` or `~`, no `..` segments — a citation that needs one is not evidence.'),
+const citationPathSchema = z.string().min(1).describe(
+  'Repo-relative path. No leading `/` or `~`, no `..` segments — a citation that needs one is not evidence.',
+);
+const citationOptionalFields = {
   line: z.number().int().positive().optional().describe('Optional line number, validated against the file\'s ACTUAL length — a hallucinated line is refused.'),
   symbol: z.string().min(1).optional().describe('Optional symbol that must literally appear in the cited file.'),
   ref: z.string().min(1).optional().describe('Doc id — for a `doc` citation naming a PG-canonical doc rather than a tree file. Requires `reason` too.'),
   reason: z.string().min(1).optional().describe('REQUIRED for kind `none`, and for a `doc` cited by `ref` alone: why this item has no code-resolvable artifact.'),
-});
+};
+const citationSchema = z.union([
+  z.object({
+    kind: z.literal('code'),
+    path: citationPathSchema,
+    ...citationOptionalFields,
+  }),
+  z.object({
+    kind: z.literal('test'),
+    path: citationPathSchema,
+    ...citationOptionalFields,
+  }),
+  z.object({
+    kind: z.literal('doc').describe(
+      '`doc` records where a non-source deliverable lives: give `path` if it is a tree file (resolved like any other path) or `ref` + `reason` if it is a PG-canonical doc — either way it never supports `implemented`.',
+    ),
+    path: citationPathSchema.optional(),
+    ...citationOptionalFields,
+  }),
+  z.object({
+    kind: z.literal('none').describe(
+      '`none` is the escape hatch and REQUIRES `reason`. The unverified counts come back in the result and go in front of the independent grader, because a self-audit cannot police its own use of them.',
+    ),
+    path: citationPathSchema.optional(),
+    ...citationOptionalFields,
+  }),
+]);
 
 const itemSchema = z.object({
   itemId: z.string().regex(/^P-\d{3,}$/).describe('The plan item this entry audits.'),
