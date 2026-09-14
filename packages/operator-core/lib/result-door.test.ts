@@ -182,6 +182,52 @@ describe('applyResultDoor', () => {
     expect(sawPartial).toBe(true);
   });
 
+  it('EI-23196202383663962: the result door forwards custom bulk-envelope semantics so a tail failure stays visible', () => {
+    const entries = [
+      ...Array.from({ length: 16 }, (_, i) => ({
+        outcome: 'ok',
+        key: `WI-${i}`,
+        detail: 'x'.repeat(4_000),
+      })),
+      { outcome: 'failed', key: 'WI-tail-failure', detail: 'x'.repeat(4_000) },
+    ];
+    const source = { accepted: true, entries, tally: { ok: 16, failed: 1 } };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'plans:bind-spec-evidence',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        bulkEnvelope: { resultsKey: 'entries', failureKey: 'outcome', countsKey: 'tally' },
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      entries: Array<Record<string, unknown>>;
+      tally: { ok: number; failed: number };
+    };
+
+    const visibleRows = projected.entries.filter((row) => row._truncated !== true);
+    expect(visibleRows.map((row) => row.key)).toEqual(
+      [...visibleRows]
+        .sort((a, b) => entries.findIndex((source) => source.key === a.key) - entries.findIndex((source) => source.key === b.key))
+        .map((row) => row.key),
+    );
+    expect(visibleRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: 'failed',
+        key: 'WI-tail-failure',
+      }),
+    ]));
+    expect(visibleRows.at(-1)).toMatchObject({
+      outcome: 'failed',
+      key: 'WI-tail-failure',
+    });
+    expect(projected.tally).toEqual({ ok: 16, failed: 1 });
+  });
+
   it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
     const noise = (prefix: string) => Object.fromEntries(
       Array.from({ length: 128 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),
