@@ -3168,6 +3168,62 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(deferred)).toBe(true);
   });
 
+  it("reserves only bounded activity:tool-log recovery reads, including deferred tools:invoke", () => {
+    const bounded = {
+      owner: "self",
+      since: "2026-09-14T07:00:00Z",
+      until: "2026-09-14T08:00:00Z",
+      max_lines: 40,
+      top_k: 8,
+    };
+    const direct = Buffer.from(
+      JSON.stringify({
+        method: "tools/call",
+        params: { name: "activity:tool-log", arguments: bounded },
+      }),
+    );
+    expect(isReservedControlPlaneCall(direct)).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__activity_tool_log",
+                args: bounded,
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "activity:tool-log",
+              arguments: { owner: "self", max_lines: 41 },
+            },
+          }),
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: { name: "activity:tool-log", arguments: {} },
+          }),
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("classifies only an all-handshake JSON-RPC batch for the reconnect bulkhead", () => {
     const body = (value: unknown) => Buffer.from(JSON.stringify(value));
     expect(

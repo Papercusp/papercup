@@ -58,6 +58,7 @@ import {
   isBoundedRecipesSearchArgs,
   isBoundedScorecardsEvaluateArgs,
   isBoundedScorecardsListArgs,
+  isBoundedActivityToolLogArgs,
   isBoundedTestingRunStatusArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
@@ -759,6 +760,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "dev:build_status",
   "dev:migrations",
   "dev:rate_governor_status",
+  // bounded activity ledger reads are safe to replay after a stale socket;
+  // admission still reserves only the explicitly scoped form below.
+  "activity:tool-log",
   // documentation + search reads
   "docs:get",
   "docs:search",
@@ -1570,6 +1574,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
 const SCORECARDS_LIST_TOOL_NAME = normalizeMcpName("scorecards:list");
 const SCORECARDS_EVALUATE_TOOL_NAME = normalizeMcpName("scorecards:evaluate");
 const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
+const ACTIVITY_TOOL_LOG_TOOL_NAME = normalizeMcpName("activity:tool-log");
 const COORD_PRESENCE_TOOL_NAME = normalizeMcpName("coord:presence");
 const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
 const TESTING_RUN_STATUS_TOOL_NAME = normalizeMcpName("testing:run-status");
@@ -1581,6 +1586,7 @@ function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: 
     return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestPath);
   }
   if (name === DEV_TELEMETRY_TOOL_NAME) return isBoundedDevTelemetryArgs(args);
+  if (name === ACTIVITY_TOOL_LOG_TOOL_NAME) return isBoundedActivityToolLogArgs(args);
   if (name === COORD_PRESENCE_TOOL_NAME) return isBoundedCoordPresenceArgs(args);
   if (name === COORD_ROSTER_TOOL_NAME) return isBoundedCoordRosterArgs(args);
   if (name === TESTING_RUN_STATUS_TOOL_NAME) return isBoundedTestingRunStatusArgs(args);
