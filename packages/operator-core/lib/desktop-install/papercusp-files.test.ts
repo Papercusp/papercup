@@ -22,6 +22,7 @@ import {
   ensureGhLinked,
   repairPapercuspGitCredentialHelpers,
   ensureAgentClisLinked,
+  ensurePythonCompatibilityLinked,
   CC_HOOK_FILES,
   type GitConfigRunner,
 } from './papercusp-files';
@@ -446,5 +447,40 @@ describe('ensureAgentClisLinked (WI-37920 / P-006)', () => {
     await ensureAgentClisLinked(home, binDir);
 
     await expect(fs.access(path.join(binDir, 'bun'))).rejects.toThrow();
+  });
+});
+
+describe('ensurePythonCompatibilityLinked (EI-22568296159914561)', () => {
+  it('links ~/.papercusp/bin/python → python3 from the managed search locations', async () => {
+    vi.stubEnv('PATH', '');
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    const python3 = path.join(home, '.local', 'bin', 'python3');
+    await touch(python3);
+
+    expect(await ensurePythonCompatibilityLinked(home, binDir, [path.dirname(python3)])).toBe(true);
+    expect(await fs.realpath(path.join(binDir, 'python'))).toBe(await fs.realpath(python3));
+  });
+
+  it('preserves an existing python entry instead of replacing it', async () => {
+    vi.stubEnv('PATH', '');
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    const existing = path.join(binDir, 'python');
+    const python3 = path.join(home, '.local', 'bin', 'python3');
+    await touch(existing);
+    await touch(python3);
+
+    expect(await ensurePythonCompatibilityLinked(home, binDir, [path.dirname(python3)])).toBe(false);
+    expect((await fs.lstat(existing)).isSymbolicLink()).toBe(false);
+  });
+
+  it('does not create a compatibility entry when python3 is unavailable', async () => {
+    vi.stubEnv('PATH', '');
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+
+    expect(await ensurePythonCompatibilityLinked(home, binDir, [])).toBe(false);
+    await expect(fs.lstat(path.join(binDir, 'python'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

@@ -2321,6 +2321,51 @@ export async function ensureAgentClisLinked(home: string, binDir: string): Promi
 }
 
 /**
+ * Make the common `python` spelling available to agent shells without changing
+ * the host's shared bin directories (EI-22568296159914561). Agent snippets and
+ * forensic runbooks sometimes invoke `python`, while the managed Linux host
+ * only provides `python3`. The installer already owns ~/.papercusp/bin and puts
+ * it on PATH, so a compatibility link there fixes the shell boundary without
+ * shadowing a user's existing `python` elsewhere on the host.
+ *
+ * This is deliberately non-clobbering: even a dangling existing entry is left
+ * untouched so an installer upgrade cannot silently take over the user's
+ * chosen `python` command. The search list supplements the GUI process PATH,
+ * which may omit user package-manager and Linuxbrew directories.
+ */
+export async function ensurePythonCompatibilityLinked(
+  home: string,
+  binDir: string,
+  searchDirs: string[] = backendSearchDirs({ home }),
+): Promise<boolean> {
+  const dest = path.join(binDir, 'python');
+
+  // Preserve any existing file, symlink (including dangling), or other entry.
+  try {
+    await fs.lstat(dest);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+  }
+
+  const candidates = [
+    resolveOnPath('python3', { env: process.env }),
+    ...searchDirs.map((dir) => path.join(dir, 'python3')),
+  ].filter((candidate, index, all): candidate is string => Boolean(candidate) && all.indexOf(candidate) === index);
+  const python3 = await firstExisting(candidates);
+  if (!python3) return false;
+
+  try {
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.symlink(python3, dest);
+    return true;
+  } catch {
+    // A concurrent installer or a permission issue must not make desktop boot fail.
+    return false;
+  }
+}
+
+/**
  * Ensure `~/.papercusp/bin/gh` is a symlink to the currently-bundled `gh` CLI
  * (WI-3626). `buildGithubLoginSpec` (endpoint-route/routes/desktop/setup-pty-
  * commands.ts) resolves `gh` to sign in + run `gh auth setup-git`, which bakes
@@ -3610,6 +3655,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // `psu → <agent>` launches out of the box — without this, a fresh install
   // where claude lives in ~/.local/bin makes psu exit immediately (can't exec it).
   await ensureAgentClisLinked(home, paths.binDir);
+
+  // Keep common agent snippets that invoke `python` working on hosts that only
+  // ship `python3`, while preserving any pre-existing managed `python` entry.
+  await ensurePythonCompatibilityLinked(home, paths.binDir);
 
   // WI-3626: keep ~/.papercusp/bin/gh symlinked to the current bundle's gh so
   // buildGithubLoginSpec's `gh auth setup-git` bakes a stable, app-rename-proof
