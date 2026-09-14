@@ -17,6 +17,13 @@ import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './
 
 /** Keep a refused X11 focus request from blocking the operator request loop. */
 const X11_FOCUS_TIMEOUT_MS = 2_000;
+/**
+ * Mutter updates _NET_ACTIVE_WINDOW asynchronously after accepting an
+ * activation request. Give that observed state a short bounded settling
+ * window before calling an otherwise successful activation a failure.
+ */
+const X11_FOCUS_SETTLE_ATTEMPTS = 10;
+const X11_FOCUS_SETTLE_INTERVAL_MS = 50;
 
 interface FocusCommandResult {
   status: number | null;
@@ -25,6 +32,7 @@ interface FocusCommandResult {
 
 interface FocusWindowIdDeps {
   runCommand?: (command: string, args: string[]) => FocusCommandResult;
+  settle?: (ms: number) => Promise<void>;
 }
 
 function parseX11WindowId(value: string): bigint | null {
@@ -50,6 +58,19 @@ function activeX11WindowMatches(
 ): boolean {
   const active = runCommand('xdotool', ['getactivewindow']);
   return active.status === 0 && sameX11WindowId(active.stdout, targetWindowId);
+}
+
+async function waitForActiveX11Window(
+  targetWindowId: string,
+  runCommand: (command: string, args: string[]) => FocusCommandResult,
+  settle: (ms: number) => Promise<void>,
+): Promise<boolean> {
+  if (activeX11WindowMatches(targetWindowId, runCommand)) return true;
+  for (let attempt = 0; attempt < X11_FOCUS_SETTLE_ATTEMPTS; attempt += 1) {
+    await settle(X11_FOCUS_SETTLE_INTERVAL_MS);
+    if (activeX11WindowMatches(targetWindowId, runCommand)) return true;
+  }
+  return false;
 }
 
 /**
@@ -158,6 +179,7 @@ export async function focusWindowId(
   }
   try {
     let runCommand = deps.runCommand;
+    const settle = deps.settle ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     if (!runCommand) {
       const { spawnSync } = await import('node:child_process');
       runCommand = (command, args) => {
@@ -185,7 +207,7 @@ export async function focusWindowId(
     // and still must pass the same observed-active-window check.
     const xdotool = runCommand('xdotool', ['windowactivate', '--sync', windowId]);
     if (xdotool.status !== 0) return false;
-    return activeX11WindowMatches(windowId, runCommand);
+    return await waitForActiveX11Window(windowId, runCommand, settle);
   } catch {
     return false;
   }

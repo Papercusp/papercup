@@ -114,14 +114,29 @@ describe('focusWindowId — Linux activation is observed, not inferred from exit
   });
 
   it('returns false when the fallback exits 0 but the target still is not active', async () => {
+    const runCommand = vi.fn(() => ({ status: 0, stdout: `${OTHER_DECIMAL}\n` }))
+      .mockReturnValueOnce({ status: 0, stdout: '' })
+      .mockReturnValueOnce({ status: 0, stdout: `${OTHER_DECIMAL}\n` })
+      .mockReturnValueOnce({ status: 0, stdout: '' });
+    const settle = vi.fn(async () => {});
+
+    const { focusWindowId } = await import('./adv-session-windows');
+    expect(await focusWindowId(TARGET, { runCommand, settle })).toBe(false);
+    expect(settle).toHaveBeenCalledTimes(10);
+  });
+
+  it('waits for Mutter to publish an asynchronously accepted activation before reporting failure', async () => {
     const runCommand = vi.fn()
       .mockReturnValueOnce({ status: 0, stdout: '' })
       .mockReturnValueOnce({ status: 0, stdout: `${OTHER_DECIMAL}\n` })
       .mockReturnValueOnce({ status: 0, stdout: '' })
-      .mockReturnValueOnce({ status: 0, stdout: `${OTHER_DECIMAL}\n` });
+      .mockReturnValueOnce({ status: 0, stdout: `${OTHER_DECIMAL}\n` })
+      .mockReturnValueOnce({ status: 0, stdout: `${TARGET_DECIMAL}\n` });
+    const settle = vi.fn(async () => {});
 
     const { focusWindowId } = await import('./adv-session-windows');
-    expect(await focusWindowId(TARGET, { runCommand })).toBe(false);
+    expect(await focusWindowId(TARGET, { runCommand, settle })).toBe(true);
+    expect(settle).toHaveBeenCalledTimes(1);
   });
 
   it('returns after wmctrl only when the observed active id matches across hex and decimal forms', async () => {
