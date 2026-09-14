@@ -2012,7 +2012,7 @@ describe('work-item admission promoter (real Postgres)', () => {
           ? 'runs'
           : query.includes('percentile_cont(0.50)')
             ? 'queue-health'
-            : query.includes('WITH active_dependency_refs AS MATERIALIZED')
+            : query.includes('active_dependency_refs AS MATERIALIZED')
               ? 'readiness-stock-flow'
               : query.includes('FROM harness_shared.work_item_occurrences')
                 ? 'readiness-recurrence'
@@ -2217,7 +2217,9 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(helperStart).toBeGreaterThanOrEqual(0);
     expect(helperEnd).toBeGreaterThan(helperStart);
     expect(reader).toContain('activeWorkItemDependencyRefsSql(sql, {');
-    expect(reader).toContain('WITH active_dependency_refs AS MATERIALIZED');
+    expect(reader).toContain('WITH occurrence_counts AS MATERIALIZED');
+    expect(reader).toContain('active_dependency_refs AS MATERIALIZED');
+    expect(reader).not.toContain('readIssueOccurrenceCounts(');
     expect(dependencyReader).toContain("blocker.harness_slug = split_part(d.blocker_ref, '#', 1)");
     expect(dependencyReader).toContain("blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)");
     expect(reader).toContain('LEFT JOIN active_dependency_refs dependency');
