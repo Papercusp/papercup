@@ -205,6 +205,9 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'sessions:timeline',
     'loop:status',
     'loop:checkpoint',
+    'logs:read',
+    'notifications:recent',
+    'testing:runs',
   ].map(normalizeMcpName),
 );
 const DEV_TELEMETRY_NAME = normalizeMcpName('dev:telemetry');
@@ -329,6 +332,17 @@ const SESSION_REQUEST_COMPACTION_NAME = normalizeMcpName('session:request-compac
 const CRITICAL_SESSION_COMPACTION_FOCUS_MAX_CHARS = 600;
 const CRITICAL_SESSION_COMPACTION_CONTINUE_NOTE_MAX_CHARS = 1_000;
 const CRITICAL_SESSION_COMPACTION_REASON_MAX_CHARS = 600;
+const LOGS_READ_NAME = normalizeMcpName('logs:read');
+const NOTIFICATIONS_RECENT_NAME = normalizeMcpName('notifications:recent');
+const TESTING_RUNS_NAME = normalizeMcpName('testing:runs');
+const CRITICAL_LOGS_READ_MAX_UNITS = 3;
+const CRITICAL_LOGS_READ_MAX_LIMIT = 50;
+const CRITICAL_LOGS_READ_MAX_GREP_CHARS = 200;
+const CRITICAL_NOTIFICATIONS_RECENT_MAX_LIMIT = 50;
+const CRITICAL_TESTING_RUNS_MAX_IDS = 25;
+const CRITICAL_TESTING_RUNS_MAX_STATUS = 6;
+const CRITICAL_TESTING_RUNS_MAX_SINCE_HOURS = 24;
+const CRITICAL_TESTING_RUNS_MAX_LIMIT = 25;
 const TESTING_RUN_STATUS_NAME = normalizeMcpName('testing:run-status');
 const CRITICAL_TESTING_RUN_STATUS_MAX_RUN_ID_CHARS = 120;
 const ACTIVITY_TOOL_LOG_NAME = normalizeMcpName('activity:tool-log');
