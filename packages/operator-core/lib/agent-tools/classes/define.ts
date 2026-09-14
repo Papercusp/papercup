@@ -3,10 +3,11 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { isCompilableSchema } from '../../datatype-payload-validation';
 import {
   defineCapabilityClass,
+  capabilityClassVectorStorageAcceptsProfile,
   normalizeCapabilityClassId,
   type CapabilityClassVerbs,
 } from '../../capability-class-registry-store';
@@ -81,9 +82,15 @@ export const defineCapabilityClassTool = defineTool({
       });
     }
 
-    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
-    const embedding = embedder
-      ? await embedder(`${args.title}\n${args.description}`).catch(() => null)
+    const resolved = await buildQueryEmbedderResolved({
+      acquireBudgetMs: interactiveEmbedAcquireBudgetMs(),
+    }).catch(() => null);
+    const embeddingProfile =
+      resolved && capabilityClassVectorStorageAcceptsProfile(resolved.profile)
+        ? resolved.profile
+        : null;
+    const embedding = resolved && embeddingProfile
+      ? await resolved.embed(`${args.title}\n${args.description}`).catch(() => null)
       : null;
     const ident = resolveAgentIdentity(ctx);
     const result = await defineCapabilityClass(getOrgPg().sql, {
@@ -96,6 +103,7 @@ export const defineCapabilityClassTool = defineTool({
       behavioralSuiteRef: args.behavioralSuiteRef ?? null,
       tags: args.tags ?? [],
       embedding,
+      embeddingProfile: embedding ? embeddingProfile : null,
       createdBy: ident.ownerId,
     });
     if (result.conflict) {
@@ -117,4 +125,3 @@ export const defineCapabilityClassTool = defineTool({
 });
 
 export default defineCapabilityClassTool;
-

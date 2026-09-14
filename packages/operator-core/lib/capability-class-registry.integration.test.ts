@@ -6,6 +6,7 @@ import {
   createFreshPgDb,
   type FreshPgDb,
 } from '../test/_pg-helpers';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { PROSE_VECTOR_DIMS } from './search/prose-vector-dims';
 import {
   bindCapabilityProviderToPot,
@@ -26,6 +27,9 @@ const MIGRATION_1140 = fileURLToPath(
 );
 const MIGRATION_1141_BASE = fileURLToPath(
   new URL('../../../libs/papercusp/libs/db/sql/1141-enforce-capability-class-passing-bindings.sql', import.meta.url),
+);
+const MIGRATION_1160_PROFILE = fileURLToPath(
+  new URL('../../../libs/papercusp/libs/db/sql/1160-capability-class-embedding-profile.sql', import.meta.url),
 );
 const embedding = (): number[] => Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.2);
 const verbs = {
@@ -59,6 +63,7 @@ describe('capability class registry (real PG)', () => {
     await db.sql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
     await applyMigrationForTest(db.sql, MIGRATION_1140);
     await applyMigrationForTest(db.sql, MIGRATION_1141_BASE);
+    await applyMigrationForTest(db.sql, MIGRATION_1160_PROFILE);
   }, 120_000);
 
   afterAll(async () => {
@@ -74,6 +79,7 @@ describe('capability class registry (real PG)', () => {
       description: 'Send customer email from a CRM contact record.',
       interfaceVerbs: verbs,
       embedding: embedding(),
+      embeddingProfile: EMBEDDER_DIM_SPECS.gemma,
       tags: ['crm', 'email'],
       createdBy: 'operator-1',
     };
@@ -81,6 +87,7 @@ describe('capability class registry (real PG)', () => {
     expect(first.created).toBe(true);
     expect(first.conflict).toBe(false);
     expect(first.capabilityClass.hasEmbedding).toBe(true);
+    expect(first.capabilityClass.embeddingProfile).toBe(EMBEDDER_DIM_SPECS.gemma.profileId);
 
     const replay = await defineCapabilityClass(db.sql, base);
     expect(replay).toMatchObject({ created: false, conflict: false });
@@ -91,6 +98,39 @@ describe('capability class registry (real PG)', () => {
     expect(got?.ref).toBe('crm.email@1.0.0');
     const found = await listCapabilityClasses(db.sql, 'ws-classes', { query: 'customer email' });
     expect(found.map((row) => row.ref)).toContain('crm.email@1.0.0');
+
+    const exactSemantic = await listCapabilityClasses(db.sql, 'ws-classes', {
+      query: 'orthogonal discovery phrase',
+      embedding: embedding(),
+      embeddingProfile: EMBEDDER_DIM_SPECS.gemma,
+    });
+    expect(exactSemantic.map((row) => row.ref)).toContain('crm.email@1.0.0');
+
+    // Same dimensions and the same closed physical metric are insufficient:
+    // a vector stored under Gemma may not be compared with an OpenAI query.
+    const equalWidthForeign = await listCapabilityClasses(db.sql, 'ws-classes', {
+      query: 'orthogonal discovery phrase',
+      embedding: embedding(),
+      embeddingProfile: EMBEDDER_DIM_SPECS.openai,
+    });
+    expect(equalWidthForeign).toEqual([]);
+
+    await db.sql`
+      UPDATE harness_shared.capability_class_registry
+         SET embedding_profile = NULL
+       WHERE workspace_id = 'ws-classes' AND id = 'crm.email' AND version = '1.0.0'`;
+    const legacySemantic = await listCapabilityClasses(db.sql, 'ws-classes', {
+      query: 'orthogonal discovery phrase',
+      embedding: embedding(),
+      embeddingProfile: EMBEDDER_DIM_SPECS.gemma,
+    });
+    expect(legacySemantic).toEqual([]);
+    const legacyLexical = await listCapabilityClasses(db.sql, 'ws-classes', {
+      query: 'customer email',
+      embedding: embedding(),
+      embeddingProfile: EMBEDDER_DIM_SPECS.gemma,
+    });
+    expect(legacyLexical.map((row) => row.ref)).toContain('crm.email@1.0.0');
     expect(await getCapabilityClass(db.sql, 'other-workspace', 'crm.email', '1.0.0')).toBeNull();
   });
 

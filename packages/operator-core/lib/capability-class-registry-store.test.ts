@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
+  CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE,
+  capabilityClassVectorStorageAcceptsProfile,
   capabilityClassRef,
   normalizeCapabilityClassId,
   parseCapabilityClassRef,
@@ -35,6 +38,7 @@ const capabilityClass = (overrides: Partial<CapabilityClassRow> = {}): Capabilit
   reviewStatus: 'none',
   tags: ['crm', 'email'],
   hasEmbedding: false,
+  embeddingProfile: null,
   createdBy: 'operator',
   createdAt: '2026-09-07T00:00:00.000Z',
   updatedAt: '2026-09-07T00:00:00.000Z',
@@ -66,6 +70,25 @@ describe('capability class identity', () => {
     expect(capabilityClassRef('CRM.Email', '1.2.3')).toBe('crm.email@1.2.3');
     expect(parseCapabilityClassRef('crm.email@1.2.3')).toEqual({ id: 'crm.email', version: '1.2.3' });
     expect(parseCapabilityClassRef('crm.email')).toBeNull();
+  });
+});
+
+describe('capability class vector storage identity', () => {
+  it('accepts only independently declared exact profiles, never width alone', () => {
+    expect(capabilityClassVectorStorageAcceptsProfile(EMBEDDER_DIM_SPECS.gemma)).toBe(true);
+    expect(capabilityClassVectorStorageAcceptsProfile(EMBEDDER_DIM_SPECS.openai)).toBe(true);
+    expect(capabilityClassVectorStorageAcceptsProfile({
+      ...EMBEDDER_DIM_SPECS.gemma,
+      profileId: 'same-width-foreign-space@v1',
+    })).toBe(false);
+  });
+
+  it('keeps the index metric coupled to the closed metric mapping', () => {
+    expect(CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE).toMatchObject({
+      dimensions: 768,
+      distanceMetric: 'cosine',
+      indexOperatorClass: 'vector_cosine_ops',
+    });
   });
 });
 
@@ -135,4 +158,3 @@ describe('validateProviderInterface', () => {
     expect(report.behavioral).toEqual({ status: 'not-run', suiteRef: 'suite:crm-email-v1' });
   });
 });
-

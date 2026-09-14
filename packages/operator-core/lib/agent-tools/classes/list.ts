@@ -2,8 +2,11 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { listCapabilityClasses } from '../../capability-class-registry-store';
-import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import {
+  capabilityClassVectorStorageAcceptsProfile,
+  listCapabilityClasses,
+} from '../../capability-class-registry-store';
+import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
 export const listCapabilityClassesTool = defineTool({
   name: 'classes:list',
@@ -29,10 +32,16 @@ export const listCapabilityClassesTool = defineTool({
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) return { data: { ok: true, classes: [], count: 0 } };
-    const embedder = args.query
-      ? await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null)
+    const resolved = args.query
+      ? await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null)
       : null;
-    const embedding = embedder && args.query ? await embedder(args.query).catch(() => null) : null;
+    const embeddingProfile =
+      resolved && capabilityClassVectorStorageAcceptsProfile(resolved.profile)
+        ? resolved.profile
+        : null;
+    const embedding = resolved && embeddingProfile && args.query
+      ? await resolved.embed(args.query).catch(() => null)
+      : null;
     const classes = await listCapabilityClasses(getOrgPg().sql, workspaceId, {
       query: args.query,
       tag: args.tag,
@@ -40,6 +49,7 @@ export const listCapabilityClassesTool = defineTool({
       includeVersions: args.includeVersions,
       limit: args.limit,
       embedding,
+      embeddingProfile: embedding ? embeddingProfile : null,
     });
     return {
       data: {
@@ -63,4 +73,3 @@ export const listCapabilityClassesTool = defineTool({
 });
 
 export default listCapabilityClassesTool;
-

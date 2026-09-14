@@ -48,6 +48,7 @@ import { afterAll, beforeAll, describe, expect, it, inject } from 'vitest';
 import postgres from 'postgres';
 import { assertPgReachable } from '@papercusp/test-config/pg';
 import { MODE_DIMS, VEC_TABLE, type ResolvedVecMode } from '@papercusp/memory';
+import { CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE } from '../capability-class-registry-store';
 import {
   PROSE_VECTOR_DIMS,
   PROSE_VECTOR_COLUMNS,
@@ -222,6 +223,13 @@ function expectedWidths(): Map<string, { dims: number; why: string }> {
       why: 'dependent view inheriting the base column (PROSE_VECTOR_DEPENDENT_VIEWS)',
     });
   }
+  const capabilityClass = CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE;
+  m.set(key(capabilityClass.table, capabilityClass.column), {
+    dims: capabilityClass.dimensions,
+    why:
+      'profile-bound capability-class storage ' +
+      `(CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE; discriminator=${capabilityClass.profileColumn})`,
+  });
   return m;
 }
 
@@ -245,9 +253,9 @@ function auditSurfaces(measured: readonly MeasuredColumn[]): string[] {
       // migration, which is precisely how WI-7326 happened.
       problems.push(
         `${SCHEMA}.${k} (${m.typname}(${m.dims}), relkind='${m.relkind}') is NOT enumerated. ` +
-          `Add it to PROSE_VECTOR_COLUMNS (a prose surface) or document it as an ` +
-          `excluded per-mode space — an unlisted column is skipped by the next width ` +
-          `migration and then fails every write under new-width-emitting code.`,
+          `Add its physical storage-fact declaration to expectedWidths (and to ` +
+          `PROSE_VECTOR_COLUMNS when it is shared prose) — an unlisted column can be ` +
+          `silently compared in a foreign space or skipped by the next applicable width migration.`,
       );
       continue;
     }

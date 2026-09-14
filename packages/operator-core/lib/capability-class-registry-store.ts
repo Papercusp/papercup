@@ -8,6 +8,13 @@
  */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
+import {
+  pgvectorMetricSpec,
+  type EmbedderProfileSpec,
+  type EmbeddingDistanceMetric,
+  type EmbeddingProfileId,
+  type PgvectorIndexOperatorClass,
+} from '@papercusp/memory';
 import { canonicalJson } from './authority/authority-rpc-envelope';
 
 export type JsonObject = Record<string, unknown>;
@@ -18,6 +25,75 @@ export interface CapabilityClassVerb {
 }
 
 export type CapabilityClassVerbs = Record<string, CapabilityClassVerb>;
+
+export interface CapabilityClassVectorStorageProfile {
+  readonly acceptedProfileIds: readonly EmbeddingProfileId[];
+  readonly table: 'capability_class_registry';
+  readonly column: 'embedding';
+  readonly profileColumn: 'embedding_profile';
+  readonly dimensions: number;
+  readonly distanceMetric: EmbeddingDistanceMetric;
+  readonly indexOperatorClass: PgvectorIndexOperatorClass;
+  readonly indexName: 'capability_class_registry_embedding_hnsw_idx';
+}
+
+/** Physical storage facts, deliberately independent from the emitter registry.
+ * Adding or changing an embedding profile never silently changes this table. */
+export const CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE: CapabilityClassVectorStorageProfile =
+  Object.freeze({
+    acceptedProfileIds: [
+      'gemma-embeddinggemma-300m-768@v1',
+      'openai-text-embedding-3-small-768@v1',
+    ] as const,
+    table: 'capability_class_registry',
+    column: 'embedding',
+    profileColumn: 'embedding_profile',
+    dimensions: 768,
+    distanceMetric: 'cosine',
+    indexOperatorClass: 'vector_cosine_ops',
+    indexName: 'capability_class_registry_embedding_hnsw_idx',
+  });
+
+export function validateCapabilityClassVectorStorageCompatibility(
+  profile: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>,
+): string[] {
+  const storage = CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE;
+  const problems: string[] = [];
+  if (!storage.acceptedProfileIds.includes(profile.profileId)) {
+    problems.push(
+      `storage ${storage.table}.${storage.column} does not accept profile ${profile.profileId}; ` +
+        `accepted=${storage.acceptedProfileIds.join(',') || '(none)'}`,
+    );
+  }
+  if (storage.dimensions !== profile.targetDims) {
+    problems.push(
+      `storage ${storage.table}.${storage.column} has ${storage.dimensions} dimensions; ` +
+        `profile ${profile.profileId} emits ${profile.targetDims}`,
+    );
+  }
+  if (storage.distanceMetric !== profile.distanceMetric) {
+    problems.push(
+      `storage ${storage.table}.${storage.column} uses ${storage.distanceMetric}; ` +
+        `profile ${profile.profileId} requires ${profile.distanceMetric}`,
+    );
+  }
+  const metric = pgvectorMetricSpec(storage.distanceMetric);
+  if (!metric) {
+    problems.push(`storage ${storage.table}.${storage.column} has unsupported metric ${storage.distanceMetric}`);
+  } else if (metric.indexOperatorClass !== storage.indexOperatorClass) {
+    problems.push(
+      `storage ${storage.table}.${storage.column} index ${storage.indexName} uses ` +
+        `${storage.indexOperatorClass}; ${storage.distanceMetric} requires ${metric.indexOperatorClass}`,
+    );
+  }
+  return problems;
+}
+
+export function capabilityClassVectorStorageAcceptsProfile(
+  profile: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>,
+): boolean {
+  return validateCapabilityClassVectorStorageCompatibility(profile).length === 0;
+}
 
 export interface CapabilityClassRow {
   id: string;
@@ -33,6 +109,7 @@ export interface CapabilityClassRow {
   reviewStatus: string;
   tags: string[];
   hasEmbedding: boolean;
+  embeddingProfile: string | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -49,6 +126,7 @@ export interface DefineCapabilityClassInput {
   behavioralSuiteRef?: string | null;
   tags?: string[];
   embedding?: number[] | null;
+  embeddingProfile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'> | null;
   createdBy?: string | null;
 }
 
@@ -65,6 +143,7 @@ type ClassDbRow = {
   review_status: string;
   tags: string[] | null;
   has_embedding: boolean;
+  embedding_profile: string | null;
   created_by: string | null;
   created_at: Date | string;
   updated_at: Date | string;
@@ -100,6 +179,7 @@ function mapClassRow(row: ClassDbRow): CapabilityClassRow {
     reviewStatus: row.review_status,
     tags: row.tags ?? [],
     hasEmbedding: row.has_embedding,
+    embeddingProfile: row.embedding_profile,
     createdBy: row.created_by,
     createdAt: asIso(row.created_at),
     updatedAt: asIso(row.updated_at),
@@ -110,7 +190,8 @@ function mapClassRow(row: ClassDbRow): CapabilityClassRow {
 const CLASS_SELECT = (sql: postgres.Sql | postgres.TransactionSql) => sql`
   id, version, workspace_id, title, description, interface_verbs,
   behavioral_suite_ref, status, published, review_status, tags,
-  (embedding IS NOT NULL) AS has_embedding, created_by, created_at, updated_at
+  (embedding IS NOT NULL) AS has_embedding, embedding_profile,
+  created_by, created_at, updated_at
 `;
 
 /** Namespace.job id, e.g. `crm.email`; punctuation never creates a second spelling. */
@@ -154,15 +235,31 @@ export async function defineCapabilityClass(
   input: DefineCapabilityClassInput,
 ): Promise<{ created: boolean; capabilityClass: CapabilityClassRow; conflict: boolean }> {
   const embeddingLiteral = input.embedding?.length ? `[${input.embedding.join(',')}]` : null;
+  if (embeddingLiteral && !input.embeddingProfile) {
+    throw new Error('defineCapabilityClass: a stored embedding requires exact profile provenance');
+  }
+  if (
+    embeddingLiteral
+    && input.embeddingProfile
+    && !capabilityClassVectorStorageAcceptsProfile(input.embeddingProfile)
+  ) {
+    throw new Error(
+      `defineCapabilityClass: profile ${input.embeddingProfile.profileId} is incompatible with ` +
+        `${CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE.table}.${CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE.column}`,
+    );
+  }
+  const embeddingProfileId: string | null =
+    embeddingLiteral && input.embeddingProfile ? input.embeddingProfile.profileId : null;
   const rows = await sql<ClassDbRow[]>`
     INSERT INTO harness_shared.capability_class_registry
       (workspace_id, id, version, title, description, interface_verbs,
-       behavioral_suite_ref, tags, embedding, created_by)
+       behavioral_suite_ref, tags, embedding, embedding_profile, created_by)
     VALUES (
       ${input.workspaceId}, ${input.id}, ${input.version}, ${input.title}, ${input.description},
       ${JSON.stringify(input.interfaceVerbs)}::text::jsonb,
       ${input.behavioralSuiteRef ?? null}, ${input.tags ?? []},
-      ${embeddingLiteral}::vector, ${input.createdBy ?? null}
+      ${embeddingLiteral}::vector, ${embeddingProfileId},
+      ${input.createdBy ?? null}
     )
     ON CONFLICT (workspace_id, id, version) DO NOTHING
     RETURNING ${CLASS_SELECT(sql)}`;
@@ -205,6 +302,7 @@ export interface ListCapabilityClassesOptions {
   includeVersions?: boolean;
   limit?: number;
   embedding?: number[] | null;
+  embeddingProfile?: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'> | null;
 }
 
 export async function listCapabilityClasses(
@@ -217,7 +315,16 @@ export async function listCapabilityClasses(
   const tagClause = opts.tag ? sql`AND ${opts.tag} = ANY(tags)` : sql``;
   const tokens = (opts.query ?? '').toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 2);
   const textQuery = tokens.length ? tokens.join(' | ') : null;
-  const embeddingLiteral = opts.embedding?.length ? `[${opts.embedding.join(',')}]` : null;
+  const embeddingLiteral =
+    opts.embedding?.length
+    && opts.embeddingProfile
+    && capabilityClassVectorStorageAcceptsProfile(opts.embeddingProfile)
+      ? `[${opts.embedding.join(',')}]`
+      : null;
+  const embeddingProfileId = embeddingLiteral ? opts.embeddingProfile?.profileId ?? null : null;
+  const exactEmbedding = embeddingProfileId
+    ? sql`embedding IS NOT NULL AND embedding_profile = ${embeddingProfileId}`
+    : sql`FALSE`;
 
   let rows: ClassDbRow[];
   if (textQuery && embeddingLiteral) {
@@ -226,11 +333,13 @@ export async function listCapabilityClasses(
              GREATEST(
                ts_rank(title_tsv, to_tsquery('english', ${textQuery})),
                0.4 * ts_rank(title_tsv, to_tsquery('english', ${textQuery}))
-                 + 0.6 * CASE WHEN embedding IS NULL THEN 0 ELSE 1 - (embedding <=> ${embeddingLiteral}::vector) END
+                 + 0.6 * CASE WHEN ${exactEmbedding}
+                              THEN 1 - (embedding <=> ${embeddingLiteral}::vector)
+                              ELSE 0 END
              ) AS score
         FROM harness_shared.capability_class_registry
        WHERE workspace_id = ${workspaceId} ${statusClause} ${tagClause}
-         AND (title_tsv @@ to_tsquery('english', ${textQuery}) OR embedding IS NOT NULL)
+         AND (title_tsv @@ to_tsquery('english', ${textQuery}) OR ${exactEmbedding})
        ORDER BY score DESC, updated_at DESC, id, version DESC
        LIMIT ${limit * (opts.includeVersions ? 1 : 4)}`;
   } else if (textQuery) {
