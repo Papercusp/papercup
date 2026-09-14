@@ -4565,6 +4565,20 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
     expect(shouldAdoptHostCode({ onReexec: null, reexecCode: 87, bridgeTty: false })).toBe(false);
   });
 
+  it('leaves the session-compacted announcement to the successor launcher', () => {
+    const src = nodeFs.readFileSync(
+      new URL('../scripts/psu-pty-host.mjs', import.meta.url),
+      'utf8',
+    );
+    const adoption = src.indexOf('if (!quotaRecovery && shouldAdoptHostCode');
+    const cleanup = src.indexOf('reexecRequested = {', adoption);
+    const adoptionBody = src.slice(adoption, cleanup);
+    expect(adoption).toBeGreaterThan(-1);
+    expect(cleanup).toBeGreaterThan(adoption);
+    expect(adoptionBody).not.toContain('fireSessionCompactedEvent(');
+    expect(adoptionBody).toContain('The launcher successor owns the adoption report');
+  });
+
   it('pins the exit code to the shim generator\'s copy', () => {
     // The two cannot import each other: this file is bare ESM run by `node`, the
     // generator is TypeScript. A drift here means the host exits with a code the
