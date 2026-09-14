@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal chat voice, More label, reorderable rail, reset, and left-aligned CTA acceptance",
+  "framework": "playwright",
+  "command": [
+    "npx playwright test --config=playwright.config.ts",
+    "node --input-type=module < live-shadow-preference Playwright probe against http://127.0.0.1:3801"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-14T02:43:47.050Z",
+  "finishedAt": "2026-09-14T02:57:35.119Z",
+  "summary": "The complete Portal Playwright suite passed 25/25. A subsequent headless Chromium probe against the promoted build on :3801 exercised the requested voice placement, More label, pointer and keyboard order persistence, reset behavior, fixed rail regions, and CTA geometry without mutating server preferences.",
+  "assertions": [
+    {
+      "id": "playwright-suite",
+      "passed": true,
+      "evidence": "npx playwright test --config=playwright.config.ts ran 25 tests with one worker; 25 passed in 43.8s, including portal-more-sections pointer/keyboard reorder, reset, reload persistence, pin/unpin, More, and fixed-control cases."
+    },
+    {
+      "id": "voice-single-chat-header-mount",
+      "passed": true,
+      "evidence": "Live :3801 DOM returned voiceCount=1, voiceHeader=1, voiceTopbar=0, voiceSettings=true."
+    },
+    {
+      "id": "search-microphone",
+      "passed": true,
+      "evidence": "Live :3801 DOM returned searchMic=1 for the independent Ask Papercup by voice affordance."
+    },
+    {
+      "id": "fixed-rail-regions",
+      "passed": true,
+      "evidence": "Live :3801 DOM returned workspaceSortable=0, moreInsideScroller=0, settingsSortable=0, and settingsInFoot=1."
+    },
+    {
+      "id": "pointer-reload-persistence",
+      "passed": true,
+      "evidence": "Live :3801 pointer drag moved Mail to the first sortable slot, emitted the placement status, and returned pointerReload=true after reload."
+    },
+    {
+      "id": "keyboard-reload-persistence",
+      "passed": true,
+      "evidence": "Live :3801 keyboard drag waited for aria-pressed sensor activation, moved Chat history up one slot, emitted the placement status, and returned keyboardReload=true after reload."
+    },
+    {
+      "id": "canonical-reset",
+      "passed": true,
+      "evidence": "Live :3801 returned resetVisible=true and resetFull=true; the persisted reset order included home plus unpinned prs and coord tokens."
+    },
+    {
+      "id": "desktop-cta-left-alignment",
+      "passed": true,
+      "evidence": "Live :3801 computed .desktop-cta-bar justify-content as flex-start and measured an 18px inline-start gap."
+    },
+    {
+      "id": "more-single-visible-label",
+      "passed": true,
+      "evidence": "With PRs active, the live More trigger returned visible text More and aria-current=page."
+    },
+    {
+      "id": "clean-console-and-shadow-write-isolation",
+      "passed": true,
+      "evidence": "The live probe captured zero console errors and serverPreferencesUnchanged=true after intercepting all preference PUTs in a shadow object."
+    }
+  ],
+  "source": {
+    "portalCommit": "1653adfc195072cf34b2749e19032e6221b15917",
+    "playwrightTranscriptRef": "session_turn:codex:01a09db6-7537-7293-b8c8-b2ccd4dbe60e:7",
+    "liveProbeCallId": "call_qhhYLk85zIkGZixmAZVqYDz1",
+    "guardedBuild": "PnfZ22fknCmHKhotaniDD-20260914025321180-2714065-b1766738"
+  }
+}
