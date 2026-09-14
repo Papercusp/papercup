@@ -3745,6 +3745,27 @@ describe('EI-17 deletion-guard kill-switch flag', () => {
   });
 });
 
+describe('WI-10001350 migration-reservation admission wiring', () => {
+  it('passes a DB-backed dirty-path checker into the pure git-sync pipeline', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    const opts = runGitSyncMock.mock.calls[0]?.[1] as RunGitSyncOpts;
+    expect(opts.migrationReservationChecker).toEqual(expect.any(Function));
+    const beforeRead = templateCalls.length;
+    await expect(opts.migrationReservationChecker!(['README.md'])).resolves.toBeUndefined();
+    await expect(opts.migrationReservationChecker!(['libs/db/sql/999-new-migration.sql'])).rejects.toThrow(
+      '[migration-reservation-guard] 999-new-migration.sql has no reservation row',
+    );
+    const migrationReads = templateCalls
+      .slice(beforeRead)
+      .filter((call) => call.text.includes('migration_reservations'));
+    expect(migrationReads).toHaveLength(1);
+    expect(migrationReads[0]?.values).toEqual([999]);
+  });
+});
+
 describe('acquireWithContentionRetry (EI-1720 — transient pg 57014/55P03 is retried, not skipped)', () => {
   const contended = () =>
     Object.assign(new Error('workspace "ws" contended (pg 57014: lock/statement timeout)'), {

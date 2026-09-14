@@ -192,6 +192,7 @@ import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './
 import { deriveGenesisBaselineSha } from './genesis-baseline';
 import { appendPipelineEvent } from './pipeline-events';
 import { DEFAULT_CONTENT_DETECTORS } from '../../content-lint/registry';
+import { assertDirtyMigrationReservations } from '../../migration-reservation';
 import {
   runGitSync,
   runGitBounded,
@@ -3214,6 +3215,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         contentDetectors: contentGuardOn ? undefined : [],
         deletionGuard: deletionGuardOn,
         diffSubjects: diffSubjectsOn,
+        // WI-10001350: keep newly armed migration files out of git-sync commits
+        // unless the shared reservation ledger still authorizes their exact names.
+        // Resolve the org client at callback time so the pure pipeline remains
+        // DB-independent in tests and callers that inject a different checker.
+        migrationReservationChecker: async (dirtyPaths) => {
+          const { sql } = getOrgPg();
+          await assertDirtyMigrationReservations(sql, dirtyPaths);
+        },
         ...(liveLockPaths.length > 0 ? { excludePaths: liveLockPaths } : {}),
         ...(liveLockHoldingRows.length > 0 ? { liveLockHoldings: liveLockHoldingRows } : {}),
         // Re-read the edit-lock plane at the final commit seam for every repo. The
