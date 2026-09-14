@@ -11,6 +11,7 @@
  */
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
+import { DbCallDeadlineError } from "@papercusp/db-org";
 import { COORD_ROLES } from "../coordination/roles";
 import {
   getWorkItem,
@@ -48,6 +49,7 @@ import {
 } from '../../carry-note';
 import { completionFreshnessForEvidence } from './completion-freshness';
 import { deploymentPositionForEvidence } from './deployment-position';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import type {
   WorkItemPayloadProjection,
   WorkItemReadOptions,
@@ -113,6 +115,40 @@ function workItemsGetUnavailableResult(id: string, budgetMs: number, reason: 'ti
           "The item was not reported as not-found; retry now."
         : "work_items:get was cancelled before the read became conclusive. The item is unavailable, " +
           "not absent; retry only if the caller still needs it.",
+  };
+}
+
+/**
+ * Map a database/pool deadline from the underlying work-item reader into the
+ * keyed read contract. `runBulk` intentionally turns uncaught errors into a
+ * plain error string, which is correct for unexpected failures but loses the
+ * distinction between "the item is absent" and "the read never completed" for
+ * PostgreSQL contention (55P03/57014) and pool acquisition deadlines.
+ */
+function workItemsGetReadFailureResult(id: string, budgetMs: number, error: unknown) {
+  const orgTxnTimeout = error instanceof OrgTxnTimeoutError;
+  const dbCallDeadline = error instanceof DbCallDeadlineError;
+  const pgCode = orgTxnTimeout
+    ? error.pgCode
+    : typeof error === 'object' && error !== null &&
+        (((error as { code?: unknown }).code === '55P03') || ((error as { code?: unknown }).code === '57014'))
+      ? (error as { code: string }).code
+      : undefined;
+  if (!orgTxnTimeout && !dbCallDeadline && pgCode === undefined) return null;
+
+  const detail = error instanceof Error ? error.message : String(error);
+  return {
+    ok: false as const,
+    id,
+    availability: 'unavailable' as const,
+    error: 'timeout' as const,
+    retryable: true as const,
+    phase: 'read' as const,
+    budgetMs,
+    ...(pgCode ? { pgCode } : {}),
+    message:
+      `work_items:get read did not complete because of a transient database/pool deadline: ${detail}. ` +
+      'No item was returned or reported as absent; retry shortly.',
   };
 }
 
@@ -543,6 +579,7 @@ const workItemsGetResultRowSchema = z.object({
   }).optional(),
   error: z.string().optional(),
   retryable: z.boolean().optional(),
+  pgCode: z.string().optional(),
   phase: z.string().optional(),
   budgetMs: z.number().optional(),
   message: z.string().optional(),
@@ -770,7 +807,7 @@ export default defineTool({
     // enrichment fail the read it decorates.
     const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
     let projectedBatch: Awaited<ReturnType<typeof getWorkItemsByIds>> | typeof WORK_ITEMS_GET_TIMEOUT | null = null;
-    let projectedBatchError: string | null = null;
+    let projectedBatchError: unknown = null;
     let projectedBatchElapsedMs: number | null = null;
     if (canBatchProjectedBaseRead) {
       const batchStartedAt = Date.now();
@@ -781,7 +818,7 @@ export default defineTool({
       );
       projectedBatchElapsedMs = Date.now() - batchStartedAt;
       if (bounded.reason === 'error') {
-        projectedBatchError = bounded.error instanceof Error ? bounded.error.message : String(bounded.error);
+        projectedBatchError = bounded.error;
         projectedBatch = WORK_ITEMS_GET_TIMEOUT;
       } else {
         projectedBatch = bounded.reason === null ? bounded.value : WORK_ITEMS_GET_TIMEOUT;
@@ -801,7 +838,15 @@ export default defineTool({
           stage.enrichmentMs = 0;
           if (projectedBatch === WORK_ITEMS_GET_TIMEOUT) {
             if (projectedBatchError) {
-              return { ok: false as const, id, error: projectedBatchError, retryable: true as const, phase: 'read' as const };
+              const readFailure = workItemsGetReadFailureResult(id, remainingBudgetMs, projectedBatchError);
+              if (readFailure) return readFailure;
+              return {
+                ok: false as const,
+                id,
+                error: projectedBatchError instanceof Error ? projectedBatchError.message : String(projectedBatchError),
+                retryable: true as const,
+                phase: 'read' as const,
+              };
             }
             return workItemsGetUnavailableResult(id, remainingBudgetMs, 'timeout');
           }
@@ -1321,6 +1366,8 @@ export default defineTool({
           label: `work_items:get:${id}`,
         });
         if (bounded.reason === "error") {
+          const readFailure = workItemsGetReadFailureResult(id, remainingBudgetMs, bounded.error);
+          if (readFailure) return readFailure;
           throw bounded.error;
         }
         if (bounded.reason === 'cancelled' || bounded.value === WORK_ITEMS_GET_CANCELLED) {

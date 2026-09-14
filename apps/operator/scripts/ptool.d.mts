@@ -21,6 +21,18 @@ export function resolvePtoolOperatorBase(env?: NodeJS.ProcessEnv): string;
  */
 export function shouldRediscoverOperatorUrl(args?: {}, env?: NodeJS.ProcessEnv): boolean;
 /**
+ * Pinned operator URLs are caller-selected endpoints, not managed launcher
+ * routes. A dead pin must report its connection failure promptly instead of
+ * spending the managed route's 120s recovery budget retrying an endpoint that
+ * cannot be rediscovered or rebased. Managed/discoverable routes retain their
+ * bounded retry loop for operator restarts.
+ */
+export function ptoolConnectionRetryOptions(args?: {}, env?: NodeJS.ProcessEnv): {
+    maxAttempts?: undefined;
+} | {
+    maxAttempts: number;
+};
+/**
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.
  */
@@ -691,6 +703,7 @@ export const PTOOL_PLANS_GET_TIMEOUT_MS: 60000;
 export const PTOOL_PLANS_AUDIT_TIMEOUT_MS: 60000;
 export const PTOOL_PLANS_NEW_TIMEOUT_MS: 60000;
 export const PTOOL_WORK_ITEMS_GET_TIMEOUT_MS: 60000;
+export const PTOOL_SCORECARDS_GET_TIMEOUT_MS: 60000;
 export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS: 60000;
 /**
  * Automatic reconnect replays after a connected tools/call are disabled.

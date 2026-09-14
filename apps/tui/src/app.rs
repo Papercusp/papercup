@@ -240,6 +240,7 @@ pub enum Action {
     },
     /// Read-only connection recheck for the new-session form.
     CheckSessionSetup,
+    ReconnectSessionSetup(crate::session_config::SetupReconnect),
     /// Open the fresh agent-chat identity already created by the Sessions
     /// Continue/Fork route. Unlike `OpenSuSession`, this must never create a
     /// second chat row when there is no initial owner turn.
@@ -6659,7 +6660,8 @@ impl App {
             return;
         }
         let endpoint = self.backend_identity.as_ref()
-            .map(|identity| identity.endpoint.clone()).unwrap_or_default();
+            .map(|identity| identity.endpoint.clone())
+            .unwrap_or_else(crate::client::selected_endpoint_label);
         let mut setup = crate::session_config::SessionSetup::new(endpoint, self.chat_input.clone());
         if let Some(config) = self.operator_config.agent.as_ref() {
             setup.backend = match config.effective_backend.as_str() {
@@ -6677,6 +6679,13 @@ impl App {
         }
         self.session_setup = Some(setup);
         self.session_picker = None;
+    }
+
+    pub fn restore_setup_draft(&mut self, draft: String) {
+        self.chat_input = draft;
+        self.show_tutorial = false;
+        self.view_state_restore_pending = false;
+        self.open_session_setup();
     }
 
     pub fn setup_projects(&self) -> Vec<String> {
@@ -6745,6 +6754,60 @@ impl App {
     fn session_setup_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
         let projects = self.setup_projects();
         let setup = self.session_setup.as_mut().expect("setup key requires setup");
+        if setup.show_help {
+            setup.show_help = false;
+            return Action::Render;
+        }
+        if setup.editing_token || setup.endpoint_input.is_some() {
+            if code == KeyCode::Esc {
+                setup.editing_token = false;
+                setup.endpoint_input = None;
+                setup.token.0.clear();
+                return Action::Render;
+            }
+            if code == KeyCode::Enter {
+                if setup.editing_token {
+                    setup.editing_token = false;
+                    setup.note = Some("Credential entered. Enter reconnects using this operator and token; Esc cancels.".into());
+                    return Action::Render;
+                }
+                if self.agent_chat_id.is_some() || self.su_session.is_some()
+                    || self.chat_streaming || self.su_pending_turn.is_some()
+                    || !self.attachments.references().is_empty() || !self.chat_queued.is_empty() {
+                    setup.note = Some("Reconnect requires an unbound PUI with no queued turns or attachments. Open a fresh PUI for another operator; this draft is retained.".into());
+                    return Action::Render;
+                }
+                let input = setup.endpoint_input.as_deref().unwrap_or(&setup.endpoint);
+                let endpoint = match crate::http::base_for_selection(input) {
+                    Ok(endpoint) => endpoint,
+                    Err(error) => { setup.note = Some(error.to_string()); return Action::Render; }
+                };
+                if setup.message.len() > 64 * 1024 || setup.message.contains('\0') {
+                    setup.note = Some("This draft is too large to reconnect safely. Keep this window and open a fresh PUI for the other operator.".into());
+                    return Action::Render;
+                }
+                return Action::ReconnectSessionSetup(crate::session_config::SetupReconnect {
+                    keep_existing_token: endpoint == setup.endpoint && setup.token.0.is_empty(),
+                    endpoint,
+                    message: setup.message.clone(),
+                    token: setup.token.clone(),
+                });
+            }
+            if code == KeyCode::Tab {
+                setup.editing_token = !setup.editing_token;
+                return Action::Render;
+            }
+            let input = if setup.editing_token { &mut setup.token.0 }
+                else { setup.endpoint_input.as_mut().unwrap() };
+            match code {
+                KeyCode::Backspace => { input.pop(); }
+                KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => input.clear(),
+                KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !ch.is_control() && input.len() < 4096 => input.push(ch),
+                _ => {}
+            }
+            return Action::Render;
+        }
         if setup.editing_message {
             match code {
                 KeyCode::Esc => setup.editing_message = false,
@@ -6778,6 +6841,12 @@ impl App {
             KeyCode::Char('/') if setup.step == 0 => {
                 setup.project_searching = true; Action::Render
             }
+            KeyCode::Char('e') if setup.step == 0 => {
+                setup.endpoint_input = Some(setup.endpoint.clone());
+                setup.note = None;
+                Action::Render
+            }
+            KeyCode::Char('?') => { setup.show_help = true; Action::Render }
             KeyCode::Down | KeyCode::Char('j') if setup.step == 0 => {
                 setup.project_cursor = (setup.project_cursor + 1).min(projects.len().saturating_sub(1));
                 Action::Render
@@ -8911,7 +8980,11 @@ impl App {
                 // flattened in the palette because its command/argument editor
                 // is one line; they are never replayed as Enter keypresses.
                 if let Some(setup) = self.session_setup.as_mut() {
-                    if setup.editing_message { setup.message.push_str(&text); }
+                    if setup.editing_token {
+                        setup.token.0.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(setup.token.0.len())));
+                    } else if let Some(input) = setup.endpoint_input.as_mut() {
+                        input.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(input.len())));
+                    } else if setup.editing_message { setup.message.push_str(&text); }
                     else if setup.project_searching {
                         setup.project_query.push_str(&text.replace(['\r', '\n'], " "));
                         setup.project_cursor = 0;
@@ -14852,6 +14925,44 @@ mod tests {
         assert_eq!(a.attachments.references(), vec!["@context.md"]);
         assert!(a.su_pending_turn.is_none());
         assert_eq!(a.harness, "chosen-project");
+    }
+
+    #[test]
+    fn session_setup_endpoint_edit_retains_draft_and_requires_explicit_reconnect() {
+        let mut a = setup_app();
+        a.chat_input = "  retained λ\nsecond line  ".into();
+        a.open_session_setup();
+        a.on_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        a.on_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        a.update(Event::Paste("https://operator.example:9443".into()));
+        a.on_key(KeyCode::Tab, KeyModifiers::NONE);
+        a.update(Event::Paste("fixture-secret".into()));
+        assert!(!format!("{:?}", a.session_setup).contains("fixture-secret"));
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let Action::ReconnectSessionSetup(request) = action else { panic!("expected reconnect"); };
+        assert_eq!(request.endpoint, "https://operator.example:9443");
+        assert_eq!(request.message, "  retained λ\nsecond line  ");
+        assert_eq!(request.token.0, "fixture-secret");
+        assert!(!request.keep_existing_token);
+        assert!(a.su_pending_turn.is_none());
+        assert!(!a.session_setup_accepted);
+    }
+
+    #[test]
+    fn session_setup_reconnect_refuses_bound_chat_and_cancels_without_losing_text() {
+        let mut a = setup_app();
+        a.agent_chat_id = Some("bound-chat".into());
+        a.chat_input = "keep this".into();
+        a.open_session_setup();
+        a.on_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        assert!(a.session_setup.as_ref().unwrap().note.as_deref().unwrap().contains("unbound"));
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.session_setup.as_ref().unwrap().endpoint_input.is_none());
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "keep this");
+        assert_eq!(a.agent_chat_id.as_deref(), Some("bound-chat"));
     }
 
     #[test]

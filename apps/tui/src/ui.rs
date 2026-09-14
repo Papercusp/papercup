@@ -4493,7 +4493,8 @@ fn draw_help(f: &mut Frame, app: &App) {
         // (layout::DOCK_BINDS), so there the subview cycle must be advertised as
         // the key that actually arrives — BackTab, which is an alias on every
         // host. A targeted replace keeps the 30-line literal un-escaped.
-        .replace("· Tab changes", &format!("· {} changes", app.cycle_key()));
+        .replace("· Tab changes", &format!("· {} changes", app.cycle_key()))
+        .replace("Sessions n new SU (psu)", "Sessions n setup · N Advanced PSU");
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -4579,24 +4580,25 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
              Pick the pot you're working in with  [  /  ] .",
         ),
         (
-            "Moving around & launching agents",
+            "Start your first PUI session",
             "Move:    j / k   (or ↑ / ↓)        Scroll docs:  PgUp / PgDn\n\
              Switch a split's focus (Harnesses):  Tab\n\n\
-             Launch a native agent into a pane:   n   (on the Fleet tab)\n\
+             New PUI session:   s then n   (Sessions > New)\n\
              Open git for the active harness:     g   (lazygit)\n\n\
-             Agents run at full fidelity in their own zellij panes — pui never\n\
-             wraps or reimplements them.",
+             Context chooses the project and operator; Runtime chooses engine,\n\
+             account, model, effort and mode. Review starts your session.\n\
+             The conversation, tools and approvals stay inside PUI.\n\
+             In setup, ? opens connection and authentication recovery help.",
         ),
         (
             "Your workbench is zellij",
-            "pui is one pane — the HUD. Your agents live in the WORK AREA beside\n\
-             it, and that whole window is a zellij session. These keys drive the\n\
-             layer pui doesn't:\n\n\
+            "Agent Chat is inside PUI. Optional work panes share the zellij\n\
+             workbench around it. These keys move between workbench panes:\n\n\
              Move focus:   Alt + ← ↓ ↑ →   (or Alt + h j k l)\n\
              Layouts:      Alt + [  /  Alt + ]   (stacked · split · grid)\n\
              Back to HUD:  Alt-move toward the pui pane\n\n\
              Command bar ( : ):  :stack · :float · :dock <side> · :layout next|prev\n\
-             New agents ( n ) stack tab-like; when one exits,  r  relaunches it.",
+             Sessions n opens PUI setup; Sessions N explicitly opens Advanced PSU.",
         ),
         (
             "Staying in the loop",
@@ -4669,13 +4671,38 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
     let Some(setup) = &app.session_setup else { return; };
     let area = f.area().inner(Margin { horizontal: 1, vertical: 1 });
     let title = ["1 Context", "2 Runtime", "3 Review"][setup.step as usize];
+    if setup.show_help {
+        let text = "Setup and recovery\n\nContext: e edits the operator address; Tab enters its token (masked). Enter reconnects this PUI; Esc cancels. A different address never receives the old operator token.\n\nRuntime: b engine, a account, m model, e effort, u mode. Default uses the operator host's credential; auto routes its configured account pool. No account? Configure one on that operator, then r refresh.\n\nAuthentication failure: enter a token issued by the selected operator. Provider login belongs on the operator host: use your engine's login or its existing account setup. PUI does not store provider keys.\n\nUnreachable: check the address and start the operator. TLS: check scheme and certificate. Missing engine: install it on the operator host. Missing capability: update that operator.\n\nManual mode is the initial setting. Review is required before any session starts.\n\nAny key returns to setup (draft retained).";
+        f.render_widget(Clear, area);
+        f.render_widget(Paragraph::new(text).style(Theme::popup())
+            .block(Theme::popup_block(" Setup help ".into()))
+            .wrap(Wrap { trim: false }), area);
+        return;
+    }
+    if let Some(endpoint) = &setup.endpoint_input {
+        let lines = vec![
+            Line::from("Reconnect this PUI"),
+            Line::from(format!("Operator: {endpoint}{}", if setup.editing_token { "" } else { "▏" })),
+            Line::from(format!("Operator token: {}{}", if setup.token.0.is_empty() { "(not entered)" } else { "••••••••" }, if setup.editing_token { "▏" } else { "" })),
+            Line::from("staging, release, or a full http(s) URL"),
+            Line::from("Tab switches address/token · Ctrl-U clears the field"),
+            Line::from("Enter reconnects · Esc cancels · first message retained"),
+            Line::from("A changed address clears the previous operator token."),
+            Line::from(setup.note.clone().unwrap_or_default()),
+        ];
+        f.render_widget(Clear, area);
+        f.render_widget(Paragraph::new(lines).style(Theme::popup())
+            .block(Theme::popup_block(" Operator connection ".into()))
+            .wrap(Wrap { trim: false }), area);
+        return;
+    }
     let mut lines = vec![
         Line::from(format!("Operator: {}", if setup.endpoint.is_empty() { "(checking)" } else { &setup.endpoint })),
         Line::from(if app.backend_identity_error.is_some() { "Connection: Unavailable" }
             else if app.backend_identity.is_some() { "Connection: Connected" } else { "Connection: Checking" }),
     ];
     if setup.step == 0 {
-        lines.push(Line::from("Endpoint is the selected PUI_OPERATOR; r rechecks its connection."));
+        lines.push(Line::from("e edit endpoint / token · r retry · ? setup help"));
         lines.push(Line::from(format!("Project search: {}{}", setup.project_query, if setup.project_searching { "▏" } else { "" })));
         let projects = app.setup_projects();
         if projects.is_empty() { lines.push(Line::from("No matching projects. Wait for connection or change the search.")); }
@@ -4708,7 +4735,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
     if let Some(note) = setup.note.as_ref().cloned().or_else(|| app.setup_blocker()) {
         lines.push(Line::from(note));
     }
-    lines.push(Line::from("← / Shift-Tab back · Esc close (message retained) · r check connection"));
+    lines.push(Line::from("← / Shift-Tab back · Esc close (message retained) · r retry · ? help"));
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).style(Theme::popup())
         .block(Theme::popup_block(format!(" New SU session — {title} ").into()))
@@ -7455,6 +7482,20 @@ mod tests {
             "Default effort", "Manual", "exact draft λ", "START SESSION", "message retained"] {
             assert!(text.contains(expected), "missing {expected}:\n{text}");
         }
+    }
+
+    #[test]
+    fn session_setup_masks_operator_token_in_connection_form() {
+        let mut app = App::new();
+        let mut setup = crate::session_config::SessionSetup::new("https://operator.example".into(), "draft".into());
+        setup.endpoint_input = Some(setup.endpoint.clone());
+        setup.editing_token = true;
+        setup.token.0 = "fixture-secret-value".into();
+        app.session_setup = Some(setup);
+        let text = render(&app, 80, 20);
+        assert!(!text.contains("fixture-secret-value"));
+        assert!(text.contains("Operator token"));
+        assert!(text.contains("first message retained"));
     }
 
     #[test]

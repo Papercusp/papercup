@@ -53,6 +53,8 @@ export default defineTool({
       max: 120,
       describe: 'Target pot for install-time capability-class grant resolution; required when the identity declares grants.',
     }).optional(),
+    capabilityRole: z.string().trim().min(1).max(120).optional()
+      .describe('Administrator-declared target role for the grant ceiling. Required for a multi-role pot; omission is inferred only for a single-role pot. Selecting a role does not widen its permissions.'),
     capabilityProviderSelections: z.record(z.string(), z.string().min(1)).optional()
       .describe('Explicit provider choices keyed by exact class@version ref; values are provider package or package@version.'),
     workspace: z.string().max(120).optional(),
@@ -96,6 +98,7 @@ export default defineTool({
       ...(args.activationStack ? { activationStack: args.activationStack } : {}),
       workspaceId: subject,
       ...(args.potSlug ? { potSlug: args.potSlug } : {}),
+      ...(args.capabilityRole ? { capabilityRole: args.capabilityRole } : {}),
       capabilityMode: 'agent',
       ...(args.capabilityProviderSelections
         ? { capabilityProviderSelections: args.capabilityProviderSelections }

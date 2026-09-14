@@ -28,12 +28,20 @@ export default defineTool({
       listingRef?: string;
       installPlugins?: boolean;
       potSlug?: string;
+      capabilityRole?: string;
       capabilityProviderSelections?: Record<string, string>;
     };
     try {
       body = await req.json();
     } catch {
       return Response.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return Response.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    }
+    if (body.capabilityRole !== undefined &&
+        (typeof body.capabilityRole !== 'string' || !body.capabilityRole.trim() || body.capabilityRole.trim().length > 120)) {
+      return Response.json({ ok: false, error: 'invalid_capability_role' }, { status: 400 });
     }
 
     const outcome = await installBlueprintFromCupboard({
@@ -42,6 +50,7 @@ export default defineTool({
       ...(typeof body.listingRef === 'string' ? { listingRef: body.listingRef } : {}),
       installPlugins: body.installPlugins === true,
       ...(typeof body.potSlug === 'string' ? { potSlug: body.potSlug } : {}),
+      ...(typeof body.capabilityRole === 'string' ? { capabilityRole: body.capabilityRole.trim() } : {}),
       capabilityMode: 'interactive',
       ...(body.capabilityProviderSelections &&
       typeof body.capabilityProviderSelections === 'object' &&

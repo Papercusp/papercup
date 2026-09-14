@@ -479,6 +479,7 @@ async fn main() -> Result<()> {
         dock_agent_panes,
         hive_agent_tabs,
         reactive_launch_panes,
+        kbd_enhanced,
     )
     .await;
 
@@ -1034,7 +1035,19 @@ fn require_interactive_terminal(command: &str) -> Result<()> {
 async fn run_workbench() -> Result<()> {
     require_interactive_terminal("workbench")?;
     let session = layout::session_name("wb");
-    let (_client, backend) = selected_backend_identity().await?;
+    let (_client, backend) = match selected_backend_identity().await {
+        Ok(backend) => backend,
+        Err(_) => {
+            // A clean machine must reach the repair form even with no operator.
+            // No multiplexer/session binding exists yet on this path.
+            use std::os::unix::process::CommandExt;
+            let error = std::process::Command::new(std::env::current_exe()?)
+                .arg("hud")
+                .env(session_config::SETUP_DRAFT_ENV, "")
+                .exec();
+            return Err(error.into());
+        }
+    };
     let live = resolve_survivor(&session, &backend)?;
     identity::inherit(&backend);
     let argv = if live {
@@ -1112,6 +1125,7 @@ async fn run<B: Backend>(
     dock_agent_panes: bool,
     hive_agent_tabs: bool,
     reactive_launch_panes: bool,
+    kbd_enhanced: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
@@ -1164,6 +1178,12 @@ async fn run<B: Backend>(
         .and_then(|s| s.trim().parse::<u32>().ok());
     // Show the first-run tutorial until this device has dismissed it once (P9).
     app.show_tutorial = !tutorial::seen();
+    let setup_draft = std::env::var(session_config::SETUP_DRAFT_ENV).ok();
+    let restoring_setup = setup_draft.is_some();
+    if let Some(draft) = setup_draft {
+        std::env::remove_var(session_config::SETUP_DRAFT_ENV);
+        app.restore_setup_draft(draft);
+    }
     spawn_input_listener(tx.clone());
     let sync_pane = PaneFetchScope {
         pinned,
@@ -1192,12 +1212,11 @@ async fn run<B: Backend>(
     // operator conversation on open so the transcript is seeded from the same
     // thread the desktop surface shares.
     let chat_load_token = app.next_agent_chat_load_token();
-    tokio::spawn(agent_chat_load(
-        app.harness.clone(),
-        None,
-        chat_load_token,
-        tx.clone(),
-    ));
+    if !restoring_setup {
+        tokio::spawn(agent_chat_load(
+            app.harness.clone(), None, chat_load_token, tx.clone(),
+        ));
+    }
     if let Some(target) = app.context_projection_target.clone() {
         tokio::spawn(fetch_context_projection(target, tx.clone()));
     }
@@ -1281,12 +1300,11 @@ async fn run<B: Backend>(
             app.agent_chat_role = "operator".to_string();
             app.agent_chat_summaries.clear();
             app.su_session_inventory.clear();
-            tokio::spawn(agent_chat_load(
-                app.harness.clone(),
-                None,
-                app.chat_load_token,
-                tx.clone(),
-            ));
+            if app.session_setup.is_none() {
+                tokio::spawn(agent_chat_load(
+                    app.harness.clone(), None, app.chat_load_token, tx.clone(),
+                ));
+            }
         }
         if app.context_projection_target != prior_context_target {
             if let Some(target) = app.context_projection_target.clone() {
@@ -1947,7 +1965,19 @@ async fn run<B: Backend>(
                 }
                 Action::CheckSessionSetup => {
                     tokio::spawn(backend_identity_fetch(tx.clone()));
+                    let _ = sync_refetch.send(RefetchSignal::SkipPlanReads);
                     terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::ReconnectSessionSetup(reconnect) => {
+                    // Replace the process as a unit; detached readers and SSE
+                    // tasks cannot keep publishing from the previous operator.
+                    if let Err(error) = reconnect_setup_process(&reconnect, kbd_enhanced) {
+                        if let Some(setup) = app.session_setup.as_mut() {
+                            setup.note = Some(format!("Could not reconnect: {error}. Your draft is retained."));
+                        }
+                        terminal.clear()?;
+                        terminal.draw(|f| ui::draw(f, &app))?;
+                    }
                 }
                 Action::OpenSuSession {
                     harness,
@@ -2488,6 +2518,71 @@ async fn backend_identity_fetch(tx: UnboundedSender<Event>) {
         .map(|(_, identity)| identity)
         .map_err(|error| operator_failure_status_line(&client::selected_endpoint_label(), &error));
     let _ = tx.send(Event::BackendIdentity(result));
+}
+
+fn setup_reconnect_command(
+    executable: &std::path::Path,
+    reconnect: &session_config::SetupReconnect,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(executable);
+    command.arg("hud")
+        .env("PUI_OPERATOR", &reconnect.endpoint)
+        .env("PAPERCUSP_OPERATOR_URL", &reconnect.endpoint)
+        .env(session_config::SETUP_DRAFT_ENV, &reconnect.message);
+    // An explicit env bearer belongs to the old origin. Never carry it to a
+    // different one, including when the new endpoint is another local port.
+    if !reconnect.token.0.is_empty() {
+        command.env(http::OPERATOR_TOKEN_ENV, &reconnect.token.0);
+    } else if !reconnect.keep_existing_token {
+        command.env_remove(http::OPERATOR_TOKEN_ENV);
+    }
+    command
+}
+
+fn reconnect_setup_process(reconnect: &session_config::SetupReconnect, enhanced: bool) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let executable = std::env::current_exe()?;
+    let mut command = setup_reconnect_command(&executable, reconnect);
+    // Restore termios before exec: crossterm's saved original state is in
+    // process memory, and would otherwise be lost across replacement.
+    let mut out = stdout();
+    if enhanced { let _ = execute!(out, crossterm::event::PopKeyboardEnhancementFlags); }
+    disable_raw_mode()?;
+    let _ = execute!(out, crossterm::event::DisableFocusChange,
+        crossterm::event::DisableBracketedPaste, LeaveAlternateScreen);
+    let error = command.exec();
+    // exec only returns on failure. Restore this same UI and retained draft.
+    enable_raw_mode()?;
+    execute!(out, EnterAlternateScreen, crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableFocusChange)?;
+    if enhanced {
+        let _ = execute!(out, crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
+    }
+    Err(error.into())
+}
+
+#[cfg(test)]
+mod setup_reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn session_setup_reconnect_scopes_token_and_keeps_draft_out_of_argv() {
+        let mut request = session_config::SetupReconnect {
+            endpoint: "https://other.example".into(), message: "private draft λ".into(),
+            token: Default::default(), keep_existing_token: false,
+        };
+        let command = setup_reconnect_command(std::path::Path::new("/test/pui"), &request);
+        assert_eq!(command.get_args().collect::<Vec<_>>(), vec!["hud"]);
+        let env = command.get_envs().collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(env[std::ffi::OsStr::new(http::OPERATOR_TOKEN_ENV)], None);
+        assert_eq!(env[std::ffi::OsStr::new(session_config::SETUP_DRAFT_ENV)].unwrap(), "private draft λ");
+        request.token.0 = "new-operator-token".into();
+        let command = setup_reconnect_command(std::path::Path::new("/test/pui"), &request);
+        let env = command.get_envs().collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(env[std::ffi::OsStr::new(http::OPERATOR_TOKEN_ENV)].unwrap(), "new-operator-token");
+        assert!(!format!("{request:?}").contains("new-operator-token"));
+    }
 }
 
 async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSender<Event>) {

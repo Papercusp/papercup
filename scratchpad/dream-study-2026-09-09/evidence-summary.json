@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-09-12T18:19:34.098Z",
+  "measuredAt": "2026-09-14T05:26:47.538Z",
   "disposition": "interim/inconclusive",
   "attempts": 19,
   "accountedUsd": 1.6147294,
@@ -1690,6 +1690,39 @@
       "tripleAccountedUsd": 0.0811164
     }
   ],
+  "independentCalibration": {
+    "source": "calibration-review-2026-09-14.json",
+    "reviewer": "su-4a57e338-b9eb-4fc6-84fb-d7804168bb72",
+    "reviewerKind": "AI/domain",
+    "reviewerMinutesApproximate": 17,
+    "blindHash": "54bcca71a57be273669f56f9a54c6f5bc4210015c7466033d827027a3d782427",
+    "frozenPostIds": [
+      204381,
+      204382,
+      204384,
+      204386,
+      204387,
+      204388,
+      204389
+    ],
+    "clarificationPostIds": [
+      204393
+    ],
+    "caseJudgments": {
+      "reject": 4,
+      "unverified": 2,
+      "accept": 0
+    },
+    "familyInterpretation": {
+      "families": 5,
+      "intrinsicallyRejected": 2,
+      "unverified": 3,
+      "accepted": 0,
+      "representativeRule": "Within the duplicated source-packing family select the lexicographically smallest frozen case ID (1176a396ed37847cf61c), before reading arm/outcome mapping. Selection is for further review, not acceptance."
+    },
+    "qualifiedFamilies": null,
+    "admissibility": "Exploratory AI source-contribution/feasibility evidence with disclosed incidental aggregate exposure; not pristine blindness, human validation, held-out confirmation or executed outcomes."
+  },
   "scientific": {
     "dreamAttempts": 17,
     "acceptedDreamRows": 0,
@@ -1707,8 +1740,9 @@
     "EI-22769219749818913 is closed: the deadline diagnostics now separate admission and generation budgets, with 49 focused tests passing at the recorded base and the relevant source unchanged at closure. The historical d536051b delay remains un-attributable, and no paid identity was retried."
   ],
   "outstanding": [
-    "Blinded human/domain review of stratified rejected/unverified sample",
-    "Flat versus faceted offline ablation",
+    "Independent human validation; AI source-domain review is recorded with incidental aggregate exposure",
+    "Separate unblinded novelty/integration review of three representative families",
+    "Flat versus faceted offline outcome ablation",
     "Qualified family and feasibility adjudication",
     "Bounded downstream trials where qualified candidates exist",
     "Independent final acceptance and owner disposition"

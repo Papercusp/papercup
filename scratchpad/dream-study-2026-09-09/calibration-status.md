@@ -1,6 +1,16 @@
-# Dream study: calibration prepared, not yet adjudicated
+# Dream study: independent AI calibration received; qualification remains open
 
 Prepared September 9, 2026, under WI-40148 / P-008.
+
+## September 14 independent review
+
+The seven frozen review parts are preserved verbatim in [calibration-review-2026-09-14.json](calibration-review-2026-09-14.json), from WI-40148 posts 204381, 204382, 204384, 204386, 204387, 204388 and 204389. All six case IDs and the closure were checked against the unchanged blind-v2 hash below.
+
+The AI/domain reviewer reported four rejected cases, two unverified cases and no accepted cases, with approximately 17 reviewer-minutes. These are case judgments, not qualified-family counts or experiment outcomes. Clarification in post 204393 retains one unverified representative for the two source-packing duplicates: the six cases describe five families, with two intrinsically rejected and three unverified. The clarification also supplies exact literal replacements for abbreviated source quotations. Original labels remain preserved.
+
+Before reading arm/outcome mappings, choose the lexicographically smallest frozen ID (`1176a396ed37847cf61c`) as the duplicate family's sole representative for further novelty/integration review. This does not accept that family or change its original case labels.
+
+The reviewer disclosed incidental exposure, after forming judgments but before posting, to aggregate/unmapped checkpoint information. No case-to-run/model/outcome mapping or key was reported seen. Retain this as exploratory AI review with that limitation; it is not pristine blindness or human validation. Independent human validation, separate unblinded novelty review, outcome ablations and qualified-family/downstream assessment remain open. No key was read or paid sampling resumed to record this review.
 
 **Correction at 11:06Z:** v1 is withdrawn for blinded use. Its verbatim narrative priors leaked outcome/model metadata and cross-links to selected cases. The earlier claim of withholding those values was too broad. The original `calibration-blind.json` and `calibration-key.json` are preserved as withdrawn evidence; do not use them for independent labels. EI-22781497607685404 tracks the repair.
 
@@ -43,11 +53,11 @@ Freeze these judgments before unblinding. These six cases are calibration-only: 
 
 ## What is not established
 
-- No independent human/domain judgments have been received; qualified families remain **unknown**, not zero.
+- Independent AI/domain judgments have been received as described above. Human validation and complete qualification remain open; qualified families are **unknown**, not zero.
 - Flat/faceted artifacts preserve every claim and source excerpt. Only representation parity is tested; the **outcome ablation has not run**. This is lossless facet removal, not a newly generated flat summary.
 - No candidate has been independently qualified for a downstream trial; none was executed.
 - The historical failed final review for run `88bb6009-f0dd-4bb9-af5c-cb92e0db1774` discarded its response. The diagnostics repair prevents future loss; it does not recover those bytes or establish whether that candidate was good.
-- Original timeout-cause, provider-routing, and sentinel-harness investigations remain open. The study still does not establish a winning arm.
+- Historical timeout attribution and Haiku recovery remain unresolved. The later deadline-diagnostic and Scout workspace-propagation fixes are recorded in `evidence-summary.md`; they do not reclassify old outcomes. The study still does not establish a winning arm.
 
 ## Verification and reproduction
 
@@ -62,4 +72,4 @@ PAPERCUSP_WORKSPACE_ID=papercusp-workspace node --import tsx scratchpad/dream-st
 
 The preparer reads only the frozen study rows. It creates v2 output files exclusively and refuses to overwrite changed frozen content. The freeze used **zero provider calls and zero ledger writes**. Test and freeze receipts: `/tmp/dream-study-calibration-v2-tests-20260909.log` and `/tmp/dream-study-calibration-v2-freeze-20260909.log`.
 
-P-008 and final acceptance remain open. Paid sampling remains paused pending calibration.
+P-008 and final acceptance remain open. Paid sampling remains paused while novelty, integration evidence and calibration adequacy are assessed.

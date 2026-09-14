@@ -1,6 +1,6 @@
 # Dream study evidence — interim
 
-Measured 2026-09-12T18:19:34.098Z. **Inconclusive; final acceptance remains open.**
+Measured 2026-09-14T05:26:47.538Z. **Inconclusive; final acceptance remains open.**
 
 19 governed study attempts; $1.614729 accounted, including conservative reservations. This is not invoice cost.
 
@@ -39,10 +39,19 @@ Blender: 2 governed cycles, 5 generated ideas, 0 routed ideas. Routing was expli
 - EI-22762141222831537 is closed: the Scout production path now threads the explicit workspaceId through productionScoutRunner, buildScoutCycleDeps, and the default goal-dispatch path. Twelve focused adapter/runner tests passed. This prevents future runs from relying on ambient sentinel scope; it does not reclassify historical study outcomes.
 - EI-22769219749818913 is closed: the deadline diagnostics now separate admission and generation budgets, with 49 focused tests passing at the recorded base and the relevant source unchanged at closure. The historical d536051b delay remains un-attributable, and no paid identity was retried.
 
+## Independent calibration review
+
+The six-case AI/domain review is frozen in [the verbatim review artifact](calibration-review-2026-09-14.json) with its exposure disclosure and source-quotation clarification. Original case labels: 4 rejected, 2 unverified, 0 accepted. These are calibration judgments, not executed outcomes.
+
+The duplicate source-packing cases count as one unverified representative family. Across five families, two are intrinsically rejected and three remain unverified. Qualified families remain unknown pending separate novelty/integration assessment; zero accepted cases does not mean zero viable families.
+
+This is exploratory AI review with disclosed incidental aggregate exposure, not pristine blindness, human validation or held-out confirmation. It used approximately 17 reviewer-minutes. No original study outcome, source pin, cost or unknown reservation is rewritten by this report.
+
 ## Remaining acceptance work
 
-- Blinded human/domain review of stratified rejected/unverified sample
-- Flat versus faceted offline ablation
+- Independent human validation; AI source-domain review is recorded with incidental aggregate exposure
+- Separate unblinded novelty/integration review of three representative families
+- Flat versus faceted offline outcome ablation
 - Qualified family and feasibility adjudication
 - Bounded downstream trials where qualified candidates exist
 - Independent final acceptance and owner disposition

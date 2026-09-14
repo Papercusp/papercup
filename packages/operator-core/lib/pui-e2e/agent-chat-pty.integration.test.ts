@@ -17,7 +17,7 @@ import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execFile, fork, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -502,7 +502,7 @@ class PuiPane {
     bin: string,
     operatorPort: number,
     home: string,
-    options: { args?: string[]; cols?: number; rows?: number } = {},
+    options: { args?: string[]; cols?: number; rows?: number; operatorToken?: string } = {},
   ) {
     this.cols = options.cols ?? 150;
     this.rows = options.rows ?? 44;
@@ -517,6 +517,7 @@ class PuiPane {
         TERM: 'xterm-256color',
         LANG: process.env.LANG ?? 'en_US.UTF-8',
         PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`,
+        ...(options.operatorToken ? { PUI_OPERATOR_TOKEN: options.operatorToken } : {}),
         PAPERCUSP_TUI_OWNER: OWNER,
         // Keep this direct-PTY test out of any ambient zellij/tmux session.
         ZELLIJ: '',
@@ -1787,6 +1788,91 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
       console.info('PUI_SETUP_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic }));
     } finally { await pane.stop(); }
+  });
+
+  test('new-session setup reconnects with an endpoint-scoped token and preserves the exact draft', async () => {
+    const prompt = '  reconnect exact λ draft  ';
+    const requiredToken = 'pui-fixture-new-operator';
+    const credentials: Array<string | undefined> = [];
+    const proxy = createServer((req, res) => {
+      credentials.push(req.headers.authorization);
+      if (req.headers.authorization !== `Bearer ${requiredToken}`) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'operator token required' }));
+        return;
+      }
+      const upstream = httpRequest(`http://127.0.0.1:${operatorPort}${req.url ?? '/'}`, {
+        method: req.method, headers: req.headers,
+      }, (response) => {
+        res.writeHead(response.statusCode ?? 502, response.headers);
+        response.pipe(res);
+      });
+      upstream.on('error', () => res.destroy());
+      res.on('close', () => upstream.destroy());
+      req.pipe(upstream);
+    });
+    const proxyPort = await listen(proxy);
+    const pane = new PuiPane(bin, operatorPort, home, { operatorToken: 'pui-fixture-old-operator' });
+    try {
+      await openComposer(pane, false);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('New SU session — 1 Context');
+      pane.write('e');
+      await pane.waitFor('Operator connection');
+      pane.write('\x15'); // Ctrl-U clears the address.
+      pane.write(`http://127.0.0.1:${proxyPort}`);
+      pane.enter();
+      await pane.waitFor('Connection: Unavailable');
+      expect(credentials.length).toBeGreaterThan(0);
+      expect(credentials.every((token) => token === undefined)).toBe(true);
+      expect(launchRequests).toEqual([]);
+      pane.write('e');
+      await pane.waitFor('Operator connection');
+      pane.write('\t');
+      pane.write(requiredToken);
+      await pane.waitFor('••••••••');
+      expect(pane.screen()).not.toContain(requiredToken);
+      pane.enter(); // Finish token entry; reconnect still needs confirmation.
+      await pane.waitFor('Credential entered');
+      expect(launchRequests).toEqual([]);
+      pane.enter();
+      await pane.waitFor('Connection: Connected');
+      expect(credentials).toContain(`Bearer ${requiredToken}`);
+      expect(pane.screen()).not.toContain(requiredToken);
+      await completeNewSessionSetup(pane);
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      expect(nativeTerminalLaunch).not.toHaveBeenCalled();
+      console.info('PUI_SETUP_RECONNECT_ACCEPTANCE', JSON.stringify({ binarySha256,
+        refusedWithoutCredential: true, oldCredentialForwarded: false, draftPreserved: true }));
+    } finally { await pane.stop(); await close(proxy); }
+  });
+
+  test('new-session setup is reachable from a clean workbench with no running operator', async () => {
+    const unused = createServer();
+    const closedPort = await listen(unused);
+    await close(unused);
+    const cleanHome = mkdtempSync(path.join(tmpdir(), 'pui-onboarding-clean-'));
+    const pane = new PuiPane(bin, closedPort, cleanHome, { args: ['workbench'], cols: 80, rows: 20 });
+    try {
+      await pane.waitFor('New SU session — 1 Context', { timeoutMs: 20_000 });
+      await pane.waitFor('Connection: Unavailable');
+      pane.enter();
+      expect(launchRequests).toEqual([]);
+      pane.write('e');
+      await pane.waitFor('Operator connection');
+      pane.write('\x15');
+      pane.write(`http://127.0.0.1:${operatorPort}`);
+      pane.enter();
+      await pane.waitFor('Connection: Connected');
+      await completeNewSessionSetup(pane);
+      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      expect(launchRequests).toHaveLength(1);
+      expect(scriptedEngine.requests).toEqual([]);
+      expect(nativeTerminalLaunch).not.toHaveBeenCalled();
+    } finally { await pane.stop(); rmSync(cleanHome, { recursive: true, force: true }); }
   });
 
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {

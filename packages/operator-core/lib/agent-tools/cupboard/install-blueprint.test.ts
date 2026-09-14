@@ -155,6 +155,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
       listingId: 'listing',
       activationStack: ['practice'],
       potSlug: 'sales-ops',
+      capabilityRole: 'sales-worker',
       capabilityProviderSelections: { 'crm.email@1.0.0': 'acme-crm@2.0.0' },
     });
 
@@ -166,6 +167,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         activationStack: ['practice'],
         workspaceId: 'ws-principal',
         potSlug: 'sales-ops',
+        capabilityRole: 'sales-worker',
         capabilityMode: 'agent',
         capabilityProviderSelections: { 'crm.email@1.0.0': 'acme-crm@2.0.0' },
       }),
@@ -217,6 +219,22 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           units: [{ name: 'acme-crm' }, { name: 'audit-pack' }],
         },
       },
+    });
+  });
+
+  it('preserves a role-ceiling refusal instead of presenting it as installation success', async () => {
+    mockInstall.mockResolvedValue({
+      ok: false, status: 403, error: 'capability_unsatisfied',
+      detail: 'crm.email@1.0.0: outside-ceiling',
+      data: { failures: [{ classRef: 'crm.email@1.0.0', cause: 'outside-ceiling' }] },
+    });
+    const result = await call({
+      operation: 'install', listingId: 'identity-listing', potSlug: 'sales-ops', capabilityRole: 'read-only',
+    });
+    expect(mockInstall).toHaveBeenCalledWith(expect.objectContaining({ capabilityRole: 'read-only' }));
+    expect(result).toMatchObject({
+      ok: false, status: 403, error: 'capability_unsatisfied',
+      data: { failures: [{ classRef: 'crm.email@1.0.0', cause: 'outside-ceiling' }] },
     });
   });
 });

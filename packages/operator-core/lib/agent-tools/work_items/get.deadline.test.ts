@@ -6,6 +6,8 @@
  * that would invite a caller to act on an item whose read never completed.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { DbCallDeadlineError } from '@papercusp/db-org';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
 const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
@@ -303,5 +305,42 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
 
     rejectRead(new Error('late storage failure'));
     await Promise.resolve();
+  });
+
+  it.each([
+    ['bounded transaction lock timeout', () => new OrgTxnTimeoutError('55P03', new Error('lock timeout')), '55P03'],
+    ['raw PostgreSQL statement timeout', () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }), '57014'],
+  ])('maps %s to a retryable unavailable result instead of a generic bulk error', async (_label, makeError, pgCode) => {
+    getWorkItem.mockRejectedValueOnce(makeError());
+
+    const out = (await get.handler({ id: 'WI-contention' } as never, ctx as never)) as Out;
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-contention',
+      availability: 'unavailable',
+      error: 'timeout',
+      retryable: true,
+      phase: 'read',
+      pgCode,
+    });
+    expect(out.data.results[0].message).toContain('retry shortly');
+  });
+
+  it('maps a pool acquisition deadline to the same retryable unavailable contract without inventing a PG code', async () => {
+    getWorkItem.mockRejectedValueOnce(
+      new DbCallDeadlineError('work_items:get:acquire', 8_000, 8_000, 'org-admin'),
+    );
+
+    const out = (await get.handler({ id: 'WI-pool-deadline' } as never, ctx as never)) as Out;
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-pool-deadline',
+      availability: 'unavailable',
+      error: 'timeout',
+      retryable: true,
+      phase: 'read',
+    });
+    expect(out.data.results[0].pgCode).toBeUndefined();
+    expect(out.data.results[0].message).toContain('retry shortly');
   });
 });

@@ -443,7 +443,7 @@ describe('evaluatePlanSpecQualityGate', () => {
       { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
       gateDeps({
         listClauses: vi.fn(async () => [clause()]),
-        listAcceptanceRubrics: vi.fn(async () => [{ classRef: null }]),
+        listAcceptanceRubrics: vi.fn(async () => [{ rubricId: 'quality-plan-acceptance', classRef: null }]),
         listCards,
       }),
     );
@@ -454,8 +454,28 @@ describe('evaluatePlanSpecQualityGate', () => {
       code: 'spec_quality_class_missing',
       wouldBlock: ['acceptance-rubric-class-missing'],
     });
+    expect(result.message).toContain(
+      'rubrics:amend { rubricRef:"quality-plan-acceptance", classRef:"<plan-class>" }',
+    );
+    expect(result.message).toContain('plans:set-template-data');
+    expect(result.message).toContain('no_template');
     expect(result.classRef).toBeUndefined();
     expect(listCards).not.toHaveBeenCalled();
+  });
+
+  it('gives a creation path when no acceptance rubric exists', async () => {
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({
+        listClauses: vi.fn(async () => [clause()]),
+        listAcceptanceRubrics: vi.fn(async () => []),
+      }),
+    );
+
+    expect(result.message).toContain('rubrics:propose');
+    expect(result.message).toContain('kind:"acceptance"');
+    expect(result.message).toContain('subjectPlan:"quality-plan"');
+    expect(result.message).toContain('plans:set-template-data');
   });
 
   it('fails closed when multiple active acceptance rubrics make the class ambiguous', async () => {

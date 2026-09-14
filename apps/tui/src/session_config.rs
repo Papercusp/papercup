@@ -53,6 +53,28 @@
 
 use serde::Deserialize;
 
+/// Credentials are never included in reducer/debug diagnostics.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SetupToken(pub String);
+
+impl std::fmt::Debug for SetupToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+/// Reconnect replaces this PUI process, closing all old subscriptions together.
+/// The draft travels in the child environment, never in argv or a tree file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupReconnect {
+    pub endpoint: String,
+    pub message: String,
+    pub token: SetupToken,
+    pub keep_existing_token: bool,
+}
+
+pub const SETUP_DRAFT_ENV: &str = "PUI_SETUP_DRAFT";
+
 /// New-session configuration is isolated from the currently bound chat.
 #[derive(Debug, Clone)]
 pub struct SessionSetup {
@@ -62,6 +84,10 @@ pub struct SessionSetup {
     pub project_searching: bool,
     pub project_cursor: usize,
     pub endpoint: String,
+    pub endpoint_input: Option<String>,
+    pub token: SetupToken,
+    pub editing_token: bool,
+    pub show_help: bool,
     pub backend: crate::su_session::SuSessionBackend,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -82,6 +108,10 @@ impl SessionSetup {
             project_searching: false,
             project_cursor: 0,
             endpoint,
+            endpoint_input: None,
+            token: SetupToken::default(),
+            editing_token: false,
+            show_help: false,
             backend: crate::su_session::PUI_DEFAULT_SU_BACKEND,
             model: None,
             effort: None,

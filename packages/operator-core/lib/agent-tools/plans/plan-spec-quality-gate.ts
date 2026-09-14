@@ -39,10 +39,12 @@ export interface PlanSpecQualityGateVerdict {
   }>;
 }
 
+type AcceptanceRubricRef = { rubricId?: string; classRef?: string | null };
+
 type GateDeps = {
   listClauses?: typeof listSpecClauses;
   listCards?: typeof listScorecards;
-  listAcceptanceRubrics?: (planSlug: string, options: { harnessSlug: string; strict: true }) => Promise<ReadonlyArray<{ classRef?: string | null }>>;
+  listAcceptanceRubrics?: (planSlug: string, options: { harnessSlug: string; strict: true }) => Promise<ReadonlyArray<AcceptanceRubricRef>>;
 };
 
 type ClassResolution =
@@ -61,7 +63,7 @@ function isPlanClassRubricRef(value: unknown): value is PlanClassRubricRef {
   return typeof value === 'string' && (PLAN_CLASS_RUBRIC_REFS as readonly string[]).includes(value);
 }
 
-export function resolvePersistedClassRef(planSlug: string, rubrics: readonly { classRef?: string | null }[]): ClassResolution {
+export function resolvePersistedClassRef(planSlug: string, rubrics: readonly AcceptanceRubricRef[]): ClassResolution {
   if (rubrics.length === 0) {
     return {
       ok: false,
@@ -69,7 +71,9 @@ export function resolvePersistedClassRef(planSlug: string, rubrics: readonly { c
       wouldBlock: ['acceptance-rubric-class-missing'],
       message:
         `Plan '${planSlug}' adopted first-class clauses but has no active acceptance rubric from which to resolve ` +
-        'the authoritative plan class. Persist an acceptance rubric template_data.classRef before evaluating spec quality.',
+        'the authoritative plan class. Create an acceptance rubric with `rubrics:propose` (kind:"acceptance", ' +
+        `subjectPlan:"${planSlug}", classRef:"<plan-class>"), then evaluate spec quality. ` +
+        'Do not write classRef to the subject plan with plans:set-template-data; that plan may intentionally have no schema.',
     };
   }
   if (rubrics.length > 1) {
@@ -91,7 +95,10 @@ export function resolvePersistedClassRef(planSlug: string, rubrics: readonly { c
       wouldBlock: ['acceptance-rubric-class-missing'],
       message:
         `Plan '${planSlug}' has an active acceptance rubric, but its persisted template_data.classRef is missing. ` +
-        `Set classRef to exactly one of ${PLAN_CLASS_RUBRIC_REFS.join(', ')}; caller-supplied subject refs are not authoritative.`,
+        `Bind it on the acceptance rubric with rubrics:amend { rubricRef:"${rubrics[0]?.rubricId ?? '<acceptance-rubric-ref>'}", ` +
+        `classRef:"<plan-class>" }; use exactly one of ${PLAN_CLASS_RUBRIC_REFS.join(', ')}. ` +
+        'Do not use plans:set-template-data on the subject plan: its missing schema correctly yields no_template. ' +
+        'Caller-supplied subject refs are not authoritative.',
     };
   }
   if (!isPlanClassRubricRef(classRef)) {
