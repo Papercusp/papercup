@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -133,7 +134,7 @@ describe('psu bounded local recovery grant', () => {
       cwd: h,
       env: { PATH: process.env.PATH },
       timeoutMs: 100,
-    });
+    }, { spawnImpl: spawn });
     expect(result.timedOut).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 500));
     await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });

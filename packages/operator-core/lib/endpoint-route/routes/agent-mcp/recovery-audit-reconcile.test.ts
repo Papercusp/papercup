@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => []);
+Object.assign(sql, {
+  begin: vi.fn(async (run: (tx: typeof sql) => unknown) => run(sql)),
+});
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql }),
