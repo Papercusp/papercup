@@ -182,9 +182,11 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'dev:pg_query',
     'dev:pg_active_queries',
     'dev:dogfood_substrate_status',
+    'backup:snapshot_list',
     'coord:whoami',
     'coord:declare-intent',
     'coord:inbox',
+    'locks:list',
     'locks:queue',
     'tools:find',
     'plans:get',
@@ -233,8 +235,10 @@ const COORD_SEND_NAME = normalizeMcpName('coord:send');
 const COORD_WHOAMI_NAME = normalizeMcpName('coord:whoami');
 const COORD_DECLARE_INTENT_NAME = normalizeMcpName('coord:declare-intent');
 const COORD_INBOX_NAME = normalizeMcpName('coord:inbox');
+const BACKUP_SNAPSHOT_LIST_NAME = normalizeMcpName('backup:snapshot_list');
 const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName('capability:bash_output');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
+const LOCKS_LIST_NAME = normalizeMcpName('locks:list');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const LOCKS_RELEASE_NAME = normalizeMcpName('locks:release');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
@@ -379,6 +383,8 @@ const COORD_PRESENCE_NAME = normalizeMcpName('coord:presence');
 const COORD_ROSTER_NAME = normalizeMcpName('coord:roster');
 const CRITICAL_TARGET_OWNER_MAX_STRING_CHARS = 120;
 const CRITICAL_TARGET_OWNER_MAX_COUNT = 50;
+const CRITICAL_BACKUP_SNAPSHOT_LIST_MAX_LIMIT = 50;
+const CRITICAL_LOCKS_LIST_MAX_LIMIT = 50;
 const CRITICAL_LOCKS_QUEUE_MAX_PATHS = 50;
 const CRITICAL_LOCKS_QUEUE_MAX_PATH_CHARS = 1_024;
 const CRITICAL_LOCKS_QUEUE_MAX_EXTERNAL_PATH_CHARS = 4_096;
@@ -1625,6 +1631,43 @@ export function isBoundedLocksQueueArgs(args: unknown): boolean {
 }
 
 /**
+ * `backup:snapshot_list` is the authoritative recovery read for an in-flight
+ * backup, but its normal limit reaches 500 rows. Keep the critical-pressure
+ * reserve to the handler default (when arguments are omitted/empty) or an
+ * explicit page of at most 50 snapshots; unknown fields and larger pages stay
+ * on the ordinary retryable path.
+ */
+export function isBoundedBackupSnapshotListArgs(args: unknown): boolean {
+  if (args === undefined) return true;
+  if (!isRecord(args)) return false;
+  if (Object.keys(args).some((key) => key !== 'limit')) return false;
+  return args.limit === undefined || isBoundedPositiveInt(args.limit, CRITICAL_BACKUP_SNAPSHOT_LIST_MAX_LIMIT);
+}
+
+/**
+ * `locks:list` normally permits a full registry browse (currently hundreds of
+ * resources), or a `q` filter without a page cap. Under critical pressure,
+ * admit one exact resource read or a bounded registry browse. A browse must
+ * carry `limit <= 50`; `q` is optional with that limit, while resource mixed
+ * with `q`/`limit` and selector-free reads remain shed.
+ */
+export function isBoundedLocksListArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['resource', 'q', 'limit']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  const hasResource = args.resource !== undefined;
+  const hasQuery = args.q !== undefined;
+  const hasLimit = args.limit !== undefined;
+  if (hasResource) {
+    return Object.keys(args).length === 1 && isBoundedCriticalText(args.resource, 200, true);
+  }
+  if (!hasLimit || !isBoundedPositiveInt(args.limit, CRITICAL_LOCKS_LIST_MAX_LIMIT)) return false;
+  if (hasQuery && !isBoundedCriticalText(args.q, 200, true)) return false;
+  return true;
+}
+
+/**
  * `locks:release` is needed to clear one held lock during critical-pressure
  * recovery, but its bulk, path-only, cross-domain, publish, and native-proof
  * forms can fan out into multiple transactions or side effects. Reserve only
@@ -2520,11 +2563,13 @@ function isBoundedJudgeGradingAuditEmitArgs(args: unknown, requestUrl?: string):
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, requestUrl?: string): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
+  if (normalized === BACKUP_SNAPSHOT_LIST_NAME) return isBoundedBackupSnapshotListArgs(args);
   if (normalized === COORD_WHOAMI_NAME) return isBoundedCoordWhoamiArgs(args);
   if (normalized === COORD_DECLARE_INTENT_NAME) return isBoundedCoordDeclareIntentArgs(args);
   if (normalized === COORD_SEND_NAME) return isBoundedCoordSendArgs(args);
   if (normalized === CAPABILITY_BASH_OUTPUT_NAME) return isBoundedBashOutputArgs(args);
   if (normalized === WORK_ITEMS_COMMENT_NAME) return isBoundedWorkItemsCommentArgs(args);
+  if (normalized === LOCKS_LIST_NAME) return isBoundedLocksListArgs(args);
   if (normalized === LOCKS_QUEUE_NAME) return isBoundedLocksQueueArgs(args);
   if (normalized === LOCKS_RELEASE_NAME) return isBoundedLocksReleaseArgs(args);
   if (normalized === COORD_PRESENCE_NAME) return isBoundedCoordPresenceArgs(args);
