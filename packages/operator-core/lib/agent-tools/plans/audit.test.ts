@@ -412,6 +412,20 @@ describe('plans:audit D-008 writer contract', () => {
 });
 
 describe('plans:audit phase:activation', () => {
+  it('publishes the canonical Requirements BAR syntax required by activation seeding', () => {
+    const guidance = [
+      tool.description,
+      tool.guidance?.when,
+      tool.guidance?.returns,
+      tool.guidance?.chaining,
+    ].join('\n');
+
+    expect(guidance).toContain('## Requirements');
+    expect(guidance).toContain('**R-N — Title.** outcome');
+    expect(guidance).toContain('fenced `requirement` JSON block');
+    expect(guidance).toContain('ordinary bullet lists do not satisfy the BAR parser');
+  });
+
   it('publishes the required planTargets destination grammar on the nested field', () => {
     const projected = lookupByMcpName('plans:audit');
     expect(projected).toBeDefined();
