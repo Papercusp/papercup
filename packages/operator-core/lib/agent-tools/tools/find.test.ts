@@ -30,6 +30,7 @@ import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
 import capabilityRead from '../capability/read';
 import agentReview from '../improvements/agent-review';
+import captureTool from '../improvements/capture';
 import rubricsPropose from '../rubrics/propose';
 import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
@@ -319,6 +320,20 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit?.argSchema).toContain(
       'constraint:$ (resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs; use a separate read for those enrichments)',
     );
+  });
+
+  it('publishes improvements:capture text-input requirements from the runtime validator (EI-22685673523193526)', async () => {
+    const result = await callHandler({ query: 'improvements:capture', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'improvements:capture');
+    expect(hit).toBeDefined();
+    expect(hit!.argSchema).toContain(
+      'constraint:$ (at least one of title, body, or toolFailure is required; title is required when both body and toolFailure are omitted',
+    );
+
+    const missingText = captureTool.args.safeParse({ lane: 'observation', checkDuplicatesOnly: true });
+    expect(missingText.success).toBe(false);
+    expect(hit!.argSchema).toContain('title?:string(1-1000)');
+    expect(captureTool.args.safeParse({ lane: 'observation', body: 'body-only capture' }).success).toBe(true);
   });
 
   it('uses the raw discovery schema for a release:trace-style path-or-sha union', () => {
