@@ -1831,7 +1831,7 @@ function completionTestPathReferences(parts: readonly string[], filesChanged: re
     new Set(
       [...filesChanged, ...prosePaths]
         .map(repoRelativePath)
-        .filter((path): path is string => Boolean(path) && TEST_PATH_RE.test(path)),
+        .filter((path): path is string => typeof path === 'string' && TEST_PATH_RE.test(path)),
     ),
   );
 }
