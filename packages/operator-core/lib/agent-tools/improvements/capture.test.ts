@@ -27,6 +27,18 @@ const stalenessHints = vi.hoisted(() => ({
   paths: vi.fn(async () => null as string | null),
 }));
 
+const trustedRuntime = vi.hoisted(() => ({
+  read: vi.fn(async () => null as {
+    commitSha: string;
+    testRunIds: number[];
+    workspaceId: string;
+    harnessSlug: string;
+    runGroupId: string;
+    root: string;
+    filePaths: string[];
+  } | null),
+}));
+
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
 // wrapper's two jobs — (1) deriving the `source` label from the caller's
 // identity tier, and (2) passing every arg + the resolved identity through to
@@ -40,6 +52,9 @@ vi.mock('../../tool-schema-staleness', async () => {
     pathsStalenessHint: stalenessHints.paths,
   };
 });
+vi.mock('../../testing-run-store', () => ({
+  readTrustedHarnessTestRunProvenance: trustedRuntime.read,
+}));
 vi.mock('../../harness/improvements/agent-review', () => ({
   enterAgentReview: vi.fn(async () => ({
     entered: true,
@@ -73,6 +88,7 @@ const mockResolveSelfLiteral = vi.mocked(resolveSelfLiteral);
 const mockPriorArt = vi.mocked(noveltyPriorArt);
 const mockRecordRoutedIdea = vi.mocked(recordRoutedIdea);
 const mockGetModes = vi.mocked(getModes);
+const mockReadTrustedHarnessTestRunProvenance = trustedRuntime.read;
 
 drainAdmission.gate.mockImplementation(async (_args, persist) => {
   if (drainAdmission.unavailable) {
@@ -91,6 +107,7 @@ drainAdmission.gate.mockImplementation(async (_args, persist) => {
 describe('improvements:capture → agent-review enrollment (abolish-human-review D-003/P-004)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReadTrustedHarnessTestRunProvenance.mockResolvedValue(null);
     mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
     mockEnterAgentReview.mockResolvedValue({
       entered: true,
@@ -383,6 +400,137 @@ describe('improvements:capture tool envelope', () => {
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ body: warning }));
     expect(body.staleCodeWarning).toBe(warning);
     expect(stalenessHints.paths).toHaveBeenCalledWith(['packages/operator-core/lib/x.ts']);
+  });
+
+  it('separates caller-supplied target runtime from the filing endpoint and uses target SHA for staleness', async () => {
+    const warning = 'ⓘ Possible STALE RUNTIME: target runtime is older than the tree';
+    stalenessHints.paths.mockResolvedValueOnce(warning);
+
+    await callTool(
+      {
+        title: 'target runtime report',
+        kind: 'change',
+        paths: ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+        observedRuntime: {
+          sha: 'target-sha-3170',
+          version: 'target-version',
+          endpoint: 'http://127.0.0.1:3170',
+          evidenceRef: 'run:target-1',
+        },
+      },
+      { transport: 'mcp', requestOrigin: { transport: 'mcp', path: '/api/mcp', query: { harness: 'papercusp' } } },
+    );
+
+    const passed = mockCapture.mock.calls[0]![0] as {
+      payloadExtra?: {
+        runtimeProvenance?: {
+          filingEndpointRuntime?: Record<string, unknown>;
+          observedTargetRuntime?: Record<string, unknown>;
+        };
+        freshnessEnvelope?: Record<string, unknown>;
+      };
+    };
+    expect(stalenessHints.paths).toHaveBeenCalledWith(
+      ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+      expect.objectContaining({ deployedSha: expect.any(Function) }),
+    );
+    const stalenessOverride = stalenessHints.paths.mock.calls[0]?.[1] as { deployedSha?: () => string };
+    expect(stalenessOverride.deployedSha?.()).toBe('target-sha-3170');
+    expect(passed.payloadExtra?.runtimeProvenance?.observedTargetRuntime).toMatchObject({
+      sha: 'target-sha-3170',
+      version: 'target-version',
+      endpoint: 'http://127.0.0.1:3170',
+      provenance: 'caller-supplied',
+    });
+    expect(passed.payloadExtra?.runtimeProvenance?.filingEndpointRuntime).toMatchObject({
+      transport: 'mcp',
+      requestOrigin: expect.objectContaining({ path: '/api/mcp' }),
+    });
+    expect(passed.payloadExtra?.runtimeProvenance?.filingEndpointRuntime?.sha).not.toBe('target-sha-3170');
+    expect(passed.payloadExtra?.freshnessEnvelope).toMatchObject({
+      observedSourceSha: 'target-sha-3170',
+      observedRuntimeSha: 'target-sha-3170',
+      reporterRuntimeVersion: 'target-version',
+    });
+  });
+
+  it('uses only the normalized SHA from exact clean test-run provenance', async () => {
+    mockReadTrustedHarnessTestRunProvenance.mockResolvedValueOnce({
+      commitSha: 'trusted-target-sha',
+      testRunIds: [41],
+      workspaceId: 'ws-target',
+      harnessSlug: 'papercusp',
+      runGroupId: 'run-target',
+      root: '/workspace/papercusp',
+      filePaths: ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+    });
+
+    await callTool({
+      title: 'trusted target report',
+      kind: 'change',
+      paths: ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+      observedRuntime: {
+        sha: 'caller-claimed-sha',
+        testRunIds: [41],
+        workspaceId: 'ws-target',
+        harnessSlug: 'papercusp',
+        runGroupId: 'run-target',
+        root: '/workspace/papercusp',
+        filePaths: ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+      },
+    });
+
+    expect(mockReadTrustedHarnessTestRunProvenance).toHaveBeenCalledWith({
+      testRunIds: [41],
+      workspaceId: 'ws-target',
+      harnessSlug: 'papercusp',
+      runGroupId: 'run-target',
+      root: '/workspace/papercusp',
+      filePaths: ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+    });
+    const passed = mockCapture.mock.calls[0]![0] as { payloadExtra?: Record<string, any> };
+    expect(passed.payloadExtra?.runtimeProvenance?.observedTargetRuntime).toMatchObject({
+      sha: 'trusted-target-sha',
+      provenance: 'trusted-test-run',
+    });
+    expect(passed.payloadExtra?.freshnessEnvelope?.observedSourceSha).toBe('trusted-target-sha');
+    const stalenessOverride = stalenessHints.paths.mock.calls[0]?.[1] as { deployedSha?: () => string };
+    expect(stalenessOverride.deployedSha?.()).toBe('trusted-target-sha');
+  });
+
+  it('does not trust a caller SHA when exact test-run evidence is unavailable', async () => {
+    await callTool({
+      title: 'unverified target report',
+      kind: 'change',
+      paths: ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+      observedRuntime: {
+        sha: 'caller-claimed-sha',
+        testRunIds: [42],
+        workspaceId: 'ws-target',
+        harnessSlug: 'papercusp',
+        runGroupId: 'run-target',
+        root: '/workspace/papercusp',
+        filePaths: ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
+      },
+    });
+
+    expect(stalenessHints.paths).toHaveBeenCalledWith([
+      'packages/operator-core/lib/agent-tools/improvements/capture.ts',
+    ]);
+    const passed = mockCapture.mock.calls[0]![0] as { payloadExtra?: Record<string, any> };
+    expect(passed.payloadExtra?.runtimeProvenance?.observedTargetRuntime).toMatchObject({
+      sha: 'caller-claimed-sha',
+      provenance: 'unverified-test-run',
+    });
+    expect(passed.payloadExtra?.freshnessEnvelope).toBeUndefined();
+  });
+
+  it('rejects partial test-run provenance instead of silently treating it as a caller-only runtime', () => {
+    const parsed = (captureTool.args as { safeParse: (value: unknown) => { success: boolean } }).safeParse({
+      title: 'partial target evidence',
+      observedRuntime: { sha: 'target-sha', testRunIds: [1], workspaceId: 'ws-target' },
+    });
+    expect(parsed.success).toBe(false);
   });
 
   it('routes a one-off tool failure to correlated non-claimable probation', async () => {

@@ -41,6 +41,8 @@ import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
 import { pathsStalenessHint, toolFailureStalenessHint } from '../../tool-schema-staleness';
+import { getBuildInfo } from '../../build-info';
+import { readTrustedHarnessTestRunProvenance } from '../../testing-run-store';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveCaptureScope } from './capture-scope';
 import { coerceCaptureArgs } from './capture-coerce';
@@ -93,6 +95,82 @@ const observationRatingsSchema = z.record(
       ),
   }),
 );
+
+const observedRuntimeSchema = z
+  .object({
+    sha: z.string().min(1).max(160).describe('runtime/source commit SHA explicitly observed by the caller'),
+    version: z.string().max(160).optional().describe('runtime version reported by the observed target'),
+    endpoint: z.string().max(500).optional().describe('endpoint used to exercise the observed target runtime'),
+    evidenceRef: z.string().max(500).optional().describe('durable evidence reference for the observed runtime'),
+    testRunIds: z
+      .array(z.number().int().positive())
+      .max(64)
+      .optional()
+      .describe('exact harness_shared.test_runs ids that can validate the target SHA'),
+    workspaceId: z.string().min(1).max(160).optional(),
+    harnessSlug: z.string().min(1).max(120).optional(),
+    runGroupId: z.string().min(1).max(200).optional(),
+    root: z.string().min(1).max(1000).optional(),
+    filePaths: z.array(z.string().min(1).max(300)).max(20).optional(),
+  })
+  .strict()
+  .superRefine((runtime, ctx) => {
+    const evidenceFields = ['workspaceId', 'harnessSlug', 'runGroupId', 'root', 'filePaths'] as const;
+    const hasAnyEvidenceField = evidenceFields.some((field) => runtime[field] !== undefined);
+    if (runtime.testRunIds !== undefined) {
+      for (const field of evidenceFields) {
+        const value = runtime[field];
+        const missing = value === undefined || (Array.isArray(value) && value.length === 0);
+        if (missing) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [field],
+            message: `observedRuntime.${field} is required when observedRuntime.testRunIds is supplied`,
+          });
+        }
+      }
+    } else if (hasAnyEvidenceField) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['testRunIds'],
+        message: 'observedRuntime.testRunIds is required when test-run provenance query fields are supplied',
+      });
+    }
+  });
+
+type ObservedRuntime = z.infer<typeof observedRuntimeSchema>;
+
+type RuntimeProvenance = {
+  filingEndpointRuntime: {
+    sha: string | null;
+    version: string;
+    transport: string | null;
+    requestOrigin: unknown;
+  };
+  observedTargetRuntime: ObservedRuntime & {
+    provenance: 'caller-supplied' | 'trusted-test-run' | 'unverified-test-run';
+  };
+};
+
+function targetFreshnessEnvelope(args: {
+  now: string;
+  targetSha: string;
+  targetVersion?: string;
+  reporterSession: string;
+  toolSchemaVersion?: string | null;
+}) {
+  return {
+    observedAt: args.now,
+    observedSourceSha: args.targetSha,
+    observedRuntimeSha: args.targetSha,
+    reporterSession: args.reporterSession,
+    reporterRuntimeVersion: args.targetVersion ?? null,
+    toolSchemaVersion: args.toolSchemaVersion ?? null,
+    lastSuccessfulReproductionAt: args.now,
+    deployBuildIdentity: args.targetVersion ? `${args.targetSha}@${args.targetVersion}` : args.targetSha,
+    linkedFixRefs: [],
+  };
+}
 
 const NOT_EXERCISED_RUBRIC_GUIDANCE =
   'CONDITIONAL: when observation.notExercised is non-empty, provide observation.rubricRef or the top-level rubricRef compatibility alias; omit it for a free-text observation.';
@@ -576,6 +654,11 @@ export default defineTool({
           .max(20)
           .optional()
           .describe('repo-relative file paths the improvement touches, when known — feeds the protected-path gate'),
+        observedRuntime: observedRuntimeSchema
+          .optional()
+          .describe(
+            'explicit runtime provenance for the environment that produced the report. Caller SHA is labeled unverified; when exact testRunIds plus all query fields are supplied, only matching clean server-owned ledger rows can validate the target SHA. This is separate from the runtime that received this capture call.',
+          ),
         notifyAgents: z
           .array(z.string().min(1))
           .max(8)
@@ -1012,6 +1095,52 @@ export default defineTool({
     const normalizedToolFailure = args.toolFailure
       ? normalizeSuspectedToolFailure(args.toolFailure as SuspectedToolFailure)
       : undefined;
+    // EI-22752568870730930: the process receiving this capture may not be the
+    // runtime that produced the report (for example, a report exercised against
+    // staging while the filing went through the green operator). Keep both
+    // identities. A caller SHA is useful evidence, but exact clean test-run rows
+    // are the only server-owned path that upgrades it to trusted provenance.
+    let targetRuntimeSha: string | null = null;
+    let runtimeProvenance: RuntimeProvenance | undefined;
+    let targetRuntimeObservedAt: string | undefined;
+    if (args.observedRuntime) {
+      const observed = args.observedRuntime;
+      let provenance: RuntimeProvenance['observedTargetRuntime']['provenance'] = 'caller-supplied';
+      let observedTarget = { ...observed };
+      if (observed.testRunIds !== undefined) {
+        const trusted = await readTrustedHarnessTestRunProvenance({
+          testRunIds: observed.testRunIds,
+          workspaceId: observed.workspaceId!,
+          harnessSlug: observed.harnessSlug!,
+          runGroupId: observed.runGroupId!,
+          root: observed.root!,
+          filePaths: observed.filePaths!,
+        }).catch(() => null);
+        if (trusted) {
+          targetRuntimeSha = trusted.commitSha;
+          provenance = 'trusted-test-run';
+          observedTarget = { ...observed, sha: trusted.commitSha };
+        } else {
+          // Never fall back to the caller SHA when it was accompanied by an
+          // invalid/incomplete evidence query: doing so would make a failed
+          // trust check look like validated target identity.
+          provenance = 'unverified-test-run';
+        }
+      } else {
+        targetRuntimeSha = observed.sha.trim();
+      }
+      targetRuntimeObservedAt = new Date().toISOString();
+      const filingBuild = getBuildInfo();
+      runtimeProvenance = {
+        filingEndpointRuntime: {
+          sha: filingBuild.sha,
+          version: filingBuild.version,
+          transport: ctx.transport ?? ctx.requestOrigin?.transport ?? null,
+          requestOrigin: ctx.requestOrigin ?? null,
+        },
+        observedTargetRuntime: { ...observedTarget, provenance },
+      };
+    }
     // EI-21351815194031529: a tool's SCHEMA is rendered by the running operator, but
     // the tree runs ahead of it — so a constraint the reporter genuinely hit may
     // already be fixed and merely undeployed. That reads exactly like an open defect
@@ -1025,7 +1154,11 @@ export default defineTool({
     // explicitly supplied subject paths against the serving build and carry a
     // non-blocking cue into the durable body so triage does not mistake an older
     // runtime for current tree behavior.
-    const pathStalenessHint = args.paths?.length ? await pathsStalenessHint(args.paths) : null;
+    const pathStalenessHint = args.paths?.length
+      ? targetRuntimeSha
+        ? await pathsStalenessHint(args.paths, { deployedSha: () => targetRuntimeSha! })
+        : await pathsStalenessHint(args.paths)
+      : null;
     // Reserve room for the hint rather than clamping the join: the body arrives
     // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
     // clamping afterwards would silently truncate the hint off the END — losing
@@ -1157,11 +1290,23 @@ export default defineTool({
           lane: effectiveLane,
           watchdogKey: captureWatchdogKey,
           payloadExtra:
-            observation || hasIdeation || toolFailureProbation
+            observation || hasIdeation || toolFailureProbation || runtimeProvenance || targetRuntimeSha
               ? {
                   ...(observation ? { observation } : {}),
                   ...(hasIdeation ? { ideation } : {}),
                   ...(toolFailureProbation ? { toolFailureProbation } : {}),
+                  ...(runtimeProvenance ? { runtimeProvenance } : {}),
+                  ...(targetRuntimeSha
+                    ? {
+                        freshnessEnvelope: targetFreshnessEnvelope({
+                          now: targetRuntimeObservedAt ?? new Date().toISOString(),
+                          targetSha: targetRuntimeSha,
+                          targetVersion: runtimeProvenance?.observedTargetRuntime.version,
+                          reporterSession: id.ownerId,
+                          toolSchemaVersion: normalizedToolFailure?.report?.schemaRevision ?? null,
+                        }),
+                      }
+                    : {}),
                 }
               : undefined,
           createdBy: id.ownerId,
