@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P012 S33 v3 real-model delegate opportunity, three repeats",
+  "framework": "node",
+  "command": ["npm", "run", "llm-test", "--", "--scenario", "su-S33-agenda-delegate"],
+  "cwd": "apps/operator",
+  "environment": {
+    "LLM_TEST_SUT_MODEL": "gpt-5.6-sol",
+    "LLM_TEST_JUDGE_MODEL": "gpt-5.6-terra",
+    "LLM_TEST_SIM_MODEL": "gpt-5.6-luna"
+  },
+  "exitCode": 0,
+  "startedAt": "2026-09-13T23:59:51.537Z",
+  "finishedAt": "2026-09-14T00:02:13.488Z",
+  "summary": "Three actual model runs passed the v3 exposed-delegation assertion. Production obligation provider/projection supplied guidance; a stateful isolated tool world checked the canonical launch arguments and recorded placement. This is one opportunity, not complete R16 acceptance, a live workspace launch, or a causal improvement claim.",
+  "assertions": [
+    {
+      "id": "repeat-1-exposed-delegation",
+      "passed": true,
+      "evidence": "llm_test_runs:e5c503b9-cb0d-4766-9ca9-90da87b8aa75; scenario_version=3; status=passed; asserts_json.violations=[]; requires an effect chosen after an observed exposure response."
+    },
+    {
+      "id": "repeat-2-exposed-delegation",
+      "passed": true,
+      "evidence": "llm_test_runs:4c9f2409-1a93-420d-8faf-32cf3b7cdfe0; scenario_version=3; status=passed; asserts_json.violations=[]."
+    },
+    {
+      "id": "repeat-3-exposed-delegation",
+      "passed": true,
+      "evidence": "llm_test_runs:57d13470-39d3-40e4-a135-db9ab1bbb962; scenario_version=3; status=passed; asserts_json.violations=[]."
+    }
+  ],
+  "matrixGroupId": "7b9d883d-ab6e-4a49-a401-b9686971014a",
+  "sourcePaths": [
+    "packages/operator-core/lib/agent-obligation-providers.ts",
+    "packages/operator-core/lib/agent-obligations.ts",
+    "packages/operator-core/lib/llm-testing/scenarios/su/S33-goal-agenda.ts"
+  ],
+  "log": "/tmp/goal-feedback-p012-s33-delegate-v3-sol-18327.log",
+  "limitations": [
+    "The timestamps cover the persisted model runs, not npm process bootstrap/teardown.",
+    "One judge warning and groundedness variance were recorded; no judge error.",
+    "The tool executor is isolated. No production fleet was launched by these probes.",
+    "Reported model costs are incomplete because the SUT price mapper has no known Codex price.",
+    "The runner used the shared working tree; no whole-import-graph clean-commit guarantee is asserted.",
+    "Other R16 opportunities and independent acceptance remain separate requirements."
+  ]
+}

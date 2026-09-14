@@ -72,6 +72,7 @@ describe('getAcceptanceRubricVettingStatus grading-audit admission', () => {
       required: true,
       satisfied: true,
       state: 'vetted',
+      reason: 'current',
       attestedRevision: 4,
     });
   });
@@ -85,6 +86,7 @@ describe('getAcceptanceRubricVettingStatus grading-audit admission', () => {
     ).resolves.toMatchObject({
       satisfied: true,
       state: 'vetted',
+      reason: 'current',
       currentRevision: 6,
       attestedRevision: 4,
       currentCriteriaHash: 'hash-current',

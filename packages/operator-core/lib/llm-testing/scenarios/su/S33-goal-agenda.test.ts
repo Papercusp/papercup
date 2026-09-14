@@ -114,6 +114,33 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect((await call(world, 'coord:presence')).active.some((r: { ownerId: string }) => r.ownerId === 'su-independent')).toBe(true);
   });
 
+  it('no-demand never invents a plan, held task or review demand on subsequent reads', async () => {
+    const world = makeS33World('no-demand');
+    expect((await call(world, 'goals:get')).goal.plans).toEqual([]);
+    expect((await call(world, 'plans:get')).results).toEqual([]);
+    expect((await call(world, 'work_items:get')).results).toEqual([]);
+  });
+
+  it.each(['paused', 'achieved', 'killed'] as const)('%s remains stopped across goal, plan and work-item reads', async (c) => {
+    const world = makeS33World(c);
+    expect((await call(world, 'goals:get')).goal.status).toBe(c);
+    const plan = (await call(world, 'plans:get')).results[0];
+    expect(plan.parentGoalStatus).toBe(c);
+    expect(plan.acceptance.status).toBe('not-applicable');
+    expect((await call(world, 'work_items:get')).results[0].checkpoint).toContain(c);
+  });
+
+  it('unknown does not become fabricated plan proof or work-item certainty', async () => {
+    const world = makeS33World('unknown');
+    for (const tool of ['goals:get', 'plans:get', 'work_items:get']) {
+      expect((await call(world, tool)).error).toBe('measurement_unavailable');
+    }
+  });
+
+  it.each(['delegate', 'report', 'continue', 'wait'] as const)('%s does not invent an independent review prerequisite', async (c) => {
+    expect((await call(makeS33World(c), 'plans:get')).results[0].acceptance.status).toBe('not-applicable');
+  });
+
   it('matrix repeats do not share delivered effects', async () => {
     const scenario = SU_S33_GOAL_AGENDA.find((s) => s.id.endsWith('-report'))!;
     const first = scenario.toolOverride!;

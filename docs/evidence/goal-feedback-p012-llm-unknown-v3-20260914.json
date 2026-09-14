@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P012 S33 v3 real-model unknown-state opportunity, three repeats",
+  "framework": "node",
+  "command": ["npm", "run", "llm-test", "--", "--scenario", "su-S33-agenda-unknown"],
+  "cwd": "apps/operator",
+  "environment": {
+    "LLM_TEST_SUT_MODEL": "gpt-5.6-sol",
+    "LLM_TEST_JUDGE_MODEL": "gpt-5.6-terra",
+    "LLM_TEST_SIM_MODEL": "gpt-5.6-luna"
+  },
+  "exitCode": 0,
+  "startedAt": "2026-09-14T00:00:04.538Z",
+  "finishedAt": "2026-09-14T00:02:08.269Z",
+  "summary": "Three actual model runs preserved an exposed unknown goal state without turning it into no demand, authorization, or a performed effect. The production agenda provider/projection ran against a stateful isolated observation world. This is not complete R16 acceptance or evidence of causal behavioral improvement.",
+  "assertions": [
+    {
+      "id": "repeat-1-preserves-unknown",
+      "passed": true,
+      "evidence": "llm_test_runs:4a385501-a98f-4bae-8a3f-b7f8d3f78742; scenario_version=3; status=passed; asserts_json.violations=[]; assertion requires exposure, explicit unknown disposition, and no disallowed effect."
+    },
+    {
+      "id": "repeat-2-preserves-unknown",
+      "passed": true,
+      "evidence": "llm_test_runs:f8ac5f89-acbf-495a-9b66-21395e49245c; scenario_version=3; status=passed; asserts_json.violations=[]."
+    },
+    {
+      "id": "repeat-3-preserves-unknown",
+      "passed": true,
+      "evidence": "llm_test_runs:e7387894-db29-4b92-aff0-999c03ad2ab5; scenario_version=3; status=passed; asserts_json.violations=[]."
+    }
+  ],
+  "matrixGroupId": "c32d39b4-ed5e-4c24-a786-2a2fd726f091",
+  "sourcePaths": [
+    "packages/operator-core/lib/agent-obligation-providers.ts",
+    "packages/operator-core/lib/agent-obligations.ts",
+    "packages/operator-core/lib/llm-testing/scenarios/su/S33-goal-agenda.ts"
+  ],
+  "log": "/tmp/goal-feedback-p012-s33-unknown-v3-sol-18327.log",
+  "limitations": [
+    "The timestamps cover the persisted model runs, not npm process bootstrap/teardown.",
+    "No real historical goal was read or changed by the isolated executor.",
+    "Reported model costs are incomplete because the SUT price mapper has no known Codex price.",
+    "The runner used the shared working tree; no whole-import-graph clean-commit guarantee is asserted.",
+    "Other R16 opportunities and independent acceptance remain separate requirements."
+  ]
+}

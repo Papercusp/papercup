@@ -33,7 +33,8 @@ export interface AcceptanceRubricVettingStatus {
     | 'gate-disabled'
     | 'meta-rubric-missing'
     | 'missing-attestation'
-    | 'stale-attestation';
+    | 'stale-attestation'
+    | 'current';
   gateEnabled: boolean;
   metaRubricRef: string;
   currentRevision: number | null;
@@ -167,7 +168,7 @@ export async function getAcceptanceRubricVettingStatus(
     required: true,
     satisfied: true,
     state: 'vetted',
-    reason: 'missing-attestation',
+    reason: 'current',
     gateEnabled,
     metaRubricRef: META_ACCEPTANCE_RUBRIC_ID,
     currentRevision,

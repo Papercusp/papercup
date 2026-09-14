@@ -7,7 +7,6 @@
  * the externally authorized design can reuse them without reviving the
  * forgeable local HMAC/TTY boundary.
  */
-import { spawn as nodeSpawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
@@ -567,7 +566,7 @@ export function renderRecoveryBanner(grant) {
 /**
  * @param {RecoveryExecutionSpec} spec
  * @param {{
- *   spawnImpl?: typeof nodeSpawn,
+ *   spawnImpl?: typeof import("node:child_process").spawn,
  *   platform?: NodeJS.Platform,
  *   kill?: (pid: number, signal?: NodeJS.Signals | number) => boolean,
  * }} [opts]
@@ -575,9 +574,22 @@ export function renderRecoveryBanner(grant) {
  */
 export function executeExactRecoveryCommand(
   { file, args, cwd, env, timeoutMs },
-  { spawnImpl = nodeSpawn, platform = process.platform, kill = process.kill.bind(process) } = {},
+  { spawnImpl, platform = process.platform, kill = process.kill.bind(process) } = {},
 ) {
   return new Promise((resolveResult) => {
+    // Native recovery is fail-closed until an external owner trust root exists.
+    // Keep the bounded executor reusable, but require that future wiring inject a
+    // governed start seam explicitly instead of silently acquiring a raw process
+    // primitive inside this module.
+    if (typeof spawnImpl !== "function") {
+      resolveResult({
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        error: "governed recovery executor required",
+      });
+      return;
+    }
     let child;
     let settled = false;
     let timedOut = false;
@@ -839,7 +851,7 @@ export function recoveryAuthorizationEligibility({
  *   startPid?: number,
  *   maxDepth?: number,
  *   platform?: NodeJS.Platform,
- *   run?: typeof spawnSync,
+ *   run?: typeof import("node:child_process").spawnSync,
  * }} [opts]
  * @returns {string[] | null}
  */
@@ -847,7 +859,7 @@ export function readRecoveryAncestorCmdlines({
   startPid = process.ppid,
   maxDepth = 32,
   platform = process.platform,
-  run = spawnSync,
+  run,
 } = {}) {
   const out = [];
   const seen = new Set();
@@ -864,6 +876,7 @@ export function readRecoveryAncestorCmdlines({
         const fields = stat.slice(close + 1).trim().split(/\s+/);
         pid = Number(fields[1]);
       } else if (platform === "darwin" || platform === "freebsd") {
+        if (typeof run !== "function") return null;
         const result = run("ps", ["-o", "ppid=", "-o", "command=", "-p", String(pid)], {
           encoding: "utf8",
           timeout: 2_000,
@@ -875,6 +888,7 @@ export function readRecoveryAncestorCmdlines({
         pid = Number(match[1]);
         out.push(match[2]);
       } else if (platform === "win32") {
+        if (typeof run !== "function") return null;
         const script =
           `$p=Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\"; ` +
           `if ($null -eq $p) { exit 2 }; ` +

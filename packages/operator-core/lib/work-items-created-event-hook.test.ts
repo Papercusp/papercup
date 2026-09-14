@@ -7,11 +7,10 @@
  * work-items-events.test.ts — this file only proves the create chokepoint
  * calls it, for both families, fire-and-forget.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 
 const emitWorkItemCreatedEvent = vi.fn();
-vi.mock('./work-items-events', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
+vi.mock('./work-items-events', () => ({
   emitWorkItemCreatedEvent: (...a: unknown[]) => emitWorkItemCreatedEvent(...a),
   emitWorkItemClaimedEvent: vi.fn(),
 }));
@@ -95,6 +94,14 @@ vi.mock('./issues-engineer', () => ({
 }));
 
 import { createWorkItem } from './work-items';
+
+// createWorkItem intentionally lazy-imports the event module to break a production
+// cycle. Preload the already-mocked module once so this test measures whether the
+// create chokepoint fires the hook, not whether a cold Vite transform finishes inside
+// vi.waitFor's unrelated one-second default on a busy shared runner.
+beforeAll(async () => {
+  await import('./work-items-events');
+});
 
 beforeEach(() => {
   emitWorkItemCreatedEvent.mockClear();

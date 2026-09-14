@@ -167,8 +167,25 @@ const WORK_SCOPE_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'workspace:work_scope_status',
 );
 
+// The pipeline resolver is deliberately live and comparatively expensive, but every
+// row below only inspects a different declaration against one of TWO identical
+// request shapes (global or one representative parameter). Re-running the same git
+// and gate census for every cell made this file spend minutes in duplicate I/O and
+// occasionally exceed an individual 20s row timeout under ordinary contention.
+// Share one in-flight snapshot per request shape; evict a rejected read so a genuine
+// resolver failure is still retryable by a later row instead of being memoized.
+const livePipelinePayloads = new Map<string | undefined, Promise<unknown>>();
 async function livePipelinePayload(path?: string) {
-  return gitPipelinePosition(path === undefined ? {} : { path });
+  const cached = livePipelinePayloads.get(path);
+  if (cached) return cached;
+  const pending = Promise.resolve(gitPipelinePosition(path === undefined ? {} : { path }));
+  livePipelinePayloads.set(path, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (livePipelinePayloads.get(path) === pending) livePipelinePayloads.delete(path);
+    throw error;
+  }
 }
 
 /** `limit: 1` — the ROW LIST is irrelevant to a path walk, and the aggregates these

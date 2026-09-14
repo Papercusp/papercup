@@ -110,14 +110,14 @@ export function renderRecoveryBanner(grant: RecoveryGrant): string;
 /**
  * @param {RecoveryExecutionSpec} spec
  * @param {{
- *   spawnImpl?: typeof nodeSpawn,
+ *   spawnImpl?: typeof import("node:child_process").spawn,
  *   platform?: NodeJS.Platform,
  *   kill?: (pid: number, signal?: NodeJS.Signals | number) => boolean,
  * }} [opts]
  * @returns {Promise<RecoveryExecutionResult>}
  */
 export function executeExactRecoveryCommand({ file, args, cwd, env, timeoutMs }: RecoveryExecutionSpec, { spawnImpl, platform, kill }?: {
-    spawnImpl?: typeof nodeSpawn;
+    spawnImpl?: typeof import("node:child_process").spawn;
     platform?: NodeJS.Platform;
     kill?: (pid: number, signal?: NodeJS.Signals | number) => boolean;
 }): Promise<RecoveryExecutionResult>;
@@ -207,7 +207,7 @@ export function recoveryAuthorizationEligibility({ env, stdinIsTTY, stdoutIsTTY,
  *   startPid?: number,
  *   maxDepth?: number,
  *   platform?: NodeJS.Platform,
- *   run?: typeof spawnSync,
+ *   run?: typeof import("node:child_process").spawnSync,
  * }} [opts]
  * @returns {string[] | null}
  */
@@ -215,7 +215,7 @@ export function readRecoveryAncestorCmdlines({ startPid, maxDepth, platform, run
     startPid?: number;
     maxDepth?: number;
     platform?: NodeJS.Platform;
-    run?: typeof spawnSync;
+    run?: typeof import("node:child_process").spawnSync;
 }): string[] | null;
 export const RECOVERY_PROTOCOL_VERSION: 1;
 export const RECOVERY_CAPABILITY_DIAGNOSTIC: "diagnostic-command";
@@ -279,5 +279,3 @@ export type RecoveryExecutionResult = {
     timedOut: boolean;
     error?: string;
 };
-import { spawn as nodeSpawn } from "node:child_process";
-import { spawnSync } from "node:child_process";

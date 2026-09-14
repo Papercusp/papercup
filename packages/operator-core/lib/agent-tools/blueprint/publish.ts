@@ -99,7 +99,7 @@ export default defineTool({
   name: 'blueprint:publish',
   capability: 'harness:write',
   description:
-    "UNSCOPED-ONLY: List a local/private blueprint on the Comb: resolves the member repo's GitHub coords + publishes a kind='blueprint' listing (listing_ref = blueprintId) with the operator's gh token + attestation. Because repoDir is caller-selected and the publication is a workspace-global Cupboard write, this requires an unscoped (--all-workspaces) superuser session; workspace-scoped sessions are refused. DELTA-NOT-COPY — the blueprint is listed keeping its `extends:`, so an install composes it against the upstream parent and inherits upstream improvements. Lands PENDING (D-007) — an operator must approve it before it is publicly visible.",
+    "UNSCOPED-ONLY: Publish a local/private blueprint to the Comb from its member repo's GitHub coordinates. This workspace-global write requires an unscoped (--all-workspaces) superuser; scoped calls fail. Keeps `extends:` so installs compose upstream improvements. Lands PENDING (D-007) until operator approval.",
   guidance: {
     when: "From an unscoped (--all-workspaces) superuser session, sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
     notWhen:
