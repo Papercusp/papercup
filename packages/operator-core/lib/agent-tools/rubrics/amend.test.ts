@@ -55,6 +55,18 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(rendered).toContain('omit legacy aliases');
   });
 
+  it('documents the durable handoff for approval JSON larger than the coord:send cap', () => {
+    const rendered = JSON.stringify({ description: amendTool.description, guidance: amendTool.guidance });
+
+    expect(rendered).toContain('600 characters');
+    expect(rendered).toContain('work_items:update');
+    expect(rendered).toContain('acceptanceBarApproval');
+    expect(rendered).toContain('payloadTier');
+    expect(rendered).toContain('full');
+    expect(rendered).toContain('short coord:send pointer');
+    expect(rendered).toContain('Never truncate or manually retype');
+  });
+
   it('accepts a full criterion set with structured checks', () => {
     const parsed = rubricsAmendArgs.safeParse({
       rubricRef: 'acceptance-example',

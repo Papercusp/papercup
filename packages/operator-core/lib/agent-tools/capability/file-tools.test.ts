@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
-import readTool, { capabilityReadSeeAlso } from './read';
+import readTool, { capabilityReadSeeAlso, MAX_FILE_BYTES } from './read';
 import writeTool, { emptyWriteWouldDestroy, looksLikeDisplayFormattedRead } from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
@@ -581,6 +581,32 @@ describe('capability:read', () => {
     const r = (await readTool.handler!({ file_path: f, tail: 500 }, ctx)) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toMatch(/\s+1\tonly/);
     expect(r.content[0].text).toContain('two');
+  });
+
+  it('streams bounded line windows from files over the unbounded-read cap', async () => {
+    const f = join(DIR, 'r-large-tail.log');
+    const line = Buffer.from(`${'x'.repeat(128)}\n`);
+    const lineCount = Math.ceil((MAX_FILE_BYTES + 1) / line.length);
+    const large = Buffer.alloc(line.length * lineCount);
+    for (let offset = 0; offset < large.length; offset += line.length) line.copy(large, offset);
+    const marker = Buffer.from('tail-marker\n');
+    marker.copy(large, large.length - marker.length);
+    writeFileSync(f, large);
+
+    const bounded = (await readTool.handler!({ file_path: f, tail: 1 }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(bounded.isError).not.toBe(true);
+    expect(bounded.content[0].text).toContain('tail-marker');
+    expect(bounded.content[0].text).not.toContain('too_large');
+
+    const unbounded = (await readTool.handler!({ file_path: f }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(unbounded.isError).toBe(true);
+    expect(parse(unbounded)).toMatchObject({ reason: 'too_large' });
   });
 
   it('expands a ~/ path instead of resolving it under the project dir', async () => {

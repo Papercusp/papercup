@@ -36,7 +36,7 @@ export const rubricsAmendArgs = z
       .boolean()
       .optional()
       .describe(
-        'preview a BAR meaning amendment without writing; returns exact approval JSON for an outside-lineage reviewer to post through work_items:comment or another authenticated Threadable verb',
+        'preview a BAR meaning amendment without writing; returns exact approval JSON. Because coord:send expects:action caps each body at 600 characters, first persist preview.approval on the approval work-item with work_items:update { id: "<work-item-id>", payload: { acceptanceBarApproval: preview.approval } }, then send the reviewer a short coord:send pointer; the reviewer fetches work_items:get { id: "<work-item-id>", payloadTier: "full" } and posts that exact object as the entire work_items:comment body',
       ),
     criteria: z
       .array(amendmentCriterionSchema)
@@ -173,14 +173,21 @@ export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Amend one criterion field, bind a missing acceptance class, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
+    "Amend one criterion field, bind a missing acceptance class, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes. Since coord:send expects:action caps each body at 600 characters, persist the exact `preview.approval` object on the approval work-item with work_items:update { id:'<work-item-id>', payload:{ acceptanceBarApproval: preview.approval } }, send the reviewer a short coord:send pointer, and have them fetch work_items:get { id:'<work-item-id>', payloadTier:'full' } before posting the exact object as the entire work_items:comment body; then apply with approvalRef:'thread-post:<id>'. Never truncate or manually retype the approval JSON. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
   guidance: {
     when: 'A targeted rubric improvement, or a complete-set revision of an already-seeded acceptance BAR contract that adds a BAR or structured checks through the atomic amendment/approval path.',
     notWhen:
       'Adding/removing criteria on a standard rubric, renaming stored keys, or changing rating scales — use rubrics:propose. Complete `criteria` here is acceptance-kind only and must preserve every stored key unless the canonical amendment rules explicitly support its removal.',
     chaining:
-      'rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` and `replicationSqlCheck` like propose/ratify.',
-    seeAlso: ['rubrics:propose (whole-document revision)', 'rubrics:get (read before amending)'],
+      "rubrics:get (read the stored field first) → rubrics:amend. For a started BAR meaning change: rubrics:amend { dryRun:true } → work_items:update { id:'<work-item-id>', payload:{ acceptanceBarApproval: preview.approval } } → coord:send a short pointer (the expects:action body cap is 600 characters) → reviewer work_items:get { id:'<work-item-id>', payloadTier:'full' } → work_items:comment with the exact approval object as the entire body → rubrics:amend { approvalRef:'thread-post:<id>' }. Never truncate or manually retype the approval JSON. The result reports `completeness` and `replicationSqlCheck` like propose/ratify.",
+    seeAlso: [
+      'rubrics:propose (whole-document revision)',
+      'rubrics:get (read before amending)',
+      'work_items:update (persist an uncapped approval payload)',
+      'work_items:get (read the exact payload with payloadTier:"full")',
+      'work_items:comment (post the exact approval JSON as a Threadable body)',
+      'coord:send (send only the short reviewer pointer)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,
