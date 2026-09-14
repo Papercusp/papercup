@@ -247,6 +247,7 @@ import {
   SU_CONTEXT_DEFAULT as PSU_SU_CONTEXT_DEFAULT,
   resumeModelMenuFor,
   resolveResumeTarget,
+  resumeTargetSelectionFromLastActive,
   sessionPortTargetAccount,
   sessionPortRequestBody,
   sessionPortTargetArgs,
@@ -6544,6 +6545,43 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
         { picker: false },
       ),
     ).toThrow(/denied/i);
+  });
+
+  it("inherits the transcript model for an older tracked Codex row with no launch argv", () => {
+    const recorded = {
+      ...source,
+      agent: "codex",
+      launchArgv: null,
+    };
+    const selection = resumeTargetSelectionFromLastActive(
+      recorded,
+      { picker: false },
+      "gpt-5.6-sol",
+    );
+    expect(selection).toEqual({
+      targetAgent: "codex",
+      modelSpec: "gpt-5.6-sol",
+      modelSource: "inherited",
+    });
+    expect(resolveResumeTarget(recorded, { picker: false }, selection)).toMatchObject({
+      operation: "native",
+      modelSpec: "gpt-5.6-sol",
+      modelSource: "inherited",
+    });
+  });
+
+  it("wires transcript-derived Codex selection into scripted/no-picker resumes", () => {
+    const sourceText = readFileSync(
+      join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+      "utf8",
+    );
+    const body = sourceText.slice(
+      sourceText.indexOf("async function chooseResumeTarget("),
+    );
+    expect(body).toContain("resumeTargetSelectionFromLastActive(");
+    expect(body).toContain(
+      "resolveResumeTarget(session, args, transcriptSelection)",
+    );
   });
 
   it("treats a visible backend-default choice as deliberate configured-default authorization", () => {
