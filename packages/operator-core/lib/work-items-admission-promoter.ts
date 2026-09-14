@@ -26,7 +26,7 @@ import {
   readAgentReviewState,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
-import { readIssueOccurrenceCounts, selectCanonicalIssue, recordIssueOccurrence } from './issue-occurrence-ledger';
+import { selectCanonicalIssue, recordIssueOccurrence, type IssueOccurrenceCounts } from './issue-occurrence-ledger';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
@@ -805,7 +805,7 @@ export interface WorkItemReadinessProjection {
     verifiedCompletionsInWindow: number;
     retainedReopenEventsInWindow: number;
     reopenedItemsInWindow: number;
-    recurrence: Awaited<ReturnType<typeof readIssueOccurrenceCounts>>;
+    recurrence: IssueOccurrenceCounts;
     readyExpectedCost: {
       coveredRows: number;
       totalRows: number;
@@ -2367,9 +2367,16 @@ export async function readWorkItemReadinessProjection(opts: {
   const successfulStates = [...ALL_SUCCESSFUL_STATUSES];
 
   type ProjectionRow = Record<string, number | string | null>;
-  const [rows, recurrence] = await Promise.all([
-    sql<ProjectionRow[]>`
-      WITH active_dependency_refs AS MATERIALIZED (${activeWorkItemDependencyRefsSql(sql, {
+  const rows = await sql<ProjectionRow[]>`
+      WITH occurrence_counts AS MATERIALIZED (
+        SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)) AS canonical_clusters,
+               count(*) AS raw_occurrences,
+               count(*) FILTER (WHERE report_kind <> 'canonical-created') AS duplicate_occurrences
+          FROM harness_shared.work_item_occurrences
+         WHERE workspace_id = ${opts.workspaceId}
+           AND (${harnessSlug}::text IS NULL OR canonical_harness_slug = ${harnessSlug})
+           AND occurred_at > ${since}::timestamptz
+      ), active_dependency_refs AS MATERIALIZED (${activeWorkItemDependencyRefsSql(sql, {
         itemWorkspaceId: opts.workspaceId,
         successfulStates,
         terminalStates,
@@ -2586,12 +2593,24 @@ export async function readWorkItemReadinessProjection(opts: {
              (count(*) FILTER (WHERE headline = 'ready' AND expected_cost_cents IS NOT NULL))::int
                AS ready_cost_covered,
              COALESCE(sum(expected_cost_cents) FILTER (WHERE headline = 'ready' AND expected_cost_cents IS NOT NULL), 0)::bigint
-               AS ready_cost_cents
-        FROM classified`,
-    readIssueOccurrenceCounts({ workspaceId: opts.workspaceId, harnessSlug, since }, sql),
-  ]);
+               AS ready_cost_cents,
+             (SELECT canonical_clusters FROM occurrence_counts) AS recurrence_canonical_clusters,
+             (SELECT raw_occurrences FROM occurrence_counts) AS recurrence_raw_occurrences,
+             (SELECT duplicate_occurrences FROM occurrence_counts) AS recurrence_duplicate_occurrences
+        FROM classified`;
   const row = rows[0] ?? {};
   const n = (key: string): number => Number(row[key] ?? 0);
+  const recurrence: IssueOccurrenceCounts = {
+    canonicalClusters: n('recurrence_canonical_clusters'),
+    rawOccurrences: n('recurrence_raw_occurrences'),
+    duplicateOccurrences: n('recurrence_duplicate_occurrences'),
+    units: {
+      canonicalClusters: 'distinct canonical work-item ids with occurrences',
+      rawOccurrences: 'append-only report rows',
+      duplicateOccurrences: 'report rows not creating a canonical item',
+    },
+    writer: 'harness_shared.work_item_occurrences',
+  };
   const ageFromEpoch = (value: number | string | null | undefined): number | null => {
     if (value == null) return null;
     const epoch = Number(value);

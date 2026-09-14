@@ -2020,12 +2020,20 @@ describe('work-item admission promoter (real Postgres)', () => {
                   ? 'census'
                   : null;
         if (label == null) return Reflect.apply(target, thisArg, args);
-        started.push(label);
-        return readsHeld.then(async () => {
-          const result = await Reflect.apply(target, thisArg, args);
-          resolved.push(label);
-          return result;
-        });
+        let consumed: Promise<unknown> | undefined;
+        const consume = () => {
+          consumed ??= readsHeld.then(async () => {
+            const result = await Reflect.apply(target, thisArg, args);
+            resolved.push(label);
+            return result;
+          });
+          if (!started.includes(label)) started.push(label);
+          return consumed;
+        };
+        return {
+          then: (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
+            consume().then(onFulfilled, onRejected),
+        };
       },
     }) as typeof db.sql;
 
@@ -2034,10 +2042,11 @@ describe('work-item admission promoter (real Postgres)', () => {
       harnessSlug: HARNESS,
       sql: controlledSql,
     });
+    await new Promise<void>((resolve) => setImmediate(resolve));
     let startAssertionError: unknown;
     try {
       expect([...started].sort()).toEqual(
-        ['census', 'queue-health', 'readiness-recurrence', 'readiness-stock-flow', 'runs'].sort(),
+        ['census', 'queue-health', 'readiness-stock-flow', 'runs'].sort(),
       );
       expect(resolved).toEqual([]);
     } catch (error) {
