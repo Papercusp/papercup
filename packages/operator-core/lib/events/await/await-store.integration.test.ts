@@ -793,4 +793,54 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(again.map((a) => a.subscriberId)).toEqual(['su-rt']);
     expect((await store.listActiveAwaits('su-rt')).filter((a) => a.eventKey === key)).toHaveLength(1);
   });
+
+  it('unguarded-halt rescue skips one-shot inbox waits but keeps the standing keepalive and ordinary wakes intact', async () => {
+    const key = 'coord:inbox-wake:su-rescue-filter';
+    const oneShot = await store.registerAwait({
+      subscriberId: 'su-rescue-one-shot',
+      eventKey: key,
+      once: true,
+    });
+    await store.upsertInboxWakeAwait({
+      subscriberId: 'su-rescue-standing',
+      eventKey: key,
+    });
+
+    // The synthetic rescue is not a directed message: it must leave the
+    // message-only one-shot armed, while the standing keepalive remains the
+    // path that can actually wake the halted session.
+    const rescued = await store.fireAwaitsForKey({
+      eventKey: key,
+      source: 'unguarded-halt-rescue',
+    });
+    expect(rescued.map((row) => row.subscriberId).sort()).toEqual(['su-rescue-standing']);
+    expect((await store.listActiveAwaits('su-rescue-one-shot')).map((row) => row.id)).toEqual([oneShot.id]);
+
+    // A real directed wake on the same key still consumes the one-shot row.
+    const directed = await store.fireAwaitsForKey({
+      eventKey: key,
+      source: 'coord:send',
+    });
+    expect(directed.map((row) => row.subscriberId).sort()).toEqual([
+      'su-rescue-one-shot',
+      'su-rescue-standing',
+    ]);
+    expect(await store.listActiveAwaits('su-rescue-one-shot')).toEqual([]);
+  });
+
+  it('rescue source does not suppress one-shot awaits on ordinary event keys', async () => {
+    const awaited = await store.registerAwait({
+      subscriberId: 'su-rescue-ordinary-key',
+      eventKey: 'ordinary:rescue-key',
+      once: true,
+    });
+
+    const fired = await store.fireAwaitsForKey({
+      eventKey: awaited.eventKey,
+      source: 'unguarded-halt-rescue',
+    });
+
+    expect(fired.map((row) => row.id)).toEqual([awaited.id]);
+    expect(await store.listActiveAwaits('su-rescue-ordinary-key')).toEqual([]);
+  });
 });

@@ -12435,6 +12435,31 @@ export function recordedCodexModelSelectionForResume(session) {
   });
 }
 
+/**
+ * Select a transcript-derived model for an unattended native Codex resume when
+ * the tracked row has no launch argv (for example, because it fell outside the
+ * resumable-session window). The transcript is authoritative for the model that
+ * actually answered the session; resolveResumeTarget still applies the normal
+ * Codex policy and deny-list to the selected value.
+ */
+export function resumeTargetSelectionFromLastActive(session, args = {}, last) {
+  if (
+    session?.agent !== "codex" ||
+    typeof last !== "string" ||
+    !last.trim() ||
+    args.model ||
+    args.modelSource ||
+    (args.agent && args.agent !== "codex")
+  ) {
+    return {};
+  }
+  return {
+    targetAgent: "codex",
+    modelSpec: last.trim(),
+    modelSource: "inherited",
+  };
+}
+
 export function sessionPortTargetAccount(account) {
   if (account?.forward === "auto" || account?.auto === true) return "auto";
   if (account?.id) return account.id;
@@ -12506,11 +12531,16 @@ async function chooseResumeTarget(session, args) {
     /* a transcript we can't read only costs the announce */
   }
   if (last) console.error(`psu: last active model in this session: ${last}`);
+  const transcriptSelection = resumeTargetSelectionFromLastActive(
+    session,
+    args,
+    last,
+  );
   // Explicit CLI selections are a complete scripted target. Cloud aliases can
   // infer Claude vs Codex; OMP remains explicit (`--agent=omp`) because its
   // model vocabulary is intentionally open/config-driven.
   if (args.model || args.agent || !args.picker)
-    return resolveResumeTarget(session, args);
+    return resolveResumeTarget(session, args, transcriptSelection);
   const { select, input, search } = await import("@inquirer/prompts");
   const picked = await select({
     message: "Continue this session with which backend/model?",

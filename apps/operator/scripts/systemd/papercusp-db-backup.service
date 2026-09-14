@@ -14,6 +14,10 @@ OnFailure=papercusp-db-backup-alert.service
 
 [Service]
 Type=oneshot
+# The scheduled guard returns EX_TEMPFAIL (75) when this cycle is intentionally
+# deferred for lock/pressure contention. It is observable in ExecMainStatus,
+# but must not fire the failure alert reserved for a real backup error.
+SuccessExitStatus=75
 Nice=19
 IOSchedulingClass=idle
 # WI-2145150: the dump lives on /mnt/backup (/dev/sda1, 1.2T free), NOT /mnt/data.

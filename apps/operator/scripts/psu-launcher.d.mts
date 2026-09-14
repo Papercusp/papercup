@@ -3356,6 +3356,22 @@ export function recordedCodexModelSelectionForResume(session: any): {
     model: string;
     source: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource;
 } | null;
+/**
+ * Select a transcript-derived model for an unattended native Codex resume when
+ * the tracked row has no launch argv (for example, because it fell outside the
+ * resumable-session window). The transcript is authoritative for the model that
+ * actually answered the session; resolveResumeTarget still applies the normal
+ * Codex policy and deny-list to the selected value.
+ */
+export function resumeTargetSelectionFromLastActive(session: any, args: {} | undefined, last: any): {
+    targetAgent?: undefined;
+    modelSpec?: undefined;
+    modelSource?: undefined;
+} | {
+    targetAgent: string;
+    modelSpec: string;
+    modelSource: string;
+};
 export function sessionPortTargetAccount(account: any): any;
 export function sessionPortRequestBody(source: any, target: any, account: any, args?: {}): {
     protocolVersion: number;

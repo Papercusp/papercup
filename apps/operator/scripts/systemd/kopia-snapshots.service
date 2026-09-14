@@ -4,6 +4,10 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# The scheduled guard returns EX_TEMPFAIL (75) when this cycle is intentionally
+# deferred for lock/pressure contention. Keep that status visible in systemd's
+# ExecMainStatus without treating an expected retry as a failed service.
+SuccessExitStatus=75
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

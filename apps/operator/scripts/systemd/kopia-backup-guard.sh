@@ -69,6 +69,16 @@ is_number "$stop_grace" || { echo "invalid KOPIA_BACKUP_STOP_GRACE_SEC=$stop_gra
 # MemoryMax/MemorySwapMax and Kopia to --parallel=1, so an admitted run is
 # capped by its cgroup rather than free to consume the host.
 max_defer="${KOPIA_BACKUP_MAX_DEFER_SEC:-21600}"
+# A scheduled cycle that did not run is retryable, not successful. EX_TEMPFAIL
+# makes the skipped work visible in systemd's recorded exit status while the
+# scheduled units' SuccessExitStatus=75 keeps expected retries out of OnFailure;
+# a completed child still returns its own status below.
+scheduled_defer_exit=75
+# A scheduled child may itself use EX_TEMPFAIL (for example, the immutable
+# script snapshot wrapper). Do not let the unit-level SuccessExitStatus=75
+# mistake that real failure for a guard deferral; normalize the collision to a
+# distinct non-success status after retaining the original in the guard log.
+scheduled_child_tempfail_exit=74
 # ...and once escalated, do not escalate again on the very next timer tick.  A
 # backup that fails for a non-pressure reason would otherwise ignore pressure on
 # every 5-minute tick forever.  This is the retry floor between escalations.
@@ -326,7 +336,7 @@ run_scheduled_command() {
   child_rc=$?
   if [ -n "$runtime_abort_reason" ]; then
     guard_log "result=deferred-during-run reason=$runtime_abort_reason child_rc=$child_rc"
-    return 75
+    return "$scheduled_defer_exit"
   fi
   return "$child_rc"
 }
@@ -334,7 +344,7 @@ run_scheduled_command() {
 if [ "$mode" = scheduled ]; then
   if ! flock -n 9; then
     guard_log "result=deferred reason=lock-held"
-    exit 0
+    exit "$scheduled_defer_exit"
   fi
 
   # WHY THE CGROUP AND NOT /proc/pressure -- measured on this host 2026-09-05.
@@ -409,7 +419,7 @@ if [ "$mode" = scheduled ]; then
       guard_log "result=admitted-despite-pressure reason=$admission_block_reason $staleness_override_reason"
     else
       guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason"
-      exit 0
+      exit "$scheduled_defer_exit"
     fi
   fi
 else
@@ -425,11 +435,18 @@ if [ "$mode" = scheduled ]; then
   run_scheduled_command "$@"
   rc=$?
   # Same contract as an admission-time pressure deferral: the scheduled cycle
-  # intentionally did no complete snapshot, but the service is healthy and the
-  # next timer tick is the retry.  Do not make systemd treat pressure control as
-  # a unit failure.
+  # intentionally did no complete snapshot, so preserve its retryable
+  # EX_TEMPFAIL status for systemd. The scheduled units classify that code as an
+  # expected retry; a completed child keeps its own status, including genuine
+  # failures that must still reach OnFailure.
   if [ -n "$runtime_abort_reason" ]; then
-    return 0
+    return "$rc"
+  fi
+  if [ "$rc" -eq "$scheduled_defer_exit" ]; then
+    guard_log "result=finished mode=$mode rc=$rc normalized_rc=$scheduled_child_tempfail_exit"
+    rc="$scheduled_child_tempfail_exit"
+  else
+    guard_log "result=finished mode=$mode rc=$rc"
   fi
 else
   # Same ownership boundary as the scheduled path above. In particular, the
@@ -437,8 +454,8 @@ else
   # must not leave pg_dump holding our flock after it is reparented to systemd.
   "$@" 9>&-
   rc=$?
+  guard_log "result=finished mode=$mode rc=$rc"
 fi
-guard_log "result=finished mode=$mode rc=$rc"
 # Only a run that actually completed resets the staleness clock.  A deferral
 # never reaches here, and the scheduled runtime-abort path returns above, so
 # neither can be mistaken for coverage.

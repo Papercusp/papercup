@@ -26,6 +26,7 @@ import {
 const systemdDir = fileURLToPath(new URL('../../../apps/operator/scripts/systemd/', import.meta.url));
 const guard = join(systemdDir, 'kopia-backup-guard.sh');
 const hotScriptPath = join(systemdDir, 'kopia-snapshot-all.sh');
+const SCHEDULED_DEFER_EXIT = 75;
 const tempDirs: string[] = [];
 
 function pressureFile(path: string, fullAvg10: number): void {
@@ -236,7 +237,7 @@ describe('Kopia global backup guard', () => {
     const marker = join(dir, 'must-not-run');
     const result = run(['--mode', 'scheduled', '--', 'touch', marker], env);
 
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, result.stderr).toBe(SCHEDULED_DEFER_EXIT);
     expect(result.stdout).toContain(`result=deferred reason=${reason}`);
     expect(spawnSync('test', ['-e', marker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
   });
@@ -247,7 +248,7 @@ describe('Kopia global backup guard', () => {
     const marker = join(dir, 'must-not-run');
     const result = run(['--mode', 'scheduled', '--', 'touch', marker], env);
 
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, result.stderr).toBe(SCHEDULED_DEFER_EXIT);
     expect(result.stdout).toContain('result=deferred reason=pressure-unavailable signal=memory');
     expect(spawnSync('test', ['-e', marker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
   });
@@ -344,7 +345,7 @@ describe('Kopia global backup guard', () => {
         out=$("$GUARD" --mode scheduled --label contender -- touch "$CONTENDER")
         rc=$?
         wait "$holder"
-        [ "$rc" -eq 0 ] && [ ! -e "$CONTENDER" ] && grep -q 'result=deferred reason=lock-held' <<<"$out"
+        [ "$rc" -eq ${SCHEDULED_DEFER_EXIT} ] && [ ! -e "$CONTENDER" ] && grep -q 'result=deferred reason=lock-held' <<<"$out"
       `,
       ],
       {
@@ -373,7 +374,9 @@ describe('Kopia global backup guard', () => {
         db=$!
         wait "$db"
         wait "$hot"
+        hot_rc=$?
         [ -e "$DB_RAN" ] &&
+          [ "$hot_rc" -eq ${SCHEDULED_DEFER_EXIT} ] &&
           grep -q 'result=stopping-during-run reason=priority-waiter' "$HOT_LOG"
         `,
       ],
@@ -583,6 +586,8 @@ describe('Kopia managed entrypoint contract', () => {
     expect(dbService).not.toContain('kopia-backup-guard.sh --mode wait --label db-dump');
     expect(dbService).toContain('-- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh');
     expect(dbService).toContain('Environment=PC_BACKUP_JOBS=1');
+    expect(hotService).toContain('SuccessExitStatus=75');
+    expect(dbService).toContain('SuccessExitStatus=75');
     expect(hotScript).not.toContain('snapshot-all.lock');
     expect(homeScript).not.toContain('home-snapshot.lock');
     expect(hotService).toContain('ExecStopPost=%h/.config/kopia/snapshot-all.sh --cleanup');
@@ -720,7 +725,7 @@ describe('Kopia managed entrypoint contract', () => {
 
     // Enabling the floor must not make every label on the host ignore pressure
     // at once on its first tick, so an unknown baseline still defers.
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, result.stderr).toBe(SCHEDULED_DEFER_EXIT);
     expect(result.stdout).toContain('result=deferred reason=memory-pressure');
     expect(result.stdout).toContain('staleness_sec=unknown-seeded');
     expect(existsSync(marker)).toBe(false);
@@ -765,7 +770,7 @@ describe('Kopia managed entrypoint contract', () => {
     const marker = join(dir, 'must-not-run');
     const second = run(['--mode', 'scheduled', '--label', 'retry', '--', 'touch', marker], env);
 
-    expect(second.status, second.stderr).toBe(0);
+    expect(second.status, second.stderr).toBe(SCHEDULED_DEFER_EXIT);
     expect(second.stdout).toContain('result=deferred reason=memory-pressure');
     expect(second.stdout).toMatch(/escalation_retry_in_sec=\d+/);
     expect(second.stdout).not.toContain('result=admitted-despite-pressure');
@@ -801,9 +806,22 @@ describe('Kopia managed entrypoint contract', () => {
     // backup would keep pushing its own deadline forward and never escalate —
     // the deadline would then measure "how recently we tried", which is exactly
     // the reassuring-but-empty signal this whole floor exists to replace.
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(1);
     expect(result.stdout).toContain('result=finished mode=scheduled');
     expect(readFileSync(basePath, 'utf8')).toBe(before);
+  });
+
+  it('does not classify a scheduled child EX_TEMPFAIL as an intentional guard deferral', () => {
+    const { env } = fixture();
+    const result = run(['--mode', 'scheduled', '--label', 'child-tempfail', '--', 'bash', '-c', 'exit 75'], env);
+
+    // The scheduled systemd units accept 75 for the guard's own retryable
+    // deferral. A child returning the same code is a real failure, so the guard
+    // preserves it in the log and maps the process status to another failure
+    // code instead of allowing SuccessExitStatus=75 to hide it.
+    expect(result.status).toBe(74);
+    expect(result.stdout).toContain('result=finished mode=scheduled rc=75 normalized_rc=74');
+    expect(result.stdout).not.toContain('result=deferred');
   });
 
   it('lets a stale cycle finish even when it passed admission and pressure rose mid-run', async () => {
